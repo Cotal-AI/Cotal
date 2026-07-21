@@ -85,6 +85,7 @@
     "smoke:start-model": "tsx implementations/manager/smoke/start-model-preflight.smoke.ts",
     "smoke:persona-acl": "tsx implementations/manager/smoke/persona-identity-acl.smoke.ts",
     "smoke:lifecycle-files": "tsx implementations/manager/smoke/lifecycle-file-ownership.smoke.ts",
+    "smoke:static-lifecycle": "tsx implementations/manager/smoke/static-lifecycle.smoke.ts",
     "smoke:transcript-grant": "tsx implementations/manager/smoke/transcript-grant-acl.smoke.ts",
     "smoke:manifest-launch": "tsx implementations/manager/smoke/manifest-launch.smoke.ts",
     "smoke:own-agent-control": "tsx implementations/manager/smoke/own-agent-control.smoke.ts",

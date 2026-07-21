@@ -73,7 +73,9 @@ import {
 } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket } from "./endpoint-binding.js";
+import { recordsBucket } from "./endpoint-records.js";
+import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, STATIC_SLOT_PREFIX } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
@@ -92,6 +94,7 @@ export type Profile =
   | "provisioner"
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
+  | "lifecycle-executor" // ephemeral, LIFECYCLE-PINNED §13.1 state writes for the STATIC manager (Unit B): exactly ONE incarnation's head/uid/gate/cred-row/slot keys
   | "operator"
   | "purger"
   | "backup"
@@ -161,6 +164,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
+  "lifecycle-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one static lifecycle operation's 13.1 state-write window (activation / terminal / renewal ledger append)" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
@@ -421,6 +425,14 @@ export interface MintOpts {
    *  a requester minted by a manager that later lost its lease is refused AT THE RAIL. Ignored
    *  by every other profile. */
   retirementRequester?: { owner: string; actor: string };
+  /** `lifecycle-executor` profile only (Unit B, the static §13.1 executor): the ONE incarnation
+   *  whose lifecycle-state keys this credential may write — the head `lifecycle.<owner>.<actor>`,
+   *  the reservation `uid.<lifecycleUid>`, the gate `gate.<lifecycleUid>`, the ledger family
+   *  `cred.<lifecycleUid>.>`, and the manager's durable slot row `slotKey`. REQUIRED for that
+   *  profile (it throws without one); every grant is key-pinned so a leaked executor cred can
+   *  move exactly one incarnation's state machine and nothing else. Ignored by every other
+   *  profile. */
+  lifecycleExecutor?: { owner: string; actor: string; lifecycleUid: string; slotKey: string };
   /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
    *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
    *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
@@ -708,6 +720,11 @@ export function permissionsFor(
       throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester ({owner, actor} of the requesting manager)");
     const req = controlServiceSubject(space, CONTROL_AUTH_ADMIN, opts.retirementRequester.owner, opts.retirementRequester.actor);
     return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
+  }
+  if (profile === "lifecycle-executor") {
+    if (!opts.lifecycleExecutor)
+      throw new Error("permissionsFor: lifecycle-executor requires opts.lifecycleExecutor ({owner, actor, lifecycleUid, slotKey} of the ONE incarnation it may move)");
+    return lifecycleExecutorPermissions(space, pr, opts.lifecycleExecutor);
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
   if (profile === "backup") {
@@ -1361,8 +1378,12 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // Every backing stream the provisioner pre-creates — the 5 message streams + the KV buckets (a bucket's
   // backing stream is `KV_<bucket>`). `managerBucket` is now pre-created here too (so the supervisor binds
   // its lease open-only); members/membership/delivery are written by other creds but created at setup here.
+  // The two §13.12 AUTHORITY stores (records + auth) join the list for the STATIC manager's start-time
+  // `ensureAuthorityStores` (Unit B): create-or-verify only — the provisioner holds NO value-write on
+  // either (lifecycle state moves only through the key-pinned `lifecycle-executor` cred).
   const buckets = [
     presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
+    recordsBucket, epAuthBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.
@@ -1398,10 +1419,72 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         `$JS.API.DIRECT.GET.KV_${aclBucket(space)}.>`, // keyed get: `.>` (the key rides the subject)
         `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`,
         `$JS.API.DIRECT.GET.KV_${channelBucket(space)}.>`, // keyed get: `.>` (the key rides the subject)
+        // The Unit B static-manager start path: `ensureAuthorityStores` UPDATEs the records store's
+        // deny-flags exactly once at fresh creation (create → update → verify), and the boot
+        // reconciliation sweep lists the manager's slot rows via a headers-only ordered consumer
+        // (`keys()`) on the records stream — value bodies are never delivered, consistent with the
+        // provisioner's no-body-reads discipline.
+        `$JS.API.STREAM.UPDATE.KV_${recordsBucket(space)}`,
+        `$JS.API.CONSUMER.CREATE.KV_${recordsBucket(space)}.>`,
+        `$JS.API.CONSUMER.INFO.KV_${recordsBucket(space)}.>`,
+        `$JS.API.CONSUMER.DELETE.KV_${recordsBucket(space)}.>`,
+        // ...and reads the slot-mapping rows so the sweep can plan resume actions. The KV client
+        // reads a lazily-bound bucket via leader-served `STREAM.MSG.GET` — stream-scoped, NOT
+        // key-scoped (the requested key rides the PAYLOAD). NAMED RESIDUAL: for its one-shot
+        // lifetime the provisioner can READ (never write) any records-store row — lifecycle
+        // metadata, no secrets. The keyed Direct Get grant stays for direct-aware read paths.
+        `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`,
+        `$JS.API.DIRECT.GET.KV_${recordsBucket(space)}.$KV.${recordsBucket(space)}.${STATIC_SLOT_PREFIX}.>`,
       ],
     },
     // Replies only: every stream/consumer/KV-create PubAck and JS API response lands on the per-id inbox.
     // NO chat/inst/dlv/ctl subscription — the provisioner never serves control nor reads any feed.
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The ephemeral, LIFECYCLE-PINNED §13.1 state-write permission set for the STATIC manager's
+ *  lifecycle executor (Unit B). One credential per lifecycle OPERATION (activation, terminal,
+ *  renewal ledger append): every grant names exactly ONE incarnation's keys — the alias head,
+ *  the uid reservation, the manager slot row, the issuance gate, and the `cred.<uid>.>` ledger
+ *  family — so a leaked executor cred can move one incarnation's state machine and nothing else.
+ *
+ *  Reads: records reads ride the keyed Direct Get form (the key is ON the subject, so the read
+ *  grant stays key-pinned); the auth store is leader-served (`allow_direct=false`), so its reads
+ *  are body-selected `STREAM.MSG.GET` — stream-scoped, NOT key-scoped (the requested key rides
+ *  the PAYLOAD, which a subject grant cannot see). NAMED RESIDUAL: for its one-shot lifetime the
+ *  executor can READ (never write) other rows in the auth store. */
+function lifecycleExecutorPermissions(
+  space: string,
+  pr: MintPrincipal,
+  pin: { owner: string; actor: string; lifecycleUid: string; slotKey: string },
+): Record<string, unknown> {
+  const REC = recordsBucket(space), AUTH = epAuthBucket(space);
+  if (typeof pin.slotKey !== "string" || !/^[A-Za-z0-9_.-]+$/.test(pin.slotKey))
+    throw new Error(`permissionsFor: lifecycle-executor slotKey ${JSON.stringify(pin.slotKey)} is not a literal KV key (no wildcards, no empty)`);
+  const recordKeys = [lifecycleHeadKey(pin.owner, pin.actor), uidReservationKey(pin.lifecycleUid), pin.slotKey];
+  return {
+    pub: {
+      allow: [
+        "$JS.API.INFO",
+        // Records-store CAS writes — the value-publish carries the key on the subject, so each
+        // grant names exactly one of this incarnation's keys.
+        ...recordKeys.map((k) => `$KV.${REC}.${k}`),
+        // Auth-store CAS writes — this incarnation's gate + its cred-ledger family (renewals
+        // append rows here; the terminal's B1 revoke CASes them).
+        `$KV.${AUTH}.${issuanceGateKey(pin.lifecycleUid)}`,
+        `$KV.${AUTH}.cred.${pin.lifecycleUid}.>`,
+        // Keyed Direct Get reads of the same records keys (key-pinned) for direct-aware read
+        // paths, PLUS the leader-served `STREAM.MSG.GET` the lazily-bound KV client actually
+        // uses — stream-scoped, NOT key-scoped (the requested key rides the PAYLOAD, which a
+        // subject grant cannot see). NAMED RESIDUAL: for its one-shot lifetime the executor can
+        // READ (never write) other rows in BOTH authority stores — lifecycle metadata, no
+        // secrets; every WRITE stays key-pinned above.
+        ...recordKeys.map((k) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${k}`),
+        `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+        `$JS.API.STREAM.MSG.GET.KV_${AUTH}`,
+      ],
+    },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
 }

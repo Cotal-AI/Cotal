@@ -314,3 +314,70 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
     throw new EpEnvelopeError("internal", `the credential-ledger row at ${key} embeds an identity that rebuilds ${expected}; a key-mismatched row never authorizes (SPEC 13.1)`);
   return o as unknown as CredentialLedgerRow;
 }
+
+// ---- the static manager's durable slot mapping (records store) ------------------------------
+
+/** Phases of one static managed slot: the F3 outer spawn intent (`provisioning`, persisted
+ *  BEFORE head activation), the owned slot (`active`), the terminal in flight (`terminalizing`),
+ *  and the completed terminal (`retired` — the row is never deleted; a same-alias successor
+ *  CASes over it). */
+export const STATIC_SLOT_PHASES: ReadonlySet<string> = new Set(["provisioning", "active", "terminalizing", "retired"]);
+export type StaticSlotPhase = "provisioning" | "active" | "terminalizing" | "retired";
+
+/** The static manager's durable alias -> (owner, actor, lifecycleUid) slot mapping (Unit B,
+ *  the F5-bind split-coordinates design): the ALIAS is routing/display, protected by this
+ *  name-keyed row plus the uid reservation and the manager's freeSlot hold; the AUTHORITY
+ *  coordinate is the incarnation-unique wire `actor` (the nkey) recorded here as DATA. The row
+ *  lives in the records store — the same durability domain as the head — and survives manager
+ *  restart (the boot sweep re-drives any non-retired phase). `credentialIds` is the incarnation's
+ *  full mint set (root + renewals): the terminal's B1 revoke enumerates from HERE (recorded
+ *  BEFORE each mint), never from a store listing. */
+export interface StaticManagedSlotRow {
+  owner: string;
+  /** The manager-visible agent name (routing identity; never sufficient authority, SPEC 13.1). */
+  alias: string;
+  /** The incarnation-unique wire principal actor (the connection nkey) — the authority coordinate. */
+  actor: string;
+  lifecycleUid: string;
+  phase: StaticSlotPhase;
+  /** Every credentialId minted for this incarnation, recorded BEFORE its mint (crash-safe:
+   *  a cred never exists without its id recorded here and its ledger row appended first). */
+  credentialIds: string[];
+  /** The minting/supervising authority (the manager's own incarnation uid). */
+  managerInstance: string;
+}
+
+/** The slot key prefix in the records store. Core-owned so permission builders and the manager
+ *  share ONE encoder (a second literal is the drift class this module bans). */
+export const STATIC_SLOT_PREFIX = "mgrslot";
+
+/** The slot key `mgrslot.<owner>.<alias>`. */
+export function staticSlotKey(owner: string, alias: string): string {
+  return `${STATIC_SLOT_PREFIX}.${assertKeySegment(owner, "slot owner")}.${assertKeySegment(alias, "slot alias")}`;
+}
+
+/** Validate a slot row at the consuming boundary — CLOSED schema, and the embedded identity
+ *  MUST rebuild the row's own key, so a key-mismatched row never drives a resume or terminal. */
+export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedSlotRow {
+  let o: unknown;
+  try {
+    o = JSON.parse(dec.decode(raw));
+  } catch {
+    throw new EpEnvelopeError("internal", `the static slot row ${key} is not JSON; garbled trusted-path state never drives supervision (SPEC 13.1)`);
+  }
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the static slot row ${key} is not an object`);
+  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the static slot row ${key} carries the unknown field "${k}" (closed schema)`);
+  if (
+    typeof o.owner !== "string" || typeof o.alias !== "string" || typeof o.actor !== "string" ||
+    typeof o.lifecycleUid !== "string" || typeof o.managerInstance !== "string" || o.managerInstance.length === 0 ||
+    typeof o.phase !== "string" || !STATIC_SLOT_PHASES.has(o.phase) ||
+    !Array.isArray(o.credentialIds) || !o.credentialIds.every((c) => typeof c === "string" && c.length > 0)
+  )
+    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance)`);
+  assertLifecycleToken(o.lifecycleUid);
+  for (const c of o.credentialIds) assertCredentialIdTail(c, `slot row ${key} credentialId`);
+  if (staticSlotKey(o.owner, o.alias) !== key)
+    throw new EpEnvelopeError("internal", `the static slot row at ${key} embeds an identity that rebuilds ${staticSlotKey(o.owner, o.alias)}; a key-mismatched row never drives supervision`);
+  return o as unknown as StaticManagedSlotRow;
+}

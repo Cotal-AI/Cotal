@@ -50,6 +50,33 @@ import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
+// Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
+// manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import {
+  recordsBucket,
+  epAuthBucket,
+  ensureAuthorityStores,
+  standaloneConnectOpts,
+  staticSlotKey,
+  STATIC_SLOT_PREFIX,
+  rawDigest,
+  inspectCredHealth,
+  STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
+  type LifecycleStateTransport,
+  type StaticManagedSlotRow,
+} from "@cotal-ai/core";
+import {
+  staticLifecycleTransport,
+  activateStaticLifecycle,
+  runStaticTerminal,
+  readStaticSlot,
+  casStaticSlot,
+  recordSlotCredential,
+  appendStaticCredentialRow,
+  planStaticSlotResume,
+} from "./static-lifecycle.js";
 
 /** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
  *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call. */
@@ -353,6 +380,12 @@ interface ManagedAgent {
   launch: ManagedLaunch;
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
+  /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
+   *  stop/despawn path (stopHandle + freeSlot are the chokepoints). Once set, this principal's
+   *  control ops refuse (the membership gate) and no further credential is minted for it
+   *  (renewal + the slot's own durable phase both refuse) — closing the freeSlot→retiring window
+   *  in-process, not just by `agents.delete` ordering. */
+  terminalizing?: boolean;
 }
 
 /**
@@ -392,6 +425,16 @@ export class Manager {
    *  same-name SUCCESSOR (which can spawn after the hold clears but before this flight's `nc.close`
    *  yield settles) never joins the predecessor's rail request and skips its own retirement. */
   private retiringFlight = new Map<string, Promise<void>>();
+  /** Wire principals of RETIRED static incarnations (Unit B, F5(a)): populated at every completed
+   *  static terminal and from the boot sweep's retired slot rows, so a copied credential of a
+   *  retired incarnation is refused at the control surface even across a manager restart. The
+   *  durable truth is the slot row + principal-keyed head; this set is the in-memory index of it
+   *  (one string per retired incarnation — bounded by lifecycle count, never pruned in-process). */
+  private readonly retiredPrincipals = new Set<string>();
+  /** This manager process's own incarnation uid (SPEC 13.1; minted once per supervisor process,
+   *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
+   *  coordinate every static activation records. */
+  private readonly managerLifecycleUid = mintLifecycleUid();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
    *  (name, lifecycleUid). The detached freeSlot teardown and every same-name-spawn nudge that
    *  re-drives it JOIN one promise instead of launching a SECOND, concurrent teardown. Without it,
@@ -523,9 +566,10 @@ export class Manager {
       creds,
       // The supervisor registers on the roster, and an authed presence-registering endpoint is
       // lifecycle-keyed (SPEC 13.1, fail-before-presence). The manager process is the top of its
-      // own launch chain (the operator command IS its launcher), so it mints its incarnation's
-      // uid here - one per supervisor process, never reused across restarts.
-      lifecycleUid: mintLifecycleUid(),
+      // own launch chain (the operator command IS its launcher): its incarnation uid is the
+      // per-process `managerLifecycleUid` field (also the `managerInstance` audit coordinate on
+      // every static activation, Unit B).
+      lifecycleUid: this.managerLifecycleUid,
       // The supervisor serves control + watches presence; it never consumes chat/dm/task
       // (no message handler). consume:false avoids binding consumers it doesn't use — and
       // under auth avoids trying to bind its own DM/task durables that nothing pre-created.
@@ -562,6 +606,12 @@ export class Manager {
     }
     this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_TTL_MS / 2);
     this.leaseTimer.unref?.();
+    // Unit B (static §13.1): ensure the two authority stores exist with their normative shape,
+    // then sweep the durable slot rows and reconcile — re-drive any crashed activation/terminal
+    // (exact-op) and terminalize dead-but-active slots (F3 "no active orphan"). Runs ONLY under
+    // the just-acquired lease (a refused second manager must never sweep-terminal live slots) and
+    // BEFORE control serving, so no spawn races the reconciliation.
+    if (this.auth && !this.userMode) await this.reconcileStaticLifecycles();
     // Serve all three control tiers (P2a): self-service (no-name self stop/despawn), privileged
     // (start / own-child stop-despawn-attach / own definePersona), and admin (purge / cross-agent
     // stop-despawn-attach / cross-agent definePersona). The cred layer grants self-service to every
@@ -618,6 +668,29 @@ export class Manager {
         console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
       if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+      // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
+      // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
+      // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
+      // Same class-2 mechanics as the daemon creds: re-sign the file for the SAME nkey; the
+      // agent endpoint's 75% source re-read adopts it.
+      if (!this.userMode) {
+        for (const a of [...this.agents.values()]) {
+          if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
+          try {
+            const stored = await workspaceSecretStore(this.workspaceRoot).get(agentSecretKeyForFile(a.secretPaths.creds));
+            if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
+            const health = inspectCredHealth(stored);
+            if (health.state === "healthy") continue;
+            if (health.state === "unbounded" || health.state === "unreadable") {
+              console.error(`! managed cred renewal ${a.name}: credential is ${health.state}${health.error ? ` (${health.error})` : ""} - not renewed (a pre-TTL credential stays as minted until respawn)`);
+              continue;
+            }
+            await this.renewManagedStaticCred(a);
+          } catch (e) {
+            console.error(`! managed cred renewal ${a.name}: ${(e as Error).message} - the agent dies loud at this cred's expiry unless it is reminted`);
+          }
+        }
+      }
     } catch (e) {
       console.error(`! credential renewal pass failed: ${(e as Error).message}`);
     } finally {
@@ -1236,6 +1309,12 @@ export class Manager {
     // advisory in open mode (consistent with "open = single-trusted-host"). Thread it to every op
     // so authz (P2c) and the spawner ledger (P4b) can act on it.
     const caller = req.from.id;
+    // The F5(a) membership gate (Unit B): the AUTHENTICATED wire principal of a retiring,
+    // terminalizing, or retired managed incarnation holds NO control authority, even with a
+    // tier-valid JWT — refused before any op dispatch. A live managed principal and every
+    // non-managed principal (operator instruments) proceed to the tier/op rules below.
+    const membership = this.lifecycleMembershipRefusal(caller);
+    if (membership) return { ok: false, error: membership };
     const name = String(args.name ?? "").trim();
     // Op↔tier binding — the real enforcement per the split. The cred gates WHO can reach each
     // subject; this gates WHAT each subject will honor, fail-closed. A privileged op arriving on
@@ -1404,6 +1483,9 @@ export class Manager {
    *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged loudly,
    *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
   private stopHandle(a: ManagedAgent, graceful: boolean): void {
+    // The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY, before any await anywhere on
+    // this stop path — from here this principal's control ops refuse and no credential renews.
+    a.terminalizing = true;
     try {
       if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
       a.handle.stop({ graceful });
@@ -1584,6 +1666,7 @@ export class Manager {
    *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
   private freeSlot(a: ManagedAgent, floor: boolean, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
+    a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle
     this.agents.delete(a.name);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
     // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
@@ -1597,6 +1680,12 @@ export class Manager {
     if (this.userMode) {
       const p = parsePrincipalKey(a.id);
       if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, secretPaths: a.secretPaths, startedAt: Date.now() });
+    } else if (this.auth) {
+      // Unit B: a STATIC lifecycle now also holds its name pending its own terminal (the F1
+      // static retirement the detached deprovision below drives) — the alias frees only when the
+      // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
+      // incarnation-unique nkey (F5-bind); owner is the dev owner.
+      this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: DEV_OWNER, actor: a.id, agentId: a.id, secretPaths: a.secretPaths, startedAt: Date.now() });
     }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
@@ -1636,6 +1725,13 @@ export class Manager {
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
   private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
     if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
+    if (!this.userMode && !a.userOwner) {
+      // Unit B: a STATIC lifecycle retires through the F1 terminal barrier — freeze → head
+      // retiring → B1 ledger revoke → footprint cleanup (creds file + broker durables/ACL, INSIDE
+      // the barrier) → gate retired → head retired → alias free. The eviction step is the process
+      // kill the stop path already performed (static's best-effort eviction).
+      return this.driveStaticRetirement(a);
+    }
     // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
@@ -2239,6 +2335,18 @@ export class Manager {
       }
       allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
     }
+    // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
+    // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
+    // but-uncompleted endpoint obligation could execute AFTER its uid is declared retired. The
+    // refusal sits at spawn-accept, before any provisioning, over the same records a persona or
+    // manifest self-claim would ride in on — capabilities cannot slip past it into the grant path.
+    if (this.auth && !this.userMode) {
+      const claims: Record<string, unknown>[] = [opts as unknown as Record<string, unknown>, (opts.resolved ?? {}) as unknown as Record<string, unknown>];
+      if (claims.some((c) => c.endpointCapabilities !== undefined)) {
+        this.reserved.delete(name);
+        return { ok: false, error: "a static managed spawn refuses endpointCapabilities (Unit B F2): the static lifecycle terminal carries no obligation-drain/frontier steps, so endpoint-rail grants are not containable in static mode" };
+      }
+    }
     // Set once the agent's creds + durables are minted; cleared the moment a live slot takes ownership
     // (`agents.set`, after which freeSlot deprovisions on exit). If it survives to `finally`, the spawn
     // threw AFTER minting (buildLaunch / runtime.spawn) — tear the orphan down so no footprint leaks (#159 B).
@@ -2282,10 +2390,24 @@ export class Manager {
         userOwner = prep.owner;
         provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, secretPaths: prep.files };
       } else if (this.auth) {
+        // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
+        // broker footprint — the F3 outer spawn intent first (slot row, phase `provisioning`),
+        // then the SHARED core activation saga (reserve uid -> gate frozen -> head CAS -> reopen
+        // LAST) over the key-pinned executor. The wire AUTHORITY principal is the incarnation-
+        // unique nkey (F5-bind); the alias is protected by the name-keyed slot + freeSlot hold.
+        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, (t) =>
+          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid }),
+        );
+        // From here the DURABLE registration exists: arm the rollback BEFORE minting, so a throw
+        // between activation and provisioning still drives the exact-op static terminal (the
+        // finally's deprovision tolerates absent files; the broker teardown is idempotent).
+        provisioned = { id: identity.id, name, lifecycleUid };
         // Pre-create the agent's bind-only chat (+ DM + role TASK) durables and mint its scoped creds
         // — the shared onboarding step (provisionAgent). It runs on a short-lived PROVISIONER connection
         // (NOT the supervisor's long-lived endpoint), so the DM/DLV consumer-create surface exists only
         // for the provisioning window, never as a standing grant on the always-on daemon (residual 2).
+        // F5(b): the credential is BOUNDED (`expiresAt`) — the manager push-renews it ahead of expiry.
+        const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
         const creds = await this.withProvisioner((prov) =>
           provisionAgent(prov, this.auth!, identity, {
             subscribe,
@@ -2294,8 +2416,17 @@ export class Manager {
             role,
             capabilities,
             lifecycleUid,
+            expiresAt: exp,
           }),
         );
+        // Ledger BEFORE materialization (§13.1): record the credentialId on the slot, append the
+        // `cred.<uid>.<credId>` row, and only then write the credential where anything can read
+        // it — a credential is never materialized before its ledger row exists.
+        const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, async (t) => {
+          await recordSlotCredential(t, DEV_OWNER, name, lifecycleUid, credentialId);
+          await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });
+        });
         // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
         // file path, so the cred must exist as a file regardless of the store behind the seam.
         // LOCAL composition, hardcoded, same posture as provisionUserAgent's grant store above.
@@ -2408,6 +2539,18 @@ export class Manager {
               : undefined,
         },
       };
+      // Unit B: the DURABLE slot takes the `active` phase before the in-memory row takes the
+      // name — a crash between the two leaves an active-but-unadopted slot the boot sweep
+      // terminalizes (never an untracked orphan). Static auth only; a failed CAS fails the spawn
+      // (the finally's rollback then drives the exact-op terminal).
+      if (this.auth && !this.userMode) {
+        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: managed.id, lifecycleUid, alias: name }, async (t) => {
+          const slot = await readStaticSlot(t, DEV_OWNER, name);
+          if (slot === undefined || slot.row.lifecycleUid !== lifecycleUid || slot.row.phase !== "provisioning")
+            throw new Error(`the static slot for "${name}" is ${slot === undefined ? "absent" : `${slot.row.phase} at uid ${slot.row.lifecycleUid}`}, not this spawn's provisioning intent; refusing to take the slot`);
+          await casStaticSlot(t, { ...slot.row, phase: "active" }, slot.revision);
+        });
+      }
       this.agents.set(name, managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
@@ -2774,12 +2917,23 @@ export class Manager {
   ): Promise<ControlReply> {
     if (!batchReserved) this.reserved.add(entry.name);
     try {
+      // Unit B F5(b): recover the STATIC identity's nkey seed from the adopted credential (the
+      // creds file embeds it) so the manager stays this incarnation's RENEWAL OWNER across a
+      // preserve/resume — without it the adopted cred would die loud at its TTL with no remint.
+      let adoptedSeed: string | undefined;
+      if (entry.identity.mode === "static") {
+        const stored = await workspaceSecretStore(this.workspaceRoot).get(agentSecretKeyForFile(resolve(entry.identity.credential.path)));
+        adoptedSeed = stored === undefined ? undefined : /-----BEGIN USER NKEY SEED-----\s*([A-Z0-9]+)\s*-----END USER NKEY SEED-----/.exec(stored)?.[1];
+        if (adoptedSeed === undefined)
+          console.error(`! resume ${entry.name}: the adopted credential carries no readable nkey seed - the manager cannot renew it (it dies loud at its exp)`);
+      }
       const handle = this.runtime.spawn(entry.name, prepared.spec, entry.launch.cwd);
       const managed: ManagedAgent = {
         name: entry.name,
         role: entry.role,
         agent: entry.launch.connector,
         id: entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id,
+        seed: adoptedSeed,
         // Recover the ORIGINAL incarnation uid the durables are keyed by (never a fresh mint on resume).
         lifecycleUid: entry.identity.lifecycleUid,
         // Adopt the INVENTORY's recorded family (possibly a pre-split name-keyed layout) — the
@@ -2999,6 +3153,173 @@ export class Manager {
    *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
    *  (no presence/consume/channel-watch) connected with memory-only `provisioner` creds; it sets its own
    *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
+  /** Run one static §13.1 lifecycle OPERATION over an ephemeral, key-pinned `lifecycle-executor`
+   *  connection (Unit B): the credential's grants name exactly ONE incarnation's head/uid/gate/
+   *  cred-family/slot keys, so the write authority exists only for this operation's window and
+   *  can move nothing else. The transport is the direct-KV binding the shared core saga drives. */
+  private async withLifecycleExecutor<T>(
+    pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
+    fn: (t: LifecycleStateTransport) => Promise<T>,
+  ): Promise<T> {
+    if (!this.auth) throw new Error("withLifecycleExecutor: no space auth (an open mesh has no lifecycle registry)");
+    const identity = newIdentity();
+    const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
+      lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, slotKey: staticSlotKey(pin.owner, pin.alias) },
+    });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    try {
+      const kvm = new Kvm(nc);
+      const recordsKv = await kvm.open(recordsBucket(this.space));
+      const authKv = await kvm.open(epAuthBucket(this.space));
+      return await fn(staticLifecycleTransport(recordsKv, authKv));
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
+  /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
+   *  sequence to the shared core saga over the executor transport; the footprint teardown (creds
+   *  file + broker durables/ACL) runs INSIDE the barrier as its cleanup step. On completion the
+   *  wire principal joins {@link retiredPrincipals} (the F5 refusal index) and the name hold
+   *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
+   *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
+   *  and the hold clears, the honest upgrade path. */
+  private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
+    const opId = retireOpId(a.lifecycleUid);
+    const cleanup = async (): Promise<void> => {
+      const secrets = workspaceSecretStore(this.workspaceRoot);
+      const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
+      if (files.creds) {
+        await secrets.delete(agentSecretKeyForFile(files.creds));
+        rmSync(files.creds, { force: true });
+      }
+      await this.deprovisionBroker(a);
+    };
+    try {
+      await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
+        const slot = await readStaticSlot(t, DEV_OWNER, a.name);
+        if (slot === undefined || slot.row.lifecycleUid !== a.lifecycleUid) {
+          // No durable registration for THIS incarnation: a pre-Unit-B spawn (or a slot already
+          // replaced by a successor — then this stale teardown must not touch the registry at all).
+          await cleanup();
+          return;
+        }
+        await runStaticTerminal(
+          t,
+          { owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId },
+          { cleanup, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
+        );
+      });
+      this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
+      const cur = this.retiring.get(a.name);
+      if (cur && cur.lifecycleUid === a.lifecycleUid) this.retiring.delete(a.name); // ABA-guarded hold clear
+    } catch (e) {
+      const h = this.retiring.get(a.name);
+      if (h && h.lifecycleUid === a.lifecycleUid)
+        h.lastError = `the static retirement did not complete (${(e as Error).message}); the name stays held - a same-name spawn retries the same terminal (op ${opId})`;
+      console.error(`static retirement ${a.name} (${a.id}): ${(e as Error).message}`);
+    }
+  }
+
+  /** F5(b) push renewal of ONE live managed-static credential (Unit B): re-mint the SAME nkey
+   *  identity with the SAME scope (recorded on the managed row at spawn) and a fresh bounded
+   *  exp, ledger the new credentialId (slot record first, then the row, then the file — a
+   *  credential is never materialized before its ledger row exists), and re-sign the SAME
+   *  lifecycle-keyed file the agent endpoint's source seam re-reads. Never advances the epoch,
+   *  never routes through any barrier (renewal is the THIRD transition). */
+  private async renewManagedStaticCred(a: ManagedAgent): Promise<void> {
+    if (!this.auth || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
+    if (a.terminalizing) throw new Error("renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins");
+    const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
+    // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
+    // allowPublish/role/capabilities are the JWT-shaping inputs; `subscribe` (the active read
+    // set) shapes durable membership only and is not a mint input.
+    const creds = await mintCreds(this.auth, { id: a.id, seed: a.seed }, "agent", {
+      allowSubscribe: a.launch.allowSubscribe,
+      allowPublish: a.launch.allowPublish,
+      role: a.role,
+      capabilities: a.launch.capabilities,
+      lifecycleUid: a.lifecycleUid,
+      expiresAt: exp,
+    });
+    const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+    await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
+      await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
+      await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
+    });
+    const secrets = workspaceSecretStore(this.workspaceRoot);
+    await secrets.put(agentSecretKeyForFile(a.secretPaths.creds), creds);
+    await materializeSecretToFile(secrets, agentSecretKeyForFile(a.secretPaths.creds), a.secretPaths.creds);
+    console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
+  }
+
+  /** The Unit B boot reconciliation (F3 "no active orphan"): ensure the authority stores, then
+   *  sweep every durable slot row and act by the TOTAL resume table — `provisioning`/
+   *  `terminalizing` re-drive the exact-op terminal; `active` rows survive ONLY when a resume
+   *  inventory may adopt them (this manager was started with a resume attempt), else their
+   *  process is gone and they terminalize; `retired` rows seed the F5 refusal index. Runs under
+   *  the lease, before control serving. */
+  private async reconcileStaticLifecycles(): Promise<void> {
+    if (!this.auth) return;
+    const identity = newIdentity();
+    const creds = await mintCreds(this.auth, identity, "provisioner");
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const slotRows: StaticManagedSlotRow[] = [];
+    try {
+      const jsm = await jetstreamManager(nc);
+      const kvm = new Kvm(nc);
+      await ensureAuthorityStores(jsm, kvm, this.space);
+      const recordsKv = await kvm.open(recordsBucket(this.space));
+      const t = staticLifecycleTransport(recordsKv, recordsKv /* auth reads unused in the sweep */);
+      const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${DEV_OWNER}.>`);
+      const aliases: string[] = [];
+      for await (const k of keys) aliases.push(k.split(".").slice(2).join("."));
+      for (const alias of aliases) {
+        const slot = await readStaticSlot(t, DEV_OWNER, alias);
+        if (slot !== undefined) slotRows.push(slot.row);
+      }
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+    for (const row of slotRows) {
+      if (row.phase === "retired") {
+        this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
+        continue;
+      }
+      // A slot THIS process actively owns is never an orphan (a no-op at boot, where nothing is
+      // managed yet; load-bearing defense for any later re-drive of the sweep).
+      const live = this.agents.get(row.alias);
+      if (live !== undefined && live.lifecycleUid === row.lifecycleUid) continue;
+      const action = planStaticSlotResume(row, row.phase === "active" && this.resumeRequired);
+      if (action === "none") continue;
+      console.error(`static reconcile ${row.alias}: slot is ${row.phase} with no live process - driving its exact-op terminal (uid ${row.lifecycleUid})`);
+      await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid });
+    }
+  }
+
+  /** The F5(a) membership gate (Unit B, the F5-bind design): decide a control caller by its
+   *  AUTHENTICATED wire principal. A LIVE managed slot passes (unless terminalizing); a RETIRING
+   *  hold or a RETIRED static incarnation refuses even with a tier-valid JWT (the
+   *  copied-credential vector — its subject can never collide with a successor's, so this match
+   *  is non-forgeable); any OTHER principal is not a managed lifecycle (an operator instrument:
+   *  the credential tier governs, exactly as before). Never name alone, never a payload field. */
+  private lifecycleMembershipRefusal(caller: string): string | undefined {
+    for (const a of this.agents.values()) {
+      if (this.managedPrincipal(a) === caller)
+        return a.terminalizing
+          ? `the caller's lifecycle ${a.lifecycleUid} is terminalizing; control is refused from the first terminal step (F5)`
+          : undefined;
+    }
+    for (const [name, hold] of this.retiring) {
+      const held = hold.userOwner ? hold.agentId : principalKey(DEV_OWNER, hold.agentId).key;
+      if (held === caller)
+        return `the caller's lifecycle ${hold.lifecycleUid} (name "${name}") is retiring; a retiring incarnation's credential holds no control authority (F5)`;
+    }
+    if (this.retiredPrincipals.has(caller))
+      return "the caller's lifecycle is retired; a retired incarnation's credential holds no control authority (F5)";
+    return undefined;
+  }
+
   private async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
     const identity = newIdentity();
