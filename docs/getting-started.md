@@ -51,7 +51,7 @@ time, it walks you through:
    `→ wrote …` line.
 4. **Nothing to install for the dashboard.** `@cotal-ai/web` ships inside `cotal-ai` and is
    seeded automatically on first run (like the built-in connectors), so `cotal web` works out
-   of the box and always matches your CLI version.
+   of the box and tracks your CLI version on upgrade.
 5. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
    `npm i -g cotal-ai` so you can just type `cotal`.
 
@@ -124,8 +124,8 @@ that is down. It starts nothing itself.
 
 The dashboard ships with `cotal-ai` and is seeded automatically on first run. It runs at
 `http://cotal.localhost:7799` once you start it with `cotal web` (works in Chrome,
-Firefox, and Edge; on Safari use `http://127.0.0.1:7799`). If it is ever missing, any
-`cotal` command re-seeds it, or force it with `cotal ext seed --repair`.
+Firefox, and Edge; on Safari use `http://127.0.0.1:7799`). If a seeded copy is damaged,
+`cotal ext seed --repair` restores it.
 
 You drive Cotal through an agent: spawn one and talk to it. It has the tools to message
 peers, spawn teammates, and send feedback (the full surface is the

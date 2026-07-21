@@ -54,8 +54,8 @@ presence changes and messages, ready for `grep`.
 ## `cotal web`: the browser dashboard
 
 The dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension and is seeded automatically on
-first run (like the built-in connectors), so `cotal web` is there out of the box and always matches
-your CLI version. If it is ever missing, any `cotal` command re-seeds it (or `cotal ext seed --repair`).
+first run (like the built-in connectors), so `cotal web` is there out of the box and tracks your CLI
+version on upgrade. If a seeded copy is damaged, `cotal ext seed --repair` restores it.
 
 ![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 
