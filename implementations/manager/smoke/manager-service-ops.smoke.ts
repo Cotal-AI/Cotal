@@ -369,10 +369,14 @@ try {
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === "w3"), rPs.reply);
-    const rDs = await invokeCommand(opNc, space, svc, "despawn", { graceful: false }, {
+    // NO-ARGS despawn — the exact shape the real CLI produces (`cotal stop --name <n>` strips the
+    // alias into the target and has nothing left): the generic layer must marshal "no args" into
+    // the contract's canonical empty form ({} for an object input), not ship undefined→null at a
+    // null-rejecting schema. The tester's 1c.2b ship-blocker; the gate's coverage hole.
+    const rDs = await invokeCommand(opNc, space, svc, "despawn", undefined, {
       target: { mode: "any", owner: DEV_OWNER, actor: w3.id, lifecycleUid: w3.lifecycleUid },
     });
-    check("ANY-mode despawn: the operator tears down an agent it did NOT spawn (rev-3 admin reach, broker-granted by the instrument row only)",
+    check("ANY-mode NO-ARGS despawn (the real CLI shape): the operator tears down an agent it did NOT spawn (rev-3 admin reach, instrument row only)",
       rDs.reply.ok === true && (rDs.reply.data as { stopped: boolean }).stopped === true, rDs.reply);
     await opNc.drain().catch(() => opNc.close());
   }

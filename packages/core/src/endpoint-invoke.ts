@@ -244,6 +244,15 @@ export async function invokeCommand(
   if (!resolved.targeted && opts.target !== undefined)
     throw new EpEnvelopeError("bad-request", `command "${command}" is untargeted; an invoke must not carry a target`);
   const caller = service.caller;
+  // "No args" marshals to the CONTRACT's canonical empty form: absent args ride as null on the
+  // wire, so when this command's input rejects null but accepts the empty object (e.g. an
+  // all-optional `{type:"object"}` input like despawn's), send `{}` — that IS the caller's
+  // intent in that contract's vocabulary (a targeted CLI stop has nothing left after the alias
+  // becomes the target block). Contract-derived, never a guess: an input that requires fields
+  // accepts neither form and still refuses loud at the pre-publish validation below.
+  let sendArgs = args;
+  if (sendArgs === undefined && !resolved.contract.input.validate(null) && resolved.contract.input.validate({}))
+    sendArgs = {};
   const describeBound = (instanceId: string): number => {
     if (instanceId !== service.responder.instanceId)
       throw new EpEnvelopeError("failed-precondition", `the ${service.endpoint} instance ${instanceId} answered but this service handle resolved against ${service.responder.instanceId}; a different queue winner is a superseded-or-split responder - re-resolve the service to adopt it (SPEC 13.2)`);
@@ -251,7 +260,7 @@ export async function invokeCommand(
   };
   return epCall(nc, space, { mode: "one" }, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
-    ...(args !== undefined ? { args } : {}),
+    ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
   }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch ?? describeBound });
 }
