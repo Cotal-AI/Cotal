@@ -253,6 +253,26 @@ try {
   }
   check("after stop() the ep rail no longer answers (no responder / deadline, never a stale reply)",
     downRefusal === "unavailable" || downRefusal === "deadline-exceeded", downRefusal);
+
+  console.log("6. RE-UP / UPGRADE path: a SECOND manager against the EXISTING store registers (the tester's regression)");
+  // The store already holds this manager endpoint's contract artifacts from the first boot, so the
+  // second registration RE-PUBLISHES them: every publishContractArtifact loses the create-only CAS
+  // and runs its verify-read. The executor cred MUST hold the EPC Direct Get read grant or the
+  // manager exits here (the 0659a9c regression). A fresh manager process = a fresh instanceId.
+  const mgr2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
+  const M2 = mgr2 as unknown as { managerLifecycleUid: string; serviceServe?: unknown };
+  let reupErr: string | undefined;
+  try { await mgr2.start(); } catch (e) { reupErr = (e as Error).message; }
+  check("the re-up manager started (no broker-denied verify-read on the re-published artifacts)", reupErr === undefined, reupErr);
+  check("the re-up manager registered its service on a FRESH instanceId", M2.serviceServe !== undefined && M2.managerLifecycleUid !== iid);
+  const reupCaller = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
+  const rReup = await epCall(reupCaller, space, { mode: "one" },
+    { endpoint: MANAGER_ENDPOINT, command: "status", contract: MANAGER_STATUS_CONTRACT, caller },
+    { deadlineMs: 8000, currentEpoch: async () => 0 });
+  check("the re-up manager serves status (the store + registration survived the upgrade path)",
+    rReup.reply.ok === true && (rReup.reply.data as ManagerStatus).instanceId === M2.managerLifecycleUid, rReup.reply);
+  await reupCaller.drain().catch(() => reupCaller.close());
+  await mgr2.stop();
   await callerNc.drain().catch(() => callerNc.close());
 } finally {
   srv.kill("SIGKILL");

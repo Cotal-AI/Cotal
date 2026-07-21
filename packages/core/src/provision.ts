@@ -1556,11 +1556,25 @@ function endpointServeExecutorPermissions(
         // callers can fetch-verify-compile the registered digests. A digest subject is a SINGLE
         // hex token (`epc.<64hex>`), so the grant is the single-token `epc.*` form (matching
         // `contractPublisherGrants`), never the multi-token `epc.>`. Digest subjects cannot be
-        // key-pinned pre-mint; the store defends itself — create-only (deny-new CAS), content-
-        // addressed (verify-on-read makes a wrong-subject write unservable), deny_delete/purge.
-        // NAMED RESIDUAL: for its one-shot lifetime the executor can publish arbitrary NEW
-        // digest-addressed artifacts (unreferenced artifacts carry no authority).
+        // key-pinned pre-mint; the store's SHAPE is the defense (ensureContractStore): a digest
+        // subject holds exactly one broker-immutable message (max_msgs_per_subject:1 +
+        // discard-new-per-subject REJECTS a second publish regardless of the create-only header, so
+        // a grant-holder CANNOT append a shadow over a published artifact), deny_delete/deny_purge
+        // keep that message, and content addressing (verify-on-read, create-only-winner fallback)
+        // makes a wrong-subject write unservable. NAMED RESIDUAL: for its one-shot lifetime the
+        // executor can publish NEW digest-addressed artifacts at previously-unused subjects (a
+        // bounded storage flood; unreferenced artifacts carry no authority) — it can NOT overwrite,
+        // shadow, or replace an existing one.
         `${spacePrefix(space)}.epc.*`,
+        // The lost-CAS verify-read `publishContractArtifact` runs when a re-publish (every re-up /
+        // restart against an existing store) loses the create-only CAS: it fetches the recorded
+        // artifact to confirm the idempotent no-op. BOTH Direct Get forms — the subject-scoped
+        // `last_by_subj` (the fast path) and the bare stream form (the create-only-winner
+        // `next_by_subj` fallback) — so the publish path never dies on a broker denial regardless
+        // of stream config. Without this the manager exits on its SECOND boot (the tester's
+        // upgrade-path regression). Reads public content-addressed artifacts only.
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}`,
         // Leader-served reads (the auth store is allow_direct=false): stream-scoped MSG.GET (the
         // barrier/fence read the gate + each epcred row), plus the ordered consumer the epcred
         // `keys()` enumeration binds. The records store IS direct-servable, so its reads add the

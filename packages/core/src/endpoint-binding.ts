@@ -12,6 +12,7 @@
 import {
   AckPolicy,
   DeliverPolicy,
+  DiscardPolicy,
   RetentionPolicy,
   StorageType,
   type ConsumerConfig,
@@ -205,21 +206,51 @@ export async function createEndpointStreams(
  * Ensure the per-space CONTRACT store (EPC) exists with its normative shape (§13.7/§13.12) —
  * content-addressed artifacts, one immutable message per digest subject, create-only mediated
  * publication, NO age eviction (artifacts are permanent). allow_direct: the subject-scoped
- * last-by-subject read IS the fetch path. Permanence is BROKER-ENFORCED, not configured-by-
- * omission: deny_delete/deny_purge reject the message-delete and purge APIs even from a
- * stream-API-holding principal, so a digest subject cannot be emptied and re-created through
- * them. Per §13.12 the flags alone are NOT the whole claim: permanence is their COMBINATION with
- * the retention floor, verify-on-read pinning WHAT a subject carries, and stream management held
- * by no profile.
+ * last-by-subject read IS the fetch path.
  *
- * Create-or-verify, safe at every authority-daemon boot (the {@link ensureAuthorityStores}
- * discipline): a fresh space gets the store created; an existing one is verified against the
- * exact flags and a drift FAILS LOUD — a drifted authority store is an operator error, never
- * silently adopted.
+ * PER-SUBJECT IMMUTABILITY is BROKER-ENFORCED, not left to publisher cooperation (the append-shadow
+ * blocker, live-confirmed by the panel). The create-only fence `Nats-Expected-Last-Subject-Sequence:
+ * 0` is a publisher-SET header the `epc.*` publish grant cannot compel, so a non-cooperative
+ * grant-holder could APPEND a second message to an already-published digest subject; `last_by_subj`
+ * would then return that shadow and a fail-closed read would make the honest artifact permanently
+ * unfetchable (deny_delete/deny_purge block recovery — an operator-reprovision-only DoS, and at
+ * §13.11's ep-only cut the SOLE contract path). The store closes this at the SOURCE:
+ * `max_msgs_per_subject: 1` + `discard: new` + `discard_new_per_subject: true` makes a second
+ * publish to an occupied digest subject BROKER-REJECTED (err 10077) regardless of headers, so a
+ * digest subject holds exactly one message forever. `deny_delete`/`deny_purge` then keep that one
+ * message from being removed. (The read path additionally defends itself version-agnostically —
+ * {@link fetchContractArtifact} prefers the create-only winner over any shadow — so a broker or a
+ * legacy stream that lacked the per-subject cap is still safe.)
+ *
+ * Create-or-verify-AND-harden, safe at every authority-daemon boot (the {@link
+ * ensureAuthorityStores} discipline): a fresh space gets the store created with the full shape; a
+ * CLEAN pre-existing store (incl. a pre-hardening one from an earlier release, OR the config-A
+ * footgun `max_msgs_per_subject:1` + `discard:old` that would DELETE the honest artifact) is UPDATED
+ * to the three config-B flags (idempotent, like the records store's rollup/deny update) and then
+ * VERIFIED - a shape that cannot be brought to config B FAILS LOUD, never silently adopted.
+ *
+ * The config-B upgrade ENFORCES per-subject immutability GOING FORWARD; it does NOT heal a shadow
+ * that predates it. Applying `max_msgs_per_subject:1` trims each subject to its newest message, so a
+ * legacy store that ALREADY holds a shadow (some digest subject with >1 message) would have the
+ * honest create-only winner trimmed away and the shadow cemented. Rather than silently cement it,
+ * the upgrade REFUSES LOUD on such a store (`messages > num_subjects`), so the operator reprovisions
+ * a clean store. This is a narrow guard: a fresh deploy is born at config B and never reaches it.
+ *
+ * FAIL-LOUD IS THE AGENT'S DEFENSE (critic completeness item): because this verify refuses to serve
+ * unless all three config-B flags are present, the manager NEVER serves an un-hardened EPC store —
+ * so a shadow-append cannot exist on any store an agent reads. That is why the ordinary agent
+ * baseline needs only the subject-scoped `last_by_subj` read (never the bare `next_by_subj` the
+ * shadow fallback uses): on every store the manager actually serves, `last_by_subj` always verifies
+ * and the fallback never triggers. The {@link fetchContractArtifact} create-only-winner fallback is
+ * defense-in-depth for the publisher path (the executor, which holds `next_by_subj`) and for a
+ * hypothetical un-hardened store the manager would refuse to serve anyway. On the pinned broker
+ * floor (nats-server >= 2.12, well past the 2.9 that added `discard_new_per_subject`) config B always
+ * lands; an older broker that ignores the flag is caught here and the daemon fails to start.
  */
 export async function ensureContractStore(jsm: JetStreamManager, space: string): Promise<void> {
   const name = epcStreamName(space);
   const subject = `${spacePrefix(space)}.epc.>`;
+  const hardening = { max_msgs_per_subject: 1, discard: DiscardPolicy.New, discard_new_per_subject: true } as const;
   if (await jsm.streams.info(name).catch(() => undefined) === undefined) {
     await jsm.streams.add({
       name,
@@ -229,11 +260,37 @@ export async function ensureContractStore(jsm: JetStreamManager, space: string):
       allow_direct: true,
       deny_delete: true,
       deny_purge: true,
+      ...hardening,
     });
+  } else {
+    // Upgrade path: an EPC stream from a pre-hardening release lacks the per-subject cap. Add it
+    // idempotently (a live update of max_msgs_per_subject + discard settings is allowed and, tested,
+    // leaves a CLEAN store's artifacts intact). A stream that WON'T take the update surfaces at the
+    // verify below.
+    const info = await jsm.streams.info(name);
+    const cur = info.config;
+    if (cur.max_msgs_per_subject !== 1 || cur.discard !== DiscardPolicy.New || cur.discard_new_per_subject !== true) {
+      // HEAL-OR-FAIL, never cement (critic upgrade-trim residual): applying max_msgs_per_subject:1
+      // TRIMS each subject to its NEWEST message. On a CLEAN legacy store (create-only, ≤1 message
+      // per subject) that trims nothing. But if a legacy store ALREADY holds a shadow (a raw append
+      // left a subject with >1 message, from before this hardening existed), the trim would keep the
+      // NEWEST (the shadow) and DELETE the honest create-only winner - cementing the shadow
+      // permanently. `messages > num_subjects` is exactly "some subject has more than one message",
+      // so refuse the upgrade LOUD there: the operator reprovisions a clean store rather than the
+      // daemon silently trim-cementing a pre-existing shadow. (Fresh deploys are born at config B and
+      // never reach this; the check only guards a legacy store that was shadowed before its first
+      // config-B boot.)
+      const { messages, num_subjects } = info.state;
+      if (messages > 0 && (num_subjects === undefined || messages > num_subjects))
+        throw new Error(`the contract store ${name} is a pre-hardening stream that cannot be proven clean (${messages} messages across ${String(num_subjects)} subjects) - a subject holding more than one message means a shadow-append predates this immutability upgrade, and applying the per-subject cap would TRIM to the newest (shadow) message and delete the honest artifact; reprovision a clean store rather than cement the shadow (SPEC 13.7/13.12)`);
+      await jsm.streams.update(name, { ...cur, ...hardening });
+    }
   }
-  const cfg = (await jsm.streams.info(name)).config;
+  const cfg = (await jsm.streams.info(name)).config as StreamConfig & { discard_new_per_subject?: boolean };
   if (cfg.allow_direct !== true || cfg.deny_delete !== true || cfg.deny_purge !== true)
     throw new Error(`the contract store ${name} has a drifted shape (allow_direct=${String(cfg.allow_direct)}, deny_delete=${String(cfg.deny_delete)}, deny_purge=${String(cfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  if (cfg.max_msgs_per_subject !== 1 || cfg.discard !== DiscardPolicy.New || cfg.discard_new_per_subject !== true)
+    throw new Error(`the contract store ${name} does not enforce per-subject immutability (max_msgs_per_subject=${String(cfg.max_msgs_per_subject)}, discard=${String(cfg.discard)}, discard_new_per_subject=${String(cfg.discard_new_per_subject)}); a digest subject must hold exactly one broker-immutable message or an append-shadow can DoS the store - reprovision it (SPEC 13.7/13.12)`);
   if (!Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== subject)
     throw new Error(`the contract store ${name} does not carry exactly the subject ${subject} (got ${JSON.stringify(cfg.subjects)}); a stream that captures anything else is not the contract store - reprovision it (SPEC 13.12)`);
   if (cfg.storage !== "file")
@@ -900,10 +957,16 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  connection-scoped (`_INBOX_<connId>.>`, never the account-wide default).
  *
  *  D32 residuals, EXPLICIT: (1) the `epc.*` publish is payload-blind — a compromised publisher
- *  can flood NEW digest subjects with garbage artifacts (verify-on-read refuses to SERVE
- *  non-canonical or digest-mismatched bytes, and an existing digest subject is CAS-protected,
- *  so it can waste storage but never corrupt or replace a published artifact); (2) the raw JS
- *  API request carries a caller-selected reply subject (the same confused-deputy injection
+ *  can publish garbage artifacts at NEW (previously-unused) digest subjects (verify-on-read refuses
+ *  to SERVE non-canonical or digest-mismatched bytes, so this is a bounded storage flood carrying
+ *  no authority). It can NOT overwrite, shadow, or replace an EXISTING published artifact: the EPC
+ *  store's shape ({@link ensureContractStore}: `max_msgs_per_subject:1` + discard-new-per-subject)
+ *  makes a second publish to an occupied digest subject broker-REJECTED regardless of the
+ *  create-only header, so per-subject immutability is broker-enforced, not publisher-cooperative.
+ *  (Earlier revisions relied on the cooperative create-only header alone and a fail-closed read,
+ *  which the panel's live repro showed a non-cooperative publisher could defeat by raw append — a
+ *  permanent shadow-DoS; the stream shape + the create-only-winner read fallback close it.) (2) the
+ *  raw JS API request carries a caller-selected reply subject (the same confused-deputy injection
  *  class as every API-holding profile). */
 export function contractPublisherGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const publish = [
