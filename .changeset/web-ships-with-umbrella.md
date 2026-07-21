@@ -1,8 +1,8 @@
 ---
-"cotal-ai": minor
-"@cotal-ai/web": minor
-"@cotal-ai/cli": minor
-"@cotal-ai/workspace": minor
+"cotal-ai": patch
+"@cotal-ai/web": patch
+"@cotal-ai/cli": patch
+"@cotal-ai/workspace": patch
 ---
 
 The web dashboard now ships and versions with the `cotal-ai` binary. Previously `@cotal-ai/web` was fetched separately on its own version line, so upgrading the CLI (`npm i -g cotal-ai@new`) left the dashboard stale, and the documented `cotal ext add @cotal-ai/web` could not cross the 0.x caret to reach the new release, leaving customers on an old dashboard with no clean way forward.
