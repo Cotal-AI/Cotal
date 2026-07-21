@@ -134,6 +134,10 @@ when behavior changes, update the affected pages under [docs/](docs/README.md) (
 `examples/*/README.md`.
 - **No fallbacks.** Throw if something is not supported in the current environment or config,
 rather than silently degrading.
+- **Keep the customer update path clean and secure.** Upgrading (`npm i -g cotal-ai@<new>`) must
+bring every installed extension and connector to a current, core-matched version, or fail loud. It
+must never leave a customer silently on stale exts, on a skewed core/ext pair, or on an unverified
+download. Any change to install, `setup`/seed, or `ext` resolution must preserve this.
 - **Use native NATS/JetStream features** first, rather than re-implementing them.
 - **Do not switch branches** without being prompted. To work independently, use a git worktree.
 - **Favor the long-term trustworthy, maintainable choice**, even when it costs more upfront.
