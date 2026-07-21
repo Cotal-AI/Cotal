@@ -34,12 +34,12 @@
  *  6. EVERY READER OF TRUST STATE FAILS CLOSED, not just the guard: a non-regular entry in the
  *     account namespace is CORRUPT (an lstat skip is an under-count); the user-auth marker throws on
  *     any errno but ENOENT (an `existsSync` false is a static-mode flip); the broker record refuses
- *     a stale same-operator system account (iat generation) and refuses a fresh operator while
+ *     a stale same-operator system account (a persisted generation, compare-and-swap - `iat` is second-resolution and cannot order same-second generations) and refuses a fresh operator while
  *     tenant accounts exist (orphaning); the resolver refuses `--server`/local auto-picks whenever
  *     the disk says several tenants (or an unreadable one) exist.
  */
 import { strict as assert } from "node:assert";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
@@ -48,7 +48,7 @@ process.env.COTAL_HOME = home;
 const originalCwd = process.cwd();
 
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
-const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceAuth, rotateSystemAccount } = await import("@cotal-ai/core");
+const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceAuth, mintCreds, newIdentity, rotateSystemAccount, stripSpaceAuth } = await import("@cotal-ai/core");
 const {
   accountInventory, assertSingleSpaceBroker, authDir, agentCredsDir, brokerAuthPath, hasUserAuthState,
   isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, recordMesh,
@@ -246,13 +246,65 @@ try {
   const gen = await makeRoot("gen", ["only2"]);
   roots.push(gen);
   const genV0 = await reloadBroker(gen);
+  check("a fresh record persists at generation 0", (genV0.gen ?? 0) === 0, genV0.gen);
   check("an idempotent re-save of the current value is allowed", (await refusal(() => saveBrokerAuth(authDir(gen), genV0))) === "");
-  await new Promise((r) => setTimeout(r, 1100)); // split the iat second so the rotation is provably newer
+  // Deliberately NO sleep: `iat` is second-resolution, so a rotation minted in the SAME second as
+  // its predecessor is iat-equal yet a different authority - the live rollback the panel proved an
+  // iat-based guard cannot stop. Only the persisted generation orders these.
   const genV1 = await rotateSystemAccount(composeSpaceAuth(genV0, await createSpaceAccountAuth(genV0, "only2")));
   saveBrokerAuth(authDir(gen), genV1);
+  check("the rotation advanced the persisted generation", (await reloadBroker(gen)).gen === 1);
   const staleMsg = await refusal(() => saveBrokerAuth(authDir(gen), genV0));
-  check("a stale pre-rotation same-seed write is REFUSED as a rollback", staleMsg.includes("rollback"), staleMsg);
+  check("a stale pre-rotation same-seed write is REFUSED, same-second included", staleMsg.includes("generation"), staleMsg);
   check("on-disk sys.pub stays at the rotated value", (await reloadBroker(gen)).sys.pub === genV1.sys.pub);
+  // The panel's exact sequence: the ROTATED value is the FIRST thing ever persisted (the record
+  // never held the pre-rotation authority). The pre-rotation copy is still generations behind the
+  // successor rule, so it refuses - this is the case a plain same-generation CAS cannot see.
+  const seq = mkdtempSync(join(tmpdir(), "cotal-multispace-seq-"));
+  roots.push(seq);
+  mkdirSync(join(seq, ".cotal"), { recursive: true });
+  const seqV0 = await createBrokerAuth("seq");
+  const seqV1 = await rotateSystemAccount(composeSpaceAuth(seqV0, await createSpaceAccountAuth(seqV0, "seqspace")));
+  saveBrokerAuth(authDir(seq), seqV1);
+  check("rotation-persisted-first: the pre-rotation value STILL refuses (same second, no prior record)",
+    (await refusal(() => saveBrokerAuth(authDir(seq), seqV0))).includes("generation"));
+  // Descent stays ergonomic: the SAVED value may rotate again without a reload (it IS the current
+  // record); skipping a save in between is refused.
+  const genV2 = await rotateSystemAccount(composeSpaceAuth(genV1, await createSpaceAccountAuth(genV1, "only2")));
+  check("rotating the saved value again (no reload) is a legal direct successor", (await refusal(() => saveBrokerAuth(authDir(gen), genV2))) === "" && (await reloadBroker(gen)).gen === 2);
+  const genV3 = await rotateSystemAccount(composeSpaceAuth(genV2, await createSpaceAccountAuth(genV2, "only2")));
+  const genV4 = await rotateSystemAccount(composeSpaceAuth(genV3, await createSpaceAccountAuth(genV3, "only2")));
+  check("skipping a save between rotations is refused (not the direct successor)",
+    (await refusal(() => saveBrokerAuth(authDir(gen), genV4))).includes("generation"));
+  // A hand-edited generation must fail CLOSED before any arithmetic: the record reaches the guard
+  // through a bare JSON cast, and a string would launder straight through it ("0"+1 is "01"),
+  // while an unsafe integer satisfies gen === gen+1 - either destroys the successor discriminator.
+  const genRecordPath = brokerAuthPath(authDir(gen));
+  const genDoc = JSON.parse(readFileSync(genRecordPath, "utf8"));
+  const genDocValid = JSON.stringify(genDoc, null, 2);
+  genDoc.gen = String(genDoc.gen);
+  writeFileSync(genRecordPath, JSON.stringify(genDoc, null, 2));
+  check("a STRING generation on disk refuses a sys change as corrupt (no arithmetic laundering)",
+    (await refusal(() => saveBrokerAuth(authDir(gen), genV3))).includes("not a non-negative integer"));
+  check("…and a rotation from the corrupt record refuses at the rotate step too",
+    (await refusal(async () => rotateSystemAccount(composeSpaceAuth(await reloadBroker(gen), await createSpaceAccountAuth(genV2, "only2")))) ).includes("not a non-negative integer"));
+  genDoc.gen = Number.MAX_SAFE_INTEGER + 2; // serializes as an unsafe float - gen+1 === gen up there
+  writeFileSync(genRecordPath, JSON.stringify(genDoc, null, 2));
+  check("an UNSAFE-integer generation refuses a sys change as corrupt",
+    (await refusal(() => saveBrokerAuth(authDir(gen), genV3))).includes("not a non-negative integer"));
+  writeFileSync(genRecordPath, genDocValid); // restore the fixture's valid record
+  // The dual-rotation race: two rotations off the SAME loaded base both mint generation N+1 with
+  // DIFFERENT sys. First write lands as the successor; the second is equal-generation with a
+  // different authority - neither the idempotent no-op (that needs byte-identical sys.pub AND
+  // sys.jwt) nor a successor. First-writer-wins loud, never last-writer - the case a
+  // monotonic-greater guard would wrongly admit (the equal-iat hole reborn at the gen layer).
+  const raceBase = await reloadBroker(gen);
+  const raceA = await rotateSystemAccount(composeSpaceAuth(raceBase, await createSpaceAccountAuth(raceBase, "only2")));
+  const raceB = await rotateSystemAccount(composeSpaceAuth(raceBase, await createSpaceAccountAuth(raceBase, "only2")));
+  saveBrokerAuth(authDir(gen), raceA);
+  check("dual rotation off one base: the second equal-generation different-sys write is REFUSED",
+    (await refusal(() => saveBrokerAuth(authDir(gen), raceB))).includes("generation"));
+  check("…and the FIRST writer's system account is what persists", (await reloadBroker(gen)).sys.pub === raceA.sys.pub);
 
   console.log("\n13) a missing broker.json does not license a fresh operator while tenants exist");
   const orphan = await makeRoot("orphan", ["alpha", "beta"]);
@@ -283,6 +335,27 @@ try {
   check("a partially-registered 2-tenant root throws ambiguous-target (the DISK is the tenant authority)", isWorkspaceTargetError(partialErr) && (partialErr as { code: string }).code === "ambiguous-target", (partialErr as Error)?.message);
   check("…naming both tenants, not just the recorded one", String((partialErr as Error)?.message).includes("alpha") && String((partialErr as Error)?.message).includes("beta"));
   removeMesh("alpha");
+
+  console.log("\n15) the stripped signer bundle (mint --signer) still loads under the broker/account split");
+  const fullChain = await createSpaceAuth("signer9");
+  const container = mkdtempSync(join(tmpdir(), "cotal-multispace-container-"));
+  roots.push(container);
+  mkdirSync(authDir(container), { recursive: true });
+  writeFileSync(join(authDir(container), "auth.json"), JSON.stringify(stripSpaceAuth(fullChain), null, 2));
+  const bundle = loadSpaceAuth(authDir(container), "signer9");
+  check("a mounted stripped monolith loads for its own space (no broker chain to verify - trust is the mount)",
+    bundle?.space === "signer9" && bundle.account.signingSeed === fullChain.account.signingSeed && bundle.operator.seed === "");
+  check("…and mints an agent cred through it (the container manager's whole job)", Boolean(await mintCreds(bundle!, newIdentity(), "agent", { lifecycleUid: "smokesigner0123456789abcdef" })));
+  check("…but never for a DIFFERENT space", loadSpaceAuth(authDir(container), "elsewhere") === undefined);
+  const noSigner = stripSpaceAuth(fullChain);
+  noSigner.account.signingSeed = "";
+  writeFileSync(join(authDir(container), "auth.json"), JSON.stringify(noSigner, null, 2));
+  check("a blanked monolith WITHOUT signing material still fails loud through composition",
+    (await refusal(() => loadSpaceAuth(authDir(container), "signer9"))).includes("operator material"));
+  writeFileSync(join(authDir(solo), "auth.json"), JSON.stringify(stripSpaceAuth(loadSpaceAuth(authDir(solo), "solo")!), null, 2));
+  check("split records take PRECEDENCE over a stray stripped monolith beside them",
+    Boolean(loadSpaceAuth(authDir(solo), "solo")!.operator.seed));
+  rmSync(join(authDir(solo), "auth.json"));
 
   console.log(`\nMULTI-SPACE SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

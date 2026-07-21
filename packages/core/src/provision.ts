@@ -236,6 +236,13 @@ export function inspectCredHealth(creds: string, nowSec = Math.floor(Date.now() 
 export interface BrokerAuth {
   operator: { seed: string; jwt: string };
   sys: { pub: string; jwt: string; signingSeed?: string };
+  /** Monotonic generation of the system-account authority. {@link rotateSystemAccount} bumps it
+   *  IN MEMORY (each rotation is the next generation of the value it derived from); persistence
+   *  (`saveBrokerAuth`) then only accepts a sys-changing write that is the DIRECT successor of the
+   *  current record, refusing anything else as stale. Absent = 0 (in-memory creates and
+   *  pre-generation records). The JWT `iat` cannot carry this ordering — it is second-resolution,
+   *  so two generations minted within one second are unordered by it. */
+  gen?: number;
 }
 
 /** SPACE-level trust: one space's data account, signed by its broker's operator. This is the only
@@ -355,10 +362,19 @@ export async function rotateSystemAccount(auth: SpaceAuth): Promise<SpaceAuth> {
   const sysPub = syskp.getPublicKey();
   const operatorJwt = await encodeOperator(`cotal-${token(auth.space)}`, okp, { system_account: sysPub });
   const sysJwt = await encodeAccount("SYS", syskp, { limits: SYS_LIMITS }, { signer: okp });
+  // The rotated value IS the next generation of whatever it derived from — persistence refuses a
+  // sys change that is not the direct successor of the current record (see BrokerAuth.gen). The
+  // input generation is runtime-validated: persisted records reach here through a bare JSON cast,
+  // and a string/float/unsafe value would launder through the arithmetic ("0"+1 is "01"; at 2^53,
+  // gen+1 === gen) and destroy the successor discriminator.
+  const gen = auth.gen ?? 0;
+  if (typeof gen !== "number" || !Number.isSafeInteger(gen) || gen < 0)
+    throw new Error(`rotateSystemAccount: broker generation ${JSON.stringify(gen)} is not a non-negative integer - the loaded record is corrupt; restore it from backup`);
   return {
     ...auth,
     operator: { ...auth.operator, jwt: operatorJwt },
     sys: { pub: sysPub, jwt: sysJwt, signingSeed: new TextDecoder().decode(syskp.getSeed()) },
+    gen: gen + 1,
   };
 }
 

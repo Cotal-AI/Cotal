@@ -355,6 +355,18 @@ export function spaceAccountPath(dir: string, space: string): string {
   return join(dir, `${SPACE_ACCOUNT_PREFIX}${accountFileKey(space)}${SPACE_ACCOUNT_SUFFIX}`);
 }
 
+/** Runtime-validate a system-account generation. `readAuthRecord` is only a type CAST over JSON,
+ *  so a hand-edited string/float/negative/unsafe value would otherwise flow into the successor
+ *  arithmetic and destroy the discriminator ("0"+1 is "01"; at 2^53, gen+1 === gen). Absent reads
+ *  as 0 (pre-generation records, migration); anything else must be a non-negative safe integer or
+ *  the record is corrupt - fail closed BEFORE any idempotent/successor handling. */
+function brokerGen(v: unknown, where: string): number {
+  if (v === undefined || v === null) return 0;
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0)
+    throw new Error(`${where}: system-account generation ${JSON.stringify(v)} is not a non-negative integer - the record is corrupt; restore it from backup`);
+  return v;
+}
+
 /** Persist BROKER trust. `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting
  *  capability, so it never lands on disk (it lives only in the in-memory {@link createBrokerAuth}
  *  result). A composition that must add spaces after first boot has to hold that seed in a
@@ -364,6 +376,7 @@ export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
     throw new Error("saveBrokerAuth: refusing to persist blank broker trust - a stripped auth value cannot own the broker record");
   const f = brokerAuthPath(dir);
   const existing = readAuthRecord<BrokerAuth>(f, "broker trust");
+  let gen: number;
   if (existing) {
     // Overwriting the broker record is only safe for the SAME operator (a system-account rotation
     // keeps the operator SEED and only re-issues its JWT + `sys`). A DIFFERENT operator seed means a
@@ -377,17 +390,31 @@ export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
       );
     // Same operator: the write must still move FORWARD. "Same seed" alone would let a stale
     // pre-rotation value (e.g. a copy held in memory across a rotateSystemAccount) overwrite the
-    // newer record and resurrect the RETIRED system account. The system-account JWT's issue time is
-    // the generation marker: a rotation re-issues it later, so an incoming `sys` issued BEFORE the
-    // persisted one is a rollback and is refused. Equal issue times (an idempotent re-save of the
-    // current value) stay allowed. An undecodable JWT on either side makes staleness undecidable
-    // and fails closed via jwtIssuedAt's own throw.
+    // newer record and resurrect the RETIRED system account. The discriminator is the GENERATION:
+    // rotateSystemAccount bumps it in memory, so a sys-changing value is writable only when it is
+    // the DIRECT SUCCESSOR of the current record - a pre-rotation copy is generations behind even
+    // when the record itself never held it (rotation persisted first). The JWT `iat` alone cannot
+    // order generations - it is second-resolution, so a rotation minted within the same second as
+    // its predecessor is `iat`-equal yet a different authority (found live in review); it stays
+    // only as a belt against a hand-edited gen smuggling a provably OLDER sys back in.
     if (!existing.sys?.jwt)
       throw new Error(`${f} holds broker trust without a system-account JWT - the record is corrupt; restore it from backup before overwriting`);
-    if (jwtIssuedAt(broker.sys.jwt) < jwtIssuedAt(existing.sys.jwt))
-      throw new Error(
-        `${f} holds a NEWER system account (issued ${jwtIssuedAt(existing.sys.jwt)}) than the value being written (issued ${jwtIssuedAt(broker.sys.jwt)}) - refusing the rollback: it would resurrect a retired system account. Reload the current broker record instead of re-saving a stale copy.`,
-      );
+    const sysUnchanged = existing.sys.pub === broker.sys.pub && existing.sys.jwt === broker.sys.jwt;
+    if (sysUnchanged) {
+      gen = brokerGen(existing.gen, f); // idempotent re-save of the current authority - the generation holds
+    } else {
+      const persistedGen = brokerGen(existing.gen, f);
+      const incomingGen = brokerGen(broker.gen, "the value being written");
+      if (incomingGen !== persistedGen + 1)
+        throw new Error(
+          `${f} is at system-account generation ${persistedGen} and a system-account change must be its direct successor (generation ${persistedGen + 1}), but the value being written carries generation ${incomingGen} - refusing the stale write: it would resurrect a retired system account. Rotate from the current broker record and save that result.`,
+        );
+      if (jwtIssuedAt(broker.sys.jwt) < jwtIssuedAt(existing.sys.jwt))
+        throw new Error(
+          `${f} holds a NEWER system account (issued ${jwtIssuedAt(existing.sys.jwt)}) than the value being written (issued ${jwtIssuedAt(broker.sys.jwt)}) - refusing the rollback: it would resurrect a retired system account.`,
+        );
+      gen = incomingGen; // the successor generation the rotation minted
+    }
   } else {
     // No broker record - but that alone must not authorize a FRESH operator: with account records
     // present (broker.json lost, tenants intact) an unconditional write would install a new
@@ -397,6 +424,7 @@ export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
     // entry keeps the refusal (the same fail-closed posture as the broker-wide guard).
     // Residual (accepted): two concurrent FIRST-TIME writes on a genuinely fresh root both pass
     // this check and last-writer-wins; real usage serializes on the single `up`/store per root.
+    gen = brokerGen(broker.gen, "the value being written"); // a fresh record keeps the value's generation (0 if new)
     const { spaces, corrupt } = accountInventory(dir);
     if (corrupt.length > 0)
       throw new Error(
@@ -415,7 +443,7 @@ export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
     }
   }
   mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
-  const onDisk: BrokerAuth = { operator: broker.operator, sys: { pub: broker.sys.pub, jwt: broker.sys.jwt } };
+  const onDisk: BrokerAuth = { operator: broker.operator, sys: { pub: broker.sys.pub, jwt: broker.sys.jwt }, gen };
   writeSecretFile(f, JSON.stringify(onDisk, null, 2));
 }
 
@@ -468,6 +496,18 @@ function loadLegacySpaceAuth(dir: string): SpaceAuth | undefined {
  *  space B mint B's agents into space A's account. Composition also asserts that this account really
  *  was signed by this broker's operator. */
 export function loadSpaceAuth(dir: string, space: string): SpaceAuth | undefined {
+  // The STRIPPED SIGNER bundle (`cotal mint --signer`, mounted read-only at `auth/auth.json` in a
+  // containerized manager) is the one legacy shape that can never compose: `stripSpaceAuth`
+  // deliberately blanks the broker root-of-trust and keeps only this space's account signing
+  // material, so there is no signature chain to verify - its trust IS the operator's decision to
+  // mount it (unchanged from pre-split). Recognize it precisely - split records absent, monolith
+  // present for THIS space, operator blanked, signing seed present - and return it as-is; any
+  // other shape must compose and verify the account really was signed by this broker's operator.
+  if (!existsSync(brokerAuthPath(dir)) && !existsSync(spaceAccountPath(dir, space))) {
+    const legacy = loadLegacySpaceAuth(dir);
+    if (legacy && legacy.space === space && !legacy.operator?.seed && legacy.account?.signingSeed)
+      return legacy;
+  }
   const broker = loadBrokerAuth(dir);
   const spaceAccount = loadSpaceAccountAuth(dir, space);
   if (!broker || !spaceAccount) return undefined;

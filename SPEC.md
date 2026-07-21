@@ -556,8 +556,9 @@ operator-facing views of this section: [docs/identity-and-auth.md](docs/identity
   the account; an account signing key mints per-agent user JWTs. A broker (one nats-server trust
   root: one operator, one system account) MAY host several spaces — one account per space, every
   account signed by that one operator. Broker trust is therefore per-broker, never per-space: a
-  space owns only its own account and references the broker's operator, and no per-space
-  operation can rotate or replace it.
+  space owns only its own account and references the broker's operator, and rotating or replacing
+  broker trust is intrinsically broker-wide - it affects every tenant on the broker at once and
+  cannot be scoped to a single space.
 - **Profiles are default-deny allow-lists.** Subject, stream, durable, and KV names are built
   from the same builders as §3 and §8. Exact profile shapes are in Appendix B.
 - **An agent's channel scope is three concepts**, each a list of channel names or wildcard

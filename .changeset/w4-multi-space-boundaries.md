@@ -5,6 +5,7 @@
 "@cotal-ai/cli": minor
 "@cotal-ai/manager": minor
 "@cotal-ai/delivery": minor
+"@cotal-ai/connector-core": minor
 ---
 
 W4 multi-space-per-broker: split broker trust from per-space accounts and harden the broker-vs-space boundary.

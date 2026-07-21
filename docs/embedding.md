@@ -16,8 +16,9 @@ host; it documents the public seams any embedder composes.
 
 The supported reference shape here is **one broker operator serving one space** (one tenant: a
 dedicated data account, under an operator that also holds the system account and a quarantined
-auth-callout account) plus three standalone processes. Running many spaces under one shared broker
-operator is a different, not-yet-composable shape (see
+auth-callout account) plus three standalone processes. The trust layer itself composes many spaces
+under one broker operator today (`createBrokerAuth` + `createSpaceAccountAuth` + N-space
+`serverConfig`); what does not exist yet is the per-space **lifecycle** on a shared broker (see
 [Known gaps](#known-gaps-not-hosted-composable-yet)). The three processes:
 
 | daemon | package | what it is |
@@ -132,13 +133,14 @@ await runDelivery({ values: { space, server: brokerUrl }, positionals: [], raw: 
 ```
 
 That renewal is a **signer** operation, not the delivery daemon's: `remintDaemonCreds(root, store)`
-(`@cotal-ai/workspace`) raw-loads the full `SpaceAuth` signer from `root/.cotal/auth/auth.json` and
-re-signs the cred into `store` (the injected `store` is only the destination, not signer custody). So
+(`@cotal-ai/workspace`) loads the root's sole space trust (composed from the split
+`auth/broker.json` + `auth/account.<key>.json`; the pre-split `auth.json` monolith is migration
+input only) and re-signs the cred into `store` (the injected `store` is only the destination, not signer custody). So
 a separate trusted renewal-owner process, under the same signer isolation as the manager, runs it on
 a schedule; the reference manager does exactly this, but against its *workspace* store, not your
 injected one. It never throws: it returns per-file results (`skipped: "no-auth"` when no filesystem
 signer is present), so the caller must check them or the cred still rides to expiry; a malformed
-`auth.json` does still throw from that initial signer load. A composition whose signer is not
+trust record does still throw from that initial signer load. A composition whose signer is not
 filesystem-resident builds its own renewal from `identityFromCreds` + `mintCreds` instead, and a
 `--creds` file path must be replaced atomically before the 75% read. This is a hosted-composability
 gap, not a solved seam.
@@ -158,19 +160,20 @@ await mgr.start();          // then wire your own SIGINT/SIGTERM -> mgr.stop()
 
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
-grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()` the manager loads the full
-space trust bundle (`.cotal/auth/auth.json`) from `workspaceRoot` and **self-mints** its supervisor
-cred and renewals from the data-account signing seed. In static mode it also mints every per-agent
+grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()` the manager loads its space's
+full trust chain (composed from `auth/broker.json` + `auth/account.<key>.json`; a container may
+instead mount a stripped signer bundle at `auth/auth.json`) from `workspaceRoot` and **self-mints**
+its supervisor cred and renewals from the data-account signing seed. In static mode it also mints every per-agent
 cred from that seed; in user mode agents instead receive callout-minted bearers, but the manager
 still holds the signing seed for its own creds and renewal. So a hosted supervisor is a **trusted
 per-tenant account-signer process**, not a least-privilege connect client. It additionally requires a
-`~/.cotal/meshes/<space>.json` registry record and the workspace user-auth marker to start in user
-mode. There is no `SecretStore`/minter injection on `ManagerOptions` yet; the only knobs are
+`~/.cotal/meshes/space.<key>.json` registry record and the workspace user-auth marker to start in
+user mode. There is no `SecretStore`/minter injection on `ManagerOptions` yet; the only knobs are
 `workspaceRoot` and the process-global `COTAL_HOME`.
 
 **Isolating the signer is an OS-sandbox problem, not a file-permission one.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
-`auth.json` does not stop a hostile same-uid agent from reading its absolute path. The reference
+the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference
 [deploy](deploy.md) tree does not solve this: it mounts the signer into the agent's own container, so
 its phase-1 boundary isolates agents from each other, not the signer from the agent. A hosted
 composition must run the manager/minter that holds the signer in a different uid, container, or mount
@@ -263,17 +266,17 @@ place and keep:
 
 | state | class | where today | hosted injection |
 |---|---|---|---|
-| full `SpaceAuth` bundle (`.cotal/auth/auth.json`) | signing authority | workspace filesystem | none (the manager reads it raw; no SecretStore seam) |
+| full `SpaceAuth` trust chain (`auth/broker.json` + `auth/account.<key>.json`, composed; a stripped signer bundle may instead be mounted at `auth/auth.json`) | signing authority | workspace filesystem | none (the manager reads it raw; no SecretStore seam) |
 | auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
 | membership/eviction creds + `membership.json` | scoped creds/config | workspace filesystem | none (see gap 1) |
 | manager agent creds, actor tokens, sentinel creds | lifecycle authority | workspace filesystem | none (no store seam yet) |
-| `~/.cotal/meshes/<space>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
+| `~/.cotal/meshes/space.<key>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
 | auth-health, renewal records | non-secret diagnostics | workspace filesystem | `workspaceRoot` |
 
-The `SpaceAuth` bundle and the auth-service store kinds are **separate** identities/projections, not
-parts of one `auth.json`. `auth-service.json` (the live exchange capability) is ephemeral runtime
+The `SpaceAuth` trust chain and the auth-service store kinds are **separate** identities/projections,
+never parts of one document. `auth-service.json` (the live exchange capability) is ephemeral runtime
 state, not durable, but is sensitive while the daemon runs. `@cotal-ai/workspace` is machine-local
 operator tooling by design; personas, PID files, and the `current-mesh` pointer are truly local and
 must **not** sit on a hosted durable path. Everything classed above as an authority is what a hosted
