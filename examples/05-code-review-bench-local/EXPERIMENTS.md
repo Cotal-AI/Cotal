@@ -7,6 +7,32 @@ leaderboard with; our judge reproduces their leaderboard on their own published 
 ~0.016 mean absolute F1 error). Precision counts every candidate that matches no golden as a false
 positive, so the benchmark rewards matching what humans chose to comment on, not raw bug-finding.
 
+## Recovery audit (2026-07-14)
+
+- Harness: `example/gateway-council`, commits `5e26275`, `5219499`, and `4c6c1a4`; TypeScript and
+  preflight pass. The local Martian clone is at `949e4a1`.
+- Raw artifacts: 2.7 GB under repository-root `.runs/`. Base runs are in `.runs/code-review-bench`,
+  cross-judge results in `.runs/rejudge{,-gpt52}`, full-file/aim runs in `.runs/fullfiles`, support
+  sweeps in `.runs/majority`, and leaderboard rescoring in `.runs/rescore-tools`.
+- The raw summaries reproduce the headline results: aimed duo `.4159/.4146`, two independent
+  three-run unanimity sets `.4632/.4565`, and six-run support thresholds 4/6 `.4654`, 5/6 `.46595`.
+- The archived mesh result is not a valid 50-PR comparison. Its run manifest maps five synthetic
+  Keycloak/Sentry PRs onto duplicate Discourse URLs, leaving 45 unique PRs and 122 goldens. The
+  resolver now derives the exact URL from each run-directory slug and refuses partial coverage;
+  the corrected mapping resolves 50 unique PRs and all 136 goldens. Do not cite the mesh delta until
+  a corrected run is complete.
+- `.runs/freshset/golden_comments` is empty. The `hexaX/Y/Z` artifacts are interrupted five-PR
+  smokes with no summary, not results.
+
+Next experiment: freeze 15 merged PRs created after 2026-07-10, three per source repository, and
+curate human inline review comments before generation. Run the locked bug-hunter/keeper/sweeper
+team three times with isolated contexts, cluster centrally at 3/3 support, and compare against the
+locked aimed duo. Start with three PRs and stop on any data leak or failure rate above 5%. The full
+run proceeds only if every artifact records reviewer and judge tokens, latency, failures, and the
+golden-freeze timestamp. Success means the filtered swarm beats both its single-run mean and the duo
+by at least `.03` F1 without losing more than `.05` recall; otherwise the tuned result does not
+transfer. A corrected mesh smoke is a separate publication prerequisite, not the next quality search.
+
 ## Scoreboard (chronological; each row changes one thing)
 
 | config | P | R | F1 | verdict |
@@ -20,11 +46,12 @@ positive, so the benchmark rewards matching what humans chose to comment on, not
 | swarm x3 runs, majority (>=2/3) vote | .367 | .537 | .436 | frontier shift: highest multi-reviewer P |
 | swarm x3 runs, UNANIMOUS (3/3) findings | .45-.46 | .463 | .457-.463 | confirmed on 2 independent trios |
 | swarm x6 runs, 4-of-6 vote | .407 | .544 | .465 | more runs = finer dial, more recall kept |
-| swarm x6 runs, 5-of-6 vote | .455 | .478 | **.466** | best overall |
+| swarm x6 runs, 5-of-6 vote | .455 | .478 | .466 | best 6-run cut |
+| swarm x9 runs, 7-of-9 vote | .466 | .507 | **.486** | ceiling; .479 under a second judge (gpt-5.5) |
 
 Same-judge comparison against the leaderboard tools' own published findings: cubic-v2 .579,
-qodo-extended-v2 .563, **ours .457-.463**, Cursor Bugbot .445, greptile-v4 .415, Claude Code .375,
-CodeRabbit .352, Copilot .346, Gemini .325.
+qodo-extended-v2 .563, **ours .486** (9-run 7-of-9; .457-.463 at 3/3 unanimity), Cursor Bugbot
+.445, greptile-v4 .415, Claude Code .375, CodeRabbit .352, Copilot .346, Gemini .325.
 
 ## The three levers that worked
 
@@ -41,7 +68,31 @@ CodeRabbit .352, Copilot .346, Gemini .325.
    ones humans flagged. This is Cursor Bugbot's documented core mechanism, and it transfers.
    With 6 runs the support curve is: k=2 F1 .387 (80 TP, our recall ceiling), k=3 .434, k=4 .465,
    k=5 .466 (peak), k=6 .442 (over-filtered). More runs give a finer dial; 4-of-6 and 5-of-6 both
-   beat 3-of-3.
+   beat 3-of-3. With 9 runs (swarm2-4 + swarmA-C + swarmD-F, 2022 findings clustered) precision
+   climbs monotonically with required support, .335 / .375 / .410 / .466 / .484 / .517 for k=4..9,
+   while F1 peaks at .486 at k=7 (69 TP) and falls off at k=8-9 as over-filtering sets in. The
+   7-of-9 candidate set scores .479 under a gpt-5.5 judge (68 TP, delta .007), so the peak is
+   dual-judge robust. Reading the exact peak off the curve is itself a test-set choice; the claim
+   that holds is the curve's shape. Artifacts: `.runs/majority/nine*.json`,
+   `.runs/majority/worker-nine-s{4..9}`, `.runs/majority/worker-nine-s7-gpt55`.
+
+## Open-weights replication (GLM-5.1, 2026-07-16/21)
+
+Same recipe as the swarm rows above (bug-hunter/keeper/sweeper trio, full files, 3 independent
+runs, cross-run voting), with GLM-5.1 as the reviewer model and the same gpt-5.2 judge:
+
+| GLM-5.1 config | P | R | F1 |
+|---|---|---|---|
+| single runs (x3) | .220 / .202 / .255 | .559 / .500 / .596 | .315 / .288 / .357 |
+| 2-of-3 vote | .268 | .522 | .354 |
+| 3-of-3 unanimous | .421 | .390 | .405 |
+
+The voting mechanism transfers, and the noisier model gains more from it: unanimity nearly
+doubles GLM's precision (.226 mean to .421) and buys +.085 F1, versus roughly +.04 for the
+GPT-5.5 swarm from the same 3/3 filter. Consistent with the resampling story: reproducibility
+filtering removes sampling noise, and the model with more sampling noise has more to remove.
+Artifacts: `.runs/fullfiles/glm{1,2,3}`, `.runs/majority/glm*.json`,
+`.runs/majority/worker-glm-s{2,3}`.
 
 ## The scorer null (the campaign's sharpest negative)
 

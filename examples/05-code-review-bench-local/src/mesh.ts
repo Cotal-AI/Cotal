@@ -539,23 +539,38 @@ async function main() {
   }
   const limitFlag = args.indexOf("--limit");
   const limit = limitFlag !== -1 ? Number(args[limitFlag + 1]) : undefined;
+  if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+    throw new Error("--limit must be a positive integer");
+  }
   const resume = args.includes("--resume");
   const sourceDir = path.join(runsRoot, sourceRunId);
   if (!existsSync(sourceDir)) throw new Error(`Source run not found: ${sourceDir}`);
 
   const sourceBenchmark = JSON.parse(await readFile(path.join(sourceDir, "benchmark_data.json"), "utf8")) as Record<string, Record<string, unknown>>;
-  const prDirs = (await readdir(sourceDir)).filter((name) => /^\d+__/.test(name)).sort();
+  const prDirs = (await readdir(sourceDir))
+    .filter((name) => /^\d+__/.test(name))
+    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
   const goldenByDir = new Map<string, { url: string; entry: Record<string, unknown> }>();
   for (const prDir of prDirs) {
-    const slugPart = prDir.replace(/^\d+__/, "");
-    const prNumber = slugPart.match(/PR(\d+)$/)?.[1];
-    const url = Object.keys(sourceBenchmark).find((key) => prNumber && key.endsWith(`/${prNumber}`) && slugPart.startsWith(key.split("/")[3] ?? "###"));
-    const fallback = Object.keys(sourceBenchmark).find((key) => prNumber && key.endsWith(`/pull/${prNumber}`));
-    const resolved = fallback || url;
-    if (resolved) goldenByDir.set(prDir, { url: resolved, entry: sourceBenchmark[resolved] });
+    const match = prDir.match(/^\d+__([^_]+)__(.+)__PR(\d+)$/);
+    const resolved = match ? `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}` : undefined;
+    if (resolved && sourceBenchmark[resolved]) goldenByDir.set(prDir, { url: resolved, entry: sourceBenchmark[resolved] });
   }
 
-  const selected = (limit ? prDirs.slice(0, limit) : prDirs).filter((dir) => goldenByDir.has(dir) && existsSync(path.join(sourceDir, dir, "patch.diff")));
+  const requested = limit === undefined ? prDirs : prDirs.slice(0, limit);
+  const selected = requested.filter((dir) =>
+    goldenByDir.has(dir) &&
+    existsSync(path.join(sourceDir, dir, "patch.diff")) &&
+    existsSync(path.join(sourceDir, dir, "pr.json")),
+  );
+  const uniqueUrls = new Set(selected.map((dir) => goldenByDir.get(dir)!.url));
+  if (
+    selected.length !== requested.length ||
+    uniqueUrls.size !== selected.length ||
+    (limit === undefined && uniqueUrls.size !== Object.keys(sourceBenchmark).length)
+  ) {
+    throw new Error(`Resolved ${selected.length}/${requested.length} requested PRs (${uniqueUrls.size} unique URLs); refusing a partial mesh run`);
+  }
   if (!selected.length) throw new Error("No PRs resolvable from source run");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const meshRunRoot = path.join(runsRoot, `mesh-${stamp}`);
