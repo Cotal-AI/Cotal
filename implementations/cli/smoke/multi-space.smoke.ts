@@ -410,6 +410,20 @@ try {
       writeFileSync(join(legacyNorm, "idp.json"), "{}");
       return hasUserAuthState(collide, "plainspace") === true && existsSync(userAuthStateDir(collide, "plainspace")) && !existsSync(legacyNorm);
     })());
+  // The both-present husk: a REAL pre-hex dir beside an EMPTY canonical husk (a crashed new-layout
+  // enable). `existsSync(canonical)` alone must NOT short-circuit the legacy check - that would read
+  // the empty canonical and flip the space to static (→ `mint` writes admin creds). Fail loud.
+  const huskRoot = await makeRoot("husk", ["realspace2"]);
+  roots.push(huskRoot);
+  const huskLegacy = join(authDir(huskRoot), encodeURIComponent("huskspace"));
+  // Build the empty canonical husk DIRECTLY (not via userAuthStateDir, which would migrate) so both
+  // exist before any migration runs.
+  mkdirSync(join(authDir(huskRoot), `space.${spaceKey("huskspace")}`), { recursive: true });
+  mkdirSync(huskLegacy, { recursive: true });
+  writeFileSync(join(huskLegacy, "idp.json"), "{}");
+  check("a real pre-hex dir beside an EMPTY canonical husk FAILS LOUD (no static flip), never reads canonical",
+    (await refusal(() => hasUserAuthState(huskRoot, "huskspace"))).includes("refusing to guess which is current"));
+  check("the husk refusal moved/stole nothing", existsSync(huskLegacy) && existsSync(join(authDir(huskRoot), `space.${spaceKey("huskspace")}`)));
 
   console.log("\n17) --server names a BROKER: a partially-registered multi-tenant root refuses, not auto-picks");
   const partial = await makeRoot("partial", ["alpha", "beta"]);
@@ -504,6 +518,50 @@ try {
   try { resolveMeshTarget(composeFail, {}); } catch (e) { composeErr = e; }
   check("resolveMeshTarget throws a typed unreadable-auth (a surface catches it and exits 0, not crashes)",
     isWorkspaceTargetError(composeErr) && (composeErr as { code: string }).code === "unreadable-auth", (composeErr as Error)?.message);
+
+  console.log("\n23) an UNREADABLE auth dir surfaces as a typed resolver error too (status exits 0, never a raw EACCES throw)");
+  // accountInventory lets a readdir EACCES propagate so the broker-wide guards fail CLOSED, but the
+  // RESOLVER must convert it (like the compose failure) or `status`/`spawn` crash on the raw throw.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const unreadable = await makeRoot("unreadable", ["only23"]);
+    roots.push(unreadable);
+    chmodSync(authDir(unreadable), 0o000);
+    let unreadErr: unknown;
+    try { resolveMeshTarget(unreadable, {}); } catch (e) { unreadErr = e; }
+    chmodSync(authDir(unreadable), 0o700);
+    check("an unreadable .cotal/auth resolves to a typed unreadable-auth, not a raw EACCES",
+      isWorkspaceTargetError(unreadErr) && (unreadErr as { code: string }).code === "unreadable-auth", (unreadErr as Error)?.message);
+  } else {
+    check("unreadable-auth-dir resolver check skipped (needs a non-root POSIX runner)", true);
+  }
+
+  console.log("\n24) a DEAD pre-hex auth-service pidfile is the both-present wedge; reclaim leaves ONE canonical record");
+  // A pre-upgrade crash leaves `auth-service.<encoded>.pid` (dead). readPidPath admits it, so a fresh
+  // start that claimed canonical WITHOUT reclaiming the dead legacy would leave BOTH files - and
+  // every later authServiceUp/down throws ambiguous (a permanent wedge). Section proves the wedge is
+  // real and that clearing the dead legacy (what reclaimDeadLegacyPid does at start) resolves it.
+  const { authServiceUp: authUp, claimAuthPidSlot } = await import("../src/lib/auth-proc.js");
+  const wedge = await makeRoot("wedge", []);
+  roots.push(wedge);
+  const prevCwd = process.cwd();
+  process.chdir(wedge); // cotalPath resolves under findCotalRoot(cwd)
+  try {
+    const dot = join(wedge, ".cotal");
+    const legacyPid = join(dot, `auth-service.${encodeURIComponent("s24")}.pid`);
+    const hexPid = join(dot, `auth-service.${spaceKey("s24")}.pid`);
+    writeFileSync(legacyPid, "999999"); // dead pre-hex pid
+    check("authServiceUp reads a dead pre-hex pid as DOWN (readPidPath resolves the legacy name)", authUp("s24") === false);
+    writeFileSync(hexPid, "888888");
+    check("both dead-legacy + canonical present is the WEDGE: authServiceUp throws ambiguous", (await refusal(() => authUp("s24"))).includes("ambiguous"));
+    rmSync(hexPid, { force: true });
+    rmSync(legacyPid, { force: true }); // what reclaimDeadLegacyPid does before the canonical claim
+    const slot = claimAuthPidSlot("s24");
+    check("post-reclaim the canonical slot claims cleanly, one record", slot !== undefined && "fd" in slot &&
+      readdirSync(dot).filter((f) => f.startsWith("auth-service.") && f.endsWith(".pid")).length === 1);
+    check("…and authServiceUp no longer wedges", (await refusal(() => authUp("s24"))) === "");
+  } finally {
+    process.chdir(prevCwd);
+  }
 
   console.log(`\nMULTI-SPACE SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

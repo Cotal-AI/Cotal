@@ -150,7 +150,16 @@ function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
 }
 
 function assertRootIsSingleTenant(root: string): void {
-  const inv = accountInventory(authDir(root));
+  // `accountInventory`'s readdir can THROW (EACCES/ELOOP on `.cotal/auth`): it lets that propagate
+  // so the broker-wide guards fail CLOSED, but the resolver is a presentation surface and must
+  // convert it to a typed error, or `status`/`spawn` crash on the raw throw. An unreadable auth dir
+  // is unreadable trust.
+  let inv: { spaces: string[]; corrupt: string[] };
+  try {
+    inv = accountInventory(authDir(root));
+  } catch (e) {
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { root });
+  }
   if (inv.corrupt.length > 0)
     throw new MeshTargetError(
       "ambiguous-target",

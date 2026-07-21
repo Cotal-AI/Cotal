@@ -46,6 +46,26 @@ function alive(pid: number): boolean {
 // so existing CLI imports keep working.
 export { resolveAuthProvider } from "@cotal-ai/core";
 
+/** Reclaim a DEAD pre-hex pidfile before a fresh start claims the canonical (hex) slot. A crash on
+ *  a pre-upgrade build leaves `auth-service.<encoded>.pid`; the new start claims
+ *  `auth-service.<hex>.pid` and, without this, BOTH would then exist - which `readPidPath` correctly
+ *  refuses as ambiguous, wedging every later status/down. A start only reaches here when
+ *  `authServiceUp` (via `readPidPath`) already read the service as down, so a legacy pid found here
+ *  is dead; a still-LIVE legacy holder is left untouched (never steal an attributable live record -
+ *  that path would have short-circuited before starting). Byte-exact match, no case-fold. */
+function reclaimDeadLegacyPid(space: string): void {
+  const legacy = cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
+  if (legacy === PID_PATH(space)) return;
+  try {
+    if (!readdirSync(dirname(legacy)).includes(basename(legacy))) return; // byte-exact absent
+  } catch {
+    return; // parent dir gone → nothing to reclaim
+  }
+  const pid = Number(readFileSync(legacy, "utf8").trim());
+  if (Number.isFinite(pid) && pid > 0 && alive(pid)) return; // live: leave the attributable record
+  rmSync(legacy, { force: true });
+}
+
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
 export function authServiceUp(space: string): boolean {
   const p = readPidPath(space);
@@ -107,6 +127,8 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
  *  The pid slot is claimed exclusively FIRST ({@link claimAuthPidSlot}); a held or contested slot
  *  yields to the existing daemon (the caller's ready() poll adjudicates liveness). */
 function startAuthServiceDetached(space: string, server: string, command: string): number {
+  reclaimDeadLegacyPid(space); // a pre-hex crash leaves a dead legacy pidfile; clear it or the
+                               // canonical claim below produces the both-present wedge readPidPath refuses
   const slot = claimAuthPidSlot(space);
   if (slot === undefined) return 0;
   if ("livePid" in slot) return slot.livePid;

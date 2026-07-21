@@ -62,9 +62,22 @@ async function printMachine(): Promise<void> {
 }
 
 function printProject(root: string, cmd: string): void {
-  const { spaces, corrupt } = accountInventory(authDir(root));
   section("This Folder");
   row("root", root);
+  // The inventory READ itself can throw (an EACCES/ELOOP on `.cotal/auth`, not just a bad record):
+  // `accountInventory` lets that propagate so the broker-wide guards fail CLOSED, but status is the
+  // recovery command and must exit 0 for any trust material it cannot read. Frame the unreadable
+  // auth dir and stop.
+  let spaces: string[];
+  let corrupt: string[];
+  try {
+    ({ spaces, corrupt } = accountInventory(authDir(root)));
+  } catch (e) {
+    row("auth", c.red(`auth dir unreadable · ${(e as Error).message}`));
+    row("hint", `check permissions on ${authDir(root)} - broker-wide commands refuse while the tenant list cannot be read`);
+    row("personas", personaSummary(root));
+    return;
+  }
   // Status is the command the broker-wide refusals send the operator to, so it must DESCRIBE every
   // state those refusals can name - crashing on one is a dead end in the exact recovery flow. An
   // unreadable record means the tenant list is uncertain: report it (the space-blind sole-load

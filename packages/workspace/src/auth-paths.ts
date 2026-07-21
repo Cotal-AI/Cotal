@@ -129,8 +129,15 @@ export function userAuthStateDir(root: string, space: string): string {
 function migrateLegacyUserAuthState(root: string, space: string, canonical: string): void {
   const legacyName = encodeURIComponent(space);
   if (legacyName === "creds") return;
-  if (existsSync(canonical)) return; // already canonical (hex cannot case-fold, so this is exact)
   const dir = authDir(root);
+  const legacyPath = join(dir, legacyName);
+  // Cheap gate first: nothing even case-insensitively at the legacy path ⇒ no pre-hex dir to weigh,
+  // so the canonical path (whatever state it is in) is authoritative and we skip the readdir. The
+  // legacy check must run BEFORE trusting a present canonical dir: `existsSync(canonical)` alone
+  // does NOT prove migration completed - an EMPTY canonical husk (a crashed new-layout enable)
+  // beside REAL pre-hex state would let a bare canonical read flip a user-auth space to static and
+  // `mint` write admin creds.
+  if (!existsSync(legacyPath)) return;
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -138,13 +145,24 @@ function migrateLegacyUserAuthState(root: string, space: string, canonical: stri
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
     throw e;
   }
+  // Byte-exact (existsSync case-folds a sibling), and a real provider pin - an empty husk at the
+  // legacy path is a crashed enable, not state, so it neither migrates nor blocks.
   const hit = entries.find((e) => e.name === legacyName && e.isDirectory());
-  if (!hit || !pathHasUserAuthMarker(join(dir, legacyName))) return;
+  if (!hit || !pathHasUserAuthMarker(legacyPath)) return;
+  // Real pre-hex state exists for this space. Two situations are irreducibly ambiguous and FAIL
+  // LOUD rather than guess: (1) the legacy name is also another space's canonical segment; (2) a
+  // canonical dir already exists (a crashed/partial new-layout enable) - migrating would either
+  // steal it or need a merge we cannot infer. Only when the canonical path is ABSENT is the rename
+  // unambiguous.
   if (spaceFromSegment(legacyName) !== undefined)
     throw new Error(
-      `${join(dir, legacyName)} is ambiguous: it is the pre-hex user-auth state dir of space "${space}" AND a canonical segment of space "${spaceFromSegment(legacyName)}" - refusing to guess which tenant owns it. Move it to ${canonical} yourself if it belongs to "${space}", or remove it.`,
+      `${legacyPath} is ambiguous: it is the pre-hex user-auth state dir of space "${space}" AND a canonical segment of space "${spaceFromSegment(legacyName)}" - refusing to guess which tenant owns it. Move it to ${canonical} yourself if it belongs to "${space}", or remove it.`,
     );
-  renameSync(join(dir, legacyName), canonical);
+  if (existsSync(canonical))
+    throw new Error(
+      `both the canonical ${canonical} and the pre-hex ${legacyPath} hold user-auth state for "${space}" - refusing to guess which is current (canonical existence alone does not prove the migration completed). Merge or remove one, then retry.`,
+    );
+  renameSync(legacyPath, canonical);
 }
 
 /** The provider's first-written user-auth pins. Workspace owns the LOCATION of a space's user-auth
