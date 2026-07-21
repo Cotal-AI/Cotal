@@ -630,6 +630,31 @@ try {
     process.chdir(prevCwd);
   }
 
+  console.log("\n25) the REAL `cotal down` path (stopLocalProcess) honors the same contract as the direct helper");
+  // `cotal down` stops the auth-service through the GENERIC stopLocalProcess, not stopAuthService,
+  // so the same attribution contract must hold there or a real `down` orphans a live signer behind a
+  // torn pidfile at exit 0. Drive stopLocalProcess directly on the auth descriptor.
+  const { stopLocalProcess } = await import("../src/commands/down.js");
+  const authComponent = { kind: "local-process" as const, name: "auth", label: "user-auth service", pidFile: "auth-service.{space}.pid" };
+  const dpRoot = await makeRoot("downpath", []);
+  roots.push(dpRoot);
+  const dpCtx = { root: dpRoot, space: "dp25", userAuth: true };
+  const dpPid = join(authDir(dpRoot), "..", `auth-service.${spaceKey("dp25")}.pid`);
+  for (const bad of ["not-a-pid", "1.5", "2147483648", "0", "-5"]) {
+    writeFileSync(dpPid, bad);
+    const msg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    check(`down/stopLocalProcess REFUSES an unattributable auth pidfile ${JSON.stringify(bad)} and PRESERVES it (no clean-report orphan)`,
+      msg.includes("unattributable") && existsSync(dpPid), { msg, kept: existsSync(dpPid) });
+  }
+  writeFileSync(dpPid, ""); // empty husk: safe to clear
+  await stopLocalProcess(authComponent as never, dpCtx as never);
+  check("down/stopLocalProcess CLEARS an empty husk (no process behind it)", !existsSync(dpPid));
+  // Over-refusal negative: a valid pid PROVEN dead (ESRCH) still clears normally - the contract
+  // refuses UNATTRIBUTABLE records, it does not break the ordinary stop of a gone process.
+  writeFileSync(dpPid, "999999");
+  check("down/stopLocalProcess still CLEARS a valid ESRCH-dead pid (normal stop, no over-refusal)",
+    (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(dpPid));
+
   console.log(`\nMULTI-SPACE SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
   console.error("  ✗ FAIL:", (e as Error).message);

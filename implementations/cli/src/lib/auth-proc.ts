@@ -12,6 +12,7 @@ import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, 
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness } from "./pid.js";
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
@@ -33,40 +34,8 @@ function readPidPath(space: string): string {
   return l && !c ? legacy : canonical;
 }
 
-/** Parse a pidfile's content to a valid OS pid, or undefined. Strict on purpose: a pid must be a
- *  positive SAFE integer. A fractional (`1.5`) or unsafe-integer (`2**53`) value is NOT a pid -
- *  `process.kill` rejects it with `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE`, which {@link alive}
- *  would then read as "not alive" and the reclaim/claim/stop paths as "proven dead", deleting an
- *  UNATTRIBUTABLE record. So every pid function parses through here BEFORE probing/deleting/
- *  signalling: undefined means unattributable (yield/refuse), never dead. Stricter than `down`'s
- *  `Number.isInteger` variant, which would admit `2**53`. */
-function parsePid(raw: string): number | undefined {
-  const n = Number(raw.trim());
-  // A Node/POSIX pid is a positive int that fits in a 32-bit signed int; `process.kill` throws
-  // ERR_OUT_OF_RANGE past 2**31-1. Bound it here so an oversized value is rejected as syntax rather
-  // than reaching the probe (which would also refuse it, as UNKNOWN - this is the cheaper first line).
-  return Number.isInteger(n) && n > 0 && n <= 0x7fffffff ? n : undefined;
-}
-
-/** TRI-STATE liveness probe. The reclaim/claim/stop contract turns on ONE rule: only an actual
- *  `ESRCH` proves a process is gone. A successful `kill(pid,0)` or an EPERM (it exists but is
- *  another user's) means alive; ANY OTHER outcome - `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE` from
- *  a syntactically-valid-but-unsignalable pid (a positive safe integer beyond the OS pid range,
- *  e.g. 2**31 on this host), or any unknown errno - is UNKNOWN, never dead. A two-state
- *  "alive-or-dead" boolean is the defect: it collapses "unknown" into "dead", so a value the kernel
- *  will not accept gets its record deleted and a competitor launched. Callers reclaim/steal ONLY on
- *  `dead`; `alive` and `unknown` both preserve. Pair with {@link parsePid} for syntax. */
-function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
-  try {
-    process.kill(pid, 0);
-    return "alive";
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return "dead";
-    if (code === "EPERM") return "alive"; // exists, just not ours to signal
-    return "unknown"; // ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE / anything else - cannot attribute
-  }
-}
+// parsePid + probeLiveness (the pid-attribution contract) live in ./pid.js, shared with `down` so
+// there is exactly ONE parser + ONE tri-state probe across the pidfile subsystem.
 
 // Provider resolution now lives in core (the manager needs the identical resolution); re-exported
 // so existing CLI imports keep working.

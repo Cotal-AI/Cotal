@@ -51,6 +51,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
+import { parsePid, probeLiveness } from "../lib/pid.js";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -162,13 +163,12 @@ export async function down(args: ParsedArgs): Promise<void> {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const parsePid = (raw: string): number | undefined => {
-  const pid = Number(raw.trim());
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-};
-export const isAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
-};
+// The pid parser + liveness probe are the SHARED pid-attribution contract (`lib/pid.ts`), the same
+// one `auth-proc` uses - so `cotal down`'s stop of the auth-service (a callout SIGNER) attributes a
+// torn pidfile exactly as the direct helper does, instead of the old unbounded parser + two-state
+// probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
+// stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
+export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
   return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
@@ -229,9 +229,19 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
   let stopped = false;
   try {
     if (pid === undefined) {
-      console.log(c.dim(`${component.label} had an invalid pidfile.`));
-      stopped = true;
-      return true;
+      // An EMPTY pidfile is a pre-protocol husk (no process behind it) and is safe to clear. Any
+      // OTHER unattributable content (garbled, fractional, out-of-range - anything `parsePid`
+      // rejects) may still front a LIVE process we cannot identify or signal; removing it would
+      // orphan that process while reporting a clean stop (the signer-orphan this slice must not do).
+      // Refuse loud and preserve it.
+      if (rawPid === "") {
+        console.log(c.dim(`${component.label} had an empty pidfile.`));
+        stopped = true; // husk cleared in `finally`
+        return true;
+      }
+      throw new Error(
+        `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
+      );
     }
     try {
       process.kill(pid, "SIGTERM");
@@ -253,7 +263,12 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
-    if (stopped || pid === undefined || !isAlive(pid)) {
+    // Remove the pidfile only when we KNOW it is safe: we stopped/cleared it, or it names a valid
+    // pid that is provably gone. An unattributable (`pid === undefined`, non-empty) record is NEVER
+    // removed here - it threw above and must survive for manual inspection, so it is deliberately
+    // absent from this condition (the old `|| pid === undefined` is exactly what orphaned a live
+    // process behind a torn pidfile).
+    if (stopped || (pid !== undefined && !isAlive(pid))) {
       rmSync(pidPath, { force: true });
     }
     rmSync(marker, { force: true });
