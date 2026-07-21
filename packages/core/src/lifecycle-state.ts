@@ -239,6 +239,76 @@ export function epcredRowKey(endpoint: string, instanceId: string, credentialId:
   return `epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.${assertCredentialIdTail(credentialId, "credentialId")}`;
 }
 
+// ---- the endpoint-instance issuance gate (auth store, endpoint family `epgate.<endpoint>.<instanceId>`) ----
+
+/** The ENDPOINT-instance issuance gate row (§13.1: a DISJOINT family from the agent
+ *  `gate.<lifecycleUid>`, distinguished by explicit PREFIX and never token arity; it carries the
+ *  endpoint fence coordinates of §13.5/§13.7). Closed schema; `frozen`/`retired` are op-bound
+ *  exactly like the agent family. Lifted to core (guarded-core: ONE encoder shared by the auth
+ *  session ledger and the manager's endpoint-serve wiring; a second dialect is the dual-encoder
+ *  drift this module bans). */
+export interface EndpointGateRow {
+  state: "open" | "frozen" | "retired";
+  generation: number;
+  processEpoch: number;
+  registrationRevision: number;
+  nameAuthorityRevision: number;
+  /** The serving instance's CONNZ-attributable connection principal (`<owner>.<actor>` dot-form)
+   *  — the eviction target when the endpoint is taken over or a serving credential is revoked
+   *  (§13.1: eviction is BY PRINCIPAL). Recorded at endpoint registration; the serving ledger
+   *  rows (`epcred.`) copy it as their `holderPrincipal`, so the endpoint KEY identity
+   *  (`endpoint`) and the evictable principal stay disjoint. */
+  principal: string;
+  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
+}
+
+/** The endpoint gate key `epgate.<endpoint>.<instanceId>` (an instanceId is unique ONLY within
+ *  `(space, endpoint)`, so the key is endpoint-qualified — equal instanceIds under two endpoints
+ *  never collide on the gate or the credential family, §13.1/§13.6). */
+export function epgateKey(endpoint: string, instanceId: string): string {
+  return `epgate.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
+}
+
+/** Validate an endpoint gate row at the consuming boundary — CLOSED schema; a real owner-grammar
+ *  serving principal; the per-kind STATE x KIND + successor invariants (§13.1). Byte-for-byte the
+ *  parser the auth session ledger carried (fact H3 lift), now shared. */
+export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
+  let o: unknown;
+  try {
+    o = JSON.parse(dec.decode(raw));
+  } catch {
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
+  }
+  if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
+  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op"]);
+  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
+  if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
+  const principal = typeof o.principal === "string" ? parsePrincipalKey(o.principal) : null;
+  if (principal === null || !isPrincipalOwnerToken(principal.owner))
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (owner-grammar owner.actor, SPEC 13.1)`);
+  if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);
+  if (o.state === "open" && o.op !== undefined)
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is open but carries an op intent (SPEC 13.1)`);
+  if (o.op !== undefined) {
+    const op = o.op as Record<string, unknown>;
+    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
+    if (typeof op.opId !== "string" || !["activation", "takeover", "registration", "retirement"].includes(op.kind as string))
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent does not validate (SPEC 13.1)`);
+    if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1); impossible persisted state, refused`);
+    if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
+    try {
+      assertLifecycleToken(op.opId);
+    } catch {
+      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries a malformed opId (SPEC 13.1)`);
+    }
+  }
+  return o as unknown as EndpointGateRow;
+}
+
 /** The §13.1 credential-ledger row, closed. `lifecycleUid` is the HOLDER's KEY identity
  *  component: the managed agent's lifecycle UID in the `cred.` family, the endpoint instance's
  *  `instanceId` in the `epcred.` family (SPEC 13.1: `instanceId` is to an endpoint what

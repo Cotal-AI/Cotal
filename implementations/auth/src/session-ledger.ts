@@ -52,6 +52,9 @@ import {
   assertLifecycleToken,
   parsePrincipalKey,
   isPrincipalOwnerToken,
+  epgateKey,
+  parseEndpointGate,
+  type EndpointGateRow,
   sessionLedgerKey,
   assertSessionStateTransition,
   sweepSessionRow,
@@ -257,30 +260,14 @@ export function kvSessionLedger(kv: KV): SessionLedger {
 
 // ---- the endpoint gate family (epgate.<endpoint>.<instanceId>, SPEC 13.1) -----------------------
 
-/** The ENDPOINT-instance issuance gate (SPEC §13.1: a DISJOINT family from the agent
- *  `gate.<lifecycleUid>`, distinguished by explicit prefix and never token arity; carries the
- *  endpoint fence coordinates of §13.5/§13.7). Closed schema; `frozen`/`retired` are op-bound
- *  exactly like the agent family. */
-export interface EndpointGateRow {
-  state: "open" | "frozen" | "retired";
-  generation: number;
-  processEpoch: number;
-  registrationRevision: number;
-  nameAuthorityRevision: number;
-  /** The serving instance's CONNZ-attributable connection principal (`<owner>.<actor>`
-   *  dot-form) — the eviction target when the endpoint is taken over or a serving credential is
-   *  revoked (§13.1: eviction is BY PRINCIPAL). Recorded at endpoint registration; the serving
-   *  ledger rows (`epcred.`) copy it as their `holderPrincipal`, so the endpoint KEY identity
-   *  (`endpoint`) and the evictable principal stay disjoint. */
-  principal: string;
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
-}
-
-/** The endpoint gate key `epgate.<endpoint>.<instanceId>` (an instanceId is unique ONLY within
- *  `(space, endpoint)`, so the key is endpoint-qualified — equal instanceIds under two
- *  endpoints never collide on the gate or the credential family, §13.1/§13.6). */
-export const epgateKey = (endpoint: string, instanceId: string): string =>
-  `epgate.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
+// The endpoint-gate KEY GRAMMAR + row schema + boundary parser are the §13.1 endpoint STATE
+// grammar, LIFTED to @cotal-ai/core (`lifecycle-state.ts`, alongside the `epcred` family) so the
+// manager's endpoint-serve wiring and this session ledger share ONE encoder (fact H3; the manager
+// cannot import this implementation package, AGENTS.md one-way deps). Imported above as
+// `epgateKey` / `parseEndpointGate` / `EndpointGateRow`; re-exported here so the package surface is
+// unchanged.
+export { epgateKey } from "@cotal-ai/core";
+export type { EndpointGateRow } from "@cotal-ai/core";
 
 /** The DETERMINISTIC per-party credential ids: the caller under its holder lifecycle (the
  *  `cred.` family), the serving under its (endpoint, instanceId) (the `epcred.` family) — the
@@ -297,49 +284,8 @@ function credLedgerKey(id: string): string {
   throw new EpEnvelopeError("failed-precondition", `credential id ${JSON.stringify(id)} names neither session party (…​.c | …​.s); nothing routes (SPEC 13.6)`);
 }
 
-function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(raw));
-  } catch {
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
-  }
-  if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
-  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op"]);
-  for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
-  if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
-  // The serving principal must be a REAL owner-grammar principal (`u_…`/`local` + actor), the
-  // same boundary the ledger rows enforce — a dot-form-only check admits `foo.bar`, which
-  // stages/finalizes a session whose serving epcred row later refuses to parse, leaving an
-  // active session with a poisoned, unenumerable serving half (SPEC 13.1).
-  const principal = typeof o.principal === "string" ? parsePrincipalKey(o.principal) : null;
-  if (principal === null || !isPrincipalOwnerToken(principal.owner))
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (owner-grammar owner.actor, SPEC 13.1)`);
-  if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);
-  if (o.state === "open" && o.op !== undefined)
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is open but carries an op intent (SPEC 13.1)`);
-  if (o.op !== undefined) {
-    const op = o.op as Record<string, unknown>;
-    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
-    if (typeof op.opId !== "string" || !["activation", "takeover", "registration", "retirement"].includes(op.kind as string))
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent does not validate (SPEC 13.1)`);
-    // The agent gate's STATE x KIND and successor invariants apply to the endpoint family too
-    // (SPEC 13.1 per-kind transition sets): a retired gate belongs only to an activation orphan
-    // or a retirement, and only takeover/registration may stage a successor summary.
-    if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1); impossible persisted state, refused`);
-    if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
-    try {
-      assertLifecycleToken(op.opId);
-    } catch {
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries a malformed opId (SPEC 13.1)`);
-    }
-  }
-  return o as unknown as EndpointGateRow;
-}
+// `parseEndpointGate` is imported from @cotal-ai/core (the lifted endpoint STATE grammar, fact
+// H3): the boundary parser is shared, never re-implemented here.
 
 /** Write an endpoint gate. This is the D14 endpoint-registration stand-in for provisioning and
  *  smokes, NOT a production authority surface (production endpoint gates are written only by
