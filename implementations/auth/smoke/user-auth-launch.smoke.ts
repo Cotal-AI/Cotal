@@ -43,7 +43,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-ua-root-"));
 
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { chatSubject, isReachable, mintCreds, newIdentity } = await import("@cotal-ai/core");
-const { authDir, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir } = await import("@cotal-ai/workspace");
+const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { deleteIdpSession, establishIdpSession, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;

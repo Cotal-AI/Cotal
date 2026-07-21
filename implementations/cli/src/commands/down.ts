@@ -104,10 +104,14 @@ export async function down(args: ParsedArgs): Promise<void> {
 
   if (selected.some((component) => component.stopLast)) {
     const selectedNames = new Set(selected.map((component) => component.name));
-    const dependants = all.filter((component) => !selectedNames.has(component.name) && processAlive(component, context));
+    // Fail CLOSED: an unselected dependant that MIGHT be running (including one behind an
+    // unattributable/unknown pidfile) blocks a stop-last shutdown - stopping the broker out from
+    // under a live dependant we could not confirm gone is exactly the signer-orphan the contract
+    // forbids. `mayBeRunning`, not `processAlive` (which reads uncertainty as "not running").
+    const dependants = all.filter((component) => !selectedNames.has(component.name) && mayBeRunning(component, context));
     if (dependants.length) {
       throw new Error(
-        `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running - name them too, or run bare \`cotal down\``,
+        `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running (or its liveness cannot be confirmed) - name them too, or run bare \`cotal down\``,
       );
     }
   }
@@ -181,6 +185,24 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
   return pid !== undefined && isAlive(pid);
 }
 
+/** Whether a component MIGHT still be running - the question the pre-stop `stopLast` guard must ask,
+ *  and it fails CLOSED on uncertainty. A component with NO pidfile, an EMPTY husk, or a valid pid
+ *  PROVEN dead (ESRCH) is not running. ANY other state - an unparsable/unattributable record, or a
+ *  valid pid that is alive or whose liveness cannot be confirmed (`unknown`) - MIGHT be running, so
+ *  it must BLOCK a stop-last (broker) shutdown. `processAlive` collapses unparsable and `unknown` to
+ *  "not alive", which is fine for "is it worth stopping" but WRONG for "is it safe to stop the broker
+ *  out from under this": that read would let `cotal down nats` orphan a live auth signer behind a
+ *  torn pidfile. Only an ESRCH-confirmed death (or no record) clears a dependant. */
+export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
+  const pidPath = localProcessPath(component.pidFile, context);
+  if (!existsSync(pidPath)) return false;
+  const raw = readFileSync(pidPath, "utf8");
+  if (raw.trim() === "") return false; // empty pre-protocol husk: no process behind it
+  const pid = parsePid(raw);
+  if (pid === undefined) return true; // unattributable content: cannot prove it gone → may be running
+  return probeLiveness(pid) !== "dead"; // alive OR unknown → may be running; only ESRCH clears it
+}
+
 /** Stop one recorded process and await its actual exit before the next dependency is stopped. */
 export async function stopLocalProcess(component: LocalProcess, context: LocalProcessContext): Promise<boolean> {
   const pidPath = localProcessPath(component.pidFile, context);
@@ -218,9 +240,12 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
         if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw readErr;
       }
-      if (owner && isAlive(owner))
-        throw new Error(`${component.name} is already being stopped by another \`cotal down\` (pid ${owner})`);
-      // A dead owner cannot finish cleanup. Reclaim its marker and retry the exclusive create.
+      // Reclaim the stop-marker ONLY when its owner is a valid pid PROVEN dead (ESRCH), or the
+      // marker is unparseable/empty (a corrupt transient reservation that cannot represent a live
+      // coordinated `down`). An owner that is alive OR whose liveness we cannot confirm (unknown)
+      // must NOT be reclaimed - racing another live `down` (or a process we cannot probe) is unsafe.
+      if (owner !== undefined && probeLiveness(owner) !== "dead")
+        throw new Error(`${component.name} may be being stopped by another \`cotal down\` (marker pid ${owner}); not reclaiming its stop-marker - retry, or remove ${marker} if it is stale`);
       rmSync(marker, { force: true });
     }
   }
@@ -245,32 +270,39 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
     }
     try {
       process.kill(pid, "SIGTERM");
-    } catch {
-      if (isAlive(pid)) throw new Error(`could not signal ${component.label} (pid ${pid})`);
-      console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
-      stopped = true;
-      return true;
+    } catch (e) {
+      // ONLY an ESRCH proves the process is already gone (safe to clear). EPERM (exists, another
+      // user's) or any other errno (EIO, argument errors, unknown) means we could NOT confirm death
+      // - reporting it stopped and removing its record would orphan a live process. Fail loud, keep
+      // the record. A two-state "not alive => gone" is exactly the bug: `unknown` is not `dead`.
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") {
+        console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
+        stopped = true;
+        return true;
+      }
+      throw new Error(`could not signal ${component.label} (pid ${pid}) (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to report it stopped or remove its record; stop it manually`);
     }
+    // Wait for CONFIRMED death (ESRCH), escalating to SIGKILL; `unknown`/`alive` both keep us
+    // waiting, and if death is never confirmed the record is preserved (never deleted on a guess).
     const graceDeadline = Date.now() + 15_000;
-    while (isAlive(pid) && Date.now() < graceDeadline) await sleep(100);
-    if (isAlive(pid)) {
+    while (probeLiveness(pid) !== "dead" && Date.now() < graceDeadline) await sleep(100);
+    if (probeLiveness(pid) !== "dead") {
       try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
       const hardDeadline = Date.now() + 3_000;
-      while (isAlive(pid) && Date.now() < hardDeadline) await sleep(100);
+      while (probeLiveness(pid) !== "dead" && Date.now() < hardDeadline) await sleep(100);
     }
-    if (isAlive(pid)) throw new Error(`${component.label} (pid ${pid}) did not exit; its pidfile was preserved`);
+    if (probeLiveness(pid) !== "dead")
+      throw new Error(`${component.label} (pid ${pid}) did not exit, or its death could not be confirmed; its pidfile was preserved`);
     stopped = true;
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
-    // Remove the pidfile only when we KNOW it is safe: we stopped/cleared it, or it names a valid
-    // pid that is provably gone. An unattributable (`pid === undefined`, non-empty) record is NEVER
-    // removed here - it threw above and must survive for manual inspection, so it is deliberately
-    // absent from this condition (the old `|| pid === undefined` is exactly what orphaned a live
-    // process behind a torn pidfile).
-    if (stopped || (pid !== undefined && !isAlive(pid))) {
-      rmSync(pidPath, { force: true });
-    }
+    // Remove the pidfile ONLY when we confirmed a clean stop: `stopped` is set exclusively on an
+    // ESRCH-proven death (already-gone, or a confirmed exit). Every other exit from the try above is
+    // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
+    // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
+    // `unknown` as gone and deleted a live process's record; it is gone.
+    if (stopped) rmSync(pidPath, { force: true });
     rmSync(marker, { force: true });
   }
 }
@@ -326,7 +358,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         // the re-prepared inventory is byte-identical to the journaled resume document.
         const manager = all.find((component) => component.name === "manager");
         if (!manager) throw new Error("local process registry has no manager descriptor");
-        if (!processAlive(manager, context)) {
+        if (!mayBeRunning(manager, context)) { // fail-closed: an uncertain manager is treated as alive, not dead
           const committing = readPreservationCommitIntent(root);
           if (!committing || committing.attemptId !== attemptId) {
             // No commit intent recorded: the child-stopping RPC was never invoked, so nothing was
@@ -358,7 +390,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         const retryTarget = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
-        if (retryDelivery && processAlive(retryDelivery, context)) await stopLocalProcess(retryDelivery, context);
+        if (retryDelivery && mayBeRunning(retryDelivery, context)) await stopLocalProcess(retryDelivery, context); // fence an uncertain delivery too (stopLocalProcess throws loud on unattributable → abort)
         const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, CONTROL_ADMIN, 60_000);
         const replan = reprepared.ok ? reprepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } : undefined;
         if (!replan?.inventory || (replan.failures?.length ?? 0) !== 0 || (replan.state !== "prepared" && replan.state !== "preserved"))
@@ -399,7 +431,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       // Fence Plane 3 BEFORE any inventory work: with the delivery daemon stopped, no durable
       // join/leave can mutate MEMBERS at or after the moment the inventory is taken.
       const delivery = all.find((component) => component.name === "delivery");
-      if (delivery && processAlive(delivery, context)) await stopLocalProcess(delivery, context);
+      if (delivery && mayBeRunning(delivery, context)) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
       const prepared = await askManager(
         target.space,
         target.server,
@@ -454,6 +486,10 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     if (existing?.state !== "cut-committed" && !managerCommitJournaled) {
       const manager = all.find((component) => component.name === "manager");
       if (!manager) throw new Error("local process registry has no manager descriptor");
+      // This one DELIBERATELY keeps `processAlive` (provably alive), not `mayBeRunning`: here we must
+      // USE the manager to prove every retained child stopped, so anything short of provably-alive -
+      // dead OR uncertain - must fail closed and preserve the cut. `processAlive` already returns
+      // false on `unknown`, so an uncertain manager throws here rather than being trusted to attest.
       if (!processAlive(manager, context))
         throw new Error("cannot complete preservation because the attempt-bound manager is not alive to prove every retained child stopped; recovery must preserve the cut-intent journal for inspection");
       // Fault window: cut-intent journaled but the child-stopping RPC not yet invoked (no commit
@@ -507,9 +543,11 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     // rank() keeps auth (40) ahead of the broker (stopLast, 100) within this phase.
     for (const component of ranked.filter(afterQuiescence))
       await stopLocalProcess(component, context);
-    const stillRunning = all.filter((component) => processAlive(component, context));
+    // Fail-closed: a component we cannot PROVE stopped (unattributable/unknown pidfile) leaves the
+    // cut partial - it must not be silently counted as gone, or `unknown` becomes a "successful cut".
+    const stillRunning = all.filter((component) => mayBeRunning(component, context));
     if (stillRunning.length)
-      throw new Error(`preservation cut is partial; still running: ${stillRunning.map((component) => component.name).join(", ")}`);
+      throw new Error(`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(", ")}`);
     await waitForEndpointUnreachable(mesh.server);
     completeMaintenanceCut(lock, {
       attemptId,
