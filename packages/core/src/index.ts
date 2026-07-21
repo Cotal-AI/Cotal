@@ -4,6 +4,7 @@ export * from "./endpoint-subjects.js";
 export * from "./endpoint-grants.js";
 export * from "./endpoint-envelope.js";
 export * from "./endpoint-records.js";
+export * from "./lifecycle-state.js";
 export * from "./endpoint-cluster.js";
 export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
