@@ -17,16 +17,18 @@
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  CONTROL_ADMIN,
+  DEV_OWNER,
   deleteChannels,
   isReachable,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   parsePrincipalKey,
   realDirNoSymlink,
   resolveAuthProvider,
   subjectMatches,
   unlinkFileNoFollow,
+  type EpCaller,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -92,22 +94,24 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   const removed: string[] = [];
   const openNoFeed: string[] = []; // owned channels removed on an open mesh with no membership proof
   const skipped: Array<{ channel: string; why: string }> = [];
-  const creds = await mintIfAuth(root, ledger.space);
+  const teardownAuth = await mintIfAuth(root, ledger.space);
+  const creds = teardownAuth?.creds;
   const reachable = await isReachable(ledger.server, creds ? { creds } : undefined);
-  let liveById = new Map<string, { name: string; id: string }>();
+  let liveById = new Map<string, { name: string; id: string; lifecycleUid?: string }>();
   // controlOk: we completed the live ps/stop/channel pass. A control-plane error (no manager
   // responder, a thrown ps/stop/membership/delete) is teardown UNCERTAINTY, not a crash — we catch
   // it, mark everything unresolved below, and fall through to ledger retention (engineer/security/ux).
   let controlOk = false;
   if (reachable) {
     try {
-      const ep = await connectProbe({ space: ledger.space, server: ledger.server, creds });
+      const ep = await connectProbe({ space: ledger.space, server: ledger.server, creds, lifecycleUid: teardownAuth?.epCaller.uid });
       try {
-        const ps = await ep.requestControl(CONTROL_ADMIN, { op: "ps" });
+        // v0.4 ep rails (1c.2c): `ps` over the generic invoke path, then per-agent any-mode despawn.
+        const psR = await ep.invokeService("manager", "ps", undefined, { deadlineMs: 8_000 });
         // A FAILED ps reply is teardown uncertainty too — not a trustworthy empty roster. Throw so it
         // joins the no-responder/thrown path → controlOk stays false → partial retention (review-ux).
-        if (!ps.ok) throw new Error(ps.error ?? "ps failed");
-        const live = (ps.data as Array<{ name: string; id: string }>) ?? [];
+        if (psR.reply.ok !== true) throw new Error(psR.reply.error?.message ?? "ps failed");
+        const live = ((psR.reply.data as Array<{ name: string; id: string; lifecycleUid: string }>) ?? []);
         liveById = new Map(live.map((r) => [r.id, r]));
         for (const a of ledger.created.agents) {
           const l = liveById.get(a.id);
@@ -117,12 +121,19 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
             else console.log(c.dim(`  • ${a.name}: not running`));
             continue;
           }
-          const stop = await ep.requestControl(CONTROL_ADMIN, { op: "stop", args: { name: l.name } });
-          if (stop.ok) {
+          // any-mode despawn: teardown stops agents it did not spawn (the admin instrument's
+          // operator reach); the target is the agent's CURRENT principal triple (from the ps row).
+          if (!l.lifecycleUid) { console.log(c.yellow(`  ! ${l.name}: stop skipped - no lifecycle uid in the ps row (a pre-1c manager)`)); continue; }
+          const [tOwner, tActor] = l.id.indexOf(".") > 0 ? [l.id.slice(0, l.id.indexOf(".")), l.id.slice(l.id.indexOf(".") + 1)] : [DEV_OWNER, l.id];
+          const stopR = await ep.invokeService("manager", "despawn", undefined, {
+            target: { mode: "any", owner: tOwner, actor: tActor, lifecycleUid: l.lifecycleUid },
+            deadlineMs: 8_000,
+          });
+          if (stopR.reply.ok === true) {
             stoppedIds.add(a.id);
             console.log(c.green(`  ✓ stopped ${l.name}`));
           } else {
-            console.log(c.yellow(`  ! ${l.name}: stop failed - ${stop.error ?? "unknown"}`));
+            console.log(c.yellow(`  ! ${l.name}: stop failed - ${stopR.reply.error?.message ?? "unknown"}`));
           }
         }
         // Channel removal: skip on ANY uncertainty (best-effort, racy — said so in output). The
@@ -291,7 +302,7 @@ async function teardownUserModeAuthority(
   cp: { requested: string; name: string; id: string; path: string; lifecycleUid?: string },
   owner: string,
   secrets: ReturnType<typeof workspaceSecretStore>,
-  liveById: Map<string, { name: string; id: string }>,
+  liveById: Map<string, { name: string; id: string; lifecycleUid?: string }>,
   unresolvedCredIds: Set<string>,
 ): Promise<void> {
   // A uid-carrying ledger row maps to the lifecycle-keyed family its spawn materialized; a
@@ -360,8 +371,12 @@ function credSubject(raw: string): string | null {
 /** Mint a scoped `teardown` cred for the ledger's space from the local trust material, or undefined for
  *  an open mesh / mismatched checkout (then we connect bare and do local cleanup). `teardown` is the SOLE
  *  cred that keeps `STREAM.DELETE` (deleteSpace + clearChannel) — no read, no forge, no other stream. */
-async function mintIfAuth(root: string, space: string): Promise<string | undefined> {
+async function mintIfAuth(root: string, space: string): Promise<{ creds: string; epCaller: EpCaller } | undefined> {
   const auth = loadSpaceAuth(authDir(root));
   if (!auth || auth.space !== space) return undefined;
-  return mintCreds(auth, newIdentity(), "teardown");
+  // The teardown instrument's ep rows are lifecycle-keyed (1c.2c): mint a fresh uid and return the
+  // caller triple so the ps/despawn calls ride the v0.4 rails.
+  const identity = newIdentity();
+  const uid = mintLifecycleUid();
+  return { creds: await mintCreds(auth, identity, "teardown", { lifecycleUid: uid }), epCaller: { owner: DEV_OWNER, actor: identity.id, uid } };
 }

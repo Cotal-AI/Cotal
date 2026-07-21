@@ -673,7 +673,12 @@ export class Manager {
     // tiers — nothing deleted. STATIC auth mode only for 1a; the user-mode registration (space-
     // owner name authority) is the named follow-up. Fail-loud: a manager that cannot register
     // its service endpoint does not start half-registered.
-    if (this.auth && !this.userMode) await this.registerManagerService();
+    // Every AUTH mesh registers the v0.4 manager service (static since 1a-serve; USER mode since
+    // 1c.2c - the registration/serve machinery is operator INFRA riding static trust material,
+    // which a user mesh retains for infrastructure, and the user-mode consumers now invoke over
+    // these rails). An OPEN mesh has no service registry - its control stays on ctl until the 1d
+    // decision resolves open-mesh serving.
+    if (this.auth) await this.registerManagerService();
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -1420,7 +1425,10 @@ export class Manager {
    *  holding `ctl.<admin>` is today. User mesh: the caller's CURRENT ledger scope must carry
    *  `admin` — the same fresh-read authority {@link psOwnerFilter} consults, so a revoked scope
    *  demotes the very next call even on a still-valid bearer. Fail-closed: an unreadable ledger
-   *  authorizes nothing. */
+   *  authorizes nothing. NAMED RESIDUAL (critic, 1c.2b): the static `true` has no serve-time
+   *  re-check — a LEAKED static admin instrument keeps its reach until the credential's bounded
+   *  TTL (the one-shot 5-minute profile), the same static-revoke≠reconnect-death class ruled
+   *  across this campaign; static revocation is the TTL, not a ledger. */
   private async epAdminReach(caller: string): Promise<boolean> {
     if (!this.userMode) return true;
     const key = parsePrincipalKey(caller);
@@ -1464,12 +1472,18 @@ export class Manager {
    *  the operator instrument's cross-agent reach (rev 3): the any-mode subject row is mintable
    *  only under operator policy (§13.2), so on a static mesh holding it IS the admin tier, and in
    *  user mode the caller's CURRENT ledger scope must still carry `admin`
-   *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). `launch` is
-   *  capability-only (mint discipline: admin instruments + the user-mode deployer view hold its
-   *  row) with the ledger-derived admin flag deciding operator-vs-owner-equality inside
-   *  {@link opLaunch} — the v0.3 user-mode privileged-tier launch, unchanged. `define-persona`
-   *  keeps `admin=false` on this door (own-persona discipline; no ep consumer needs cross-owner
-   *  persona writes — an operator redefines via config, not the wire). */
+   *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). The
+   *  `manager.admin` family (purge + the resume/preservation ops) is capability-gated at mint AND
+   *  re-checked at serve time via {@link epAdminReach} (the `adminGated` wrapper) so a user's
+   *  revoked scope demotes the next call. `launch` is OWNER-EQUALITY on this door for everyone
+   *  (freelance HIGH #2): the deploy path is its only consumer and stamps the caller's own owner,
+   *  so cross-owner launch was a ctl-tier incidental never exercised, and keying it on the actor's
+   *  ledger scope broke the deployer-view attenuation - uniform owner-equality is the safe tier.
+   *  TWO DELIBERATE NARROWINGS vs the ctl doors (NOT bit-exact parity, panel-accepted): (1)
+   *  `define-persona` is `admin=false` for everyone (own-persona discipline; no ep consumer needs
+   *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
+   *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
+   *  Both are least-privilege reductions, never widenings. */
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -1479,6 +1493,17 @@ export class Manager {
     const unwrap = (r: ControlReply): unknown => {
       if (!r.ok) throw new EpEnvelopeError("failed-precondition", r.error ?? "the operation failed");
       return r.data;
+    };
+    // The admin-family serve gate (1c.2c, security4's hardening): every `manager.admin`-class
+    // command re-checks operator reach AT SERVE TIME - static: true (the mint boundary already
+    // gates the rows to instruments); user mesh: the caller's CURRENT ledger scope must still
+    // carry `admin` ({@link epAdminReach}'s fresh read), so a revoked scope demotes the very next
+    // call instead of riding the bearer's remaining JWT-row lifetime. The resume family keeps its
+    // serveGated BYPASS (those ops must run while the maintenance fence holds) but not the gate.
+    const adminGated = async <T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> => {
+      if (!(await this.epAdminReach(callerOf(ctx))))
+        throw new EpEnvelopeError("permission-denied", `${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
+      return fn();
     };
     const targetAgent = (ctx: EpServeContext): ManagedAgent => {
       const t = ctx.request.target!; // targeted commands only: the serve boundary enforced body-target presence + fresh currency
@@ -1514,14 +1539,23 @@ export class Manager {
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
-      purge: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx)))),
-      launch: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opLaunch(args(ctx), callerOf(ctx), await this.epAdminReach(callerOf(ctx))))),
-      resumePreserved: async (ctx) => unwrap(await this.opResumePreserved(args(ctx))),
-      commitResume: async (ctx) => unwrap(await this.opCommitResume(args(ctx))),
-      finalizeResume: async (ctx) => unwrap(await this.opFinalizeResume(args(ctx))),
-      preparePreservation: async (ctx) => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx))),
-      commitPreservation: async (ctx) => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx))),
-      abortPreservation: async (ctx) => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx))),
+      purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
+      // launch is OWNER-EQUALITY on the ep door for every caller (freelance HIGH #2): the deploy
+      // path is the only launch consumer and its spec stamps the CALLER's own owner, so
+      // owner-equality always holds for a legitimate deploy; cross-owner launch was a ctl
+      // admin-tier INCIDENTAL never exercised by a real flow (static is single-owner, so the flag
+      // is a no-op there). Keying admin on epAdminReach read the ACTOR's ledger scope, which does
+      // NOT reflect the deployer VIEW's privileged-tier attenuation - an admin user's stolen
+      // deployer bearer would then bypass owner-equality (operator launch) despite the view holding
+      // no admin rows. Uniform owner-equality removes that divergence in the least-privilege
+      // direction (consistent with the delta-(b) tier narrowing the panel endorsed).
+      launch: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opLaunch(args(ctx), callerOf(ctx), false))),
+      resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
+      commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
+      finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
+      preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
+      commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
+      abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
     });
   }
 
@@ -3500,6 +3534,21 @@ export class Manager {
   private async registerManagerService(): Promise<void> {
     if (!this.auth) throw new Error("registerManagerService: no space auth (an open mesh has no service registry)");
     const auth = this.auth;
+    // The §13.7 contract store is REGISTRATION's dependency, ensured here MODE-NEUTRALLY (1c.2c):
+    // it used to ride the static-only lifecycle reconcile, so a USER-mode manager registered
+    // against an absent stream and its artifact publish died no-responders (live-repro'd). A
+    // provisioner one-shot creates-or-verifies it (config-B immutability incl. the shadowed-legacy
+    // refuse) before the executor publishes a single artifact.
+    {
+      const provIdentity = newIdentity();
+      const provCreds = await mintCreds(auth, provIdentity, "provisioner");
+      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds }), maxReconnectAttempts: 0 });
+      try {
+        await ensureContractStore(await jetstreamManager(provNc), this.space);
+      } finally {
+        await provNc.drain().catch(() => provNc.close());
+      }
+    }
     const iid = this.managerLifecycleUid;
     const artifacts = managerClusterArtifacts();
     // In-memory §13.7 content store: the manager is this document's AUTHOR, so registration and
@@ -3696,9 +3745,6 @@ export class Manager {
       const jsm = await jetstreamManager(nc);
       const kvm = new Kvm(nc);
       await ensureAuthorityStores(jsm, kvm, this.space);
-      // The §13.7 contract store joins the authority-store ensure (P2 item 1, 1c): the service
-      // registration that follows publishes the manager's cluster/schema artifacts into it.
-      await ensureContractStore(jsm, this.space);
       const recordsKv = await kvm.open(recordsBucket(this.space));
       const t = staticLifecycleTransport(recordsKv, recordsKv /* auth reads unused in the sweep */);
       const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${DEV_OWNER}.>`);

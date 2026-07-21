@@ -83,7 +83,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   abortPreservation: { command: "abort-preservation" },
 };
 
-/** The ep-rail control call ({@link askManager}'s static path): one short-lived raw connection,
+/** The ep-rail control call ({@link askManager}'s auth-mesh path): one short-lived raw connection,
  *  a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile — the
  *  generic item-5 caller, no hand-imported manager schemas), then the mapped command. Targeted
  *  ops resolve the alias to its CURRENT principal triple through `ps` first and ride mode `any`
@@ -101,7 +101,13 @@ async function askManagerEp(
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
-  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds: auth.creds }), maxReconnectAttempts: 0 });
+  // standaloneConnectOpts handles both auth shapes: static creds, or the user bearer + sentinel
+  // (client-chosen inbox nonce; the callout scopes the reply inbox on it).
+  const nc = await connect({
+    servers: server,
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds }),
+    maxReconnectAttempts: 0,
+  });
   try {
     const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
     let target: EpVerbTarget | undefined;
@@ -113,10 +119,16 @@ async function askManagerEp(
       if (ps.reply.ok !== true) return { ok: false, error: `could not resolve "${name}": ${ps.reply.error?.message ?? "ps failed"}` };
       const row = (ps.reply.data as { name: string; id: string; lifecycleUid: string }[]).find((r) => r.name === name);
       if (!row) return { ok: false, error: `no agent named "${name}"` };
+      // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
+      // is the composite `owner.actor` principal key - split it (an embedded dot would break the
+      // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins
+      // the caller's own, so a foreign-owner target is broker-denied at publish.
+      const dot = row.id.indexOf(".");
+      const [tOwner, tActor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [caller.owner, row.id];
       target = {
         mode: tier === CONTROL_ADMIN ? "any" : "owner",
-        owner: caller.owner,
-        actor: row.id,
+        owner: tOwner,
+        actor: tActor,
         lifecycleUid: row.lifecycleUid,
       };
       const { name: _dropped, ...rest } = args ?? {};
@@ -155,13 +167,13 @@ export async function askManager(
   tier: ControlTier = CONTROL_PRIVILEGED,
   timeoutMs?: number,
 ): Promise<ControlReply> {
-  // STATIC-auth instruments ride the v0.4 ep rails (P2 item 1, 1c.2b) — the minted caller triple
-  // marks the credential as carrying the ep rows. The ctl branch below remains for exactly the
-  // surfaces whose ep path is not wired yet: OPEN meshes (no service registry to register in) and
-  // USER-mode bearers (the ep caller-triple plumbing is the named 1c.2c follow-up) — both are
-  // scheduled onto ep before 1d deletes the manager ctl rail, plus raw `--creds` files minted by
-  // an older generation (no ep rows to ride).
-  if (auth.epCaller && auth.creds) return askManagerEp(space, server, op, args, auth, tier, timeoutMs);
+  // Auth-mesh callers ride the v0.4 ep rails (1c.2b static instruments; 1c.2c user-mode bearers)
+  // — the caller triple marks the credential/bearer as carrying the ep rows. The ctl branch below
+  // remains for exactly the surfaces whose ep path is not wired yet: OPEN meshes (no service
+  // registry to register in) and raw `--creds` files minted by an older generation (no ep rows to
+  // ride) — both resolved at 1d, which deletes the manager ctl rail.
+  if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
+    return askManagerEp(space, server, op, args, auth, tier, timeoutMs);
   const ep = new CotalEndpoint({
     space,
     servers: server,

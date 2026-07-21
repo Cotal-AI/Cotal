@@ -7,8 +7,6 @@ import {
   channelInAllow,
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
-  CONTROL_PRIVILEGED,
-  CONTROL_SELF_SERVICE,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   type EpAttributedReply,
@@ -702,8 +700,6 @@ export class MeshAgent extends EventEmitter {
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }): Promise<ControlReply> {
     this.assertConnected();
     const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };
-    if (this.config.userAuth) // user-mode ep caller triple = the 1c.2c follow-up; ctl serves until then
-      return this.ep.requestControl(CONTROL_PRIVILEGED, { op: "start", args }, SPAWN_TIMEOUT_MS);
     return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS });
   }
 
@@ -738,12 +734,18 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
-   *  lifecycleUid), never an alias — §13.2) through the manager's `inspect` read. */
+   *  lifecycleUid), never an alias — §13.2) through the manager's `inspect` read. A STATIC row's
+   *  `id` is the bare actor (nkey) under the caller's own owner; a USER-mode row's `id` is the
+   *  composite `owner.actor` principal key — split it, or the embedded dot breaks the target
+   *  block's subject arity. The owner-mode standing mint pins the caller's OWN owner, so a
+   *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl). */
   private async managerTargetFor(name: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
     const info = await this.managerInvoke("inspect", { name });
     if (!info.ok) return { error: info };
     const row = info.data as { id: string; lifecycleUid: string };
-    return { target: { mode: "owner", owner: this.ep.principal.owner, actor: row.id, lifecycleUid: row.lifecycleUid } };
+    const dot = row.id.indexOf(".");
+    const [owner, actor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [this.ep.principal.owner, row.id];
+    return { target: { mode: "owner", owner, actor, lifecycleUid: row.lifecycleUid } };
   }
 
   /** Ask the manager to tear a teammate down (its `stop` op). Graceful by default —
@@ -757,10 +759,6 @@ export class MeshAgent extends EventEmitter {
   async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
     this.assertConnected();
     const graceful = opts?.graceful ?? true;
-    if (this.config.userAuth) { // 1c.2c: user-mode stays on ctl until the bearer triple is wired
-      if (!name) return this.ep.requestControl(CONTROL_SELF_SERVICE, { op: "stop", args: { graceful } });
-      return this.ep.requestControl(CONTROL_PRIVILEGED, { op: "stop", args: { name, graceful } });
-    }
     if (!name) // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
       return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
     const resolved = await this.managerTargetFor(name);
@@ -773,7 +771,6 @@ export class MeshAgent extends EventEmitter {
   async purgeHistory(opts?: { includeDms?: boolean }): Promise<ControlReply> {
     this.assertConnected();
     const args = { includeDms: opts?.includeDms ?? false };
-    if (this.config.userAuth) return this.ep.requestControl(CONTROL_PRIVILEGED, { op: "purge", args });
     return this.managerInvoke("purge", args);
   }
 
@@ -788,9 +785,7 @@ export class MeshAgent extends EventEmitter {
     this.assertConnected();
     // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
     const args = { name: def.name, model: def.model, persona: def.prompt };
-    const reply = this.config.userAuth
-      ? await this.ep.requestControl(CONTROL_PRIVILEGED, { op: "definePersona", args })
-      : await this.managerInvoke("define-persona", args);
+    const reply = await this.managerInvoke("define-persona", args);
     if (reply.ok) await this.send(`persona \`${def.name}\` is now available — spawn it to bring it online`);
     return reply;
   }

@@ -189,7 +189,7 @@ try {
   const prb = newIdentity(), prbCreds = await mintCreds(auth, prb, "probe");
   const cw = newIdentity(), cwCreds = await mintCreds(auth, cw, "channel-writer");
   const cp = newIdentity(), cpCreds = await mintCreds(auth, cp, "channel-purger");
-  const td = newIdentity(), tdCreds = await mintCreds(auth, td, "teardown");
+  const td = newIdentity(), tdCreds = await mintCreds(auth, td, "teardown", { lifecycleUid: mintLifecycleUid() });
   const ccp = newIdentity(), ccpCreds = await mintCreds(auth, ccp, "control-caller-privileged", { lifecycleUid: mintLifecycleUid() });
   const cca = newIdentity(), ccaCreds = await mintCreds(auth, cca, "control-caller-admin", { lifecycleUid: mintLifecycleUid() });
   const dp = newIdentity(), dpCreds = await mintCreds(auth, dp, "deployer", { lifecycleUid: mintLifecycleUid() });

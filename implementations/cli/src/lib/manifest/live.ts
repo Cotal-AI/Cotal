@@ -1,17 +1,21 @@
 /**
  * Live-mesh helpers for `cotal spawn -f` — the network half: a transient, invisible probe endpoint
- * for reading the roster + membership feed, and the control calls that drive the running manager's
- * `launch` op — admin tier for a static operator deploy, PRIVILEGED tier for a user-mode
- * deployer-view deploy (the manager's owner-equality authorization governs there). (Channel-registry
+ * for reading the roster + membership feed, and the manager calls that drive the running manager's
+ * `launch`/`ps` — over the v0.4 ep rails (1c.2c): the deployer credential/view carries the
+ * tier-matched instrument rows (static = admin set; user-mode deployer view = privileged set + an
+ * owner-equality `launch` row, the manager's ledger-derived admin flag governs). (Channel-registry
  * reads use `readChannelRegistry`, which connects itself.)
  */
-import { CotalEndpoint, CONTROL_ADMIN, type ControlReply, type ControlTier, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, EpEnvelopeError, type ControlReply, type Presence } from "@cotal-ai/core";
 import { START_TIMEOUT_MS } from "../control.js";
 
 export interface MeshConn {
   space: string;
   server: string;
   creds?: string;
+  /** The deploy credential's v0.4 lifecycle uid (static: the instrument mint's; user: the
+   *  bearer's ledger claim) — the probe endpoint's caller triple is keyed on it. */
+  lifecycleUid?: string;
   /** User mode: the "deployer" VIEW material — a bearer SOURCE (a deploy spans several ≤5-min
    *  token lives across launch readiness waits) + sentinel + the pinned principal a source-mode
    *  endpoint requires. */
@@ -33,6 +37,7 @@ export async function connectProbe(conn: MeshConn): Promise<CotalEndpoint> {
           card: { owner: conn.user.owner, actor: conn.user.actor, name: "spawn-f", kind: "endpoint" as const },
         }
       : { creds: conn.creds, card: { name: "spawn-f", kind: "endpoint" as const } }),
+    lifecycleUid: conn.lifecycleUid,
     channels: [],
     consume: false,
     registerPresence: false, // an invisible probe — don't add ourselves to the roster we read
@@ -56,17 +61,17 @@ export async function settleRoster(ep: CotalEndpoint): Promise<Presence[]> {
   return ep.getRoster();
 }
 
-/** Poll the manager's control plane until it answers `ps` — it may have just been started detached,
- *  so it needs a moment to connect + come up. Returns false on timeout. `tier` matches the caller's
- *  deploy credential (admin for static, privileged for the user-mode deployer view). */
-export async function waitManagerReady(ep: CotalEndpoint, timeoutMs = 20_000, tier: ControlTier = CONTROL_ADMIN): Promise<boolean> {
+/** Poll the manager until it answers `ps` on the ep rails — it may have just been started
+ *  detached, so it needs a moment to connect, register its service, and come up. Returns false on
+ *  timeout. The deploy credential's instrument rows carry the read regardless of tier. */
+export async function waitManagerReady(ep: CotalEndpoint, timeoutMs = 20_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const r = await ep.requestControl(tier, { op: "ps" });
-      if (r.ok) return true;
+      const r = await ep.invokeService("manager", "ps", undefined, { deadlineMs: 4_000 });
+      if (r.reply.ok === true) return true;
     } catch {
-      /* manager not answering yet */
+      /* manager not answering / not registered yet */
     }
     await sleep(500);
   }
@@ -85,13 +90,19 @@ export async function waitLeaseGone(ep: CotalEndpoint, timeoutMs: number): Promi
   return !(await ep.readManagerLease());
 }
 
-/** Ask the running manager to launch one resolved agent from the run spec — on the ADMIN tier for
- *  a static operator deploy (the `launch` op is operator-only there; a spawn-capable agent must
- *  not reach it), on the PRIVILEGED tier for a user-mode deployer-view deploy (the manager
- *  enforces spec-owner === caller-owner). The manager derives `.cotal/run/<runId>.json` itself;
- *  we pass the runId, never a path. */
-export async function launchAgent(ep: CotalEndpoint, runId: string, name: string, tier: ControlTier = CONTROL_ADMIN): Promise<ControlReply> {
+/** Ask the running manager to launch one resolved agent from the run spec — the v0.4 `launch`
+ *  command, capability-only: a static deploy credential holds it via the admin instrument set (a
+ *  spawn-capable agent holds no row at all), a user-mode deployer view holds the owner-equality
+ *  variant (the manager's ledger-derived admin flag keeps spec-owner === caller-owner there). The
+ *  manager derives `.cotal/run/<runId>.json` itself; we pass the runId, never a path. */
+export async function launchAgent(ep: CotalEndpoint, runId: string, name: string): Promise<ControlReply> {
   // #159 B1: `launch` funnels into the same startAgent readiness wait as `start` — the manager
   // replies only on a real outcome (join / exit / ~30s backstop), so the request must outlive it.
-  return ep.requestControl(tier, { op: "launch", args: { runId, name } }, START_TIMEOUT_MS);
+  try {
+    const r = await ep.invokeService("manager", "launch", { runId, name }, { deadlineMs: START_TIMEOUT_MS });
+    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "launch failed" };
+    return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
+  } catch (e) {
+    return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message };
+  }
 }

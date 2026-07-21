@@ -91,7 +91,9 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   CotalEndpoint, CONTROL_PRIVILEGED, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
+  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
 } = await import("@cotal-ai/core");
+const { connect: rawConnect } = await import("@nats-io/transport-node");
 const { decodeJwt } = await import("jose");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
@@ -387,6 +389,36 @@ try {
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
   const listed = manager.list().find((a) => a.name === "alpha");
   check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && listed?.mesh !== "absent", listed);
+
+  // ---------- B1e. the v0.4 ep rails under a USER bearer (1c.2c) ----------
+  // The manager REGISTERS its service on this user mesh (the mode-neutral 1c.2c flip), the cli
+  // actor's callout-minted rows carry the spawn set + baseline, and the bearer's ledger lifecycle
+  // claim is the caller triple's uid - the whole user-mode generic-invoke chain, live.
+  console.log("B1e) the user bearer rides the manager's v0.4 service (registered on this USER mesh)");
+  {
+    const bearerClaims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { sub: string; act: { actor: string; lifecycleUid: string } };
+    const epCaller = { owner: bearerClaims.sub, actor: bearerClaims.act.actor, uid: bearerClaims.act.lifecycleUid };
+    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds }), maxReconnectAttempts: 0 });
+    try {
+      const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
+      check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
+        svc.commands.size === 17 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+      const ri = await invokeCommand(epNc, SPACE, svc, "inspect", { name: "alpha" }, {});
+      check("user bearer invokes `inspect` over ep (a spawn-set row; describe-bound currency, no epoch stub)",
+        ri.reply.ok === true && (ri.reply.data as { name: string }).name === "alpha", ri.reply);
+      let refused: string | undefined;
+      try {
+        const rp = await invokeCommand(epNc, SPACE, svc, "ps", undefined, { deadlineMs: 2500 });
+        refused = rp.reply.ok === false ? rp.reply.error?.code : "SERVED-OK";
+      } catch (e) {
+        refused = e instanceof EpEnvelopeError ? e.code : String(e);
+      }
+      check("a spawn-scope bearer's `ps` is broker-dropped (manager.read is not in the spawn set - the ep tier boundary holds on a user mesh)",
+        refused === "deadline-exceeded" || refused === "unavailable", refused);
+    } finally {
+      await epNc.drain().catch(() => epNc.close());
+    }
+  }
 
   // ---------- B2. delegation attenuation (the ENVELOPE rule, end to end) ----------
   console.log("B2) a spawner-attributed spawn is attenuated to the spawner's own grant");

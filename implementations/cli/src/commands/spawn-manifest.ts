@@ -21,8 +21,6 @@ import {
   newIdentity,
   readChannelRegistry,
   seedChannelRegistry,
-  CONTROL_ADMIN,
-  CONTROL_PRIVILEGED,
   type ControlReply,
   type MembershipSnapshot,
   type Presence,
@@ -86,7 +84,6 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   // operator-grade (a "channel-writer" view, scope "admin", below).
   const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "deployer");
   const user = connection.bearer ? await userViewAuthOrExit(connection, "deployer") : undefined;
-  const tier = user ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
 
   const root = cotalRoot();
   // Same-checkout invariant (security/UX): the launch spec, the ledger, and the manager `spawn -f`
@@ -132,6 +129,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     space,
     server: connection.server,
     creds: connection.creds,
+    lifecycleUid: user ? user.lifecycleUid : connection.epCaller?.uid,
     user: user ? { source: user.source, sentinelCreds: user.sentinelCreds, owner: user.owner, actor: user.actor } : undefined,
   });
   try {
@@ -173,7 +171,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     // backend before seeding channels or writing launch state, so a missing app cannot strand an
     // unledgered partial deploy.
     const held = agentPlan.willCreate.length ? await ep.readManagerLease() : undefined;
-    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS, tier));
+    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS));
     if (heldReady && held) {
       if (resolve(held.root) !== resolve(root))
         throw new Error(`a manager from a different checkout serves "${space}" (root ${held.root}) - stop it, or run spawn -f from there`);
@@ -216,7 +214,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // another way — two managers queue-split every control op).
       const launchHeld = await ep.readManagerLease();
       const launchReady = launchHeld
-        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS, tier))
+        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS))
         : false;
       if (!launchHeld) {
         // Nobody owns the space — stand up a manager (it acquires the lease on boot).
@@ -235,7 +233,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
       // `held` snapshot, which can turn over during the probe / a concurrent start — TOCTOU). Fail LOUD if
       // a foreign-checkout or wrong-runtime manager won the space before we launch into it.
-      if (!(await waitManagerReady(ep, undefined, tier))) {
+      if (!(await waitManagerReady(ep))) {
         console.error(c.red("✗ manager did not become ready for control - see .cotal/manager.log"));
         process.exit(1);
       }
@@ -253,7 +251,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         process.exit(1);
       }
       for (const e of agentPlan.willCreate) {
-        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, tier);
+        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name);
         if (!reply.ok) {
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
           continue;

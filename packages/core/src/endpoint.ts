@@ -1171,12 +1171,12 @@ export class CotalEndpoint extends EventEmitter {
     return m.json<ControlReply>();
   }
 
-  /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. STATIC
-   *  identities only: a user-mode bearer's derived triple rides the exchange, and wiring it here is
-   *  the named 1c.2c follow-up (fail loud, never a guessed owner). */
+  /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. The
+   *  owner/actor principal is mode-correct by construction (static: DEV_OWNER + the connection
+   *  identity; user mode: the bearer's callout-derived pair — 1c.2c), and the lifecycle UID is the
+   *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
+   *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
-    if (this.bearerSource !== undefined || this.sentinelCreds !== undefined)
-      throw new Error("invokeService: a user-mode endpoint's ep-rail caller triple is not wired yet (1c.2c) - user-mode control calls stay on requestControl until then");
     return { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
   }
 

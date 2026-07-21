@@ -1,15 +1,14 @@
 /**
  * cotal_spawn parity smoke — proves the MCP spawn door carries the same harness/model/variant knobs as the
- * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which (1c.2b) puts
- * `agent` plus model selectors into the manager's v0.4 `spawn` command over the generic invoke path
- * (`CotalEndpoint.invokeService`); the manager's shared opStart core consumes them. A USER-MODE config
- * still rides the ctl `start` op until the 1c.2c bearer-triple wiring. No NATS: the MeshAgent constructor
- * builds an endpoint but never connects, so we swap in a recording `ep` and mark connected.
- * Run with: pnpm smoke:spawn-args
+ * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which (1c.2b/2c)
+ * puts `agent` plus model selectors into the manager's v0.4 `spawn` command over the generic invoke path
+ * (`CotalEndpoint.invokeService`) in EVERY auth mode — the user-mode caller triple is the endpoint's own
+ * bearer-derived principal + the launcher's lifecycle uid, so there is no ctl branch left. No NATS: the
+ * MeshAgent constructor builds an endpoint but never connects, so we swap in a recording `ep` and mark
+ * connected. Run with: pnpm smoke:spawn-args
  */
 import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { CONTROL_PRIVILEGED, type ControlReply, type ControlRequest, type ControlTier } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -60,18 +59,27 @@ check("name-only: model key absent", !("model" in (rec?.args ?? {})));
 check("name-only: variant key absent", !("variant" in (rec?.args ?? {})));
 check("name-only: role key absent", !("role" in (rec?.args ?? {})));
 
-// USER MODE keeps the ctl `start` door until the bearer caller-triple wiring (1c.2c): same args,
-// privileged tier, same long window.
+// USER MODE rides the SAME invokeService door (1c.2c: the endpoint's bearer-derived principal +
+// the launcher's lifecycle uid ARE the caller triple; no ctl branch remains in the connector).
 const u = new MeshAgent({ ...cfg, userAuth: { bearerCmd: ["true"], sentinelCreds: "sentinel", owner: "u_x", actor: "cli" } } as AgentConfig);
-let recCtl: { tier: ControlTier; req: ControlRequest; timeoutMs?: number } | undefined;
-(u as unknown as { ep: { requestControl: (t: ControlTier, r: ControlRequest, ms?: number) => Promise<ControlReply> } }).ep = {
-  requestControl: (tier, req, timeoutMs) => { recCtl = { tier, req, timeoutMs }; return Promise.resolve({ ok: true, data: { name: req.args?.name } }); },
+rec = undefined;
+(u as unknown as {
+  ep: {
+    invokeService: (endpoint: string, command: string, args?: Record<string, unknown>, opts?: { target?: unknown; deadlineMs?: number }) => Promise<unknown>;
+    principal: { owner: string; actor: string };
+  };
+}).ep = {
+  invokeService: (endpoint, command, args, opts) => {
+    rec = { endpoint, command, args, opts };
+    return Promise.resolve({ reply: { ok: true, data: { name: args?.name } }, responder: { endpoint, instanceId: "i", epoch: 0 } });
+  },
+  principal: { owner: "u_x", actor: "cli" },
 };
 (u as unknown as { _connected: boolean })._connected = true;
 await u.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet" });
-check("user mode: still the ctl `start` op on the privileged subject (1c.2c pending)",
-  recCtl?.req.op === "start" && recCtl?.tier === CONTROL_PRIVILEGED && recCtl?.req.args?.model === "sonnet", recCtl);
-check("user mode: request carries the readiness window too", recCtl?.timeoutMs === SPAWN_TIMEOUT_MS, recCtl?.timeoutMs);
+check("user mode: the SAME v0.4 spawn command over invokeService (no ctl branch left)",
+  rec?.endpoint === "manager" && rec?.command === "spawn" && rec?.args?.model === "sonnet", rec);
+check("user mode: request carries the readiness window too", rec?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, rec?.opts?.deadlineMs);
 
 console.log(`\nSPAWN-ARGS SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

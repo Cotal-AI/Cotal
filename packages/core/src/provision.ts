@@ -1187,6 +1187,10 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
  *  nothing else. Minted ephemerally per teardown from the local trust material (same-checkout `down -f`). */
 function teardownPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  // The ep-rail mirror of the admin deploy tier (1c.2c): teardown reads `ps` and stops owned agents
+  // it did not spawn (any-mode despawn) - the admin instrument set. Lifecycle-keyed, so a uid is
+  // required at mint (fail-loud).
+  const ep = instrumentEpRows(space, pr, "admin");
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 buckets); each needs
@@ -1208,8 +1212,10 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
         `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
         "$JS.FC.>", // ordered-consumer flow control
-        // Stop the managed agents via the admin control tier (ps + per-agent stop).
+        // Stop the managed agents over the v0.4 ep rails (ps + any-mode despawn) - dual-served with
+        // the admin ctl tier during 1c/1d.
         controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor),
+        ...ep.pub,
         ...del,
         // deleteChannels/clearChannel: purge the channel's chat messages + delete its registry key.
         `$JS.API.STREAM.PURGE.${CHAT}`,
@@ -1220,7 +1226,7 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
     // subtree: the agent-stop step is `requestControl(CONTROL_ADMIN, ps/stop)`, whose reply rides
     // `ctl.admin.<id>.reply.<uuid>` (NOT `_INBOX`) — without this grant those calls hang and the agents are
     // never stopped before the streams are deleted.
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`] },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`, ...ep.sub] },
   };
 }
 

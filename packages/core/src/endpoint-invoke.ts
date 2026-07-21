@@ -26,8 +26,8 @@ import {
 } from "./endpoint-contract-store.js";
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall } from "./endpoint-verbs.js";
-import { epRequestSubject, epCallerReplyFilter, type EpCaller } from "./endpoint-subjects.js";
-import { spacePrefix } from "./subjects.js";
+import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller } from "./endpoint-subjects.js";
+import { parseEndpointReply } from "./endpoint-envelope.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 
 const dec = new TextDecoder(), enc = new TextEncoder();
@@ -61,9 +61,13 @@ export interface ResolvedService {
 /**
  * The reserved `describe` command as a raw request/reply (§13.7: describe pins NO contract, so it
  * carries no `op` digests — {@link epCall} always stamps digests and the serve boundary rejects a
- * digest-bearing describe as `contract-mismatch`, so this is a purpose-built raw path). Subscribes
- * the caller's nonce-scoped reply rail, publishes the void-arg describe on the `one` rail, and
- * resolves the first attributed reply within the deadline.
+ * digest-bearing describe as `contract-mismatch`, so this is a purpose-built raw path). It
+ * REQUEST-BINDS its reply exactly as {@link epCall}'s `parseAttributedReply` does (§13.2): the
+ * responder grant `epResponderReplyPattern` spans EVERY caller suffix, so any live responder can
+ * publish on the caller's rail at any nonce — acceptance therefore checks the reply SUBJECT's
+ * endpoint + nonce AND the body's echoed request id, not just "first `{ok:true}` on the rail".
+ * A reply that fails any of these is IGNORED (not rejected: an attacker racing a wrong-nonce reply
+ * must not be able to fail an honest describe), and the wait continues to the deadline.
  */
 export async function describeEndpoint(
   nc: NatsConnection,
@@ -74,9 +78,10 @@ export async function describeEndpoint(
 ): Promise<{ answer: DescribeAnswer; responder: { instanceId: string; epoch: number } }> {
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const n = nonce();
+  const requestId = nonce();
   const subject = epRequestSubject(space, { route: { mode: "one" }, endpoint, command: "describe", caller, nonce: n });
   const env = {
-    v: 1, id: nonce(), op: { endpoint, command: "describe" }, class: "ephemeral",
+    v: 1, id: requestId, op: { endpoint, command: "describe" }, class: "ephemeral",
     replyExpected: true, deadlineMs, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor },
   };
   let sub: Subscription | undefined;
@@ -86,19 +91,20 @@ export async function describeEndpoint(
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
           if (err) { reject(new EpEnvelopeError("unavailable", `describe reply subscription failed: ${err.message}`)); return; }
-          // Structural attribution off the reply SUBJECT (§13.2): after the space prefix the rail is
-          // `ep.reply.<endpoint>.<instanceId>.<epoch>.<caller triple>.<nonce>` - the serve publish
-          // grant pins the responder triple, so these tokens are broker-authenticated, never body data.
-          const tokens = msg.subject.split(".");
-          const at = spacePrefix(space).split(".").length;
-          const [ep, instanceId, epochTok] = [tokens[at + 2], tokens[at + 3], tokens[at + 4]];
-          const epoch = Number(epochTok);
-          if (ep !== endpoint || instanceId === undefined || !Number.isInteger(epoch) || epoch < 0) {
-            reject(new EpEnvelopeError("internal", `describe reply subject ${msg.subject} does not attribute a ${endpoint} responder (SPEC 13.2)`));
-            return;
-          }
-          try { resolve({ body: JSON.parse(dec.decode(msg.data)) as Record<string, unknown>, responder: { instanceId, epoch } }); }
-          catch (e) { reject(new EpEnvelopeError("internal", `describe reply did not decode as JSON: ${(e as Error).message}`)); }
+          // REQUEST-BIND off the reply SUBJECT first (§13.2): the responder triple + nonce are
+          // broker-pinned by the serve publish grant. A reply for a DIFFERENT endpoint, or on a
+          // nonce that is not the one we published (the rail is shared across our concurrent
+          // requests, and a hostile responder can publish at any nonce), is NOT ours — ignore it
+          // and keep waiting, never fail the honest describe on an injected reply.
+          const parsed = parseEpSubject(msg.subject);
+          if (!parsed || parsed.plane !== "reply" || parsed.endpoint !== endpoint || parsed.nonce !== n) return;
+          // Then the body: it must parse as an EndpointReply and ECHO our request id on this
+          // nonce-scoped rail (§13.3) — the second half of the confused-deputy binding.
+          let reply;
+          try { reply = parseEndpointReply(JSON.parse(dec.decode(msg.data))); }
+          catch { return; } // a malformed body on our nonce is not a usable answer; wait for a valid one
+          if (reply.id !== requestId) return;
+          resolve({ body: reply as unknown as Record<string, unknown>, responder: { instanceId: parsed.instanceId, epoch: parsed.epoch } });
         },
       });
       nc.publish(subject, enc.encode(JSON.stringify(env)));

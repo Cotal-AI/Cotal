@@ -396,9 +396,10 @@ command by name: `--args` is a JSON object validated against the fetched input s
 publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal via
 `ps`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
-endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs a
-static-auth mesh (the manager registers its service there; user-mode support follows with the
-bearer-triple wiring).
+endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
+auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
+rides their bearer; cross-agent reach needs the `admin` scope). An open mesh has no service
+registry.
 
 ## ps, stop, attach
 

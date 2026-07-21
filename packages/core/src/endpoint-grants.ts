@@ -222,8 +222,11 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
  *  (tOwner `"*"`) and the `manager.admin` command family. The 1c admin-reach decision: operator
  *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
- *  synonym) - the any-mode subject row exists ONLY in instrument credentials (§13.2: `any` is
- *  mintable only under operator policy), so the broker grant is the tier boundary exactly as
+ *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the
+ *  `control-caller-admin`/`deployer`/`teardown` instruments AND an agent credential explicitly
+ *  granted the `admin` capability (which by design mirrors the full admin instrument set - its
+ *  ctl-tier equivalent already held `ctl.<admin>`, so this is parity, not a new escalation). An
+ *  ordinary agent, incl. the `spawn` capability, never carries it. So the broker grant is the tier boundary exactly as
  *  `ctl.<admin>` is today, and the responder maps mode `any` to its admin authorization path. */
 export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): EpCapability[] {
   const caps: EpCapability[] = [

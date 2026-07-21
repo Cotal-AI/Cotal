@@ -73,10 +73,12 @@ export interface Connection {
   root?: string;
   /** How the target was resolved (registry / current / flag-space / …) — undefined for raw. */
   source?: MeshTarget["source"];
-  /** The minted instrument's v0.4 caller triple (SPEC §13.2), present exactly when this connection
-   *  minted an operator INSTRUMENT profile (`control-caller-*` / `deployer`) from static trust
-   *  material: those credentials carry lifecycle-keyed ep-rail rows, and the caller needs the
-   *  same triple to build its request subjects (`askManager`'s ep path). */
+  /** The connection's v0.4 caller triple (SPEC §13.2), present when this connection can ride the
+   *  ep rails: a minted operator INSTRUMENT (`control-caller-*` / `deployer`, static trust
+   *  material - the mint pins a fresh lifecycle uid) or a USER-mode bearer (the callout mints the
+   *  cli actor's rows keyed on the bearer's ledger lifecycle claim). The caller needs the same
+   *  triple to build its request subjects (`askManager`'s ep path). Absent exactly for open meshes
+   *  and raw off-registry creds (still ctl until 1d). */
   epCaller?: EpCaller;
 }
 
@@ -102,6 +104,9 @@ export interface UserViewAuth {
   sentinelCreds: string;
   owner: string;
   actor: string;
+  /** The bearer's ledger lifecycle claim - with (owner, actor) the v0.4 caller triple the
+   *  callout-minted instrument-view rows pin (1c.2c). */
+  lifecycleUid: string;
   source: () => Promise<string>;
 }
 
@@ -127,8 +132,8 @@ export async function userViewAuth(conn: Connection, view: string): Promise<User
   const store = workspaceSecretStore(conn.root);
   const mint = () => provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR, view });
   const { bearer, sentinelCreds } = await mint();
-  const { owner, actor } = principalFromBearer(bearer);
-  return { bearer, sentinelCreds, owner, actor, source: () => mint().then((r) => r.bearer) };
+  const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source: () => mint().then((r) => r.bearer) };
 }
 
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
@@ -141,20 +146,24 @@ export async function userViewAuthOrExit(conn: Connection, view: string): Promis
   }
 }
 
-/** The (owner, actor) principal a minted bearer is bound to — read from the JWT payload WITHOUT
- *  verification (client side; the broker verifies). A bearer-source endpoint requires the principal
- *  pinned at construction, and the bearer is the one authoritative place it lives. */
-function principalFromBearer(bearer: string): { owner: string; actor: string } {
+/** The (owner, actor, lifecycleUid) principal a minted bearer is bound to — read from the JWT
+ *  payload WITHOUT verification (client side; the broker verifies). A bearer-source endpoint
+ *  requires the principal pinned at construction, and the caller triple (1c.2c: the v0.4 ep-rail
+ *  subjects the callout-minted rows pin) needs the ledger lifecycle claim too — the bearer is the
+ *  one authoritative place all three live. */
+function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
   try {
     const mid = bearer.split(".")[1];
     if (!mid) throw new Error("not a compact JWS");
     const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as {
       sub?: string;
-      act?: { actor?: string };
+      act?: { actor?: string; lifecycleUid?: string };
     };
     if (typeof payload.sub !== "string" || !payload.sub || typeof payload.act?.actor !== "string" || !payload.act.actor)
       throw new Error("missing sub/act.actor");
-    return { owner: payload.sub, actor: payload.act.actor };
+    if (typeof payload.act.lifecycleUid !== "string" || !payload.act.lifecycleUid)
+      throw new Error("missing act.lifecycleUid (lifecycle-bound bearers are the v0.4 hard cut)");
+    return { owner: payload.sub, actor: payload.act.actor, lifecycleUid: payload.act.lifecycleUid };
   } catch (e) {
     throw new Error(`could not read the principal from the minted bearer (${e instanceof Error ? e.message : String(e)}) - the auth service's build may be stale; restart it with \`cotal up\``);
   }
@@ -278,6 +287,11 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
       space: target.space,
       actor: CLI_USER_ACTOR,
     });
+    // The v0.4 caller triple (1c.2c): the callout mints the cli actor's ep-rail rows keyed on the
+    // LEDGER lifecycle claim the bearer carries - the same three tokens, read client-side, let
+    // askManager's ep path build its request subjects. A re-granted alias invalidates the triple
+    // at the next exchange, exactly when the rows change.
+    const p = principalFromBearer(bearer);
     return {
       server: target.server,
       space: target.space,
@@ -286,6 +300,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
       userAuth: ua,
       root: target.root,
       source: target.source,
+      epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
     };
   } catch (e) {
     console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));

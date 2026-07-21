@@ -24,6 +24,7 @@ import {
   inspectCredHealth,
   isReachable,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   recreateConsumerCheckpoint,
   serverConfig,
@@ -207,7 +208,7 @@ try {
   );
 
   const teardown = newIdentity();
-  const teardownCreds = await mintCreds(auth, teardown, "teardown");
+  const teardownCreds = await mintCreds(auth, teardown, "teardown", { lifecycleUid: mintLifecycleUid() });
   const teardownNc = await connect({ servers, ...standaloneConnectOpts({ creds: teardownCreds }) });
   const teardownManager = await jetstreamManager(teardownNc);
   await teardownManager.streams.delete(taskStream(space));
