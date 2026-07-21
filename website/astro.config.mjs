@@ -16,6 +16,8 @@ try {
 export default defineConfig({
   // The deploy origin. Drives sitemap, canonical URLs and absolute llms.txt links.
   site: 'https://docs.cotal.ai',
+  // The pi guide moved from /agent-frameworks; keep the published URL alive.
+  redirects: { '/agent-frameworks': '/connect-pi' },
   integrations: [
     starlight({
       title: 'Cotal',

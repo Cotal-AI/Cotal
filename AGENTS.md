@@ -93,7 +93,7 @@ adapter; includes a Python sidecar.
 - `**@cotal-ai/pi**` (`extensions/pi`): the pi adapter — a pi extension (loaded into the
 user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's process and
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
-See [docs/agent-frameworks.md](docs/agent-frameworks.md).
+See [docs/connect-pi.md](docs/connect-pi.md).
 - `**@cotal-ai/cmux**` (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
 plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 - `**@cotal-ai/tmux**` (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
@@ -134,6 +134,10 @@ when behavior changes, update the affected pages under [docs/](docs/README.md) (
 `examples/*/README.md`.
 - **No fallbacks.** Throw if something is not supported in the current environment or config,
 rather than silently degrading.
+- **Keep the customer update path clean and secure.** Upgrading (`npm i -g cotal-ai@<new>`) must
+bring every installed extension and connector to a current, core-matched version, or fail loud. It
+must never leave a customer silently on stale exts, on a skewed core/ext pair, or on an unverified
+download. Any change to install, `setup`/seed, or `ext` resolution must preserve this.
 - **Use native NATS/JetStream features** first, rather than re-implementing them.
 - **Do not switch branches** without being prompted. To work independently, use a git worktree.
 - **Favor the long-term trustworthy, maintainable choice**, even when it costs more upfront.

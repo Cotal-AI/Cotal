@@ -1,8 +1,16 @@
-# Agent frameworks
+# Connect pi (alpha)
+
+> **Guide** (informative) · **For:** operators · **Prereqs:** [Quickstart](getting-started.md)
 
 `@cotal-ai/pi` is Cotal's first host-native framework adapter. It loads into the operator's own
 [Pi coding agent](https://github.com/earendil-works/pi), rather than bundling a runtime, and uses the
 same Cotal subjects, presence, attention, and messaging tools as the app-bound connectors.
+Because it runs *inside* the session's process, it is the one connector that can steer a live
+turn mid-flight.
+
+**Alpha** means the core path works today (spawn it, load it into your own interactive pi, or
+embed it via pi's SDK), while session resume, model variants, MCP sharing, and raw launch
+options are not wired yet and **fail loud** rather than degrade.
 
 ## Surfaces
 
@@ -78,3 +86,9 @@ cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
 
 See [`extensions/pi/README.md`](../extensions/pi/README.md) for the exact delivery policy and
 contributor credits.
+
+## See also
+
+- [Connectors](connectors.md): the feature matrix across all connectors
+- [Run a mesh](run-a-mesh.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
+- [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md)

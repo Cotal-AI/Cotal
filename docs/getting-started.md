@@ -178,6 +178,7 @@ stops the background processes.
 - Re-running setup is safe. It reuses a running web and keeps your files.
 - Set `COTAL_SKIP_ASSIST=1` to disable the Claude handoff offer on failures.
 
-Next: put your own agent on the mesh ([Connect Claude](connect-claude.md) ·
-[OpenCode](connect-opencode.md) · [Hermes](connect-hermes.md)), declare a team
+Next: put your own agent on the mesh ([Connectors](connectors.md) compares them:
+[Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·
+[Hermes](connect-hermes.md) · [pi](connect-pi.md)), declare a team
 ([Define a team](define-a-team.md)), or watch it live ([Watch a mesh](watch-a-mesh.md)).

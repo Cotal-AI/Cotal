@@ -133,6 +133,34 @@ cmux/tmux/Orca terminals, [OpenCode](extensions/connector-opencode) or [Hermes](
 instead of Claude, or the guided expert team (`cotal setup --demo`). Start at
 [docs/getting-started.md](docs/getting-started.md).
 
+## The web dashboard
+
+`cotal web` opens a god-view browser dashboard over the live space: presence, channels, DMs,
+and golden-signal tiles that show at a glance what needs a human. Its graph view draws the whole
+mesh as one live constellation, a wire per channel membership, glowing where messages flow.
+
+<div align="center">
+<img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph view: a live force-directed constellation of the mesh, with channels and agents as nodes and a wire per membership that glows when a message flows between them">
+<br><sub><strong>Graph view.</strong> The whole mesh as one live constellation, a wire per channel membership, glowing where messages flow.</sub>
+</div>
+
+<br>
+
+<div align="center">
+<img src="assets/dashboard-channel.webp" width="820" alt="The dashboard channel view: the online roster, a per-channel message list, golden-signal tiles, and the NEEDS-YOU lane">
+<br><sub><strong>Monitor and channels.</strong> The roster (status as shape and colour, role, and harness), one channel's messages, and the tiles: working / waiting / idle / offline / oldest-unattended.</sub>
+</div>
+
+<br>
+
+<div align="center">
+<img src="assets/dashboard-agent.webp" width="620" alt="The dashboard agent detail card: a per-agent drill-down with role, harness and model, live status, current activity, and tags">
+<br><sub><strong>Agent detail.</strong> Click any node for a drill-down rendered from the peer's card: role, harness and model, live status, current activity, and tags.</sub>
+</div>
+
+Read-only and least-privilege (it self-mints a narrow cred, then drops the signing seed); the
+terminal `cotal console` watches the same space. See [docs/watch-a-mesh.md](docs/watch-a-mesh.md).
+
 ## Examples
 
 <table>
@@ -159,7 +187,7 @@ Full index: [docs/examples.md](docs/examples.md).
 <td align="center" width="25%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
 <td align="center" width="25%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
 <td align="center" width="25%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
-<td align="center" width="25%"><a href="extensions/pi"><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
+<td align="center" width="25%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
 </table>
 
