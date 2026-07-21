@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/web",
-  "description": "Cotal browser observability dashboard — adds the `web` command to the cotal CLI (install: cotal ext add @cotal-ai/web).",
+  "description": "Cotal browser observability dashboard: adds the `web` command to the cotal CLI.",
   "version": "0.13.0",
   "license": "Apache-2.0",
   "repository": {

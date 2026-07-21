@@ -210,11 +210,12 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       // it): re-install it regardless of current manifest state, whether the crash tore the files or
       // died before the manifest commit. Verified below before the cursor is cleared.
       seedOne(name, generation, nonce, true);
-      verifyInstalled(name);
+      verifyInstalled(name, generation);
       everSeeded.add(name);
       refreshed.push(name);
     } else if (!wasSeeded) {
       seedOne(name, generation, nonce, mode === "reset" || mode === "force");
+      verifyInstalled(name, generation);
       everSeeded.add(name);
       seeded.push(name);
     } else if (entry) {
@@ -228,7 +229,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       const refresh = mode === "force" || torn || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
         seedOne(name, generation, nonce, true);
-        verifyInstalled(name);
+        verifyInstalled(name, generation);
         refreshed.push(name);
       }
     } else if (manifestRebuilt && installedExtensionVersion(SEEDED_EXTENSIONS[name].pkg)) {
@@ -236,7 +237,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       // lost with the manifest, not removed. Re-seed it to rebuild the record (a quarantined manifest
       // carries no reliable "removed" fact — only on-disk presence can distinguish the two).
       seedOne(name, generation, nonce, true);
-      verifyInstalled(name);
+      verifyInstalled(name, generation);
       refreshed.push(name);
     } else {
       removedKept.push(name); // seeded before, deliberately removed (or absent on disk) → leave removed
@@ -412,15 +413,19 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   }
 }
 
-/** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk with its
- *  entry file resolvable — so `--repair` can never clear the cursor and stamp success over a
- *  half-installed prefix (a surviving package.json with a missing main is still broken). */
-function verifyInstalled(name: string): void {
+/** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk at the
+ *  seed generation with its entry file resolvable — so `--repair` can never clear the cursor and stamp
+ *  success over a half-installed prefix (a surviving package.json with a missing main is still broken)
+ *  or a version-skewed payload (installed version != generation) that would silently mismatch core. */
+function verifyInstalled(name: string, generation: string): void {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
   const entry = installedEntry(name);
   if (!entry) throw new Error(`connector "${name}" (${pkg}) was expected in the manifest after seeding but is absent - rerun \`cotal ext seed --repair\``);
-  if (!installedExtensionVersion(pkg))
+  const version = installedExtensionVersion(pkg);
+  if (!version)
     throw new Error(`connector "${name}" (${pkg}) is recorded but not installed on disk - rerun \`cotal ext seed --repair\``);
+  if (version !== generation)
+    throw new Error(`connector "${name}" (${pkg}) installed at version ${version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
   if (!mainEntryPresent(pkg))
     throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
 }

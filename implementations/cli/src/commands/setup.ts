@@ -134,9 +134,9 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ];
   const tail = demo
-    ? [dim(`Visual dashboard: ${cmd} ext add @cotal-ai/web · then ${cmd} web`)]
+    ? [dim(`Visual dashboard: ${cmd} web`)]
     : [
-        dim(`Want a visual dashboard? ${cmd} ext add @cotal-ai/web · then ${cmd} web`),
+        dim(`Want a visual dashboard? ${cmd} web`),
         dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
       ];
   note(
