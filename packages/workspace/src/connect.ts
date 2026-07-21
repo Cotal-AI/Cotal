@@ -2,12 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
+  DEV_OWNER,
   isReachable,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   probeConnect,
   registry,
   type AuthProvider,
+  type EpCaller,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -70,6 +73,11 @@ export interface Connection {
   root?: string;
   /** How the target was resolved (registry / current / flag-space / …) — undefined for raw. */
   source?: MeshTarget["source"];
+  /** The minted instrument's v0.4 caller triple (SPEC §13.2), present exactly when this connection
+   *  minted an operator INSTRUMENT profile (`control-caller-*` / `deployer`) from static trust
+   *  material: those credentials carry lifecycle-keyed ep-rail rows, and the caller needs the
+   *  same triple to build its request subjects (`askManager`'s ep path). */
+  epCaller?: EpCaller;
 }
 
 /** The one way a command turns a {@link Connection} into endpoint auth options — spread this into
@@ -222,9 +230,27 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
   // plane) and never connects credlessly. Everything it needs comes from the login cache + the
   // provider's space-scoped state; every failure is one sentence with the exact operator action.
   if (target.mode === "user") return userConnectOrExit(target);
-  const creds = target.auth ? await mintCreds(target.auth, newIdentity(), role) : undefined;
+  // An operator INSTRUMENT mint pins a fresh lifecycle uid: its ep-rail caller rows are
+  // lifecycle-keyed (SPEC §13.1/§13.2 — the reply rail names one incarnation), and the caller
+  // needs the triple back to build its request subjects. Every other profile mints as before.
+  const instrument = role === "control-caller-privileged" || role === "control-caller-admin" || role === "deployer";
+  let creds: string | undefined;
+  let epCaller: EpCaller | undefined;
+  if (target.auth) {
+    const identity = newIdentity();
+    if (instrument) {
+      const uid = mintLifecycleUid();
+      creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid });
+      epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
+    } else {
+      creds = await mintCreds(target.auth, identity, role);
+    }
+  }
   await preflightOrExit(target, creds);
-  return { server: target.server, space: target.space, creds, auth: target.auth, root: target.root, source: target.source };
+  return {
+    server: target.server, space: target.space, creds, auth: target.auth, root: target.root, source: target.source,
+    ...(epCaller ? { epCaller } : {}),
+  };
 }
 
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root

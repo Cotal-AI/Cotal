@@ -135,7 +135,7 @@ try {
   const roundTrip = async (profile: Profile, tier: string, label: string) => {
     const cid = newIdentity();
     const ep = new CotalEndpoint({
-      space, servers: SERVERS, creds: await mintCreds(auth, cid, profile),
+      space, servers: SERVERS, creds: await mintCreds(auth, cid, profile, profile === "teardown" ? {} : { lifecycleUid: mintLifecycleUid() }),
       channels: [], consume: false, registerPresence: false, watchPresence: false,
       card: { id: cid.id, name: label, kind: "endpoint" },
     });

@@ -22,6 +22,8 @@ import {
   createSpaceAuth,
   serverConfig,
   mintCreds,
+  mintLifecycleUid,
+  DEV_OWNER,
   mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   newIdentity,
@@ -820,10 +822,15 @@ async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): 
   const auth = loadSpaceAuth(authDir(root));
   if (!auth) throw new Error("same-principal resume requires the existing space trust material");
   const identity = newIdentity();
+  // The instrument's ep caller triple (1c.2b): the admin instrument's rows are lifecycle-keyed,
+  // and the triple rides back so the resume/preservation calls take askManager's ep path.
+  const uid = mintLifecycleUid();
   return {
     creds: await mintCreds(auth, identity, "control-caller-admin", {
+      lifecycleUid: uid,
       expiresAt: Math.floor((Date.now() + 30 * 60 * 1000) / 1000),
     }),
+    epCaller: { owner: DEV_OWNER, actor: identity.id, uid },
   };
 }
 

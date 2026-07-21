@@ -51,6 +51,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   send: { flags: [...TARGET], positionals: true },
   endpoints: { flags: [...TARGET], positionals: false },
+  // The generic v0.4 service surface (P2 item 1, 1c.2b): describe an endpoint's registered
+  // command set off the wire; invoke one command by name with JSON args.
+  describe: { flags: [...TARGET], positionals: true },
+  invoke: {
+    flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
+    positionals: true,
+  },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
   // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,

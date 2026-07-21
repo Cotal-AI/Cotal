@@ -190,9 +190,9 @@ try {
   const cw = newIdentity(), cwCreds = await mintCreds(auth, cw, "channel-writer");
   const cp = newIdentity(), cpCreds = await mintCreds(auth, cp, "channel-purger");
   const td = newIdentity(), tdCreds = await mintCreds(auth, td, "teardown");
-  const ccp = newIdentity(), ccpCreds = await mintCreds(auth, ccp, "control-caller-privileged");
-  const cca = newIdentity(), ccaCreds = await mintCreds(auth, cca, "control-caller-admin");
-  const dp = newIdentity(), dpCreds = await mintCreds(auth, dp, "deployer");
+  const ccp = newIdentity(), ccpCreds = await mintCreds(auth, ccp, "control-caller-privileged", { lifecycleUid: mintLifecycleUid() });
+  const cca = newIdentity(), ccaCreds = await mintCreds(auth, cca, "control-caller-admin", { lifecycleUid: mintLifecycleUid() });
+  const dp = newIdentity(), dpCreds = await mintCreds(auth, dp, "deployer", { lifecycleUid: mintLifecycleUid() });
 
   const CHAT = chatStream(space), DM = dmStream(space), DLV = dlvStream(space), TASK = taskStream(space);
   const PKV = `KV_${presenceBucket(space)}`;

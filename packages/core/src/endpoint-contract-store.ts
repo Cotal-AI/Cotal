@@ -75,7 +75,10 @@ export async function contractStoreContext(nc: NatsConnection, space: string): P
   if (typeof space !== "string" || space.length === 0)
     throw new EpEnvelopeError("failed-precondition", "a contract-store context needs a space");
   const js = jetstream(nc);
-  const jsm = await jetstreamManager(nc);
+  // checkAPI:false - the manager construction otherwise probes `$JS.API.INFO`, a grant the
+  // minimal fetch-only callers (operator instruments: Direct Get + publish rows only) do not and
+  // should not hold; every real read/publish below still fails loud on its own denial.
+  const jsm = await jetstreamManager(nc, { checkAPI: false });
   const ctx: ContractStoreContext = Object.freeze({ space });
   STORE_RESOURCES.set(ctx, { js, jsm });
   return ctx;

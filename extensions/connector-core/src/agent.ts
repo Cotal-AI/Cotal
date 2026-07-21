@@ -9,6 +9,10 @@ import {
   CotalEndpoint,
   CONTROL_PRIVILEGED,
   CONTROL_SELF_SERVICE,
+  BASELINE_LIFECYCLE_ENDPOINT,
+  EpEnvelopeError,
+  type EpAttributedReply,
+  type EpVerbTarget,
   type ControlReply,
   type Delivery,
   type MessageMeta,
@@ -697,10 +701,49 @@ export class MeshAgent extends EventEmitter {
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }): Promise<ControlReply> {
     this.assertConnected();
-    return this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "start",
-      args: { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd },
-    }, SPAWN_TIMEOUT_MS);
+    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };
+    if (this.config.userAuth) // user-mode ep caller triple = the 1c.2c follow-up; ctl serves until then
+      return this.ep.requestControl(CONTROL_PRIVILEGED, { op: "start", args }, SPAWN_TIMEOUT_MS);
+    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS });
+  }
+
+  /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
+   *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
+   *  the {@link ControlReply} shape every tool above consumes. `undefined` args are stripped BEFORE the
+   *  compiled input contract validates (closed schemas reject present-but-undefined keys; the ctl path
+   *  shed them in JSON serialization). A broker-denied publish (a capability the caller's credential
+   *  does not hold, e.g. a capability-less purge) has NO responder and surfaces as the deadline —
+   *  named here so the refusal reads as the tier boundary it is. */
+  private async managerInvoke(
+    command: string,
+    args: Record<string, unknown> | undefined,
+    opts: { target?: EpVerbTarget; deadlineMs?: number } = {},
+  ): Promise<ControlReply> {
+    const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
+    let r: EpAttributedReply;
+    try {
+      r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
+    } catch (e) {
+      if (e instanceof EpEnvelopeError)
+        return {
+          ok: false,
+          error: e.code === "deadline-exceeded"
+            ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
+            : `${e.code}: ${e.message}`,
+        };
+      return { ok: false, error: (e as Error).message };
+    }
+    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
+  }
+
+  /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
+   *  lifecycleUid), never an alias — §13.2) through the manager's `inspect` read. */
+  private async managerTargetFor(name: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
+    const info = await this.managerInvoke("inspect", { name });
+    if (!info.ok) return { error: info };
+    const row = info.data as { id: string; lifecycleUid: string };
+    return { target: { mode: "owner", owner: this.ep.principal.owner, actor: row.id, lifecycleUid: row.lifecycleUid } };
   }
 
   /** Ask the manager to tear a teammate down (its `stop` op). Graceful by default —
@@ -714,23 +757,24 @@ export class MeshAgent extends EventEmitter {
   async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
     this.assertConnected();
     const graceful = opts?.graceful ?? true;
-    if (!name) {
-      return this.ep.requestControl(CONTROL_SELF_SERVICE, { op: "stop", args: { graceful } });
+    if (this.config.userAuth) { // 1c.2c: user-mode stays on ctl until the bearer triple is wired
+      if (!name) return this.ep.requestControl(CONTROL_SELF_SERVICE, { op: "stop", args: { graceful } });
+      return this.ep.requestControl(CONTROL_PRIVILEGED, { op: "stop", args: { name, graceful } });
     }
-    return this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "stop",
-      args: { name, graceful },
-    });
+    if (!name) // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
+      return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
+    const resolved = await this.managerTargetFor(name);
+    if ("error" in resolved) return resolved.error;
+    return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
   }
 
   /** Ask the manager to purge the space's retained chat backlog (its `purge` op). Cleanup only —
    *  it doesn't touch live agents or the anycast work queue. `includeDms` also clears DM history. */
   async purgeHistory(opts?: { includeDms?: boolean }): Promise<ControlReply> {
     this.assertConnected();
-    return this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "purge",
-      args: { includeDms: opts?.includeDms ?? false },
-    });
+    const args = { includeDms: opts?.includeDms ?? false };
+    if (this.config.userAuth) return this.ep.requestControl(CONTROL_PRIVILEGED, { op: "purge", args });
+    return this.managerInvoke("purge", args);
   }
 
   /** Define a persona and persist it as config (the manager's `definePersona` op writes
@@ -742,11 +786,11 @@ export class MeshAgent extends EventEmitter {
     model?: string;
   }): Promise<ControlReply> {
     this.assertConnected();
-    const reply = await this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "definePersona",
-      // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
-      args: { name: def.name, model: def.model, persona: def.prompt },
-    });
+    // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
+    const args = { name: def.name, model: def.model, persona: def.prompt };
+    const reply = this.config.userAuth
+      ? await this.ep.requestControl(CONTROL_PRIVILEGED, { op: "definePersona", args })
+      : await this.managerInvoke("define-persona", args);
     if (reply.ok) await this.send(`persona \`${def.name}\` is now available — spawn it to bring it online`);
     return reply;
   }

@@ -48,6 +48,7 @@ runtimes ship this way.
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
+| Messaging & watching | [`describe` / `invoke`](#describe-invoke) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
@@ -378,6 +379,26 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
 it is not limited to child processes owned by the manager.
+
+## describe, invoke
+
+```bash
+cotal describe <endpoint>                                        [--space <s>]
+cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
+cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
+```
+
+The generic v0.4 service surface. `describe` resolves a registered endpoint's command set off the
+wire - the reserved `describe` command answers the registered contract digests, the schemas are
+fetched from the space's content-addressed contract store, recompiled, and verified against those
+digests - and prints each command with its capability class and targeting shape. `invoke` calls one
+command by name: `--args` is a JSON object validated against the fetched input schema *before*
+publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal via
+`ps`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
+the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
+endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs a
+static-auth mesh (the manager registers its service there; user-mode support follows with the
+bearer-triple wiring).
 
 ## ps, stop, attach
 

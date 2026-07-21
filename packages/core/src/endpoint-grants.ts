@@ -146,6 +146,23 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const)
  *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
+/** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
+ *  persona write (`define-persona`, caller-scoped by the pinned triple) and per-agent status read
+ *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`). These
+ *  ride the v0.3 privileged tier today; minting them with `spawn` keeps that tier's surface 1:1. */
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"] as const);
+
+// ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
+/** The manager endpoint's read commands (`manager.read` class). */
+export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models"] as const);
+/** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
+ *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
+ *  NEVER an agent/spawn profile (the ratified 1c pin). */
+export const MANAGER_ADMIN_COMMANDS = Object.freeze([
+  "purge", "launch",
+  "resume-preserved", "commit-resume", "finalize-resume",
+  "prepare-preservation", "commit-preservation", "abort-preservation",
+] as const);
 
 // PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
 // never the live exports, so the minted surface survives even a hypothetical defeat of the
@@ -154,6 +171,9 @@ const DELIVERY_COMMANDS_SNAP = Object.freeze([...BASELINE_DELIVERY_COMMANDS]);
 const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS]);
 const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
+const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
+const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
+const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
 
 /** `describe` on ALL endpoints (Appendix B / §13.9 "describe by default"): the ONE
  *  subject-wildcard request form in the caller grammar,
@@ -188,7 +208,39 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
       endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
       target: { mode: "owner", tOwner: callerOwner } as EpTarget,
     })),
+    ...SPAWN_SERVICE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
   ];
+}
+
+/** An operator INSTRUMENT's capability set (the 1c grant-migration table's admin row), per the
+ *  instrument's v0.3 control tier - the SAME mint sites that grant a `ctl.<tier>` row today
+ *  (`control-caller-*` / `deployer`) consume this for the ep rails; no new minting authority.
+ *
+ *  `privileged` (the ps/start instrument): the manager reads + untargeted `spawn` +
+ *  `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
+ *
+ *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
+ *  (tOwner `"*"`) and the `manager.admin` command family. The 1c admin-reach decision: operator
+ *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
+ *  synonym) - the any-mode subject row exists ONLY in instrument credentials (§13.2: `any` is
+ *  mintable only under operator policy), so the broker grant is the tier boundary exactly as
+ *  `ctl.<admin>` is today, and the responder maps mode `any` to its admin authorization path. */
+export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): EpCapability[] {
+  const caps: EpCapability[] = [
+    ...MANAGER_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+  ];
+  if (tier === "admin") {
+    caps.push(
+      ...SPAWN_OWNER_SNAP.map((command) => ({
+        endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+        target: { mode: "any", tOwner: "*" } as EpTarget,
+      })),
+      ...MANAGER_ADMIN_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    );
+  }
+  return caps;
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

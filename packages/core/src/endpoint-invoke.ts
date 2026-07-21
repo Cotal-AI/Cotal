@@ -27,6 +27,7 @@ import {
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall } from "./endpoint-verbs.js";
 import { epRequestSubject, epCallerReplyFilter, type EpCaller } from "./endpoint-subjects.js";
+import { spacePrefix } from "./subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 
 const dec = new TextDecoder(), enc = new TextEncoder();
@@ -45,11 +46,15 @@ export interface ResolvedCommand {
 
 /** An endpoint's resolved invocation surface: every command the caller may see, with recompiled
  *  digest-verified contracts. Built from a fresh `describe` + store fetch. Carries the `caller`
- *  triple the describe ran as, so {@link invokeCommand} reuses the same authenticated identity. */
+ *  triple the describe ran as, so {@link invokeCommand} reuses the same authenticated identity,
+ *  and the ANSWERING incarnation's identity off the describe reply SUBJECT (broker-authenticated:
+ *  the §13.9 serve publish row pins `instanceId`+`epoch`, a responder cannot stamp another's) -
+ *  {@link invokeCommand}'s default currency check binds the invoke to this incarnation. */
 export interface ResolvedService {
   endpoint: string;
   owner: string;
   caller: EpCaller;
+  responder: { instanceId: string; epoch: number };
   commands: Map<string, ResolvedCommand>;
 }
 
@@ -66,7 +71,7 @@ export async function describeEndpoint(
   endpoint: string,
   caller: EpCaller,
   opts: { deadlineMs?: number } = {},
-): Promise<DescribeAnswer> {
+): Promise<{ answer: DescribeAnswer; responder: { instanceId: string; epoch: number } }> {
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const n = nonce();
   const subject = epRequestSubject(space, { route: { mode: "one" }, endpoint, command: "describe", caller, nonce: n });
@@ -77,23 +82,34 @@ export async function describeEndpoint(
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const got = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
           if (err) { reject(new EpEnvelopeError("unavailable", `describe reply subscription failed: ${err.message}`)); return; }
-          try { resolve(JSON.parse(dec.decode(msg.data)) as Record<string, unknown>); }
+          // Structural attribution off the reply SUBJECT (§13.2): after the space prefix the rail is
+          // `ep.reply.<endpoint>.<instanceId>.<epoch>.<caller triple>.<nonce>` - the serve publish
+          // grant pins the responder triple, so these tokens are broker-authenticated, never body data.
+          const tokens = msg.subject.split(".");
+          const at = spacePrefix(space).split(".").length;
+          const [ep, instanceId, epochTok] = [tokens[at + 2], tokens[at + 3], tokens[at + 4]];
+          const epoch = Number(epochTok);
+          if (ep !== endpoint || instanceId === undefined || !Number.isInteger(epoch) || epoch < 0) {
+            reject(new EpEnvelopeError("internal", `describe reply subject ${msg.subject} does not attribute a ${endpoint} responder (SPEC 13.2)`));
+            return;
+          }
+          try { resolve({ body: JSON.parse(dec.decode(msg.data)) as Record<string, unknown>, responder: { instanceId, epoch } }); }
           catch (e) { reject(new EpEnvelopeError("internal", `describe reply did not decode as JSON: ${(e as Error).message}`)); }
         },
       });
       nc.publish(subject, enc.encode(JSON.stringify(env)));
     });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`)), deadlineMs); });
-    const reply = await Promise.race([got, timeout]);
+    const { body: reply, responder } = await Promise.race([got, timeout]);
     if (reply.ok !== true) {
       const e = reply.error as { code?: string; message?: string } | undefined;
       throw new EpEnvelopeError((e?.code as never) ?? "unavailable", `describe(${endpoint}) failed: ${e?.message ?? "unknown"}`);
     }
-    return reply.data as unknown as DescribeAnswer;
+    return { answer: reply.data as unknown as DescribeAnswer, responder };
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
@@ -176,7 +192,7 @@ export async function resolveService(
   caller: EpCaller,
   opts: { deadlineMs?: number } = {},
 ): Promise<ResolvedService> {
-  const answer = await describeEndpoint(nc, space, endpoint, caller, opts);
+  const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, opts);
   const store = await contractStoreContext(nc, space);
   const commands = new Map<string, ResolvedCommand>();
   const visible = new Set<string>(answer.descriptor.clusters.flatMap((cl) => cl.commands));
@@ -194,7 +210,7 @@ export async function resolveService(
       });
     }
   }
-  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, commands };
+  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands };
 }
 
 /**
@@ -203,6 +219,14 @@ export async function resolveService(
  * digest-bound boundary re-validates), route on the `one` rail, return the attributed reply. A
  * command absent from the resolved surface is `not-found` (the caller cannot see it, or it does
  * not exist); a targeted command needs its `target`.
+ *
+ * Currency: `opts.currentEpoch` (e.g. the registry-read `serviceEpochReader`) when supplied;
+ * otherwise the DESCRIBE-BOUND default - accept exactly the incarnation that answered this
+ * service's resolve (its broker-authenticated `instanceId`+`epoch` off the describe reply
+ * subject) and refuse `failed-precondition` when a DIFFERENT instance wins the `one` queue
+ * (a superseded-or-split responder; re-resolve to adopt a legitimate successor). The bind needs
+ * no registry read grant, and it is strictly stronger than no check: two live instances of a
+ * single-instance endpoint can never both pass one resolved handle.
  */
 export async function invokeCommand(
   nc: NatsConnection,
@@ -210,7 +234,7 @@ export async function invokeCommand(
   service: ResolvedService,
   command: string,
   args: Record<string, unknown> | undefined,
-  opts: { target?: EpVerbTarget; deadlineMs?: number; currentEpoch: (instanceId: string) => Promise<number> | number },
+  opts: { target?: EpVerbTarget; deadlineMs?: number; currentEpoch?: (instanceId: string) => Promise<number> | number },
 ): Promise<EpAttributedReply> {
   const resolved = service.commands.get(command);
   if (resolved === undefined)
@@ -220,11 +244,16 @@ export async function invokeCommand(
   if (!resolved.targeted && opts.target !== undefined)
     throw new EpEnvelopeError("bad-request", `command "${command}" is untargeted; an invoke must not carry a target`);
   const caller = service.caller;
+  const describeBound = (instanceId: string): number => {
+    if (instanceId !== service.responder.instanceId)
+      throw new EpEnvelopeError("failed-precondition", `the ${service.endpoint} instance ${instanceId} answered but this service handle resolved against ${service.responder.instanceId}; a different queue winner is a superseded-or-split responder - re-resolve the service to adopt it (SPEC 13.2)`);
+    return service.responder.epoch;
+  };
   return epCall(nc, space, { mode: "one" }, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(args !== undefined ? { args } : {}),
     ...(opts.target ? { target: opts.target } : {}),
-  }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch });
+  }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch ?? describeBound });
 }
 
 /** A digest reference's bare hex, exported so a CLI can print the resolved surface's digests. */

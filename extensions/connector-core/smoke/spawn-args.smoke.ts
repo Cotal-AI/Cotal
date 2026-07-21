@@ -1,9 +1,11 @@
 /**
  * cotal_spawn parity smoke — proves the MCP spawn door carries the same harness/model/variant knobs as the
- * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which puts `agent`
- * plus model selectors into the manager's `start` control op; the manager's opStart already consumes them.
- * No NATS: the MeshAgent constructor builds an endpoint but never connects, so we swap in a
- * recording `ep` and mark connected. Run with: pnpm smoke:spawn-args
+ * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which (1c.2b) puts
+ * `agent` plus model selectors into the manager's v0.4 `spawn` command over the generic invoke path
+ * (`CotalEndpoint.invokeService`); the manager's shared opStart core consumes them. A USER-MODE config
+ * still rides the ctl `start` op until the 1c.2c bearer-triple wiring. No NATS: the MeshAgent constructor
+ * builds an endpoint but never connects, so we swap in a recording `ep` and mark connected.
+ * Run with: pnpm smoke:spawn-args
  */
 import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
@@ -21,32 +23,55 @@ const cfg: AgentConfig = {
 };
 const a = new MeshAgent(cfg);
 
-// Record the control request instead of sending it; mark connected so assertConnected() passes.
-let rec: { tier: ControlTier; req: ControlRequest; timeoutMs?: number } | undefined;
-(a as unknown as { ep: { requestControl: (t: ControlTier, r: ControlRequest, ms?: number) => Promise<ControlReply> } }).ep = {
-  requestControl: (tier, req, timeoutMs) => { rec = { tier, req, timeoutMs }; return Promise.resolve({ ok: true, data: { name: req.args?.name } }); },
+// Record the generic invoke instead of sending it; mark connected so assertConnected() passes.
+let rec: { endpoint: string; command: string; args?: Record<string, unknown>; opts?: { target?: unknown; deadlineMs?: number } } | undefined;
+(a as unknown as {
+  ep: {
+    invokeService: (endpoint: string, command: string, args?: Record<string, unknown>, opts?: { target?: unknown; deadlineMs?: number }) => Promise<unknown>;
+    principal: { owner: string; actor: string };
+  };
+}).ep = {
+  invokeService: (endpoint, command, args, opts) => {
+    rec = { endpoint, command, args, opts };
+    return Promise.resolve({ reply: { ok: true, data: { name: args?.name } }, responder: { endpoint, instanceId: "i", epoch: 0 } });
+  },
+  principal: { owner: "local", actor: "caller" },
 };
 (a as unknown as { _connected: boolean })._connected = true;
 
-// Full knobs: harness + model selectors ride through to the manager's `start` op.
+// Full knobs: harness + model selectors ride through to the manager's v0.4 `spawn` command.
 await a.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet", variant: "high" });
-check("op is start", rec?.req.op === "start", rec?.req.op);
-check("rides the privileged control subject", rec?.tier === CONTROL_PRIVILEGED);
-check("name forwarded", rec?.req.args?.name === "rev");
-check("role forwarded", rec?.req.args?.role === "reviewer");
-check("agent (harness) forwarded", rec?.req.args?.agent === "opencode", rec?.req.args?.agent);
-check("model forwarded", rec?.req.args?.model === "sonnet", rec?.req.args?.model);
-check("variant forwarded", rec?.req.args?.variant === "high", rec?.req.args?.variant);
-// #159 B1: the manager replies to `start` only on a real outcome (join / exit / ~30s readiness
-// backstop) — the request must carry the long spawn window, not fall back to the 5s op default.
-check("request outlives the readiness wait (SPAWN_TIMEOUT_MS, not the 5s default)", rec?.timeoutMs === SPAWN_TIMEOUT_MS, rec?.timeoutMs);
+check("command is the manager endpoint's `spawn`", rec?.endpoint === "manager" && rec?.command === "spawn", rec);
+check("name forwarded", rec?.args?.name === "rev");
+check("role forwarded", rec?.args?.role === "reviewer");
+check("agent (harness) forwarded", rec?.args?.agent === "opencode", rec?.args?.agent);
+check("model forwarded", rec?.args?.model === "sonnet", rec?.args?.model);
+check("variant forwarded", rec?.args?.variant === "high", rec?.args?.variant);
+// #159 B1: the manager replies to `spawn` only on a real outcome (join / exit / ~30s readiness
+// backstop) — the request must carry the long spawn window, not fall back to the op default.
+check("request outlives the readiness wait (SPAWN_TIMEOUT_MS, not the default deadline)", rec?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, rec?.opts?.deadlineMs);
 
-// Name-only: agent/model/variant absent → undefined, so the manager applies its defaults (env/Claude, file model).
+// Name-only: agent/model/variant absent → STRIPPED before the closed input contract validates
+// (a present-but-undefined key would refuse at additionalProperties:false), so the manager
+// applies its defaults (env/Claude, file model).
 await a.spawn("plain");
-check("name-only: agent undefined", rec?.req.args?.agent === undefined);
-check("name-only: model undefined", rec?.req.args?.model === undefined);
-check("name-only: variant undefined", rec?.req.args?.variant === undefined);
-check("name-only: role undefined", rec?.req.args?.role === undefined);
+check("name-only: agent key absent", !("agent" in (rec?.args ?? {})));
+check("name-only: model key absent", !("model" in (rec?.args ?? {})));
+check("name-only: variant key absent", !("variant" in (rec?.args ?? {})));
+check("name-only: role key absent", !("role" in (rec?.args ?? {})));
+
+// USER MODE keeps the ctl `start` door until the bearer caller-triple wiring (1c.2c): same args,
+// privileged tier, same long window.
+const u = new MeshAgent({ ...cfg, userAuth: { bearerCmd: ["true"], sentinelCreds: "sentinel", owner: "u_x", actor: "cli" } } as AgentConfig);
+let recCtl: { tier: ControlTier; req: ControlRequest; timeoutMs?: number } | undefined;
+(u as unknown as { ep: { requestControl: (t: ControlTier, r: ControlRequest, ms?: number) => Promise<ControlReply> } }).ep = {
+  requestControl: (tier, req, timeoutMs) => { recCtl = { tier, req, timeoutMs }; return Promise.resolve({ ok: true, data: { name: req.args?.name } }); },
+};
+(u as unknown as { _connected: boolean })._connected = true;
+await u.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet" });
+check("user mode: still the ctl `start` op on the privileged subject (1c.2c pending)",
+  recCtl?.req.op === "start" && recCtl?.tier === CONTROL_PRIVILEGED && recCtl?.req.args?.model === "sonnet", recCtl);
+check("user mode: request carries the readiness window too", recCtl?.timeoutMs === SPAWN_TIMEOUT_MS, recCtl?.timeoutMs);
 
 console.log(`\nSPAWN-ARGS SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

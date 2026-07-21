@@ -20,6 +20,10 @@
  *     ctl refusals), and the preservation fence: after `preparePreservation` the ep door refuses
  *     ordinary ops (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
  *  6. Dual-serve intact: the legacy ctl rail still answers.
+ *  7. The 1c.2b operator instrument: a `control-caller-admin` one-shot resolves the surface over
+ *     the GENERIC describe/store path (describe-BOUND default currency, no epoch stub) and tears
+ *     down an agent it did not spawn via ANY-mode despawn (rev 3); the same any-mode subject from
+ *     a spawn-capable AGENT cred is broker-dropped (operator-policy-mintable only, §13.2).
  *
  * Run: pnpm smoke:manager-service-ops   (needs nats-server + node on PATH; boots its own broker)
  */
@@ -36,6 +40,7 @@ import {
   mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, CONTROL_PRIVILEGED,
   controlServiceSubject, epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
+  resolveService, invokeCommand,
   registry,
   type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
@@ -153,8 +158,8 @@ try {
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
-    check("the document is revision 2; despawn declares owner mode, stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 2 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner"]'
+    check("the document is revision 3; despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 3 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
     sub.unsubscribe();
@@ -310,7 +315,7 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 2 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === 3 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
     const { manifest: inManifest, artifacts: inArts } = await fetchContractClosure(storeCtx, spawnInputDigest!, () => []);
     const schema = JSON.parse(dec.decode(inArts.get(contractRefToHex(inManifest.root))!)) as Record<string, unknown>;
     const recompiled = compileContract({ root: schema });
@@ -341,6 +346,54 @@ try {
   {
     const psCtl = await A.ctl("ps", {});
     check("the legacy ctl rail still answers ps", psCtl.ok === true, psCtl);
+  }
+
+  console.log("11. the operator instrument (1c.2b): any-mode cross-agent reach over the GENERIC invoke path");
+  {
+    // The CLI's exact path: a `control-caller-admin` one-shot minted with a lifecycle uid, whose
+    // ep rows come from operatorInstrumentCapabilities("admin") — never the agent profile. NO
+    // currentEpoch stub anywhere in this section: the invokes ride the describe-BOUND default
+    // currency (the incarnation that answered the resolve, off the broker-authenticated reply
+    // subject).
+    const opId = newIdentity();
+    const opUid = mintLifecycleUid();
+    const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
+    const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
+    const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds }), maxReconnectAttempts: 0 });
+    const rw3 = await A.call("spawn", { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", rw3.reply.ok === true, rw3.reply);
+    const w3 = rw3.reply.data as { id: string; lifecycleUid: string };
+    const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
+    check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
+      svc.commands.size === 17 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+    const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
+    check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
+      rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === "w3"), rPs.reply);
+    const rDs = await invokeCommand(opNc, space, svc, "despawn", { graceful: false }, {
+      target: { mode: "any", owner: DEV_OWNER, actor: w3.id, lifecycleUid: w3.lifecycleUid },
+    });
+    check("ANY-mode despawn: the operator tears down an agent it did NOT spawn (rev-3 admin reach, broker-granted by the instrument row only)",
+      rDs.reply.ok === true && (rDs.reply.data as { stopped: boolean }).stopped === true, rDs.reply);
+    await opNc.drain().catch(() => opNc.close());
+  }
+
+  console.log("12. any-mode is operator-policy-mintable ONLY: an agent cred's any-mode request never reaches the handler");
+  {
+    // B holds the spawn set's OWNER-mode despawn row. The ANY-mode form of the SAME command is a
+    // different subject its credential does not carry — the broker drops the publish (default
+    // deny), so the admin path is structurally unreachable from every agent-grade credential.
+    let refused: string | undefined;
+    try {
+      const r = await epCall(B.nc, space, { mode: "one" }, {
+        endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller: B.caller,
+        args: { graceful: false }, target: { mode: "any", owner: DEV_OWNER, actor: B.caller.actor, lifecycleUid: B.caller.uid },
+      }, { deadlineMs: 2500, currentEpoch: async () => 0 });
+      refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+    } catch (e) {
+      refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+    }
+    check("a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)",
+      refused === "unavailable" || refused === "deadline-exceeded", refused);
   }
 
   await A.nc.drain().catch(() => A.nc.close());

@@ -3,17 +3,26 @@ import {
   DEFAULT_SPACE,
   CONTROL_PRIVILEGED,
   CONTROL_ADMIN,
+  BASELINE_LIFECYCLE_ENDPOINT,
+  EpEnvelopeError,
+  invokeCommand,
+  resolveService,
+  standaloneConnectOpts,
   type ControlReply,
   type ControlTier,
+  type EpCaller,
+  type EpVerbTarget,
   type Profile,
 } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
 import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
 import { connectOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
- *  (spread into the endpoint verbatim). */
-export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string };
+ *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
+ *  static mint produced one ({@link askManager}'s ep-rail path rides it). */
+export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller };
 
 /** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
  *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
@@ -44,7 +53,89 @@ export async function resolveControlTarget(
   // publishes on its OWN ctl principal subject — the broker grants that publish only when the cli
   // actor's ledger scope carries the matching capability (`spawn` → privileged, `admin` → admin).
   const conn = await connectOrExit(withSpace, profile);
-  return { space: conn.space, server: conn.server, auth: endpointAuth(conn) };
+  return {
+    space: conn.space,
+    server: conn.server,
+    auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+  };
+}
+
+/** v0.3 ctl op → v0.4 typed command (P2 item 1, 1c.2b): the wire names the manager REGISTERS
+ *  (manager-service-contract ROWS). `start` is creation (`spawn`), a NAMED `stop` is the one
+ *  owner/any-mode terminal (`despawn`), the per-agent `status` read is `inspect`; the camelCase
+ *  admin family maps to its kebab-case wire names. `targeted` marks the two commands whose
+ *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
+ *  a `ps` read first — the wire target is (owner, actor, lifecycleUid), never an alias). */
+const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
+  start: { command: "spawn" },
+  stop: { command: "despawn", targeted: true },
+  attach: { command: "attach", targeted: true },
+  status: { command: "inspect" },
+  ps: { command: "ps" },
+  models: { command: "models" },
+  launch: { command: "launch" },
+  purge: { command: "purge" },
+  resumePreserved: { command: "resume-preserved" },
+  commitResume: { command: "commit-resume" },
+  finalizeResume: { command: "finalize-resume" },
+  preparePreservation: { command: "prepare-preservation" },
+  commitPreservation: { command: "commit-preservation" },
+  abortPreservation: { command: "abort-preservation" },
+};
+
+/** The ep-rail control call ({@link askManager}'s static path): one short-lived raw connection,
+ *  a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile — the
+ *  generic item-5 caller, no hand-imported manager schemas), then the mapped command. Targeted
+ *  ops resolve the alias to its CURRENT principal triple through `ps` first and ride mode `any`
+ *  on the admin tier (the instrument's cross-agent reach) or `owner` on the privileged tier —
+ *  exactly the v0.3 tier the same call rode on ctl. */
+async function askManagerEp(
+  space: string,
+  server: string,
+  op: string,
+  args: Record<string, unknown> | undefined,
+  auth: ControlAuth,
+  tier: ControlTier,
+  timeoutMs?: number,
+): Promise<ControlReply> {
+  const mapped = EP_COMMANDS[op];
+  if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
+  const caller = auth.epCaller!;
+  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds: auth.creds }), maxReconnectAttempts: 0 });
+  try {
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+    let target: EpVerbTarget | undefined;
+    let sendArgs = args;
+    if (mapped.targeted) {
+      const name = String(args?.name ?? "").trim();
+      if (!name) return { ok: false, error: `${op} requires a name` };
+      const ps = await invokeCommand(nc, space, service, "ps", undefined, { deadlineMs: 10_000 });
+      if (ps.reply.ok !== true) return { ok: false, error: `could not resolve "${name}": ${ps.reply.error?.message ?? "ps failed"}` };
+      const row = (ps.reply.data as { name: string; id: string; lifecycleUid: string }[]).find((r) => r.name === name);
+      if (!row) return { ok: false, error: `no agent named "${name}"` };
+      target = {
+        mode: tier === CONTROL_ADMIN ? "any" : "owner",
+        owner: caller.owner,
+        actor: row.id,
+        lifecycleUid: row.lifecycleUid,
+      };
+      const { name: _dropped, ...rest } = args ?? {};
+      sendArgs = Object.keys(rest).length ? rest : undefined;
+    }
+    const r = await invokeCommand(nc, space, service, mapped.command, sendArgs, {
+      ...(target ? { target } : {}),
+      deadlineMs: timeoutMs ?? 10_000,
+    });
+    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
+    const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
+    return { ok: true, ...(data !== undefined ? { data } : {}) };
+  } catch (e) {
+    const msg = e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message;
+    return { ok: false, error: `no manager reachable on the ep rails (${msg})` };
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
 }
 
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
@@ -64,6 +155,13 @@ export async function askManager(
   tier: ControlTier = CONTROL_PRIVILEGED,
   timeoutMs?: number,
 ): Promise<ControlReply> {
+  // STATIC-auth instruments ride the v0.4 ep rails (P2 item 1, 1c.2b) — the minted caller triple
+  // marks the credential as carrying the ep rows. The ctl branch below remains for exactly the
+  // surfaces whose ep path is not wired yet: OPEN meshes (no service registry to register in) and
+  // USER-mode bearers (the ep caller-triple plumbing is the named 1c.2c follow-up) — both are
+  // scheduled onto ep before 1d deletes the manager ctl rail, plus raw `--creds` files minted by
+  // an older generation (no ep rows to ride).
+  if (auth.epCaller && auth.creds) return askManagerEp(space, server, op, args, auth, tier, timeoutMs);
   const ep = new CotalEndpoint({
     space,
     servers: server,

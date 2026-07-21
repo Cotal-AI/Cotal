@@ -71,7 +71,11 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
-import { epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, type EpCapability } from "./endpoint-grants.js";
+import {
+  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities,
+  operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
+  type EpCapability,
+} from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
 import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
@@ -964,6 +968,13 @@ export function permissionsFor(
   const epSub: string[] = [...baseline.sub];
   if (opts.capabilities?.includes("spawn"))
     pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);
+  if (opts.capabilities?.includes("admin"))
+    // The admin capability's ep mirror (the 1c grant-migration table): the v0.3 `ctl.<admin>`
+    // subject above grants the FULL admin-tier op reach, so its holder gets the admin instrument
+    // set on the ep rails — any-mode despawn/attach + the `manager.admin` family + the reads. In
+    // user mode this is the ledger `admin` scope arriving via the callout, the broker-enforced
+    // half of the tier; the manager's ledger-derived per-op admin flag stays on top of it.
+    pubAllow.push(...epCallerGrantRows(space, operatorInstrumentCapabilities("admin"), epCaller).pub);
   if (opts.endpointCapabilities?.length) {
     if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
       throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);
@@ -1229,13 +1240,43 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
  *     subject + the cred being ephemeral (mint → one request → disconnect, from the local signing seed). */
 function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string): Record<string, unknown> {
   const reqSubject = controlServiceSubject(space, tier, pr.owner, pr.actor);
+  const ep = instrumentEpRows(space, pr, tier === CONTROL_ADMIN ? "admin" : "privileged");
   return {
-    pub: { allow: [reqSubject] }, // exactly ONE tier — ps/start XOR stop/attach
+    pub: { allow: [reqSubject, ...ep.pub] }, // exactly ONE ctl tier — ps/start XOR stop/attach — + its ep-rail mirror
     // Own inbox + the BOUNDED control-reply subtree. `requestControl` issues a `noMux` request whose reply
     // rides `ctl.<tier>.<id>.reply.<uuid>` (UNDER its own request subject, NOT `_INBOX`), so it must be able
     // to subscribe that subtree — without this grant the reply sub is broker-denied and every control call
     // hangs to timeout (endpoint.ts:803-806 predicts exactly this).
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${reqSubject}.reply.>`] },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, `${reqSubject}.reply.>`, ...ep.sub] },
+  };
+}
+
+/** The v0.4 ep-rail rows of an operator INSTRUMENT credential (the 1c grant-migration table's
+ *  admin row): the tier-matched {@link operatorInstrumentCapabilities} request rows + the caller's
+ *  reply rail, the wildcard `describe` form, and the ONE subject-scoped §13.7 contract-store fetch
+ *  row (the same shape the agent baseline holds; the D32 audit's single exemption). These mirror
+ *  the instrument's ctl tier onto the ep rails during dual-serve; at 1d the ctl row disappears and
+ *  these ARE the instrument. The caller triple pins the instrument's own mint-time lifecycle uid
+ *  ({@link MintPrincipal.lifecycleUid}) — REQUIRED here: without it the reply rail cannot be pinned
+ *  and the mint fails loud rather than emit a triple-less (unfenced) caller surface. `extra` lets a
+ *  profile append its tier-refined additions (the user-mode deployer's owner-equality `launch`). */
+function instrumentEpRows(
+  space: string,
+  pr: MintPrincipal,
+  tier: "privileged" | "admin",
+  extra: EpCapability[] = [],
+): { pub: string[]; sub: string[] } {
+  if (!pr.lifecycleUid)
+    throw new Error(`permissionsFor: an operator instrument's ep caller rows are lifecycle-keyed (SPEC 13.1/13.2) - mint with opts.lifecycleUid (mintLifecycleUid()) so the reply rail pins the instrument's own incarnation`);
+  const epCaller = { owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid };
+  const rows = epCallerGrantRows(space, [...operatorInstrumentCapabilities(tier), ...extra], epCaller);
+  return {
+    pub: [
+      epDescribeAllGrantRow(space, epCaller),
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      ...rows.pub,
+    ],
+    sub: rows.sub,
   };
 }
 
@@ -1304,6 +1345,13 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
  *  auth for one `spawn -f`, memory-only, dropped after deploy. If it is ever persisted, handed to
  *  user-supplied `--creds`, or reused as a general "read + admin" cred, revisit. */
 function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier = CONTROL_ADMIN): Record<string, unknown> {
+  // The ep-rail mirror of the deploy tier: static (admin) deploys carry the admin instrument set;
+  // the user-mode deployer VIEW (privileged) carries the privileged set PLUS an untargeted `launch`
+  // row — its launch stays owner-equality-authorized (the manager's ledger-derived admin flag is
+  // false for a spawn-scoped deployer), exactly the v0.3 user-mode privileged-tier launch.
+  const ep = tier === CONTROL_ADMIN
+    ? instrumentEpRows(space, pr, "admin")
+    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }]);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
   const DLVKV = `KV_${deliveryBucket(space)}`;
@@ -1338,12 +1386,13 @@ function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier
         // (the historical shape); the user-mode `deployer` VIEW rides CONTROL_PRIVILEGED so the
         // manager's owner-equality launch authorization governs (never the admin-tier bypass).
         controlServiceSubject(space, tier, pr.owner, pr.actor),
+        ...ep.pub,
       ],
     },
     // Own inbox (presence/registry watch delivery + JS API responses) + the BOUNDED control-reply
     // subtree for the same tier: `requestControl(tier, launch/ps)` subscribes `ctl.<tier>.<id>.reply.<uuid>`,
     // so without this grant the launch + ps-readiness calls hang to timeout.
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, tier, pr.owner, pr.actor)}.reply.>`] },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, tier, pr.owner, pr.actor)}.reply.>`, ...ep.sub] },
   };
 }
 

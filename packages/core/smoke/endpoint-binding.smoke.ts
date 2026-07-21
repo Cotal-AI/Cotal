@@ -213,7 +213,7 @@ c("the baseline/spawn command vocabularies are frozen",
 throws("pushing a command into the baseline vocabulary throws (no post-import grant widening)",
   () => (BASELINE_SELF_LIFECYCLE_COMMANDS as unknown as string[]).push("attach"));
 c("the minted baseline/spawn surfaces are unchanged after the attempted push (private snapshots)",
-  baselineCallerCapabilities().length === 4 && spawnCallerCapabilities("u_abc").length === 3);
+  baselineCallerCapabilities().length === 4 && spawnCallerCapabilities("u_abc").length === 5);
 c("CREDENTIAL_LIFETIMES and every policy are frozen",
   Object.isFrozen(CREDENTIAL_LIFETIMES) && Object.values(CREDENTIAL_LIFETIMES).every((p) => Object.isFrozen(p)));
 throws("nulling a one-shot TTL throws (a non-expiring provisioner credential cannot be minted in)",

@@ -1413,6 +1413,42 @@ export class Manager {
     }
   }
 
+  /** The ep door's ADMIN flag for a caller (the 1c tier refinement). Static mesh: `true` — the
+   *  admin-grade rows (any-mode despawn/attach, the `manager.admin` family, `launch`) are minted
+   *  only into operator instruments (§13.2: `any` is operator-policy-mintable; the agent/spawn
+   *  rollups never carry them), so REACHING the handler is holding the admin tier, exactly as
+   *  holding `ctl.<admin>` is today. User mesh: the caller's CURRENT ledger scope must carry
+   *  `admin` — the same fresh-read authority {@link psOwnerFilter} consults, so a revoked scope
+   *  demotes the very next call even on a still-valid bearer. Fail-closed: an unreadable ledger
+   *  authorizes nothing. */
+  private async epAdminReach(caller: string): Promise<boolean> {
+    if (!this.userMode) return true;
+    const key = parsePrincipalKey(caller);
+    if (!key) return false;
+    try {
+      const scope = await resolveAuthProvider().actorScope({
+        dir: userAuthStateDir(this.workspaceRoot, this.space),
+        owner: key.owner,
+        actor: key.actor,
+      });
+      return scope?.includes("admin") === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** A targeted request's admin flag: mode `any` (the operator instrument's cross-agent form,
+   *  rev 3) resolves through {@link epAdminReach}; a user-mode any-mode caller whose CURRENT
+   *  ledger row lost `admin` since its rows were minted refuses loud rather than silently
+   *  downgrading to the owner path (the request's declared mode is honored or denied, never
+   *  reinterpreted). Owner mode is always the privileged (own-domain) path. */
+  private async epAnyModeAdmin(ctx: EpServeContext): Promise<boolean> {
+    if (ctx.subject.target?.mode !== "any") return false;
+    if (!(await this.epAdminReach(principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key)))
+      throw new EpEnvelopeError("permission-denied", `an any-mode ${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
+    return true;
+  }
+
   /** The v0.4 typed command table (P2 item 1, slice 1b): every ordinary handler runs the SHARED
    *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
    *  door dispatches (checklist 8: one core, two thin doors). The resume/preservation family
@@ -1421,13 +1457,19 @@ export class Manager {
    *  fences; its ep gate is the admin-grade `manager.admin` capability grant (the 1b rule: static
    *  admin-class commands are capability-gated + untargeted, never a fabricated ledger mode).
    *
-   *  TIER SEMANTICS on the ep door (until the 1c grant-migration table lands): the mutating
-   *  handlers pass `admin=false`, i.e. the ctl PRIVILEGED semantics — own-child despawn/attach
-   *  ({@link authorizeNamed}), own-persona redefine. This is deliberate: every spawn-capable
-   *  agent cred ALREADY holds the Appendix-B owner-mode `despawn`/`attach` request rows (minted
-   *  ahead of serving, previously no-responder), so serving them with admin reach would silently
-   *  escalate those agents past their ctl privileged tier. Operator cross-agent reach stays on
-   *  the ctl admin tier until 1c mints the admin-grade ep instruments. */
+   *  TIER SEMANTICS on the ep door (the 1c grant-migration table): the tier lives in the CALLER'S
+   *  GRANT, refined per-op exactly as the ctl doors refine their subject tier. Owner-mode
+   *  `despawn`/`attach` keep the privileged semantics (`admin=false`, own-domain via
+   *  {@link authorizeNamed}) — every spawn-capable agent holds those rows. ANY-mode requests are
+   *  the operator instrument's cross-agent reach (rev 3): the any-mode subject row is mintable
+   *  only under operator policy (§13.2), so on a static mesh holding it IS the admin tier, and in
+   *  user mode the caller's CURRENT ledger scope must still carry `admin`
+   *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). `launch` is
+   *  capability-only (mint discipline: admin instruments + the user-mode deployer view hold its
+   *  row) with the ledger-derived admin flag deciding operator-vs-owner-equality inside
+   *  {@link opLaunch} — the v0.3 user-mode privileged-tier launch, unchanged. `define-persona`
+   *  keeps `admin=false` on this door (own-persona discipline; no ep consumer needs cross-owner
+   *  persona writes — an operator redefines via config, not the wire). */
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -1460,20 +1502,20 @@ export class Manager {
       spawn: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opStart(args(ctx), callerOf(ctx)))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), false);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), false);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(this.attachAuthorized(a));
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
       purge: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx)))),
-      launch: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opLaunch(args(ctx), callerOf(ctx), false))),
+      launch: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opLaunch(args(ctx), callerOf(ctx), await this.epAdminReach(callerOf(ctx))))),
       resumePreserved: async (ctx) => unwrap(await this.opResumePreserved(args(ctx))),
       commitResume: async (ctx) => unwrap(await this.opCommitResume(args(ctx))),
       finalizeResume: async (ctx) => unwrap(await this.opFinalizeResume(args(ctx))),

@@ -271,8 +271,12 @@ const ROWS: CommandRow[] = [
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
-  { name: "despawn", capability: "manager.lifecycle", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["owner"], handler: "despawn" },
-  { name: "attach", capability: "manager.lifecycle", input: VOID_SCHEMA, output: ATTACH_OUTPUT_SCHEMA, targeted: true, modes: ["owner"], handler: "attach" },
+  // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
+  // instrument's cross-agent reach (rev 3, the 1c admin-reach decision): the any-mode subject row
+  // is mintable only under operator policy (§13.2), so the broker grant is the tier boundary and
+  // the handler maps mode `any` to its admin authorization path — no wire synonym command.
+  { name: "despawn", capability: "manager.lifecycle", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "despawn" },
+  { name: "attach", capability: "manager.lifecycle", input: VOID_SCHEMA, output: ATTACH_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "attach" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
   { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
@@ -317,8 +321,8 @@ export function managerContractArtifactValues(): unknown[] {
 export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } = MANAGER_CONTRACTS.status;
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
- *  surface (revision 2, the 1b fan-out). All commands are ephemeral (request/reply ops; the
- *  spawn-as-action journal model is item 2). */
+ *  surface (revision 3: the 1c any-mode despawn/attach admission). All commands are ephemeral
+ *  (request/reply ops; the spawn-as-action journal model is item 2). */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -336,7 +340,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 2,
+    revision: 3,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

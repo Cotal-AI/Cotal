@@ -17,6 +17,10 @@ import {
 } from "@nats-io/transport-node";
 import { credsClaims, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
+import { resolveService, invokeCommand, type ResolvedService } from "./endpoint-invoke.js";
+import { EpEnvelopeError } from "./endpoint-envelope.js";
+import type { EpCaller } from "./endpoint-subjects.js";
+import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -400,6 +404,15 @@ export class CotalEndpoint extends EventEmitter {
   private readonly actor: string;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
+  /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
+   *  `failed-precondition` currency refusal (the described incarnation was superseded). */
+  private readonly resolvedServices = new Map<string, ResolvedService>();
+
+  /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
+   *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
+  get principal(): { owner: string; actor: string } {
+    return { owner: this.owner, actor: this.actor };
+  }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
    *  ⇒ loud refusal naming the operation (the hard cut of SPEC §13.1 — no alias-keyed fallback). */
@@ -1156,6 +1169,50 @@ export class CotalEndpoint extends EventEmitter {
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
     const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
     return m.json<ControlReply>();
+  }
+
+  /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. STATIC
+   *  identities only: a user-mode bearer's derived triple rides the exchange, and wiring it here is
+   *  the named 1c.2c follow-up (fail loud, never a guessed owner). */
+  private serviceCaller(): EpCaller {
+    if (this.bearerSource !== undefined || this.sentinelCreds !== undefined)
+      throw new Error("invokeService: a user-mode endpoint's ep-rail caller triple is not wired yet (1c.2c) - user-mode control calls stay on requestControl until then");
+    return { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+  }
+
+  /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
+   *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
+   *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
+   *  resolve is describe-bound currency: when a DIFFERENT instance answers a later invoke
+   *  (`failed-precondition`, a restart/supersede), the cache is dropped and resolved ONCE more
+   *  against the current incarnation. Errors from the responder come back structurally on the
+   *  attributed reply (`reply.ok === false`); transport/validation refusals throw
+   *  {@link EpEnvelopeError}. */
+  async invokeService(
+    endpoint: string,
+    command: string,
+    args?: Record<string, unknown>,
+    opts: { target?: EpVerbTarget; deadlineMs?: number } = {},
+  ): Promise<EpAttributedReply> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const caller = this.serviceCaller();
+    const resolve = async (): Promise<ResolvedService> => {
+      const cached = this.resolvedServices.get(endpoint);
+      if (cached) return cached;
+      const svc = await resolveService(this.nc!, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000 });
+      this.resolvedServices.set(endpoint, svc);
+      return svc;
+    };
+    const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
+    try {
+      return await invokeCommand(this.nc, this.space, await resolve(), command, args, invokeOpts);
+    } catch (e) {
+      if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
+      // The describe-bound incarnation is gone (restart/supersede) — re-resolve once, then invoke
+      // against the CURRENT one; a second failure is the real state and throws.
+      this.resolvedServices.delete(endpoint);
+      return await invokeCommand(this.nc, this.space, await resolve(), command, args, invokeOpts);
+    }
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its

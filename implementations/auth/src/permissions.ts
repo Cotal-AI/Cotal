@@ -80,7 +80,10 @@ export function calloutPermissions(
       return permissionsFor(
         t.act.view,
         t.space,
-        principal,
+        // The bearer's ledger lifecycle claim rides the principal: an operator INSTRUMENT view
+        // (deployer / control-caller-*) mints lifecycle-keyed ep caller rows (1c.2b) and refuses
+        // to mint without one - the claim was already asserted present + row-current above.
+        { ...principal, lifecycleUid: t.act.lifecycleUid },
         // The user-mode deployer's control calls ride the PRIVILEGED tier: the manager's
         // owner-equality launch authorization governs, never the admin-tier bypass.
         t.act.view === "deployer" ? { controlTier: CONTROL_PRIVILEGED } : {},
