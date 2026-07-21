@@ -1,4 +1,5 @@
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -222,30 +223,38 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
   const marker = `${pidPath}.stopping`;
   let markerFd: number | undefined;
   for (;;) {
+    // ATOMIC publish (the pid-slot pattern): fill a private temp inode with our pid FIRST, then
+    // `link(2)` it as the marker - a no-overwrite atomic op. A contender therefore never observes an
+    // empty marker mid-publish; the old `openSync(marker,"wx")` then `writeFileSync` left exactly
+    // that window, and a reader in it saw owner=undefined and reclaimed a LIVE owner's reservation
+    // (mutual exclusion defeated). The published name and the held fd both keep the inode alive.
+    const temp = `${marker}.${process.pid}.${randomBytes(4).toString("hex")}`;
     try {
-      markerFd = openSync(marker, "wx", 0o600);
+      markerFd = openSync(temp, "wx", 0o600);
       writeFileSync(markerFd, String(process.pid));
+      linkSync(temp, marker); // EEXIST here = the marker is already held
+      rmSync(temp, { force: true });
       break;
     } catch (e) {
       if (markerFd !== undefined) {
         closeSync(markerFd);
-        rmSync(marker, { force: true });
         markerFd = undefined;
       }
+      try { rmSync(temp, { force: true }); } catch { /* never created, or already gone */ }
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       let owner: number | undefined;
       try {
         owner = parsePid(readFileSync(marker, "utf8"));
       } catch (readErr) {
-        if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue; // holder released between publish-refusal and read
         throw readErr;
       }
-      // Reclaim the stop-marker ONLY when its owner is a valid pid PROVEN dead (ESRCH), or the
-      // marker is unparseable/empty (a corrupt transient reservation that cannot represent a live
-      // coordinated `down`). An owner that is alive OR whose liveness we cannot confirm (unknown)
-      // must NOT be reclaimed - racing another live `down` (or a process we cannot probe) is unsafe.
-      if (owner !== undefined && probeLiveness(owner) !== "dead")
-        throw new Error(`${component.name} may be being stopped by another \`cotal down\` (marker pid ${owner}); not reclaiming its stop-marker - retry, or remove ${marker} if it is stale`);
+      // Reclaim ONLY a valid pid PROVEN dead (ESRCH). With the atomic publish above, an empty marker
+      // can no longer occur during a live publish - so an unparseable/undefined owner is genuine
+      // corruption, and we STILL fail closed on it (it may front a live `down` we cannot identify),
+      // requiring manual removal rather than reclaiming a possibly-live reservation.
+      if (owner === undefined || probeLiveness(owner) !== "dead")
+        throw new Error(`${component.name} may be being stopped by another \`cotal down\` (marker at ${marker}${owner !== undefined ? `, pid ${owner}` : ", unattributable content"}); not reclaiming it - retry, or remove ${marker} if it is stale`);
       rmSync(marker, { force: true });
     }
   }

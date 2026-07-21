@@ -676,6 +676,26 @@ try {
   check("down/stopLocalProcess still CLEARS a valid ESRCH-dead pid (normal stop, no over-refusal)",
     (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(dpPid));
 
+  // The stop-MARKER (`.stopping`) mutual-exclusion reservation: a contender must never reclaim a
+  // marker it cannot prove dead. The old open-then-write left an EMPTY-file window a reader took as
+  // "unattributable → reclaim", stealing a live owner's reservation. Now: (a) an existing marker
+  // whose owner is empty/garbled/live/unknown makes stopLocalProcess FAIL CLOSED (never reclaimed);
+  // (b) only an ESRCH-dead owner is reclaimed. The pidfile itself is a dead pid so the stop proceeds
+  // once the marker is (legitimately) acquired.
+  const marker = `${dpPid}.stopping`;
+  for (const held of ["", "not-a-pid", String(process.pid)]) {
+    writeFileSync(dpPid, "999999");
+    writeFileSync(marker, held); // a pre-existing reservation this `down` did not create
+    const msg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    check(`stop-marker with ${held === String(process.pid) ? "a LIVE" : JSON.stringify(held) === '""' ? "an EMPTY" : "a GARBLED"} owner is NOT reclaimed (fail-closed mutual exclusion)`,
+      msg.includes("not reclaiming") && existsSync(marker) && existsSync(dpPid), { msg });
+    rmSync(marker, { force: true });
+  }
+  writeFileSync(dpPid, "999999");
+  writeFileSync(marker, "999999"); // an ESRCH-dead owner: safe to reclaim
+  check("stop-marker with an ESRCH-dead owner IS reclaimed, and the stop then proceeds",
+    (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
+
   console.log("\n26) the PRE-STOP `stopLast` dependant guard fails CLOSED on an unattributable dependant (mayBeRunning)");
   // `cotal down nats` (nats = stopLast) must NOT stop the broker while an unselected dependant (the
   // auth signer) may be running - including behind a torn/unattributable pidfile. `processAlive`
