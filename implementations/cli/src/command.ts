@@ -98,6 +98,7 @@ function skipAutoReconcile(argv: string[]): boolean {
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
   // `cotal supervise --roster`, the agent supervisor + container entrypoint) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
+  if (name === "ext" && sub === "root") return true; // a side-effect-free path print: no seed noise, so `$(cotal ext root)` stays exactly one line even on first run
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   return false;
