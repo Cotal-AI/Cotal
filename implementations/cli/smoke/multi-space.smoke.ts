@@ -744,6 +744,36 @@ try {
     process.exitCode = prevExit; // the guard throw never sets exitCode, but stay defensive
   }
 
+  console.log("\n27) `doctor auth` on a multi-space root: loud refusal bare, actionable with --space, no false-healthy on a typo");
+  const { doctor: doctorCmd } = await import("../src/commands/doctor.js");
+  const docRoot = await makeRoot("doctor", ["doca", "docb"]);
+  roots.push(docRoot);
+  const runDoc = async (values: Record<string, unknown>): Promise<{ out: string; code: number | undefined }> => {
+    const lines: string[] = [];
+    const oL = console.log, oE = console.error;
+    console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
+    console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
+    const oX = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await doctorCmd({ positionals: ["auth"], values, raw: [] } as never);
+      return { out: lines.join("\n"), code: process.exitCode as number | undefined };
+    } finally { console.log = oL; console.error = oE; process.exitCode = oX; }
+  };
+  const prevCwd27 = process.cwd();
+  process.chdir(docRoot);
+  try {
+    const bare = await refusal(() => doctorCmd({ positionals: ["auth"], values: {}, raw: [] } as never));
+    check("bare doctor on 2 tenants refuses naming both (and --space makes the advice actionable)", bare.includes("2 spaces"), bare);
+    const explicit = await runDoc({ space: "doca" });
+    check("doctor --space <tenant> diagnoses that tenant", explicit.out.includes("space doca"), explicit);
+    check("…and the signer line names the tenant's split account file", explicit.out.includes(spaceAccountPath(authDir(docRoot), "doca")), explicit.out);
+    const typo = await runDoc({ space: "nope" });
+    check("doctor --space <unknown> fails loud, never a false-healthy", typo.code === 1 && !typo.out.includes("healthy") && typo.out.includes("no account record"), typo);
+  } finally {
+    process.chdir(prevCwd27);
+  }
+
   console.log(`\nMULTI-SPACE SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
   console.error("  ✗ FAIL:", (e as Error).message);
