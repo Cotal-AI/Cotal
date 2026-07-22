@@ -150,18 +150,74 @@ export function findCotalRoot(start: string = process.cwd()): string {
   }
 }
 
-/** Persist the space trust material. The file holds the data-account signing seed — treat as a secret.
- *  The system-account `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting capability,
- *  so it never lands on disk (it lives only in the in-memory {@link createSpaceAuth} result). */
-export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
-  mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
-  const onDisk: SpaceAuth = { ...auth, sys: { pub: auth.sys.pub, jwt: auth.sys.jwt } };
-  writeSecretFile(join(dir, AUTH_FILE), JSON.stringify(onDisk, null, 2));
+/** THE single place `sys.signingSeed` is dropped from a persisted bundle — broker-admin minting
+ *  capability, so it never lands at rest (disk OR store); it lives only in the in-memory
+ *  {@link createSpaceAuth} result. Both the FS writer ({@link saveSpaceAuth}) and the seam writer
+ *  ({@link putSpaceAuth}) reduce through here so the strip can never drift between the two. */
+function atRestSpaceAuth(auth: SpaceAuth): SpaceAuth {
+  return { ...auth, sys: { pub: auth.sys.pub, jwt: auth.sys.jwt } };
 }
 
-/** Load the space trust material, or undefined if auth was never set up here. */
+/** Persist the space trust material to a local `.cotal/auth/auth.json`. LOCAL FS composition only —
+ *  the seam writer {@link putSpaceAuth} is the hosted-injectable path; this stays for the name/presence
+ *  sync readers' companion and the smoke fixtures that seed the FS layout directly. The file holds the
+ *  data-account signing seed — treat as a secret; `sys.signingSeed` is stripped ({@link atRestSpaceAuth}). */
+export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret lands (private ACL on win32, 0700 POSIX)
+  writeSecretFile(join(dir, AUTH_FILE), JSON.stringify(atRestSpaceAuth(auth), null, 2));
+}
+
+/** Load the space trust material from a local `.cotal/auth/auth.json`, or undefined if never set up.
+ *  SYNC + LOCAL FS by design: the workstation-only NAME/PRESENCE callers (resolveSpace, tab-completion,
+ *  status, "is a signer here") must stay sync (async would ripple through completion), and the space
+ *  NAME is non-secret and never resolved in a hosted context. SIGNER-bearing callers must NOT use this —
+ *  they go through {@link getSpaceAuth} so a hosted composition's injected store is the sole authority. */
 export function loadSpaceAuth(dir: string): SpaceAuth | undefined {
   const f = join(dir, AUTH_FILE);
   if (!existsSync(f)) return undefined;
   return JSON.parse(readFileSync(f, "utf8")) as SpaceAuth;
+}
+
+// ---- the space trust bundle as a SecretStore kind (the signer-bearing seam) ----
+
+/** THE store key of the space trust bundle. Under {@link workspaceSecretStore} (rooted at `.cotal`)
+ *  it resolves byte-for-byte to today's `.cotal/auth/auth.json`; a hosted KMS/Vault adapter scopes
+ *  per-tenant inside its own resolve. One source for every signer-bearing tier (the `up` writer, the
+ *  manager + renewal readers, the `clean` delete) — a drifted literal would silently split the kind. */
+export const SPACE_AUTH_KEY = `auth/${AUTH_FILE}`;
+
+/** Load the space trust bundle through the seam — THE reader for signer-bearing paths (the manager's
+ *  signer hold, the renewal owner, CLI mint/backup/restore/…). `store` is the sole authority: a hosted
+ *  composition injects KMS/Vault; the local default reads today's file byte-for-byte. Optional
+ *  `expectedSpace` cross-checks the bundle's name where the caller knows it. Fails loud on a malformed
+ *  bundle; every error names ONLY the key + space labels, NEVER the stored bytes/seeds/JWTs. */
+export async function getSpaceAuth(store: SecretStore, expectedSpace?: string): Promise<SpaceAuth | undefined> {
+  const raw = await store.get(SPACE_AUTH_KEY);
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`the space trust bundle (${SPACE_AUTH_KEY}) is not valid JSON`); // never echo the bytes
+  }
+  if (parsed === null || typeof parsed !== "object" || typeof (parsed as SpaceAuth).space !== "string")
+    throw new Error(`the space trust bundle (${SPACE_AUTH_KEY}) is malformed - no space name`);
+  const auth = parsed as SpaceAuth;
+  if (expectedSpace !== undefined && auth.space !== expectedSpace)
+    throw new Error(`the space trust bundle names space "${auth.space}" but "${expectedSpace}" was expected`);
+  return auth;
+}
+
+/** Persist the space trust bundle through the seam — the hosted-injectable WRITE. Strips
+ *  `sys.signingSeed` ({@link atRestSpaceAuth}, the one strip site) and writes atomically via the
+ *  store. Byte-identical to {@link saveSpaceAuth} under the local FS composition. */
+export async function putSpaceAuth(store: SecretStore, auth: SpaceAuth): Promise<void> {
+  await store.put(SPACE_AUTH_KEY, JSON.stringify(atRestSpaceAuth(auth), null, 2));
+}
+
+/** Remove the space trust bundle through the seam — the authoritative delete for a non-FS store.
+ *  Idempotent. The `clean all` teardown calls this AFTER its failure gate so a partial-failure reset
+ *  re-runs with the bundle still present to name the space. */
+export async function deleteSpaceAuth(store: SecretStore): Promise<void> {
+  await store.delete(SPACE_AUTH_KEY);
 }

@@ -8,7 +8,7 @@ import {
   type Profile,
   type SecretStore,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "./auth-paths.js";
+import { getSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
@@ -66,9 +66,13 @@ export interface RemintResult {
  *  never throws: a failed remint leaves the old cred running toward its loud expiry and the caller
  *  records/reports the failure. */
 export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
-  const auth = loadSpaceAuth(authDir(root));
-  if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
   const s = store ?? workspaceSecretStore(root);
+  // Read the SIGNER through the SAME store the daemon creds live in — symmetric with the daemon's
+  // `runDelivery(args, store)`. Reading it from the FS while writing the daemon creds to an injected
+  // store would split authority (signer ← disk, cred ← KMS): the exact class 3b closed for daemon
+  // creds, here for the signer. `getSpaceAuth` returns undefined on an unprovisioned store (→ no-auth).
+  const auth = await getSpaceAuth(s);
+  if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
     try {

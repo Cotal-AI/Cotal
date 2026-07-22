@@ -37,7 +37,7 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -487,8 +487,11 @@ export class Manager {
   async start(): Promise<void> {
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
-    // itself creds from the same signing key it uses for the agents it spawns.
-    this.auth = loadSpaceAuth(authDir(this.workspaceRoot));
+    // itself creds from the same signing key it uses for the agents it spawns. The signer comes
+    // through the SecretStore seam (`this.secrets` — the injected `ManagerOptions.secretStore`, or
+    // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
+    // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
+    this.auth = await getSpaceAuth(this.secrets, this.space);
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the

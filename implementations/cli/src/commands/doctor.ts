@@ -11,10 +11,11 @@ import {
 import {
   authDir,
   findCotalRoot,
-  loadSpaceAuth,
+  getSpaceAuth,
   readRenewalRecord,
   remintDaemonCreds,
   userAuthStateDir,
+  workspaceSecretStore,
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
@@ -50,7 +51,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   }
   const values = args.values as FlagValues<typeof doctorFlags>;
   const root = findCotalRoot(process.cwd());
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = await getSpaceAuth(workspaceSecretStore(root));
 
   console.log(c.bold("cotal doctor auth"));
   console.log(`  root ${root}`);
