@@ -225,6 +225,44 @@ export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
   writeSecretFile(join(dir, AUTH_FILE), JSON.stringify(onDisk, null, 2));
 }
 
+/** The persisted MANAGER INSTANCE identity (P2 item 3, SPEC 13.6 item 7): the LOGICAL instanceId
+ *  (stable across restart, so a restart re-registers the SAME id with an ADVANCED epoch and the
+ *  (i) fence bites) + the serve nkey identity (so re-registration reuses the SAME gate principal —
+ *  provisionEndpointGateOpen stays idempotent, no core barrier change, and eviction targets a
+ *  stable principal). Holds a private seed, so it lands in a HARDENED secret file, space-scoped by
+ *  a hex key (an authDir is a shared namespace; a raw space token can collide/case-fold). */
+export interface ManagerInstanceIdentity {
+  instanceId: string;
+  serveIdentity: { id: string; seed: string };
+}
+function managerInstanceFile(root: string, space: string): string {
+  return join(authDir(root), `manager-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+}
+/** Load this workspace root's persisted manager instance identity for `space`, or undefined if a
+ *  manager has never registered here. A present-but-MALFORMED file fails LOUD: minting a fresh id
+ *  over it would orphan the prior registration and break the restart-fence guarantee, so a restart
+ *  never silently becomes a fresh instance (no-fallbacks). */
+export function loadManagerInstanceIdentity(root: string, space: string): ManagerInstanceIdentity | undefined {
+  const f = managerInstanceFile(root, space);
+  if (!existsSync(f)) return undefined;
+  let parsed: ManagerInstanceIdentity;
+  try { parsed = JSON.parse(readFileSync(f, "utf8")) as ManagerInstanceIdentity; }
+  catch (e) { throw new Error(`the persisted manager instance identity at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`); }
+  if (parsed === null || typeof parsed !== "object"
+    || typeof parsed.instanceId !== "string" || parsed.instanceId.length === 0
+    || parsed.serveIdentity === null || typeof parsed.serveIdentity !== "object"
+    || typeof parsed.serveIdentity.id !== "string" || parsed.serveIdentity.id.length === 0
+    || typeof parsed.serveIdentity.seed !== "string" || parsed.serveIdentity.seed.length === 0)
+    throw new Error(`the persisted manager instance identity at ${f} is malformed; refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`);
+  return { instanceId: parsed.instanceId, serveIdentity: { id: parsed.serveIdentity.id, seed: parsed.serveIdentity.seed } };
+}
+/** Persist this workspace root's manager instance identity for `space` (hardened secret file). */
+export function saveManagerInstanceIdentity(root: string, space: string, identity: ManagerInstanceIdentity): void {
+  const dir = authDir(root);
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
+  writeSecretFile(managerInstanceFile(root, space), JSON.stringify(identity, null, 2));
+}
+
 /** Load the space trust material, or undefined if auth was never set up here. */
 export function loadSpaceAuth(dir: string): SpaceAuth | undefined {
   const f = join(dir, AUTH_FILE);

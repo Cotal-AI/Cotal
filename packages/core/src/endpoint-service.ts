@@ -421,8 +421,10 @@ export async function registerServiceInstance(
 
   // The gate is frozen; every exit below reopens it (token-pinned, at the original coordinate) or
   // deliberately leaves it FROZEN for reconciliation. The successor the completing reopen targets.
-  const successorAt = (registrationRevision: number): EpGateSuccessor => ({
-    generation: obs.generation + 1, processEpoch: obs.processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
+  // `processEpoch` defaults to the frozen gate's epoch (an ABORT reopens the UNCHANGED coordinate);
+  // only the completing PHASE-4 reopen of a RE-registration advances it (P2 item 3, below).
+  const successorAt = (registrationRevision: number, processEpoch: number = obs.processEpoch): EpGateSuccessor => ({
+    generation: obs.generation + 1, processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
   });
 
   // PHASE 1 — authorize UNDER the frozen gate, then ownership stability. Both are authority /
@@ -560,8 +562,15 @@ export async function registerServiceInstance(
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
   // may reopen; a lost CAS means a reconciler/newer barrier superseded us → leave frozen.
+  // P2 item 3 (SPEC 13.6 item 7): a RE-registration (a prior spec existed at PHASE 1) is a
+  // restarted/superseded incarnation of the SAME instanceId — advance the processEpoch so the
+  // successor FENCES the predecessor's epoch (old-epoch serve/settle is refused, the (i) fence
+  // bites on a real restart). A FIRST registration keeps the provisioned epoch (0), so a single
+  // never-restarted instance stays at epoch 0. The advance rides THIS completing reopen only; the
+  // old family was already revoked + verify-evicted in PHASE 2, so no old-epoch authority survives.
+  const isReRegistration = current !== undefined && current !== null && current.operation === "PUT";
   try {
-    if (!(await args.barrier.reopen(token, successorAt(newRev))))
+    if (!(await args.barrier.reopen(token, successorAt(newRev, isReRegistration ? obs.processEpoch + 1 : obs.processEpoch))))
       throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);

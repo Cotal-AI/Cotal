@@ -35,7 +35,7 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadManagerInstanceIdentity, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -44,6 +44,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
+import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
@@ -500,6 +501,17 @@ export class Manager {
    *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
    *  coordinate every static activation records. */
   private readonly managerLifecycleUid = mintLifecycleUid();
+  /** The persisted LOGICAL instance id (SPEC 13.6 item 7, P2 item 3): STABLE across restart, so a
+   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
+   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
+   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
+   *  resolveExecutorEpoch key — DISTINCT from {@link managerLifecycleUid} (per-process: the presence
+   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(). */
+  private managerInstanceId!: string;
+  /** The persisted serve nkey identity: reusing the SAME principal across restart keeps
+   *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
+   *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
+  private managerServeIdentity!: Identity;
   /** P2 item 1 (1a-serve): the manager's v0.4 service-endpoint serve state — the serve handle +
    *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
    *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
@@ -625,6 +637,23 @@ export class Manager {
       throw new Error(
         `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} - the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
       );
+    // P2 item 3 (SPEC 13.6 item 7): the LOGICAL instance id + serve identity PERSIST across restart
+    // (a space-scoped manager identity file under .cotal). A restart re-registers the SAME id with an
+    // ADVANCED epoch (the successor fences the predecessor); a fresh mint over a malformed file is
+    // refused loud (no-fallbacks - a restart never silently becomes a fresh instance). A second
+    // manager in a DIFFERENT workspace root is a DIFFERENT logical id by construction (its own state
+    // dir) - two managers in ONE space are two workspace roots.
+    {
+      const persisted = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
+      if (persisted !== undefined) {
+        this.managerInstanceId = persisted.instanceId;
+        this.managerServeIdentity = persisted.serveIdentity;
+      } else {
+        this.managerInstanceId = mintLifecycleUid();
+        this.managerServeIdentity = newIdentity();
+        saveManagerInstanceIdentity(this.workspaceRoot, this.space, { instanceId: this.managerInstanceId, serveIdentity: this.managerServeIdentity });
+      }
+    }
     let creds: (() => Promise<string>) | undefined;
     let id: string | undefined;
     if (this.auth) {
@@ -788,7 +817,7 @@ export class Manager {
           if (health.state !== "healthy") {
             s.creds = await this.withEndpointServeExecutor(({ authKv }) =>
               mintCreds(authRef, s.identity, "endpoint-serve", {
-                serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerLifecycleUid }),
+                serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
                 endpointServe: s.grant,
               }));
           }
@@ -3495,7 +3524,7 @@ export class Manager {
     if (!this.auth) throw new Error("withEndpointServeExecutor: no space auth (an open mesh has no service registry)");
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
-      endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerLifecycleUid },
+      endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
     });
     const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
     try {
@@ -3529,7 +3558,7 @@ export class Manager {
   /** The served manager-level health summary (1a's one read-only command). */
   private managerStatusData(): ManagerStatus {
     return {
-      instanceId: this.managerLifecycleUid,
+      instanceId: this.managerInstanceId,
       runtime: this.runtime.kind,
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
@@ -3571,7 +3600,7 @@ export class Manager {
         await provNc.drain().catch(() => provNc.close());
       }
     }
-    const iid = this.managerLifecycleUid;
+    const iid = this.managerInstanceId;
     const artifacts = managerClusterArtifacts();
     // In-memory §13.7 content store: the manager is this document's AUTHOR, so registration and
     // serve authorization verify against the exact artifacts it publishes from memory. The DURABLE
@@ -3588,9 +3617,11 @@ export class Manager {
     const authority: ServiceNameAuthority = {
       authorize: (name, owner) => ({ authorized: name === MANAGER_ENDPOINT && owner === DEV_OWNER, revision: 0 }),
     };
-    // The STABLE serve identity: minted BEFORE the gate so the gate binds this principal (§13.1
-    // serving-principal binding); renewals re-mint the same nkey with a fresh bounded exp.
-    const serveIdentity = newIdentity();
+    // The STABLE serve identity (P2 item 3): the PERSISTED serve nkey, reused across restart so the
+    // gate binds the SAME principal (§13.1 serving-principal binding) - provisionEndpointGateOpen
+    // stays idempotent and verified eviction has a stable target. Renewals re-mint the same nkey
+    // with a fresh bounded exp; a restart re-provisions the same (idempotent) gate + re-registers.
+    const serveIdentity = this.managerServeIdentity;
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
     const run = async ({ recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => {
       // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
@@ -3602,11 +3633,26 @@ export class Manager {
       const storeCtx = await contractStoreContext(execNc, this.space);
       for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest])
         await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-      // §13.1 pre-registration (checklist 1): the issuance gate, born open@gen0 bound to the
-      // serve principal. Idempotent for this principal; a different-principal re-provision of the
-      // same instance token conflicts (an instance token is never re-bound).
-      await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
-      const barrier = endpointRegistrationBarrier(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: mintLifecycleUid() });
+      // §13.1 pre-registration (checklist 1): the issuance gate, born open@gen0 bound to the serve
+      // principal — provisioned ONCE, on the FIRST registration. On a RESTART (P2 item 3) the gate
+      // already EXISTS (advanced past gen0 by the prior registration), so re-provisioning the gen0
+      // row would conflict "foreign content"; the persisted instanceId makes this a TAKEOVER, and
+      // registerServiceInstance below freezes + re-registers the EXISTING gate (advancing the epoch
+      // after it verify-evicts the superseded family). The serve principal is the SAME persisted one,
+      // so the gate's principal binding is unchanged either way.
+      if ((await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
+        await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
+      // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
+      // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
+      // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
+      // mesh mints no serve family, so no evictor (the empty-family path never consults it and a
+      // restart there works evictor-free). NO-ORACLE = LOUD: with no reachable delivery daemon the
+      // evictor THROWS naming the cure, so PHASE 2 fails closed with the delivery-daemon fix in the
+      // error text — a crash-restart never silently skips eviction (no-fallbacks).
+      const barrier = endpointRegistrationBarrier(authKv, this.space, {
+        endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: mintLifecycleUid(),
+        ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line) }) } : {}),
+      });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       await registerServiceInstance(recordsKv, {
         space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
@@ -3684,7 +3730,7 @@ export class Manager {
    *  resolves its stale epoch (its terminal parks on the stale-epoch subject) and the successor
    *  resolves the current one (its settle is what current readers see). */
   private currentInstanceEpoch(instanceId: string): number | null {
-    if (instanceId === this.managerLifecycleUid && this.serviceServe !== undefined) return this.serviceServe.grant.epoch;
+    if (instanceId === this.managerInstanceId && this.serviceServe !== undefined) return this.serviceServe.grant.epoch;
     return null;
   }
 
@@ -3737,7 +3783,7 @@ export class Manager {
     if (!nc) return;
     try {
       nc.publish(
-        epeSubject(this.space, MANAGER_ENDPOINT, this.managerLifecycleUid, epoch, goalProgressTopic(ref)),
+        epeSubject(this.space, MANAGER_ENDPOINT, this.managerInstanceId, epoch, goalProgressTopic(ref)),
         new TextEncoder().encode(JSON.stringify({ v: 1, goalId: ref.goalId, ...event })),
       );
     } catch (e) {
@@ -3757,7 +3803,7 @@ export class Manager {
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
-    const executor = { lifecycleUid: this.managerLifecycleUid, epoch: this.serviceServe?.grant.epoch ?? 0 };
+    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
     const epoch = executor.epoch;
     const acceptedAt = Date.now();
 
@@ -3800,7 +3846,7 @@ export class Manager {
           // The EXECUTING instance (the (i) fence, SPEC 13.6 P2 item 3): this manager's registration
           // instanceId. Its presence EPOCH-SCOPES the terminal-fact subject, so a superseded
           // incarnation's terminal is invisible to a current-epoch reader (the successor settle wins).
-          executor: { instanceId: this.managerLifecycleUid },
+          executor: { instanceId: this.managerInstanceId },
           requestId: goalId,
           sourceSeq: 0,
           acceptedAt,

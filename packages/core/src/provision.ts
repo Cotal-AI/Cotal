@@ -120,7 +120,15 @@ export type Profile =
   // that accepts action goals inline on its ephemeral handler — EXACTLY that endpoint's goal
   // bind/terminal facts + goal-record writes ({@link goalWriterGrants}), a dedicated connection
   // disjoint from the serve credential (Q2). Standing, re-minted on renewal like the serve cred.
-  | "goal-writer";
+  | "goal-writer"
+  // v0.4 endpoint-registration eviction (P2 item 3, slice 3a): the SCOPED delivery-admin caller a
+  // registration barrier mints PER re-registration to verify-evict the SUPERSEDED serve family
+  // before the epoch advances (SPEC 13.1 "old authority dies before new authority is visible").
+  // EXACTLY the delivery-admin request+reply rail + $JS.API.INFO — no lease, presence, store read,
+  // consumer, KV, or executing right; the daemon does the $SYS scan/KICK, the manager passes only
+  // the predecessor's principal. Ephemeral (one re-registration's window), narrower than the
+  // `supervisor` profile the auth barrier-evict reuses (its #30 residual, done here for the manager).
+  | "endpoint-evictor";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -185,6 +193,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action (P2 item 2); the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential (Q2)" },
+  "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
@@ -741,6 +750,16 @@ export function permissionsFor(
       throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester ({owner, actor} of the requesting manager)");
     const req = controlServiceSubject(space, CONTROL_AUTH_ADMIN, opts.retirementRequester.owner, opts.retirementRequester.actor);
     return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
+  }
+  if (profile === "endpoint-evictor") {
+    // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
+    // Publish EXACTLY this credential's OWN delivery-admin control subject + $JS.API.INFO; subscribe
+    // its own reply subtree + inbox. NO lease, presence, store read, consumer, KV, or executing
+    // right — the daemon does the $SYS scan/KICK (subject-gated authority, like the supervisor evictor
+    // it narrows) and the manager passes only the predecessor's principal. Narrower than the
+    // `supervisor` profile the auth barrier-evict reuses (its #30 residual, done here for the manager).
+    const req = controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor);
+    return { pub: { allow: [req, "$JS.API.INFO"] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
   }
   if (profile === "lifecycle-executor") {
     if (!opts.lifecycleExecutor)

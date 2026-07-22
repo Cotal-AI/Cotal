@@ -244,6 +244,12 @@ try {
   const regA2 = await reg(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
   c("re-registration ADVANCES registrationRevision (scatter churn detection, SPEC 13.5)",
     regA2.registrationRevision > regA.registrationRevision);
+  // P2 item 3 (SPEC 13.6 item 7): a re-registration of the SAME instanceId is a restarted/superseded
+  // incarnation — the gate's processEpoch ADVANCES so the successor fences the predecessor's epoch
+  // (the empty-family stub here is exactly the open-mesh path: nothing to evict, the advance still
+  // rides the completing reopen).
+  c("re-registration ADVANCES the gate processEpoch (a restarted incarnation fences the predecessor's epoch)",
+    gateStates.get(`manager/${IID_A}`)!.processEpoch === 1);
   await rejects("a registration whose authenticated caller is not the descriptor owner refuses (impersonation)",
     () => reg(kv, { spec, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
   await rejects("a registration under an unauthorized claimed owner refuses",
@@ -279,6 +285,8 @@ try {
 
   // ---- the hardened freeze ----
   const regB = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
+  c("a FIRST registration of a fresh instanceId keeps epoch 0 (a never-restarted single manager)",
+    gateStates.get(`manager/${IID_B}`)!.processEpoch === 0);
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regB.registrationRevision } });
   const frozen = await freezeExpectedSet(jsm, kv, SPACE, "manager");
   c("the frozen expected set carries (instanceId, registrationRevision, epoch) per live instance",
@@ -289,6 +297,8 @@ try {
   // advances) while its status still observes the old revision — freezing (new rev, old epoch)
   // would combine a registration with liveness it never had.
   const regB2 = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
+  c("each restart advances the gate epoch monotonically (B: first 0 -> restart 1)",
+    gateStates.get(`manager/${IID_B}`)!.processEpoch === 1);
   c("a stale projection (status behind the CURRENT registration) leaves the frozen set",
     regB2.registrationRevision > regB.registrationRevision
     && (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));

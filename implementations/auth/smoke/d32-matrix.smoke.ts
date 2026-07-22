@@ -33,7 +33,7 @@ import {
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
-  createSpaceAuth, mintCreds, newIdentity,
+  createSpaceAuth, mintCreds, newIdentity, DEV_OWNER,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -566,6 +566,21 @@ console.log("4. the auth-admin rail profiles (piece 3)");
     !listener.publish.some((r) => /\.ctl\.auth-admin\.(\*|>)/.test(r) && !r.includes(".reply.")));
   c("the listener holds NO consumer authority and NO KV write anywhere",
     listener.publish.every((r) => !r.includes("CONSUMER.") && !r.startsWith("$KV.")));
+}
+
+// ---- 5. the endpoint-evictor profile (P2 item 3, slice 3a): scoped delivery-admin, pinned EXACTLY -
+console.log("5. the endpoint-evictor profile (P2 item 3): a re-registration's verify-evict caller");
+{
+  const evId = newIdentity();
+  const ev = decode(await mintCreds(auth, evId, "endpoint-evictor", {}));
+  const rail = `cotal.${S}.ctl.delivery-admin.${DEV_OWNER}.${evId.id}`;
+  c("the endpoint-evictor mint is EXACTLY its OWN delivery-admin request + $JS.API.INFO, own reply + inbox (no lease/presence/store/consumer/KV/executing right)",
+    JSON.stringify(ev.pub) === JSON.stringify([rail, "$JS.API.INFO"])
+    && ev.sub.length === 2 && ev.sub[0] === `${rail}.reply.>` && ev.sub[1]!.startsWith("_INBOX_"),
+    ev);
+  c("the endpoint-evictor is NARROWER than supervisor: NO lease, presence, chat/inst/svc, consumer, or KV write anywhere",
+    ev.pub.every((r) => r === rail || r === "$JS.API.INFO")
+    && !ev.pub.some((r) => r.includes("CONSUMER.") || r.startsWith("$KV.") || r.includes(".chat.") || r.includes(".inst.") || r.includes(".svc.") || r.toUpperCase().includes("LEASE") || r.includes(".presence.")));
 }
 
 console.log(fail === 0 ? `\nD32 MATRIX AUDIT OK ✅  (${ok} passed, ${fail} failed)` : `\nD32 MATRIX AUDIT FAILED ❌  (${ok} passed, ${fail} failed)`);

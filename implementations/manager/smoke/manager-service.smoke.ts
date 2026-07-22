@@ -75,6 +75,7 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 // produce (retired principal, resume-pending) and to read the minted serve identity.
 const M = mgr as unknown as {
   managerLifecycleUid: string;
+  managerInstanceId: string; // P2 item 3: the PERSISTED logical registration id (distinct from the per-process managerLifecycleUid)
   serviceServe?: { identity: { id: string; seed: string }; creds: string; grant: { epoch: number; instanceId: string; registrationRevision: number } };
   retiredPrincipals: Set<string>;
   resumeRequired: boolean;
@@ -87,7 +88,7 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   await mgr.start();
-  const iid = M.managerLifecycleUid;
+  const iid = M.managerInstanceId; // P2 item 3: registration is keyed on the PERSISTED logical instance id
 
   // Inspection connection: an endpoint-serve-executor cred READS both authority stores (its
   // writes are key-pinned to this same instance, unused here).
@@ -110,7 +111,7 @@ try {
   console.log("1. registration through the §13.1 gate (checklist 1/2/4)");
   check("start() registered the service (serve state present)", M.serviceServe !== undefined);
   const specEntry = await recKv.get(recordSpecKey(RECORD_KINDS.svc, [MANAGER_ENDPOINT, iid]));
-  check("the svc spec record exists for (manager, managerLifecycleUid)", specEntry !== null && specEntry.operation === "PUT");
+  check("the svc spec record exists for (manager, managerInstanceId)", specEntry !== null && specEntry.operation === "PUT");
   const gate = await readGate();
   const servePrincipal = principalKey(DEV_OWNER, M.serviceServe!.identity.id).key;
   check("the gate is OPEN at generation 1 (the registration barrier traversed it: freeze -> reopen)",
@@ -119,7 +120,7 @@ try {
     specEntry !== null && gate.registrationRevision === specEntry.revision, { gate: gate.registrationRevision, spec: specEntry?.revision });
   check("the gate binds the SERVE principal (minted before the gate, §13.1 serving-principal binding)",
     gate.principal === servePrincipal, { gate: gate.principal, servePrincipal });
-  check("processEpoch is the GATE's (0), instanceId the lifecycle uid — never conflated (checklist 4)",
+  check("processEpoch is the GATE's (0 on a FIRST registration), instanceId the persisted logical id — never conflated (checklist 4)",
     gate.processEpoch === 0 && M.serviceServe!.grant.epoch === 0 && M.serviceServe!.grant.instanceId === iid);
   const rows1 = await credRows();
   const expectId = rawDigest(M.serviceServe!.creds).replace("sha256:", "sha256-");
@@ -239,25 +240,24 @@ try {
   check("after stop() the ep rail no longer answers (no responder / deadline, never a stale reply)",
     downRefusal === "unavailable" || downRefusal === "deadline-exceeded", downRefusal);
 
-  console.log("6. RE-UP / UPGRADE path: a SECOND manager against the EXISTING store registers (the tester's regression)");
-  // The store already holds this manager endpoint's contract artifacts from the first boot, so the
-  // second registration RE-PUBLISHES them: every publishContractArtifact loses the create-only CAS
-  // and runs its verify-read. The executor cred MUST hold the EPC Direct Get read grant or the
-  // manager exits here (the 0659a9c regression). A fresh manager process = a fresh instanceId.
+  console.log("6. RESTART on a mesh with NO delivery oracle: the takeover REFUSES loudly (P2 item 3, pin 3)");
+  // P2 item 3 (SPEC 13.6 item 7): a restart in the SAME workspace root loads the PERSISTED logical
+  // instanceId, so re-registration is a TAKEOVER of the same id — §13.1 requires the superseded serve
+  // family to be verify-evicted before the epoch advances. This smoke runs NO delivery daemon, so the
+  // scoped endpoint-evictor cannot reach the liveness oracle. The registration MUST fail-closed
+  // LOUDLY, naming the cure (start the delivery daemon) — never silently skip eviction (no-fallbacks).
+  await mgr.stop();
   const mgr2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
-  const M2 = mgr2 as unknown as { managerLifecycleUid: string; serviceServe?: unknown };
+  const M2 = mgr2 as unknown as { managerInstanceId?: string; serviceServe?: unknown };
   let reupErr: string | undefined;
   try { await mgr2.start(); } catch (e) { reupErr = (e as Error).message; }
-  check("the re-up manager started (no broker-denied verify-read on the re-published artifacts)", reupErr === undefined, reupErr);
-  check("the re-up manager registered its service on a FRESH instanceId", M2.serviceServe !== undefined && M2.managerLifecycleUid !== iid);
-  const reupCaller = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
-  const rReup = await epCall(reupCaller, space, { mode: "one" },
-    { endpoint: MANAGER_ENDPOINT, command: "status", contract: MANAGER_STATUS_CONTRACT, caller },
-    { deadlineMs: 8000, currentEpoch: async () => 0 });
-  check("the re-up manager serves status (the store + registration survived the upgrade path)",
-    rReup.reply.ok === true && (rReup.reply.data as ManagerStatus).instanceId === M2.managerLifecycleUid, rReup.reply);
-  await reupCaller.drain().catch(() => reupCaller.close());
-  await mgr2.stop();
+  check("the no-oracle restart-takeover REFUSES (no silent success)", reupErr !== undefined, reupErr);
+  check("the refusal names the CURE (verify-evict the superseded family + start the delivery daemon) — pin 3",
+    reupErr !== undefined && /delivery daemon/i.test(reupErr) && /verify-evict|superseded serve family/i.test(reupErr), reupErr);
+  check("the refused takeover registered NO serve surface (fail-closed, gate frozen for reconciliation)",
+    M2.serviceServe === undefined);
+  check("the restart preserved the SAME persisted logical instanceId (not a fresh mint)", M2.managerInstanceId === iid);
+  await mgr2.stop().catch(() => {});
   await callerNc.drain().catch(() => callerNc.close());
 } finally {
   srv.kill("SIGKILL");
