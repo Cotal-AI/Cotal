@@ -48,7 +48,7 @@ const { bearer } = await fromAuth("better-auth/plugins/bearer");
 const { toNodeHandler } = await fromAuth("better-auth/node");
 
 const { CotalEndpoint, isReachable, mintCreds, newIdentity, principalKey } = await import("@cotal-ai/core");
-const { authDir, loadSpaceAuth, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, loadSoleSpaceAuth, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, establishIdpSession } = await import("@cotal-ai/auth");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
