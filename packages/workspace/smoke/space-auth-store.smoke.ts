@@ -137,39 +137,38 @@ try {
   const wrongSpace = await remintDaemonCreds(root, "not-this-space", mem);
   check("cross-space signer is REFUSED (every file ok:false, none re-signed)", wrongSpace.every((r) => r.ok === false));
   check("the last-good delivery cred is NOT overwritten by a wrong-space signer", mem.map.get(DELIVERY_CREDS_KEY) === beforeWrong);
-  // and the RIGHT space still re-signs (proves the gate is on the space, not a blanket refusal). With
-  // NO preflight, a full bundle re-signs directly — the local/operator FS path (operator owns the signer).
-  check("a full bundle re-signs WITHOUT a preflight (local/operator path)", (await remintDaemonCreds(root, space, mem)).find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+  // ---- FINDING-6/6b/doctor regression: NEVER overwrite the last-good with an UNPROVEN cred ----
+  // Proof = a broker PREFLIGHT (manager) OR AUTHORITY CONTINUITY (same account signer as the last-good).
+  // A same-label ALTERNATE account (full OR stripped) is neither ⇒ refused — this is the availability
+  // clobber the panel found (a re-minted, mis-mounted, or forged same-label chain B). A CONTINUOUS
+  // signer re-signs WITHOUT a preflight (the offline local repair `doctor auth --fix` + the local FS path).
+  const lastGoodA = await mintCreds(auth, newIdentity(), "delivery"); // chain A's broker-accepted last-good
+  const authB = await createSpaceAuth(space); // same label, DIFFERENT account/operator than chain A
+  const seed6 = async (signer: SpaceAuth) => {
+    const st = new MemStore();
+    await st.put(SPACE_AUTH_KEY, JSON.stringify(signer));
+    await st.put(DELIVERY_CREDS_KEY, lastGoodA);
+    return st;
+  };
+  const deliveryOf = (r: Awaited<ReturnType<typeof remintDaemonCreds>>) => r.find((x) => x.file === DELIVERY_CREDS_KEY);
 
-  // FINDING-6 regression: a STRIPPED signer (mint --signer / container form) has no JWT chain to bind
-  // its account to the space, so a wrong-account signer with the right LABEL would mint a broker-
-  // rejected cred and CLOBBER the last-good. It must PROVE broker acceptance (injected preflight)
-  // before overwriting; no proof ⇒ refuse. Broker-free via a deterministic preflight callback.
-  const stripStore = new MemStore();
-  await stripStore.put(SPACE_AUTH_KEY, JSON.stringify(stripSpaceAuth(auth)));
-  const goodCred = await mintCreds(auth, newIdentity(), "delivery");
-  await stripStore.put(DELIVERY_CREDS_KEY, goodCred);
-  const noPre = await remintDaemonCreds(root, space, stripStore); // no preflight
-  check("stripped signer WITHOUT a preflight refuses to re-sign", noPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false);
-  check("...and does NOT overwrite the last-good cred", stripStore.map.get(DELIVERY_CREDS_KEY) === goodCred);
-  const rejPre = await remintDaemonCreds(root, space, stripStore, { preflight: async () => false }); // broker refuses
-  check("stripped signer whose cred the broker REFUSES does not overwrite the last-good", rejPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false && stripStore.map.get(DELIVERY_CREDS_KEY) === goodCred);
-  const okPre = await remintDaemonCreds(root, space, stripStore, { preflight: async () => true }); // broker accepts (legit container renewal)
-  check("stripped signer whose cred the broker ACCEPTS re-signs (container renewal works)", okPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
-
-  // FINDING-6b regression: a same-LABEL FULL bundle is NOT broker-bound either — a fresh
-  // createSpaceAuth(space) is a valid, same-named, DIFFERENT-account chain that validateSpaceAuthForRead
-  // accepts. When a preflight is supplied (the manager path), it too must prove broker acceptance before
-  // overwriting the last-good; JWT self-consistency proves only that B trusts itself, not that A's broker does.
-  const authB = await createSpaceAuth(space); // same label, different account/operator than `auth` (chain A)
-  const fullBStore = new MemStore();
-  await putSpaceAuth(fullBStore, authB);
-  const lastGoodA = await mintCreds(auth, newIdentity(), "delivery"); // the last-good is chain A's cred
-  await fullBStore.put(DELIVERY_CREDS_KEY, lastGoodA);
-  const bRej = await remintDaemonCreds(root, space, fullBStore, { preflight: async () => false }); // A's broker refuses B's cred
-  check("a same-label FULL bundle whose cred the broker REFUSES does NOT overwrite the last-good", bRej.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false && fullBStore.map.get(DELIVERY_CREDS_KEY) === lastGoodA);
-  const bOk = await remintDaemonCreds(root, space, fullBStore, { preflight: async () => true }); // (only the RIGHT chain passes a real broker)
-  check("a full bundle whose cred the broker ACCEPTS re-signs", bOk.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+  // (1) CONTINUOUS signer (same account A), NO preflight → re-signs (offline authority continuity)
+  for (const [label, signer] of [["full", auth], ["stripped", stripSpaceAuth(auth)]] as const) {
+    const st = await seed6(signer);
+    check(`a CONTINUOUS ${label} signer re-signs WITHOUT a preflight (offline authority continuity)`, deliveryOf(await remintDaemonCreds(root, space, st))?.ok === true);
+  }
+  // (2) same-label ALTERNATE account (chain B), NO preflight → REFUSED, last-good preserved (the clobber)
+  for (const [label, signer] of [["full", authB], ["stripped", stripSpaceAuth(authB)]] as const) {
+    const st = await seed6(signer);
+    const r = await remintDaemonCreds(root, space, st);
+    check(`a same-label ALTERNATE-account ${label} signer WITHOUT a preflight is REFUSED`, deliveryOf(r)?.ok === false);
+    check(`...and does NOT overwrite the last-good (${label})`, st.map.get(DELIVERY_CREDS_KEY) === lastGoodA);
+  }
+  // (3) with a preflight, the BROKER proof is authoritative for every candidate (manager-hosted path)
+  const stripB = await seed6(stripSpaceAuth(authB));
+  const rej = await remintDaemonCreds(root, space, stripB, { preflight: async () => false });
+  check("a preflight REFUSAL preserves the last-good", deliveryOf(rej)?.ok === false && stripB.map.get(DELIVERY_CREDS_KEY) === lastGoodA);
+  check("a preflight ACCEPT re-signs (broker-proven renewal)", deliveryOf(await remintDaemonCreds(root, space, stripB, { preflight: async () => true }))?.ok === true);
 
   // The negative: with NO store and an empty disk, the signer is genuinely unreachable → no-auth.
   const emptyRoot = mkdtempSync(join(tmpdir(), "cotal-spaceauth-empty-"));

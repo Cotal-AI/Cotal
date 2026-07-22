@@ -141,9 +141,11 @@ its `servers`) — gates **every** candidate before it overwrites the last-good,
 full bundle or a stripped projection: a bundle's JWT chain proves only that it is self-consistent and
 named the space, NOT that its account is the broker's *current* account for that space (two
 `createSpaceAuth(space)` calls yield same-named, different-account chains), so a same-label alternate
-signer would otherwise mint a broker-dead cred and clobber the good one. Without a preflight a stripped
-signer refuses (its account is not chain-bound at all); a full bundle re-signs directly only on the
-local/operator path, where the operator owns the signer and no network proof is available. The reference
+signer would otherwise mint a broker-dead cred and clobber the good one. Without a preflight — the
+offline local repair (`doctor auth --fix`) — the overwrite is allowed only under **authority
+continuity**: the candidate must be signed by the same account signing key (`iss`) as the current
+(already broker-accepted) cred. A same-label alternate account breaks continuity and is refused, full or
+stripped; a legitimate local re-sign is continuous and proceeds without a network. The reference
 `Manager` runs it on a schedule against its **own**
 `secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs

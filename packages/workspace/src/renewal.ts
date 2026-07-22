@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  credsClaims,
   credsFingerprint,
   identityFromCreds,
   mintCreds,
@@ -73,15 +74,15 @@ export interface RemintResult {
  *  The store's ATOMIC put is load-bearing here, because the daemons re-read these values LIVE (the
  *  delivery endpoint's 75% source refresh, the membership feed's 75% renewal fetch).
  *
- *  `opts.preflight` is a disposable "does the broker accept this cred" proof (the caller owns the
- *  broker context — the manager passes a {@link probeConnect} over `this.servers`). WHEN SUPPLIED it
- *  gates EVERY candidate before overwrite, full bundle or stripped projection: a bundle's JWT chain
- *  proves only that it is self-consistent and named the space, NOT that its account is the broker's
- *  CURRENT account for that space (two `createSpaceAuth(space)` calls yield same-named, different-account
- *  chains), so a same-label alternate signer — full OR stripped — could otherwise mint a broker-rejected
- *  cred and CLOBBER the last-good (availability loss). WITHOUT a preflight a STRIPPED signer refuses (its
- *  account is not chain-bound at all); a FULL bundle re-signs directly on the local/operator FS path,
- *  where the operator owns the signer and no network proof is available.
+ *  The last-good cred is NEVER overwritten with an UNPROVEN one — a bundle's JWT chain is self-bound,
+ *  not broker-bound (two `createSpaceAuth(space)` calls yield same-named, DIFFERENT-account chains), so
+ *  a same-label alternate signer could mint a broker-dead cred and CLOBBER the last-good (availability
+ *  loss). Proof before overwrite is one of: (1) `opts.preflight` — a disposable "does the broker accept
+ *  this cred" probe the caller owns (the manager passes a {@link probeConnect} over `this.servers`),
+ *  which gates EVERY candidate when supplied; or (2) AUTHORITY CONTINUITY — the candidate is signed by
+ *  the SAME account signing key (`iss`) as the current (last-good, already broker-accepted) cred, the
+ *  same authority the broker trusts, which the OFFLINE local repair (`doctor auth --fix`) relies on. A
+ *  same-label alternate account breaks continuity, so with no preflight it is refused, not clobbered.
  *
  *  Structured per-file results, never throws: a failed remint leaves the old cred running toward its
  *  loud expiry and the caller records/reports the failure. */
@@ -105,9 +106,6 @@ export async function remintDaemonCreds(
     return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, error: (e as Error).message }));
   }
   if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
-  // A stripped signer projection has no operator JWT, so its account is not chain-bound to the space;
-  // its re-signed creds must PROVE broker acceptance before overwriting the last-good (see the docstring).
-  const stripped = !auth.operator?.jwt;
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
     try {
@@ -117,22 +115,28 @@ export async function remintDaemonCreds(
         continue;
       }
       const next = await mintCreds(auth, identityFromCreds(current), profile);
-      // A broker preflight, WHEN supplied (the manager has live broker context), proves acceptance of
-      // EVERY candidate before overwrite — full OR stripped. A full bundle's JWT chain proves only that
-      // it is self-consistent and named `expectedSpace`, NOT that its account is the broker's CURRENT
-      // account for that space: two `createSpaceAuth(space)` calls yield same-named, different-account
-      // chains, so a same-label full bundle can also mint a broker-dead cred and clobber the last-good.
-      // WITHOUT a preflight: a stripped signer (account not chain-bound at all) REFUSES; a full bundle
-      // re-signs directly — the local/operator FS path, where the operator owns the signer and no
-      // network proof is available or needed.
+      // NEVER overwrite the last-good cred with an UNPROVEN one. A bundle's JWT chain is SELF-bound,
+      // not broker-bound (two `createSpaceAuth(space)` calls yield same-named, DIFFERENT-account chains),
+      // so `expectedSpace` + full-chain validity is not enough. Proof is one of:
+      //  (1) a broker PREFLIGHT — the manager's live "does the broker accept this cred" probe; OR
+      //  (2) AUTHORITY CONTINUITY — the candidate is signed by the SAME account signing key (`iss`) as
+      //      the current (last-good, already broker-accepted) cred, i.e. the same authority the broker
+      //      already trusts. This is what the OFFLINE local repair (`doctor auth --fix`, no live broker)
+      //      relies on. A same-label ALTERNATE account (full OR stripped) breaks continuity, so with no
+      //      preflight it is REFUSED — the last-good is preserved rather than clobbered by a broker-dead cred.
+      let proven: boolean;
+      let why: string;
       if (opts?.preflight) {
-        if (!(await opts.preflight(next))) {
-          results.push({ file, ok: false, error: "the broker refused the re-signed cred (wrong-account or unreachable signer) - last-good cred preserved" });
-          continue;
-        }
-      } else if (stripped) {
-        results.push({ file, ok: false, error: "a stripped signer cannot re-sign without a broker preflight - its account is not chain-bound to the space" });
-        continue; // fail-safe: never overwrite the last-good from an unprovable stripped signer
+        proven = await opts.preflight(next);
+        why = "the broker refused the re-signed cred (wrong-account or unreachable signer)";
+      } else {
+        const iss = credsClaims(next).iss;
+        proven = iss !== undefined && iss === credsClaims(current).iss;
+        why = "the re-signed cred's signer is not the last-good cred's authority, and no broker preflight was supplied";
+      }
+      if (!proven) {
+        results.push({ file, ok: false, error: `${why} - last-good cred preserved` });
+        continue;
       }
       await s.put(file, next);
       results.push({ file, ok: true, fingerprint: credsFingerprint(next) });
