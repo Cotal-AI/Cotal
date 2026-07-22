@@ -73,6 +73,21 @@ export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: 
   }
 }
 
+/** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style
+ *  renew-early convention: the remaining 25% is the loud-failure window, wide for day-scale standing
+ *  creds). Negative when already past it. A source-fed cred WITHOUT a numeric `exp` is fail-loud: the
+ *  renewal seam exists precisely for bounded creds, so an unbounded one signals a matrix/caller
+ *  mismatch, not a cred to keep silently forever. Shared by the endpoint's `delivery.creds` renewal
+ *  and the membership feed's rw-cred renewal so the 75% convention is defined once. */
+export function credsRenewalDelayMs(creds: string): number {
+  const claims = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
+  if (typeof claims.exp !== "number")
+    throw new Error("creds source returned a cred without a numeric exp - a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
+  const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
+  const expMs = claims.exp * 1000;
+  return iatMs + 0.75 * (expMs - iatMs) - Date.now();
+}
+
 /** The full identity (id + seed) carried by a creds file — what a standing-renewal REMINTER needs:
  *  re-signing a fresh JWT for the file's EXISTING nkey (never a new one) is what lets the renewed
  *  cred pass the endpoint's identity pin, so renewal can never silently swap who a daemon is. Same

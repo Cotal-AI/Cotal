@@ -15,7 +15,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
-import { credsClaims, credsFingerprint, idFromCreds } from "./identity.js";
+import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
@@ -3474,20 +3474,6 @@ function authOpts(a: AuthOpts) {
  *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
  *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
  *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
-/** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style
- *  renew-early convention: the remaining 25% is the loud-failure window, wide for day-scale standing
- *  creds). Negative when already past it. A source-fed cred WITHOUT a numeric `exp` is fail-loud:
- *  the renewal seam exists precisely for bounded creds, so an unbounded one signals a matrix/caller
- *  mismatch, not a cred to keep silently forever. */
-function credsRenewalDelayMs(creds: string): number {
-  const claims = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
-  if (typeof claims.exp !== "number")
-    throw new Error("creds source returned a cred without a numeric exp - a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
-  const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
-  const expMs = claims.exp * 1000;
-  return iatMs + 0.75 * (expMs - iatMs) - Date.now();
-}
-
 /** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
  *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
 function bearerExpiryMs(bearer: string): number {
