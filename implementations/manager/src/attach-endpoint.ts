@@ -30,6 +30,23 @@ export interface FeedEvent {
   data: unknown;
 }
 
+/** What `POST /session/<name>` returns: the console's mesh §13.6 session establishment (P2 item 6).
+ *  The `grant` is the holder-bound offer (no ws:// URL, non-bearer); `wsUrl` is the broker's
+ *  localhost websocket listener; `creds` is the per-session, rails-only session-caller credential the
+ *  browser connects with. NO 127.0.0.1 terminal transport — the terminal rides the mesh session. */
+export interface SessionEstablishment {
+  grant: unknown;
+  wsUrl: string;
+  creds: string;
+}
+
+/** The manager-injected session establisher (P2 item 6): given a managed agent name, mint the offer
+ *  through the ONE {@link import("./session/plane.js").ManagerSessionPlane} + the per-session caller
+ *  credential, and return what the browser needs to connect. INJECTED — the face never constructs a
+ *  plane; the manager wires the single plane + the cred mint at boot (6b-2). Absent ⇒ the route 503s
+ *  (an open mesh with no console session client, or the pre-6b-2 stub). */
+export type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
+
 /**
  * The manager's local HTTP + WebSocket face. It hosts the **console** (a
  * lightweight xterm.js page) and bridges each agent's PTY to the browser — and to
@@ -56,6 +73,9 @@ export class AttachEndpoint {
     /** Events replayed to each console as it connects to `/feed` (e.g. the current roster). */
     private readonly snapshot: () => FeedEvent[],
     port = 0,
+    /** P2 item 6: the manager-injected mesh-session establisher backing `POST /session/<name>`
+     *  (the console's session-client transport). Absent ⇒ the route 503s. Wired at 6b-2. */
+    private readonly establishSession?: SessionEstablisher,
   ) {
     this.#port = port;
     this.#http = createServer((req, res) => this.#onRequest(req, res));
@@ -115,6 +135,14 @@ export class AttachEndpoint {
   #onRequest(req: IncomingMessage, res: ServerResponse): void {
     try {
       const path = (req.url ?? "/").split("?")[0];
+      // P2 item 6: the console's mesh §13.6 session establishment. `POST /session/<name>` mints the
+      // holder-bound offer + the per-session caller credential (via the injected establisher) and
+      // returns {grant, wsUrl, creds} for the browser to open the caller rail — no ws:// terminal
+      // transport in the reply. Loopback + same-host operator is the trust boundary here.
+      if (path.startsWith("/session/")) {
+        this.#onSession(req, res, path);
+        return;
+      }
       if (path === "/agents") {
         const body = JSON.stringify(this.list());
         res.writeHead(200, { "content-type": "application/json" });
@@ -140,6 +168,40 @@ export class AttachEndpoint {
         /* response already torn down */
       }
     }
+  }
+
+  /** `POST /session/<name>` (P2 item 6): establish a mesh §13.6 session for the console and return
+   *  {grant, wsUrl, creds}. POST because it has side effects (it mints a one-use offer + a
+   *  per-session credential). 503 when no establisher is wired (open mesh / pre-6b-2). */
+  #onSession(req: IncomingMessage, res: ServerResponse, path: string): void {
+    if (req.method !== "POST") {
+      res.writeHead(405, { allow: "POST" }).end("method not allowed");
+      return;
+    }
+    if (!this.establishSession) {
+      res.writeHead(503).end("mesh session establishment is not available (open mesh, or not yet wired)");
+      return;
+    }
+    let name: string;
+    try {
+      name = decodeURIComponent(path.slice("/session/".length));
+    } catch {
+      res.writeHead(400).end("bad agent name");
+      return;
+    }
+    if (!name) {
+      res.writeHead(400).end("missing agent name");
+      return;
+    }
+    this.establishSession(name)
+      .then((est) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(est));
+      })
+      .catch((e) => {
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: (e as Error).message }));
+      });
   }
 
   #serveFile(res: ServerResponse, file: string, type: string): void {
