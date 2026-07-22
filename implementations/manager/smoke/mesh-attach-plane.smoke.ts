@@ -173,6 +173,57 @@ transport.close();
 c("transport.close ends the session (clean detach)", await until(() => cliEnd === "detached"));
 await ncCli.close();
 
+// --------------------------------------------------------------------------------------------
+// The coordinator's live-e2e finding (pin 4): a managed agent's process dies ON ITS OWN while a
+// session is live → the bridge MUST surface the DISTINCT `process-exit` end reason, never a zombie
+// session (rail open, writing into a corpse, no end frame). This is the NATURAL exit path (not
+// endForTarget, not handle.stop) — the one section C never exercised.
+console.log("F. a NATURAL pty exit (the child dies on its own) surfaces `process-exit` to a live caller");
+const h3 = createRuntime("pty", "mesh-plane-smoke3").spawn("worker-3", { command: "cat", args: [] }, process.cwd());
+const s3 = h3.attach();
+const r3 = await plane.establishAttach({ ...CALLER, uid: "e".repeat(26) }, { name: "worker-3", lifecycleUid: "y".repeat(26) }, s3);
+const ncCaller3: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+let end3: string | undefined;
+const rx3: Buffer[] = [];
+const rail3 = openSessionRail({
+  nc: ncCaller3, grant: r3.grant, role: "caller",
+  onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "data") rx3.push(Buffer.from(p.b, "base64")); else if (p.k === "end") end3 = p.reason; },
+});
+await ncCaller3.flush();
+rail3.send({ k: "ready" } satisfies TerminalFrame);
+rail3.send(encodeTerminalData(Buffer.from("ALIVE3\n", "utf8")));
+c("the caller is live (echo confirms the pty is alive before the kill)", await until(() => Buffer.concat(rx3).toString("utf8").includes("ALIVE3")));
+// Kill the child DIRECTLY (bypass endForTarget + handle.stop) — the agent process exits on its own.
+process.kill(h3.pid, "SIGKILL");
+c("a natural pty exit surfaces `process-exit` to the live caller (NO zombie session)", await until(() => end3 === "process-exit"), { end3, handleStatus: h3.status() });
+c("the plane drops the naturally-exited session", await until(() => plane.liveSessions === 0));
+await ncCaller3.close();
+
+// --------------------------------------------------------------------------------------------
+// A caller RESIZE with 0 dims (a console fitting before its pane is laid out) must NOT break the
+// session: node-pty REJECTS a 0-dim resize (throws), and an uncaught throw in the serving frame
+// handler would silently wedge the rail (no more echo, no end frame — the coordinator's zombie).
+console.log("G. a 0-dim caller resize must NOT wedge the session (bad frame is tolerated)");
+const h4 = createRuntime("pty", "mesh-plane-smoke4").spawn("worker-4", { command: "cat", args: [] }, process.cwd());
+const s4 = h4.attach();
+const r4 = await plane.establishAttach({ ...CALLER, uid: "f".repeat(26) }, { name: "worker-4", lifecycleUid: "z".repeat(26) }, s4);
+const ncCaller4: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+let end4: string | undefined;
+const rx4: Buffer[] = [];
+const rail4 = openSessionRail({
+  nc: ncCaller4, grant: r4.grant, role: "caller",
+  onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "data") rx4.push(Buffer.from(p.b, "base64")); else if (p.k === "end") end4 = p.reason; },
+});
+await ncCaller4.flush();
+rail4.send({ k: "ready" } satisfies TerminalFrame);
+rail4.send({ k: "resize", cols: 0, rows: 0 } satisfies TerminalFrame); // the suspect: a 0-dim resize
+await wait(200);
+rail4.send(encodeTerminalData(Buffer.from("AFTERRESIZE\n", "utf8")));
+c("a 0-dim resize does NOT wedge the session — later keystrokes still echo", await until(() => Buffer.concat(rx4).toString("utf8").includes("AFTERRESIZE")), { end4 });
+c("the session is still live after the bad resize (not a silent zombie)", plane.liveSessions >= 1 && end4 === undefined, { live: plane.liveSessions, end4 });
+await ncCaller4.close();
+h4.stop({ graceful: false });
+
 plane.endAll("closed");
 h2.stop({ graceful: false });
 await ncPlane.close();

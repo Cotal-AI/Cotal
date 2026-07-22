@@ -122,19 +122,24 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   };
 
   const onCallerFrame = (data: unknown): void => {
-    const p = decodeTerminalFrame(data); // throws on a garbled frame → the rail surfaces it, breaks
+    // A caller frame must NEVER wedge the serving rail. A GARBLED or DEGENERATE frame — e.g. a console
+    // fitting before its pane is laid out sends a 0-dim resize, which the §13.6 codec rejects — is
+    // IGNORED, and each pty side effect is best-effort. One bad frame crashing this handler is exactly
+    // the live-e2e "zombie session" class (rail open, no echo, no honest end) that violates pin 4: a
+    // stray/degenerate caller frame drives no pty effect, so drop it and keep the session honest.
+    let p: TerminalFrame;
+    try { p = decodeTerminalFrame(data); } catch { return; }
     switch (p.k) {
       case "ready":
         void goLive();
         return;
       case "data":
-        session.write(new TextDecoder().decode(terminalFrameBytes(p)));
+        try { session.write(new TextDecoder().decode(terminalFrameBytes(p))); } catch { /* pty gone/degenerate; never wedge the rail */ }
         return;
       case "resize":
-        session.resize(p.cols, p.rows);
+        try { session.resize(p.cols, p.rows); } catch { /* degenerate geometry; ignore, never wedge */ }
         return;
-      // `end`/`drop` are serving → caller only; a caller sending one is out of protocol — ignore it
-      // (harmless: it drives no pty effect), rather than tear down a session on a stray frame.
+      // `end`/`drop` are serving → caller only; a caller sending one is out of protocol — ignore it.
       case "end":
       case "drop":
         return;
