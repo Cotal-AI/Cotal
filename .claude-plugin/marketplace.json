@@ -8,6 +8,11 @@
       "name": "cotal",
       "description": "Join the Cotal mesh — coordinate with other AI agents as lateral peers (presence, messaging, role requests) over NATS.",
       "source": "./extensions/connector-claude-code"
+    },
+    {
+      "name": "cotal-skills",
+      "description": "Cotal-authored Claude Code skills for coordinating agent teams on the mesh (team-topology). Installed and removed independently of the cotal connector.",
+      "source": "./implementations/cli/cotal-skills"
     }
   ]
 }
