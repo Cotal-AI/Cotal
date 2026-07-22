@@ -26,6 +26,7 @@ import {
 } from "./endpoint-contract-store.js";
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall } from "./endpoint-verbs.js";
+import { epGoalProgressGrantRow } from "./endpoint-grants.js";
 import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
@@ -269,6 +270,58 @@ export async function invokeCommand(
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
   }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch ?? describeBound });
+}
+
+/** Submit an ACTION command and FOLLOW its goal to the terminal (P2 item 2, 2b): since 2a a
+ *  spawn/launch reply is the ACCEPTANCE (returned before the agent is live), so a consumer that
+ *  wants the old block-until-outcome behaviour follows the caller-scoped progress subtree to the
+ *  terminal here. The subscription opens BEFORE `submit` runs (a fast join could terminalize within
+ *  milliseconds of the acceptance), buffering terminals by goalId. The reply is then RESOLVED from
+ *  the terminal: `succeeded` → the terminal's data (today's live reply — name/id/role/agent/mode/
+ *  lifecycleUid), `failed`/`uncertain`/`cancelled` → a non-ok reply carrying the cause. A reply with
+ *  NO goalId (a refuse-at-accept, or a non-action command) passes through unchanged. UX is preserved:
+ *  the call still returns on the real outcome. The caller needs the per-goal progress read row
+ *  ({@link epGoalProgressGrantRow}) — minted with any goal-bearing capability. */
+export async function submitAndFollowGoal(
+  nc: NatsConnection,
+  space: string,
+  endpoint: string,
+  caller: EpCaller,
+  deadlineMs: number,
+  submit: () => Promise<EpAttributedReply>,
+): Promise<EpAttributedReply> {
+  const terminals = new Map<string, { state: string; data?: unknown }>();
+  const waiters = new Map<string, () => void>();
+  const sub = nc.subscribe(epGoalProgressGrantRow(space, endpoint, caller), {
+    callback: (err, m) => {
+      if (err) return;
+      let ev: { goalId?: unknown; phase?: unknown; state?: unknown; data?: unknown };
+      try { ev = JSON.parse(dec.decode(m.data)); } catch { return; }
+      if (ev && ev.phase === "terminal" && typeof ev.goalId === "string") {
+        terminals.set(ev.goalId, { state: String(ev.state), data: ev.data });
+        waiters.get(ev.goalId)?.();
+      }
+    },
+  });
+  try {
+    const attributed = await submit();
+    if (attributed.reply.ok !== true) return attributed; // refuse at accept — surface as-is
+    const goalId = (attributed.reply.data as { goalId?: unknown } | undefined)?.goalId;
+    if (typeof goalId !== "string") return attributed; // not an action reply — pass through
+    const terminal = terminals.get(goalId) ?? await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
+      const t = setTimeout(() => resolve(terminals.get(goalId)), deadlineMs);
+      waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
+    });
+    if (terminal === undefined)
+      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" produced no terminal within ${deadlineMs}ms; read its outcome with 'ps'/'inspect' (SPEC 13.6)` } } };
+    if (terminal.state === "succeeded")
+      return { ...attributed, reply: { ...attributed.reply, ok: true, ...(terminal.data !== undefined ? { data: terminal.data } : { data: undefined }), error: undefined } };
+    const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown };
+    const message = typeof d.error === "string" ? d.error : typeof d.reason === "string" ? d.reason : `the goal settled ${terminal.state}`;
+    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message } } };
+  } finally {
+    sub.unsubscribe();
+  }
 }
 
 /** A digest reference's bare hex, exported so a CLI can print the resolved surface's digests. */

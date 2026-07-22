@@ -17,7 +17,7 @@ import {
 } from "@nats-io/transport-node";
 import { credsClaims, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
-import { resolveService, invokeCommand, type ResolvedService } from "./endpoint-invoke.js";
+import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
@@ -1191,27 +1191,34 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
+    const nc = this.nc;
     const caller = this.serviceCaller();
     const resolve = async (): Promise<ResolvedService> => {
       const cached = this.resolvedServices.get(endpoint);
       if (cached) return cached;
-      const svc = await resolveService(this.nc!, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000 });
+      const svc = await resolveService(nc, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000 });
       this.resolvedServices.set(endpoint, svc);
       return svc;
     };
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
-    try {
-      return await invokeCommand(this.nc, this.space, await resolve(), command, args, invokeOpts);
-    } catch (e) {
-      if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-      // The describe-bound incarnation is gone (restart/supersede) — re-resolve once, then invoke
-      // against the CURRENT one; a second failure is the real state and throws.
-      this.resolvedServices.delete(endpoint);
-      return await invokeCommand(this.nc, this.space, await resolve(), command, args, invokeOpts);
-    }
+    const doInvoke = async (): Promise<EpAttributedReply> => {
+      try {
+        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+      } catch (e) {
+        if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
+        // The describe-bound incarnation is gone (restart/supersede) — re-resolve once, then invoke
+        // against the CURRENT one; a second failure is the real state and throws.
+        this.resolvedServices.delete(endpoint);
+        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+      }
+    };
+    // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
+    // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
+    if (!opts.follow) return doInvoke();
+    return submitAndFollowGoal(nc, this.space, endpoint, caller, opts.deadlineMs ?? 10_000, doInvoke);
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its

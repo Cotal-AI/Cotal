@@ -59,8 +59,10 @@ throws("caller owner/actor tokens are grammar-validated in grant rows too",
 throws("standing caller bundle refuses a handle-mode capability (redemption-minted only)",
   () => epCallerGrantRows("demo", [handleCap], caller));
 const bundle = epCallerGrantRows("demo", [spawnCap], caller);
-c("caller bundle: request + journal pub, reply-rail sub",
-  bundle.pub.length === 2 && bundle.sub.length === 1 && bundle.sub[0] === epCallerReplyGrantRow("demo", caller));
+c("caller bundle: request + journal pub, reply-rail + own-goal-progress sub (spawn is goal-bearing, P2 item 2)",
+  bundle.pub.length === 2 && bundle.sub.length === 2
+  && bundle.sub[0] === epCallerReplyGrantRow("demo", caller)
+  && bundle.sub[1] === epGoalProgressGrantRow("demo", "manager", caller));
 c("empty capability set mints nothing", JSON.stringify(epCallerGrantRows("demo", [], caller)) === '{"pub":[],"sub":[]}');
 
 // ── the Appendix-B baseline set ──

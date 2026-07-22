@@ -91,25 +91,32 @@ export function epGoalProgressGrantRow(space: string, endpoint: string, caller: 
 }
 
 /** All caller-side rows for a capability set: request-publish (+ optional journal) into
- *  `pub.allow`, the reply rail into `sub.allow`. This is the STANDING rollup (`permissionsFor`
- *  mints long-lived credentials from it), so a `handle`-mode capability is refused here:
- *  handle rows are redemption-minted only (§13.2/§13.6), built by the redemption path through
- *  {@link epRequestGrantRows} directly. Deliberately NOT included: `epe` event
- *  subtrees beyond the per-goal row — read grants are minted per read capability by the
- *  granting authority (Appendix B), not implied by an invoke capability. */
+ *  `pub.allow`, the reply rail (+ the per-goal progress read for GOAL-BEARING capabilities) into
+ *  `sub.allow`. This is the STANDING rollup (`permissionsFor` mints long-lived credentials from
+ *  it), so a `handle`-mode capability is refused here: handle rows are redemption-minted only
+ *  (§13.2/§13.6), built by the redemption path through {@link epRequestGrantRows} directly.
+ *  A goal-bearing capability ({@link GOAL_BEARING_COMMANDS}: spawn/launch) adds ONE per-endpoint
+ *  {@link epGoalProgressGrantRow} — the caller may follow its OWN goal to terminal (P2 item 2, Q1);
+ *  it is the one read an invoke implies, because the subject pins the caller's own triple. Still
+ *  NOT included: any OTHER `epe` subtree — those are minted per read capability by the granting
+ *  authority (Appendix B), not implied by an invoke. */
 export function epCallerGrantRows(
   space: string,
   caps: EpCapability[],
   caller: EpCaller,
 ): { pub: string[]; sub: string[] } {
   const pub: string[] = [];
+  const progressEndpoints: string[] = [];
   for (const cap of caps) {
     if (cap.target?.mode === "handle")
       throw new Error(`a "handle"-mode capability on "${cap.endpoint}.${cap.command}" is redemption-minted only (SPEC 13.2), never a standing capability`);
     pub.push(...epRequestGrantRows(space, cap, caller));
     if (cap.journal) pub.push(epJournalGrantRow(space, cap, caller));
+    if (GOAL_BEARING_SET.has(cap.command) && !progressEndpoints.includes(cap.endpoint)) progressEndpoints.push(cap.endpoint);
   }
-  return { pub, sub: caps.length ? [epCallerReplyGrantRow(space, caller)] : [] };
+  const sub = caps.length ? [epCallerReplyGrantRow(space, caller)] : [];
+  for (const e of progressEndpoints) sub.push(epGoalProgressGrantRow(space, e, caller));
+  return { pub, sub };
 }
 
 // ---- the Appendix-B BASELINE capability set (SPEC Appendix B "Agent", §13.9 agent row) ------------
@@ -163,6 +170,14 @@ export const MANAGER_ADMIN_COMMANDS = Object.freeze([
   "resume-preserved", "commit-resume", "finalize-resume",
   "prepare-preservation", "commit-preservation", "abort-preservation",
 ] as const);
+
+/** The ACTION commands (§13.6): submitting one accepts a GOAL, so the caller may follow its OWN
+ *  goal progress (P2 item 2). `spawn` (create) and `launch` (manifest) both serve as actions on
+ *  the manager endpoint since 2a; a caller holding one of these capabilities is granted the
+ *  per-goal live-progress read for that endpoint ({@link epGoalProgressGrantRow}), the one read an
+ *  invoke DOES imply because it is bounded to the caller's OWN goal subtree. */
+export const GOAL_BEARING_COMMANDS = Object.freeze(["spawn", "launch"] as const);
+const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 
 // PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
 // never the live exports, so the minted surface survives even a hypothetical defeat of the
