@@ -243,6 +243,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 
   const { rt, events } = updateRuntime({
     extensions: [
+      installed("@cotal-ai/orca", "0.12.0", "@cotal-ai/orca"),
       installed("@cotal-ai/web", "0.12.0", "@cotal-ai/web"),
       installed("third-party-ext", "1.2.3", "third-party-ext@^1"),
     ],
@@ -250,8 +251,12 @@ async function completionOut(positionals: string[]): Promise<string> {
   });
   assert.equal(await executeUpdate(false, rt), 0);
   const replay = events.find((event) => event.startsWith("spawn:"));
-  assert.ok(replay?.includes("ext __update-add @cotal-ai/web @cotal-ai/web@0.13.1"));
-  assert.equal(events.filter((event) => event.startsWith("spawn:")).length, 1, "third-party extension is untouched");
+  assert.ok(replay?.includes("ext __update-add @cotal-ai/orca @cotal-ai/orca@0.13.1"));
+  assert.equal(events.filter((event) => event.startsWith("spawn:")).length, 1, "seeded web + third-party extension are not operator-replayed");
+  assert.ok(
+    !events.some((event) => event.startsWith("spawn:") && event.includes("@cotal-ai/web")),
+    "the seeded web dashboard is reconciled by the seed pass, never operator-replayed from npm",
+  );
   assert.ok(events.some((event) => event.includes("third-party-ext@1.2.3 - not auto-updated")));
   assert.ok(events.indexOf("reconcile") < events.findIndex((event) => event.startsWith("npm:view")), "default reconciles before npm check");
 }
@@ -264,27 +269,27 @@ async function completionOut(positionals: string[]): Promise<string> {
 
   const attempted: string[] = [];
   const continued = updateRuntime({
-    extensions: [installed("@cotal-ai/web"), installed("@cotal-ai/orca")],
+    extensions: [installed("@cotal-ai/orca"), installed("@cotal-ai/cmux")],
     spawn: (_file, args) => {
       attempted.push(args[args.indexOf("__update-add") + 1]);
-      return args.includes("@cotal-ai/web") ? { status: 1, stderr: "web failed" } : { status: 0 };
+      return args.includes("@cotal-ai/orca") ? { status: 1, stderr: "orca failed" } : { status: 0 };
     },
   });
   assert.equal(await executeUpdate(false, continued.rt), 1);
-  assert.deepEqual(attempted, ["@cotal-ai/web", "@cotal-ai/orca"]);
+  assert.deepEqual(attempted, ["@cotal-ai/orca", "@cotal-ai/cmux"]);
 
   const abnormalAttempts: string[] = [];
   const abnormal = updateRuntime({
-    extensions: [installed("@cotal-ai/web"), installed("@cotal-ai/orca")],
+    extensions: [installed("@cotal-ai/orca"), installed("@cotal-ai/cmux")],
     spawn: (_file, args) => {
       abnormalAttempts.push(args[args.indexOf("__update-add") + 1]);
       return { status: null, error: "wrapper terminated" };
     },
   });
   assert.equal(await executeUpdate(false, abnormal.rt), 1);
-  assert.deepEqual(abnormalAttempts, ["@cotal-ai/web"], "abnormal wrapper death aborts later replays");
+  assert.deepEqual(abnormalAttempts, ["@cotal-ai/orca"], "abnormal wrapper death aborts later replays");
 
-  const stopped = updateRuntime({ extensions: [installed("@cotal-ai/web")] });
+  const stopped = updateRuntime({ extensions: [installed("@cotal-ai/orca")] });
   stopped.rt.reconcile = async () => { throw new Error("seed interrupted"); };
   assert.equal(await executeUpdate(false, stopped.rt), 1);
   assert.ok(!stopped.events.some((event) => event.startsWith("spawn:")), "seed failure blocks later prefix mutation");
@@ -298,7 +303,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   let blocked = 0;
   try {
     const concurrent = updateRuntime({
-      extensions: [installed("@cotal-ai/web")],
+      extensions: [installed("@cotal-ai/orca")],
       spawn: () => {
         assert.throws(() => claimExtensionMutation(), /another extension update or mutation is in progress/);
         blocked++;

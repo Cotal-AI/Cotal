@@ -7,7 +7,7 @@ import {
   beginGlobalUpdateChild,
   claimGlobalNpmUpdateLock,
   loadExtensionsManifest,
-  OFFICIAL_CONNECTORS,
+  SEEDED_EXTENSIONS,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
@@ -153,7 +153,10 @@ async function reconcileCurrent(
     rt.out(c.bold("Operator extensions"));
     let entries: readonly InstalledExtension[];
     try {
-      const builtIns = new Set(Object.values(OFFICIAL_CONNECTORS));
+      // Exclude every seeded built-in (the connectors AND the bundled web dashboard) — runSeed already
+      // reconciled them from the bundled store; letting web fall through here reinstalls it from npm on
+      // top of the seed, drops its seeded marker, and makes `cotal update` fail offline on a bundled pkg.
+      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg));
       entries = rt.extensions().filter((entry) => !builtIns.has(entry.pkg));
     } catch (e) {
       rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));
