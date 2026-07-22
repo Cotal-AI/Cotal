@@ -416,6 +416,19 @@ interface ManagedAgent {
  * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
  * mesh traffic — terminal I/O streams over its own attach endpoint instead.
  */
+
+/** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
+ *  Roster boot and the blocking callers pass none (unchanged behavior). */
+export interface SpawnHooks {
+  /** Fires synchronously AFTER the incarnation identity (nkey + lifecycleUid) is minted but BEFORE
+   *  any provision/side-effect — the accept seam: it binds the goal and replies the acceptance. A
+   *  THROW here aborts the spawn before provisioning (the existing catch returns the failure and the
+   *  finally releases the reserve, so no footprint leaks) — this is the bind-conflict refusal path. */
+  onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string }) => Promise<void> | void;
+  /** Fires once the child process has been launched (the "launched" progress edge). */
+  onLaunched?: () => void;
+}
+
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -2347,17 +2360,17 @@ export class Manager {
    *  `spawner` is the authenticated id of the peer that requested the spawn (`req.from.id`),
    *  defaulting to the manager's own id for roster/pre-spawn — recorded for the spawner
    *  ledger (own-children despawn + reap-on-parent-exit). */
-  async startAgent(opts: StartAgentOpts, spawner?: string): Promise<ControlReply> {
+  async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
     const release = this.beginLifecycle();
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
-      return await this.startAgentActive(opts, spawner);
+      return await this.startAgentActive(opts, spawner, hooks);
     } finally {
       release();
     }
   }
 
-  private async startAgentActive(opts: StartAgentOpts, spawner?: string): Promise<ControlReply> {
+  private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
     // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
     // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
     // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
@@ -2558,6 +2571,12 @@ export class Manager {
       // broker resource (dm_/dlv_/chathist_ durables, ACL row, memberships) and the teardown
       // credential carry it, so a same-name successor's footprint is name-disjoint by construction.
       const lifecycleUid = mintLifecycleUid();
+      // ACCEPT SEAM (P2 item 2 spawn-as-action): the incarnation identity is minted and NOTHING has
+      // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
+      // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
+      // returns the failure and the finally releases the reserve, so a refused accept leaves zero
+      // footprint (pin 1). Blocking callers (roster boot) pass no hooks and this is a no-op.
+      await hooks?.onAccepted?.({ name, identity, lifecycleUid });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
@@ -2688,6 +2707,7 @@ export class Manager {
         workspaceRoot: this.workspaceRoot,
       });
       const handle = this.runtime.spawn(name, spec, cwd);
+      hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
         role,
