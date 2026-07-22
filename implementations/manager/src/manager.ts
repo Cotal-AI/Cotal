@@ -1637,7 +1637,7 @@ export class Manager {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
-        return unwrap(this.attachAuthorized(a));
+        return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
@@ -4448,34 +4448,21 @@ export class Manager {
     return { ok: true, data: { name, path } };
   }
 
-  private async opAttach(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
-    const name = String(args.name ?? "").trim();
-    const a = this.agents.get(name);
-    if (!a) return { ok: false, error: `no agent "${name}"` };
-    return this.attachCore(a, caller, admin);
-  }
-
-  /** The shared attach core (both doors, checklist 8). attach grants terminal read+write — same
-   *  scoping as despawn: own child (and, on a user mesh, the caller's owner-domain) on the
-   *  privileged tier, any agent on admin. */
-  private async attachCore(a: ManagedAgent, caller: string, admin: boolean): Promise<ControlReply> {
-    const denied = await this.authorizeNamed(a, caller, admin);
-    if (denied) return { ok: false, error: denied };
-    return this.attachAuthorized(a);
-  }
-
-  /** The post-authorization attach effect (both doors). Only pty streams over the WS attach
-   *  endpoint; external runtimes are watched natively, and each handle's attach() throws with the
-   *  right per-runtime guidance. */
-  private attachAuthorized(a: ManagedAgent): ControlReply {
-    if (a.handle.kind !== "pty") {
-      try {
-        a.handle.attach();
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
+  /** The post-authorization attach effect (P2 item 6): mint the holder-bound §13.6 offer, redeem it
+   *  through the ONE session plane (one-use CAS + presenter-equality), and stand up the PTY bridge —
+   *  atomically. The reply is the SIGNED grant (no ws:// URL, non-bearer, never logged); the caller
+   *  redeems it over the mesh with a per-session rails-only cred it mints itself. Only streamable
+   *  backends (pty/host) attach; an external runtime's attach() throws with per-runtime guidance. */
+  private async attachAuthorized(a: ManagedAgent, caller: { owner: string; actor: string; uid: string }): Promise<ControlReply> {
+    if (!this.sessionPlane) return { ok: false, error: "the manager session plane is not available (the manager is not fully started)" };
+    let session;
+    try {
+      session = a.handle.attach();
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
     }
-    return { ok: true, data: { ws: this.attach.url(a.name) } };
+    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
+    return { ok: true, data: { grant } };
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */

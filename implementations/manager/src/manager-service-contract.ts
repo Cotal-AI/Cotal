@@ -169,9 +169,13 @@ const STOP_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
 
+// P2 item 6: attach returns the holder-bound §13.6 session GRANT, never a 127.0.0.1 ws:// URL. The
+// grant is a signed, presenter-equality-bound offer (sessionId/subjects/serving/exp/sig) — non-bearer
+// (a leak releases nothing) and never logged. The caller redeems it over the mesh (meshSessionTransport)
+// with a per-session rails-only cred it mints itself. The object is signature-validated, not schema-shaped.
 const ATTACH_OUTPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["ws"],
-  properties: { ws: { type: "string" } },
+  type: "object", additionalProperties: false, required: ["grant"],
+  properties: { grant: { type: "object" } },
 } as const;
 
 /** `models` output, NORMALIZED: always the full catalog list ({@link ManagerServiceHandlers}
@@ -321,8 +325,9 @@ export function managerContractArtifactValues(): unknown[] {
 export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } = MANAGER_CONTRACTS.status;
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
- *  surface (revision 3: the 1c any-mode despawn/attach admission). All commands are ephemeral
- *  (request/reply ops; the spawn-as-action journal model is item 2). */
+ *  surface. Revisions: 3 = the 1c any-mode despawn/attach admission; 4 = item-2's spawn-as-action;
+ *  5 = item-6's `attach` output flip (ws:// URL → the holder-bound §13.6 session grant). All
+ *  commands are ephemeral (request/reply ops; the spawn-as-action journal model is item 2). */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -340,7 +345,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 4,
+    revision: 5,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

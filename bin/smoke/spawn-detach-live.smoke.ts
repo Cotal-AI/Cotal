@@ -6,7 +6,8 @@
  *  A. `spawn --detach <persona> --prompt/--subscribe/--share-tools` → control plane → manager
  *     spawns it; the overrides arrive in the connector's LaunchOpts (flags > persona, e2e).
  *  B. `ps` lists the managed agent; `stop --name` tears it down; `ps` is empty again.
- *  C. `attach` replies a loopback ws:// URL and the socket actually opens (the pinned contract).
+ *  C. `attach` replies the holder-bound §13.6 session grant (no ws:// URL, no 127.0.0.1) and the
+ *     mesh caller rail opens + handshakes over the real broker (item 6 replaced the loopback WS).
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
  *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
  *  F. foreground `--creds` (no --detach) fails loud (subprocess).
@@ -41,11 +42,12 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail } = await import("@cotal-ai/core");
+const { connect } = await import("@nats-io/transport-node");
 const { recordMesh } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
-import type { Command, Connector, ControlReply, LaunchOpts } from "@cotal-ai/core";
+import type { Command, Connector, ControlReply, LaunchOpts, SessionGrant } from "@cotal-ai/core";
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -224,16 +226,27 @@ try {
     await ep.stop();
   }
   ok("attach reply ok", attachReply.ok === true, attachReply);
-  const wsUrl = (attachReply.data as { ws?: string })?.ws ?? "";
-  ok("attach replies a loopback ws:// URL", /^ws:\/\/127\.0\.0\.1:\d+\//.test(wsUrl), wsUrl);
-  const sock = new WebSocket(wsUrl);
-  const opened = await new Promise<boolean>((res) => {
-    sock.onopen = () => res(true);
-    sock.onerror = () => res(false);
-    setTimeout(() => res(false), 5000);
+  // P2 item 6: attach replies the holder-bound §13.6 session grant, NOT a 127.0.0.1 ws:// URL.
+  const grant = (attachReply.data as { grant?: SessionGrant })?.grant;
+  ok("attach replies a holder-bound §13.6 session grant (no ws:// URL)",
+    typeof grant?.sessionId === "string" && typeof grant.subjects?.in === "string" && (attachReply.data as { ws?: unknown }).ws === undefined, attachReply.data);
+  ok("the grant names an eps session rail and carries NO 127.0.0.1 anywhere",
+    /^cotal\..+\.eps\.manager\./.test(grant?.subjects?.in ?? "") && !JSON.stringify(grant ?? {}).includes("127.0.0.1"), grant?.subjects);
+  // Redeem it over the MESH (open mesh: a bare connection): the caller rail opens on the real broker
+  // and completes the `ready` handshake — the item-6 replacement for the loopback WebSocket, end to end.
+  const rnc = await connect({ servers: SERVER });
+  let railErr: string | undefined;
+  const rail = openSessionRail({
+    nc: rnc, grant: grant!, role: "caller",
+    onData: () => {}, onClose: () => {}, onProtocolError: (r: string) => { railErr = r; },
   });
-  ok("attach socket opens", opened);
-  sock.close();
+  await rnc.flush();
+  let ready = false;
+  try { rail.send({ k: "ready" }); ready = true; } catch (e) { railErr = (e as Error).message; }
+  await sleep(500);
+  ok("the mesh caller rail opens + handshakes over the real broker (no ws, no 127.0.0.1)", ready && railErr === undefined, railErr);
+  rail.close();
+  await rnc.drain().catch(() => rnc.close());
 
   const stopOut = await capture(() => run("stop", ["--name", "bard", "--space", SPACE]));
   ok("stop reports ✓", /stopped bard/.test(stopOut), stopOut);

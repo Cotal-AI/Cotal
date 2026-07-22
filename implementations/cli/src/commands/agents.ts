@@ -1,8 +1,9 @@
-import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
+import { connect } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
-import { attachClient, detachKey, wsTerminalTransport } from "../lib/attach-client.js";
+import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -109,8 +110,27 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach);
   failIfNotOk(reply);
-  const { ws } = reply.data as { ws: string };
+  // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
+  // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
+  // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
+  // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
+  const { grant } = reply.data as { grant: SessionGrant };
+  const auth = loadSpaceAuth(authDir(findCotalRoot()));
+  if (!auth) {
+    console.error(c.red("mesh attach needs the local space seed (static auth mesh); user-mode session redemption is the #29 callout follow-up, not wired yet"));
+    process.exit(1);
+  }
+  const id = newIdentity();
+  const creds = await mintCreds(auth, id, "session-caller", {
+    sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+    expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+  });
+  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
-  await attachClient(wsTerminalTransport(ws));
+  try {
+    await attachClient(meshSessionTransport(nc, grant));
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
