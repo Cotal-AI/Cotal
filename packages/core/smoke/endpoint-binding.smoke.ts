@@ -289,11 +289,13 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
     ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
   })());
-c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, and nothing else — one principal owns the whole accepted→terminal goal-fact chain",
+c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, the must-5 reconcile-index write, and the must-5 own-gate read — nothing else",
   (() => {
     const g = goalWriterGrants(SPACE, "manager", CONN);
     return JSON.stringify(g.publish) === JSON.stringify([
       "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
+      "$KV.cotal_records_epbind.goalidx.manager.>",
+      "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
       "cotal.epbind.epf.manager.goal.*.*.*.*.result",
       "cotal.epbind.epf.manager.eff.>",
       "cotal.epbind.epf.manager.receipt.>",
@@ -308,7 +310,12 @@ c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the go
     ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
       && g.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind"
-      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
+      // must-5: the reconcile-index write is key-pinned to THIS endpoint's index subtree, and the
+      // own-gate read is the auth store's leader MSG.GET (the goal-writer holds NO records CONSUMER
+      // authority — the boot sweep enumerates the index over the provisioner, never this connection)
+      && g.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>")
+      && g.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind")
+      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER."));
   })());
 c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",
   (() => {

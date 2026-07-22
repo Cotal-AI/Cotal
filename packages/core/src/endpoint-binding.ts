@@ -966,8 +966,23 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  profile's standard ceiling; a tighter goal-only ceiling is a follow-up if the panel prefers it. */
 export function goalWriterGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
   const base = commitPrincipalGrants(space, endpoint, connId);
-  const bindLeaf = `${spacePrefix(space)}.epf.${endpointToken(endpoint)}.goal.*.*.*.*.bind`;
-  return { publish: [bindLeaf, ...base.publish], subscribe: base.subscribe };
+  const e = endpointToken(endpoint);
+  const bindLeaf = `${spacePrefix(space)}.epf.${e}.goal.*.*.*.*.bind`;
+  // must-5 Q-B — the reconcile index: the goal-writer records each accepted goal under
+  // `goalidx.<e>.<caller triple>.<goalId>` (create-only) before the bind and deletes it at the
+  // terminal, so a successor incarnation can settle orphaned goals. Key-pinned to THIS endpoint's
+  // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
+  // index over the PROVISIONER, never this standing connection).
+  const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
+  // must-5 (a) — the own-gate currency belt: the manager reads its OWN issuance gate
+  // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
+  // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
+  // leader `STREAM.MSG.GET` that cannot be key-pinned to the single gate key — the SAME residual
+  // class the `endpoint-serve-executor` carries (reads any auth-bucket row = gate + ledger
+  // metadata, never bearer bytes), here on a standing rather than one-shot connection. The manager
+  // reads ONLY `epgate.<e>.<iid>`; (a) is the fast-fail belt, (b) barrier-revoke is the durable fence.
+  const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
+  return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
 }
 
 /** The CONTRACT PUBLISHER principal's rows (§13.9 matrix "Contract-artifact publication" +
