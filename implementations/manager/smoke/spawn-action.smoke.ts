@@ -61,6 +61,10 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+// A ROLE-LESS persona: its succeeded terminal data carries no `role`, which the strict
+// canonicalJson would reject if the manager left `role: undefined` on the payload (surfaced live
+// by readiness:live; guarded here in smoke:ci).
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "norole.md"), `---\nname: norole\n---\n`);
 
 // Inline connectors driving the three readiness outcomes (open mesh — no creds needed). `join` is
 // a real child that joins presence under the manager-assigned id (readiness resolves succeeded);
@@ -187,6 +191,16 @@ try {
     const rw = await callSpawn({ name: "w1", agent: "stuck" });
     const fw = await followGoal(acc(rw).goalId as string, 12_000);
     check("M3 readiness window elapsed -> uncertain (bounded, never success)", fw.terminal?.state === "uncertain", fw.terminal);
+
+    // A ROLE-LESS spawn: its succeeded terminal data carries no `role`, so the strict-canonicalJson
+    // terminal commit must not choke on an `undefined` (the readiness:live repro, guarded in-gate).
+    const rr = await callSpawn({ name: "norole", agent: "join" });
+    const fr = await followGoal(acc(rr).goalId as string, 12_000);
+    check("M3 a ROLE-LESS spawn still commits its succeeded terminal (no undefined role in the payload)", fr.terminal?.state === "succeeded", fr.terminal);
+    check("M3 the role-less succeeded terminal carries the identity and omits role", (() => {
+      const d = fr.terminal?.data as { lifecycleUid?: string; role?: unknown } | undefined;
+      return !!d?.lifecycleUid && d.role === undefined;
+    })(), fr.terminal?.data);
   }
 
   // ── M4: SETTLE RACE - despawn mid-goal drives the cancel terminal (first terminal wins) ──────

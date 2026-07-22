@@ -2901,7 +2901,11 @@ export class Manager {
       // would never match and down -f would treat the agent as foreign).
       // `lifecycleUid` rides the reply so callers that record this spawn (the manifest ledger) can
       // later address the incarnation's lifecycle-keyed artifacts without re-deriving by name.
-      const okData = { name, role, agent, id: managed.id, mode: handle.kind, lifecycleUid };
+      // OMIT an absent role: the goal terminal commits this data through the strict
+      // canonicalJson (undefined never coerces to null, SPEC 13.6), so a role-less spawn would
+      // otherwise fail its succeeded terminal. The CLI/connector already render an absent role as
+      // "no role", so dropping the key preserves the reply (P2 item 2, surfaced by readiness:live).
+      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
     } catch (e) {
