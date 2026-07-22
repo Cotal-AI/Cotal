@@ -67,6 +67,25 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const enc = new TextEncoder(), dec = new TextDecoder();
 
+/** P2 item 2: spawn is an ACTION - its reply is the ACCEPTANCE, returned BEFORE the agent is live.
+ *  Poll `ps` until the named agent appears, returning the acceptance + its live ps row (id + uid, the
+ *  targeting coordinates the pre-action reply used to carry). */
+const spawnLive = async (
+  call: (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string } } }>,
+  args: Record<string, unknown>,
+): Promise<{ acc: Record<string, unknown>; row: { name: string; id: string; lifecycleUid: string } }> => {
+  const r = await call("spawn", args);
+  if (r.reply.ok !== true) throw new Error(`spawn ${String(args.name)} was not accepted: ${JSON.stringify(r.reply)}`);
+  const acc = (r.reply.data ?? {}) as Record<string, unknown>;
+  for (let i = 0; i < 80; i++) {
+    const ps = await call("ps");
+    const row = ((ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string }>) ?? []).find((x) => x.name === acc.name);
+    if (row) return { acc, row };
+    await wait(250);
+  }
+  throw new Error(`agent ${String(acc.name)} never became live in ps`);
+};
+
 const space = `mgrops-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-mgrops-"));
@@ -152,8 +171,8 @@ try {
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
-    check("the document is revision 3; despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 3 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    check("the document is revision 4; despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 4 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
     sub.unsubscribe();
@@ -163,9 +182,15 @@ try {
   {
     const captured: Array<{ opts: Record<string, unknown>; spawner?: string }> = [];
     const orig = M.startAgent.bind(mgr);
-    M.startAgent = async (opts, spawner) => {
+    // P2 item 2: spawn is an ACTION - the ep handler drives the goal via the hooks. The mock must
+    // call onAccepted (so serveSpawnGoal binds the goal + replies the acceptance) and onOutcome (so
+    // the goal terminalizes), then return the phantom reply. The fidelity oracle still captures opts.
+    M.startAgent = async (opts, spawner, hooks) => {
       captured.push({ opts, spawner });
-      return { ok: true, data: { name: String(opts.name), id: "x", role: "worker", agent: "e2e-stub", mode: "fake", lifecycleUid: "l".repeat(26) } };
+      const uid = "l".repeat(26);
+      await hooks?.onAccepted?.({ name: String(opts.name), identity: { id: "x".repeat(56), seed: "" } as unknown as import("@cotal-ai/core").Identity, lifecycleUid: uid, agentTriple: { owner: DEV_OWNER, actor: "x", uid } });
+      await hooks?.onOutcome?.({ kind: "succeeded", data: { name: String(opts.name), id: "x", role: "worker", agent: "e2e-stub", mode: "fake", lifecycleUid: uid } });
+      return { ok: true, data: { name: String(opts.name), id: "x", role: "worker", agent: "e2e-stub", mode: "fake", lifecycleUid: uid } };
     };
     const fields = {
       agent: "e2e-stub", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
@@ -191,9 +216,9 @@ try {
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
-  const r1 = await A.call("spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot });
-  const w1 = r1.reply.data as { name: string; id: string; lifecycleUid: string };
-  check("ep spawn boots a REAL agent (presence-joined reply)", r1.reply.ok === true && w1.name === "w1" && w1.lifecycleUid.length >= 26, r1.reply);
+  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot });
+  check("ep spawn accepts (acceptance floor) + the agent joins the mesh",
+    acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerLifecycleUid && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
   {
     const ps = await A.call("ps");
     const rows = ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string; mesh: string }>;
@@ -218,8 +243,8 @@ try {
   }
 
   console.log("4. baseline self-stop: the agent's OWN cred halts itself over ep.one");
-  const r2 = await A.call("spawn", { name: "w2", agent: "e2e-stub", cwd: repoRoot });
-  check("w2 spawned", r2.reply.ok === true, r2.reply);
+  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot });
+  check("w2 spawned + joined", acc2.name === "w2", acc2);
   {
     const w2 = M.agents.get("w2")!;
     const credsPath = w2.secretPaths?.creds ?? join(authDir(workspaceRoot), "creds", `w2.${w2.lifecycleUid}.creds`);
@@ -249,9 +274,8 @@ try {
       rModels.reply.ok === true && Array.isArray(catalogs) && catalogs.some((c) => c.agent === "e2e-stub" && c.supported === false), rModels.reply);
     const rPurge = await A.call("purge", {});
     check("purge clears the space history (typed {chat} result)", rPurge.reply.ok === true && typeof (rPurge.reply.data as { chat: number }).chat === "number", rPurge.reply);
-    const r3 = await A.call("spawn", { name: "w3", agent: "e2e-stub", cwd: repoRoot });
-    check("w3 spawned for attach", r3.reply.ok === true, r3.reply);
-    const w3 = r3.reply.data as { id: string; lifecycleUid: string };
+    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    check("w3 spawned for attach", acc3.name === "w3", acc3);
     const rAttach = await A.call("attach", undefined, { actor: w3.id, lifecycleUid: w3.lifecycleUid });
     check("targeted attach returns the WS url", rAttach.reply.ok === true && String((rAttach.reply.data as { ws: string }).ws).startsWith("ws"), rAttach.reply);
     const rLaunch = await A.call("launch", { runId: "zzzz", name: "x" });
@@ -309,7 +333,7 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 3 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === 4 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
     const { manifest: inManifest, artifacts: inArts } = await fetchContractClosure(storeCtx, spawnInputDigest!, () => []);
     const schema = JSON.parse(dec.decode(inArts.get(contractRefToHex(inManifest.root))!)) as Record<string, unknown>;
     const recompiled = compileContract({ root: schema });
@@ -348,15 +372,14 @@ try {
     const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
     const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
     const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds }), maxReconnectAttempts: 0 });
-    const rw3 = await A.call("spawn", { name: "w3", agent: "e2e-stub", cwd: repoRoot });
-    check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", rw3.reply.ok === true, rw3.reply);
-    const w3 = rw3.reply.data as { id: string; lifecycleUid: string };
+    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
       svc.commands.size === 17 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
-      rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === "w3"), rPs.reply);
+      rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);
     // NO-ARGS despawn — the exact shape the real CLI produces (`cotal stop --name <n>` strips the
     // alias into the target and has nothing left): the generic layer must marshal "no args" into
     // the contract's canonical empty form ({} for an object input), not ship undefined→null at a
