@@ -48,6 +48,7 @@ import {
   findMesh,
   getCurrent,
   loadMeshes,
+  MEMBERSHIP_RW_CREDS_KEY,
   recordMesh,
   removeMesh,
   setCurrent,
@@ -1828,7 +1829,7 @@ async function authSetup(
   if (!auth) {
     auth = await createSpaceAuth(space);
     saveSpaceAuth(dir, auth); // strips the $SYS seed on disk, but leaves the in-memory `auth` intact …
-    await provisionMembershipCreds(auth); // … so the observer can still be minted here (fresh-space only)
+    await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && existsSync(stateDir)) {
@@ -1876,8 +1877,11 @@ async function authSetup(
  *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
  *  — a documented migration property, not a silent no-op.
  *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
- *  a cred added here must be added to that removal list too. */
-async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
+ *  a cred added here must be added to that removal list too. `membership-rw.creds` is a MIGRATED kind:
+ *  its write/read/delete all go through the {@link SecretStore} seam (here, the feed reader, and clean),
+ *  so the renewal owner can re-sign it into a hosted store. The observer / evictor / config stay on the
+ *  raw FS (static $SYS creds + non-secret config, not renewable kinds). */
+async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
@@ -1888,7 +1892,7 @@ async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
     const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
     mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
     writeSecretFile(cotalPath("membership-observer.creds"), observer);
-    writeSecretFile(cotalPath("membership-rw.creds"), rw);
+    await workspaceSecretStore(root).put(MEMBERSHIP_RW_CREDS_KEY, rw); // migrated kind: through the seam (0600 FS put)
     writeSecretFile(cotalPath("connection-evictor.creds"), evictor);
     writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {
