@@ -31,14 +31,11 @@ import {
   resolveAuthProvider,
   saveAgentFile,
   subjectMatches,
-  CONTROL_PRIVILEGED,
-  CONTROL_SELF_SERVICE,
-  CONTROL_ADMIN,
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
+import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -464,7 +461,7 @@ export class Manager {
    *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
    *  in user mode (the named 1a follow-up), and before registration completes. */
-  private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds: string };
+  private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
@@ -644,19 +641,10 @@ export class Manager {
     // the just-acquired lease (a refused second manager must never sweep-terminal live slots) and
     // BEFORE control serving, so no spawn races the reconciliation.
     if (this.auth && !this.userMode) await this.reconcileStaticLifecycles();
-    // Serve all three control tiers (P2a): self-service (no-name self stop/despawn), privileged
-    // (start / own-child stop-despawn-attach / own definePersona), and admin (purge / cross-agent
-    // stop-despawn-attach / cross-agent definePersona). The cred layer grants self-service to every
-    // agent, privileged only to spawn-capable ones, and admin only to the manager's own profile
-    // (no agent ever reaches it); the handler then routes by op↔tier (fail-closed on mismatch) so a
-    // misrouted op is rejected before anything acts.
-    // `boundReply` (closure (i)): each tier replies ONLY into the requester's own subtree
-    // (`${reqSubject}.reply.…`), never the per-id `_INBOX`. This both keeps the confused-deputy guard
-    // (a caller can't redirect a reply onto a peer's lane) AND lets the manager cred drop its position-1
-    // inbox publish wildcard — callers subscribe `ctl.<tier>.<id>.reply.>`, granted per tier they may call.
-    this.ep.serveControl(CONTROL_PRIVILEGED, (req) => this.handle(req, CONTROL_PRIVILEGED), { boundReply: true });
-    this.ep.serveControl(CONTROL_SELF_SERVICE, (req) => this.handle(req, CONTROL_SELF_SERVICE), { boundReply: true });
-    this.ep.serveControl(CONTROL_ADMIN, (req) => this.handle(req, CONTROL_ADMIN), { boundReply: true });
+    // P2 item 1 (1d): the manager serves NO ctl tiers - its whole control surface is the v0.4
+    // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
+    // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
+    // plane) are separate services and keep their rails.
     // D5 slice 5 class 2: the manager is the CLASS-2 RENEWAL OWNER — the one control-plane process
     // that is resident in EVERY mesh mode (foreground `up`, `up --detach`, same-root refresh) and
     // holds the signer. Ordered initial pass NOW (ensureControlPlane starts delivery BEFORE the
@@ -668,17 +656,13 @@ export class Manager {
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, (STANDING_RENEWABLE_TTL_SEC / 2) * 1000);
       this.credRenewTimer.unref?.();
     }
-    // P2 item 1 (1a-serve): register the manager as an ordinary v0.4 `service` endpoint (SPEC
-    // §13.7/§13.9) and DUAL-SERVE its typed 1a surface (`status`) on the ep rails beside the ctl
-    // tiers — nothing deleted. STATIC auth mode only for 1a; the user-mode registration (space-
-    // owner name authority) is the named follow-up. Fail-loud: a manager that cannot register
-    // its service endpoint does not start half-registered.
-    // Every AUTH mesh registers the v0.4 manager service (static since 1a-serve; USER mode since
-    // 1c.2c - the registration/serve machinery is operator INFRA riding static trust material,
-    // which a user mesh retains for infrastructure, and the user-mode consumers now invoke over
-    // these rails). An OPEN mesh has no service registry - its control stays on ctl until the 1d
-    // decision resolves open-mesh serving.
-    if (this.auth) await this.registerManagerService();
+    // P2 item 1: register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
+    // and serve its typed command surface on the ep rails - since 1d the ONLY control door, in
+    // EVERY mesh mode. Static + user meshes mint the scoped executor + endpoint-serve credential;
+    // an open mesh runs the same gate/registration ceremony over bare connections and never mints
+    // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
+    // trust). Fail-loud: a manager that cannot register does not start half-registered.
+    await this.registerManagerService();
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -739,11 +723,11 @@ export class Manager {
       // §13.1 mint fence over a scoped one-shot executor (every renewal stages a distinct ledger
       // row and wins the gate CAS; never the standing connection). The serve connection's
       // authenticator presents the refreshed credential on its next (re)connect.
-      if (this.serviceServe && this.auth) {
+      if (this.serviceServe?.creds && this.auth) {
         const s = this.serviceServe;
         const authRef = this.auth;
         try {
-          const health = inspectCredHealth(s.creds);
+          const health = inspectCredHealth(this.serviceServe.creds);
           if (health.state !== "healthy") {
             s.creds = await this.withEndpointServeExecutor(({ authKv }) =>
               mintCreds(authRef, s.identity, "endpoint-serve", {
@@ -1212,40 +1196,6 @@ export class Manager {
     }
   }
 
-  private async handle(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {
-    // The resume/preservation family deliberately sits BEFORE admitControl: these maintenance ops
-    // must run while `resumeRequired` fences ordinary work. Each body lives in a door-shared
-    // method (the v0.4 ep door serves the same ops through the same cores); the ctl door keeps
-    // the tier gate here, the ep door's gate is its admin-grade capability grant.
-    if (req.op === "finalizeResume") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: "finalizeResume is admin-only; not allowed on this control subject" };
-      return this.opFinalizeResume(req.args);
-    }
-    if (req.op === "commitResume") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: "commitResume is admin-only; not allowed on this control subject" };
-      return this.opCommitResume(req.args);
-    }
-    if (req.op === "resumePreserved") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: "resumePreserved is admin-only; not allowed on this control subject" };
-      return this.opResumePreserved(req.args);
-    }
-    if (req.op === "preparePreservation" || req.op === "commitPreservation" || req.op === "abortPreservation") {
-      if (tier !== CONTROL_ADMIN)
-        return { ok: false, error: `${req.op} is admin-only; not allowed on this control subject` };
-      return this.opPreservationCtl(req.op, req.args);
-    }
-    const admission = this.admitControl(req.from.id);
-    if (admission.refusal !== undefined) return { ok: false, error: admission.refusal };
-    try {
-      return await this.handleActive(req, tier);
-    } finally {
-      admission.release();
-    }
-  }
-
   private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
     {
       let args: { attemptId: string; durableCommitToken: string };
@@ -1593,82 +1543,12 @@ export class Manager {
     };
   }
 
-  private async handleActive(req: ControlRequest, tier: ControlTier): Promise<ControlReply> {
-    const args = req.args ?? {};
-    // `req.from.id` is non-forgeable in auth mode: serveControl rejects any request whose payload
-    // `from.id` doesn't match the subject sender (endpoint.ts). In open mode there are no creds, so
-    // from.id is self-asserted — the spawner ledger + this routing are auth-mode guarantees,
-    // advisory in open mode (consistent with "open = single-trusted-host"). Thread it to every op
-    // so authz (P2c) and the spawner ledger (P4b) can act on it.
-    const caller = req.from.id;
-    // The F5(a) membership gate (Unit B) already ran in the SHARED admission chokepoint
-    // ({@link admitControl}, called by `handle` before dispatching here) — the same helper the
-    // v0.4 ep door runs, so neither door can drift a weaker fence.
-    const name = String(args.name ?? "").trim();
-    // Op↔tier binding — the real enforcement per the split. The cred gates WHO can reach each
-    // subject; this gates WHAT each subject will honor, fail-closed. A privileged op arriving on
-    // the self-service subject (publishable by all) must be rejected or the split does nothing.
-    if (tier === CONTROL_SELF_SERVICE) {
-      // Self-service honors self-ops only: a no-name stop (self-despawn). Durable join/leave/list moved
-      // OFF the manager onto the server-side delivery daemon's `ctl.delivery` service (the manager is
-      // lifecycle-only). A named stop (belongs on privileged/admin) or anything else is a misroute.
-      if (req.op !== "stop") return { ok: false, error: `op "${req.op}" not allowed on self-service control subject` };
-      if (name) return { ok: false, error: "named stop not allowed on self-service subject; send it on the privileged subject" };
-      return this.opStopSelf(caller, args);
-    }
-    const admin = tier === CONTROL_ADMIN;
-    // Privileged + admin tiers. A no-name stop is a self-op and belongs on the self-service subject.
-    switch (req.op) {
-      case "start":
-        // Spawn is a privileged-tier op; reaching it via admin is fine (admin ⊇ privileged powers).
-        return this.opStart(args, caller);
-      case "launch":
-        // SECURITY: on a STATIC mesh, manifest launch is operator-only (admin tier). It is
-        // higher-power than `start` — it boots an operator-authored, coordinated policy set from a
-        // run spec and underpins the ownership ledger — so a merely spawn-capable agent (which CAN
-        // publish to the privileged subject) must not reach it. Gate at the handler like `purge`;
-        // the subject alone isn't a boundary because `spawn` grants privileged-subject publish and
-        // dispatch is by op here. On a USER mesh, a spawn-scoped operator deploys THEIR OWN team on
-        // the privileged tier: opLaunch enforces owner-equality (the spec's apply-time stamped
-        // owner === the subject-pinned caller's owner) BEFORE any side effect.
-        if (!admin && !this.userMode) return { ok: false, error: "launch is admin-only; not allowed on the privileged subject" };
-        return this.opLaunch(args, caller, admin);
-      case "stop": {
-        if (!name) return { ok: false, error: "self-stop not allowed on privileged subject; send it on the self-service subject" };
-        return this.opStop(args, caller, admin);
-      }
-      case "definePersona":
-        return this.opDefinePersona(args, caller, admin);
-      case "purge":
-        // SECURITY: purge clears space history incl. DMs — admin-only. On the privileged tier any
-        // spawn-capable agent could wipe the space, so it must not be honored there.
-        if (!admin) return { ok: false, error: "purge is admin-only; not allowed on the privileged subject" };
-        return this.opPurge(args, caller);
-      case "attach":
-        return this.opAttach(args, caller, admin);
-      case "ps":
-        // USER mesh, privileged tier: `ps` lists only the CALLER's own owner-domain (the admin tier
-        // OR a fresh ledger `admin` scope sees all) — cross-owner agent metadata (principals,
-        // personas, auth health) is operator-grade. Fail-closed: an unparseable caller sees nothing.
-        // Static meshes are unchanged.
-        return { ok: true, data: this.list(await this.psOwnerFilter(caller, admin)) };
-      case "models":
-        return this.opModels(args);
-      case "status": {
-        // Same owner-domain bound as `ps`: a cross-owner target reads as absent, never as metadata.
-        const a = this.list(await this.psOwnerFilter(caller, admin)).find((x) => x.name === name);
-        return a ? { ok: true, data: a } : { ok: false, error: `no agent "${name}"` };
-      }
-      default:
-        return { ok: false, error: `unknown op: ${req.op}` };
-    }
-  }
-
-  /** Collapsed despawn/attach authorization (P4b). The caller already reached the privileged or
-   *  admin tier (cred-gated). On the admin tier any named target is allowed (operator). On the
-   *  privileged tier a named target is allowed if it's the caller's OWN child (`spawner ==
-   *  caller`) — and, on a user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the
-   *  caller's ledger row holds `admin`, read fresh. The policy is the pure
+  /** Collapsed despawn/attach authorization (P4b). The caller already reached the command's ep
+   *  row (cred-gated: owner-mode rows via the spawn capability, any-mode rows only in admin
+   *  instruments). With admin=true (any-mode) any named target is allowed (operator). Otherwise
+   *  a named target is allowed if it's the caller's OWN child (`spawner == caller`) — and, on a
+   *  user mesh, if it runs under the CALLER'S OWNER (owner-domain) or the caller's ledger row
+   *  holds `admin`, read fresh. The policy is the pure
    *  {@link authorizeNamedControl}; this wrapper only binds the manager's state (the mode flag +
    *  the provider-backed ledger read — a build with no provider authorizes nothing extra,
    *  fail-closed via the policy's catch). Error string when denied, `undefined` when allowed. */
@@ -3512,6 +3392,26 @@ export class Manager {
     }
   }
 
+  /** 1d open-mesh counterpart of {@link withEndpointServeExecutor}: an OPEN mesh has no
+   *  credential system, so there is no scoped executor to mint - the same §13.1 gate/records
+   *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
+   *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
+  private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
+    if (this.auth) throw new Error("withOpenServeConnection: an auth mesh must use the scoped endpoint-serve executor");
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
+    try {
+      const kvm = new Kvm(nc);
+      // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
+      // lazily without checking the stream exists — create-or-verify the §13.12 authority stores
+      // first (the same mode-neutral treatment {@link registerManagerService} gives the contract
+      // store), or the first gate write dies "stream not found".
+      await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
+      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
   /** The served manager-level health summary (1a's one read-only command). */
   private managerStatusData(): ManagerStatus {
     return {
@@ -3522,17 +3422,20 @@ export class Manager {
     };
   }
 
-  /** P2 item 1 (1a-serve): register the manager as an ordinary v0.4 `service` endpoint and serve
-   *  its typed 1a command surface (`status`) on the ep rails, dual-served beside the ctl tiers.
-   *  The whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
+  /** P2 item 1: register the manager as an ordinary v0.4 `service` endpoint and serve its typed
+   *  command surface on the ep rails - since 1d the manager's ONLY control door. On an AUTH mesh
+   *  the whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
    *  test that keeps "ordinary" honest): provision the §13.1 issuance gate, drive the
    *  registration BARRIER's gate CAS, then release the serve credential only on the mint FENCE's
    *  revision-pinned CAS win — all over the scoped one-shot executor ({@link
    *  withEndpointServeExecutor}), never a seed-signed shortcut. Holding the signing seed only
-   *  AUTHORIZES the reserved single-label name (`manager`, operator name authority, static
-   *  DEV_OWNER; the user-mode space-owner registration is the named follow-up). */
+   *  AUTHORIZES the reserved single-label name (`manager`, operator name authority, DEV_OWNER).
+   *  On an OPEN mesh the same gate/registration/serve-grant ceremony runs over bare one-shot
+   *  connections and NO credential is ever minted: there is no credential system to issue from,
+   *  so the gate legitimately keeps an empty `epcred` family (the §13.1 fence is issuance-only)
+   *  and the serve connection is bare — the broker enforces nothing on an open mesh, exactly the
+   *  old open-mesh ctl trust ("open = single-trusted-host"). */
   private async registerManagerService(): Promise<void> {
-    if (!this.auth) throw new Error("registerManagerService: no space auth (an open mesh has no service registry)");
     const auth = this.auth;
     // The §13.7 contract store is REGISTRATION's dependency, ensured here MODE-NEUTRALLY (1c.2c):
     // it used to ride the static-only lifecycle reconcile, so a USER-mode manager registered
@@ -3540,8 +3443,8 @@ export class Manager {
     // provisioner one-shot creates-or-verifies it (config-B immutability incl. the shadowed-legacy
     // refuse) before the executor publishes a single artifact.
     {
-      const provIdentity = newIdentity();
-      const provCreds = await mintCreds(auth, provIdentity, "provisioner");
+      // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
+      const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
       const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds }), maxReconnectAttempts: 0 });
       try {
         await ensureContractStore(await jetstreamManager(provNc), this.space);
@@ -3570,7 +3473,7 @@ export class Manager {
     // serving-principal binding); renewals re-mint the same nkey with a fresh bounded exp.
     const serveIdentity = newIdentity();
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
-    const { grant, creds } = await this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {
+    const run = async ({ recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => {
       // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
       // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
       // advertises their digests — so a caller can always fetch-verify-compile a registered
@@ -3603,9 +3506,12 @@ export class Manager {
           return g.processEpoch;
         },
       });
-      const creds = await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
+      // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
+      // gate keeps an empty `epcred` family; the serve connection below stays bare.
+      const creds = auth ? await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }) : undefined;
       return { grant, creds };
-    });
+    };
+    const { grant, creds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
     // The serve connection presents the CURRENT credential on every (re)connect (the state object
     // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
     // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
@@ -3614,7 +3520,8 @@ export class Manager {
     const enc = new TextEncoder();
     const nc = await connect({
       servers: this.servers ?? DEFAULT_SERVER,
-      authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds))(nonce),
+      // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
+      ...(creds !== undefined ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${serveIdentity.id}`,
       maxReconnectAttempts: -1,
     });

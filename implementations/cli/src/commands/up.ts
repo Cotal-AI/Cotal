@@ -18,7 +18,6 @@ import { join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
-  CONTROL_ADMIN,
   createSpaceAuth,
   serverConfig,
   mintCreds,
@@ -1194,7 +1193,7 @@ async function completeResumeActivation(
   const auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
-    const ready = await askManager(pending.space, server, "ps", undefined, auth, CONTROL_ADMIN, 2_000);
+    const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
     if (!ready.error?.startsWith("no manager reachable")) break;
     if (Date.now() >= readinessDeadline) {
       markPendingResumeDegraded(attemptId, ready.error);
@@ -1213,7 +1212,7 @@ async function completeResumeActivation(
         : pending.inventory as Record<string, unknown>,
     },
     auth,
-    CONTROL_ADMIN,
+    "any",
     10 * 60 * 1000,
   );
   if (!resumed.ok) {
@@ -1247,7 +1246,7 @@ async function completeResumeActivation(
       "commitResume",
       { attemptId },
       auth,
-      CONTROL_ADMIN,
+      "any",
       40_000,
     );
     if (!committed.ok) {
@@ -1281,7 +1280,7 @@ async function completeResumeActivation(
       "commitResume",
       { attemptId },
       auth,
-      CONTROL_ADMIN,
+      "any",
       40_000,
     );
     // A surviving manager that already finalized legitimately answers {state:"active"} with the
@@ -1302,7 +1301,7 @@ async function completeResumeActivation(
     "finalizeResume",
     { attemptId, durableCommitToken: managerCommit.durableCommitToken },
     auth,
-    CONTROL_ADMIN,
+    "any",
     40_000,
   );
   if (!finalized.ok)

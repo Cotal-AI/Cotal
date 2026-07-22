@@ -1,4 +1,4 @@
-import { CONTROL_ADMIN, CONTROL_PRIVILEGED, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
@@ -35,17 +35,16 @@ export async function stop(args: ParsedArgs): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
-  // STATIC mesh: operator stop is a cross-agent op — the admin tier with the scoped
-  // `control-caller-admin` cred (holding ONLY the admin-subject publish; that cred IS the
-  // cross-agent authority, the manager honors any named target on it).
-  // USER mesh: ONE deterministic path — the op rides the operator's own bearer on the SPAWN
-  // (privileged) tier, and the MANAGER authorizes: agents under your own owner pass with scope
-  // "spawn" (owner-domain), another owner's agent needs "admin" on your ledger row. No
-  // client-side try-admin-then-privileged fallback; sending on ctl.admin would die at the
-  // broker for every spawn-scoped operator before the manager could decide anything.
+  // STATIC mesh: operator stop is a cross-agent op — the `control-caller-admin` instrument holds
+  // the any-mode despawn row, so `reach: "any"` names any target (the broker grant IS the
+  // authority).
+  // USER mesh: ONE deterministic path — the op rides the operator's own bearer with `reach:
+  // "owner"` (its own-domain despawn row), and the MANAGER authorizes: agents under your own
+  // owner pass with scope "spawn", another owner's agent needs "admin" on your ledger row (the
+  // handler's fresh any-mode authorization). No client-side try-admin-then-owner fallback.
   const t = await resolveControlTarget(v, "control-caller-admin");
-  const tier = t.auth.bearer ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, tier);
+  const reach = t.auth.bearer ? "owner" : "any";
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach);
   failIfNotOk(reply);
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
@@ -103,12 +102,12 @@ export async function attach(args: ParsedArgs): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
-  // Same tier routing as stop: static mesh → admin tier on the scoped `control-caller-admin`
-  // cred; user mesh → the operator's own bearer on the SPAWN tier, with the manager deciding
-  // (own owner-domain passes with "spawn", cross-owner needs ledger "admin").
+  // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
+  // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
+  // passes with "spawn", cross-owner needs ledger "admin").
   const t = await resolveControlTarget(v, "control-caller-admin");
-  const tier = t.auth.bearer ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, tier);
+  const reach = t.auth.bearer ? "owner" : "any";
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach);
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));

@@ -86,7 +86,6 @@ import {
   chatHistDurable,
   chatSubject,
   controlServiceSubject,
-  CONTROL_SELF_SERVICE,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   dmStream,

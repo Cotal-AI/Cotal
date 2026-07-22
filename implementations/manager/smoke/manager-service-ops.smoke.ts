@@ -37,8 +37,8 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
-  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, CONTROL_PRIVILEGED,
-  controlServiceSubject, epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
+  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
+  epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
   resolveService, invokeCommand,
   registry,
@@ -115,13 +115,7 @@ async function instrument(caps: Array<{ command: string; owner?: true }>) {
       ...(callArgs !== undefined ? { args: callArgs } : {}),
       ...(target ? { target: { mode: "owner" as const, owner: DEV_OWNER, actor: target.actor, lifecycleUid: target.lifecycleUid } } : {}),
     }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
-  const ctl = async (op: string, ctlArgs: Record<string, unknown>): Promise<ControlReply> => {
-    const reqSubject = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, id.id);
-    const m = await nc.request(reqSubject, JSON.stringify({ op, args: ctlArgs, from: { id: principal, name: "smoke", role: "agent", kind: "agent" } }),
-      { timeout: 30_000, noMux: true, reply: `${reqSubject}.reply.${randomUUID()}` });
-    return JSON.parse(dec.decode(m.data)) as ControlReply;
-  };
-  return { id, uid, caller, principal, nc, call, ctl };
+  return { id, uid, caller, principal, nc, call };
 }
 
 try {
@@ -165,7 +159,7 @@ try {
     sub.unsubscribe();
   }
 
-  console.log("2. spawn parity: ctl start and ep spawn coerce IDENTICAL StartAgentOpts");
+  console.log("2. spawn fidelity: the ep door coerces the full StartAgentOpts + shared deep validation");
   {
     const captured: Array<{ opts: Record<string, unknown>; spawner?: string }> = [];
     const orig = M.startAgent.bind(mgr);
@@ -179,20 +173,20 @@ try {
       subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
     };
     const rEp = await A.call("spawn", { name: "wp1", ...fields });
-    const rCtl = await A.ctl("start", { name: "wp2", ...fields });
     M.startAgent = orig;
-    check("both doors accepted the 16-field request", rEp.reply.ok === true && rCtl.ok === true, { ep: rEp.reply, ctl: rCtl });
-    const [ep, ctl] = captured;
+    check("the ep door accepted the 16-field request", rEp.reply.ok === true, rEp.reply);
+    const [ep] = captured;
     const strip = (o: Record<string, unknown>) => { const { name: _n, ...rest } = o; return rest; };
-    check("the coerced StartAgentOpts are IDENTICAL field-for-field (the fidelity oracle)",
-      captured.length === 2 && JSON.stringify(strip(ep.opts)) === JSON.stringify(strip(ctl.opts)),
-      { ep: strip(ep?.opts ?? {}), ctl: strip(ctl?.opts ?? {}) });
-    check("both doors attribute the SAME spawner principal", ep?.spawner === A.principal && ctl?.spawner === A.principal, { ep: ep?.spawner, ctl: ctl?.spawner });
+    // The coercion oracle: every declared field round-trips into StartAgentOpts (a schema drift
+    // that silently dropped one would show here).
+    check("the coerced StartAgentOpts carry every declared field (the fidelity oracle)",
+      captured.length === 1 && Object.keys(strip(ep.opts)).length >= Object.keys(fields).length - 1, strip(ep?.opts ?? {}));
+    check("the ep door attributes the caller's own spawner principal", ep?.spawner === A.principal, ep?.spawner);
     let badCode: string | undefined;
     try { await A.call("spawn", { name: "wp1", bogus: 1 }); } catch (e) { badCode = e instanceof EpEnvelopeError ? e.code : (e as Error).message; }
     check("an unknown spawn field is bad-request at the CALLER's own closed contract (pre-publish; the responder enforces the same digest-bound schema)", badCode === "bad-request", badCode);
     const rEmpty = await A.call("spawn", { name: "wp1", resume: "" });
-    check("an empty resume refuses through the SHARED deep validation (both doors, one rule)",
+    check("an empty resume refuses through the shared deep validation",
       rEmpty.reply.ok === false && String(rEmpty.reply.error?.message ?? "").includes("session id must not be empty"), rEmpty.reply);
   }
 
@@ -342,13 +336,7 @@ try {
     await S.nc.drain().catch(() => S.nc.close());
   }
 
-  console.log("10. dual-serve intact");
-  {
-    const psCtl = await A.ctl("ps", {});
-    check("the legacy ctl rail still answers ps", psCtl.ok === true, psCtl);
-  }
-
-  console.log("11. the operator instrument (1c.2b): any-mode cross-agent reach over the GENERIC invoke path");
+  console.log("10. the operator instrument (1c.2b): any-mode cross-agent reach over the GENERIC invoke path");
   {
     // The CLI's exact path: a `control-caller-admin` one-shot minted with a lifecycle uid, whose
     // ep rows come from operatorInstrumentCapabilities("admin") — never the agent profile. NO

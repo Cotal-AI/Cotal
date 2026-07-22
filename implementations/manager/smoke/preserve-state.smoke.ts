@@ -3,8 +3,6 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CONTROL_ADMIN,
-  CONTROL_PRIVILEGED,
   DEV_OWNER,
   createSpaceAuth,
   mintCreds,
@@ -166,11 +164,42 @@ function managerWith(
   return manager;
 }
 
-const control = (manager: Manager, tier: string, op: string, args: Record<string, unknown>) =>
-  (manager as unknown as { handle: (req: unknown, controlTier: string) => Promise<{ ok: boolean; data?: unknown; error?: string }> }).handle(
-    { op, args, from: { id: "local.operator" } },
-    tier,
-  );
+type Reply = { ok: boolean; data?: unknown; error?: string };
+// 1d: the manager `ctl` `handle` router is deleted; each op is a door-shared method the ep serve
+// path calls. This test helper drives the SAME methods with the SAME framing the ep door uses:
+//  - the resume/preservation FAMILY bypasses the admission fence (the ep door wraps them in
+//    `adminGated`, not `serveGated`, so they run WHILE `resumeRequired` fences ordinary work);
+//  - ordinary ops (`models`, `stop`) ride the shared `admitControl` fence (serveGated's core — the
+//    drain gate preserveState waits on). The admin authority is now the ep credential boundary +
+//    `adminGated` (proven in manager-split/manager-service-ops), not a tier arg here.
+const control = async (manager: Manager, _tier: string, op: string, args: Record<string, unknown>): Promise<Reply> => {
+  const m = manager as unknown as {
+    opResumePreserved: (a: unknown) => Promise<Reply>;
+    opCommitResume: (a: unknown) => Promise<Reply>;
+    opFinalizeResume: (a: unknown) => Promise<Reply>;
+    opPreservationCtl: (op: string, a: unknown) => Promise<Reply>;
+    opModels: (a: Record<string, unknown>) => Promise<Reply>;
+    opStop: (a: Record<string, unknown>, caller: string, admin: boolean) => Promise<Reply>;
+    list: (filter?: string) => unknown[];
+    psOwnerFilter: (caller: string, admin: boolean) => Promise<string | undefined>;
+    admitControl: (caller: string) => { refusal?: string; release?: () => void };
+  };
+  if (op === "resumePreserved") return m.opResumePreserved(args);
+  if (op === "commitResume") return m.opCommitResume(args);
+  if (op === "finalizeResume") return m.opFinalizeResume(args);
+  if (op === "preparePreservation" || op === "commitPreservation" || op === "abortPreservation") return m.opPreservationCtl(op, args);
+  // Ordinary op: run through the admission fence (the ep door's serveGated core).
+  const admission = m.admitControl("local.operator");
+  if (admission.refusal !== undefined) return { ok: false, error: admission.refusal };
+  try {
+    if (op === "models") return await m.opModels(args);
+    if (op === "stop") return await m.opStop(args, "local.operator", true);
+    if (op === "ps") return { ok: true, data: m.list(await m.psOwnerFilter("local.operator", true)) };
+    return { ok: false, error: `unknown op: ${op}` };
+  } finally {
+    admission.release?.();
+  }
+};
 
 // A deterministic valid incarnation uid ([a-z0-9]{26,32}) per agent, so preserved inventory carries
 // the exact value a real ManagedAgent would (spawn mints it, resume recovers it) and the smoke can
@@ -266,10 +295,7 @@ registry.register({
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
   (manager as unknown as { watchExit: (a: unknown) => void }).watchExit(map.get("worker"));
 
-  const accepted = (manager as unknown as { handle: (req: unknown, tier: string) => Promise<unknown> }).handle(
-    { op: "models", args: { agent: "preserve-slow-models" }, from: { id: "local.operator" } },
-    CONTROL_ADMIN,
-  );
+  const accepted = control(manager, "admin", "models", { agent: "preserve-slow-models" });
   let persistenceStarted!: () => void;
   let releasePersistence!: () => void;
   const persisting = new Promise<void>((resolve) => { persistenceStarted = resolve; });
@@ -346,10 +372,7 @@ registry.register({
     deprovisionStarted();
     await blocked;
   };
-  const stop = (manager as unknown as { handle: (req: unknown, tier: string) => Promise<unknown> }).handle(
-    { op: "stop", args: { name: "precut", graceful: false }, from: { id: "local.operator" } },
-    CONTROL_ADMIN,
-  );
+  const stop = control(manager, "admin", "stop", { name: "precut", graceful: false });
   const preserving = manager.preserveState({ attemptId: "precut", persistInventory: async () => {} });
   await started;
   let settled = false;
@@ -459,15 +482,15 @@ let openInventory: ManagerResumeAgent;
 {
   const attemptId = "restart_after_commit";
   const first = managerWith((name) => fakeHandle(name), { resumeAttemptId: attemptId });
-  await control(first, CONTROL_ADMIN, "resumePreserved", { attemptId, inventory: inventoryOf(openInventory) });
-  const committed = await control(first, CONTROL_ADMIN, "commitResume", { attemptId });
+  await control(first, "admin", "resumePreserved", { attemptId, inventory: inventoryOf(openInventory) });
+  const committed = await control(first, "admin", "commitResume", { attemptId });
   const durableCommitToken = (committed.data as { durableCommitToken?: string }).durableCommitToken!;
   await first.stop();
 
   const replacement = managerWith((name) => fakeHandle(name), { resumeAttemptId: attemptId, resumeDurableCommitToken: durableCommitToken });
-  const resumed = await control(replacement, CONTROL_ADMIN, "resumePreserved", { attemptId, inventory: inventoryOf(openInventory) });
-  const recommitted = await control(replacement, CONTROL_ADMIN, "commitResume", { attemptId });
-  const finalized = await control(replacement, CONTROL_ADMIN, "finalizeResume", { attemptId, durableCommitToken });
+  const resumed = await control(replacement, "admin", "resumePreserved", { attemptId, inventory: inventoryOf(openInventory) });
+  const recommitted = await control(replacement, "admin", "commitResume", { attemptId });
+  const finalized = await control(replacement, "admin", "finalizeResume", { attemptId, durableCommitToken });
   check("replacement manager re-adopts retained agents", resumed.ok, resumed.error);
   check("replacement manager returns the fsynced commit token", recommitted.ok && (recommitted.data as { durableCommitToken?: string }).durableCommitToken === durableCommitToken, recommitted);
   check("replacement manager finalizes the original commit", finalized.ok && (finalized.data as { state?: string }).state === "active", finalized);
@@ -493,7 +516,7 @@ let openInventory: ManagerResumeAgent;
     lifecycleUid: openInventory.identity.mode === "open" ? openInventory.identity.lifecycleUid : undefined,
     status: spawned || !survivorOffline ? "idle" : "offline",
   }];
-  const resumePending = control(replacement, CONTROL_ADMIN, "resumePreserved", { attemptId, inventory: survivorInventory });
+  const resumePending = control(replacement, "admin", "resumePreserved", { attemptId, inventory: survivorInventory });
   await new Promise((resolveTick) => setTimeout(resolveTick, 0));
   check("replacement waits for the initial presence snapshot before spawn", spawns === 0, spawns);
   releaseSnapshot();
@@ -501,7 +524,7 @@ let openInventory: ManagerResumeAgent;
   check("replacement refuses an already-live retained principal before spawn", !resumed.ok && /already live/.test(resumed.error ?? "") && spawns === 0, resumed.error);
   ep.waitForPresenceSnapshot = async () => {};
   survivorOffline = true;
-  const retried = await control(replacement, CONTROL_ADMIN, "resumePreserved", { attemptId, inventory: survivorInventory });
+  const retried = await control(replacement, "admin", "resumePreserved", { attemptId, inventory: survivorInventory });
   check("replacement retry ignores an offline survivor ghost", retried.ok && spawns === 1, retried.error);
 }
 
@@ -509,7 +532,7 @@ let openInventory: ManagerResumeAgent;
 {
   let spawns = 0;
   const manager = managerWith((name) => { spawns++; return fakeHandle(name); });
-  const result = await control(manager, CONTROL_ADMIN, "resumePreserved", {
+  const result = await control(manager, "admin", "resumePreserved", {
     attemptId: "unbound",
     inventory: inventoryOf(openInventory),
   });
@@ -522,44 +545,44 @@ let openInventory: ManagerResumeAgent;
   const args = { attemptId: "restore_1", inventory: inventoryOf(openInventory) };
   const gated = await manager.startAgent({ name: "worker", agent: "preserve-connector" });
   check("startup resume gate fences ordinary lifecycle work", !gated.ok && /waiting for resume attempt/.test(gated.error ?? ""), gated.error);
-  const denied = await control(manager, CONTROL_PRIVILEGED, "resumePreserved", args);
-  check("wire resume rejects the privileged tier", !denied.ok && /admin-only/.test(denied.error ?? ""), denied.error);
-  check("denied wire resume launches nothing", spawns === 0, spawns);
+  // 1d: `resumePreserved` is admin-only via the ep credential boundary (the `manager.admin` ep row
+  // is minted only into operator instruments — manager-split) + serve-time `adminGated`
+  // (manager-service-ops); a merely spawn-capable caller is broker-denied before the handler. There
+  // is no in-handler tier reject to assert here anymore, so this section drives the admin path only.
+  check("no resume launched before the admin call", spawns === 0, spawns);
   capturedLaunch = undefined;
-  const resumed = await control(manager, CONTROL_ADMIN, "resumePreserved", args);
+  const resumed = await control(manager, "admin", "resumePreserved", args);
   check("admin wire resume succeeds", resumed.ok, resumed.error);
   check("wire resume uses the exact retained principal", capturedLaunch?.id === "open_principal_resume", capturedLaunch?.id);
   const data = resumed.data as { attemptId?: string; state?: string; agents?: Array<{ name: string; reply: { ok: boolean } }> };
   check("wire response is attempt-bound with per-agent results", data.attemptId === "restore_1" && data.state === "awaitingCommit" && data.agents?.length === 1 && data.agents[0]?.reply.ok === true, resumed.data);
-  const repeated = await control(manager, CONTROL_ADMIN, "resumePreserved", args);
+  const repeated = await control(manager, "admin", "resumePreserved", args);
   check("same attempt and inventory is idempotent", repeated.ok && spawns === 1, `spawns=${spawns}`);
   const changedInventory = { ...args.inventory, createdAt: new Date(Date.now() + 1_000).toISOString() };
-  const changed = await control(manager, CONTROL_ADMIN, "resumePreserved", { attemptId: "restore_1", inventory: changedInventory });
+  const changed = await control(manager, "admin", "resumePreserved", { attemptId: "restore_1", inventory: changedInventory });
   check("same attempt rejects a different inventory", !changed.ok && /different inventory/.test(changed.error ?? ""), changed.error);
-  const wrongAttempt = await control(manager, CONTROL_ADMIN, "resumePreserved", { ...args, attemptId: "restore_2" });
+  const wrongAttempt = await control(manager, "admin", "resumePreserved", { ...args, attemptId: "restore_2" });
   check("wire resume rejects a different attempt", !wrongAttempt.ok && /expects resume attempt/.test(wrongAttempt.error ?? ""), wrongAttempt.error);
   const stillGated = await manager.startAgent({ name: "worker", agent: "preserve-connector" });
   check("ordinary lifecycle remains fenced until durable activation commit", !stillGated.ok && /waiting for resume attempt/.test(stillGated.error ?? ""), stillGated.error);
-  const deniedCommit = await control(manager, CONTROL_PRIVILEGED, "commitResume", { attemptId: "restore_1" });
-  check("resume commit is admin-only", !deniedCommit.ok && /admin-only/.test(deniedCommit.error ?? ""), deniedCommit.error);
+  // `commitResume` is admin-only by the same ep credential boundary (see the resumePreserved note).
   const [committed, committedAgain] = await Promise.all([
-    control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "restore_1" }),
-    control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "restore_1" }),
+    control(manager, "admin", "commitResume", { attemptId: "restore_1" }),
+    control(manager, "admin", "commitResume", { attemptId: "restore_1" }),
   ]);
   const commitData = committed.data as { state?: string; durableCommitToken?: string };
   check("admin commit returns durable evidence without releasing the gate", committed.ok && commitData.state === "awaitingFinalize" && /^[a-f0-9]{64}$/.test(commitData.durableCommitToken ?? ""), committed);
   check("concurrent resume commit retries are idempotent with one durable token", committedAgain.ok && (committedAgain.data as { durableCommitToken?: string }).durableCommitToken === commitData.durableCommitToken, committedAgain);
-  const stillCommitted = await control(manager, CONTROL_ADMIN, "models", { agent: "preserve-connector" });
+  const stillCommitted = await control(manager, "admin", "models", { agent: "preserve-connector" });
   check("ordinary lifecycle remains fenced after commit", !stillCommitted.ok && /waiting for resume attempt/.test(stillCommitted.error ?? ""), stillCommitted.error);
-  const deniedFinalize = await control(manager, CONTROL_PRIVILEGED, "finalizeResume", { attemptId: "restore_1", durableCommitToken: commitData.durableCommitToken });
-  check("resume finalize is admin-only", !deniedFinalize.ok && /admin-only/.test(deniedFinalize.error ?? ""), deniedFinalize.error);
-  const wrongToken = await control(manager, CONTROL_ADMIN, "finalizeResume", { attemptId: "restore_1", durableCommitToken: "0".repeat(64) });
+  // `finalizeResume` is admin-only by the same ep credential boundary (see the resumePreserved note).
+  const wrongToken = await control(manager, "admin", "finalizeResume", { attemptId: "restore_1", durableCommitToken: "0".repeat(64) });
   check("resume finalize is bound to commit evidence", !wrongToken.ok && /does not match/.test(wrongToken.error ?? ""), wrongToken.error);
-  const finalized = await control(manager, CONTROL_ADMIN, "finalizeResume", { attemptId: "restore_1", durableCommitToken: commitData.durableCommitToken });
+  const finalized = await control(manager, "admin", "finalizeResume", { attemptId: "restore_1", durableCommitToken: commitData.durableCommitToken });
   check("token-bound finalize releases the startup resume gate", finalized.ok && (finalized.data as { state?: string }).state === "active", finalized);
-  const finalizedAgain = await control(manager, CONTROL_ADMIN, "finalizeResume", { attemptId: "restore_1", durableCommitToken: commitData.durableCommitToken });
+  const finalizedAgain = await control(manager, "admin", "finalizeResume", { attemptId: "restore_1", durableCommitToken: commitData.durableCommitToken });
   check("resume finalize is idempotent", finalizedAgain.ok, finalizedAgain.error);
-  const released = await control(manager, CONTROL_ADMIN, "models", { agent: "preserve-connector" });
+  const released = await control(manager, "admin", "models", { agent: "preserve-connector" });
   check("ordinary lifecycle is active only after finalize", !/waiting for resume attempt/.test(released.error ?? ""), released.error);
 }
 
@@ -569,8 +592,8 @@ let openInventory: ManagerResumeAgent;
   const manager = managerWith(() => handle, { resumeAttemptId: "signal_gap" });
   let deprovisions = 0;
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
-  await control(manager, CONTROL_ADMIN, "resumePreserved", { attemptId: "signal_gap", inventory: inventoryOf(openInventory) });
-  const committed = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "signal_gap" });
+  await control(manager, "admin", "resumePreserved", { attemptId: "signal_gap", inventory: inventoryOf(openInventory) });
+  const committed = await control(manager, "admin", "commitResume", { attemptId: "signal_gap" });
   await manager.stop();
   check("SIGTERM-equivalent stop after commit-before-finalize stops the child", committed.ok && handle.stops === 1, handle.stops);
   check("SIGTERM-equivalent stop after commit-before-finalize preserves retained footprint", deprovisions === 0, deprovisions);
@@ -581,8 +604,8 @@ let openInventory: ManagerResumeAgent;
   const manager = managerWith(() => handle, { resumeAttemptId: "lease_gap" });
   let deprovisions = 0;
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
-  await control(manager, CONTROL_ADMIN, "resumePreserved", { attemptId: "lease_gap", inventory: inventoryOf(openInventory) });
-  const committed = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "lease_gap" });
+  await control(manager, "admin", "resumePreserved", { attemptId: "lease_gap", inventory: inventoryOf(openInventory) });
+  const committed = await control(manager, "admin", "commitResume", { attemptId: "lease_gap" });
   const ep = (manager as unknown as { ep: Record<string, unknown> }).ep;
   ep.renewManagerLease = async () => { throw new Error("simulated lease loss"); };
   (manager as unknown as { leaseInfo: unknown; leaseRevision: number }).leaseInfo = {
@@ -607,15 +630,15 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = silentExitHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "exit_before_finalize" });
-  await control(manager, CONTROL_ADMIN, "resumePreserved", { attemptId: "exit_before_finalize", inventory: inventoryOf(openInventory) });
-  const committed = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "exit_before_finalize" });
+  await control(manager, "admin", "resumePreserved", { attemptId: "exit_before_finalize", inventory: inventoryOf(openInventory) });
+  const committed = await control(manager, "admin", "commitResume", { attemptId: "exit_before_finalize" });
   handle.exitSilently();
-  const finalized = await control(manager, CONTROL_ADMIN, "finalizeResume", {
+  const finalized = await control(manager, "admin", "finalizeResume", {
     attemptId: "exit_before_finalize",
     durableCommitToken: (committed.data as { durableCommitToken?: string }).durableCommitToken,
   });
   check("finalize refuses to release suppression if a committed handle stopped", !finalized.ok && /not live at finalize/.test(finalized.error ?? ""), finalized.error);
-  const stillFenced = await control(manager, CONTROL_ADMIN, "models", { agent: "preserve-connector" });
+  const stillFenced = await control(manager, "admin", "models", { agent: "preserve-connector" });
   check("failed finalize keeps ordinary lifecycle fenced", !stillFenced.ok && /waiting for resume attempt/.test(stillFenced.error ?? ""), stillFenced.error);
 }
 
@@ -625,14 +648,14 @@ let openInventory: ManagerResumeAgent;
   const secretManager = managerWith((name) => { spawns++; return fakeHandle(name); });
   const secretInventory = JSON.parse(JSON.stringify(inventoryOf(openInventory))) as Record<string, unknown> & { agents: Array<Record<string, unknown>> };
   secretInventory.agents[0].seed = "must-not-cross-wire";
-  const secret = await control(secretManager, CONTROL_ADMIN, "resumePreserved", { attemptId: "secret", inventory: secretInventory });
+  const secret = await control(secretManager, "admin", "resumePreserved", { attemptId: "secret", inventory: secretInventory });
   check("wire inventory rejects secret/unknown fields", !secret.ok && /Unrecognized key/.test(secret.error ?? ""), secret.error);
   check("secret-bearing inventory launches nothing", spawns === 0, spawns);
 
   const largeManager = managerWith((name) => { spawns++; return fakeHandle(name); });
   const largeInventory = JSON.parse(JSON.stringify(inventoryOf(openInventory))) as { agents: Array<{ launch: { model?: string } }> };
   largeInventory.agents[0].launch.model = "x".repeat(MAX_RESUME_CONTROL_BYTES);
-  const large = await control(largeManager, CONTROL_ADMIN, "resumePreserved", { attemptId: "large", inventory: largeInventory });
+  const large = await control(largeManager, "admin", "resumePreserved", { attemptId: "large", inventory: largeInventory });
   check("wire inventory enforces the payload byte bound", !large.ok && /exceed/.test(large.error ?? ""), large.error);
   check("oversized inventory launches nothing", spawns === 0, spawns);
 }
@@ -652,7 +675,7 @@ let openInventory: ManagerResumeAgent;
     },
     dependencies: [missing],
   };
-  const result = await control(manager, CONTROL_ADMIN, "resumePreserved", {
+  const result = await control(manager, "admin", "resumePreserved", {
     attemptId: "all_preflight",
     inventory: inventoryOf(openInventory, invalid),
   });
@@ -676,13 +699,13 @@ let openInventory: ManagerResumeAgent;
     name: "worker-two",
     identity: { mode: "open", id: "open_principal_two", lifecycleUid: uidFor("workertwo") },
   };
-  const result = await control(manager, CONTROL_ADMIN, "resumePreserved", {
+  const result = await control(manager, "admin", "resumePreserved", {
     attemptId: "partial_resume",
     inventory: inventoryOf(openInventory, second),
   });
   const data = result.data as { state?: string; agents?: Array<{ name: string; reply: { ok: boolean; error?: string } }> } | undefined;
   check("launch failure returns one result per inventory agent", !result.ok && data?.state === "degraded" && data.agents?.length === 2 && data.agents[0]?.reply.ok === true && data.agents[1]?.reply.ok === false, result.data);
-  const commit = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "partial_resume" });
+  const commit = await control(manager, "admin", "commitResume", { attemptId: "partial_resume" });
   check("failed activation cannot be committed", !commit.ok && /no successful activation/.test(commit.error ?? ""), commit.error);
   await manager.stop();
   check("partial resume shutdown does not deprovision retained principals", deprovisions === 0, deprovisions);
@@ -706,7 +729,7 @@ let openInventory: ManagerResumeAgent;
   };
   let deprovisions = 0;
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
-  const result = await control(manager, CONTROL_ADMIN, "resumePreserved", {
+  const result = await control(manager, "admin", "resumePreserved", {
     attemptId: "late_presence",
     inventory: inventoryOf(openInventory),
   });
@@ -755,13 +778,13 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = silentExitHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "exit_before_commit" });
-  const resumed = await control(manager, CONTROL_ADMIN, "resumePreserved", {
+  const resumed = await control(manager, "admin", "resumePreserved", {
     attemptId: "exit_before_commit",
     inventory: inventoryOf(openInventory),
   });
   check("external-style resume activates before silent exit", resumed.ok, resumed.error);
   handle.exitSilently();
-  const commit = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "exit_before_commit" });
+  const commit = await control(manager, "admin", "commitResume", { attemptId: "exit_before_commit" });
   check("commit rejects an exited handle still present in manager map", !commit.ok && /runtime is not running/.test(commit.error ?? ""), commit.error);
 }
 
@@ -771,7 +794,7 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "commit_wrong_uid" });
-  const resumed = await control(manager, CONTROL_ADMIN, "resumePreserved", { attemptId: "commit_wrong_uid", inventory: inventoryOf(openInventory) });
+  const resumed = await control(manager, "admin", "resumePreserved", { attemptId: "commit_wrong_uid", inventory: inventoryOf(openInventory) });
   check("commit-uid setup: resume activated on the exact incarnation", resumed.ok, resumed.error);
   // Swap the roster to a ghost: same alias, DIFFERENT incarnation (the true uid presence is gone).
   (manager as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{
@@ -779,7 +802,7 @@ let openInventory: ManagerResumeAgent;
     lifecycleUid: uidFor("ghostuid"),
     status: "idle",
   }];
-  const commit = await control(manager, CONTROL_ADMIN, "commitResume", { attemptId: "commit_wrong_uid" });
+  const commit = await control(manager, "admin", "commitResume", { attemptId: "commit_wrong_uid" });
   check("commit refuses a wrong-incarnation presence under the reused alias", !commit.ok && /is not exactly present/.test(commit.error ?? ""), commit.error);
 }
 
@@ -848,11 +871,11 @@ let openInventory: ManagerResumeAgent;
     resumeDurableCommitToken: "2".repeat(64),
   });
   (commitDriftManager as unknown as { auth: unknown }).auth = auth;
-  await control(commitDriftManager, CONTROL_ADMIN, "resumePreserved", { attemptId: "static_commit_drift", inventory: inventoryOf(commitEntry, secondCommitEntry) });
+  await control(commitDriftManager, "admin", "resumePreserved", { attemptId: "static_commit_drift", inventory: inventoryOf(commitEntry, secondCommitEntry) });
   writeFileSync(secondCredsPath, replacementCreds, { mode: 0o600 });
-  const commitDrift = await control(commitDriftManager, CONTROL_ADMIN, "commitResume", { attemptId: "static_commit_drift" });
+  const commitDrift = await control(commitDriftManager, "admin", "commitResume", { attemptId: "static_commit_drift" });
   check("replacement recommit revalidates every static entry and refuses later-entry drift", !commitDrift.ok && /static-worker-two/.test(commitDrift.error ?? ""), commitDrift.error);
-  const cannotFinalize = await control(commitDriftManager, CONTROL_ADMIN, "finalizeResume", { attemptId: "static_commit_drift", durableCommitToken: "0".repeat(64) });
+  const cannotFinalize = await control(commitDriftManager, "admin", "finalizeResume", { attemptId: "static_commit_drift", durableCommitToken: "0".repeat(64) });
   check("a failed static authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
 }
 
@@ -957,14 +980,14 @@ let openInventory: ManagerResumeAgent;
     resumeDurableCommitToken: "3".repeat(64),
   });
   (userCommitDriftManager as unknown as { userMode: boolean }).userMode = true;
-  const resumed = await control(userCommitDriftManager, CONTROL_ADMIN, "resumePreserved", {
+  const resumed = await control(userCommitDriftManager, "admin", "resumePreserved", {
     attemptId: "user_commit_drift",
     inventory: inventoryOf(entry),
   });
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["other"] };
-  const commitDrift = await control(userCommitDriftManager, CONTROL_ADMIN, "commitResume", { attemptId: "user_commit_drift" });
+  const commitDrift = await control(userCommitDriftManager, "admin", "commitResume", { attemptId: "user_commit_drift" });
   check("replacement recommit revalidates every user authority row and refuses drift", resumed.ok && !commitDrift.ok && /retained authority changed/.test(commitDrift.error ?? ""), commitDrift.error);
-  const cannotFinalize = await control(userCommitDriftManager, CONTROL_ADMIN, "finalizeResume", { attemptId: "user_commit_drift", durableCommitToken: "0".repeat(64) });
+  const cannotFinalize = await control(userCommitDriftManager, "admin", "finalizeResume", { attemptId: "user_commit_drift", durableCommitToken: "0".repeat(64) });
   check("a failed user authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["general"] };
 }
@@ -991,9 +1014,9 @@ let openInventory: ManagerResumeAgent;
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("dying", managed("dying", "dying_id", handle, "persona"));
   (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => {};
-  const stopped = await control(manager, CONTROL_ADMIN, "stop", { name: "dying" });
+  const stopped = await control(manager, "admin", "stop", { name: "dying" });
   check("an accepted stop replies without waiting for the child to die", stopped.ok === true, stopped.error);
-  const listed = await control(manager, CONTROL_ADMIN, "ps", {});
+  const listed = await control(manager, "admin", "ps", {});
   check(
     "an accepted stop frees the slot before ps reads it",
     (listed.data as { name: string }[]).every((a) => a.name !== "dying"),

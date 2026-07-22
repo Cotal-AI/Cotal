@@ -78,11 +78,13 @@ export interface ManagerStatus {
 
 /** One managed-agent row (`ps`/`inspect`), the ctl `list()` shape plus `lifecycleUid` — the
  *  coordinate an ep caller needs to build a targeted (`despawn`/`attach`) request. The two
- *  auth-health fields appear only on a user-mode agent whose bearer refresh is unhealthy. */
+ *  auth-health fields appear only on a user-mode agent whose bearer refresh is unhealthy; `role`
+ *  only when the launch profile declared one (a role-less row serializes WITHOUT the key —
+ *  `JSON.stringify` drops `undefined` — so pinning it required fails the responder's own reply). */
 const AGENT_ROW_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["name", "id", "role", "agent", "space", "mode", "status", "uptimeMs", "mesh", "lifecycleUid"],
+  required: ["name", "id", "agent", "space", "mode", "status", "uptimeMs", "mesh", "lifecycleUid"],
   properties: {
     name: { type: "string" },
     id: { type: "string" },

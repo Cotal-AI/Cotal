@@ -37,13 +37,9 @@ import {
   unicastSubject,
   anycastSubject,
   controlServiceSubject,
-  CONTROL_PRIVILEGED,
-  CONTROL_SELF_SERVICE,
-  CONTROL_ADMIN,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   CONTROL_AUTH_ADMIN,
-  type ControlTier,
   chatStream,
   dmStream,
   taskStream,
@@ -376,8 +372,6 @@ export interface MintOpts {
   allowPublish?: string[];
   /** The agent's role — scopes its TASK-queue consumer to svc_<role>. */
   role?: string;
-  /** Control service the agent may address. Defaults to `"manager"`. */
-  manager?: string;
   /** Capabilities declared in the agent file (e.g. `"spawn"`). A capability gates the
    *  privileged control-subject grant in {@link permissionsFor}: `spawn` → the agent may
    *  publish to the privileged control subject (start/purge/definePersona/named stop).
@@ -450,12 +444,12 @@ export interface MintOpts {
    *  shortcut"; the standing seed connection never writes the epgate or the epcred family). Ignored
    *  by every other profile. */
   endpointServeExecutor?: { endpoint: string; instanceId: string };
-  /** `deployer` profile only: which control tier its `launch`/`ps` calls ride. Defaults to
-   *  {@link CONTROL_ADMIN} (the static operator's ephemeral deploy cred). The user-mode `deployer`
-   *  VIEW mints {@link CONTROL_PRIVILEGED} instead, so a spawn-scoped deploy reaches the manager
-   *  where its owner-equality launch authorization governs — never the admin-tier bypass. Ignored
-   *  by every other profile. */
-  controlTier?: ControlTier;
+  /** `deployer` profile only: which v0.4 ep instrument set its `launch`/`ps` rows carry. Defaults
+   *  to `"admin"` (the static operator's ephemeral deploy cred). The user-mode `deployer` VIEW
+   *  mints `"privileged"` instead, so a spawn-scoped deploy reaches the manager where its
+   *  owner-equality launch authorization governs — never the admin any-mode reach. Ignored by
+   *  every other profile. */
+  controlTier?: "privileged" | "admin";
   /** Override the profile default lifetime. Internal/test hook; command surfaces should prefer the
    * centralized {@link CREDENTIAL_LIFETIMES} defaults so profile behavior stays auditable. */
   expiresInSeconds?: number;
@@ -762,9 +756,9 @@ export function permissionsFor(
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge (PR 1.5)
   if (profile === "teardown") return teardownPermissions(space, pr); // sole STREAM.DELETE holder (PR 1.5)
-  if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, CONTROL_PRIVILEGED); // ps/start (PR 1.5)
-  if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, CONTROL_ADMIN); // stop/attach (PR 1.5)
-  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? CONTROL_ADMIN); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
+  if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged"); // ps/start reads (PR 1.5)
+  if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin"); // any-mode stop/attach (PR 1.5)
+  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin"); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
   if (profile === "endpoint-serve")
     // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
     // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
@@ -855,7 +849,6 @@ export function permissionsFor(
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);
-  const manager = opts.manager ?? CONTROL_PRIVILEGED;
   if (!pr.lifecycleUid)
     throw new Error("permissionsFor(agent): a lifecycleUid is required - the agent's dm/dlv/chathist grants are lifecycle-keyed exact names (SPEC 13.1)");
   const uid = assertLifecycleToken(pr.lifecycleUid);
@@ -868,7 +861,8 @@ export function permissionsFor(
     ...allowPublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
     unicastSubject(space, "*", "*", pr.owner, pr.actor), // inst.*.*.<o>.<a> — DM any instance, as me
     anycastSubject(space, "*", pr.owner, pr.actor), //  svc.*.<o>.<a>   — anycast any role, as me
-    controlServiceSubject(space, CONTROL_SELF_SERVICE, pr.owner, pr.actor), // ctl.self.<o>.<a> — self stop/despawn
+    // Self stop/despawn rides the v0.4 ep baseline (`stop` self-mode) — the manager `ctl` rail is
+    // deleted (1d). The delivery-daemon rail below is a separate service (Plane-3), kept.
     // ctl.delivery.<o>.<a> — request a durable backstop join/leave/list from the SERVER-SIDE delivery
     // daemon (NOT the manager). The reply rides this same subtree (`ctl.delivery.<o>.<a>.reply.<n>`, in
     // sub.allow below) so the daemon can answer without broad inbox-publish — see CONTROL_DELIVERY.
@@ -937,20 +931,9 @@ export function permissionsFor(
       `$JS.ACK.${TASK}.${svcD}.>`,
     );
   }
-  if (opts.capabilities?.includes("spawn")) {
-    // Spawn capability → grant the PRIVILEGED control subject (start / purge / definePersona /
-    // named stop-despawn). Default-deny otherwise: the subject is simply absent from this
-    // allow-list, so nats-server rejects the publish — no handler check, no deny-entry (a
-    // blanket `ctl.<mgr>.>` deny would override this grant too, since NATS deny beats allow).
-    // The self-service subject above is granted to all regardless of capability.
-    pubAllow.push(controlServiceSubject(space, manager, pr.owner, pr.actor));
-  }
-  if (opts.capabilities?.includes("admin")) {
-    // Admin capability → the ADMIN control tier (cross-agent stop/attach, manifest launch). In user
-    // mode this arrives via the ledger row's scope (`cotal actor grant … --scope admin`) — the
-    // broker-enforced half of the tier split; the manager's per-op checks stay on top of it.
-    pubAllow.push(controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor));
-  }
+  // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
+  // deleted, 1d) — the spawn set (owner-mode manager lifecycle) and the admin instrument set
+  // (any-mode + manager.admin family) are added to the ep caller rows, not a ctl subject.
   // v0.4 endpoint rails (SPEC §13.9 caller rows). EVERY agent gets the Appendix-B BASELINE set
   // (wildcard describe + delivery join/leave/list + self-mode lifecycle + the reply rail), keyed
   // on the SAME lifecycle uid as the agent's durables; the spawn capability adds the owner-mode
@@ -1009,17 +992,9 @@ export function permissionsFor(
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
-  // Bounded control replies (closure (i)): the manager's lifecycle tiers now reply on
-  // `ctl.<tier>.<id>.reply.>` (not the per-id `_INBOX`), so each agent must subscribe the reply subtree
-  // for the tiers it may call. Every agent can self-stop ⇒ always grant the self tier; the privileged /
-  // admin tiers' replies are granted only with the matching capability (which also grants the request
-  // publish above).
-  const controlReplies = [`${controlServiceSubject(space, CONTROL_SELF_SERVICE, pr.owner, pr.actor)}.reply.>`];
-  if (opts.capabilities?.includes("spawn"))
-    controlReplies.push(`${controlServiceSubject(space, CONTROL_PRIVILEGED, pr.owner, pr.actor)}.reply.>`);
-  if (opts.capabilities?.includes("admin"))
-    controlReplies.push(`${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...controlReplies, ...subChat, ...epSub] } };
+  // Manager control replies ride the v0.4 ep reply rail (in `epSub`, keyed on the caller triple) —
+  // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail (1d).
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...subChat, ...epSub] } };
 }
 
 /** The long-lived SUPERVISOR permission set (closure (ii), residual 2) — the always-on manager daemon
@@ -1033,16 +1008,14 @@ export function permissionsFor(
  *  `setActivity`, a presence write), NO DM/DLV read of any kind (no consumer-create, no native sub), NO
  *  stream CREATE/DELETE/PURGE/UPDATE, NO channel-registry access (the daemon sets `watchChannels:false`).
  *  `$JS` is an ENUMERATED allow-list — exactly the presence-watch + lease-KV verbs — never `$JS.>`. A
- *  leaked supervisor cred can hold/serve control and read the public roster; it cannot read a DM, forge an
+ *  leaked supervisor cred can hold the lease and read the public roster; it cannot read a DM, forge an
  *  actor, provision, purge, or tamper with a stream. */
 function supervisorPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, MKV = `KV_${managerBucket(space)}`;
-  // The three SERVED lifecycle tiers (manager.ts serveControl): subscribe `ctl.<tier>.*.*` (queue-grouped,
-  // the owner+actor caller slots widened from one token to two) and reply on the bounded
-  // `ctl.<tier>.<owner>.<actor>.reply.<uuid>` subtree. Plain NATS request/reply — no `$JS.ACK`.
-  const tiers = [CONTROL_PRIVILEGED, CONTROL_SELF_SERVICE, CONTROL_ADMIN];
-  const ctlServe = tiers.map((t) => controlServiceSubject(space, t, "*", "*")); // ctl.<tier>.*.*
-  const ctlReplies = tiers.map((t) => `${controlServiceSubject(space, t, "*", "*")}.reply.>`);
+  // 1d: the supervisor no longer serves the manager control tiers — the manager's control surface
+  // is its v0.4 `service` endpoint, served on a SEPARATE connection under its own `endpoint-serve`
+  // credential (its rails are that credential's grant, not the supervisor's). The supervisor now
+  // holds only the lease, presence, and the ONE delivery-admin call.
   return {
     pub: {
       allow: [
@@ -1060,9 +1033,6 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         `$JS.API.CONSUMER.CREATE.${PKV}.>`, // kv.watch ordered consumer (roster)
         `$JS.API.CONSUMER.INFO.${PKV}.>`,
         "$JS.FC.>", // ordered-consumer flow control
-        // Control: reply to any caller on each SERVED tier (bounded). It SERVES (does not call), so no
-        // request-publish grant and no position-1 wildcard — EXCEPT the delivery-admin rail below.
-        ...ctlReplies,
         // The ONE control service the supervisor CALLS (D5 slice 5): the delivery daemon's privileged
         // admin rail — the manager is the class-2 renewal owner, and after re-signing the daemon creds
         // files it requests `reloadCreds` here so adoption is an explicit, auditable event. Self-scoped
@@ -1071,10 +1041,10 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
       ],
     },
     sub: {
-      // Own reply inbox + the three served control tiers (queue-grouped) + the delivery-admin reply
-      // subtree for its OWN requests. NO chat/inst/dlv native sub (the supervisor reads no feed), NO
-      // broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
-      allow: [`_INBOX_${pr.connId}.>`, ...ctlServe, `${controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor)}.>`],
+      // Own reply inbox + the delivery-admin reply subtree for its OWN requests. NO chat/inst/dlv
+      // native sub (the supervisor reads no feed), NO manager control-tier serve (1d: that moved to
+      // the endpoint-serve credential), NO broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
+      allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor)}.>`],
     },
   };
 }
@@ -1180,7 +1150,8 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
 
 /** TEARDOWN (PR 1.5) — `cotal down -f` space teardown. The SOLE cred that keeps `STREAM.DELETE` (the
  *  face-b tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
- *  → `requestControl(CONTROL_ADMIN, ps/stop)` to politely stop the managed agents → `deleteChannels`
+ *  → invoke the manager's `ps` + any-mode `despawn` over the ep rails to politely stop the managed
+ *  agents → `deleteChannels`
  *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 12 space streams/buckets).
  *  So it reads state, CALLS admin control, deletes channels, and deletes streams — but NEVER reads a
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
@@ -1212,9 +1183,8 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
         `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
         "$JS.FC.>", // ordered-consumer flow control
-        // Stop the managed agents over the v0.4 ep rails (ps + any-mode despawn) - dual-served with
-        // the admin ctl tier during 1c/1d.
-        controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor),
+        // Stop the managed agents over the v0.4 ep rails only (ps + any-mode despawn) — the admin
+        // instrument set. The manager `ctl` rail is deleted (1d).
         ...ep.pub,
         ...del,
         // deleteChannels/clearChannel: purge the channel's chat messages + delete its registry key.
@@ -1222,11 +1192,9 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
         `$KV.${channelBucket(space)}.>`,
       ],
     },
-    // Own inbox (connectProbe presence-watch delivery + JS API responses) + the BOUNDED admin control-reply
-    // subtree: the agent-stop step is `requestControl(CONTROL_ADMIN, ps/stop)`, whose reply rides
-    // `ctl.admin.<id>.reply.<uuid>` (NOT `_INBOX`) — without this grant those calls hang and the agents are
-    // never stopped before the streams are deleted.
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_ADMIN, pr.owner, pr.actor)}.reply.>`, ...ep.sub] },
+    // Own inbox (connectProbe presence-watch delivery + JS API responses) + the ep reply rail (the
+    // ps + any-mode despawn calls reply there). The `ctl.admin.<id>.reply.>` subtree is gone (1d).
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
   };
 }
 
@@ -1244,16 +1212,14 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
  *   • `control-caller-admin` (stop/attach) gets ONLY `ctl.<admin>.<id>` — it genuinely needs cross-agent
  *     reach. Its containment is NOT a manager re-check (there is none): it is the broker gating the admin
  *     subject + the cred being ephemeral (mint → one request → disconnect, from the local signing seed). */
-function controlCallerPermissions(space: string, pr: MintPrincipal, tier: string): Record<string, unknown> {
-  const reqSubject = controlServiceSubject(space, tier, pr.owner, pr.actor);
-  const ep = instrumentEpRows(space, pr, tier === CONTROL_ADMIN ? "admin" : "privileged");
+function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin"): Record<string, unknown> {
+  // 1d: the manager `ctl` rail is gone — an operator instrument holds ONLY its v0.4 ep rows (the
+  // tier-matched request set, the reply rail, describe, the one epc fetch). The `epTier` selects
+  // privileged (ps/start reads) vs admin (any-mode stop/attach) exactly as the ctl tier did.
+  const ep = instrumentEpRows(space, pr, epTier);
   return {
-    pub: { allow: [reqSubject, ...ep.pub] }, // exactly ONE ctl tier — ps/start XOR stop/attach — + its ep-rail mirror
-    // Own inbox + the BOUNDED control-reply subtree. `requestControl` issues a `noMux` request whose reply
-    // rides `ctl.<tier>.<id>.reply.<uuid>` (UNDER its own request subject, NOT `_INBOX`), so it must be able
-    // to subscribe that subtree — without this grant the reply sub is broker-denied and every control call
-    // hangs to timeout (endpoint.ts:803-806 predicts exactly this).
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${reqSubject}.reply.>`, ...ep.sub] },
+    pub: { allow: ep.pub },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
   };
 }
 
@@ -1334,28 +1300,28 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
 
 /** DEPLOYER (PR 1.5) — the `cotal spawn -f` manifest-deploy authority. `spawn -f` drives ONE
  *  `connectProbe` endpoint that both READS live state (roster/presence watch, channel registry,
- *  membership feed, manager-singleton lease) AND control-CALLS the running manager's admin tier
- *  (`launch` + `ps` readiness — both `CONTROL_ADMIN`). Those interleave on one connection, so a strict
- *  3-connection split would only refactor `live.ts` for marginal gain; `deployer` is that one coherent,
+ *  membership feed, manager-singleton lease) AND invokes the running manager's `launch` + `ps`
+ *  readiness over the v0.4 ep rails. Those interleave on one connection, so a strict 3-connection
+ *  split would only refactor `live.ts` for marginal gain; `deployer` is that one coherent,
  *  ephemeral deploy cred. It is the SOLE profile that combines reads + admin-control — NOT a template a
  *  4th command should reach for (revisit the connection split before adding a second such caller).
  *
  *  Boundaries (all enforced by omission / default-deny): NO self-post (`chat`/`inst`/`svc`), NO `$JS.>`,
  *  NO `STREAM.DELETE`/`PURGE`/`UPDATE`, NO DM/DLV/TASK `CONSUMER.CREATE` (no body-read surface), NO `$KV`
- *  writes (channel seeding rides a SEPARATE `channel-writer` cred), admin tier ONLY (no privileged, no
- *  serve). It holds `ctl.<admin>.<id>` because manifest launch/ps genuinely need the admin tier — and
- *  that IS real cross-agent power: the manager's admin authz is subject-gated, not caller-identity-gated
- *  (`authorizeNamed`: `if (admin) return undefined`), so holding the admin pub grant lets it stop/attach/
- *  launch ANY agent, with no manager-side `req.from.id` re-check. The BROKER gating that subject is the
- *  boundary. Containment is therefore the LIFETIME, not a manager re-check: minted from LOCAL same-checkout
- *  auth for one `spawn -f`, memory-only, dropped after deploy. If it is ever persisted, handed to
- *  user-supplied `--creds`, or reused as a general "read + admin" cred, revisit. */
-function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier = CONTROL_ADMIN): Record<string, unknown> {
-  // The ep-rail mirror of the deploy tier: static (admin) deploys carry the admin instrument set;
-  // the user-mode deployer VIEW (privileged) carries the privileged set PLUS an untargeted `launch`
-  // row — its launch stays owner-equality-authorized (the manager's ledger-derived admin flag is
-  // false for a spawn-scoped deployer), exactly the v0.3 user-mode privileged-tier launch.
-  const ep = tier === CONTROL_ADMIN
+ *  writes (channel seeding rides a SEPARATE `channel-writer` cred). It holds the admin INSTRUMENT ep
+ *  set (any-mode despawn/attach + the manager.admin family + reads) because manifest launch/ps
+ *  genuinely need cross-agent reach — and that IS real power: the manager's any-mode authz is
+ *  subject-gated (the any-mode ep row is mintable only under operator policy), so holding it lets it
+ *  stop/attach/launch ANY agent. The BROKER gating that row is the boundary. Containment is therefore
+ *  the LIFETIME, not a manager re-check: minted from LOCAL same-checkout auth for one `spawn -f`,
+ *  memory-only, dropped after deploy. If it is ever persisted, handed to user-supplied `--creds`, or
+ *  reused as a general "read + admin" cred, revisit. */
+function deployerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin" = "admin"): Record<string, unknown> {
+  // The v0.4 ep rows of the deploy authority: static (admin) deploys carry the admin instrument
+  // set; the user-mode deployer VIEW (privileged) carries the privileged set PLUS an untargeted
+  // `launch` row — its launch stays owner-equality-authorized (the manager's ledger-derived admin
+  // flag is false for a spawn-scoped deployer), exactly the v0.3 user-mode privileged-tier launch.
+  const ep = epTier === "admin"
     ? instrumentEpRows(space, pr, "admin")
     : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }]);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
@@ -1388,17 +1354,15 @@ function deployerPermissions(space: string, pr: MintPrincipal, tier: ControlTier
         ...kvPointRead(MGRKV), // manager-singleton lease keyed read (waitManagerReady) — point-get, NO write, NO watch
         ...kvPointRead(DLVKV), // delivery-lease keyed read (preserve-state quiescence proof) — point-get, NO write, NO watch
         "$JS.FC.>", // ordered-consumer flow control
-        // ONE control tier — launch + ps readiness. Static operator deploy creds ride CONTROL_ADMIN
-        // (the historical shape); the user-mode `deployer` VIEW rides CONTROL_PRIVILEGED so the
-        // manager's owner-equality launch authorization governs (never the admin-tier bypass).
-        controlServiceSubject(space, tier, pr.owner, pr.actor),
+        // 1d: launch + ps readiness ride the v0.4 ep rows only (the manager `ctl` rail is gone).
+        // Static deploys carry the admin instrument set; the user-mode deployer VIEW carries the
+        // privileged set + an owner-equality `launch` row (the manager's ledger-derived admin flag
+        // is false for a spawn-scoped deployer, so its launch stays owner-equality-authorized).
         ...ep.pub,
       ],
     },
-    // Own inbox (presence/registry watch delivery + JS API responses) + the BOUNDED control-reply
-    // subtree for the same tier: `requestControl(tier, launch/ps)` subscribes `ctl.<tier>.<id>.reply.<uuid>`,
-    // so without this grant the launch + ps-readiness calls hang to timeout.
-    sub: { allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, tier, pr.owner, pr.actor)}.reply.>`, ...ep.sub] },
+    // Own inbox (presence/registry watch delivery + JS API responses) + the ep reply rail.
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
   };
 }
 

@@ -1,15 +1,14 @@
 import {
-  CotalEndpoint,
   DEFAULT_SPACE,
-  CONTROL_PRIVILEGED,
-  CONTROL_ADMIN,
+  DEV_OWNER,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   invokeCommand,
+  mintLifecycleUid,
+  newIdentity,
   resolveService,
   standaloneConnectOpts,
   type ControlReply,
-  type ControlTier,
   type EpCaller,
   type EpVerbTarget,
   type Profile,
@@ -83,29 +82,35 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   abortPreservation: { command: "abort-preservation" },
 };
 
-/** The ep-rail control call ({@link askManager}'s auth-mesh path): one short-lived raw connection,
- *  a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile — the
- *  generic item-5 caller, no hand-imported manager schemas), then the mapped command. Targeted
- *  ops resolve the alias to its CURRENT principal triple through `ps` first and ride mode `any`
- *  on the admin tier (the instrument's cross-agent reach) or `owner` on the privileged tier —
- *  exactly the v0.3 tier the same call rode on ctl. */
+/** Operator reach for one targeted control call: `owner` rides the caller's own-domain verb rows
+ *  (the spawn capability's standing mint), `any` the admin instrument's cross-agent rows (§13.2
+ *  any-mode). Replaces the deleted manager ctl tiers as the CLI's mode selector (1d). */
+export type ControlReach = "owner" | "any";
+
+/** The ep-rail control call — since 1d {@link askManager}'s ONLY path: one short-lived raw
+ *  connection, a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile
+ *  — the generic item-5 caller, no hand-imported manager schemas), then the mapped command.
+ *  Targeted ops resolve the alias to its CURRENT principal triple through the name-keyed
+ *  `inspect` read first and ride mode `any` (admin instruments) or `owner` per {@link
+ *  ControlReach}. */
 async function askManagerEp(
   space: string,
   server: string,
   op: string,
   args: Record<string, unknown> | undefined,
   auth: ControlAuth,
-  tier: ControlTier,
+  reach: ControlReach,
   timeoutMs?: number,
 ): Promise<ControlReply> {
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
-  // standaloneConnectOpts handles both auth shapes: static creds, or the user bearer + sentinel
-  // (client-chosen inbox nonce; the callout scopes the reply inbox on it).
+  // standaloneConnectOpts handles all three auth shapes: static creds, the user bearer + sentinel
+  // (client-chosen inbox nonce; the callout scopes the reply inbox on it), or BARE on an open
+  // mesh (no credential system; the broker enforces nothing).
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds }),
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds } : {}),
     maxReconnectAttempts: 0,
   });
   try {
@@ -115,18 +120,31 @@ async function askManagerEp(
     if (mapped.targeted) {
       const name = String(args?.name ?? "").trim();
       if (!name) return { ok: false, error: `${op} requires a name` };
-      const ps = await invokeCommand(nc, space, service, "ps", undefined, { deadlineMs: 10_000 });
-      if (ps.reply.ok !== true) return { ok: false, error: `could not resolve "${name}": ${ps.reply.error?.message ?? "ps failed"}` };
-      const row = (ps.reply.data as { name: string; id: string; lifecycleUid: string }[]).find((r) => r.name === name);
-      if (!row) return { ok: false, error: `no agent named "${name}"` };
+      // Alias -> CURRENT principal triple via the manager's name-keyed `inspect` read (§13.2: a
+      // target is a triple, never an alias) - the same resolution the connector uses. `inspect`
+      // rides the SPAWN capability arm as well as the instrument read set, so every caller class
+      // that can despawn/attach can also resolve its target (a `ps` SCAN here broker-drops exactly
+      // the spawn-scoped user bearers - the 1c.2b read narrowing - and hangs their stop/attach).
+      const info = await invokeCommand(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
+      if (info.reply.ok !== true)
+        return { ok: false, error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}` };
+      const row = info.reply.data as { id: string; lifecycleUid: string };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
       // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins
       // the caller's own, so a foreign-owner target is broker-denied at publish.
       const dot = row.id.indexOf(".");
       const [tOwner, tActor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [caller.owner, row.id];
+      // Target mode from the RESOLVED target owner: an own-domain target rides `owner` mode (pinned
+      // to the caller's own owner); a CROSS-owner target rides `any` mode - which the broker admits
+      // only for a caller holding the admin instrument rows (a static admin instrument, or a user
+      // bearer whose ledger `admin` scope the callout minted them into). `reach: "any"` forces
+      // any-mode for a static admin instrument even on its own domain. So a spawn-scoped caller's
+      // cross-owner despawn/attach is broker-denied at publish (no any-mode row), while an
+      // admin-scoped operator's is admitted and the manager's fresh ledger check governs.
+      const mode = reach === "any" || tOwner !== caller.owner ? "any" : "owner";
       target = {
-        mode: tier === CONTROL_ADMIN ? "any" : "owner",
+        mode,
         owner: tOwner,
         actor: tActor,
         lifecycleUid: row.lifecycleUid,
@@ -150,57 +168,36 @@ async function askManagerEp(
   }
 }
 
-/** Connect a short-lived client with the resolved creds, send one control request to the manager,
- *  disconnect. The target is already reachability- + auth-preflighted by
- *  {@link resolveControlTarget}, so this connects straight through. `tier` picks the control
- *  subject: privileged for spawn --detach/ps — and, on a user mesh, for stop/attach too (the
- *  operator's bearer publishes there with scope "spawn"; the MANAGER authorizes owner-domain vs
- *  ledger-admin). On a static mesh stop/attach stay admin-tier ops. `creds` is the tier-scoped
- *  caller cred (`control-caller-privileged` / `control-caller-admin` — each holds ONLY its own
- *  tier's pub grant), or undefined on an open mesh. */
+/** Send one control command to the manager over the v0.4 service-endpoint rails and disconnect —
+ *  since 1d the manager's ONLY control door (the `ctl` tiers are deleted). The target is already
+ *  reachability- + auth-preflighted by {@link resolveControlTarget}. `reach` picks the operator
+ *  mode for the two targeted ops (stop/attach): `owner` = the caller's own domain (the spawn
+ *  capability's standing mint / a user bearer's own owner), `any` = the admin instrument's
+ *  cross-agent reach. Three auth shapes reach the rails: a static instrument's caller triple, a
+ *  user bearer's triple, or an OPEN mesh (no credential system — a bare connection under a
+ *  synthesized DEV_OWNER triple, since the manager registered under DEV_OWNER and the broker
+ *  enforces nothing). A raw `--creds` file from an older generation carries no ep rows and is
+ *  refused loud (no silent ctl fallback exists anymore). */
 export async function askManager(
   space: string,
   server: string,
   op: string,
   args?: Record<string, unknown>,
   auth: ControlAuth = {},
-  tier: ControlTier = CONTROL_PRIVILEGED,
+  reach: ControlReach = "owner",
   timeoutMs?: number,
 ): Promise<ControlReply> {
-  // Auth-mesh callers ride the v0.4 ep rails (1c.2b static instruments; 1c.2c user-mode bearers)
-  // — the caller triple marks the credential/bearer as carrying the ep rows. The ctl branch below
-  // remains for exactly the surfaces whose ep path is not wired yet: OPEN meshes (no service
-  // registry to register in) and raw `--creds` files minted by an older generation (no ep rows to
-  // ride) — both resolved at 1d, which deletes the manager ctl rail.
+  // A user bearer or a minted static instrument carries its own ep caller triple: ride it.
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerEp(space, server, op, args, auth, tier, timeoutMs);
-  const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    ...auth,
-    channels: [],
-    consume: false, // request/reply only — binds no consumers (and under auth has no pre-created DM durable)
-    registerPresence: false,
-    watchPresence: false,
-    card: { name: "cli", kind: "endpoint" },
-  });
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
-  await ep.start();
-  try {
-    return await ep.requestControl(tier, { op, args }, timeoutMs);
-  } catch (e) {
-    // A user-mode caller whose cli actor lacks the tier's scope gets a broker publish denial (the
-    // red endpoint error above) and then this timeout — name the grant, not just the silence.
-    // The re-grant REPLACES the scope list, so the hint must say "add", never a bare one-token
-    // --scope that would silently strip the caller's spawn/role capabilities.
-    const need = tier === CONTROL_ADMIN ? "admin" : "spawn";
-    const scopeHint = auth.bearer
-      ? ` - on a user-auth mesh this op needs scope "${need}" on your cli actor. Re-grant with "${need}" ADDED to your current scope (the upsert replaces the list; see \`cotal actor list\`), e.g. \`cotal actor grant cli --sub <your IdP subject> --scope 'spawn,role:default,${need}'\``
-      : "";
-    return { ok: false, error: `no manager reachable (${(e as Error).message})${scopeHint}` };
-  } finally {
-    await ep.stop();
-  }
+    return askManagerEp(space, server, op, args, auth, reach, timeoutMs);
+  // A raw `--creds` file with NO minted triple is a pre-1c generation's cred (no ep rows). The ctl
+  // rail it used to ride is gone (1d), so refuse loud with the recovery rather than hang.
+  if (auth.creds)
+    return { ok: false, error: `this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder (\`cotal ps\`/\`cotal stop\`) which mints the instrument for you` };
+  // OPEN mesh: no credential system. The manager registered its service under DEV_OWNER and the
+  // broker enforces nothing, so synthesize a fresh DEV_OWNER caller triple and connect bare.
+  const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
+  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs);
 }
 
 export function failIfNotOk(reply: ControlReply): void {

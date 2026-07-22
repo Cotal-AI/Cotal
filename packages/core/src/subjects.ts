@@ -505,24 +505,14 @@ export function anycastServeFilter(space: string, service: string): string {
   return `${spacePrefix(space)}.svc.${routeToken(service)}.>`;
 }
 
-/** Control request/reply to a service (e.g. the manager): `ctl.<service>.<owner>.<actor>` — tagged with
- *  the caller principal; anycast via queue group. Identity slots accept `*` (serve side: `ctl.<tier>.*.*`). */
+/** Control request/reply to a service — since 1d ONLY the delivery daemon (`ctl.delivery` /
+ *  `ctl.delivery-admin`) and the auth plane (`ctl.auth-admin`); the manager's own control moved to
+ *  its v0.4 `service` endpoint on the `ep.*` rails. `ctl.<service>.<owner>.<actor>` — tagged with the
+ *  caller principal; anycast via queue group. Identity slots accept `*` (serve side: `ctl.<svc>.*.*`). */
 export function controlServiceSubject(space: string, service: string, owner: string, actor: string): string {
   return `${spacePrefix(space)}.ctl.${routeToken(service)}.${ownerToken(owner)}.${ownerToken(actor)}`;
 }
 
-/** Control-plane service names — the three-tier split (P2a). The manager subscribes to ALL
- *  three; the cred layer grants {@link CONTROL_SELF_SERVICE} to every agent and
- *  {@link CONTROL_PRIVILEGED} only to spawn-capable agents (default-deny otherwise), while
- *  {@link CONTROL_ADMIN} is reached only by the manager's own allow-all profile (no agent ever
- *  gets it). nats-server — not a handler — is the coarse boundary. The handler then routes by
- *  op↔service (fail-closed on mismatch) and refines own-child vs admin among holders of the
- *  privileged subject. `CONTROL_PRIVILEGED` is the existing `manager` service; `CONTROL_SELF_SERVICE`
- *  carries only the no-name self stop/despawn; `CONTROL_ADMIN` carries the operator-only ops
- *  (purge, cross-agent stop/despawn/attach/definePersona). */
-export const CONTROL_PRIVILEGED = "manager" as const;
-export const CONTROL_SELF_SERVICE = "self" as const;
-export const CONTROL_ADMIN = "admin" as const;
 /** The delivery service — a control service served by the server-side **delivery daemon** (NOT the
  *  manager), carrying the runtime durable `join` / `leave` / `listMemberships` ops agents call. Agents
  *  publish a request to `ctl.delivery.<agentId>` and receive the reply on `ctl.delivery.<agentId>.…`,
@@ -536,7 +526,7 @@ export const CONTROL_DELIVERY = "delivery" as const;
  *  EXECUTES for the mesh's renewal/repair owner — credential reload (`reloadCreds`, the class-2
  *  standing-renewal adoption step) now; the live-eviction executor rides here next. Cred-enforced
  *  caller set: only the manager's `supervisor` profile holds the request-publish grant (every agent
- *  cred is default-denied — nats-server is the boundary, same pattern as {@link CONTROL_ADMIN});
+ *  cred is default-denied — nats-server is the boundary);
  *  the `delivery` cred holds the serve + bounded-reply side. */
 export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
 /** The AUTH service's control rail (#29 piece 3; SPEC 13.2 reserved): lifecycle-authority ops the
@@ -549,16 +539,9 @@ export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
  *  minted with that principal's request-publish grant reaches it, and replies are bound under
  *  the sender's own `<request>.reply.>` subtree. */
 export const CONTROL_AUTH_ADMIN = "auth-admin" as const;
-/** The three control-plane tiers the manager serves — values tie to the `CONTROL_*` service
- *  names so handler routing can't drift from the subject names. */
-export type ControlTier = typeof CONTROL_PRIVILEGED | typeof CONTROL_SELF_SERVICE | typeof CONTROL_ADMIN;
 
 export function traceSubject(space: string, agentId: string): string {
   return `${spacePrefix(space)}.trace.${token(agentId)}`;
-}
-
-export function controlSubject(space: string, agentId: string): string {
-  return `${spacePrefix(space)}.control.${token(agentId)}`;
 }
 
 /** Wildcard matching every subject within a space. */

@@ -10,14 +10,14 @@
  *     staged at generation 1 = through the post-registration gate CAS) for exactly the minted
  *     JWT's digest — and the manager's STANDING supervisor credential is broker-DENIED the epgate
  *     write, so the traversal could only have ridden the scoped one-shot executor.
- *  3. SHARED F5(a)/maintenance CHOKEPOINT (checklist 3/8): a retired managed principal is refused
- *     on BOTH doors (`ep.one` permission-denied + `ctl` refusal, same helper), and a
- *     resume-pending manager refuses ep ops (`unavailable`); both restore.
+ *  3. F5(a)/maintenance CHOKEPOINT (checklist 3/8): a retired managed principal is refused on
+ *     `ep.one` (permission-denied), and a resume-pending manager refuses ep ops (`unavailable`);
+ *     both restore. (Since 1d the ep door is the only control door.)
  *  4. processEpoch ≠ instanceId (checklist 4): the served epoch is the GATE's processEpoch (0),
  *     while instanceId is the manager's lifecycle uid.
  *  5. Typed invoke + describe (the 1a walking skeleton): a caller-cred `epCall` over `ep.one`
  *     (with the gate-backed currency reader, checklist 6) returns the digest-bound ManagerStatus;
- *     `describe` returns the public descriptor; the legacy `ctl` rail still answers (dual-serve).
+ *     `describe` returns the public descriptor.
  *  6. STANDING RENEWAL through the fence (checklist 7): a re-mint of the SAME serve identity
  *     stages a SECOND active ledger row (distinct per-JWT id, same nkey) behind the gate CAS.
  *  7. stop() tears the serve loop down — the ep rail stops answering.
@@ -34,12 +34,12 @@ import { connect } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, idFromCreds,
-  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER, CONTROL_PRIVILEGED,
-  controlServiceSubject, recordsBucket, epAuthBucket, epgateKey, parseEndpointGate,
+  mintLifecycleUid, standaloneConnectOpts, principalKey, DEV_OWNER,
+  recordsBucket, epAuthBucket, epgateKey, parseEndpointGate,
   epcredFamilyPrefix, parseLedgerRow, rawDigest, recordSpecKey, RECORD_KINDS,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   serveIssuanceGateKv,
-  type EpServeLedgerRow, type ControlReply,
+  type EpServeLedgerRow,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -143,13 +143,12 @@ try {
     await supNc.drain().catch(() => supNc.close());
   }
 
-  console.log("2. typed invoke over ep.one + describe + ctl dual-serve (checklist 6/9)");
+  console.log("2. typed invoke over ep.one + describe (checklist 6/9)");
   const callerId = newIdentity();
   const callerUid = mintLifecycleUid();
   const caller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
   const callerCreds = await mintCreds(auth, callerId, "agent", {
     lifecycleUid: callerUid,
-    capabilities: ["spawn"], // the privileged ctl tier, for the dual-serve check
     endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }],
   });
   const callerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
@@ -190,27 +189,13 @@ try {
     sub.unsubscribe();
   }
 
-  // Dual-serve: the legacy ctl rail still answers the SAME caller (nothing deleted in 1a).
-  const ctlPs = async (): Promise<ControlReply> => {
-    const reqSubject = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, callerId.id);
-    const m = await callerNc.request(reqSubject, JSON.stringify({
-      op: "ps", args: {}, from: { id: `${DEV_OWNER}.${callerId.id}`, name: "smoke", role: "agent", kind: "agent" },
-    }), { timeout: 5000, noMux: true, reply: `${reqSubject}.reply.${randomUUID()}` });
-    return JSON.parse(dec.decode(m.data)) as ControlReply;
-  };
-  const psOk = await ctlPs();
-  check("the legacy ctl rail STILL serves the same caller (dual-serve intact)", psOk.ok === true, psOk);
-
-  console.log("3. ONE shared F5(a)/maintenance chokepoint on BOTH doors (checklist 3/8)");
+  console.log("3. ONE shared F5(a)/maintenance chokepoint on the ep door (checklist 3/8)");
   const callerPrincipal = principalKey(DEV_OWNER, callerId.id).key;
   M.retiredPrincipals.add(callerPrincipal);
   const rRet = await callStatus();
   check("a RETIRED managed principal is refused on ep.one (permission-denied, F5(a))",
     rRet.reply.ok === false && rRet.reply.error?.code === "permission-denied"
     && String(rRet.reply.error?.message ?? "").includes("retired"), rRet.reply);
-  const psRet = await ctlPs();
-  check("the SAME principal is refused on the ctl door with the SAME F5 refusal (one chokepoint, not two)",
-    psRet.ok === false && String(psRet.error ?? "").includes("retired"), psRet);
   M.retiredPrincipals.delete(callerPrincipal);
   M.resumeRequired = true;
   const rRes = await callStatus();

@@ -41,7 +41,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint, CONTROL_ADMIN } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
@@ -191,8 +191,9 @@ try {
   const psOut = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps lists the detached agent under its OVERRIDDEN identity", /bard/.test(psOut) && !/poet/.test(psOut), psOut);
 
-  // C — attach replies the pinned ws:// contract and the socket opens. One-shot control client
-  // over core (the same wire the CLI's askManager uses).
+  // C — attach replies the pinned ws:// contract and the socket opens. One-shot ep client over
+  // core (the same wire the CLI's askManagerEp uses: inspect resolves the wire target, then the
+  // targeted attach rides the manager's v0.4 service endpoint — the open-mesh bare-caller shape).
   const ep = new CotalEndpoint({
     space: SPACE,
     servers: SERVER,
@@ -205,7 +206,20 @@ try {
   await ep.start();
   let attachReply: ControlReply;
   try {
-    attachReply = await ep.requestControl(CONTROL_ADMIN, { op: "attach", args: { name: "bard" } });
+    const info = await ep.invokeService("manager", "inspect", { name: "bard" });
+    if (info.reply.ok !== true) throw new Error(`inspect could not resolve bard: ${info.reply.error?.message ?? info.reply.error?.code}`);
+    const row = info.reply.data as { id: string; lifecycleUid: string };
+    // A static/open row's `id` is the bare actor under the caller's own owner; a user-mode row's
+    // is the composite `owner.actor` — split only when the dot is there (the CLI's exact guard).
+    const dot = row.id.indexOf(".");
+    const [tOwner, tActor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [ep.principal.owner, row.id];
+    // Operator reach: this one-shot client is NOT bard's spawner, so owner-mode's spawner-bound
+    // privileged semantics refuse it — the instrument rides ANY-mode (the CLI's non-bearer
+    // `reach: "any"` shape; on an open mesh the serve side admits it as the old single-trusted-host).
+    const r = await ep.invokeService("manager", "attach", undefined, {
+      target: { mode: "any", owner: tOwner, actor: tActor, lifecycleUid: row.lifecycleUid },
+    });
+    attachReply = r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
   } finally {
     await ep.stop();
   }
@@ -248,18 +262,37 @@ try {
     }
   }
 
+  // E/F run TRUE subprocesses through bin/cotal.ts with `extensions: true`, so the sandbox must
+  // cover the OPERATOR config dir too (the installed-extensions prefix lives under
+  // `$XDG_CONFIG_HOME/cotal`, NOT COTAL_HOME): the operator's real store holds npm-published
+  // connectors built against the RELEASED core, and in the pre-release window their import
+  // fail-louds against this worktree's core (the designed skew refusal) before the arg
+  // validation under test is ever reached. The seed stays skipped so nothing npm-installs into
+  // the sandbox either. Customers never see this state (the lockstep release publishes core +
+  // connectors together).
+  const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+
   // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
   const tomb = spawnSync("npx", ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
     encoding: "utf8",
-    env: { ...process.env, COTAL_HOME: home },
+    env: subEnv,
   });
   ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
   ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
 
-  // F — foreground --creds fails loud.
+  // F — foreground --creds fails loud. A foreground spawn REQUIRES its connector materialized
+  // pre-dispatch (spawnRequiredExtensions), so first `ext add` THIS WORKTREE's claude connector
+  // into the sandbox prefix (the real local-path install + core peer-link path) — never the
+  // operator's global store.
+  const extAdd = spawnSync(
+    "npx",
+    ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "ext", "add", join(import.meta.dirname, "..", "..", "extensions", "connector-claude-code")],
+    { encoding: "utf8", env: subEnv },
+  );
+  ok("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, (extAdd.stderr + extAdd.stdout).slice(0, 300));
   const fg = spawnSync("npx", ["tsx", join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
     encoding: "utf8",
-    env: { ...process.env, COTAL_HOME: home },
+    env: subEnv,
   });
   ok("foreground --creds exits non-zero", fg.status === 1, fg.status);
   ok("foreground --creds names --detach", /only valid with --detach/.test(fg.stderr), fg.stderr.slice(0, 200));

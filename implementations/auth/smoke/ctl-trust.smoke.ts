@@ -1,9 +1,11 @@
 /**
- * Gate-1 CONTROL-PLANE TRUST live smoke (the security lane's 4 cases) — pins the assumptions the
- * manager makes about a control caller's principal against a REAL user-auth broker + REAL callout,
- * for CALLOUT-MINTED user-mode connections (not the static/dev creds every other control test uses).
+ * Gate-1 CONTROL-PLANE TRUST live smoke (the security lane's 4 cases) — pins the assumptions a
+ * ctl-rail SERVER makes about a control caller's principal against a REAL user-auth broker + REAL
+ * callout, for CALLOUT-MINTED user-mode connections (not the static/dev creds other tests use).
+ * The manager's ctl tiers are gone (1d); the surviving production rail is the delivery daemon's
+ * `ctl.delivery` carve-out, so the trust properties are pinned THERE.
  *
- * The manager trusts the ctl caller's principal from the SUBJECT (`ctl.<tier>.<owner>.<actor>`) after
+ * The server trusts the ctl caller's principal from the SUBJECT (`ctl.delivery.<owner>.<actor>`) after
  * serveControl's two guards. That trust is only sound if the BROKER actually forge-locks the subject's
  * identity slots to the connection's minted grant, and the guards reject a payload that disagrees. This
  * stands up the real pieces and proves both halves at once:
@@ -11,18 +13,20 @@
  *   (a) PAYLOAD FORGE   — A.cli sends a control request on its OWN subject but with a payload `from.id`
  *                         claiming A.victim; serveControl's `req.from.id === subject-sender` guard rejects
  *                         it BEFORE the handler runs (error reply, handler never recorded it).
- *   (b) SELF-SUBJECT FORGE — A.cli raw-publishes onto ctl.<A>.victim (its own owner, another actor); the
- *                         BROKER denies the publish (the mint grants only ctl.<A>.cli) — the manager never sees it.
- *   (c) CROSS-OWNER     — A.cli raw-publishes onto ctl.<B>.cli (another owner); the broker denies it too.
+ *   (b) SELF-SUBJECT FORGE — A.cli raw-publishes onto ctl.delivery.<A>.victim (its own owner, another
+ *                         actor); the BROKER denies the publish (the mint grants only
+ *                         ctl.delivery.<A>.cli) — the server never sees it.
+ *   (c) CROSS-OWNER     — A.cli raw-publishes onto ctl.delivery.<B>.cli (another owner); the broker
+ *                         denies it too.
  *   (d) REPLY ESCAPE    — A.cli sends a well-formed request on its own subject but points the reply at a
- *                         PEER's reply lane (ctl.<B>.cli.reply.… — exactly the confused-deputy condition
- *                         `boundReply` closes); boundReply drops it before the handler, and a privileged
- *                         witness on that lane confirms nothing lands.
+ *                         PEER's reply lane (ctl.delivery.<B>.cli.reply.… — exactly the confused-deputy
+ *                         condition `boundReply` closes); boundReply drops it before the handler, and a
+ *                         privileged witness on that lane confirms nothing lands.
  *
  * The bearers are minted DIRECTLY by the production issuer against a real actor ledger (no IdP HTTP
- * exchange); the callout runs in-process on the callout-account connection; the "manager" is a
- * CotalEndpoint on a static supervisor cred serving CONTROL_PRIVILEGED with { boundReply: true }.
- * Every subject comes from core's controlServiceSubject/CONTROL_PRIVILEGED — never a hand-rolled string.
+ * exchange); the callout runs in-process on the callout-account connection; the "daemon" is a
+ * CotalEndpoint on a scoped delivery cred serving CONTROL_DELIVERY with { boundReply: true }.
+ * Every subject comes from core's controlServiceSubject/CONTROL_DELIVERY — never a hand-rolled string.
  *
  * COTAL_HOME-free (no workspace state); kills only the nats-server it starts, by exact PID.
  * Run: npx tsx implementations/auth/smoke/ctl-trust.smoke.ts   (needs nats-server on PATH)
@@ -35,7 +39,7 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  principalKey, controlServiceSubject, CONTROL_PRIVILEGED,
+  principalKey, controlServiceSubject, CONTROL_DELIVERY,
   type ControlRequest, type ControlReply,
 } from "@cotal-ai/core";
 import {
@@ -84,9 +88,9 @@ const ledgerDir = mkdtempSync(join(tmpdir(), "cotal-ctltrust-ledger-"));
 const ownerA = deriveOwnerToken(SECRET, "idp-subject-A");
 const ownerB = deriveOwnerToken(SECRET, "idp-subject-B");
 const ACL = { allowSubscribe: ["general"], allowPublish: ["general"] };
-const aCliRow = grantActor(ledgerDir, { owner: ownerA, actor: "cli", scope: ["spawn"], ...ACL });     // spawn-capable ⇒ holds ctl.<A>.cli
-grantActor(ledgerDir, { owner: ownerA, actor: "victim", scope: [], ...ACL });          // no spawn ⇒ no ctl grant of its own
-grantActor(ledgerDir, { owner: ownerB, actor: "cli", scope: ["spawn"], ...ACL });      // a different owner's spawn-capable actor
+const aCliRow = grantActor(ledgerDir, { owner: ownerA, actor: "cli", scope: ["spawn"], ...ACL });     // holds ctl.delivery.<A>.cli (its OWN slot only)
+grantActor(ledgerDir, { owner: ownerA, actor: "victim", scope: [], ...ACL });          // the forged-identity target of (a)/(b)
+grantActor(ledgerDir, { owner: ownerB, actor: "cli", scope: ["spawn"], ...ACL });      // a different owner's actor — the cross-owner target
 
 // ---------- the production issuer: mint A.cli's bearer directly (no IdP HTTP exchange) ----------
 // Lifecycle-bound to A.cli's row uid (SPEC 13.1): a directly-minted bearer must carry the row's
@@ -115,11 +119,11 @@ try {
     log: () => {},
   });
 
-  // ---------- the "manager": a static supervisor cred serving CONTROL_PRIVILEGED (boundReply) ----------
-  const supervisorCreds = await mintCreds(auth, newIdentity(), "supervisor");
+  // ---------- the "daemon": a scoped delivery cred serving CONTROL_DELIVERY (boundReply) ----------
+  const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
   managerEp = new CotalEndpoint({
-    space, servers: SERVERS, creds: supervisorCreds,
-    card: { name: "manager", kind: "agent" },
+    space, servers: SERVERS, creds: deliveryCreds,
+    card: { name: "delivery", kind: "endpoint" },
     registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
   });
   const managerErrors: string[] = [];
@@ -127,7 +131,7 @@ try {
   await managerEp.start();
   const handled: ControlRequest[] = []; // records ONLY requests that pass both guards + reach the handler
   managerEp.serveControl(
-    CONTROL_PRIVILEGED,
+    CONTROL_DELIVERY,
     (req) => { handled.push(req); return { ok: true, data: { echoedOp: req.op } }; },
     { boundReply: true },
   );
@@ -136,7 +140,7 @@ try {
   // ---------- a privileged witness on B.cli's reply lane (the confused-deputy target for check d) ----------
   const witnessCreds = await mintCreds(auth, newIdentity(), "admin"); // admin sub.allow = cotal.<space>.>
   witnessNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(witnessCreds)) });
-  const bReplyLane = `${controlServiceSubject(space, CONTROL_PRIVILEGED, ownerB, "cli")}.reply.>`;
+  const bReplyLane = `${controlServiceSubject(space, CONTROL_DELIVERY, ownerB, "cli")}.reply.>`;
   const escapeLanded: string[] = [];
   witnessNc.subscribe(bReplyLane, { callback: (err, m) => { if (!err) escapeLanded.push(m.subject); } });
   await witnessNc.flush();
@@ -156,9 +160,9 @@ try {
   check("setup: A.cli connects user-mode via the callout (valid bearer + granted actor)", !!ncA);
 
   // Subjects + principal dot-forms — ALL from core's builders (never hand-rolled).
-  const reqA = controlServiceSubject(space, CONTROL_PRIVILEGED, ownerA, "cli");
-  const subjAvictim = controlServiceSubject(space, CONTROL_PRIVILEGED, ownerA, "victim");
-  const subjBcli = controlServiceSubject(space, CONTROL_PRIVILEGED, ownerB, "cli");
+  const reqA = controlServiceSubject(space, CONTROL_DELIVERY, ownerA, "cli");
+  const subjAvictim = controlServiceSubject(space, CONTROL_DELIVERY, ownerA, "victim");
+  const subjBcli = controlServiceSubject(space, CONTROL_DELIVERY, ownerB, "cli");
   const idAcli = principalKey(ownerA, "cli").key;       // == parseSubject(reqA).sender
   const idAvictim = principalKey(ownerA, "victim").key; // the forged claim in (a)/(b)
   const idBcli = principalKey(ownerB, "cli").key;
@@ -174,11 +178,11 @@ try {
   };
 
   // ---------- POSITIVE CONTROL: a legit A.cli request reaches + is recorded by the handler ----------
-  // Makes every negative assertion below meaningful: it proves the manager serves, and that a request
+  // Makes every negative assertion below meaningful: it proves the daemon serves, and that a request
   // which passes the guards IS recorded — so "not recorded" downstream is a real rejection, not silence.
   const pos = await requestOn(reqA, "sanity", idAcli, reqA);
   check(
-    "setup: manager serves A.cli's legit privileged request (ok reply, handler recorded it)",
+    "setup: the daemon serves A.cli's legit delivery-rail request (ok reply, handler recorded it)",
     pos?.ok === true && handled.some((r) => r.op === "sanity" && r.from.id === idAcli),
     { pos, handled: handled.map((h) => h.op) },
   );
@@ -197,7 +201,7 @@ try {
   await ncA.flush().catch(() => {});
   const deniedB = await until(() => permErrors.slice(beforeB).some((e) => /permission/i.test(e)));
   check(
-    "(b) self-subject forge (publish to ctl.<A>.victim) is broker-denied; the manager never sees it",
+    "(b) self-subject forge (publish to ctl.delivery.<A>.victim) is broker-denied; the daemon never sees it",
     deniedB && !handled.some((r) => r.op === "self-forge"),
     { deniedB, perm: permErrors.slice(beforeB), handled: handled.map((h) => h.op) },
   );
@@ -208,16 +212,16 @@ try {
   await ncA.flush().catch(() => {});
   const deniedC = await until(() => permErrors.slice(beforeC).some((e) => /permission/i.test(e)));
   check(
-    "(c) cross-owner forge (publish to ctl.<B>.cli) is broker-denied; the manager never sees it",
+    "(c) cross-owner forge (publish to ctl.delivery.<B>.cli) is broker-denied; the daemon never sees it",
     deniedC && !handled.some((r) => r.op === "cross-owner"),
     { deniedC, perm: permErrors.slice(beforeC), handled: handled.map((h) => h.op) },
   );
 
   // ---------- (d) REPLY ESCAPE ----------
   // A.cli publishes a well-formed request on its OWN subject (broker-allowed) but points the reply at a
-  // PEER's reply lane — ctl.<B>.cli.reply.<uuid> — which the supervisor cred CAN publish to
-  // (ctl.<tier>.*.*.reply.>). Only boundReply stops the manager from becoming a confused deputy here.
-  const escapeReply = `${controlServiceSubject(space, CONTROL_PRIVILEGED, ownerB, "cli")}.reply.${randomUUID()}`;
+  // PEER's reply lane — ctl.delivery.<B>.cli.reply.<uuid> — which the delivery cred CAN publish to
+  // (ctl.delivery.*.*.reply.>). Only boundReply stops the server from becoming a confused deputy here.
+  const escapeReply = `${controlServiceSubject(space, CONTROL_DELIVERY, ownerB, "cli")}.reply.${randomUUID()}`;
   const escapeBefore = escapeLanded.length;
   ncA.publish(reqA, reqBody("reply-escape", idAcli), { reply: escapeReply });
   await ncA.flush().catch(() => {});

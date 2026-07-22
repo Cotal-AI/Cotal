@@ -30,7 +30,6 @@ import {
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
-  CONTROL_ADMIN,
   DEV_OWNER,
   isReachable,
   LEASE_TTL_MS,
@@ -337,7 +336,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
         if (retryDelivery && processAlive(retryDelivery, context)) await stopLocalProcess(retryDelivery, context);
-        const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, CONTROL_ADMIN, 60_000);
+        const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, "any", 60_000);
         const replan = reprepared.ok ? reprepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } : undefined;
         if (!replan?.inventory || (replan.failures?.length ?? 0) !== 0 || (replan.state !== "prepared" && replan.state !== "preserved"))
           throw new Error(reprepared.error ?? "manager could not re-prepare the recorded preservation attempt");
@@ -351,7 +350,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           // A restarted manager prepared a DIFFERENT inventory: the journaled cut no longer
           // matches reality. Release its fence and abandon the stale intent; a rerun cuts fresh.
           try {
-            await askManager(retryTarget.space, retryTarget.server, "abortPreservation", { attemptId }, retryTarget.auth, CONTROL_ADMIN, 30_000);
+            await askManager(retryTarget.space, retryTarget.server, "abortPreservation", { attemptId }, retryTarget.auth, "any", 30_000);
           } catch { /* best effort - the fence dies with the manager */ }
           abortMaintenanceCut(lock);
           clearPreservationPrepareIntent(lock);
@@ -384,7 +383,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         "preparePreservation",
         { attemptId },
         target.auth,
-        CONTROL_ADMIN,
+        "any",
         60_000,
       );
       if (!prepared.ok) throw new Error(prepared.error ?? "manager preservation prepare failed");
@@ -445,7 +444,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         "commitPreservation",
         { attemptId },
         target.auth,
-        CONTROL_ADMIN,
+        "any",
         120_000,
       );
       if (!commit.ok) throw new Error(commit.error ?? "manager preservation commit was incomplete");

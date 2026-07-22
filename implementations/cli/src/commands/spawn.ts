@@ -29,7 +29,6 @@ import {
   type LaunchSpec,
   type ParsedArgs,
   type SpaceAuth,
-  CONTROL_PRIVILEGED,
 } from "@cotal-ai/core";
 import {
   agentActorTokenKey,
@@ -258,7 +257,7 @@ async function spawnDetached(
     transcript,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
-  }, t.auth, CONTROL_PRIVILEGED, START_TIMEOUT_MS);
+  }, t.auth, "owner", START_TIMEOUT_MS);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(
