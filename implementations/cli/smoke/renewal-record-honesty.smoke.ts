@@ -18,7 +18,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth } from "@cotal-ai/core";
+import { createSpaceAuth, inspectCredHealth, mintCreds, newIdentity } from "@cotal-ai/core";
 import {
   authDir,
   readRenewalRecord,
@@ -48,13 +48,13 @@ saveSpaceAuth(authDir(root), auth);
 const origCwd = process.cwd();
 const origLog = console.log;
 const origErr = console.error;
-function runDoctor(): Promise<{ out: string; code: number | undefined }> {
+function runDoctor(values: Record<string, boolean | string | undefined> = {}): Promise<{ out: string; code: number | undefined }> {
   const lines: string[] = [];
   console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
   console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
   process.exitCode = undefined;
   process.chdir(root);
-  return doctor({ values: {}, positionals: ["auth"], raw: [] })
+  return doctor({ values, positionals: ["auth"], raw: [] })
     .then(() => ({ out: lines.join("\n"), code: process.exitCode as number | undefined }))
     .finally(() => {
       console.log = origLog;
@@ -100,6 +100,37 @@ try {
   check("broker-refused renewal exits non-zero (1)", refused.code === 1, refused.code);
   check("the verdict names the refusal, not `auth: healthy`", !refused.out.includes("auth: healthy") && /not broker-accepted|refused by the broker/i.test(refused.out), refused.out);
   check("the refusal line names the next action (repair the manager)", /manager/i.test(refused.out) && refused.out.includes("next:"), refused.out);
+
+  // ── 3. `doctor --fix` must not ERASE a broker refusal to green ───────────────────────────────────
+  // A local re-sign is not a broker proof. If the last renewal was broker-REFUSED and the operator runs
+  // `--fix`, the re-signed generation is still unproven (it may be the very signer the broker rejects);
+  // `--fix` must carry the refusal forward, not overwrite it with an adoption-absent record and go green.
+  const now = Math.floor(Date.now() / 1000);
+  const dlvId = newIdentity();
+  const rwId = newIdentity();
+  // an EXPIRED delivery cred = a remintable PROBLEM, so the `--fix` branch actually runs.
+  writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
+  writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
+  // the last renewal was refused by the broker.
+  writeRenewalRecord(root, {
+    ts: "2026-01-01T00:00:00.000Z",
+    owner: "manager",
+    results: [{ file: "delivery.creds", ok: true }],
+    adoption: { ok: false, error: "the broker did not accept the re-signed credential (Authorization Violation); nothing adopted" },
+  });
+  const afterFix = await runDoctor({ fix: true });
+  check("`--fix` re-signed the expired delivery cred (the fix branch ran)", inspectCredHealth(readFileSync(join(root, ".cotal", "delivery.creds"), "utf8")).state === "healthy");
+  check("`--fix` did NOT erase the broker refusal to green (exit 1)", afterFix.code === 1, `${afterFix.code} ${afterFix.out.slice(-300)}`);
+  check("`--fix` verdict still names the unproven/refused state, not `auth: healthy`", !afterFix.out.includes("auth: healthy") && /not broker-accepted|refused by the broker/i.test(afterFix.out), afterFix.out);
+  const afterRec = readRenewalRecord(root);
+  check("the persisted record carries the refusal forward as an explicit unproven state", afterRec?.adoption?.ok === false && /not yet broker-proven/i.test(afterRec?.adoption?.error ?? ""), afterRec?.adoption);
+
+  // negative control: with NO prior refusal, `--fix` on a fresh expired cred still reaches healthy/0
+  // (it only preserves REFUSALS, it does not block every fix).
+  writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
+  writeRenewalRecord(root, { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } } });
+  const cleanFix = await runDoctor({ fix: true });
+  check("`--fix` with no prior refusal still reaches healthy (exit 0)", cleanFix.code === undefined && cleanFix.out.includes("auth: healthy"), `${cleanFix.code} ${cleanFix.out.slice(-300)}`);
 
   console.log(fail === 0 ? `\nRENEWAL-RECORD HONESTY OK ✅  (${pass} passed, ${fail} failed)` : `\nRENEWAL-RECORD HONESTY FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = fail === 0 ? 0 : 1;

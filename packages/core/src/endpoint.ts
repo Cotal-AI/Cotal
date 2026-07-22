@@ -657,8 +657,16 @@ export class CotalEndpoint extends EventEmitter {
    *  the preflight proves broker acceptance, the resident authenticator getter can never present an
    *  unproven cred (not even on an incidental reconnect), and a rejected candidate leaves the resident
    *  connection untouched on BOTH the timer and explicit paths. THROWS (structured) on any failure. */
-  private async adoptFreshCreds(opts: { expected?: string; deadlineMs?: number } = {}): Promise<{ iat?: number; exp?: number }> {
-    const deadline = Date.now() + (opts.deadlineMs ?? CotalEndpoint.RELOAD_DEADLINE_MS);
+  private async adoptFreshCreds(opts: { expected?: string; deadline?: number } = {}): Promise<{ iat?: number; exp?: number }> {
+    // ABSOLUTE deadline, captured at the CALLER's entry (reloadCreds / renewCredsOnTimer) BEFORE the
+    // single-flight enqueue, so the queue wait behind an in-flight transaction counts against it. A
+    // reload queued behind a hung-store timer tick can never receive a FRESH budget and commit after
+    // the renewal owner's request bound already elapsed.
+    const deadline = opts.deadline ?? Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
+    // Fence BEFORE any source I/O: if the queue wait already burned the budget, fail structured now and
+    // never touch the store, the preflight, or currentCreds.
+    if (Date.now() > deadline)
+      throw new Error("reloadCreds: the request deadline elapsed while queued behind another credential transaction; nothing adopted");
     const candidate = await CotalEndpoint.withDeadline(this.credsSource!(), deadline - Date.now(), "reloadCreds: the creds source did not return before the daemon deadline; nothing adopted");
     const id = idFromCreds(candidate);
     if (id !== this.connId)
@@ -684,8 +692,10 @@ export class CotalEndpoint extends EventEmitter {
    *  with the explicit reload. Never throws — a failed renewal logs and retries while the old cred
    *  stays live until its expiry. */
   private async renewCredsOnTimer(): Promise<void> {
+    // Deadline captured HERE, before the enqueue, for the same reason as the explicit reload.
+    const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
     try {
-      await this.runCredsTxn(() => this.adoptFreshCreds());
+      await this.runCredsTxn(() => this.adoptFreshCreds({ deadline }));
       await this.swapConnectionOntoFreshCreds();
     } catch (e) {
       this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
@@ -711,10 +721,14 @@ export class CotalEndpoint extends EventEmitter {
   async reloadCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }> {
     if (!this.credsSource)
       throw new Error("reloadCreds: this endpoint has no creds source (a static cred cannot be renewed in place)");
+    // Capture the ABSOLUTE deadline at ENTRY, before enqueue, so a reload queued behind a hung-store
+    // 75% timer tick is bounded by the SAME window (queue wait included) and cannot commit/swap after
+    // the renewal owner's request bound has already elapsed and it recorded "no responder".
+    const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
     // The prove-then-adopt transaction (fetch + preflight + commit) runs under the single-flight so it
     // cannot interleave with the 75% timer; the wire swap is scheduled by {@link handleDeliveryAdmin}
     // after the aggregate reply (the responder rides this connection).
-    const { iat, exp } = await this.runCredsTxn(() => this.adoptFreshCreds({ expected }));
+    const { iat, exp } = await this.runCredsTxn(() => this.adoptFreshCreds({ expected, deadline }));
     return { identity: this.connId, iat, exp };
   }
 
