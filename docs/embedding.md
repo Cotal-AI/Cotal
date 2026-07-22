@@ -135,12 +135,16 @@ signer **through the same resolved `store`** (`getSpaceAuth(store ?? workspaceSe
 key `auth/auth.json`) and re-signs the daemon creds (`delivery.creds` and the membership feed's
 `membership-rw.creds`) back into that store — so the injected `store` is BOTH the signer source AND the
 cred destination, never a split. `space` is **required** and validated against the store's signer, so a
-store swapped to a different space cannot re-sign over the wrong broker's creds. When the signer is the
-**stripped projection** (the `mint --signer`/container form, whose account is not chain-bound to the
-space), `preflight` — a "does the broker accept this cred" proof the caller owns (the reference
-`Manager` passes a `probeConnect` over its `servers`) — is REQUIRED before an overwrite: a wrong-account
-signer's cred is refused, never clobbering the last-good. A full bundle is account-bound by its JWT
-chain and re-signs directly. The reference `Manager` runs it on a schedule against its **own**
+store swapped to a different space cannot re-sign over the wrong broker's creds. `preflight` — a "does
+the broker accept this cred" proof the caller owns (the reference `Manager` passes a `probeConnect` over
+its `servers`) — gates **every** candidate before it overwrites the last-good, whether the signer is a
+full bundle or a stripped projection: a bundle's JWT chain proves only that it is self-consistent and
+named the space, NOT that its account is the broker's *current* account for that space (two
+`createSpaceAuth(space)` calls yield same-named, different-account chains), so a same-label alternate
+signer would otherwise mint a broker-dead cred and clobber the good one. Without a preflight a stripped
+signer refuses (its account is not chain-bound at all); a full bundle re-signs directly only on the
+local/operator path, where the operator owns the signer and no network proof is available. The reference
+`Manager` runs it on a schedule against its **own**
 `secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
 into it, and the daemon adopts each generation on a preflight-proven 75% timer. It never throws: it

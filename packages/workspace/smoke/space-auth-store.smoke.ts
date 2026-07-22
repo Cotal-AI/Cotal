@@ -137,9 +137,9 @@ try {
   const wrongSpace = await remintDaemonCreds(root, "not-this-space", mem);
   check("cross-space signer is REFUSED (every file ok:false, none re-signed)", wrongSpace.every((r) => r.ok === false));
   check("the last-good delivery cred is NOT overwritten by a wrong-space signer", mem.map.get(DELIVERY_CREDS_KEY) === beforeWrong);
-  // and the RIGHT space still re-signs (proves the gate is on the space, not a blanket refusal). The
-  // full bundle in `mem` is account-bound by its JWT chain, so it re-signs with NO preflight.
-  check("the matching FULL-bundle signer re-signs (account-bound, no preflight)", (await remintDaemonCreds(root, space, mem)).find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+  // and the RIGHT space still re-signs (proves the gate is on the space, not a blanket refusal). With
+  // NO preflight, a full bundle re-signs directly — the local/operator FS path (operator owns the signer).
+  check("a full bundle re-signs WITHOUT a preflight (local/operator path)", (await remintDaemonCreds(root, space, mem)).find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
 
   // FINDING-6 regression: a STRIPPED signer (mint --signer / container form) has no JWT chain to bind
   // its account to the space, so a wrong-account signer with the right LABEL would mint a broker-
@@ -156,6 +156,20 @@ try {
   check("stripped signer whose cred the broker REFUSES does not overwrite the last-good", rejPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false && stripStore.map.get(DELIVERY_CREDS_KEY) === goodCred);
   const okPre = await remintDaemonCreds(root, space, stripStore, { preflight: async () => true }); // broker accepts (legit container renewal)
   check("stripped signer whose cred the broker ACCEPTS re-signs (container renewal works)", okPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+
+  // FINDING-6b regression: a same-LABEL FULL bundle is NOT broker-bound either — a fresh
+  // createSpaceAuth(space) is a valid, same-named, DIFFERENT-account chain that validateSpaceAuthForRead
+  // accepts. When a preflight is supplied (the manager path), it too must prove broker acceptance before
+  // overwriting the last-good; JWT self-consistency proves only that B trusts itself, not that A's broker does.
+  const authB = await createSpaceAuth(space); // same label, different account/operator than `auth` (chain A)
+  const fullBStore = new MemStore();
+  await putSpaceAuth(fullBStore, authB);
+  const lastGoodA = await mintCreds(auth, newIdentity(), "delivery"); // the last-good is chain A's cred
+  await fullBStore.put(DELIVERY_CREDS_KEY, lastGoodA);
+  const bRej = await remintDaemonCreds(root, space, fullBStore, { preflight: async () => false }); // A's broker refuses B's cred
+  check("a same-label FULL bundle whose cred the broker REFUSES does NOT overwrite the last-good", bRej.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false && fullBStore.map.get(DELIVERY_CREDS_KEY) === lastGoodA);
+  const bOk = await remintDaemonCreds(root, space, fullBStore, { preflight: async () => true }); // (only the RIGHT chain passes a real broker)
+  check("a full bundle whose cred the broker ACCEPTS re-signs", bOk.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
 
   // The negative: with NO store and an empty disk, the signer is genuinely unreachable → no-auth.
   const emptyRoot = mkdtempSync(join(tmpdir(), "cotal-spaceauth-empty-"));

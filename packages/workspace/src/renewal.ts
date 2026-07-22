@@ -74,12 +74,14 @@ export interface RemintResult {
  *  delivery endpoint's 75% source refresh, the membership feed's 75% renewal fetch).
  *
  *  `opts.preflight` is a disposable "does the broker accept this cred" proof (the caller owns the
- *  broker context — the manager passes a {@link probeConnect} over `this.servers`). It is REQUIRED to
- *  overwrite from a STRIPPED signer projection ({@link stripSpaceAuth} — the `mint --signer`/container
- *  form): a stripped signer has no operator JWT to bind its account to the space, so a wrong-account
- *  signer with the right label would otherwise mint a broker-rejected cred and CLOBBER the last-good
- *  daemon cred (availability loss). No preflight ⇒ refuse. A FULL bundle is account-bound by its
- *  validated JWT chain, so it re-signs directly (the local FS + operator paths, no network).
+ *  broker context — the manager passes a {@link probeConnect} over `this.servers`). WHEN SUPPLIED it
+ *  gates EVERY candidate before overwrite, full bundle or stripped projection: a bundle's JWT chain
+ *  proves only that it is self-consistent and named the space, NOT that its account is the broker's
+ *  CURRENT account for that space (two `createSpaceAuth(space)` calls yield same-named, different-account
+ *  chains), so a same-label alternate signer — full OR stripped — could otherwise mint a broker-rejected
+ *  cred and CLOBBER the last-good (availability loss). WITHOUT a preflight a STRIPPED signer refuses (its
+ *  account is not chain-bound at all); a FULL bundle re-signs directly on the local/operator FS path,
+ *  where the operator owns the signer and no network proof is available.
  *
  *  Structured per-file results, never throws: a failed remint leaves the old cred running toward its
  *  loud expiry and the caller records/reports the failure. */
@@ -115,15 +117,22 @@ export async function remintDaemonCreds(
         continue;
       }
       const next = await mintCreds(auth, identityFromCreds(current), profile);
-      if (stripped) {
-        if (!opts?.preflight) {
-          results.push({ file, ok: false, error: "a stripped signer cannot re-sign without a broker preflight - its account is not chain-bound to the space" });
-          continue; // fail-safe: never overwrite the last-good from an unprovable stripped signer
-        }
+      // A broker preflight, WHEN supplied (the manager has live broker context), proves acceptance of
+      // EVERY candidate before overwrite — full OR stripped. A full bundle's JWT chain proves only that
+      // it is self-consistent and named `expectedSpace`, NOT that its account is the broker's CURRENT
+      // account for that space: two `createSpaceAuth(space)` calls yield same-named, different-account
+      // chains, so a same-label full bundle can also mint a broker-dead cred and clobber the last-good.
+      // WITHOUT a preflight: a stripped signer (account not chain-bound at all) REFUSES; a full bundle
+      // re-signs directly — the local/operator FS path, where the operator owns the signer and no
+      // network proof is available or needed.
+      if (opts?.preflight) {
         if (!(await opts.preflight(next))) {
           results.push({ file, ok: false, error: "the broker refused the re-signed cred (wrong-account or unreachable signer) - last-good cred preserved" });
           continue;
         }
+      } else if (stripped) {
+        results.push({ file, ok: false, error: "a stripped signer cannot re-sign without a broker preflight - its account is not chain-bound to the space" });
+        continue; // fail-safe: never overwrite the last-good from an unprovable stripped signer
       }
       await s.put(file, next);
       results.push({ file, ok: true, fingerprint: credsFingerprint(next) });
