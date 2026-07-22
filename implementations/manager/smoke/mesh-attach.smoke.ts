@@ -46,9 +46,9 @@ import {
   serveSessionBridge,
   staticRedemptionSeam,
   userModeRedemptionSeam,
-  encodeAttachBytes,
-  decodeAttachPayload,
-  type AttachPayload,
+  encodeTerminalData,
+  decodeTerminalFrame,
+  type TerminalFrame,
 } from "../src/session/index.js";
 
 let ok = 0, fail = 0;
@@ -149,14 +149,14 @@ await rejects("user-mode redeem refuses LOUD (unwired #29 path), never falls bac
 // ---------------------------------------------------------------------------------------------
 console.log("B. the framing codec (raw bytes base64-in-JSON + JSON control frames, §13.6 ruling 3)");
 {
-  const p = encodeAttachBytes(Buffer.from("héllo\n", "utf8"));
-  c("bytes encode to a base64-in-JSON data payload", p.k === "b" && typeof (p as { b: string }).b === "string");
-  const back = decodeAttachPayload(p);
-  c("bytes round-trip through decode", back.k === "b" && Buffer.from((back as { b: string }).b, "base64").toString("utf8") === "héllo\n");
-  c("a resize control frame round-trips", decodeAttachPayload({ k: "resize", cols: 120, rows: 40 }).k === "resize");
-  let threw = false; try { decodeAttachPayload({ k: "nope" }); } catch { threw = true; }
+  const p = encodeTerminalData(Buffer.from("héllo\n", "utf8"));
+  c("bytes encode to a base64-in-JSON data payload", p.k === "data" && typeof (p as { b: string }).b === "string");
+  const back = decodeTerminalFrame(p);
+  c("bytes round-trip through decode", back.k === "data" && Buffer.from((back as { b: string }).b, "base64").toString("utf8") === "héllo\n");
+  c("a resize control frame round-trips", decodeTerminalFrame({ k: "resize", cols: 120, rows: 40 }).k === "resize");
+  let threw = false; try { decodeTerminalFrame({ k: "nope" }); } catch { threw = true; }
   c("an unknown frame kind fails loud (closed schema)", threw);
-  let threw2 = false; try { decodeAttachPayload({ k: "b", b: "not base64!!" }); } catch { threw2 = true; }
+  let threw2 = false; try { decodeTerminalFrame({ k: "data", b: "not base64!!" }); } catch { threw2 = true; }
   c("a non-base64 byte payload fails loud", threw2);
 }
 
@@ -205,8 +205,8 @@ const callerRail = openSessionRail({
   grant: liveOffer,
   role: "caller",
   onData: (data) => {
-    const p = decodeAttachPayload(data);
-    if (p.k === "b") received.push(Buffer.from(p.b, "base64"));
+    const p = decodeTerminalFrame(data);
+    if (p.k === "data") received.push(Buffer.from(p.b, "base64"));
     else if (p.k === "end") callerEnd = p.reason;
     else if (p.k === "drop") dropNotice += p.bytes;
   },
@@ -215,17 +215,17 @@ const callerRail = openSessionRail({
 await ncCaller.flush(); // caller `out` sub live before `ready` triggers the serving backlog replay
 
 // The reconstruction handshake: caller subscribed → send `ready` → serving replays backlog + live.
-callerRail.send({ k: "ready" } satisfies AttachPayload);
+callerRail.send({ k: "ready" } satisfies TerminalFrame);
 const gotBacklog = await until(() => Buffer.concat(received).toString("utf8").includes("SEEDLINE"));
 c("ready → the pty backlog is reconstructed on attach (PR #158 preserved over the mesh)", gotBacklog);
 
 // Duplex: a keystroke the caller sends is echoed by `cat` and returns as output.
-callerRail.send(encodeAttachBytes(Buffer.from("PINGPONG\n", "utf8")));
+callerRail.send(encodeTerminalData(Buffer.from("PINGPONG\n", "utf8")));
 const echoed = await until(() => Buffer.concat(received).toString("utf8").includes("PINGPONG"));
 c("caller keystrokes stream to the pty and its output streams back (duplex byte flow)", echoed);
 
 // Resize is a structured control frame, never smuggled as raw bytes.
-callerRail.send({ k: "resize", cols: 100, rows: 30 } satisfies AttachPayload);
+callerRail.send({ k: "resize", cols: 100, rows: 30 } satisfies TerminalFrame);
 const resized = await until(() => session.cols === 100 && session.rows === 30);
 c("a resize control frame reaches the pty (structured, authenticated, bound)", resized);
 
@@ -266,10 +266,10 @@ console.log("D. backpressure DROP-NOTICE (bounded window, never silent loss)");
   const notices: number[] = [];
   const stalledRail = openSessionRail({
     nc: ncC, grant: g, role: "caller", stallTimeoutMs: 0, idleCreditMs: 0,
-    onData: (data) => { const p = decodeAttachPayload(data); if (p.k === "drop") notices.push(p.bytes); },
+    onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "drop") notices.push(p.bytes); },
   });
   await ncC.flush();
-  stalledRail.send({ k: "ready" } satisfies AttachPayload);
+  stalledRail.send({ k: "ready" } satisfies TerminalFrame);
   await until(() => br.stats().live, 4000);
 
   // Emit more discrete chunks than the window: the first `window` land, the rest are DROPPED and

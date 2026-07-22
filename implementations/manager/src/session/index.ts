@@ -16,17 +16,14 @@ export {
   type RedemptionSeam,
   type StaticRedemptionDeps,
 } from "./establish.js";
-export { serveSessionBridge, type ServeSessionBridgeOpts, type SessionBridge } from "./bridge.js";
+export { serveSessionBridge, type ServeSessionBridgeOpts, type SessionBridge, type AttachEndReason } from "./bridge.js";
 export {
   ManagerSessionPlane,
   kvManagerSessionLedger,
   openSessionLedgerKv,
   type ManagerSessionPlaneDeps,
 } from "./plane.js";
-export {
-  encodeAttachBytes,
-  attachBytes,
-  decodeAttachPayload,
-  type AttachPayload,
-  type AttachEndReason,
-} from "./frame.js";
+// The terminal-session frame codec is NORMATIVE WIRE and lives in core (the §13.6 terminal-session
+// profile); re-exported here for the manager's own consumers/smokes. The CLI + console import it
+// straight from @cotal-ai/core (implementations cannot import each other).
+export { encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type TerminalFrame } from "@cotal-ai/core";

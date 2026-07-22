@@ -1,7 +1,7 @@
 /**
  * The serving-side PTY ↔ session-rail bridge (P2 item 6). Given an authenticated §13.6 session
  * (its verified grant + a connection scoped to the two eps rails) and a live pty {@link
- * AttachSession}, it speaks the {@link AttachPayload} framing over `openSessionRail(role:"serving")`:
+ * AttachSession}, it speaks the {@link TerminalFrame} framing over `openSessionRail(role:"serving")`:
  *
  *  - the RECONSTRUCTION handshake (PR #158 preserved over the mesh): the caller opens its rail,
  *    then sends `ready`; the bridge replays the pty's byte-exact backlog snapshot (which can rebuild
@@ -21,8 +21,17 @@
  *    restarted".
  */
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, openSessionRail, type SessionGrant, type SessionRail, type AttachSession } from "@cotal-ai/core";
-import { attachBytes, decodeAttachPayload, encodeAttachBytes, type AttachEndReason, type AttachPayload } from "./frame.js";
+import {
+  EpEnvelopeError, openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame,
+  type SessionGrant, type SessionRail, type AttachSession, type TerminalFrame,
+} from "@cotal-ai/core";
+
+/** The reference manager's terminal-cause vocabulary (the `end.reason` tokens it surfaces — a
+ *  bounded subset of the generic §13.6 terminal-session `end` reason). `process-exit` = the child
+ *  exited; `closed` = a party closed the rail; `expired` = the offer/session TTL elapsed;
+ *  `target-despawn` = the attached agent was despawned; `manager-restart` = the serving manager
+ *  incarnation advanced its epoch (the successor refuses old-epoch sessions, §13.6). */
+export type AttachEndReason = "process-exit" | "closed" | "expired" | "target-despawn" | "manager-restart";
 
 export interface ServeSessionBridgeOpts {
   /** A connection scoped to this session's two eps rails (the serving side's per-session credential,
@@ -59,7 +68,7 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   // Send an application payload down the serving rail. Returns true on success; false when the
   // window is FULL (`resource-exhausted`, the caller-must-drop signal); any OTHER failure
   // (broken/closed rail) terminates the session — a broken transport is a distinct `closed` end.
-  const railSend = (p: AttachPayload): boolean => {
+  const railSend = (p: TerminalFrame): boolean => {
     try {
       rail.send(p);
       return true;
@@ -81,7 +90,7 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
       if (railSend({ k: "drop", bytes: droppedBytes })) droppedBytes = 0;
       else { droppedBytes += chunk.length; return; }
     }
-    if (!railSend(encodeAttachBytes(chunk))) droppedBytes += chunk.length;
+    if (!railSend(encodeTerminalData(chunk))) droppedBytes += chunk.length;
   };
 
   const offData = session.onData((chunk) => {
@@ -113,13 +122,13 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   };
 
   const onCallerFrame = (data: unknown): void => {
-    const p = decodeAttachPayload(data); // throws on a garbled frame → the rail surfaces it, breaks
+    const p = decodeTerminalFrame(data); // throws on a garbled frame → the rail surfaces it, breaks
     switch (p.k) {
       case "ready":
         void goLive();
         return;
-      case "b":
-        session.write(attachBytes(p).toString("utf8"));
+      case "data":
+        session.write(terminalFrameBytes(p).toString("utf8"));
         return;
       case "resize":
         session.resize(p.cols, p.rows);

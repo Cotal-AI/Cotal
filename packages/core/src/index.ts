@@ -21,6 +21,7 @@ export * from "./endpoint-serve-kv.js";
 export * from "./endpoint-guard.js";
 export * from "./endpoint-handle.js";
 export * from "./endpoint-session.js";
+export * from "./session-terminal-frames.js";
 export * from "./endpoint-virtual.js";
 export * from "./endpoint-receipt.js";
 export * from "./endpoint-signing.js";

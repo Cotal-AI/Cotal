@@ -37,7 +37,7 @@ import {
 } from "@cotal-ai/core";
 import { mintAttachOffer, staticRedemptionSeam, ManagerSessionRegistry, type SessionTarget } from "./establish.js";
 import { serveSessionBridge, type SessionBridge } from "./bridge.js";
-import type { AttachEndReason } from "./frame.js";
+import type { AttachEndReason } from "./bridge.js";
 
 const TERMINAL = new Set(["closed", "expired", "superseded", "retired"]);
 

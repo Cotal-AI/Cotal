@@ -35,9 +35,9 @@ import {
 import { createRuntime } from "../src/index.js";
 import {
   ManagerSessionPlane,
-  decodeAttachPayload,
-  encodeAttachBytes,
-  type AttachPayload,
+  decodeTerminalFrame,
+  encodeTerminalData,
+  type TerminalFrame,
 } from "../src/session/index.js";
 
 let ok = 0, fail = 0;
@@ -108,12 +108,12 @@ const received: Buffer[] = [];
 let endReason: string | undefined;
 const rail = openSessionRail({
   nc: ncCaller, grant, role: "caller",
-  onData: (data) => { const p = decodeAttachPayload(data); if (p.k === "b") received.push(Buffer.from(p.b, "base64")); else if (p.k === "end") endReason = p.reason; },
+  onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "data") received.push(Buffer.from(p.b, "base64")); else if (p.k === "end") endReason = p.reason; },
 });
 await ncCaller.flush();
-rail.send({ k: "ready" } satisfies AttachPayload);
+rail.send({ k: "ready" } satisfies TerminalFrame);
 c("ready → the pty backlog is reconstructed (PR #158 over the plane)", await until(() => Buffer.concat(received).toString("utf8").includes("SEEDLINE")));
-rail.send(encodeAttachBytes(Buffer.from("PLANEPING\n", "utf8")));
+rail.send(encodeTerminalData(Buffer.from("PLANEPING\n", "utf8")));
 c("caller keystrokes echo back through cat (duplex byte flow)", await until(() => Buffer.concat(received).toString("utf8").includes("PLANEPING")));
 
 // --------------------------------------------------------------------------------------------
