@@ -73,8 +73,19 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   // the doctor reports what IS, never what it hopes the fix did.
   if (values.fix && problems.some((r) => isRemintable(r.kind))) {
     console.log(c.dim("\n--fix: re-signing the remintable daemon creds…"));
+    const prior = readRenewalRecord(root);
     const results = await remintDaemonCreds(root);
-    writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results });
+    // A local re-sign is NOT a broker proof: `--fix` has no live admin rail to adopt through, it
+    // relies on the daemon's 75% re-read backstop. So it must NEVER erase a KNOWN broker refusal to
+    // green — if the last renewal was refused (e.g. the signer the broker rejects), the re-signed
+    // generation is still unproven and may be broker-dead. Carry the refusal forward as an explicit
+    // unproven state until a REAL proof (the manager's/daemon's reloadCreds) supersedes it, so the
+    // verdict below stays exit 1 with an actionable next step. A prior non-refusal is left absent
+    // (the "backstop will adopt" state), unchanged from before.
+    const adoption = prior?.adoption?.ok === false
+      ? { ok: false, error: "re-signed locally by `doctor auth --fix`, but the previous renewal was refused by the broker and the re-signed generation is not yet broker-proven - start the mesh's manager (the renewal owner) so it proves and adopts it" }
+      : undefined;
+    writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption });
     for (const r of results.filter((x) => !x.ok && !x.skipped)) console.error(c.red(`  ✗ ${r.file}: ${r.error}`));
     reports = inventory(root);
     problems = reports.filter((r) => r.problem);
@@ -85,12 +96,22 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   render("$SYS creds (rotation-renewed - never remintable from disk)", reports.filter((r) => r.kind === "membership-observer" || r.kind === "connection-evictor"));
   render("Agent creds (static, pre-flip)", reports.filter((r) => r.kind === "agent"));
 
-  if (!problems.length) {
+  // A broker-REFUSED renewal is a first-class problem for the final verdict + exit status, not just a
+  // warning line. Cred-file health alone is not enough: a structurally-valid JWT the broker rejected
+  // must never let `auth: healthy` / exit 0 stand (the whole point of the renewal-honesty slice).
+  const rec = readRenewalRecord(root);
+  const adoptionRefused = rec?.adoption?.ok === false;
+  if (!problems.length && !adoptionRefused) {
     console.log(c.green("\nauth: healthy"));
     return;
   }
-  console.log(c.red(`\nauth: ${problems.length} problem${problems.length === 1 ? "" : "s"}`));
+  const parts: string[] = [];
+  if (problems.length) parts.push(`${problems.length} cred problem${problems.length === 1 ? "" : "s"}`);
+  if (adoptionRefused) parts.push("last renewal not broker-accepted");
+  console.log(c.red(`\nauth: ${parts.join(", ")}`));
   for (const p of problems) console.log(`  ${c.red("✗")} ${p.label}: ${p.problem}\n    next: ${p.repair}`);
+  if (adoptionRefused)
+    console.log(`  ${c.red("✗")} the last renewal pass was refused by the broker: ${rec?.adoption?.error ?? "unknown"}\n    next: start or repair the mesh's manager (the renewal owner) so it re-signs and re-proves the daemon creds`);
   process.exitCode = 1;
 }
 
@@ -190,13 +211,25 @@ function renderRenewalRecord(root: string): void {
   }
   const resigned = rec.results.filter((r) => r.ok).map((r) => r.file);
   const failed = rec.results.filter((r) => !r.ok && !r.skipped);
+  // Per-component result from the daemon's structured reply detail (persisted on ok AND failed
+  // passes): "accepted" = the broker accepted this generation (the proof); "rejected" (ok:false);
+  // "n/a" (absent/skipped). NOT "adopted" — the resident wire swap is best-effort/self-healing, not
+  // witnessed. Empty for an older record.
+  const detail = rec.adoption?.detail as
+    | { delivery?: { ok?: boolean; brokerAccepted?: unknown; skipped?: string }; membership?: { ok?: boolean; brokerAccepted?: unknown; skipped?: string } }
+    | undefined;
+  const compStatus = (comp?: { ok?: boolean; brokerAccepted?: unknown; skipped?: string }): string =>
+    comp === undefined ? "n/a" : comp.ok === false ? "rejected" : comp.skipped ? "n/a" : comp.brokerAccepted ? "accepted" : "n/a";
+  const perComponent = detail && typeof detail === "object" && (detail.delivery !== undefined || detail.membership !== undefined)
+    ? ` (delivery: ${compStatus(detail.delivery)}, membership: ${compStatus(detail.membership)})`
+    : "";
   const adoption = rec.adoption === undefined
     ? resigned.length
-      ? c.yellow("daemon adoption not requested by this pass - daemons adopt via the 75% re-read backstop or the manager's next renewal pass")
-      : c.dim("adoption: n/a (nothing re-signed)")
+      ? c.yellow("daemon reload not requested by this pass - daemons pick up the re-sign via the 75% re-read backstop or the next renewal pass")
+      : c.dim("renewal: n/a (nothing re-signed)")
     : rec.adoption.ok
-      ? c.green("daemon adopted ✓")
-      : c.yellow(`daemon adoption pending - ${rec.adoption.error ?? "unknown"}`);
+      ? c.green(`broker-accepted ✓${perComponent}`)
+      : c.yellow(`renewal not accepted - ${rec.adoption.error ?? "unknown"}${perComponent}`);
   console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} - re-signed [${resigned.join(", ") || "none"}] · ${adoption}`);
   for (const f of failed) console.log(`    ${c.red("✗")} last pass failed on ${f.file}: ${f.error}`);
 }

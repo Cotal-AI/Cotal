@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  credsFingerprint,
   identityFromCreds,
   mintCreds,
   writeSecretFile,
@@ -25,12 +26,17 @@ import { workspaceSecretStore } from "./secret-store-fs.js";
  *  key↔filename convention is the workspace layout's; implementations never import each other. */
 export const DELIVERY_CREDS_KEY = "delivery.creds";
 
+/** The membership feed's data-account rw cred key — the same key↔filename discipline as
+ *  {@link DELIVERY_CREDS_KEY}. Named (not a bare literal) so the renewal owner can map a remint
+ *  result back to the daemon's `membership` component without a hand-copied string. */
+export const MEMBERSHIP_RW_CREDS_KEY = "membership-rw.creds";
+
 /** The seed-less daemon creds files a renewal owner re-signs. The $SYS files
  *  (membership-observer, connection-evictor) are deliberately ABSENT: they are rotation-renewed —
  *  no persisted seed can re-sign them, by design. */
 export const REMINTABLE_DAEMON_CREDS: ReadonlyArray<{ file: string; profile: Profile }> = [
   { file: DELIVERY_CREDS_KEY, profile: "delivery" },
-  { file: "membership-rw.creds", profile: "membership-rw" },
+  { file: MEMBERSHIP_RW_CREDS_KEY, profile: "membership-rw" },
 ];
 
 export interface RemintResult {
@@ -39,6 +45,11 @@ export interface RemintResult {
   ok: boolean;
   skipped?: "missing-file" | "no-auth";
   error?: string;
+  /** EPHEMERAL SHA-256 of the JUST-RE-SIGNED cred's USER JWT — the EXPECTED-generation token the
+   *  renewal owner hands the daemon so an adoption reply can prove it adopted THIS generation, not
+   *  merely re-read some file. Present only on `ok`. NEVER persisted: the caller strips it before
+   *  writing the renewal record (a stable secret-derived token must not land on disk). */
+  fingerprint?: string;
 }
 
 /** Re-sign the daemon creds files for their EXISTING nkeys (a renewal must never swap a daemon's
@@ -66,8 +77,9 @@ export async function remintDaemonCreds(root: string, store?: SecretStore): Prom
         results.push({ file, ok: false, skipped: "missing-file" });
         continue;
       }
-      await s.put(file, await mintCreds(auth, identityFromCreds(current), profile));
-      results.push({ file, ok: true });
+      const next = await mintCreds(auth, identityFromCreds(current), profile);
+      await s.put(file, next);
+      results.push({ file, ok: true, fingerprint: credsFingerprint(next) });
     } catch (e) {
       results.push({ file, ok: false, error: (e as Error).message });
     }
@@ -93,7 +105,11 @@ export function renewalRecordPath(root: string): string {
 }
 
 export function writeRenewalRecord(root: string, record: RenewalRecord): void {
-  writeSecretFile(renewalRecordPath(root), JSON.stringify(record, null, 2));
+  // REDACT the ephemeral generation token HERE, at the single persistence boundary, so no writer
+  // (the manager, `doctor auth --fix`, or any future caller) can leak the stable secret-derived
+  // fingerprint to `.cotal/renewal.json`. `JSON.stringify` then omits the `undefined` field.
+  const redacted: RenewalRecord = { ...record, results: record.results.map((r) => ({ ...r, fingerprint: undefined })) };
+  writeSecretFile(renewalRecordPath(root), JSON.stringify(redacted, null, 2));
 }
 
 export function readRenewalRecord(root: string): RenewalRecord | undefined {

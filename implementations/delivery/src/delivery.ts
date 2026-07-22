@@ -186,8 +186,18 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
   // rw connection via this hook.
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
-    reloadMembershipCreds: async () =>
-      membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
+    reloadMembershipCreds: async (expected?: string) => {
+      if (!membership) {
+        // Absent feed: a FAILURE when the renewal owner EXPECTED a membership generation (it re-signed
+        // membership-rw.creds but the feed that must adopt it is not running), else n/a — a
+        // delivery-only renewal must never be falsely failed by an unprovisioned feed.
+        if (expected !== undefined)
+          throw new Error("membership feed is not running, but a membership generation was expected - nothing adopted");
+        return { skipped: "membership feed not running (nothing to reload)" };
+      }
+      // Symmetric with delivery: claim broker acceptance (the preflight), not verified resident reauth.
+      return { brokerAccepted: await membership.reloadRwCreds(expected), residentSwap: "best-effort" as const };
+    },
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
     evictPrincipal: (principal) => executeEviction(server, principal),

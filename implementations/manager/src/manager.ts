@@ -37,7 +37,7 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -72,6 +72,11 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+/** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
+ * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
+ * daemon's STRUCTURED per-component failure, never a client-side timeout that the catch below would
+ * misrecord as "no delivery-admin responder" (a false negative while the daemon is mid-proof). */
+const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
@@ -598,9 +603,20 @@ export class Manager {
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {
+        // Hand the daemon the EXPECTED generation per component (SHA-256 of the JWT we just
+        // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
+        const expected: { delivery?: string; membership?: string } = {};
+        for (const r of resigned) {
+          if (r.file === DELIVERY_CREDS_KEY && r.fingerprint) expected.delivery = r.fingerprint;
+          else if (r.file === MEMBERSHIP_RW_CREDS_KEY && r.fingerprint) expected.membership = r.fingerprint;
+        }
         try {
-          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", {});
-          adoption = reply.ok ? { ok: true, detail: reply.data } : { ok: false, error: reply.error };
+          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
+          // Keep the per-component aggregate on BOTH outcomes: on a top-level failure `reply.data`
+          // still carries which component adopted and which was refused, which `doctor auth` renders.
+          adoption = reply.ok
+            ? { ok: true, detail: reply.data }
+            : { ok: false, error: reply.error, detail: reply.data };
         } catch (e) {
           adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
         }
@@ -608,6 +624,8 @@ export class Manager {
       for (const r of results.filter((x) => !x.ok && !x.skipped))
         console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
       if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
+      // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
+      // the `doctor auth --fix` writer too), so the results pass straight through.
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
     } catch (e) {
       console.error(`! credential renewal pass failed: ${(e as Error).message}`);
