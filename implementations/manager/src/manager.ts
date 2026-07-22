@@ -3822,23 +3822,26 @@ export class Manager {
     const gw = this.goalWriter;
     if (!gw) { this.goalReconcileDone = true; return; }
     try {
-      let refs: GoalRef[] = [];
+      let entries: { ref: GoalRef; iid: string }[] = [];
       const nc = this.auth
         ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner") }), maxReconnectAttempts: 0 })
         : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
       try {
         const kvm = new Kvm(nc);
         await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-        refs = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
+        entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
       } finally {
         await nc.drain().catch(() => nc.close());
       }
-      for (const ref of refs) {
+      // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
+      // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep
+      // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
+      for (const { ref } of entries) {
         if (this.goalAcceptances.has(ref.goalId)) continue; // never settle a goal THIS incarnation drives
         try { await this.reconcileOneGoal(ref); }
         catch (e) { console.error(`! goal reconcile for ${ref.goalId}: ${(e as Error).message}`); }
       }
-      if (refs.length) console.error(`goal-index boot reconcile: swept ${refs.length} inherited goal(s)`);
+      if (entries.length) console.error(`goal-index boot reconcile: swept ${entries.length} inherited goal(s)`);
     } catch (e) {
       console.error(`! goal-index boot reconcile failed: ${(e as Error).message} - accepted goals from a predecessor may stay unsettled until the next restart`);
     } finally {
@@ -3955,7 +3958,8 @@ export class Manager {
         // crash between this write and the bind leaves an index entry whose goal status is absent —
         // the sweep clears it as a no-goal; a crash before it leaves no entry (never durable). A
         // concurrent same-goalId attempt writes the byte-identical pointer (idempotent, no conflict).
-        await recordGoalIndex(gw.ctx, ref);
+        // Carry THIS incarnation's instanceId (the executor coord) so a multi-instance sweep can skip a live sibling's goal.
+        await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid);
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
         // a create-only CAS per goalId (pin 1 — a refused accept above left zero bind, zero reserve).
         const b = await bindGoal(gw.ctx, ref, fingerprint);

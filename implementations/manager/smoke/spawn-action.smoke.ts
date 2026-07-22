@@ -227,7 +227,7 @@ try {
     const ref = goalRef(goalId);
     await wait(400); // let it provision + write the durable index (goal accepted, still in-flight)
     check("M5 the inherited goal has no terminal before the crash (accepted, in-flight)", (await readGoalResult(rctx, ref)) === undefined);
-    check("M5 the reconcile index carries the in-flight goal", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).some((g) => g.goalId === goalId), goalId);
+    check("M5 the reconcile index carries the in-flight goal", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).some((g) => g.ref.goalId === goalId), goalId);
     // CRASH: drop the goal-writer FIRST so the graceful shutdown cannot settle the goal (the
     // child-exit's terminal commit then fails on the closed connection) — the goal is orphaned
     // exactly as after a real crash, an accepted goal with no terminal and a live index entry.
@@ -244,7 +244,7 @@ try {
     check("M5 the successor is a FRESH incarnation (a new instanceId)", successorIid !== managerIid, { successorIid, managerIid });
     const after = await pollResult(ref, 4_000);
     check("M5 the successor reconciled the inherited goal to a terminal, never dropped (uncertain)", after?.state === "uncertain", after);
-    check("M5 the reconcile cleared the index entry (goal terminal)", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).every((g) => g.goalId !== goalId), goalId);
+    check("M5 the reconcile cleared the index entry (goal terminal)", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).every((g) => g.ref.goalId !== goalId), goalId);
   }
 
   console.log(`\nspawn-action open-mesh functional smoke: ${pass} passed, ${fail} failed`);

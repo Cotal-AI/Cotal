@@ -1123,27 +1123,31 @@ export async function settleGoalUncertain(
 
 // ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------
 
-/** One reconcile-index entry: a pure pointer to a goal ref — the coordinates a SUCCESSOR
- *  incarnation needs to find + settle an orphaned in-flight goal it never held in memory. The
- *  acceptance clock is NOT duplicated here (it lives in the goal spec the sweep reads), so a
- *  concurrent same-goalId retry writes the byte-IDENTICAL entry (create-only idempotent). */
-export interface GoalIndexEntry { v: 1; endpoint: string; owner: string; actor: string; uid: string; goalId: string }
+/** One reconcile-index entry: a pointer to a goal ref plus the ACCEPTING executor's instanceId —
+ *  the coordinates a SUCCESSOR incarnation needs to find + settle an orphaned in-flight goal it
+ *  never held in memory. `iid` is the accepting incarnation's instanceId: a single-manager
+ *  successor (a fresh instanceId) reconciles every entry, but it is the hook a multi-instance
+ *  sweep filters on (never settle a goal a still-LIVE sibling instance owns — a filter-only add,
+ *  no schema change). The acceptance clock is NOT duplicated here (it lives in the goal spec the
+ *  sweep reads); for one (endpoint, iid) a concurrent same-goalId retry writes the byte-IDENTICAL
+ *  entry (create-only idempotent). */
+export interface GoalIndexEntry { v: 1; endpoint: string; owner: string; actor: string; uid: string; goalId: string; iid: string }
 
 function goalIndexKey(ref: GoalRef): string {
   return recordAtomicKey(RECORD_KINDS.goalidx, [ref.endpoint, ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId]);
 }
 
-function goalIndexEntryOf(ref: GoalRef): GoalIndexEntry {
-  return { v: 1, endpoint: ref.endpoint, owner: ref.caller.owner, actor: ref.caller.actor, uid: ref.caller.uid, goalId: ref.goalId };
+function goalIndexEntryOf(ref: GoalRef, iid: string): GoalIndexEntry {
+  return { v: 1, endpoint: ref.endpoint, owner: ref.caller.owner, actor: ref.caller.actor, uid: ref.caller.uid, goalId: ref.goalId, iid };
 }
 
 function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId"], `goal-index entry ${key}`);
+  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "iid"], `goal-index entry ${key}`);
   if (o.v !== 1 || typeof o.endpoint !== "string" || typeof o.owner !== "string" || typeof o.actor !== "string"
-    || typeof o.uid !== "string" || typeof o.goalId !== "string")
+    || typeof o.uid !== "string" || typeof o.goalId !== "string" || typeof o.iid !== "string")
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is malformed; garbled reconcile state never authorizes (SPEC 13.6)`);
   return o as unknown as GoalIndexEntry;
 }
@@ -1152,17 +1156,17 @@ function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  (must-5 Q-B): the atomicity is `index-CAS-before-bind`, so recoverability is clean either side
  *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
  *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
- *  entry, so the acceptance was never durable. Idempotent for an adopted or concurrent same-goalId
- *  retry (the entry is a byte-identical pointer). */
-export async function recordGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<void> {
+ *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
+ *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
+export async function recordGoalIndex(ctx: ActionContext, ref: GoalRef, iid: string): Promise<void> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
   const key = goalIndexKey(snap);
-  try { await createRecordEntry(ctx.kv, key, goalIndexEntryOf(snap)); }
+  try { await createRecordEntry(ctx.kv, key, goalIndexEntryOf(snap, iid)); }
   catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    // A create conflict is only legitimate as an idempotent retry (the entry is a pure pointer, so
-    // any winner wrote the identical bytes); a non-PUT marker is corruption, never reusable absence.
+    // A create conflict is only legitimate as an idempotent retry (the entry is a byte-identical
+    // pointer for one (endpoint, iid)); a non-PUT marker is corruption, never reusable absence.
     const existing = await ctx.kv.get(key);
     if (!existing || existing.operation !== "PUT")
       throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent/deleted; reconcile the store (SPEC 13.6)`);
@@ -1180,15 +1184,16 @@ export async function clearGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<
 /** Enumerate the endpoint's in-flight reconcile index over a RAW records KV: a successor's boot
  *  sweep opens it with the PROVISIONER credential (records CONSUMER.CREATE), never the goal-writer
  *  (which holds no enumeration grant), and settles each unterminal goal so an accepted goal is
- *  never dropped across a manager restart. Returns each recorded GoalRef. */
-export async function listGoalIndex(kv: KV, endpoint: string): Promise<GoalRef[]> {
+ *  never dropped across a manager restart. Returns each recorded GoalRef + the accepting `iid` (the
+ *  hook a multi-instance sweep filters on so it never settles a live sibling's goal). */
+export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: GoalRef; iid: string }[]> {
   const filter = `${RECORD_KINDS.goalidx.kind}.${endpointToken(endpoint)}.>`;
-  const out: GoalRef[] = [];
+  const out: { ref: GoalRef; iid: string }[] = [];
   for await (const key of await kv.keys(filter)) {
     const e = await kv.get(key);
     if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
     const v = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
-    out.push({ endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId });
+    out.push({ ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId }, iid: v.iid });
   }
   return out;
 }
