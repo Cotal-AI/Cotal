@@ -312,6 +312,16 @@ export function epsSubject(space: string, endpoint: string, sessionId: string, e
   return assertSized(`${spacePrefix(space)}.eps.${endpointToken(endpoint)}.${assertIdToken(sessionId, "sessionId")}.${assertEpoch(epoch)}.${dir}`);
 }
 
+/** A serving writer's session rail with the sessionId a WILDCARD (`*`, one token):
+ *  `eps.<endpoint>.*.<epoch>.<in|out>` (§13.6). The endpoint AND the epoch are PINNED; only the
+ *  session varies. The manager's standing session-writer holds exactly this per direction — it
+ *  serves every live session of ONE endpoint at ONE serving epoch and reaches no other endpoint's
+ *  or epoch's rails. The serving counterpart to {@link epsSubject} (a caller cred pins one concrete
+ *  sessionId); factored here so the epoch/endpoint token validation stays centralized. */
+export function epsWildcardSubject(space: string, endpoint: string, epoch: number, dir: EpSessionDir): string {
+  return assertSized(`${spacePrefix(space)}.eps.${endpointToken(endpoint)}.*.${assertEpoch(epoch)}.${dir}`);
+}
+
 // ---- parser (§13.2 explicit discrimination; exact arity; null = MUST NOT handle) ------------
 
 export interface ParsedEpRequest {
