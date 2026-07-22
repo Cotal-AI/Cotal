@@ -138,7 +138,9 @@ try {
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000; // short window for a fast uncertain
   await mgr.start();
-  const managerIid = (mgr as unknown as { managerLifecycleUid: string }).managerLifecycleUid;
+  // P2 item 3: the goal's executor coordinate is the PERSISTED logical instanceId (the fence key),
+  // not the per-process managerLifecycleUid.
+  const managerIid = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
 
   callNc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
   conns.push(callNc);

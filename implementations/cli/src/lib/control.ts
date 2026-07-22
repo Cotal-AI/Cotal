@@ -6,6 +6,7 @@ import {
   GOAL_BEARING_COMMANDS,
   invokeCommand,
   submitAndFollowGoal,
+  scatterCommand,
   mintLifecycleUid,
   newIdentity,
   resolveService,
@@ -103,6 +104,7 @@ async function askManagerEp(
   auth: ControlAuth,
   reach: ControlReach,
   timeoutMs?: number,
+  instanceId?: string,
 ): Promise<ControlReply> {
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
@@ -116,7 +118,9 @@ async function askManagerEp(
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+    // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
+    // multi-manager space addresses the intended manager, never whichever wins the class anycast.
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
     if (mapped.targeted) {
@@ -192,10 +196,11 @@ export async function askManager(
   auth: ControlAuth = {},
   reach: ControlReach = "owner",
   timeoutMs?: number,
+  instanceId?: string,
 ): Promise<ControlReply> {
   // A user bearer or a minted static instrument carries its own ep caller triple: ride it.
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerEp(space, server, op, args, auth, reach, timeoutMs);
+    return askManagerEp(space, server, op, args, auth, reach, timeoutMs, instanceId);
   // A raw `--creds` file with NO minted triple is a pre-1c generation's cred (no ep rows). The ctl
   // rail it used to ride is gone (1d), so refuse loud with the recovery rather than hang.
   if (auth.creds)
@@ -203,7 +208,81 @@ export async function askManager(
   // OPEN mesh: no credential system. The manager registered its service under DEV_OWNER and the
   // broker enforces nothing, so synthesize a fresh DEV_OWNER caller triple and connect bare.
   const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
-  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs);
+  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs, instanceId);
+}
+
+/** One instance's slot in a class scatter (P2 item 3): a REACHABLE instance carries its attributed
+ *  reply (`data` on ok, `error` on a per-instance failure); an UNREACHABLE one (a frozen slot that
+ *  produced no on-time reply — a severed/stalled manager) is reported, NEVER omitted (SPEC §13.5 pin 3). */
+export interface ScatterInstanceReply {
+  instanceId: string;
+  reachable: boolean;
+  data?: unknown;
+  error?: string;
+}
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string };
+
+/** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default): one short-lived connection, a fresh
+ *  UNPINNED {@link resolveService} (any instance answers `describe` for the shared command surface),
+ *  then {@link scatterCommand} — freeze the live class from the records registry, publish once on the
+ *  `all` rail, and gather one attributed reply per instance. Every frozen instance is accounted for:
+ *  a reachable one carries its reply, a non-answering one is labeled unreachable (never omitted). */
+async function askManagerScatterEp(
+  space: string,
+  server: string,
+  op: string,
+  auth: ControlAuth,
+  timeoutMs?: number,
+): Promise<ScatterReply> {
+  const mapped = EP_COMMANDS[op];
+  if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
+  if (mapped.targeted) return { ok: false, error: `${op} is targeted and cannot be scattered across instances` };
+  const caller = auth.epCaller!;
+  const nc = await connect({
+    servers: server,
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds } : {}),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+    const result = await scatterCommand(nc, space, service, mapped.command, undefined, {
+      deadlineMs: timeoutMs ?? 8_000,
+      reconcileDeadlineMs: 3_000,
+    });
+    const instances: ScatterInstanceReply[] = [];
+    for (const [instanceId, ar] of result.replies) {
+      if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
+      else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error" });
+    }
+    // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped (pin 3).
+    for (const instanceId of result.missing) instances.push({ instanceId, reachable: false });
+    return { ok: true, instances };
+  } catch (e) {
+    const msg = e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message;
+    return { ok: false, error: `no manager reachable on the ep rails (${msg})` };
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** SCATTER one untargeted read (`ps`) across EVERY registered manager instance in the space and merge
+ *  the attributed results — the `cotal ps` default in a multi-manager space (P2 item 3). Auth shapes
+ *  match {@link askManager}: a minted instrument or user bearer rides its own caller triple; a raw
+ *  pre-1c `--creds` file is refused loud; an OPEN mesh synthesizes a DEV_OWNER triple and connects
+ *  bare (the broker enforces nothing, so the records freeze reads freely). */
+export async function scatterManager(
+  space: string,
+  server: string,
+  op: string,
+  auth: ControlAuth = {},
+  timeoutMs?: number,
+): Promise<ScatterReply> {
+  if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
+    return askManagerScatterEp(space, server, op, auth, timeoutMs);
+  if (auth.creds)
+    return { ok: false, error: `this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder (\`cotal ps\`) which mints the instrument for you` };
+  const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
+  return askManagerScatterEp(space, server, op, openAuth, timeoutMs);
 }
 
 export function failIfNotOk(reply: ControlReply): void {

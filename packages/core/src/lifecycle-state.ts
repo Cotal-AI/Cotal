@@ -420,8 +420,15 @@ export interface StaticManagedSlotRow {
   /** Every credentialId minted for this incarnation, recorded BEFORE its mint (crash-safe:
    *  a cred never exists without its id recorded here and its ledger row appended first). */
   credentialIds: string[];
-  /** The minting/supervising authority (the manager's own incarnation uid). */
+  /** The minting/supervising authority (the manager's own per-PROCESS incarnation uid — audit only). */
   managerInstance: string;
+  /** The owning LOGICAL manager instance id (P2 item 3 slice 3b-2): stable across manager restart, so
+   *  the boot reconcile filters to rows THIS logical instance owns and never sweep-terminalizes a
+   *  SIBLING manager's rows (multi-manager-per-space). Optional for backward-compat: a legacy row
+   *  (written before 3b-2, no owner recorded) predates multi-manager, so a reconciling manager treats
+   *  it as its own (the single-manager past). An orphaned sibling row is claimed only by an explicit
+   *  operator CAS takeover (ruling 1), never auto-adopted. */
+  ownerInstanceId?: string;
 }
 
 /** The slot key prefix in the records store. Core-owned so permission builders and the manager
@@ -443,15 +450,16 @@ export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedS
     throw new EpEnvelopeError("internal", `the static slot row ${key} is not JSON; garbled trusted-path state never drives supervision (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the static slot row ${key} is not an object`);
-  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance"]);
+  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance", "ownerInstanceId"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the static slot row ${key} carries the unknown field "${k}" (closed schema)`);
   if (
     typeof o.owner !== "string" || typeof o.alias !== "string" || typeof o.actor !== "string" ||
     typeof o.lifecycleUid !== "string" || typeof o.managerInstance !== "string" || o.managerInstance.length === 0 ||
     typeof o.phase !== "string" || !STATIC_SLOT_PHASES.has(o.phase) ||
+    (o.ownerInstanceId !== undefined && (typeof o.ownerInstanceId !== "string" || o.ownerInstanceId.length === 0)) ||
     !Array.isArray(o.credentialIds) || !o.credentialIds.every((c) => typeof c === "string" && c.length > 0)
   )
-    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance)`);
+    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance/ownerInstanceId)`);
   assertLifecycleToken(o.lifecycleUid);
   for (const c of o.credentialIds) assertCredentialIdTail(c, `slot row ${key} credentialId`);
   if (staticSlotKey(o.owner, o.alias) !== key)

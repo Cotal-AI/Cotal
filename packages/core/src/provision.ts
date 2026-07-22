@@ -75,7 +75,7 @@ import {
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionWriterGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
 import { epsSubject } from "./endpoint-subjects.js";
-import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
+import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
@@ -129,7 +129,15 @@ export type Profile =
   // one endpoint's §13.6 sessions at ONE serving epoch — the session `out`/`in` rails
   // (wildcard session, pinned endpoint+epoch) + the DEDICATED sessions-bucket ledger, NOTHING else.
   // Standing + re-minted for the SAME nkey on renewal, the goal-writer precedent ({@link goalWriterGrants}).
-  | "session-writer";
+  | "session-writer"
+  // v0.4 endpoint-registration eviction (P2 item 3, slice 3a): the SCOPED delivery-admin caller a
+  // registration barrier mints PER re-registration to verify-evict the SUPERSEDED serve family
+  // before the epoch advances (SPEC 13.1 "old authority dies before new authority is visible").
+  // EXACTLY the delivery-admin request+reply rail + $JS.API.INFO — no lease, presence, store read,
+  // consumer, KV, or executing right; the daemon does the $SYS scan/KICK, the manager passes only
+  // the predecessor's principal. Ephemeral (one re-registration's window), narrower than the
+  // `supervisor` profile the auth barrier-evict reuses (its #30 residual, done here for the manager).
+  | "endpoint-evictor";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -196,6 +204,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action (P2 item 2); the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential (Q2)" },
   "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred (P2 item 6): rails-only for ONE §13.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
   "session-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's serving session-writer (P2 item 6): STANDING own-endpoint writer over one endpoint's §13.6 session rails + the dedicated sessions bucket; the manager re-mints for the SAME nkey on the half-TTL loop, disjoint from the serve credential (the goal-writer precedent)" },
+  "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
@@ -763,6 +772,16 @@ export function permissionsFor(
     const req = controlServiceSubject(space, CONTROL_AUTH_ADMIN, opts.retirementRequester.owner, opts.retirementRequester.actor);
     return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
   }
+  if (profile === "endpoint-evictor") {
+    // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
+    // Publish EXACTLY this credential's OWN delivery-admin control subject + $JS.API.INFO; subscribe
+    // its own reply subtree + inbox. NO lease, presence, store read, consumer, KV, or executing
+    // right — the daemon does the $SYS scan/KICK (subject-gated authority, like the supervisor evictor
+    // it narrows) and the manager passes only the predecessor's principal. Narrower than the
+    // `supervisor` profile the auth barrier-evict reuses (its #30 residual, done here for the manager).
+    const req = controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor);
+    return { pub: { allow: [req, "$JS.API.INFO"] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
+  }
   if (profile === "lifecycle-executor") {
     if (!opts.lifecycleExecutor)
       throw new Error("permissionsFor: lifecycle-executor requires opts.lifecycleExecutor ({owner, actor, lifecycleUid, alias} of the ONE incarnation it may move)");
@@ -1058,11 +1077,15 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
     pub: {
       allow: [
         "$JS.API.INFO",
-        // Singleton manager lease (managerBucket, pre-created at `cotal up`): OPEN-ONLY bind + CAS the one
-        // lease key (acquire/renew/release) + read it. NO STREAM.CREATE (pre-created), DELETE, or PURGE.
+        // Per-instance manager liveness lease (managerBucket, pre-created at `cotal up`): OPEN-ONLY bind +
+        // CAS this instance's own `lease.<instanceId>` key (acquire/renew/release) + read the subtree. P2
+        // item 3 demoted the per-space singleton to per-instance keys, so the write grant spans `lease.*`
+        // (every instance of this space shares this one supervisor principal — the isolation between
+        // instances is the logical-id/CAS boundary, not a cred boundary). NO STREAM.CREATE (pre-created),
+        // DELETE, or PURGE.
         `$JS.API.STREAM.INFO.${MKV}`,
-        `$JS.API.STREAM.MSG.GET.${MKV}`, // readManagerLease + CAS-conflict kv.get (auth-mode kvm.open ⇒ MSG.GET)
-        `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, // the SINGLE lease key (create/update/delete = $KV publishes)
+        `$JS.API.STREAM.MSG.GET.${MKV}`, // readManagerLease (last_by_subj lease.*) + CAS-conflict kv.get
+        `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}.*`, // this instance's lease.<id> key (create/update/delete = $KV publishes)
         // Presence: publish OWN key + watch the roster. Own key only (no peer-key forge — residual 3); no
         // presence-stream purge/delete (no force-offline tamper). No presence kv.get (roster is the in-memory
         // watch cache + sweep), so no STREAM.MSG.GET on presence.
@@ -1256,9 +1279,36 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "pri
   // privileged (ps/start reads) vs admin (any-mode stop/attach) exactly as the ctl tier did.
   const ep = instrumentEpRows(space, pr, epTier);
   return {
-    pub: { allow: ep.pub },
+    // The PRIVILEGED tier (the `cotal ps` instrument) also carries the SCOPED §13.9 records read the
+    // class scatter's freeze rides (P2 item 3): `freezeExpectedSet` enumerates `svc.<endpoint>.*.spec`
+    // and LEADER-reads each frozen slot's svc spec/status before it scatters `ps` on the `all` rail.
+    // The admin tier (stop/attach) never scatters, so it gets no records read.
+    pub: { allow: epTier === "privileged" ? [...ep.pub, ...scatterFreezeReadRows(space)] : ep.pub },
     sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
   };
+}
+
+/** The SCOPED §13.9 records-read rows the class-scatter freeze rides (P2 item 3, `cotal ps`): the
+ *  `svc.*` enumeration consumer + the leader-served per-slot spec/status read of the endpoint's
+ *  `svc` registry — a READ of exactly the service-registration keys, no write, no other bucket. A
+ *  new D32 matrix row. The keyed Direct Get is subject-PINNED to `svc.>`; the enumeration consumer
+ *  and the leader `STREAM.MSG.GET` are STREAM-scoped because the requested key rides the PAYLOAD
+ *  (which a subject grant cannot narrow) — the SAME NAMED RESIDUAL every records reader already
+ *  accepts (the provisioner, the lifecycle/serve executors): for this EPHEMERAL one-shot instrument's
+ *  lifetime it can READ (never write) any records-store row — registration metadata, no secrets. */
+function scatterFreezeReadRows(space: string): string[] {
+  const REC = recordsBucket(space);
+  return [
+    // `kv.keys("svc.<e>.*.spec")` rides an ordered ephemeral consumer over the records bucket.
+    `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,
+    `$JS.API.CONSUMER.INFO.KV_${REC}.>`,
+    `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,
+    // The per-slot spec/status reads (`freezeExpectedSet` + the registration reconcile) are
+    // leader-served `STREAM.MSG.GET` — stream-scoped (NAMED RESIDUAL above), plus the subject-pinned
+    // keyed Direct Get form for any direct-aware read path (scoped to the `svc.` registry prefix).
+    `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+    `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.svc.>`,
+  ];
 }
 
 /** The v0.4 ep-rail rows of an operator INSTRUMENT credential (the 1c grant-migration table's
@@ -1636,9 +1686,13 @@ function endpointServeExecutorPermissions(
   const gateKey = epgateKey(pin.endpoint, pin.instanceId);
   const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
   // The registration writes this ONE instance's spec key plus the endpoint's governance head
-  // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor).
+  // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor), and this
+  // instance's own svc STATUS key (P2 item 3: the manager writes its CONVERGED `ready` status so it
+  // is a §13.5 scatter member — `freezeExpectedSet` requires a status caught up to the current
+  // registration; the write is epoch-fenced by `writeServiceStatus`).
   const recordKeys = [
     recordSpecKey(RECORD_KINDS.svc, [pin.endpoint, assertLifecycleToken(pin.instanceId, "instanceId")]),
+    recordStatusKey(RECORD_KINDS.svc, [pin.endpoint, assertLifecycleToken(pin.instanceId, "instanceId")]),
     recordAtomicKey(GOVERN_HEAD, [pin.endpoint]),
   ];
   return {

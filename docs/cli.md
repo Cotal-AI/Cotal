@@ -404,7 +404,7 @@ registry.
 ## ps, stop, attach
 
 ```bash
-cotal ps [--space <s>]
+cotal ps [--on <instance>] [--space <s>]
 cotal stop --name <n> [--space <s>]
 cotal attach --name <n> [--space <s>]
 ```
@@ -413,10 +413,14 @@ cotal attach --name <n> [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
+| `--on <instance>` | class scatter | `ps`: pin to one manager instance id (multi-manager space) |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
-renders each managed agent's last credential-refresh outcome, fail-closed. `attach` streams and
+renders each managed agent's last credential-refresh outcome, fail-closed. In a space with more than
+one manager instance, bare `ps` is a **class scatter**: it merges every registered instance's agents,
+grouped and attributed per instance, and a non-answering instance is shown `unreachable` (never
+silently omitted). `--on <instance>` pins the read to one exact instance id instead. `attach` streams and
 drives an agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
 [`COTAL_DETACH_KEY`](config.md)). It does so over a one-use, holder-bound mesh session ([SPEC](../SPEC.md)
 §13.6): the manager replies with a signed session grant (never a `127.0.0.1` URL), the CLI redeems it

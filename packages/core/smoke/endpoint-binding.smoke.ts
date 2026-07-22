@@ -271,11 +271,12 @@ c("a reader bind grant is INFO/MSG.NEXT/ACK on the reader's own stream, never cr
   readerBindGrants(recordsKvStreamName(SPACE), recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: recSubtree })).length === 3);
 // ── D14: the commit principal + contract publisher (§13.9 matrix rows, exact strings) ──
 const CONN = "ibxsmoke0123456789";
-c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families incl. the (i)-fence epoch-scoped result leaf + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
   (() => {
     const g = commitPrincipalGrants(SPACE, "manager", CONN);
     return JSON.stringify(g.publish) === JSON.stringify([
       "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+      "cotal.epbind.epf.manager.goal.*.*.*.*.result.*",
       "cotal.epbind.epf.manager.eff.>",
       "cotal.epbind.epf.manager.receipt.>",
       "cotal.epbind.epf.manager.wrk.>",
@@ -297,6 +298,7 @@ c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the go
       "$KV.cotal_records_epbind.goalidx.manager.>",
       "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
       "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+      "cotal.epbind.epf.manager.goal.*.*.*.*.result.*",
       "cotal.epbind.epf.manager.eff.>",
       "cotal.epbind.epf.manager.receipt.>",
       "cotal.epbind.epf.manager.wrk.>",

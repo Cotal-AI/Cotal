@@ -62,6 +62,17 @@ export interface ActionContext {
   js: JetStreamClient;
   jsm: JetStreamManager;
   space: string;
+  /** The (i) INSTANT EPOCH FENCE resolver (SPEC 13.6, P2 item 3 slice 3.0): resolve the CURRENT
+   *  gate epoch of an EXECUTING instance by its (logical) instanceId, or `null` if that instance
+   *  is retired/unknown. A goal whose accepted spec pins an {@link GoalSpecValue.executor} has an
+   *  EPOCH-SCOPED terminal-fact subject (`…result.<epoch>`): the commit writes under the
+   *  committer's own epoch and a reader resolves the executor's CURRENT epoch HERE and reads that
+   *  exact subject — so a superseded manager's wrong terminal under the OLD epoch is never
+   *  surfaced (the successor's settle under the current epoch is what callers see). This is the
+   *  current-epoch-resolved read, NEVER a wildcard `last_by_subj` (the 1c.1 append-shadow lesson).
+   *  A context wired for executor-carrying goals MUST supply it; its absence on such a goal is a
+   *  loud wiring refusal, never a silent flat-subject read. */
+  resolveExecutorEpoch?: (instanceId: string) => Promise<number | null> | number | null;
 }
 const BRANDED_CONTEXTS = new WeakSet<ActionContext>();
 /** The context's source connection, held privately for the §13.4 one-connection bond: emission
@@ -69,17 +80,32 @@ const BRANDED_CONTEXTS = new WeakSet<ActionContext>();
  *  on a different broker (which passes any string-space compare) can never splice receipts
  *  across brokers. */
 const ACTION_CONNECTIONS = new WeakMap<ActionContext, NatsConnection>();
-export async function actionContext(nc: NatsConnection, space: string): Promise<ActionContext> {
+export async function actionContext(nc: NatsConnection, space: string, opts?: { resolveExecutorEpoch?: (instanceId: string) => Promise<number | null> | number | null }): Promise<ActionContext> {
   if (nc === null || typeof nc !== "object" || typeof (nc as unknown as { close?: unknown }).close !== "function")
     throw new EpEnvelopeError("failed-precondition", "an action context is constructed from ONE binding-layer connection; separate resources are never accepted (SPEC 13.4)");
   if (typeof space !== "string" || space.length === 0) throw new EpEnvelopeError("failed-precondition", "an action context needs a space");
+  if (opts?.resolveExecutorEpoch !== undefined && typeof opts.resolveExecutorEpoch !== "function")
+    throw new EpEnvelopeError("failed-precondition", "resolveExecutorEpoch, when supplied, is a function (SPEC 13.6)");
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
   const kv = await openRecordsBucket(nc, space);
-  const ctx = Object.freeze({ kv, js, jsm, space });
+  const ctx = Object.freeze({ kv, js, jsm, space, ...(opts?.resolveExecutorEpoch !== undefined ? { resolveExecutorEpoch: opts.resolveExecutorEpoch } : {}) });
   BRANDED_CONTEXTS.add(ctx);
   ACTION_CONNECTIONS.set(ctx, nc);
   return ctx;
+}
+
+/** Resolve an executor instance's CURRENT gate epoch through the branded context's wired resolver
+ *  (SPEC 13.6, the (i) fence). A goal carrying an {@link GoalSpecValue.executor} through a context
+ *  with NO resolver is a loud wiring refusal (never a silent flat read); a non-integer answer is
+ *  garbled authority. `null` = the executor is retired/unknown (no current epoch to resolve). */
+async function resolveCurrentExecutorEpoch(ctx: ActionContext, instanceId: string): Promise<number | null> {
+  if (typeof ctx.resolveExecutorEpoch !== "function")
+    throw new EpEnvelopeError("failed-precondition", `goal terminal fencing needs the executor "${instanceId}"'s current epoch, but this action context carries no resolveExecutorEpoch; an executor-pinned goal never silently reads a flat terminal (SPEC 13.6)`);
+  const current = await resolveWithBudget(ctx.resolveExecutorEpoch(instanceId), 5_000);
+  if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
+    throw new EpEnvelopeError("internal", `the executor-epoch resolver returned ${JSON.stringify(current)} for "${instanceId}"; a non-integer epoch never authorizes (SPEC 13.6)`);
+  return current;
 }
 function assertCtx(ctx: ActionContext): void {
   if (!BRANDED_CONTEXTS.has(ctx))
@@ -166,9 +192,20 @@ export function goalRefOf(request: ParsedEpRequest, goalId: string): GoalRef {
   return { endpoint: request.endpoint, caller: { owner: c.owner, actor: c.actor, uid: c.uid }, goalId: assertIdToken(goalId, "goalId") };
 }
 
-/** The goal's terminal-result fact subject (`epf.<e>.goal.<triple>.<goalId>.result`, §13.2). */
-export function goalResultSubject(space: string, ref: GoalRef): string {
-  return epfSubject(space, ref.endpoint, ["goal", ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId, "result"]);
+/** The goal's terminal-result fact subject (§13.2). Flat `epf.<e>.goal.<triple>.<goalId>.result`
+ *  for an ordinary goal; EPOCH-SCOPED `…result.<execEpoch>` when the goal pins an executing
+ *  instance (the (i) fence, SPEC 13.6 P2 item 3): each executor epoch owns its own create-only
+ *  result subject, so a superseded manager's terminal lands under a stale epoch nobody resolves-to
+ *  and the current executor can still commit its own — first-terminal-wins is per-epoch, and the
+ *  reader picks the subject by resolving the executor's CURRENT epoch. */
+export function goalResultSubject(space: string, ref: GoalRef, execEpoch?: number): string {
+  const tail = ["goal", ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId, "result"];
+  if (execEpoch !== undefined) {
+    if (typeof execEpoch !== "number" || !Number.isSafeInteger(execEpoch) || execEpoch < 0)
+      throw new EpEnvelopeError("failed-precondition", `an epoch-scoped goal result subject needs an unsigned integer epoch; got ${JSON.stringify(execEpoch)} (SPEC 13.6)`);
+    tail.push(String(execEpoch));
+  }
+  return epfSubject(space, ref.endpoint, tail);
 }
 
 /** The per-goal progress EVENT topic tail (§13.2 reserved topics). */
@@ -330,6 +367,14 @@ export interface GoalSpecValue {
   command: string;
   caller: { id: string; lifecycleUid: string };
   target?: { owner: string; actor: string; lifecycleUid: string; mappingRevision: number };
+  /** The EXECUTING instance (SPEC 13.6, the (i) fence, P2 item 3): the (logical) instanceId of
+   *  the manager that accepted and executes this goal. Its PRESENCE makes the terminal-fact
+   *  subject EPOCH-SCOPED — the terminal commits under the executor's own gate epoch and a reader
+   *  resolves that instance's CURRENT epoch to pick the subject, so a superseded incarnation's
+   *  terminal is never surfaced. A `create` goal (spawn) pins no target but IS executor-bound;
+   *  a target-pinned goal fences on the target lifecycle (assertExecutorCurrency) and is not
+   *  executor-epoch-scoped. */
+  executor?: { instanceId: string };
   /** The accepted submission's request id — the goal's ADDRESS for its durable acceptance fact
    *  (`epf.<e>.dec.<triple>.<id>`), written at acceptance when it is known. The raw submission
    *  (EPJ) is age-evicted, so receipt reconstruction after a crash reads the acceptance THROUGH
@@ -353,9 +398,17 @@ function parseSpec(raw: unknown, key: string, ref: GoalRef): GoalSpecValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal spec ${key} is not an object; garbled mediated record state never authorizes (SPEC 13.4)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "requestId", "guard", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
+  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "executor", "requestId", "guard", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
   if (o.guard !== undefined && (typeof o.guard !== "string" || o.guard.length === 0))
     throw new EpEnvelopeError("internal", `goal spec ${key} carries a malformed guard binding; garbled state never authorizes (SPEC 13.4/13.6)`);
+  if (o.executor !== undefined) {
+    const x = o.executor as Record<string, unknown>;
+    if (x === null || typeof x !== "object" || Array.isArray(x))
+      throw new EpEnvelopeError("internal", `goal spec ${key} executor is not an object; garbled state never authorizes (SPEC 13.4)`);
+    assertClosedKeys(x, ["instanceId"], `goal spec ${key} executor`);
+    if (typeof x.instanceId !== "string" || x.instanceId.length === 0)
+      throw new EpEnvelopeError("internal", `goal spec ${key} executor carries no valid instanceId; garbled state never authorizes (SPEC 13.4/13.6)`);
+  }
   if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0 || typeof o.command !== "string")
     throw new EpEnvelopeError("internal", `goal spec ${key} is malformed; garbled state never authorizes (SPEC 13.4)`);
   try { assertIdToken(o.requestId as string, "requestId"); }
@@ -405,6 +458,12 @@ export interface GoalStatusValue extends Record<string, unknown> {
   checkpoint?: { token: string; deadlineGeneration: number };
   cancelMode?: "graceful" | "terminate";
   observedSpecRevision: number;
+  /** The EXECUTOR epoch a TERMINAL projection reflects (SPEC 13.6, the (i) fence): present only on
+   *  a terminal state projected from an executor-pinned goal. The projection is epoch-MONOTONIC — a
+   *  newer executor epoch's terminal supersedes an older epoch's projection (a superseded epoch
+   *  cannot bind the successor's outcome, §13.6 item 7), so the corpse's stale-epoch terminal never
+   *  freezes the status against the successor's settle. */
+  executorEpoch?: number;
 }
 
 /** Create the goal record at acceptance, IDEMPOTENTLY (spec create-only, then the `accepted`
@@ -443,7 +502,13 @@ function parseStatus(raw: unknown, key: string): GoalStatusValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal status ${key} is not an object; garbled mediated record state never authorizes (SPEC 13.4)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["state", "checkpoint", "cancelMode", "observedSpecRevision"], `goal status ${key}`);
+  assertClosedKeys(o, ["state", "checkpoint", "cancelMode", "observedSpecRevision", "executorEpoch"], `goal status ${key}`);
+  if (o.executorEpoch !== undefined) {
+    if (!GOAL_TERMINAL_STATES.includes(o.state as GoalState))
+      throw new EpEnvelopeError("internal", `goal status ${key} carries an executorEpoch outside a terminal state; garbled cross-variant state never authorizes (SPEC 13.6)`);
+    if (typeof o.executorEpoch !== "number" || !Number.isSafeInteger(o.executorEpoch) || o.executorEpoch < 0)
+      throw new EpEnvelopeError("internal", `goal status ${key} executorEpoch is not an unsigned integer; garbled state never authorizes (SPEC 13.6)`);
+  }
   if (typeof o.state !== "string" || !(GOAL_STATES as readonly string[]).includes(o.state))
     throw new EpEnvelopeError("internal", `goal status ${key} carries unknown state ${JSON.stringify(o.state)}; garbled state never authorizes (SPEC 13.6)`);
   if (typeof o.observedSpecRevision !== "number" || !Number.isSafeInteger(o.observedSpecRevision) || o.observedSpecRevision < 0)
@@ -647,30 +712,61 @@ export async function transitionGoal(
 /** Project the WINNING terminal fact onto the status — the ONLY path a status reaches a terminal
  *  state, and the crash reconciler for a commit that fenced the fact but died before projecting.
  *  Cross-checks the fact's fingerprint against the persisted spec (a terminal fact whose
- *  fingerprint disagrees with the accepted goal is a garbled authority chain). */
+ *  fingerprint disagrees with the accepted goal is a garbled authority chain). For an
+ *  EXECUTOR-pinned goal (SPEC 13.6, the (i) fence) the projected fact is the CURRENT epoch's, and
+ *  the status projection is EPOCH-MONOTONIC: a newer executor epoch's terminal SUPERSEDES an older
+ *  epoch's projection (a superseded epoch cannot bind the successor, §13.6 item 7), so the corpse's
+ *  stale-epoch terminal never freezes the status against the successor's settle. */
 export async function projectGoalTerminal(ctx: ActionContext, ref: GoalRef): Promise<GoalStatusValue> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
-  const fact = await readGoalResult(ctx, snap);
-  if (fact === undefined)
-    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no terminal fact; only a committed result projects a terminal status (SPEC 13.6)`);
   const spec = await readGoalSpec(ctx, snap);
   if (spec === undefined)
     throw new EpEnvelopeError("internal", `goal "${snap.goalId}" has a terminal fact but no accepted spec; garbled state never authorizes (SPEC 13.4)`);
+  // Resolve the CURRENT epoch's terminal (the (i) fence); a non-executor goal reads the flat one.
+  let execEpoch: number | undefined;
+  let subject: string;
+  if (spec.value.executor !== undefined) {
+    const current = await resolveCurrentExecutorEpoch(ctx, spec.value.executor.instanceId);
+    if (current === null)
+      throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}"'s executor "${spec.value.executor.instanceId}" is retired/unknown; no current-epoch terminal to project (SPEC 13.6)`);
+    execEpoch = current;
+    subject = goalResultSubject(ctx.space, snap, current);
+  } else {
+    subject = goalResultSubject(ctx.space, snap);
+  }
+  const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
+  const fact = raw === undefined ? undefined : parseGoalResultFact(raw, subject, snap);
+  if (fact === undefined)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no terminal fact; only a committed result projects a terminal status (SPEC 13.6)`);
   if (fact.fingerprint !== spec.value.fingerprint)
     throw new EpEnvelopeError("internal", `goal "${snap.goalId}"'s terminal fact fingerprint disagrees with its accepted spec; a projection never follows a garbled fact (SPEC 13.6)`);
   const key = recordStatusKey(RECORD_KINDS.goal, goalQualifiers(snap));
+  const withEpoch = (state: GoalState, observedSpecRevision: number): GoalStatusValue =>
+    assertStatusValue({ state, observedSpecRevision, ...(execEpoch !== undefined ? { executorEpoch: execEpoch } : {}) });
   for (let pass = 0; pass < 2; pass++) {
     const current = await readGoalStatus(ctx, snap);
     if (current === undefined) {
-      const created: GoalStatusValue = assertStatusValue({ state: fact.state, observedSpecRevision: spec.revision });
+      const created = withEpoch(fact.state, spec.revision);
       try { await createRecordEntry(ctx.kv, key, created); return created; }
       catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
     }
-    if (current.value.state === fact.state) return current.value;
-    if (GOAL_TERMINAL_STATES.includes(current.value.state))
+    // Same terminal already projected FOR THIS epoch (or an epoch-agnostic goal): converge.
+    if (current.value.state === fact.state
+      && (execEpoch === undefined || current.value.executorEpoch === execEpoch)) return current.value;
+    if (GOAL_TERMINAL_STATES.includes(current.value.state)) {
+      // An already-terminal status. For an executor goal, a NEWER epoch's terminal SUPERSEDES an
+      // older epoch's projection (a superseded epoch cannot bind the successor's outcome, §13.6
+      // item 7); a same/newer recorded epoch with a different state is a genuine journal contradiction.
+      const recordedEpoch = typeof current.value.executorEpoch === "number" ? current.value.executorEpoch : undefined;
+      if (execEpoch !== undefined && (recordedEpoch === undefined || recordedEpoch < execEpoch)) {
+        const next = withEpoch(fact.state, current.value.observedSpecRevision);
+        try { await updateRecordEntry(ctx.kv, key, next, current.revision); return next; }
+        catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
+      }
       throw new EpEnvelopeError("internal", `goal "${snap.goalId}" status is terminal ${current.value.state} but the winning fact is ${fact.state}; a projection never contradicts the journal (SPEC 13.6)`);
-    const next: GoalStatusValue = assertStatusValue({ state: fact.state, observedSpecRevision: current.value.observedSpecRevision });
+    }
+    const next = withEpoch(fact.state, current.value.observedSpecRevision);
     try { await updateRecordEntry(ctx.kv, key, next, current.revision); return next; }
     catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
   }
@@ -737,11 +833,23 @@ export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef)
   return o as unknown as GoalResultFact;
 }
 
-/** Read the goal's cached terminal outcome (`undefined` = not terminal yet). */
+/** Read the goal's cached terminal outcome (`undefined` = not terminal yet). For an EXECUTOR-pinned
+ *  goal (the (i) fence, SPEC 13.6) this is the CURRENT-EPOCH-RESOLVED read: resolve the executor's
+ *  current gate epoch and read that EXACT `…result.<epoch>` subject (never a wildcard `last_by_subj`
+ *  — the append-shadow lesson), so a superseded incarnation's terminal under a stale epoch is not
+ *  surfaced. A retired/unknown executor (`null` epoch) has no current terminal to surface. */
 export async function readGoalResult(ctx: ActionContext, ref: GoalRef): Promise<GoalResultFact | undefined> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
-  const subject = goalResultSubject(ctx.space, snap);
+  const spec = await readGoalSpec(ctx, snap);
+  let subject: string;
+  if (spec?.value.executor !== undefined) {
+    const current = await resolveCurrentExecutorEpoch(ctx, spec.value.executor.instanceId);
+    if (current === null) return undefined; // the executor is retired/unknown: no current-epoch terminal exists
+    subject = goalResultSubject(ctx.space, snap, current);
+  } else {
+    subject = goalResultSubject(ctx.space, snap);
+  }
   const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
   return raw === undefined ? undefined : parseGoalResultFact(raw, subject, snap);
 }
@@ -751,7 +859,7 @@ export async function readGoalResult(ctx: ActionContext, ref: GoalRef): Promise<
  *  fingerprint FROM the spec, projects the winner, and proves a lost-CAS winner's fingerprint
  *  agrees with the spec. */
 async function commitTerminalFact(
-  ctx: ActionContext, snap: GoalRef, spec: GoalSpecValue, state: GoalOutcomeState, data: unknown, now: number,
+  ctx: ActionContext, snap: GoalRef, spec: GoalSpecValue, state: GoalOutcomeState, data: unknown, now: number, execEpoch: number | undefined,
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
   const snapshotData: unknown = data === undefined ? undefined : JSON.parse(canonicalJson(data));
   const fact: GoalResultFact = {
@@ -759,9 +867,19 @@ async function commitTerminalFact(
     outcomeDigest: contractDigest(snapshotData === undefined ? null : snapshotData),
     ...(snapshotData !== undefined ? { data: snapshotData } : {}), ts: now,
   };
-  const subject = goalResultSubject(ctx.space, snap);
+  // The (i) fence (SPEC 13.6): an executor-pinned goal's terminal commits under the COMMITTER's
+  // OWN epoch (`execEpoch`), never a freshly-resolved current one — so a superseded committer
+  // lands its fact on its stale-epoch subject (invisible to current readers), not on the
+  // successor's. The lost-CAS winner is read from that SAME exact subject (a same-epoch retry or
+  // reconciler), never through readGoalResult's current-resolve which could point elsewhere.
+  const subject = goalResultSubject(ctx.space, snap, spec.executor !== undefined ? execEpoch : undefined);
   const res = await publishCreateOnly(ctx.js, subject, new TextEncoder().encode(JSON.stringify(fact)));
-  const winner = res.won ? fact : await readGoalResult(ctx, snap);
+  let winner: GoalResultFact | undefined;
+  if (res.won) winner = fact;
+  else {
+    const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
+    winner = raw === undefined ? undefined : parseGoalResultFact(raw, subject, snap);
+  }
   if (winner === undefined)
     throw new EpEnvelopeError("internal", `the goal terminal CAS for ${subject} was lost but no winning fact is readable (SPEC 13.4)`);
   if (winner.fingerprint !== spec.fingerprint)
@@ -942,7 +1060,7 @@ export type GoalCommitCause =
  *  {@link reconcileReceiptEmission} is the durable backstop that converges it. */
 export async function commitGoalResult(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number; receipts?: ReceiptEmissionWiring } & GoalCommitCause,
+  args: { ref: GoalRef; now: number; receipts?: ReceiptEmissionWiring; executorEpoch?: number } & GoalCommitCause,
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue; receiptEmission?: ReceiptEmissionResult | { outcome: "failed"; error: EpEnvelopeError } }> {
   assertCtx(ctx);
   // ENTRY SNAPSHOT (single-read): ref, clock, cause, wiring, and every per-cause field detach
@@ -951,6 +1069,12 @@ export async function commitGoalResult(
   const now = assertSafeInt(args.now, "now");
   const receipts = args.receipts;
   if (receipts !== undefined) assertEmissionWiring(ctx, receipts);
+  // The (i) fence input (SPEC 13.6, P2 item 3): the committer's OWN executor epoch, detached at
+  // entry. Required for an executor-pinned goal (verified below against the accepted spec), a
+  // wiring confusion on any other goal.
+  const executorEpoch = args.executorEpoch;
+  if (executorEpoch !== undefined && (!Number.isSafeInteger(executorEpoch) || executorEpoch < 0))
+    throw new EpEnvelopeError("failed-precondition", `executorEpoch must be an unsigned integer; got ${JSON.stringify(args.executorEpoch)} (SPEC 13.6)`);
   const cause = args.cause;
   const dataRaw = (args as { data?: unknown }).data;
   let data: unknown;
@@ -1004,6 +1128,26 @@ export async function commitGoalResult(
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; a terminal commits only for an accepted goal (SPEC 13.6)`);
 
+  // The (i) fence belt (SPEC 13.6, P2 item 3): an EXECUTOR-pinned goal commits its terminal under
+  // the committer's OWN epoch, and this belt refuses a committer already SUPERSEDED at commit time
+  // (a fresh resolve of the executor's current epoch disagrees). It is defence in depth over the
+  // epoch-scoped subject, which is the actual instant fence: any terminal that still lands in the
+  // resolve→CAS window is written under the stale epoch and is invisible to current readers, so
+  // the successor's settle under the current epoch is what callers see. A committer that presents
+  // no epoch for an executor-pinned goal is a wiring omission; an executorEpoch on a non-pinned
+  // goal is a wiring confusion — both refuse loud.
+  if (spec.value.executor !== undefined) {
+    if (executorEpoch === undefined)
+      throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is executor-pinned ("${spec.value.executor.instanceId}"); its terminal commits under the executor's own epoch, which the committer MUST present (SPEC 13.6)`);
+    const current = await resolveCurrentExecutorEpoch(ctx, spec.value.executor.instanceId);
+    if (current === null)
+      throw new EpEnvelopeError("expired", `goal "${snap.goalId}"'s executor "${spec.value.executor.instanceId}" is retired/unknown; a retired executor cannot commit a terminal (SPEC 13.6)`);
+    if (current !== executorEpoch)
+      throw new EpEnvelopeError("expired", `goal "${snap.goalId}"'s committer carries epoch ${executorEpoch} but the executor "${spec.value.executor.instanceId}"'s current epoch is ${current}; a superseded incarnation cannot commit a terminal (SPEC 13.6)`);
+  } else if (executorEpoch !== undefined) {
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not executor-pinned; an executorEpoch here is a wiring confusion (SPEC 13.6)`);
+  }
+
   // The post-commit emission tail every cause routes through: the terminal is already committed
   // and immutable when this runs, so a runtime emission failure SURFACES on the result instead
   // of masking the commit (the reconciler converges it); wiring errors refused at entry above.
@@ -1021,13 +1165,13 @@ export async function commitGoalResult(
     // Currency immediately before the terminal CAS — the check is paired with the commit it
     // fences, never a stale earlier read (SPEC 13.6 item 7).
     await assertExecutorCurrency(spec.value, snap.goalId, plan.executor, plan.resolver, plan.budget);
-    return finish(await commitTerminalFact(ctx, snap, spec.value, plan.state, data, now));
+    return finish(await commitTerminalFact(ctx, snap, spec.value, plan.state, data, now, executorEpoch));
   }
   if (plan.cause === "cancel") {
     const status = await readGoalStatus(ctx, snap);
     if (status === undefined || status.value.state !== "cancelling")
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not \`cancelling\` (state ${status?.value.state ?? "unknown"}); a cancel terminal follows a requested cancel, never a naked assertion (SPEC 13.6)`);
-    return finish(await commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now));
+    return finish(await commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now, executorEpoch));
   }
   if (plan.cause === "deny") {
     if (plan.denial.kind === "hold-expired") {
@@ -1046,14 +1190,14 @@ export async function commitGoalResult(
       if (settle === undefined || settle.settle !== "expired")
         throw new EpEnvelopeError("failed-precondition", `checkpoint "${plan.denial.token}" has no RECORDED expired settlement (${settle === undefined ? "still live" : `settled ${settle.settle}`}); a live or resumed hold never denies (SPEC 13.6)`);
     }
-    return finish(await commitTerminalFact(ctx, snap, spec.value, "failed", data, now));
+    return finish(await commitTerminalFact(ctx, snap, spec.value, "failed", data, now, executorEpoch));
   }
   // readiness
   if (spec.value.readinessDeadlineMs === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" declares no readiness deadline; an unbounded goal is never settled uncertain (SPEC 13.6)`);
   if (now < spec.value.acceptedAt + spec.value.readinessDeadlineMs)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not past its readiness deadline (acceptedAt ${spec.value.acceptedAt} + ${spec.value.readinessDeadlineMs}ms > now ${now}); an early uncertain settle would steal a still-possible success (SPEC 13.6)`);
-  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now));
+  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now, executorEpoch));
 }
 
 // ---- cancel (§13.6 item 4) --------------------------------------------------------------------
@@ -1116,9 +1260,9 @@ export async function requestGoalCancel(
  *  required). A racing late success that committed first wins and this returns the winner. */
 export async function settleGoalUncertain(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number },
+  args: { ref: GoalRef; now: number; executorEpoch?: number },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness" });
+  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(args.executorEpoch !== undefined ? { executorEpoch: args.executorEpoch } : {}) });
 }
 
 // ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------

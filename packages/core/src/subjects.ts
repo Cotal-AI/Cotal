@@ -796,15 +796,23 @@ export function leaseKey(shardIndex: number): string {
   return `lease.${shardIndex}`;
 }
 
-/** Name of the KV bucket holding the per-space MANAGER singleton lease — one key
- *  ({@link MANAGER_LEASE_KEY}), the live manager for the space. Bucket-level TTL (max_age =
- *  LEASE_TTL_MS) auto-expires a crashed manager's lease so a replacement can acquire. Created by the
- *  manager (allow-all profile); read by `spawn -f` to reuse the running manager not start a duplicate. */
+/** Name of the KV bucket holding the per-space MANAGER liveness leases — ONE KEY PER LOGICAL MANAGER
+ *  INSTANCE ({@link managerLeaseKey}), each the live-liveness marker of one manager instance in the
+ *  space (P2 item 3 demoted the old per-space singleton to per-instance liveness — two managers = two
+ *  workspace roots = two instance ids = two keys, so they coexist). Bucket-level TTL (max_age =
+ *  LEASE_TTL_MS) auto-expires a crashed instance's key so a replacement can re-acquire. */
 export function managerBucket(space: string): string {
   return `cotal_manager_${token(space)}`;
 }
-/** The single key in {@link managerBucket} — there is exactly one manager per space. */
+/** The lease-key PREFIX token in {@link managerBucket}. The demoted per-instance key is
+ *  `${MANAGER_LEASE_KEY}.<instanceId>` ({@link managerLeaseKey}); this bare prefix is no longer written
+ *  on its own (it stays exported as the grant/subtree anchor `${MANAGER_LEASE_KEY}.*`). */
 export const MANAGER_LEASE_KEY = "lease";
+/** The per-logical-instance liveness key in {@link managerBucket}. `instanceId` is a single lifecycle-uid
+ *  token (lowercase alnum, no dots/wildcards), so it is a safe trailing subject token under `lease.*`. */
+export function managerLeaseKey(instanceId: string): string {
+  return `${MANAGER_LEASE_KEY}.${instanceId}`;
+}
 
 /** Deterministic FNV-1a (32-bit) hash of `key` into `[0, n)` — stable across processes/restarts, so a
  *  shard assignment never moves under a running daemon. The Plane-3 partition seam (sharding):
