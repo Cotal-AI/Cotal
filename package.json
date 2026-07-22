@@ -145,6 +145,7 @@
     "smoke:manager-restart-fence": "tsx implementations/manager/smoke/manager-restart-fence.smoke.ts",
     "smoke:manager-coexist": "tsx implementations/manager/smoke/manager-coexist.smoke.ts",
     "smoke:manager-reconcile-ownership": "tsx implementations/manager/smoke/manager-reconcile-ownership.smoke.ts",
+    "smoke:manager-name-claim": "tsx implementations/manager/smoke/manager-name-claim.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
     "smoke:ep-verbs": "tsx packages/core/smoke/endpoint-verbs.smoke.ts",
