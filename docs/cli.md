@@ -685,9 +685,11 @@ renders its channel / role / ACL graph. See [Define a team](define-a-team.md) an
 ## ext
 
 ```bash
+cotal ext                 # same as `list`
 cotal ext add <npm-package>
 cotal ext remove <name>
 cotal ext list
+cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
 
@@ -697,6 +699,11 @@ providers are lazy-loaded by commands such as `supervise`; local process provide
 `status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical command/process example. Installed packages and their location are described in
 [config](config.md).
+
+Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
+root kept **separate** from npm's own global tree, so these packages never show up in `npm list -g` —
+`cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
+prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
 
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process

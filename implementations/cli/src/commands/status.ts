@@ -13,6 +13,7 @@ import {
 import {
   authDir,
   CLI_USER_ACTOR,
+  extensionsDir,
   findCotalRoot,
   getCurrent,
   isWorkspaceTargetError,
@@ -58,11 +59,17 @@ export async function status(args: ParsedArgs): Promise<void> {
 }
 
 /** The installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
- *  versions. Skipped entirely when none are installed (e.g. a fresh binary before its first seed). */
+ *  versions. Always rendered — the `root` line plus an explicit empty state answers "where do these
+ *  live / is anything installed", which is precisely ambiguous on a fresh binary before its first
+ *  seed. Versions are the manifest pin (add-time), not a live on-disk/host-compat check. */
 function printExtensions(): void {
   const exts = extensionVersions();
-  if (!exts.length) return;
   section("Extensions");
+  row("root", extensionsDir());
+  if (!exts.length) {
+    row("installed", c.dim("none"));
+    return;
+  }
   for (const e of exts) row(e.label, c.green(`v${e.version}`) + (e.pkg === e.label ? "" : c.dim(` · ${e.pkg}`)));
 }
 
