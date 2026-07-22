@@ -18,6 +18,12 @@ export {
 } from "./establish.js";
 export { serveSessionBridge, type ServeSessionBridgeOpts, type SessionBridge } from "./bridge.js";
 export {
+  ManagerSessionPlane,
+  kvManagerSessionLedger,
+  openSessionLedgerKv,
+  type ManagerSessionPlaneDeps,
+} from "./plane.js";
+export {
   encodeAttachBytes,
   attachBytes,
   decodeAttachPayload,
