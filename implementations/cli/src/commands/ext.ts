@@ -60,14 +60,24 @@ export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAb
 
 export async function ext(args: ParsedArgs): Promise<void> {
   const [sub, ...rest] = args.positionals;
+  // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
+  // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
+  // global tree), so erroring here left the honest answer undiscoverable.
+  if (!sub) return list();
   if (sub === "add" && rest[0]) return add(rest[0]);
   if (sub === "remove" && rest[0]) return remove(rest[0]);
   if (sub === "list" && !rest.length) return list();
+  // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
+  // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
+  if (sub === "root" && !rest.length) {
+    console.log(extensionsDir());
+    return;
+  }
   if (sub === "seed" && !rest.length) {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
     return runSeed({ repair, reset, force });
   }
-  console.error(c.red("usage: cotal ext <add <npm-package> | remove <name> | list | seed [--repair|--reset|--force]>"));
+  console.error(c.red("usage: cotal ext [add <npm-package> | remove <name> | list | root | seed [--repair|--reset|--force]]"));
   process.exit(1);
 }
 
@@ -420,6 +430,12 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
 
 function list(): void {
   const { extensions } = loadExtensionsManifest();
+  // Lead with the store's real location and its ownership, so the inventory is self-explaining: these
+  // packages are cotal-managed and kept out of npm's global prefix by design, which is exactly why
+  // `npm list -g` never shows them. Resolve the path dynamically — never hard-code it.
+  console.log(c.dim(`Extension root: ${extensionsDir()}`));
+  console.log(c.dim("Managed by `cotal ext`; kept separate from npm's global prefix, so `npm list -g` does not include these."));
+  console.log("");
   if (!extensions.length) {
     console.log(c.dim("(no extensions installed - add one with `cotal ext add <npm-package>`)"));
     return;
@@ -427,4 +443,6 @@ function list(): void {
   for (const e of extensions) {
     console.log(`${c.bold(e.pkg)}@${e.version}  ${c.dim(extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`).join(", "))}`);
   }
+  console.log("");
+  console.log(c.dim("Manage with `cotal ext add`/`cotal ext remove`; `cotal ext --help` for all commands."));
 }

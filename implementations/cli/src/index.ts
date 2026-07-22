@@ -49,8 +49,8 @@ const baseCommands: Command[] = [
     name: "ext",
     group: "Setup",
     summary: "operator-installed extensions - add commands, runtimes, and local process providers",
-    usage: "ext <add <npm-package> | remove <name> | list | seed [--repair|--reset|--force]>",
-    positionals: "<add <npm-package> | remove <name> | list | seed>",
+    usage: "ext [add <npm-package> | remove <name> | list | root | seed [--repair|--reset|--force]]",
+    positionals: "[add <npm-package> | remove <name> | list | root | seed]",
     flags: [
       { name: "repair", type: "boolean", description: "seed: recover a lost ever-seeded authority from its durable backup" },
       { name: "reset", type: "boolean", description: "seed: discard the authority and re-seed all built-in connectors (resurrects removed ones)" },
