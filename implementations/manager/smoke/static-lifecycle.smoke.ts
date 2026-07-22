@@ -131,6 +131,7 @@ const con: Connector = {
 registry.register(con);
 
 const M = mgr as unknown as {
+  managerInstanceId: string;
   agents: Map<string, { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string }; seed?: string }>;
   retiring: Map<string, { lifecycleUid: string }>;
   retiredPrincipals: Set<string>;
@@ -281,7 +282,7 @@ try {
     try {
       const kvm = new Kvm(nc);
       const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
-      await activateStaticLifecycle(t, { owner: DEV_OWNER, alias: "orphan", actor: orphanId.id, lifecycleUid: orphanUid, managerInstance: "smoke" });
+      await activateStaticLifecycle(t, { owner: DEV_OWNER, alias: "orphan", actor: orphanId.id, lifecycleUid: orphanUid, managerInstance: "smoke", ownerInstanceId: M.managerInstanceId });
       const slot = await readStaticSlot(t, DEV_OWNER, "orphan");
       await casStaticSlot(t, { ...slot!.row, phase: "active" }, slot!.revision);
     } finally {
@@ -308,7 +309,7 @@ try {
     try {
       const kvm = new Kvm(nc);
       const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
-      await activateStaticLifecycle(t, { owner: DEV_OWNER, alias: "resorphan", actor: resOrphanId.id, lifecycleUid: resOrphanUid, managerInstance: "smoke" });
+      await activateStaticLifecycle(t, { owner: DEV_OWNER, alias: "resorphan", actor: resOrphanId.id, lifecycleUid: resOrphanUid, managerInstance: "smoke", ownerInstanceId: M.managerInstanceId });
       const slot = await readStaticSlot(t, DEV_OWNER, "resorphan");
       await casStaticSlot(t, { ...slot!.row, phase: "active" }, slot!.revision);
     } finally {

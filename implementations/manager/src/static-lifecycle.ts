@@ -180,7 +180,7 @@ export async function revokeStaticCredentialRows(
  *  managed row owns the slot. */
 export async function activateStaticLifecycle(
   t: LifecycleStateTransport,
-  args: { owner: string; alias: string; actor: string; lifecycleUid: string; managerInstance: string },
+  args: { owner: string; alias: string; actor: string; lifecycleUid: string; managerInstance: string; ownerInstanceId: string },
 ): Promise<{ slotRevision: number }> {
   const { revision } = await writeStaticSlotIntent(t, {
     owner: args.owner,
@@ -188,6 +188,7 @@ export async function activateStaticLifecycle(
     actor: args.actor,
     lifecycleUid: args.lifecycleUid,
     managerInstance: args.managerInstance,
+    ownerInstanceId: args.ownerInstanceId,
   });
   await runActivationSagaAtUid(t, { owner: args.owner, actor: args.actor, lifecycleUid: args.lifecycleUid, managerInstance: args.managerInstance });
   return { slotRevision: revision };

@@ -2711,7 +2711,7 @@ export class Manager {
         // LAST) over the key-pinned executor. The wire AUTHORITY principal is the incarnation-
         // unique nkey (F5-bind); the alias is protected by the name-keyed slot + freeSlot hold.
         await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, (t) =>
-          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid }),
+          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid, ownerInstanceId: this.managerInstanceId }),
         );
         // From here the DURABLE registration exists: arm the rollback BEFORE minting, so a throw
         // between activation and provisioning still drives the exact-op static terminal (the
@@ -4016,9 +4016,19 @@ export class Manager {
     }
     for (const row of slotRows) {
       if (row.phase === "retired") {
+        // A retirement is a GLOBAL refusal fact — seed the F5 index for EVERY retired incarnation
+        // regardless of which instance owned it, so a sibling-retired incarnation's copied credential
+        // is refused at this control surface too. Ownership gates only the DESTRUCTIVE sweep below.
         this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
         continue;
       }
+      // 3b-2 RECONCILE OWNERSHIP (multi-manager-per-space): a manager adjudicates ONLY the non-retired
+      // rows THIS logical instance owns. A SIBLING manager's active/provisioning row is LEFT UNTOUCHED —
+      // sweep-terminalizing it would destroy the sibling's live agent (the historical all-agents-kill
+      // hazard, now cross-instance). A legacy row (pre-3b-2, no owner recorded) predates multi-manager,
+      // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
+      // sibling row is reclaimed only by an explicit operator CAS takeover (ruling 1), never here.
+      if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) continue;
       // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
       // at the SAME uid is never an orphan (empty at boot; exactly the adopted set at the
       // post-adoption sweep — the fix for the F3 resume hole).
