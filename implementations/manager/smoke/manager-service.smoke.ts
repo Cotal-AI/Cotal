@@ -121,10 +121,13 @@ try {
     gate.principal === servePrincipal, { gate: gate.principal, servePrincipal });
   check("processEpoch is the GATE's (0), instanceId the lifecycle uid — never conflated (checklist 4)",
     gate.processEpoch === 0 && M.serviceServe!.grant.epoch === 0 && M.serviceServe!.grant.instanceId === iid);
-  const rows1 = await credRows();
+  const family1 = await credRows();
+  const rows1 = family1.filter((r) => r.holderPrincipal === servePrincipal);
   const expectId = rawDigest(M.serviceServe!.creds).replace("sha256:", "sha256-");
   check("EXACTLY one ACTIVE serve ledger row exists (the released credential's §13.1 row)",
     rows1.length === 1 && rows1[0].state === "active", rows1);
+  check("the §13.1 family ALSO carries the goal-writer sibling (must-5 (b): a distinct active holder the takeover barrier revokes+evicts together)",
+    family1.some((r) => r.holderPrincipal !== servePrincipal && r.state === "active"), family1);
   check("the row IS the minted JWT (per-JWT digest id), held by the serve principal, with a BOUNDED exp (through the gate CAS, not a seed-signed shortcut; no unbounded serve JWT)",
     rows1[0].credentialId === expectId && rows1[0].holderPrincipal === servePrincipal
     && typeof rows1[0].exp === "number" && rows1[0].exp > Date.now() / 1000, rows1[0]);
@@ -216,10 +219,10 @@ try {
       serveIssuance: serveIssuanceGateKv(execAuthKv, space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }),
       endpointServe: M.serviceServe!.grant as never,
     }));
-  const rows2 = await credRows();
+  const rows2 = (await credRows()).filter((r) => r.holderPrincipal === servePrincipal);
   check("the renewal released a NEW credential for the SAME stable serve nkey",
     M.serviceServe!.creds !== before && idFromCreds(M.serviceServe!.creds) === M.serviceServe!.identity.id);
-  check("the renewal staged a SECOND ACTIVE ledger row behind the gate CAS (distinct per-JWT id, no overwrite)",
+  check("the renewal staged a SECOND ACTIVE serve ledger row behind the gate CAS (distinct per-JWT id, no overwrite)",
     rows2.length === 2 && rows2.every((r) => r.state === "active" && r.holderPrincipal === servePrincipal)
     && new Set(rows2.map((r) => r.credentialId)).size === 2, rows2);
   check("the ep rail still answers after renewal (the standing serve connection is undisturbed)",
