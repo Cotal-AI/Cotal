@@ -7,7 +7,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { authDir, CLI_USER_ACTOR, findCotalRoot, homeCotalDir, loadMeshes, loadSpaceAuth, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -146,7 +146,7 @@ async function evictRevokedPrincipal(space: string, principal: string): Promise<
   const fallback = (why: string) =>
     `live-connection eviction skipped (${why}) - deny-new is committed and the revoke cannot be re-run; the already-open connection ends at its current bearer's expiry. To evict live connections at revoke time, run \`cotal actor revoke\` from the mesh root (local signer + registry).`;
   const root = findCotalRoot();
-  const auth = loadSpaceAuth(authDir(root), space);
+  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth) return fallback("no local signer here");
   const mesh = loadMeshes().find((m) => m.space === space);
   if (!mesh) return fallback("mesh not in the local registry");

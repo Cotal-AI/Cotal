@@ -37,7 +37,7 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, hasUserAuthState, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -487,11 +487,11 @@ export class Manager {
   async start(): Promise<void> {
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
-    // itself creds from the same signing key it uses for the agents it spawns.
-    // Space-KEYED: this manager is bound to exactly one space, so it must load THAT space's account.
-    // A root-wide load would let a manager for space B mint B's agents into space A's account the
-    // moment a root holds more than one.
-    this.auth = loadSpaceAuth(authDir(this.workspaceRoot), this.space);
+    // itself creds from the same signing key it uses for the agents it spawns. The signer comes
+    // through the SecretStore seam (`this.secrets` — the injected `ManagerOptions.secretStore`, or
+    // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
+    // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
+    this.auth = await getSpaceAuth(this.secrets, this.space);
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the
@@ -617,7 +617,13 @@ export class Manager {
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
-      const results = await remintDaemonCreds(this.workspaceRoot, this.secrets);
+      // `this.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
+      // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
+      // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
+      // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.
+      const results = await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
+        preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
+      });
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {

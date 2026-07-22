@@ -4,6 +4,7 @@ import {
   composeSpaceAuth,
   jwtIssuedAt,
   mkSecretDir,
+  validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
   type BrokerAuth,
@@ -438,57 +439,72 @@ function brokerGen(v: unknown, where: string): number {
   return v;
 }
 
+/** The overwrite guard every broker-trust writer shares — the FS writer ({@link saveBrokerAuth})
+ *  and the seam writer ({@link putSpaceAuth}) both reduce through here, so the refusals can never
+ *  drift between the two (the one-guarded-encoder discipline). `f` labels the record in errors (the
+ *  file path or the store key — both non-material). Returns the generation the write must carry.
+ *
+ *  Overwriting the broker record is only safe for the SAME operator (a system-account rotation
+ *  keeps the operator SEED and only re-issues its JWT + `sys`). A DIFFERENT operator seed means a
+ *  fresh broker root - every space account here is signed by the current operator, so replacing it
+ *  orphans them ALL. That is exactly what a naive `createSpaceAuth` for a second space on this root
+ *  would do; refuse it loud rather than silently break the existing tenants. A new space must be
+ *  signed by the existing broker, never mint its own. */
+function guardBrokerOverwrite(f: string, existing: BrokerAuth, broker: BrokerAuth): number {
+  if (existing.operator?.seed !== broker.operator.seed)
+    throw new Error(
+      `${f} already holds a different broker operator - refusing to overwrite it: every space account on this broker is signed by the current operator, so replacing it would orphan them all. Sign the new space under the existing broker instead of minting a fresh operator.`,
+    );
+  // Same operator: the write must still move FORWARD. "Same seed" alone would let a stale
+  // pre-rotation value (e.g. a copy held in memory across a rotateSystemAccount) overwrite the
+  // newer record and resurrect the RETIRED system account. The discriminator is the GENERATION:
+  // rotateSystemAccount bumps it in memory, so a sys-changing value is writable only when it is
+  // the DIRECT SUCCESSOR of the current record - a pre-rotation copy is generations behind even
+  // when the record itself never held it (rotation persisted first). The JWT `iat` alone cannot
+  // order generations - it is second-resolution, so a rotation minted within the same second as
+  // its predecessor is `iat`-equal yet a different authority (found live in review); it stays
+  // only as a belt against a hand-edited gen smuggling a provably OLDER sys back in.
+  if (!existing.sys?.jwt)
+    throw new Error(`${f} holds broker trust without a system-account JWT - the record is corrupt; restore it from backup before overwriting`);
+  // BOTH generations validate before EITHER branch: a malformed value refuses even on the
+  // byte-identical idempotent path, rather than being silently absorbed and rewritten - a
+  // corrupt input never gets a success exit from a trust write.
+  const persistedGen = brokerGen(existing.gen, f);
+  const incomingGen = brokerGen(broker.gen, "the value being written");
+  const sysUnchanged = existing.sys.pub === broker.sys.pub && existing.sys.jwt === broker.sys.jwt;
+  if (sysUnchanged) {
+    return persistedGen; // idempotent re-save of the current authority - the generation holds
+  }
+  if (incomingGen !== persistedGen + 1)
+    throw new Error(
+      `${f} is at system-account generation ${persistedGen} and a system-account change must be its direct successor (generation ${persistedGen + 1}), but the value being written carries generation ${incomingGen} - refusing the stale write: it would resurrect a retired system account. Rotate from the current broker record and save that result.`,
+    );
+  if (jwtIssuedAt(broker.sys.jwt) < jwtIssuedAt(existing.sys.jwt))
+    throw new Error(
+      `${f} holds a NEWER system account (issued ${jwtIssuedAt(existing.sys.jwt)}) than the value being written (issued ${jwtIssuedAt(broker.sys.jwt)}) - refusing the rollback: it would resurrect a retired system account.`,
+    );
+  return incomingGen; // the successor generation the rotation minted
+}
+
+/** Refuse to persist a stripped/blank broker half through ANY writer: `stripSpaceAuth` blanks the
+ *  operator, and a blank value must never own (or blank) the broker record. Shared by the FS and
+ *  seam writers for the same no-drift reason as {@link guardBrokerOverwrite}. */
+function assertWritableBrokerTrust(broker: BrokerAuth, who: string): void {
+  if (!broker.operator.seed || !broker.operator.jwt || !broker.sys.pub)
+    throw new Error(`${who}: refusing to persist blank broker trust - a stripped auth value cannot own the broker record`);
+}
+
 /** Persist BROKER trust. `sys.signingSeed` is STRIPPED before writing: it is broker-admin minting
  *  capability, so it never lands on disk (it lives only in the in-memory {@link createBrokerAuth}
  *  result). A composition that must add spaces after first boot has to hold that seed in a
  *  BROKER-scoped secret store instead; see core's `BrokerAuth`. */
 export function saveBrokerAuth(dir: string, broker: BrokerAuth): void {
-  if (!broker.operator.seed || !broker.operator.jwt || !broker.sys.pub)
-    throw new Error("saveBrokerAuth: refusing to persist blank broker trust - a stripped auth value cannot own the broker record");
+  assertWritableBrokerTrust(broker, "saveBrokerAuth");
   const f = brokerAuthPath(dir);
   const existing = readAuthRecord<BrokerAuth>(f, "broker trust");
   let gen: number;
   if (existing) {
-    // Overwriting the broker record is only safe for the SAME operator (a system-account rotation
-    // keeps the operator SEED and only re-issues its JWT + `sys`). A DIFFERENT operator seed means a
-    // fresh broker root - every space account here is signed by the current operator, so replacing it
-    // orphans them ALL. That is exactly what a naive `createSpaceAuth` for a second space on this root
-    // would do; refuse it loud rather than silently break the existing tenants. A new space must be
-    // signed by the existing broker, never mint its own.
-    if (existing.operator?.seed !== broker.operator.seed)
-      throw new Error(
-        `${f} already holds a different broker operator - refusing to overwrite it: every space account on this broker is signed by the current operator, so replacing it would orphan them all. Sign the new space under the existing broker instead of minting a fresh operator.`,
-      );
-    // Same operator: the write must still move FORWARD. "Same seed" alone would let a stale
-    // pre-rotation value (e.g. a copy held in memory across a rotateSystemAccount) overwrite the
-    // newer record and resurrect the RETIRED system account. The discriminator is the GENERATION:
-    // rotateSystemAccount bumps it in memory, so a sys-changing value is writable only when it is
-    // the DIRECT SUCCESSOR of the current record - a pre-rotation copy is generations behind even
-    // when the record itself never held it (rotation persisted first). The JWT `iat` alone cannot
-    // order generations - it is second-resolution, so a rotation minted within the same second as
-    // its predecessor is `iat`-equal yet a different authority (found live in review); it stays
-    // only as a belt against a hand-edited gen smuggling a provably OLDER sys back in.
-    if (!existing.sys?.jwt)
-      throw new Error(`${f} holds broker trust without a system-account JWT - the record is corrupt; restore it from backup before overwriting`);
-    // BOTH generations validate before EITHER branch: a malformed value refuses even on the
-    // byte-identical idempotent path, rather than being silently absorbed and rewritten - a
-    // corrupt input never gets a success exit from a trust write.
-    const persistedGen = brokerGen(existing.gen, f);
-    const incomingGen = brokerGen(broker.gen, "the value being written");
-    const sysUnchanged = existing.sys.pub === broker.sys.pub && existing.sys.jwt === broker.sys.jwt;
-    if (sysUnchanged) {
-      gen = persistedGen; // idempotent re-save of the current authority - the generation holds
-    } else {
-      if (incomingGen !== persistedGen + 1)
-        throw new Error(
-          `${f} is at system-account generation ${persistedGen} and a system-account change must be its direct successor (generation ${persistedGen + 1}), but the value being written carries generation ${incomingGen} - refusing the stale write: it would resurrect a retired system account. Rotate from the current broker record and save that result.`,
-        );
-      if (jwtIssuedAt(broker.sys.jwt) < jwtIssuedAt(existing.sys.jwt))
-        throw new Error(
-          `${f} holds a NEWER system account (issued ${jwtIssuedAt(existing.sys.jwt)}) than the value being written (issued ${jwtIssuedAt(broker.sys.jwt)}) - refusing the rollback: it would resurrect a retired system account.`,
-        );
-      gen = incomingGen; // the successor generation the rotation minted
-    }
+    gen = guardBrokerOverwrite(f, existing, broker);
   } else {
     // No broker record - but that alone must not authorize a FRESH operator: with account records
     // present (broker.json lost, tenants intact) an unconditional write would install a new
@@ -718,4 +734,182 @@ export function accountInventory(dir: string): { spaces: string[]; corrupt: stri
  *  {@link assertSingleSpaceBroker} / {@link soleSpaceOf}, which also refuse on an unreadable record. */
 export function listSpaceAccounts(dir: string): string[] {
   return accountInventory(dir).spaces;
+}
+
+// ---- the split trust records as SecretStore kinds (the signer-bearing seam) ----
+//
+// The trust material is the highest-blast-radius secret kind - whoever holds a space's account
+// signing seed mints any cred in that account - so signer-bearing paths read and write it through
+// the SecretStore seam: a hosted composition injects its own store (KMS/Vault) and no signing seed
+// lands on the hosted disk, while the local default resolves byte-for-byte to the same files the FS
+// readers/writers above use. The seam speaks the SPLIT layout (one broker record + per-space account
+// records); the pre-W4 monolith key exists only as migration input and as the documented container
+// signer mount (`cotal mint --signer` → `.cotal/auth/auth.json`, read-only, for `supervise`).
+
+/** THE store key of the broker trust record. Under the workspace store (rooted at `.cotal`) it
+ *  resolves byte-for-byte to `.cotal/auth/broker.json`. One source for every signer-bearing tier -
+ *  a drifted literal would silently split the kind. */
+export const BROKER_AUTH_KEY = `auth/${BROKER_FILE}`;
+
+/** The LEGACY monolith store key (`auth/auth.json`) - migration INPUT and the container signer
+ *  mount only; nothing writes this shape now (see the layout note above). */
+export const SPACE_AUTH_KEY = `auth/${AUTH_FILE}`;
+
+/** THE store key of one space's account record - `auth/account.<key>.json`, the same injective
+ *  {@link spaceKey} filename the FS layout uses. */
+export function spaceAccountKey(space: string): string {
+  return `auth/${SPACE_ACCOUNT_PREFIX}${accountFileKey(space)}${SPACE_ACCOUNT_SUFFIX}`;
+}
+
+/** Parse one store record. Errors name ONLY the key, never the stored bytes: unlike the FS reader
+ *  ({@link readAuthRecord}, whose errors describe files on the operator's own disk), a store value
+ *  may be hosted or attacker-influenced, and nothing sourced from it may reach a caller's log. */
+function parseStoreRecord<T>(raw: string, key: string, what: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error(`the ${what} (${key}) is not valid JSON - repair or replace the store value`);
+  }
+}
+
+/** Validate a legacy-monolith store value without letting ANY stored field into the error: the
+ *  wrapped message names only the key and the caller-provided (trusted) space label. Accepts both a
+ *  full bundle (validated over the whole JWT chain, which also catches a relabel) and the stripped
+ *  container signer projection (validated over its mintable account material) - see core's
+ *  {@link validateSpaceAuthForRead}. */
+function validateStoredSpaceAuth(value: SpaceAuth, key: string, space: string): SpaceAuth {
+  try {
+    return validateSpaceAuthForRead(value, space);
+  } catch {
+    throw new Error(
+      `the space trust bundle (${key}) failed trust-chain validation for space "${space}" - the store value is corrupt or mislabeled; repair or replace it`,
+    );
+  }
+}
+
+/** Load one space's COMPOSED trust view through the seam - THE reader for signer-bearing paths (the
+ *  manager's signer hold, the renewal owner, CLI mint/backup/restore/…). The store is the sole
+ *  authority for the material; the space is REQUIRED for the same reason as {@link loadSpaceAuth}'s:
+ *  a root-wide "the auth" read is ambiguous the moment a broker holds two accounts (space-blind CLI
+ *  paths resolve theirs first via {@link getSoleSpaceAuth}). Mirrors the FS reader's shapes exactly -
+ *  split records compose (and verify the account really was signed by this broker's operator), either
+ *  half may still come from the legacy monolith during migration, and with both split records absent
+ *  the monolith is read whole (full bundle or the stripped container signer) and validated against
+ *  the caller's space; there a wrong-space or malformed value fails LOUD rather than reading as
+ *  absent, because the monolith names exactly one tenant. Every error names only store keys and the
+ *  caller's own space label, never the stored bytes. */
+export async function getSpaceAuth(store: SecretStore, space: string): Promise<SpaceAuth | undefined> {
+  const accountKey = spaceAccountKey(space);
+  const brokerRaw = await store.get(BROKER_AUTH_KEY);
+  const accountRaw = await store.get(accountKey);
+  const legacyRaw = brokerRaw === undefined || accountRaw === undefined ? await store.get(SPACE_AUTH_KEY) : undefined;
+  if (brokerRaw === undefined && accountRaw === undefined) {
+    if (legacyRaw === undefined) return undefined;
+    const legacy = parseStoreRecord<SpaceAuth>(legacyRaw, SPACE_AUTH_KEY, "space trust bundle");
+    return validateStoredSpaceAuth(legacy, SPACE_AUTH_KEY, space);
+  }
+  const legacy = legacyRaw !== undefined ? parseStoreRecord<SpaceAuth>(legacyRaw, SPACE_AUTH_KEY, "space trust bundle") : undefined;
+  const broker: BrokerAuth | undefined =
+    brokerRaw !== undefined
+      ? parseStoreRecord<BrokerAuth>(brokerRaw, BROKER_AUTH_KEY, "broker trust record")
+      : legacy
+        ? { operator: legacy.operator, sys: legacy.sys }
+        : undefined;
+  let account: SpaceAccountAuth | undefined;
+  if (accountRaw !== undefined) {
+    const doc = parseStoreRecord<SpaceAccountAuth>(accountRaw, accountKey, "space account record");
+    if (doc.space !== space)
+      throw new Error(`the space account record (${accountKey}) does not name space "${space}" - it was renamed or corrupted; repair or replace it`);
+    if (!isAccountShape(doc.account))
+      throw new Error(`the space account record (${accountKey}) is missing its account material - the record is corrupt; restore it from backup`);
+    account = doc;
+  } else if (legacy && legacy.space === space) {
+    account = { space: legacy.space, account: legacy.account };
+  }
+  if (!broker || !account) return undefined;
+  try {
+    return composeSpaceAuth(broker, account);
+  } catch {
+    throw new Error(
+      `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - the store holds an account this broker's operator did not sign; repair or replace it`,
+    );
+  }
+}
+
+/** The seam companion of {@link loadSoleSpaceAuth} for the space-blind CLI paths: the FS inventory
+ *  (tenant NAMES only - non-secret) supplies the one space this root holds, failing loud on several
+ *  via {@link soleSpaceOf}, and the store stays the sole authority for the trust material itself.
+ *  Every space-blind caller is a workstation CLI verb with the root's auth dir on this disk; a
+ *  hosted composition knows its space and calls {@link getSpaceAuth} directly. */
+export async function getSoleSpaceAuth(store: SecretStore, dir: string): Promise<SpaceAuth | undefined> {
+  const space = soleSpaceOf(dir);
+  return space ? getSpaceAuth(store, space) : undefined;
+}
+
+/** Persist a composed value through the seam by DECOMPOSING it into its two records - the seam
+ *  writer with the SAME refusals as the FS pair ({@link saveBrokerAuth}/{@link saveSpaceAccountAuth},
+ *  shared via {@link guardBrokerOverwrite}): a stripped value, a foreign-operator overwrite, a stale
+ *  or rolled-back system-account generation, and another tenant's account record all refuse loud.
+ *  All guards run BEFORE either put, so a refusal never leaves a half-written pair. `sys.signingSeed`
+ *  never lands at rest (broker-admin minting capability; the record shape drops it).
+ *
+ *  With NO broker record in the store, the FS writer's whole-inventory orphan check cannot run - a
+ *  {@link SecretStore} has no enumeration - so it ranges over the ADDRESSABLE records instead: this
+ *  space's own account and the legacy monolith, each of which the incoming operator must have signed.
+ *  That is complete for a hosted store (scoped per-tenant inside its own resolve, per the seam's
+ *  design) and for every same-space local repair; a lost broker.json beside a DIFFERENT tenant's
+ *  account on the local FS stays covered by the FS writer wherever {@link saveSpaceAuth} is the
+ *  writer (accepted residual, documented here rather than silently absorbed). */
+export async function putSpaceAuth(store: SecretStore, auth: SpaceAuth): Promise<void> {
+  assertWritableBrokerTrust(auth, "putSpaceAuth");
+  const accountKey = spaceAccountKey(auth.space);
+  const existingBrokerRaw = await store.get(BROKER_AUTH_KEY);
+  const existingBroker =
+    existingBrokerRaw !== undefined ? parseStoreRecord<BrokerAuth>(existingBrokerRaw, BROKER_AUTH_KEY, "broker trust record") : undefined;
+  let gen: number;
+  if (existingBroker) {
+    gen = guardBrokerOverwrite(BROKER_AUTH_KEY, existingBroker, auth);
+  } else {
+    gen = brokerGen(auth.gen, "the value being written");
+    for (const [key, what] of [
+      [accountKey, "space account record"],
+      [SPACE_AUTH_KEY, "space trust bundle"],
+    ] as const) {
+      const raw = await store.get(key);
+      if (raw === undefined) continue;
+      const doc = parseStoreRecord<{ space?: unknown; account?: unknown }>(raw, key, what);
+      if (typeof doc.space !== "string" || !isAccountShape(doc.account))
+        throw new Error(
+          `the store has no broker record but holds an unreadable ${what} (${key}) - refusing to install an operator while the tenant list is uncertain; repair or remove it first`,
+        );
+      try {
+        composeSpaceAuth(auth, { space: doc.space, account: doc.account as SpaceAccountAuth["account"] });
+      } catch {
+        throw new Error(
+          `the store has no broker record but holds a ${what} (${key}) the operator being written did not sign - refusing to install it: the existing tenant would be orphaned. Restore the original broker trust instead.`,
+        );
+      }
+    }
+  }
+  const existingAccountRaw = await store.get(accountKey);
+  if (existingAccountRaw !== undefined) {
+    const doc = parseStoreRecord<SpaceAccountAuth>(existingAccountRaw, accountKey, "space account record");
+    if (doc.space !== auth.space)
+      throw new Error(`the space account record (${accountKey}) does not name space "${auth.space}" - refusing to overwrite another tenant's account record`);
+  }
+  const brokerAtRest: BrokerAuth = { operator: auth.operator, sys: { pub: auth.sys.pub, jwt: auth.sys.jwt }, gen };
+  const accountAtRest: SpaceAccountAuth = { space: auth.space, account: auth.account };
+  await store.put(BROKER_AUTH_KEY, JSON.stringify(brokerAtRest, null, 2));
+  await store.put(accountKey, JSON.stringify(accountAtRest, null, 2));
+}
+
+/** Remove the space trust material through the seam - the authoritative delete for a non-FS store.
+ *  BROKER-WIDE by nature (the broker record dies with its last space's account), so its one caller
+ *  is `clean all` AFTER the failure gate and the {@link assertSingleSpaceBroker} guard - on a
+ *  multi-tenant root that guard refuses long before this runs. Deletes the space's account record,
+ *  the broker record, and the legacy monolith. Idempotent. */
+export async function deleteSpaceAuth(store: SecretStore, space: string): Promise<void> {
+  await store.delete(spaceAccountKey(space));
+  await store.delete(BROKER_AUTH_KEY);
+  await store.delete(SPACE_AUTH_KEY);
 }

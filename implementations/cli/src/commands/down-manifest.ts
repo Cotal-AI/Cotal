@@ -28,7 +28,7 @@ import {
   subjectMatches,
   unlinkFileNoFollow,
 } from "@cotal-ai/core";
-import { agentActorTokenKey, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentActorTokenKey, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, getSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
@@ -357,7 +357,7 @@ function credSubject(raw: string): string | null {
  *  an open mesh / mismatched checkout (then we connect bare and do local cleanup). `teardown` is the SOLE
  *  cred that keeps `STREAM.DELETE` (deleteSpace + clearChannel) — no read, no forge, no other stream. */
 async function mintIfAuth(root: string, space: string): Promise<string | undefined> {
-  const auth = loadSpaceAuth(authDir(root), space);
+  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth || auth.space !== space) return undefined;
   return mintCreds(auth, newIdentity(), "teardown");
 }

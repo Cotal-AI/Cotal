@@ -63,11 +63,11 @@ export function credsFingerprint(creds: string): string {
  *  inspector (credential health, renewal scheduling, identity checks). Unverified is correct here:
  *  the broker is the enforcement boundary; local readers only need the claims to schedule and
  *  diagnose. Throws on a structurally-unusable file (no JWT block / undecodable payload). */
-export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: number; name?: string } {
+export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: number; name?: string; iss?: string } {
   const payload = jwtFromCreds(creds)?.split(".")[1];
   if (!payload) throw new Error("creds: no NATS user JWT block found");
   try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; iat?: number; exp?: number; name?: string };
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; iat?: number; exp?: number; name?: string; iss?: string };
   } catch {
     throw new Error("creds: undecodable user JWT payload");
   }

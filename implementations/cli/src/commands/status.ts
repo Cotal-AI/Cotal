@@ -10,11 +10,12 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, accountInventory, authDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
+import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { machineStatus, resolveSpace, webUp, WEB_URL } from "../lib/status.js";
+import { machineStatus, resolveSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { c, statusBadge } from "../ui.js";
@@ -39,12 +40,55 @@ export async function status(args: ParsedArgs): Promise<void> {
 }
 
 /** The installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
- *  versions. Skipped entirely when none are installed (e.g. a fresh binary before its first seed). */
+ *  versions. Always rendered — the `root` line plus an explicit empty state answers "where do these
+ *  live / is anything installed", which is precisely ambiguous on a fresh binary before its first
+ *  seed. Versions are the manifest pin (add-time), not a live on-disk/host-compat check. */
 function printExtensions(): void {
   const exts = extensionVersions();
-  if (!exts.length) return;
   section("Extensions");
+  row("root", extensionsDir());
+  if (!exts.length) {
+    row("installed", c.dim("none"));
+    return;
+  }
   for (const e of exts) row(e.label, c.green(`v${e.version}`) + (e.pkg === e.label ? "" : c.dim(` · ${e.pkg}`)));
+}
+
+/** Cotal's authored skills reach non-Claude harnesses through the cross-vendor `~/.agents/skills`
+ *  directory (Codex, Cursor, OpenCode, Gemini CLI, Windsurf). Those harnesses have no remote update, so
+ *  surface a stale/missing/retired drop here and point at the fix (`cotal setup` reconciles it). A corrupt
+ *  skills bundle throws (fail-loud); we render that as a red integrity error rather than "none shipped". */
+function skillsSkewRow(): string {
+  let skew;
+  try {
+    skew = agentSkillsSkew();
+  } catch (e) {
+    return c.red(`bundle error: ${(e as Error).message}`);
+  }
+  const behind = skew.filter((s) => s.state !== "current");
+  if (!behind.length) return c.green(`current (${skew.length})`);
+  if (behind.every((s) => s.state === "missing")) return c.dim(`not installed · ${displayCmd()} setup`);
+  const retired = behind.filter((s) => s.state === "retired").length;
+  const label = retired ? `${behind.length} to reconcile (${retired} retired)` : `${behind.length}/${skew.length} out of date`;
+  return c.yellow(`${label} · ${displayCmd()} setup`);
+}
+
+/** The `cotal-skills` Claude Code plugin (user scope) vs this CLI release: stale means an update didn't
+ *  take, missing means it isn't installed, broken means it is installed but failed to load; all point at
+ *  `cotal setup` to fix. */
+function claudeSkillsLabel(state: MachineStatus["claudeSkills"]): string {
+  switch (state) {
+    case "current":
+      return c.green("current");
+    case "stale":
+      return c.yellow(`stale · ${displayCmd()} setup`);
+    case "broken":
+      return c.red(`load error · ${displayCmd()} setup`);
+    case "missing":
+      return c.dim(`not installed · ${displayCmd()} setup`);
+    default:
+      return c.dim("unknown");
+  }
 }
 
 async function printMachine(): Promise<void> {
@@ -55,8 +99,10 @@ async function printMachine(): Promise<void> {
   row("cotal-ai", c.green(`v${cliVersion()}`));
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
   row("Claude plugin", m.claudePlugin ? c.green("installed") : c.dim("not installed"));
+  row("Claude skills", claudeSkillsLabel(m.claudeSkills));
   row("Claude", m.agents.claude ? c.green("on PATH") : c.dim("not on PATH"));
   row("OpenCode", m.agents.opencode ? c.green("on PATH") : c.dim("not on PATH"));
+  row("Skills (.agents)", skillsSkewRow());
   row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }

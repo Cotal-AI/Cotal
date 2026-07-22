@@ -167,7 +167,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
     const blocked = cotal(["hello-ext"]);
     ok(
       "a competing materializer fails before rebinding the active host's peer",
-      blocked.status === 1 && /install\/remove is in progress/.test(blocked.stderr) && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core")),
+      blocked.status === 1 && /(install\/remove|update or mutation) is in progress/.test(blocked.stderr) && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core")),
       blocked.stderr,
     );
   } finally {

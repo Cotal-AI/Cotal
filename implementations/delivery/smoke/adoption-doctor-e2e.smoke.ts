@@ -92,7 +92,7 @@ try {
   cleanups.push(() => { void ep.stop?.(); });
 
   // HAPPY
-  const results = await remintDaemonCreds(root);
+  const results = await remintDaemonCreds(root, space);
   const expected: { delivery?: string; membership?: string } = {};
   for (const r of results.filter((x) => x.ok)) { if (r.file === DELIVERY_CREDS_KEY && r.fingerprint) expected.delivery = r.fingerprint; else if (r.fingerprint) expected.membership = r.fingerprint; }
   const okReply = await adminReq(ep, "reloadCreds", { expected });
