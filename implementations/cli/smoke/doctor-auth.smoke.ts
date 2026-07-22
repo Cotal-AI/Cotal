@@ -106,8 +106,8 @@ try {
   // explicit daemon adoption renders as "not requested" (backstop applies), never "nothing
   // re-signed" (the slice-6 UX-review catch).
   check(
-    "--fix renewal record says adoption was not requested, not 'nothing re-signed'",
-    fixed.out.includes("adoption not requested") && !fixed.out.includes("nothing re-signed"),
+    "--fix renewal record says the daemon reload was not requested, not 'nothing re-signed'",
+    fixed.out.includes("daemon reload not requested by this pass") && !fixed.out.includes("nothing re-signed"),
     fixed.out,
   );
   const dlvAfter = readFileSync(join(root, ".cotal", "delivery.creds"), "utf8");
