@@ -107,7 +107,7 @@ registry.register(stubCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
-  managerLifecycleUid: string;
+  managerInstanceId: string;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string } }>;
   startAgent: (opts: Record<string, unknown>, spawner?: string) => Promise<ControlReply>;
 };
@@ -218,7 +218,7 @@ try {
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
   const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot });
   check("ep spawn accepts (acceptance floor) + the agent joins the mesh",
-    acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerLifecycleUid && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
+    acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerInstanceId && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
   {
     const ps = await A.call("ps");
     const rows = ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string; mesh: string }>;

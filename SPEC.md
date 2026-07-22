@@ -2206,7 +2206,8 @@ grammar** (the qualifier tokens between the kind token and the `.spec`/`.status`
 its writer roles, and its mediation class; grants and merged watches are derived from that
 grammar, so two implementations always agree on which key carries what. The core kinds'
 key grammars, pinned here (each key then splits `.spec`/`.status` per §13.4, EXCEPT the
-unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, and `oblig`):
+unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `oblig`, and
+`goalidx`):
 
 | Kind | Key grammar |
 | --- | --- |
@@ -2215,6 +2216,7 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, and 
 | `handle` | `handle.<issuerKeyId>.<id>` |
 | `contracts` | `contracts.<endpoint>` |
 | `goal` | `goal.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` |
+| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by the provisioner sweep so a superseded executor's orphaned goals settle; never caller-addressed) |
 | `cp` | `cp.<endpoint>.<token>` |
 | `lease` | `lease.<endpoint>.<pool>.<cOwner>.<cActor>.<cUid>.<id>` (the item's acceptance identity, §13.2) |
 | `lifecycle` | `lifecycle.<owner>.<actor>.<lifecycleUid>` (the §13.1 mapping detail) |

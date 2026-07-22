@@ -4126,8 +4126,17 @@ export class Manager {
     if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, ref); return; }
     const spec = await readGoalSpec(gw.ctx, ref);
     if (spec === undefined) return; // a status without its spec is garbled — leave for the next boot
+    // The (i) fence (item 3): an executor-pinned goal's terminal commits under the executor's CURRENT
+    // epoch. This incarnation reconciles only goals whose executor is ITS OWN registration instanceId
+    // (a same-instanceId restart advances the epoch), so it resolves that current epoch and settles the
+    // orphan there; a foreign/retired executor (no current epoch) is left for its own instance/operator.
+    const execEpoch = spec.value.executor !== undefined ? this.currentInstanceEpoch(spec.value.executor.instanceId) : null;
+    if (spec.value.executor !== undefined && execEpoch === null) {
+      console.error(`goal reconcile ${ref.goalId}: executor "${spec.value.executor.instanceId}" is not this incarnation's own instance; left for its owner (never a cross-instance settle)`);
+      return;
+    }
     const settle = async () => {
-      await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }); // first-terminal-wins: a racing terminal returns the winner, no throw
+      await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), ...(execEpoch !== null ? { executorEpoch: execEpoch } : {}) }); // first-terminal-wins: a racing terminal returns the winner, no throw
       await clearGoalIndex(gw.ctx, ref);
     };
     const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
@@ -4318,7 +4327,9 @@ export class Manager {
     try {
       await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
-      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" } });
+      // The (i) fence (item 3): the goal is executor-pinned, so its cancel terminal commits under THIS
+      // incarnation's gate epoch (like onOutcome) - land it on the epoch-scoped result subject.
+      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" }, executorEpoch: epoch });
       this.emitGoalProgress(ref, epoch, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
       await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
     } catch {
