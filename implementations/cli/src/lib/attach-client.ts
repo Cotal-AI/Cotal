@@ -300,7 +300,9 @@ export function meshSessionTransport(nc: NatsConnection, grant: SessionGrant): T
     onData: (cb) => { onDataCb = cb; },
     onEnd: (cb) => { onEndCb = cb; },
     send: (bytes) => { try { rail.send(encodeTerminalData(bytes)); } catch { /* interactive keystrokes are low-volume; a stuck window ends via the stall watchdog */ } },
-    resize: (cols, rows) => { try { rail.send({ k: "resize", cols, rows }); } catch { /* advisory */ } },
+    // Guard degenerate geometry: the §13.6 codec rejects a non-positive dimension (a terminal
+    // reporting 0 during a transient) — never emit it (the serving side tolerates it regardless).
+    resize: (cols, rows) => { if (cols > 0 && rows > 0) { try { rail.send({ k: "resize", cols, rows }); } catch { /* advisory */ } } },
     close: () => { rail.close(); fireEnd(undefined, "detached"); },
   };
 }

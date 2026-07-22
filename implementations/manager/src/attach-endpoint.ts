@@ -146,6 +146,11 @@ export class AttachEndpoint {
         this.#onSession(req, res, path);
         return;
       }
+      // Browsers request the favicon unprompted; answer 204 so it isn't a noisy 404 in the console.
+      if (path === "/favicon.ico") {
+        res.writeHead(204).end();
+        return;
+      }
       if (path === "/agents") {
         const body = JSON.stringify(this.list());
         res.writeHead(200, { "content-type": "application/json" });

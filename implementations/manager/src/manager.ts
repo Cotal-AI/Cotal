@@ -4466,6 +4466,9 @@ export class Manager {
    *  backends (pty/host) attach; an external runtime's attach() throws with per-runtime guidance. */
   private async attachAuthorized(a: ManagedAgent, caller: { owner: string; actor: string; uid: string }): Promise<ControlReply> {
     if (!this.sessionPlane) return { ok: false, error: "the manager session plane is not available (the manager is not fully started)" };
+    // Never establish a session over a dead agent — a doomed session (the caller would get an
+    // immediate process-exit at best, a confusing empty terminal at worst). Refuse honestly.
+    if (a.handle.status() !== "running") return { ok: false, error: `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach` };
     let session;
     try {
       session = a.handle.attach();
@@ -4488,6 +4491,7 @@ export class Manager {
     if (this.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
     const a = this.agents.get(name);
     if (!a) throw new Error(`no managed agent "${name}"`);
+    if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
     const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
     // The loopback operator is the console's holder (same-host trust boundary).
     const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };

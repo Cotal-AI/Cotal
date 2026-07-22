@@ -66,6 +66,9 @@ async function openSession(name, pane) {
   } catch { term.write("\r\n[cotal: broker connection failed]\r\n"); return; }
   if (!panes.has(name)) { void nc.close(); return; } // pane removed while connecting
 
+  // Mark the pane's dot as dead when the SESSION ends — honest even if /agents still lists the
+  // agent for a beat (the terminal is gone). `ended` wins over the roster-poll dot (setStatus).
+  const markEnded = () => { pane.ended = true; const dot = pane.el.querySelector(".dot"); if (dot) dot.className = "dot exited"; };
   const rail = S.openSessionRail({
     nc,
     grant,
@@ -74,11 +77,11 @@ async function openSession(name, pane) {
       let frame;
       try { frame = S.decodeTerminalFrame(data); } catch { return; }
       if (frame.k === "data") term.write(S.terminalFrameBytes(frame));
-      else if (frame.k === "end") term.write(`\r\n[cotal: session ended - ${frame.reason}]\r\n`);
+      else if (frame.k === "end") { term.write(`\r\n[cotal: session ended - ${frame.reason}]\r\n`); markEnded(); }
       else if (frame.k === "drop") term.write(`\r\n[cotal: ${frame.bytes} bytes dropped - backpressure]\r\n`);
     },
-    onClose: () => term.write("\r\n[cotal: session closed]\r\n"),
-    onProtocolError: (reason) => term.write(`\r\n[cotal: session error - ${reason}]\r\n`),
+    onClose: () => { term.write("\r\n[cotal: session closed]\r\n"); markEnded(); },
+    onProtocolError: (reason) => { term.write(`\r\n[cotal: session error - ${reason}]\r\n`); markEnded(); },
   });
 
   // The caller's `out` subscription must be live before the serving side replays (EPS is at-most-
@@ -87,7 +90,9 @@ async function openSession(name, pane) {
   try { rail.send({ k: "ready" }); } catch { /* the onProtocolError path surfaces it */ }
   fit.fit();
   term.onData((bytes) => { try { rail.send(S.encodeTerminalData(bytes)); } catch { /* keystrokes are low-volume */ } });
-  term.onResize(() => { try { rail.send({ k: "resize", cols: term.cols, rows: term.rows }); } catch { /* advisory */ } });
+  // Guard the resize: a pane fitting before it is laid out can compute a 0 dimension, which the
+  // §13.6 codec rejects — a bad frame the serving side now tolerates, but never emit it in the first place.
+  term.onResize(() => { if (term.cols > 0 && term.rows > 0) { try { rail.send({ k: "resize", cols: term.cols, rows: term.rows }); } catch { /* advisory */ } } });
   pane.session = { nc, rail };
 }
 
@@ -107,6 +112,7 @@ function setStatus(name, status) {
   const p = panes.get(name);
   if (!p) return;
   p.status = status;
+  if (p.ended) { p.el.querySelector(".dot").className = "dot exited"; return; } // a dead session stays dead in the UI
   p.el.querySelector(".dot").className = `dot ${status === "running" ? "running" : "exited"}`;
 }
 
