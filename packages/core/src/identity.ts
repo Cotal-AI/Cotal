@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createUser, fromSeed } from "@nats-io/nkeys";
 
 /**
@@ -34,13 +35,36 @@ export function idFromCreds(creds: string): string {
   return identityFromCreds(creds).id;
 }
 
+/** The compact USER JWT carried by a creds file — ONE extraction, shared by every reader that
+ *  needs the token rather than the whole envelope. Returns undefined when there is no JWT block;
+ *  callers decide whether that is fatal. */
+export function jwtFromCreds(creds: string): string | undefined {
+  return creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/)?.[1].trim();
+}
+
+/** A non-secret GENERATION token for a credential: SHA-256 of its compact USER JWT.
+ *
+ *  The JWT, not the whole creds envelope, on purpose. The JWT is exactly what the broker is
+ *  presented with, so hashing it binds the claims, permissions, and signature of the generation
+ *  being adopted. The envelope additionally carries the nkey SEED, so hashing that would put a
+ *  stable secret-derived token on a control rail and make the value sensitive to envelope
+ *  formatting, without proving anything more about broker authorization. The seed stays bound
+ *  separately: {@link identityFromCreds} rejects a seed whose public key is not the JWT subject.
+ *
+ *  Safe to send on the privileged rail as an EXPECTED-generation token; the credential itself is
+ *  never sent. Ephemeral by contract — it must not be persisted (see the renewal record). */
+export function credsFingerprint(creds: string): string {
+  const jwt = jwtFromCreds(creds);
+  if (!jwt) throw new Error("creds: no NATS user JWT block found - cannot fingerprint");
+  return createHash("sha256").update(jwt).digest("hex");
+}
+
 /** The decoded (UNVERIFIED) claims of a creds file's user JWT — shared parse for every local
  *  inspector (credential health, renewal scheduling, identity checks). Unverified is correct here:
  *  the broker is the enforcement boundary; local readers only need the claims to schedule and
  *  diagnose. Throws on a structurally-unusable file (no JWT block / undecodable payload). */
 export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: number; name?: string } {
-  const jwtM = creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/);
-  const payload = jwtM?.[1].trim().split(".")[1];
+  const payload = jwtFromCreds(creds)?.split(".")[1];
   if (!payload) throw new Error("creds: no NATS user JWT block found");
   try {
     return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; iat?: number; exp?: number; name?: string };
@@ -58,8 +82,7 @@ export function identityFromCreds(creds: string): Identity {
   if (!seedM) throw new Error("creds: no user nkey seed block found");
   const seed = seedM[1].trim();
   const id = fromSeed(new TextEncoder().encode(seed)).getPublicKey();
-  const jwtM = creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/);
-  const payload = jwtM?.[1].trim().split(".")[1];
+  const payload = jwtFromCreds(creds)?.split(".")[1];
   const sub = payload
     ? (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string }).sub
     : undefined;
