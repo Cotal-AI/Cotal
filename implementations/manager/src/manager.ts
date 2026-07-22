@@ -79,12 +79,19 @@ import {
   registerServiceInstance,
   authorizeServeGrant,
   serveEndpoint,
+  type EpIssuanceGate,
   bindGoal,
   createGoal,
   transitionGoal,
   commitGoalResult,
   settleGoalUncertain,
   readGoalResult,
+  readGoalStatus,
+  readGoalSpec,
+  recordGoalIndex,
+  clearGoalIndex,
+  listGoalIndex,
+  GOAL_TERMINAL_STATES,
   goalRefOf,
   goalProgressTopic,
   epeSubject,
@@ -510,13 +517,28 @@ export class Manager {
   /** P2 item 2 (spawn-as-action): the SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential (Q2), scoped to exactly this endpoint's
    *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
-   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from). */
-  private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity };
+   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from).
+   *  `gate` (auth mode) is the own-issuance-gate READER for the must-5 (a) currency belt — the
+   *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
+   *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
+  private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
+  /** P2 item 2 must-5 (b): the STABLE goal-writer identity (auth mode) — minted once at
+   *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
+   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
+   *  goal-writer credential is minted INSIDE {@link registerManagerService}'s run block (fence
+   *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
+  private goalWriterIdentity?: Identity;
+  private goalWriterCreds?: string;
   /** P2 item 2: the acceptance replied for each in-flight goalId this incarnation accepted, so an
    *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple) without
    *  a second spawn. Durable cross-incarnation reconstruction rides the must-5 goal-index; here the
    *  live map covers same-incarnation retries, with the committed result fact as the fallback. */
   private goalAcceptances = new Map<string, SpawnAcceptance>();
+  /** P2 item 2 must-5 Q-B: the boot reconcile of the durable goal index runs ONCE at start (a
+   *  fresh incarnation inherits the endpoint's accepted-but-unterminal goals from any predecessor).
+   *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
+   *  acceptance (settling one mid-flight would steal its real terminal). */
+  private goalReconcileDone = false;
   /** P2 item 2 (M4): the live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   private agentGoals = new Map<string, GoalRef>();
@@ -798,6 +820,23 @@ export class Manager {
           }
         } catch (e) {
           console.error(`! endpoint-serve renewal: ${(e as Error).message} - the manager's service endpoint dies loud at this cred's expiry unless it is re-registered`);
+        }
+      }
+      // P2 item 2 must-5 (b): the manager is also the goal-writer's renewal owner — re-mint the SAME
+      // goal-writer nkey with a fresh bounded exp AND re-stage its new credId into the §13.1 family,
+      // through the scoped executor (never the standing seed). Without this the standing goal-writer
+      // connection dies at its TTL and spawn-as-action stops accepting until a restart. The
+      // connection's authenticator presents the refreshed credential on its next (re)connect.
+      if (this.goalWriter && this.goalWriterCreds && this.auth) {
+        const gw = this.goalWriter;
+        try {
+          if (inspectCredHealth(this.goalWriterCreds).state !== "healthy") {
+            const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
+            this.goalWriterCreds = fresh;
+            gw.creds = fresh;
+          }
+        } catch (e) {
+          console.error(`! goal-writer renewal: ${(e as Error).message} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
         }
       }
     } catch (e) {
@@ -3600,6 +3639,9 @@ export class Manager {
     // serving-principal binding); renewals re-mint the same nkey with a fresh bounded exp.
     const serveIdentity = newIdentity();
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
+    // must-5 (b): the STABLE goal-writer identity — a SIBLING credential in the same §13.1 family
+    // (not the gate's bound serving principal), minted here so the run block can family-stage it.
+    this.goalWriterIdentity = newIdentity();
     const run = async ({ recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => {
       // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
       // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
@@ -3636,9 +3678,14 @@ export class Manager {
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
       // gate keeps an empty `epcred` family; the serve connection below stays bare.
       const creds = auth ? await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }) : undefined;
-      return { grant, creds };
+      // must-5 (b): mint + family-stage the goal-writer credential HERE, over this executor's
+      // authKv (the fence is live), so its credId lands in `epcred.<e>.<iid>` and the takeover
+      // barrier revokes it. Open mesh: no mint (no credential system; the goal-writer conn is bare).
+      const goalWriterCreds = auth ? await this.mintAndStageGoalWriter(authKv) : undefined;
+      return { grant, creds, goalWriterCreds };
     };
-    const { grant, creds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
+    const { grant, creds, goalWriterCreds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
+    this.goalWriterCreds = goalWriterCreds;
     // The serve connection presents the CURRENT credential on every (re)connect (the state object
     // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
     // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
@@ -3684,30 +3731,71 @@ export class Manager {
     console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
   }
 
+  /** P2 item 2 must-5 (b): mint the standing `goal-writer` credential and STAGE it into this
+   *  instance's §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`
+   *  (the scoped `endpoint-serve-executor`, which holds the epcred write grant). The GRANT profile
+   *  stays goal-writer-only (Q2 — disjoint from the serve credential); only the FAMILY membership
+   *  is shared, so the registration barrier's existing enumerate+revoke+evict catches the
+   *  goal-writer on takeover/retire with NO barrier code change. Used both at registration (the run
+   *  block's `authKv`) and at renewal (a fresh executor's), re-minting the SAME stable nkey with a
+   *  fresh bounded exp — each issuance writes a DISTINCT ledger row (per-JWT credentialId digest). */
+  private async mintAndStageGoalWriter(authKv: KV): Promise<string> {
+    const auth = this.auth!;
+    const identity = this.goalWriterIdentity!;
+    const iid = this.managerLifecycleUid;
+    const creds = await mintCreds(auth, identity, "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
+    const exp = inspectCredHealth(creds).exp;
+    if (exp === undefined)
+      throw new Error(`the goal-writer credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
+    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const observed = await fence.observe();
+    if (observed === null)
+      throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the goal-writer cannot join its §13.1 revocation family`);
+    await fence.stage({
+      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialKey: identity.id,
+      holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
+      endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
+      generation: observed.generation, processEpoch: observed.processEpoch,
+      registrationRevision: observed.registrationRevision, nameAuthorityRevision: observed.nameAuthorityRevision,
+    });
+    return creds;
+  }
+
   /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
-   *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh mints a scoped
-   *  `goal-writer` credential ({@link goalWriterGrants} — exactly this endpoint's goal bind/terminal
-   *  facts + goal-record writes + fencing reads, DISJOINT from the serve cred); an OPEN mesh uses a
-   *  bare connection (no credential system to mint from - the broker enforces nothing). The
-   *  connection reconnects unbounded for the incarnation's life; the ActionContext bonds its
+   *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh uses the
+   *  scoped `goal-writer` credential already minted + family-STAGED inside registration's run block
+   *  ({@link mintAndStageGoalWriter} — DISJOINT grant from the serve cred, SHARED §13.1 revocation
+   *  family); an OPEN mesh uses a bare connection (no credential system to mint from - the broker
+   *  enforces nothing). The connection presents the CURRENT credential on every (re)connect (a
+   *  renewal is adopted without reconnecting the whole endpoint); the ActionContext bonds its
    *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
    *  goal state across brokers. */
   private async startGoalWriter(): Promise<void> {
-    const identity = newIdentity();
-    const creds = this.auth
-      ? await mintCreds(this.auth, identity, "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } })
-      : undefined;
+    const identity = this.auth ? this.goalWriterIdentity! : newIdentity();
     const enc = new TextEncoder();
+    // The mutable holder captured by the authenticator (mirrors the serve connection): a half-TTL
+    // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
+    const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
+      { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: this.auth ? this.goalWriterCreds : undefined, identity };
     const nc = await connect({
       servers: this.servers ?? DEFAULT_SERVER,
-      ...(creds !== undefined ? { authenticator: credsAuthenticator(enc.encode(creds)) } : {}),
+      ...(this.auth ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { if (err) console.error(`! manager goal-writer connection closed: ${err.message}`); });
-    const ctx = await actionContext(nc, this.space);
-    this.goalWriter = { nc, ctx, creds, identity };
-    console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred" : "open/bare"})`);
+    gw.nc = nc;
+    gw.ctx = await actionContext(nc, this.space);
+    // must-5 (a): the own-issuance-gate READER for the currency belt (auth mode only — an open mesh
+    // has no gate/credential system). Reads `epgate.<e>.<iid>` over this connection's STREAM.MSG.GET
+    // grant; observe-only (stage/commit/revoke are never called through it — the goal-writer holds
+    // no gate/epcred WRITE grant, so a mis-call would broker-deny anyway).
+    gw.gate = this.auth
+      ? serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerLifecycleUid })
+      : undefined;
+    this.goalWriter = gw;
+    console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
   }
 
   /** Drain the goal-writer connection (best-effort, both exit paths). */
@@ -3734,6 +3822,27 @@ export class Manager {
     } catch (e) {
       console.error(`! goal progress emit for ${ref.goalId} failed: ${(e as Error).message}`);
     }
+  }
+
+  /** must-5 (a) — the own-gate currency belt: before the goal-writer commits a terminal fact, the
+   *  manager reads its OWN issuance gate epoch and REFUSES the commit if superseded (a takeover
+   *  advanced the epoch). Auth mode only — an open mesh has no gate. This is the fast-fail belt that
+   *  narrows the read→commit window; the durable fence is the (b) barrier-revoke that evicts this
+   *  connection. NAMED RESIDUAL (closed by item-3 slice 3.0, never a permanent residual): between
+   *  this read and the create-only terminal CAS a freshly-superseded corpse can still win a WRONG
+   *  terminal fact — the accept→terminal-honesty window, misreporting the ACTION OUTCOME. It is
+   *  reachable ONLY via a LIVE-superseded manager (item-3 multi-manager takeover); single-manager
+   *  item 2 supersedes only a DEAD process (no live corpse, window closed). The PHYSICAL spawn
+   *  side-effects are separately fenced (mint/reserve + barrier-revoke), so the exposed surface is
+   *  callers trusting the terminal fact, never orphaned processes. */
+  private async assertGoalWriterEpochCurrent(epoch: number): Promise<void> {
+    const gate = this.goalWriter?.gate;
+    if (!gate) return; // open mesh: no gate/credential system to fence against
+    const observed = await gate.observe();
+    if (observed === null)
+      throw new EpEnvelopeError("expired", `the manager's issuance gate for ${MANAGER_ENDPOINT}/${this.managerLifecycleUid} is gone; a retired incarnation never commits a goal terminal (SPEC 13.1/13.6)`);
+    if (observed.processEpoch !== epoch)
+      throw new EpEnvelopeError("expired", `the manager's issuance gate epoch is ${observed.processEpoch} but this goal was accepted under epoch ${epoch}; a superseded incarnation never commits a goal terminal (must-5 (a) own-gate belt, SPEC 13.6)`);
   }
 
   /** Serve `spawn`/`launch` as an ACTION (P2 item 2). Authz already ran in {@link serveGated}. The
@@ -3770,6 +3879,12 @@ export class Manager {
 
     const bg = run({
       onAccepted: async ({ name, agentTriple }) => {
+        // must-5 Q-B: record the goal in the reconcile index BEFORE the bind (index-CAS-before-bind),
+        // so a successor incarnation finds + settles this goal if we crash before its terminal. A
+        // crash between this write and the bind leaves an index entry whose goal status is absent —
+        // the sweep clears it as a no-goal; a crash before it leaves no entry (never durable). A
+        // concurrent same-goalId attempt writes the byte-identical pointer (idempotent, no conflict).
+        await recordGoalIndex(gw.ctx, ref);
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
         // a create-only CAS per goalId (pin 1 — a refused accept above left zero bind, zero reserve).
         const b = await bindGoal(gw.ctx, ref, fingerprint);
@@ -3802,9 +3917,12 @@ export class Manager {
       onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
       onOutcome: async (o) => {
         // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
-        // caller cannot publish it). NON-must-5: the commit takes no executor/resolver (the goal is not
-        // target-pinned yet) — the must-5 block wires assertExecutorCurrency + the own-gate read as the fence belt.
+        // caller cannot publish it). The commit is NON-target-pinned (the goal pins no target
+        // lifecycle — ruled + withdrawn), so the fence is at the MANAGER-GATE level: must-5 (a) reads
+        // the own gate epoch and REFUSES a superseded commit, (b) barrier-revoke evicts this
+        // connection on takeover. On success the reconcile-index entry is cleared (goal terminal).
         try {
+          await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits
           let fact;
           if (o.kind === "succeeded") {
             this.emitGoalProgress(ref, epoch, { phase: "presence" });
@@ -3815,6 +3933,7 @@ export class Manager {
             ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }));
           }
           this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+          await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
           if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
         } catch (e) {
           console.error(`! goal terminal commit for ${goalId} failed: ${(e as Error).message}`);
@@ -3852,10 +3971,13 @@ export class Manager {
     const ref = this.agentGoals.get(name);
     if (!gw || !ref) return;
     this.agentGoals.delete(name);
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
+      await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
       const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" } });
-      this.emitGoalProgress(ref, this.serviceServe?.grant.epoch ?? 0, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
+      this.emitGoalProgress(ref, epoch, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
+      await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
     } catch {
       // the goal already terminalized (the readiness outcome won the settle race) - nothing to cancel.
     }

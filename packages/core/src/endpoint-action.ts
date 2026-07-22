@@ -1123,23 +1123,28 @@ export async function settleGoalUncertain(
 
 // ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------
 
-/** One reconcile-index entry: the goal ref coordinates plus the acceptance clock a SUCCESSOR
- *  incarnation needs to settle an orphaned in-flight goal it never held in memory. */
-export interface GoalIndexEntry { v: 1; endpoint: string; owner: string; actor: string; uid: string; goalId: string; acceptedAt: number }
+/** One reconcile-index entry: a pure pointer to a goal ref — the coordinates a SUCCESSOR
+ *  incarnation needs to find + settle an orphaned in-flight goal it never held in memory. The
+ *  acceptance clock is NOT duplicated here (it lives in the goal spec the sweep reads), so a
+ *  concurrent same-goalId retry writes the byte-IDENTICAL entry (create-only idempotent). */
+export interface GoalIndexEntry { v: 1; endpoint: string; owner: string; actor: string; uid: string; goalId: string }
 
 function goalIndexKey(ref: GoalRef): string {
   return recordAtomicKey(RECORD_KINDS.goalidx, [ref.endpoint, ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId]);
+}
+
+function goalIndexEntryOf(ref: GoalRef): GoalIndexEntry {
+  return { v: 1, endpoint: ref.endpoint, owner: ref.caller.owner, actor: ref.caller.actor, uid: ref.caller.uid, goalId: ref.goalId };
 }
 
 function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "acceptedAt"], `goal-index entry ${key}`);
+  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId"], `goal-index entry ${key}`);
   if (o.v !== 1 || typeof o.endpoint !== "string" || typeof o.owner !== "string" || typeof o.actor !== "string"
     || typeof o.uid !== "string" || typeof o.goalId !== "string")
     throw new EpEnvelopeError("internal", `goal-index entry ${key} is malformed; garbled reconcile state never authorizes (SPEC 13.6)`);
-  assertSafeInt(o.acceptedAt, `goal-index entry ${key} acceptedAt`);
   return o as unknown as GoalIndexEntry;
 }
 
@@ -1147,19 +1152,21 @@ function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  (must-5 Q-B): the atomicity is `index-CAS-before-bind`, so recoverability is clean either side
  *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
  *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
- *  entry, so the acceptance was never durable. Idempotent-if-identical for an adopted retry. */
-export async function recordGoalIndex(ctx: ActionContext, ref: GoalRef, acceptedAt: number): Promise<void> {
+ *  entry, so the acceptance was never durable. Idempotent for an adopted or concurrent same-goalId
+ *  retry (the entry is a byte-identical pointer). */
+export async function recordGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<void> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
-  const entry: GoalIndexEntry = { v: 1, endpoint: snap.endpoint, owner: snap.caller.owner, actor: snap.caller.actor, uid: snap.caller.uid, goalId: snap.goalId, acceptedAt: assertSafeInt(acceptedAt, "acceptedAt") };
   const key = goalIndexKey(snap);
-  try { await createRecordEntry(ctx.kv, key, entry); }
+  try { await createRecordEntry(ctx.kv, key, goalIndexEntryOf(snap)); }
   catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+    // A create conflict is only legitimate as an idempotent retry (the entry is a pure pointer, so
+    // any winner wrote the identical bytes); a non-PUT marker is corruption, never reusable absence.
     const existing = await ctx.kv.get(key);
-    if (existing && existing.operation === "PUT"
-      && canonicalJson(parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(existing.value)), key)) === canonicalJson(entry)) return;
-    throw new EpEnvelopeError("conflict", `goal-index entry ${key} already exists with different coordinates; one goalId never carries two acceptances (SPEC 13.6)`);
+    if (!existing || existing.operation !== "PUT")
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent/deleted; reconcile the store (SPEC 13.6)`);
+    parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(existing.value)), key);
   }
 }
 
@@ -1173,15 +1180,15 @@ export async function clearGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<
 /** Enumerate the endpoint's in-flight reconcile index over a RAW records KV: a successor's boot
  *  sweep opens it with the PROVISIONER credential (records CONSUMER.CREATE), never the goal-writer
  *  (which holds no enumeration grant), and settles each unterminal goal so an accepted goal is
- *  never dropped across a manager restart. Returns each recorded GoalRef + its acceptance clock. */
-export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: GoalRef; acceptedAt: number }[]> {
+ *  never dropped across a manager restart. Returns each recorded GoalRef. */
+export async function listGoalIndex(kv: KV, endpoint: string): Promise<GoalRef[]> {
   const filter = `${RECORD_KINDS.goalidx.kind}.${endpointToken(endpoint)}.>`;
-  const out: { ref: GoalRef; acceptedAt: number }[] = [];
+  const out: GoalRef[] = [];
   for await (const key of await kv.keys(filter)) {
     const e = await kv.get(key);
     if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
     const v = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
-    out.push({ ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId }, acceptedAt: v.acceptedAt });
+    out.push({ endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId });
   }
   return out;
 }
