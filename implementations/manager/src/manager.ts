@@ -640,7 +640,6 @@ export class Manager {
     this.resumeDurableCommitToken = opts.resumeDurableCommitToken;
     this.wsPort = opts.wsPort;
     this.attach = new AttachEndpoint(
-      (name) => this.maintenanceState === "active" && !this.resumeRequired ? this.agents.get(name)?.handle : undefined,
       () => this.list(),
       // Initial /feed replay for a connecting console: the current peer roster.
       () => [{ event: "roster", data: this.ep?.getRoster() ?? [] }],

@@ -3,9 +3,6 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { WebSocketServer, type WebSocket } from "ws";
-import type { AttachSession } from "@cotal-ai/core";
-import type { AgentHandle } from "./runtime/index.js";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,27 +48,23 @@ export interface SessionEstablishment {
 export type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
 
 /**
- * The manager's local HTTP + WebSocket face. It hosts the **console** (a
- * lightweight xterm.js page) and bridges each agent's PTY to the browser — and to
- * `cotal attach` — over a direct socket, never the mesh, so owning the terminal
- * keeps the manager off the message hot path. Bound to loopback.
+ * The manager's local HTTP face. It serves the **console** (a lightweight xterm.js page + its
+ * assets) and is the browser's loopback credential broker: `POST /session/<name>` mints a mesh
+ * §13.6 session for the console to drive the terminal over the broker's WebSocket listener. The
+ * terminal never rides a manager-hosted socket (P2 item 6 replaced the loopback `ws://.../attach/`
+ * transport with the mesh session, closing the bearer-less-local hole). Bound to loopback.
  *
- * Routes: `GET /` console page, `GET /agents` the managed roster (JSON),
- * `GET /feed` the live mesh feed (SSE: presence roster + comms), static assets
- * under `/assets`, and `WS /attach/<name>` the PTY stream.
- *
- * Attach protocol: server → client sends raw terminal bytes (binary). client →
- * server: binary frames are keystrokes; a text frame `r:<cols>,<rows>` resizes.
+ * Routes: `GET /` console page + `/app.js` + `/session-bundle.js` + `/assets/*`; `GET /agents` the
+ * managed roster (JSON); `GET /feed` the live mesh feed (SSE: presence roster + comms);
+ * `POST /session/<name>` the mesh session establishment.
  */
 export class AttachEndpoint {
   #http: Server;
-  #wss: WebSocketServer;
   #port: number;
   #sse = new Set<ServerResponse>();
   #ping?: ReturnType<typeof setInterval>;
 
   constructor(
-    private readonly lookup: (name: string) => AgentHandle | undefined,
     private readonly list: () => unknown,
     /** Events replayed to each console as it connects to `/feed` (e.g. the current roster). */
     private readonly snapshot: () => FeedEvent[],
@@ -82,24 +75,10 @@ export class AttachEndpoint {
   ) {
     this.#port = port;
     this.#http = createServer((req, res) => this.#onRequest(req, res));
-    this.#wss = new WebSocketServer({ noServer: true });
-    this.#http.on("upgrade", (req, socket, head) => {
-      const path = (req.url ?? "/").split("?")[0];
-      if (!path.startsWith("/attach/")) {
-        socket.destroy();
-        return;
-      }
-      let name: string;
-      try {
-        name = decodeURIComponent(path.slice("/attach/".length));
-      } catch {
-        socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-        return;
-      }
-      this.#wss.handleUpgrade(req, socket, head, (ws) => {
-        this.#onConnection(ws, name).catch(() => ws.close());
-      });
-    });
+    // HTTP-only face: refuse any WebSocket upgrade with a clean 400 (P2 item 6 removed the loopback
+    // `ws://.../attach/` terminal transport — the console drives the terminal over the mesh session).
+    // A proper response beats leaving a stray/malformed upgrade hanging or resetting it abruptly.
+    this.#http.on("upgrade", (_req, socket) => socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"));
   }
 
   async start(): Promise<void> {
@@ -116,18 +95,12 @@ export class AttachEndpoint {
     if (this.#ping) clearInterval(this.#ping);
     for (const res of this.#sse) res.end();
     this.#sse.clear();
-    for (const ws of this.#wss.clients) ws.terminate();
     await new Promise<void>((resolve) => this.#http.close(() => resolve()));
   }
 
   /** Push a named event to every connected console (SSE). */
   publish(event: string, data: unknown): void {
     for (const res of this.#sse) this.#writeEvent(res, event, data);
-  }
-
-  /** The ws URL a client uses to attach to `name`. */
-  url(name: string): string {
-    return `ws://127.0.0.1:${this.#port}/attach/${encodeURIComponent(name)}`;
   }
 
   /** The console page URL. */
@@ -248,73 +221,5 @@ export class AttachEndpoint {
   #writeEvent(res: ServerResponse, event: string, data: unknown): void {
     if (res.writableEnded) return;
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  }
-
-  async #onConnection(ws: WebSocket, name: string): Promise<void> {
-    const handle = this.lookup(name);
-    if (!handle || handle.status() !== "running") {
-      ws.close();
-      return;
-    }
-    // Only streamable backends (pty/host) can be attached over the wire; external runtimes are watched
-    // natively and their attach() throws. Close cleanly instead of letting it crash the upgrade.
-    let session: AttachSession;
-    try {
-      session = handle.attach();
-    } catch {
-      ws.close(1011, `attach unsupported for the ${handle.kind} runtime - watch its surface directly`);
-      return;
-    }
-
-    const send = (b: Buffer) => {
-      if (ws.readyState === ws.OPEN) ws.send(b);
-    };
-    // Subscribe to live output BEFORE requesting the snapshot, and buffer what arrives until the
-    // snapshot is sent. The snapshot (below) is a point-in-time screen image; anything the child
-    // emits after it must land after it, in order. Subscribing first (no await in between) means no
-    // chunk can slip through unobserved, and the buffer stops a mid-snapshot burst from racing ahead
-    // of — or being lost before — the image.
-    let live = false;
-    const buffered: Buffer[] = [];
-    const offData = session.onData((chunk) => {
-      if (live) send(chunk);
-      else buffered.push(chunk);
-    });
-    const offExit = session.onExit(() => ws.close());
-    // Wire input + cleanup now too, so the client's initial `r:cols,rows` (and any early keystrokes)
-    // during the snapshot await aren't dropped, and a disconnect mid-await still unsubscribes.
-    ws.on("message", (data, isBinary) => {
-      if (isBinary) {
-        session.write((data as Buffer).toString("utf8"));
-        return;
-      }
-      const text = data.toString();
-      const m = /^r:(\d+),(\d+)$/.exec(text);
-      if (!m) {
-        session.write(text);
-        return;
-      }
-      session.resize(Number(m[1]), Number(m[2]));
-    });
-    ws.on("close", () => {
-      offData();
-      offExit();
-    });
-
-    // Reconstructed screen image: the backend replays a byte-exact snapshot — including the
-    // alternate-screen buffer of a full-screen TUI (OpenCode/Claude) — so a late or concurrent attach
-    // paints correctly without depending on the child to repaint. (Raw scrollback replay couldn't
-    // rebuild an alt-screen, leaving same-size re/co-attaches a partial screen.) Then flush anything
-    // that arrived while we built it, and switch to sending live output straight through.
-    let snapshot: Buffer;
-    try {
-      snapshot = await session.backlog();
-    } catch {
-      ws.close(1011, "attach snapshot failed");
-      return;
-    }
-    if (snapshot.length) send(snapshot);
-    for (const chunk of buffered) send(chunk);
-    live = true; // snapshot delivered — stream subsequent output straight through
   }
 }

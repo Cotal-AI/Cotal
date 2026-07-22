@@ -19,7 +19,6 @@ const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.l
 // --- A. with an injected establisher ---
 const called: string[] = [];
 const ep = new AttachEndpoint(
-  () => undefined,
   () => [],
   () => [],
   0,
@@ -44,7 +43,7 @@ await ep.stop();
 
 // --- C. without an establisher (open mesh / pre-6b-2) ---
 console.log("C. no injected establisher → 503, never a wrong/silent response");
-const ep2 = new AttachEndpoint(() => undefined, () => [], () => []);
+const ep2 = new AttachEndpoint(() => [], () => []);
 await ep2.start();
 const base2 = ep2.consoleUrl().replace(/\/$/, "");
 const r2 = await fetch(`${base2}/session/worker-1`, { method: "POST" });

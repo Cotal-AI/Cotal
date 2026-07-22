@@ -8,22 +8,18 @@
  *
  * A) PtyRuntime: a real pty runs a tiny full-screen program; its backlog() reconstructs the current
  *    alt-screen — twice over (a repeat/concurrent attach is deterministic), and it tracks the live
- *    screen as the child redraws.
- * B) AttachEndpoint: with an async backlog, the client gets the snapshot FIRST, then live output in
- *    order and exactly once — output arriving mid-snapshot is buffered, not lost or raced ahead.
- * C) attachClient teardown: the snapshot re-enters the child's alternate screen on OUR terminal, so
+ *    screen as the child redraws. (The snapshot-ordering leg — snapshot first, then buffered + live
+ *    output in order — now lives in the mesh session bridge; see mesh-attach-plane.)
+ * B) attachClient teardown: the snapshot re-enters the child's alternate screen on OUR terminal, so
  *    on detach the client must leave it again — but ONLY when the child was full-screen. An inline
  *    child keeps its native scrollback untouched. (Regression: leaving the terminal in the alt buffer
- *    stranded it with no scrollback, and the wheel walked shell history via xterm alt-scroll.)
+ *    stranded it with no scrollback, and the wheel walked shell history via xterm alt-scroll.) Driven
+ *    through a transport-agnostic mock — the teardown is identical over the mesh §13.6 session.
  */
 import assert from "node:assert";
-import type { AddressInfo } from "node:net";
-import WebSocket, { WebSocketServer } from "ws";
-import { AttachEndpoint } from "../src/attach-endpoint.js";
-import { attachClient } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
+import { attachClient, type TerminalTransport } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
 import { PtyRuntime } from "../src/runtime/pty.js";
-import type { AttachSession, LaunchSpec } from "@cotal-ai/core";
-import type { AgentHandle } from "../src/runtime/index.js";
+import type { LaunchSpec } from "@cotal-ai/core";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const str = (b: Buffer | Promise<Buffer>) => Promise.resolve(b).then((x) => x.toString("utf8"));
@@ -65,62 +61,19 @@ async function testPtyReconstruction(): Promise<void> {
   }
 }
 
-async function testEndpointOrdering(): Promise<void> {
-  // Snapshot resolves after 50ms; live chunks are emitted at 20ms (mid-snapshot → must be buffered
-  // behind it) and 90ms (post-snapshot → straight through). Expect exactly "SNAP" then both, in order.
-  let dataFn: ((c: Buffer) => void) | undefined;
-  const session = {
-    cols: 80,
-    rows: 24,
-    backlog: () => new Promise<Buffer>((res) => setTimeout(() => res(Buffer.from("SNAP")), 50)),
-    onData: (fn: (c: Buffer) => void) => {
-      dataFn = fn;
-      return () => (dataFn = undefined);
-    },
-    onExit: () => () => {},
-    write: () => {},
-    resize: () => {},
-  } as unknown as AttachSession;
-  const handle = {
-    name: "a",
-    kind: "pty",
-    status: () => "running",
-    stop: () => {},
-    interrupt: () => {},
-    attach: () => session,
-  } as unknown as AgentHandle;
-
-  const ep = new AttachEndpoint((n) => (n === "a" ? handle : undefined), () => [], () => [], 0);
-  await ep.start();
-  try {
-    const got: string[] = [];
-    const ws = new WebSocket(ep.url("a"));
-    ws.on("message", (d: Buffer) => got.push(d.toString("utf8")));
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => resolve());
-      ws.on("error", reject);
-    });
-    setTimeout(() => dataFn?.(Buffer.from("LIVE")), 20); // mid-snapshot → buffered
-    setTimeout(() => dataFn?.(Buffer.from("AFTER")), 90); // post-snapshot → live
-    await sleep(220);
-    ws.close();
-    await sleep(20);
-
-    assert.strictEqual(got[0], "SNAP", "B: snapshot arrives first");
-    assert.strictEqual(got.join(""), "SNAPLIVEAFTER", "B: live output ordered after the snapshot, exactly once");
-    console.log("  ✓ endpoint sends the snapshot first, then buffered + live output in order");
-  } finally {
-    await ep.stop();
-  }
-}
-
 // Drive the real attachClient through one attach→detach and return the bytes it wrote to the
-// (faked-TTY) terminal. The server hands back `snapshot` on connect; Ctrl-] (0x1d) on stdin detaches.
+// (faked-TTY) terminal. A transport-agnostic MOCK delivers `snapshot` once ready (the reconstructed
+// screen); Ctrl-] (0x1d) on stdin detaches, which resolves the transport's onEnd.
 async function driveDetach(snapshot: string, marker: string): Promise<string> {
-  const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-  await new Promise<void>((r) => wss.on("listening", () => r()));
-  const { port } = wss.address() as AddressInfo;
-  wss.on("connection", (sock) => sock.send(Buffer.from(snapshot, "latin1")));
+  let onEndCb: ((err?: Error, reason?: string) => void) | undefined;
+  const transport: TerminalTransport = {
+    onReady: (cb) => { queueMicrotask(cb); },
+    onData: (cb) => { queueMicrotask(() => cb(Buffer.from(snapshot, "latin1"))); },
+    onEnd: (cb) => { onEndCb = cb; },
+    send: () => {},
+    resize: () => {},
+    close: () => { onEndCb?.(undefined, "detached"); },
+  };
 
   let captured = "";
   const realWrite = process.stdout.write;
@@ -131,38 +84,36 @@ async function driveDetach(snapshot: string, marker: string): Promise<string> {
     return true;
   }) as typeof process.stdout.write;
   try {
-    const done = attachClient(`ws://127.0.0.1:${port}/attach/x`);
+    const done = attachClient(transport);
     // Detach only once the snapshot has actually been painted to our terminal (poll, don't guess a
     // fixed sleep — a late snapshot on a loaded runner would fail the alt case / pass inline vacuously).
     for (let i = 0; i < 200 && !captured.includes(marker); i++) await sleep(10);
-    assert.ok(captured.includes(marker), "C: snapshot painted before detach");
+    assert.ok(captured.includes(marker), "B: snapshot painted before detach");
     process.stdin.emit("data", Buffer.from([0x1d])); // Ctrl-] → detach → cleanup()
     await done;
   } finally {
     process.stdout.write = realWrite;
     Object.defineProperty(process.stdout, "isTTY", { value: realTTY, configurable: true });
-    await new Promise<void>((res) => wss.close(() => res()));
   }
   return captured;
 }
 
 async function testDetachLeavesAltScreen(): Promise<void> {
   const alt = await driveDetach("\x1b[?1049h\x1b[H\x1b[?1002hFULLSCREEN-VIEW", "FULLSCREEN-VIEW");
-  assert.match(alt, /\x1b\[\?1049l/, "C: detach from a full-screen child leaves the alternate screen");
+  assert.match(alt, /\x1b\[\?1049l/, "B: detach from a full-screen child leaves the alternate screen");
   // Must NOT touch `?1007` — attach never enabled alt-scroll, so disabling it would clobber the
   // operator's own preference for later apps. Leaving the alt buffer already makes alt-scroll inert.
-  assert.doesNotMatch(alt, /\x1b\[\?1007/, "C: detach does not touch the operator's alt-scroll mode");
+  assert.doesNotMatch(alt, /\x1b\[\?1007/, "B: detach does not touch the operator's alt-scroll mode");
 
   const inline = await driveDetach("inline conversation line\r\n$ ", "inline conversation line");
-  assert.doesNotMatch(inline, /\x1b\[\?1049l/, "C: detach from an inline child keeps native scrollback (no alt-screen toggle)");
+  assert.doesNotMatch(inline, /\x1b\[\?1049l/, "B: detach from an inline child keeps native scrollback (no alt-screen toggle)");
   console.log("  ✓ attach client leaves the alt-screen on detach only when the child entered it");
 }
 
 async function main(): Promise<void> {
   await testPtyReconstruction();
-  await testEndpointOrdering();
   await testDetachLeavesAltScreen();
-  console.log("\nATTACH REPAINT SMOKE OK ✅  (3 tests)");
+  console.log("\nATTACH REPAINT SMOKE OK ✅  (2 tests)");
 }
 
 main()

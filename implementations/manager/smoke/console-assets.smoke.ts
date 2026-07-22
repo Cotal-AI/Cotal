@@ -41,7 +41,6 @@ const index = join(process.cwd(), "implementations/manager/dist/console/index.ht
 check("manager build emits dist/console/index.html", existsSync(index));
 
 const endpoint = new AttachEndpoint(
-  () => undefined,
   () => [],
   () => [],
 );

@@ -1,4 +1,3 @@
-import WebSocket from "ws";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type SessionGrant } from "@cotal-ai/core";
 import { c } from "../ui.js";
@@ -81,8 +80,9 @@ const lastIndexOfRe = (re: RegExp, s: string): number => {
 
 /**
  * A transport-agnostic terminal session. {@link attachClient} drives the terminal through this
- * interface, so the SAME raw-mode / alt-screen / detach handling serves both the legacy loopback
- * WebSocket ({@link wsTerminalTransport}) and the mesh §13.6 session ({@link meshSessionTransport}).
+ * interface, so the SAME raw-mode / alt-screen / detach handling serves the mesh §13.6 session
+ * ({@link meshSessionTransport}). (The legacy loopback `ws://.../attach/` transport was removed with
+ * the P2 item 6 no-127.0.0.1 sweep.)
  */
 export interface TerminalTransport {
   /** Fires once the transport is connected and ready to carry the terminal. */
@@ -103,8 +103,8 @@ export interface TerminalTransport {
 /**
  * Drive a manager's attach session from the terminal: raw-mode stdin streams to the remote PTY,
  * PTY output streams to stdout, and SIGWINCH-style resizes are forwarded. The detach key (Ctrl-]
- * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic — the
- * terminal handling is identical over the loopback WebSocket and the mesh session.
+ * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic over the
+ * mesh §13.6 session.
  */
 export function attachClient(transport: TerminalTransport): Promise<void> {
   // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
@@ -235,23 +235,6 @@ export function attachClient(transport: TerminalTransport): Promise<void> {
   });
 }
 
-/**
- * The legacy loopback WebSocket transport: binary frames are keystrokes/output, a text frame
- * `r:<cols>,<rows>` resizes. Kept for the transitional `ws://` attach reply until the manager's
- * `attach` output schema flips to returning a mesh session offer.
- */
-export function wsTerminalTransport(url: string): TerminalTransport {
-  const ws = new WebSocket(url);
-  ws.binaryType = "arraybuffer";
-  return {
-    onReady: (cb) => { ws.on("open", cb); },
-    onData: (cb) => { ws.on("message", (data: Buffer) => cb(data)); },
-    onEnd: (cb) => { ws.on("close", () => cb()); ws.on("error", (e) => cb(e)); },
-    send: (bytes) => ws.send(bytes),
-    resize: (cols, rows) => ws.send(`r:${cols},${rows}`),
-    close: () => ws.close(),
-  };
-}
 
 /**
  * The mesh §13.6 SESSION transport: the item-6 replacement for the loopback WebSocket. Given a

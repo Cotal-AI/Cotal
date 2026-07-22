@@ -2095,6 +2095,34 @@ a retirement failure leaves the escalation standing, and a reconciler retries re
 already-escalated rows until it completes, recording completion durably (nothing
 un-escalates).
 
+**Interactive session**, a one-use, holder-bound, bidirectional byte stream to a managed target
+(the `attach` reference case). Establishment is a two-step, collapsible exchange: the serving endpoint
+mints a signed **session grant** bound to `(holder triple, target (owner, actor, lifecycleUid),
+serving instanceId + epoch, expiry)` and returns it as the establishment answer, **never a transport
+URL and never logged**; the holder **redeems** it by opening the session, which consumes it (create-only
+CAS on the durable `session.<sessionId>` ledger row, §13.12; a second redeem is `conflict`). The grant
+is non-bearer: redemption is **presenter-equality** bound to `holder` (§13.10), so a leaked grant confers
+nothing. Authorization is the target command's own (`owner`/`any` + name authority, §13.9); a session is
+never a path around the despawn/attach authorization.
+
+The byte stream rides two CORE-ONLY rails, `eps.<endpoint>.<sessionId>.<epoch>.<in|out>` (§13.9), never
+stream-captured: the holder publishes `in` and subscribes `out`, the serving endpoint the reverse; the
+holder's grant covers exactly its own session's two subjects. **Framing** (the terminal-session profile):
+application bytes are `{ k: "data", b: <standard base64> }`; control is structured JSON, `{ k: "ready" }`,
+`{ k: "resize", cols, rows }` (both positive integers), `{ k: "end", reason }`, `{ k: "drop", bytes }`.
+Ordering is per direction by publisher sequence. Flow is a bounded in-flight window per direction; output
+the window cannot take is **dropped, counted, and surfaced** as a `drop` frame before the resumed stream,
+never silently lost. On the holder's `ready` the serving side replays a byte-exact reconstruction of the
+target's current screen, then streams live output in order. A degenerate or unparseable caller frame is
+dropped, never a session teardown.
+
+**Termination is honest and distinct**: every teardown surfaces an `end` frame naming a bounded reason,
+`process-exit` (the target exited), `closed` (a party closed), `expired` (the session TTL elapsed),
+`target-despawn` (the target lifecycle retired), `manager-restart` (the serving incarnation advanced its
+epoch). The session binds the target's `(principal, lifecycleUid)` and the serving epoch (§13.1): a
+successor incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct
+session.
+
 ### 13.7 Contracts and discovery
 
 **Clusters.** An endpoint's surface is a set of composable **capability clusters**, each
