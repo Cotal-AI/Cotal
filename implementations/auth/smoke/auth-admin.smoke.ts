@@ -5,12 +5,13 @@
  * A. the requester credential's broker-enforced confinement: it can publish ONLY its own
  *    control subject (a foreign principal's subject is broker-denied), and only its own reply
  *    subtree is readable.
- * B. the GREEN path: the lease holder's request retires a live lifecycle end-to-end through the
- *    plane's own barrier + sealed scanner; a REPEAT request answers already-retired (idempotent,
- *    same stable opId).
- * C. the RAIL-TIME lease re-check (the four refusal faces in operator vocabulary): a NON-holder
- *    requester is refused with the lease-loss copy (FULL no-op stated, `cotal supervise` NEXT,
- *    and the target provably unchanged); an ABSENT lease refuses fail-closed; a STALE uid
+ * B. the GREEN path: a CURRENT serving manager instance's request retires a live lifecycle end-to-end
+ *    through the plane's own barrier + sealed scanner; a REPEAT request answers already-retired
+ *    (idempotent, same stable opId).
+ * C. the RAIL-TIME serve-grant re-check (P2 item 3 3b-3, registration-record-derived): a SUPERSEDED
+ *    manager instance (old serve epoch, a deposed predecessor after a restart) is refused with the
+ *    full-no-op copy (`cotal supervise` NEXT, and the target provably unchanged); an ABSENT serve
+ *    registration refuses fail-closed; a STALE uid
  *    refuses naming the current incarnation; an UNBOUND reply target is dropped (no reply at
  *    all — the boundReply discipline). (A foreign-op-holds-the-gate refusal is exercised where
  *    gates are staged — the retirement-barrier suite; the rail branch is exact-code over the
@@ -27,8 +28,8 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
-  CONTROL_AUTH_ADMIN, managerLeaseKey, MANAGER_LEASE_TTL_MS, controlServiceSubject,
-  createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, managerBucket,
+  CONTROL_AUTH_ADMIN, epgateKey, epAuthBucket, controlServiceSubject,
+  createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable,
   mintCreds, mintLifecycleUid, newIdentity, serverConfig, type EvictionResult,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
@@ -78,15 +79,22 @@ const gatedEvictor: EvictPrincipal = async (principal) => {
 };
 const MGR = { owner: "local", actor: "mgr0" };
 const MGR_KEY = `${MGR.owner}.${MGR.actor}`;
+// P2 item 3 (3b-3): the rail's holder check is now the serve-issuance GATE, not the manager lease.
+// The requester declares its serve identity; these are the defaults every green request rides (a test
+// overrides serveEpoch to model a superseded/deposed predecessor).
+const MGR_INST = mintLifecycleUid();
+const SERVE_EPOCH = 1;
 
-/** One rail request over a FRESH requester credential (the real mint + real broker ACLs). */
+/** One rail request over a FRESH requester credential (the real mint + real broker ACLs). The default
+ *  serve identity (manager/MGR_INST @ SERVE_EPOCH) is injected; caller `args` override it. */
 async function request(requester: { owner: string; actor: string }, args: Record<string, unknown>, opts: { foreignReply?: boolean } = {}): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply"> {
   const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: requester });
   const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
   try {
     const subject = controlServiceSubject(space, CONTROL_AUTH_ADMIN, requester.owner, requester.actor);
     const reply = opts.foreignReply ? `${controlServiceSubject(space, CONTROL_AUTH_ADMIN, "local", "other")}.reply.${randomUUID()}` : `${subject}.reply.${randomUUID()}`;
-    const m = await nc.request(subject, JSON.stringify({ op: "retireLifecycle", args }), { timeout: 8000, noMux: true, reply });
+    const fullArgs = { serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH, ...args };
+    const m = await nc.request(subject, JSON.stringify({ op: "retireLifecycle", args: fullArgs }), { timeout: 8000, noMux: true, reply });
     return m.json<{ ok: boolean; data?: Record<string, unknown>; error?: string }>();
   } catch (e) {
     if (/timeout|no responders/i.test((e as Error).message)) return "no-reply";
@@ -108,15 +116,17 @@ try {
   const kvm = new Kvm(wide.nc);
   await ensureAuthorityStores(jsm, kvm, space);
   await createEndpointStreams(jsm, kvm, space);
-  const mgrKv = await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
-  // P2 item 3: the lease is per LOGICAL INSTANCE (`lease.<instanceId>`), not a per-space singleton. These
-  // two ids stand in for two manager instances; the rail's holder-check reads the most-recent live key.
-  const MGR_INST = "mgrinst", OTHER_INST = "otherinst";
-  const putLease = async (holder: string, instanceId: string) => {
-    await mgrKv.put(managerLeaseKey(instanceId), new TextEncoder().encode(JSON.stringify({ holder, instanceId, runtime: "pty", root: "/x", pid: 1, since: Date.now() })));
+  // P2 item 3 (3b-3): the rail reads the serve-issuance GATE (`epgate.manager.<instanceId>`), a
+  // registration-record-derived currency check, not the per-space manager lease. Stage a gate row for
+  // the manager instance at a given serve epoch (a superseded predecessor declares an OLD epoch and is
+  // refused). `createEndpointStreams` pre-created the epAuth bucket the gate lives in.
+  const epKv = await kvm.open(epAuthBucket(space));
+  const putGate = async (instanceId: string, epoch: number, state: "open" | "retired" = "open") => {
+    const row: Record<string, unknown> = { state, generation: 1, processEpoch: epoch, registrationRevision: 1, nameAuthorityRevision: 1, principal: MGR_KEY };
+    if (state === "retired") row.op = { opId: "r".repeat(26), kind: "retirement" };
+    await epKv.put(epgateKey("manager", instanceId), new TextEncoder().encode(JSON.stringify(row)));
   };
-  const dropLease = async (instanceId: string) => { await mgrKv.delete(managerLeaseKey(instanceId)); };
-  await putLease(MGR_KEY, MGR_INST);
+  await putGate(MGR_INST, SERVE_EPOCH);
 
   // The REAL plane serves the rail.
   plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: gatedEvictor });
@@ -138,12 +148,12 @@ try {
     }
   }
 
-  console.log("B. the green path (lease holder retires a live lifecycle; repeat = idempotent)");
+  console.log("B. the green path (a current serving instance retires a live lifecycle; repeat = idempotent)");
   const uid1 = mintLifecycleUid();
   await ensureRootCredential(wreg, { owner: OWNER, actor: "w1", lifecycleUid: uid1, managerInstance: "smoke" });
   const op1 = "a".repeat(26);
   const r1 = await request(MGR, { owner: OWNER, actor: "w1", lifecycleUid: uid1, opId: op1 });
-  check("the lease holder's request RETIRES the lifecycle end-to-end (the plane's own barrier + sealed scanner)",
+  check("a current serving instance's request RETIRES the lifecycle end-to-end (the plane's own barrier + sealed scanner)",
     r1 !== "no-reply" && r1.ok === true && (r1.data as { retired?: boolean })?.retired === true, r1);
   check("the head reads retired after the rail request",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w1"))?.mapping.state === "retired");
@@ -151,25 +161,26 @@ try {
   check("a REPEAT request answers already-retired (idempotent under the stable opId)",
     r1b !== "no-reply" && r1b.ok === true && (r1b.data as { alreadyRetired?: boolean })?.alreadyRetired === true, r1b);
 
-  console.log("C. the refusal faces (rail-time lease re-check + closed shapes)");
+  console.log("C. the refusal faces (rail-time serve-grant re-check + closed shapes)");
   const uid2 = mintLifecycleUid();
   await ensureRootCredential(wreg, { owner: OWNER, actor: "w2", lifecycleUid: uid2, managerInstance: "smoke" });
   const op2 = "b".repeat(26);
-  // Non-holder: the lease moved to another manager AFTER the requester was minted (MGR's instance is no
-  // longer live; a different instance holds the space).
-  await dropLease(MGR_INST);
-  await putLease("local.other", OTHER_INST);
-  const r2 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2, opId: op2 });
-  check("a requester that LOST the lease is refused with the lease-loss operator copy (names the holder + FULL no-op + cotal supervise)",
-    r2 !== "no-reply" && r2.ok === false && (r2.error ?? "").includes("lost the space lease") && (r2.error ?? "").includes("FULL no-op") && (r2.error ?? "").includes("cotal supervise"), r2);
+  // SUPERSEDED (P2 item 3 3b-3 — the red-first deposed-predecessor fence): the gate advanced to a NEWER
+  // epoch (a restart re-registered the SAME instanceId), so a request declaring the OLD epoch is a
+  // deposed predecessor and is refused. Against the old name-derived lease-holder check this PASSED (the
+  // shared holder principal matched); the gate-currency check is what closes it.
+  await putGate(MGR_INST, SERVE_EPOCH + 1); // current serve grant is now epoch 2
+  const r2 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2, opId: op2, serveEpoch: SERVE_EPOCH }); // predecessor declares epoch 1
+  check("a SUPERSEDED manager instance (old epoch) is refused as a full no-op (names SUPERSEDED + the epochs + cotal supervise)",
+    r2 !== "no-reply" && r2.ok === false && (r2.error ?? "").includes("SUPERSEDED") && (r2.error ?? "").includes("FULL no-op") && (r2.error ?? "").includes("cotal supervise"), r2);
   check("the refused target is provably UNCHANGED (the full-no-op statement is true)",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w2"))?.mapping.state === "active");
-  // Absent lease (TTL-expired / no manager): fail-closed. Drop the remaining live key so NO instance holds.
-  await dropLease(OTHER_INST);
-  const r3 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2, opId: op2 });
-  check("an ABSENT lease refuses fail-closed (no manager holds the space; supervise NEXT)",
-    r3 !== "no-reply" && r3.ok === false && (r3.error ?? "").includes("no manager currently holds") && (r3.error ?? "").includes("cotal supervise"), r3);
-  await putLease(MGR_KEY, MGR_INST);
+  // ABSENT registration: the requester names an instance with NO serve gate (never registered). A real
+  // gate is never DELETED (a DEL is corruption, SPEC 13.12), so absence is an unregistered instanceId.
+  const r3 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2, opId: op2, serveInstanceId: mintLifecycleUid() });
+  check("an ABSENT serve registration refuses fail-closed (no manager instance holds; supervise NEXT)",
+    r3 !== "no-reply" && r3.ok === false && (r3.error ?? "").includes("no manager instance currently holds") && (r3.error ?? "").includes("cotal supervise"), r3);
+  await putGate(MGR_INST, SERVE_EPOCH); // restore the current gate at the default epoch (the superseded test bumped it) for the stale-uid test below
   // Stale uid: the trigger names a previous incarnation.
   const r4 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: mintLifecycleUid(), opId: op2 });
   check("a STALE incarnation refuses naming the current one (never retires the wrong lifecycle)",

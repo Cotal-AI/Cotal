@@ -557,9 +557,9 @@ console.log("4. the auth-admin rail profiles (piece 3)");
     && req.sub.length === 2 && req.sub[0] === `cotal.${S}.ctl.auth-admin.local.mgr0.reply.>` && req.sub[1]!.startsWith("_INBOX_"),
     req);
   const listener = authAdminListenerGrants(S, CONN);
-  c("the auth-admin listener grant is EXACTLY REPLY-ONLY publish + $JS.API.INFO + the ONE lease read + inbox (no bare request subject → no self-forge)",
+  c("the auth-admin listener grant is EXACTLY REPLY-ONLY publish + $JS.API.INFO + the ONE serve-gate read + inbox (no bare request subject → no self-forge)",
     JSON.stringify(listener) === JSON.stringify({
-      publish: [`cotal.${S}.ctl.auth-admin.*.*.reply.>`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_manager_${S}`],
+      publish: [`cotal.${S}.ctl.auth-admin.*.*.reply.>`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_auth_${S}`],
       subscribe: [`cotal.${S}.ctl.auth-admin.*.*`, `_INBOX_${CONN}.>`],
     }), listener);
   c("the listener publish CANNOT reach a bare request subject (self-forge closed): no grant matches ctl.auth-admin.<owner>.<actor> without a .reply. segment",

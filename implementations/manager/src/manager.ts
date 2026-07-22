@@ -2100,7 +2100,14 @@ export class Manager {
         const subject = controlServiceSubject(this.space, CONTROL_AUTH_ADMIN, me.owner, me.actor);
         const m = await nc.request(
           subject,
-          JSON.stringify({ op: "retireLifecycle", args: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid, opId: retireOpId(a.lifecycleUid) } }),
+          // P2 item 3 (3b-3): declare THIS manager instance's current serve identity so the rail's
+          // holder check is registration-record-derived (the serve-issuance gate), not a name-derived
+          // "the manager". A superseded predecessor (same instanceId, OLD epoch after a restart) is
+          // then refused at the rail — its declared epoch no longer matches the gate's current one.
+          JSON.stringify({ op: "retireLifecycle", args: {
+            owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid, opId: retireOpId(a.lifecycleUid),
+            serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch: this.serviceServe?.grant.epoch ?? 0,
+          } }),
           { timeout: 20_000, noMux: true, reply: `${subject}.reply.${randomUUID()}` },
         );
         const r = m.json<{ ok: boolean; data?: unknown; error?: string }>();
