@@ -116,6 +116,17 @@ try {
   check("the daemon identity is preserved across the re-sign", identityFromCreds(resigned).id === deliveryId.id);
   check("renewal NEVER wrote the signer to disk (auth.json still absent)", !existsSync(authJson));
 
+  // HIGH-2 regression: a store whose signer is for a DIFFERENT space must NOT re-sign — that would
+  // overwrite the last-good daemon cred with one this space's broker rejects (looking freshly
+  // renewed). remintDaemonCreds with the WRONG expected space fails every file and leaves the cred
+  // byte-for-byte intact.
+  const beforeWrong = mem.map.get(DELIVERY_CREDS_KEY)!;
+  const wrongSpace = await remintDaemonCreds(root, mem, "not-this-space");
+  check("cross-space signer is REFUSED (every file ok:false, none re-signed)", wrongSpace.every((r) => r.ok === false));
+  check("the last-good delivery cred is NOT overwritten by a wrong-space signer", mem.map.get(DELIVERY_CREDS_KEY) === beforeWrong);
+  // and the RIGHT space still re-signs (proves the gate is on the space, not a blanket refusal)
+  check("the matching space still re-signs", (await remintDaemonCreds(root, mem, space)).find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+
   // The negative: with NO store and an empty disk, the signer is genuinely unreachable → no-auth.
   const emptyRoot = mkdtempSync(join(tmpdir(), "cotal-spaceauth-empty-"));
   try {
@@ -126,17 +137,36 @@ try {
     rmSync(emptyRoot, { recursive: true, force: true });
   }
 
-  // ---- 4. non-material errors ----
+  // ---- 4. full trust-chain validation + non-material errors ----
   const seed = auth.account.signingSeed; // a real seed we must never see leak into an error string
-  await rejects("expected-space mismatch fails loud, names only the space labels",
+  await rejects("expected-space mismatch fails loud, names ONLY the expected label (not the stored one)",
     () => getSpaceAuth(mem, "some-other-space"), "some-other-space", seed);
   const corrupt = new MemStore();
   await corrupt.put(SPACE_AUTH_KEY, "{ not json — SEED_LEAK_CANARY");
   await rejects("corrupt store value fails loud without echoing the bytes",
     () => getSpaceAuth(corrupt), "not valid JSON", "SEED_LEAK_CANARY");
+  // HIGH-1 A: a bare `{space:"x"}` is NOT a valid bundle — the whole trust chain is validated.
   const shapeless = new MemStore();
-  await shapeless.put(SPACE_AUTH_KEY, JSON.stringify({ nope: true }));
-  await rejects("malformed bundle (no space name) fails loud", () => getSpaceAuth(shapeless), "malformed");
+  await shapeless.put(SPACE_AUTH_KEY, JSON.stringify({ space: "seam-space" }));
+  await rejects("a bare {space} object fails trust-chain validation, is NOT returned as a signer",
+    () => getSpaceAuth(shapeless), "failed trust-chain validation");
+  // HIGH-1 B: a REAL bundle for "seam-space", relabeled `space:"decoy-space"`, must be REJECTED — the
+  // label check alone is forgeable; validateSpaceAuth catches it on the operator JWT name binding.
+  // The error must also not echo any stored seed.
+  const forged = new MemStore();
+  const relabeled = JSON.parse(JSON.stringify(auth)) as SpaceAuth;
+  relabeled.space = "decoy-space";
+  await forged.put(SPACE_AUTH_KEY, JSON.stringify(relabeled));
+  await rejects("a relabeled real bundle is rejected by trust-chain validation (label alone is forgeable)",
+    () => getSpaceAuth(forged, "decoy-space"), "failed trust-chain validation", seed);
+  // HIGH-1 C: the mismatch error echoes ONLY the caller's expected space, NEVER the attacker-controlled
+  // STORED space. Store a canary stored-space; ask for a different expected space.
+  const canary = new MemStore();
+  const canaryBytes = JSON.parse(JSON.stringify(auth)) as SpaceAuth;
+  canaryBytes.space = "STORED_SPACE_LEAK_CANARY";
+  await canary.put(SPACE_AUTH_KEY, JSON.stringify(canaryBytes));
+  await rejects("the error names the caller's expected space, NOT the stored one",
+    () => getSpaceAuth(canary, "the-expected-space"), "the-expected-space", "STORED_SPACE_LEAK_CANARY");
 
   // ---- delete ----
   await deleteSpaceAuth(mem);

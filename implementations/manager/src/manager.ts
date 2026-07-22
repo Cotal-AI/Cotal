@@ -617,7 +617,9 @@ export class Manager {
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
-      const results = await remintDaemonCreds(this.workspaceRoot, this.secrets);
+      // `this.space` gates cross-space signer swaps: a store whose signer is for another space must
+      // not re-sign (it would overwrite the last-good daemon cred with one this broker rejects).
+      const results = await remintDaemonCreds(this.workspaceRoot, this.secrets, this.space);
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {

@@ -7,6 +7,7 @@ import {
   writeSecretFile,
   type Profile,
   type SecretStore,
+  type SpaceAuth,
 } from "@cotal-ai/core";
 import { getSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
@@ -59,19 +60,32 @@ export interface RemintResult {
  *  The manager — the D5 standing-renewal owner, and a hosted-path caller (manager.ts calls this
  *  unconditionally) — passes the SAME store it gives the daemon (its `ManagerOptions.secretStore`),
  *  so a hosted composition re-signs into the store the daemon renews from, never a divergent one; no
- *  store means the local workspace FS composition (keys = the filenames under `.cotal/`). The store's
- *  ATOMIC put is load-bearing here, because the daemons re-read these values LIVE (the delivery
- *  endpoint's 75% source refresh, the membership feed's 75% renewal fetch) and the plain
- *  `writeSecretFile` this replaced could tear such a concurrent read. Structured per-file results,
- *  never throws: a failed remint leaves the old cred running toward its loud expiry and the caller
- *  records/reports the failure. */
-export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
+ *  store means the local workspace FS composition (keys = the filenames under `.cotal/`).
+ *
+ *  `expectedSpace` (the caller's known space — the manager's `this.space`, doctor's resolved space)
+ *  is REQUIRED to be validated against the store's signer: the daemon creds are SPACE-SCOPED, so a
+ *  store whose signer is for a DIFFERENT space (a swap after start, a misconfigured hosted mount)
+ *  must NOT re-sign — that would overwrite each last-good cred with one the space's broker rejects,
+ *  breaking the daemon on a value that looks freshly renewed. A signer that fails validation fails
+ *  EVERY file (`ok:false`), leaving the standing creds intact toward their loud expiry rather than
+ *  clobbering them. The store's ATOMIC put is load-bearing here, because the daemons re-read these
+ *  values LIVE (the delivery endpoint's 75% source refresh, the membership feed's 75% renewal fetch).
+ *  Structured per-file results, never throws: a failed remint leaves the old cred running toward its
+ *  loud expiry and the caller records/reports the failure. */
+export async function remintDaemonCreds(root: string, store?: SecretStore, expectedSpace?: string): Promise<RemintResult[]> {
   const s = store ?? workspaceSecretStore(root);
-  // Read the SIGNER through the SAME store the daemon creds live in — symmetric with the daemon's
-  // `runDelivery(args, store)`. Reading it from the FS while writing the daemon creds to an injected
-  // store would split authority (signer ← disk, cred ← KMS): the exact class 3b closed for daemon
-  // creds, here for the signer. `getSpaceAuth` returns undefined on an unprovisioned store (→ no-auth).
-  const auth = await getSpaceAuth(s);
+  // Read + FULLY VALIDATE the SIGNER through the SAME store the daemon creds live in (symmetric with
+  // the daemon's `runDelivery(args, store)`) — reading it from the FS while writing the daemon creds
+  // to an injected store would split authority (signer ← disk, cred ← KMS): the class 3b closed for
+  // daemon creds, here for the signer. `getSpaceAuth(s, expectedSpace)` cross-checks the trust chain
+  // against the caller's space; a wrong-space or malformed signer THROWS (never re-signs).
+  let auth: SpaceAuth | undefined;
+  try {
+    auth = await getSpaceAuth(s, expectedSpace);
+  } catch (e) {
+    // Wrong-space / malformed signer: fail every file, DO NOT overwrite the last-good creds.
+    return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, error: (e as Error).message }));
+  }
   if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {

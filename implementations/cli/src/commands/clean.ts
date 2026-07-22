@@ -222,18 +222,13 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       throw new Error(
         `clean all: secret-store deprovision failed (${failures.join("; ")}) - the local identity was NOT removed; the deletes are idempotent, fix the cause and re-run \`cotal clean all --force\``,
       );
-    // The space trust bundle (`auth/auth.json`) is a migrated kind too, but it is the SPACE-NAMER
-    // (`resolveSpace` above reads it), so it dies LAST — through the store, AFTER the failure gate.
-    // A partial-failure reset threw already, leaving the bundle present so the re-run still names the
-    // space for the provider deprovision retry. The store delete is authoritative (real for a non-FS
-    // store); the `rm` clears the FS materialization + the rest of `.cotal/auth` (callout, creds).
-    await deleteSpaceAuth(secrets);
-    rm(join(root, ".cotal", "auth"), ".cotal/auth (space identity + creds)");
-    // Creds/records signed by (or tied to) the deleted identity: stale the moment it is gone.
-    // The fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds`
-    // in up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no
-    // old-operator material survives the reset. (`auth.json`, `delivery.creds`, and
-    // `membership-rw.creds` are gone already — migrated kinds that went through the store, never a raw rm.)
+    // Creds/records signed by (or tied to) the space identity: stale the moment it is gone. The
+    // fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds` in
+    // up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no old-operator
+    // material survives the reset. (`delivery.creds` and `membership-rw.creds` went through the store
+    // above, never a raw rm.) These, the pidfiles, and `run/` are removed BEFORE the space namer, so
+    // that if ANY of them fails to remove — an immutable/locked file EPERMs — auth.json is still
+    // present and a re-run resolves THIS space, not the default.
     for (const f of [
       "manager.delivery-aware",
       "membership-observer.creds",
@@ -245,6 +240,14 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
     for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
+    // The space trust bundle (`auth/auth.json`) is the SPACE-NAMER (`resolveSpace` above reads it), so
+    // it dies ABSOLUTELY LAST — after the failure gate AND after every fallible space-dependent removal
+    // above. Any earlier EPERM/lock therefore leaves it present, so a re-run still names THIS space for
+    // the provider deprovision retry rather than falling back to the default. The store delete is
+    // authoritative (real for a non-FS store); the `rm` clears the FS materialization + the rest of
+    // `.cotal/auth` (callout, creds).
+    await deleteSpaceAuth(secrets);
+    rm(join(root, ".cotal", "auth"), ".cotal/auth (space identity + creds)");
   }
   return removed;
 }

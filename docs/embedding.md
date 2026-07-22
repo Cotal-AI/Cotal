@@ -248,11 +248,11 @@ scopes the capability out. None is a wire concern.
    live eviction and a fully-hosted feed a partial gap. Missing files degrade membership to
    traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
    Plane-3 durable backstop.
-2. **Supervisor signer custody.** The store side has landed: `ManagerOptions.secretStore` injects the
-   one `SecretStore` the manager reads/writes every secret through (its daemon-cred renewal and its
-   per-agent kinds). What remains is the *signer* — the manager still raw-loads the `SpaceAuth` bundle
-   from `workspaceRoot`, so a hosted supervisor is still a filesystem-resident per-tenant account-signer
-   process plus mesh-registry record.
+2. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
+   manager reads/writes every secret through, including the `SpaceAuth` signer bundle
+   (`auth/auth.json`), its daemon-cred renewal, and its per-agent kinds. What remains is process
+   isolation: the manager still decrypts the signer in-process at its uid, so untrusted agent children
+   must run under a different uid/container/mount namespace or behind a future remote signer.
 3. **Many spaces per broker.** No published "add a tenant account under one shared operator" API;
    the exports compose the one-space reference shape. This is the multi-space operator layer.
 4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
@@ -273,7 +273,7 @@ place and keep:
 
 | state | class | where today | hosted injection |
 |---|---|---|---|
-| full `SpaceAuth` bundle (`.cotal/auth/auth.json`) | signing authority | workspace filesystem | none (the manager reads it raw; no SecretStore seam) |
+| full `SpaceAuth` bundle (`auth/auth.json`, `.cotal/auth/auth.json` under the FS store) | signing authority | `SecretStore` | `SecretStore` (manager + renewal) |
 | auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
@@ -288,8 +288,8 @@ parts of one `auth.json`. `auth-service.json` (the live exchange capability) is 
 state, not durable, but is sensitive while the daemon runs. `@cotal-ai/workspace` is machine-local
 operator tooling by design; personas, PID files, and the `current-mesh` pointer are truly local and
 must **not** sit on a hosted durable path. Everything classed above as an authority is what a hosted
-composition must provision and persist, today only partly through the `SecretStore` seam and
-otherwise through ambient `workspaceRoot`/cwd paths.
+composition must provision and persist: signer-bearing server secrets now have `SecretStore` seams;
+the remaining non-injectable rows are the explicit ambient `workspaceRoot`/cwd paths above.
 
 ## See also
 

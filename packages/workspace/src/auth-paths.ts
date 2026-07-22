@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { mkSecretDir, writeSecretFile, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { mkSecretDir, validateSpaceAuth, writeSecretFile, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 
 /**
  * On-disk auth-material I/O for a local checkout's `.cotal/` — machine-local path resolution plus
@@ -195,9 +195,15 @@ export const SPACE_AUTH_KEY = `auth/${AUTH_FILE}`;
 
 /** Load the space trust bundle through the seam — THE reader for signer-bearing paths (the manager's
  *  signer hold, the renewal owner, CLI mint/backup/restore/…). `store` is the sole authority: a hosted
- *  composition injects KMS/Vault; the local default reads today's file byte-for-byte. Optional
- *  `expectedSpace` cross-checks the bundle's name where the caller knows it. Fails loud on a malformed
- *  bundle; every error names ONLY the key + space labels, NEVER the stored bytes/seeds/JWTs. */
+ *  composition injects KMS/Vault; the local default reads today's file byte-for-byte.
+ *
+ *  Fully validates the trust chain via {@link validateSpaceAuth} (operator/account/system JWT subjects,
+ *  issuers, names, and seed↔pub bindings) before returning — a `space` LABEL check alone is forgeable
+ *  (a real bundle for space B, relabeled `space:"A"`, would otherwise mint B-account creds under an
+ *  "A" request; the JWT `name` binding catches it). `expectedSpace`, when the caller knows it, is
+ *  cross-checked cryptographically, not by string only. Every error names ONLY the key and the
+ *  caller-provided `expectedSpace` — NEVER any field sourced from the stored bytes (seeds, JWTs, or the
+ *  stored `space`, which on a compromised/misconfigured store is attacker-controlled). */
 export async function getSpaceAuth(store: SecretStore, expectedSpace?: string): Promise<SpaceAuth | undefined> {
   const raw = await store.get(SPACE_AUTH_KEY);
   if (raw === undefined) return undefined;
@@ -207,12 +213,17 @@ export async function getSpaceAuth(store: SecretStore, expectedSpace?: string): 
   } catch {
     throw new Error(`the space trust bundle (${SPACE_AUTH_KEY}) is not valid JSON`); // never echo the bytes
   }
-  if (parsed === null || typeof parsed !== "object" || typeof (parsed as SpaceAuth).space !== "string")
-    throw new Error(`the space trust bundle (${SPACE_AUTH_KEY}) is malformed - no space name`);
-  const auth = parsed as SpaceAuth;
-  if (expectedSpace !== undefined && auth.space !== expectedSpace)
-    throw new Error(`the space trust bundle names space "${auth.space}" but "${expectedSpace}" was expected`);
-  return auth;
+  try {
+    return validateSpaceAuth(parsed, expectedSpace);
+  } catch {
+    // validateSpaceAuth's own messages can name the stored space; re-wrap so NO stored-sourced field
+    // reaches the caller's log. Only the caller-provided expectedSpace (trusted) is safe to name.
+    throw new Error(
+      `the space trust bundle (${SPACE_AUTH_KEY}) failed trust-chain validation` +
+        (expectedSpace !== undefined ? ` for space "${expectedSpace}"` : "") +
+        ` - the stored signer material is malformed or is not this space's trust chain`,
+    );
+  }
 }
 
 /** Persist the space trust bundle through the seam — the hosted-injectable WRITE. Strips
