@@ -74,6 +74,7 @@ import {
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, epAuthBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
+import { epsSubject } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -120,7 +121,10 @@ export type Profile =
   // that accepts action goals inline on its ephemeral handler — EXACTLY that endpoint's goal
   // bind/terminal facts + goal-record writes ({@link goalWriterGrants}), a dedicated connection
   // disjoint from the serve credential (Q2). Standing, re-minted on renewal like the serve cred.
-  | "goal-writer";
+  | "goal-writer"
+  // The console/CLI per-session CALLER credential (P2 item 6): rails-only for ONE §13.6 session,
+  // TTL-bound to it, never standing. Static = face-minted from the seed; user mode = the callout.
+  | "session-caller";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -185,6 +189,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action (P2 item 2); the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential (Q2)" },
+  "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred (P2 item 6): rails-only for ONE §13.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
@@ -454,6 +459,11 @@ export interface MintOpts {
    *  standing connection may bind + commit ({@link goalWriterGrants}). REQUIRED for that profile;
    *  ignored by every other. */
   goalWriter?: { endpoint: string };
+  /** `session-caller` profile only (P2 item 6): the ONE §13.6 session whose two eps rails this
+   *  credential may use — the serving endpoint, the fresh sessionId, and the serving epoch. REQUIRED
+   *  for that profile; ignored by every other. The rows pin all three, so the cred authorizes
+   *  exactly that session's `in`+`out` and nothing else. */
+  sessionCaller?: { endpoint: string; sessionId: string; epoch: number };
   /** `deployer` profile only: which v0.4 ep instrument set its `launch`/`ps` rows carry. Defaults
    *  to `"admin"` (the static operator's ephemeral deploy cred). The user-mode `deployer` VIEW
    *  mints `"privileged"` instead, so a spawn-scoped deploy reaches the manager where its
@@ -774,6 +784,7 @@ export function permissionsFor(
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged"); // ps/start reads (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin"); // any-mode stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin"); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
+  if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails (P2 item 6)
   if (profile === "endpoint-serve")
     // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
     // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
@@ -1573,6 +1584,21 @@ function lifecycleExecutorPermissions(
 function goalWriterPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string }): Record<string, unknown> {
   const g = goalWriterGrants(space, pin.endpoint, pr.connId);
   return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+}
+
+/** The console/CLI per-session CALLER rows (P2 item 6): RAILS-ONLY for ONE §13.6 session — pub the
+ *  session's epoch-pinned `in` rail, sub its `out` rail plus the caller's own reply inbox, and
+ *  NOTHING else. Deliberately NO KV, NO JetStream API, NO store: the caller drives the terminal over
+ *  the two core-only eps subjects and never reads the session ledger, so there is no subject-blind
+ *  store read to widen (SPEC §13.9). The endpoint+sessionId+epoch pin the EXACT pair, so a cred for
+ *  session A authorizes nothing of session B (no wildcard). `epsSubject` validates every token, so a
+ *  malformed coordinate refuses at the mint rather than emitting a broadened subject. */
+function sessionCallerPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string; sessionId: string; epoch: number } | undefined): Record<string, unknown> {
+  if (!pin) throw new Error('permissionsFor: "session-caller" requires opts.sessionCaller ({endpoint, sessionId, epoch}) - the ONE session\'s rails this cred may use');
+  return {
+    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, "in")] },
+    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, "out"), `_INBOX_${pr.connId}.>`] },
+  };
 }
 
 function endpointServeExecutorPermissions(

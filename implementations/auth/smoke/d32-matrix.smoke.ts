@@ -33,7 +33,7 @@ import {
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
-  createSpaceAuth, mintCreds, newIdentity,
+  createSpaceAuth, mintCreds, newIdentity, permissionsFor,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -48,6 +48,7 @@ let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 
 const S = "d32m", EP = "manager", EPJ = "jobsrv", CONN = "ibxconn0123456789";
+const SC_SID = "sessfixture0123456789ab"; // P2 item 6: a fixed session id for the session-caller fixture row
 const UID = "u".repeat(26);
 const cap: EpCapability = { endpoint: EP, command: "spawn", target: { mode: "owner", tOwner: "u_abc" }, journal: true };
 
@@ -313,6 +314,15 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   "drain-canceller": { publish: [
     `cotal.d32m.epf.jobsrv.eff.local.worker.${"u".repeat(26)}.acc001`,
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // P2 item 6: the per-session console/CLI CALLER cred — RAILS-ONLY for ONE §13.6 session. It pubs
+  // the session's `in` rail and subs its `out` rail + its own reply inbox, and NOTHING else (no KV,
+  // no JS-API, no store — so no subject-blind ledger read; the sessionId+epoch pin the exact pair).
+  "session-caller": { publish: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.in`,
+  ], subscribe: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.out`,
+    "_INBOX_ibxconn0123456789.>",
+  ] },
 };
 
 // ---- 1. regenerate every builder and pin against the fixture ----------------------------------
@@ -357,6 +367,10 @@ put("retirement-executor", retirementExecutorClientGrants(S, EPJ, ["pa", "pb"], 
 put("drain-applier", drainApplierGrants(S, `goal.${EPJ}.local.worker.${UID}.g00001.spec`, CONN));
 put("drain-reconciler", drainReconcilerGrants(S, `cotal.${S}.epw.${EPJ}.pa.local.worker.${UID}.acc001`, CONN));
 put("drain-canceller", drainCancellerGrants(S, `cotal.${S}.epf.${EPJ}.eff.local.worker.${UID}.acc001`, CONN));
+{
+  const scPerms = permissionsFor("session-caller", S, { owner: "u_abc", actor: "cli", connId: CONN }, { sessionCaller: { endpoint: EP, sessionId: SC_SID, epoch: 3 } }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  put("session-caller", { publish: scPerms.pub.allow, subscribe: scPerms.sub.allow });
+}
 
 for (const name of Object.keys(FIXTURE)) {
   c(`fixture pin: ${name}`, JSON.stringify(gen[name]) === JSON.stringify(FIXTURE[name]), gen[name]);
