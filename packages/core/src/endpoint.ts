@@ -682,8 +682,12 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error(`reloadCreds: the broker did not accept the re-signed credential (${probe.reason}); nothing adopted`);
     if (Date.now() > deadline)
       throw new Error("reloadCreds: the proof exceeded the daemon deadline; nothing adopted"); // fence a late commit
+    // Validate the bounded-window renewal delay BEFORE the commit: credsRenewalDelayMs throws on a cred
+    // lacking a numeric `exp`, and that throw must not leave currentCreds flipped to a candidate the
+    // authenticator would present on the next reconnect (a post-preflight validation failure is a no-op).
+    const delay = credsRenewalDelayMs(candidate);
     this.currentCreds = candidate;
-    this.armCredsRefresh(credsRenewalDelayMs(candidate));
+    this.armCredsRefresh(delay);
     return credsClaims(candidate);
   }
 

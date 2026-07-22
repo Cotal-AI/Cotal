@@ -228,12 +228,24 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     // `RenewalRecord.adoption.error`, so neither the observed nor the expected digest may appear.
     if (a.expected !== undefined && credsFingerprint(candidate) !== a.expected)
       throw new Error("reloadRwCreds: re-read credential generation did not match the expected re-signed generation; nothing adopted");
+    // Compute the bounded-window renewal delay BEFORE any commit or preflight: credsRenewalDelayMs throws
+    // on a cred lacking a numeric `exp`, and that throw must NOT leave `currentRwCreds` flipped to a
+    // candidate the authenticator would then present on the next reconnect (a post-preflight validation
+    // failure must be a true no-op on the cache).
+    const delay = credsRenewalDelayMs(candidate);
+    // An UNCHANGED generation past its own renewal point is a MISSED remint (the renewal owner has not
+    // re-signed yet), not a candidate to adopt. Adopting it would recommit the same cred, floor the next
+    // timer to 1s (delay <= 0), and reconnect EVERY second for the JWT's remaining 25% of life. Fail it
+    // like a renewal error so `renewRwOnTimer` retries at 60s with NO resident reconnect. The explicit
+    // reload's `expected` already rejects a stale read; this covers the timer path (no expectation sent).
+    if (candidate === currentRwCreds && delay <= 0)
+      throw new Error("reloadRwCreds: the rw source still holds the previous generation past its renewal point (the renewal owner has not re-signed it - run `cotal doctor auth --fix` or restart the manager); nothing adopted");
     if (!(await brokerAcceptsCreds(opts.servers, candidate, Math.max(500, Math.min(MEMBERSHIP_PREFLIGHT_MS, a.deadline - Date.now())))))
       throw new Error("reloadRwCreds: the broker did not accept the re-signed rw credential; nothing adopted");
     if (Date.now() > a.deadline)
       throw new Error("reloadRwCreds: the proof exceeded the daemon deadline; nothing adopted"); // fence a late commit
-    currentRwCreds = candidate;
-    armRwRefresh(credsRenewalDelayMs(candidate));
+    currentRwCreds = candidate; // commit ONLY after identity pin + fingerprint + delay/claims validation + preflight
+    armRwRefresh(delay);
     return credsClaims(candidate);
   };
   // The 75%-of-lifetime renewal tick: prove + adopt + swap conn B onto the fresh cred. conn B is NOT the

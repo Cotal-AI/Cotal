@@ -24,6 +24,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   isReachable, createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig,
   setupSpaceStreams, startMembershipFeed, credsFingerprint, idFromCreds, membershipBucket,
@@ -205,6 +207,58 @@ try {
   check("B finished within the manager's 15s bound (no fresh budget after the queue wait, case 5)", rbRes.ms < MANAGER_BOUND_MS, `${rbRes.ms}ms`);
   check("B really was queued behind A (waited past the deadline, not instant)", rbRes.ms >= 10_000, `${rbRes.ms}ms`);
   await feed3.stop();
+  feed = undefined;
+
+  // ---- Scenario 5: an UNCHANGED source past 75% must NOT 1s-churn (freelance HIGH 1) ----
+  // The 75% timer fires; if the renewal owner has not re-signed yet, the source returns the SAME cred. It
+  // is still broker-valid, so a naive adopt recommits it, `credsRenewalDelayMs` is <=0 (past the renewal
+  // point), `armRwRefresh` floors the next tick to 1s, and `renewRwOnTimer` reconnects EVERY second for
+  // the rest of the JWT's life. The fix treats an unchanged generation past its renewal point as a MISSED
+  // remint: a 60s retry with NO resident reconnect. Discriminator: renewal reads in the churn window.
+  const churnTtl = 12;
+  const churnCred = await mintCreds(auth, feedId, "membership-rw", { expiresInSeconds: churnTtl });
+  let churnReads = 0;
+  const churnSource = async (): Promise<string> => { churnReads++; return churnCred; }; // NEVER changes
+  const feed4 = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds, rwCreds: churnSource, intervalMs: 60_000 });
+  feed = feed4;
+  check("churn feed starts (source read once)", churnReads === 1, churnReads);
+  await wait(8_500);              // just past 75% (9s) minus setup slack — the timer has not fired yet
+  const churnBaseline = churnReads;
+  await wait(2_800);             // ~11.3s: the buggy 1s loop would have ticked ~3x in the 9-12s window
+  check("an unchanged source past 75% did NOT busy-loop (<=1 renewal read in the churn window, H1)", churnReads - churnBaseline <= 1, { churnReads, churnBaseline });
+  await feed4.stop();
+  feed = undefined;
+
+  // ---- Scenario 6: a post-preflight validation failure must NOT poison the cache (freelance HIGH 2) ----
+  // A same-nkey cred the broker ACCEPTS but that lacks a numeric `exp` (unbounded, minted with EMPTY perms
+  // so an adopted-by-mistake reconnect is observably broken). `credsRenewalDelayMs` rejects it AFTER the
+  // preflight; the bug committed `currentRwCreds` BEFORE that check, so `reloadRwCreds` reported failure
+  // while conn B's cache had already flipped, and the next reconnect presented the "rejected" unbounded
+  // cred. The fix validates the bounded window BEFORE the cache assignment.
+  const boundedInit = await mintCreds(auth, feedId, "membership-rw", { expiresInSeconds: 3600 });
+  // NO exp (credsRenewalDelayMs rejects), but ENOUGH perms to pass the disposable preflight connect (the
+  // inbox sub) and NO KV perms — so if the bug adopts it, an incidental reconnect onto it is observably
+  // broken (heartbeat KV writes denied). credsRenewalDelayMs must therefore reject it AFTER the preflight.
+  const unboundedJwt = await encodeUser("mrw-unbounded", fromPublic(feedId.id), fromPublic(auth.account.pub), { pub: { deny: [">"] }, sub: { allow: [`_INBOX_${feedId.id}.>`] } }, { signer: fromSeed(enc(auth.account.signingSeed)) });
+  const unboundedCred = `-----BEGIN NATS USER JWT-----\n${unboundedJwt}\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${feedId.seed}\n------END USER NKEY SEED------\n`;
+  let h2Served = boundedInit;
+  const feed5 = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds, rwCreds: async () => h2Served, intervalMs: 60_000 });
+  feed = feed5;
+  const h2hb = await provesLive(feed5, boundedInit, 0);
+  check("H2 feed live on the bounded cred", h2hb > 0, h2hb);
+  h2Served = unboundedCred;
+  const h2 = await feed5.reloadRwCreds().then(() => ({ ok: true, e: "" }), (e: Error) => ({ ok: false, e: e.message }));
+  check("reload of an unbounded (no-exp) cred FAILS", !h2.ok && /numeric exp|nothing adopted/i.test(h2.e), h2);
+  // Force conn B to reconnect (broker restart) so it presents whatever `currentRwCreds` now holds. With the
+  // fix it is still the bounded cred (full perms → KV works → heartbeat advances). With the bug it is the
+  // unbounded EMPTY-perms cred (KV denied → heartbeat frozen).
+  srv.kill("SIGKILL");
+  await wait(500);
+  srv = startBroker();
+  await waitReachable();
+  const h2after = await provesLive(feed5, boundedInit, h2hb);
+  check("post-validation-failure the cache is UNCHANGED — bounded cred still presented after reconnect (H2)", h2after > h2hb, { h2after, h2hb });
+  await feed5.stop();
   feed = undefined;
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-RW RENEWAL ${pass}/${pass + fail}`);
