@@ -41,7 +41,7 @@ import {
   principalFromConnz,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
-import { credsClaims, idFromCreds } from "./identity.js";
+import { credsClaims, credsFingerprint, idFromCreds } from "./identity.js";
 import type { ChannelMembership } from "./types.js";
 
 export interface MembershipFeedOpts {
@@ -77,13 +77,36 @@ export interface MembershipFeedHandle {
   /** Force an immediate reconcile (also used by tests). Never throws — errors are logged. */
   poll(): Promise<void>;
   /** Explicitly adopt a re-signed rw creds file on conn B (D5 class-2 renewal): validated re-read
-   *  (pinned nkey) + forced reconnect, returning the adopted JWT window as proof. THROWS when the
-   *  re-read fails (missing/swapped file) — adoption must never be assumed. */
-  reloadRwCreds(): Promise<{ identity: string; iat?: number; exp?: number }>;
+   *  (pinned nkey), optional fingerprint match against the renewal owner's `expected` generation, a
+   *  DISPOSABLE PREFLIGHT proving the broker accepts the bytes, then a reconnect that presents those
+   *  exact pinned bytes — returning the BROKER-ACCEPTED generation's window (the resident conn-B swap
+   *  is best-effort, not witnessed). THROWS when the re-read fails (missing/swapped file), the
+   *  fingerprint does not match `expected`, or the broker refuses the preflight. Symmetric with the
+   *  endpoint's {@link CotalEndpoint.reloadCreds}. */
+  reloadRwCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }>;
   stop(): Promise<void>;
 }
 
 const enc = (s: string) => new TextEncoder().encode(s);
+
+/** The disposable-preflight connect bound for the EXPLICIT rw-cred reload proof — mirrors the
+ *  endpoint's: a rogue/unreachable candidate must resolve fast, well under the manager's
+ *  delivery-admin request bound. */
+const MEMBERSHIP_PREFLIGHT_MS = 4_000;
+
+/** Prove the broker ACCEPTS these creds on a throwaway connection — the D5 class-2 adoption
+ *  proof-of-record for conn B. `reconnect:false` + `maxReconnectAttempts:0` so a refused cred
+ *  REJECTS fast instead of entering a retry loop; a genuine accept returns true. Presents exactly
+ *  the candidate, so the proof is unambiguous. */
+async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const probe = await connect({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+    await probe.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
 const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server before a loud under-report)
 
 /** Connect, wire the triggers + safety poll, and run an immediate first reconcile. */
@@ -116,10 +139,16 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     if (id !== rwSelfId) throw new Error(`membership rw creds re-read returned identity ${id}, expected ${rwSelfId} - a renewal may not swap the feed's nkey`);
     return creds;
   };
+  // Set by `reloadRwCreds` around its explicit reconnect: pins the EXACT bytes the preflight proved,
+  // so conn B provably presents that generation (never a value a concurrent source rewrite slipped in
+  // between preflight and reconnect). Cleared shortly after, so the per-reconnect source re-read
+  // remains the backstop for a later renewal.
+  let reloadPin: string | undefined;
   const connB = await connect({
     servers: opts.servers,
-    // Re-wrapped per (re)connect attempt so each attempt signs with the freshest (pinned) file read.
-    authenticator: (nonce?: string) => credsAuthenticator(enc(rwCredsPinned()))(nonce),
+    // Re-wrapped per (re)connect attempt: the explicit reload pins its proven bytes; otherwise each
+    // attempt signs with the freshest (pinned-nkey) file read.
+    authenticator: (nonce?: string) => credsAuthenticator(enc(reloadPin ?? rwCredsPinned()))(nonce),
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
@@ -306,13 +335,29 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
 
   return {
     poll,
-    async reloadRwCreds() {
+    async reloadRwCreds(expected?: string) {
       // Explicit class-2 adoption for conn B (D5 slice 5): validate the re-read (the pinned getter
-      // throws on a swapped nkey or a missing file) and force a reconnect so the fresh cred is on
-      // the wire NOW — never waiting for the broker's expiry-close. The observer conn (A) is
-      // rotation-renewed and deliberately not reloadable.
-      const { exp, iat } = credsClaims(rwCredsPinned());
-      await connB.reconnect().catch(() => {}); // already-reconnecting is a no-op; its loop re-reads the getter
+      // throws on a swapped nkey or a missing file), PROVE the broker accepts it on a disposable
+      // preflight, then force a reconnect so the fresh cred is on the wire NOW — never waiting for the
+      // broker's expiry-close. The observer conn (A) is rotation-renewed and deliberately not reloadable.
+      const creds = rwCredsPinned();
+      // Reject a wrong generation BEFORE the preflight. Non-material message ON PURPOSE: the
+      // fingerprint is a stable secret-derived generation token and this text flows to the manager's
+      // persisted `RenewalRecord.adoption.error`, so neither the observed nor expected digest may appear.
+      if (expected !== undefined && credsFingerprint(creds) !== expected)
+        throw new Error("reloadRwCreds: re-read credential generation did not match the expected re-signed generation; nothing adopted");
+      // PREFLIGHT = the proof. conn B is NOT the delivery-admin rail (that reply rides the delivery
+      // endpoint's connection), so a failed proof here throws without stranding the reply, and a
+      // proven-good cred can be swapped inline.
+      if (!(await brokerAcceptsCreds(opts.servers, creds, MEMBERSHIP_PREFLIGHT_MS)))
+        throw new Error("reloadRwCreds: the broker did not accept the re-signed rw credential; nothing adopted");
+      const { exp, iat } = credsClaims(creds);
+      // Pin EXACTLY the proven bytes for the explicit reconnect so conn B presents the generation the
+      // preflight accepted, then release the pin shortly after so a later manager re-sign is still
+      // picked up by the per-reconnect re-read. Best-effort swap (the proof was the preflight).
+      reloadPin = creds;
+      await connB.reconnect().catch(() => {});
+      setTimeout(() => { if (reloadPin === creds) reloadPin = undefined; }, 2_000).unref?.();
       return { identity: rwSelfId, iat, exp };
     },
     async stop() {
