@@ -98,7 +98,12 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
     if (live) forwardOutput(chunk);
     else preReadyBuffer.push(chunk); // hold until the snapshot is replayed, then flush in order
   });
-  const offExit = session.onExit(() => end("process-exit"));
+  // The pty exit surfaces `process-exit` — but DEFERRED until the caller is live if it exits before
+  // the `ready` handshake (a session established over an already-dead, or a just-dying, pty): EPS is
+  // at-most-once, so an `end` frame sent before the caller subscribed to `.out` is lost. goLive sends
+  // the deferred exit AFTER the backlog, so the caller always learns the agent exited.
+  let pendingExit = false;
+  const offExit = session.onExit(() => { if (live) end("process-exit"); else pendingExit = true; });
 
   // The reconstruction handshake: replay the byte-exact backlog snapshot, then flush anything the
   // pty emitted while we built it, then stream live. Subscribing to output BEFORE this (above)
@@ -119,6 +124,9 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
       for (const chunk of preReadyBuffer.splice(0)) forwardOutput(chunk);
       live = true;
     }
+    // The pty exited before we went live (established over a dead/dying pty): surface `process-exit`
+    // NOW, after the backlog reconstruction, so the caller sees the final screen AND the honest end.
+    if (pendingExit) end("process-exit");
   };
 
   const onCallerFrame = (data: unknown): void => {

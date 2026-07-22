@@ -165,6 +165,11 @@ export class PtyRuntime implements Runtime {
           return () => dataSubs.delete(fn);
         },
         onExit: (fn) => {
+          // Already exited (a session attaching over a just-dead pty): fire on the next tick so the
+          // bridge surfaces a `process-exit` end frame instead of a silent zombie. proc.onExit fired
+          // ONCE before this listener existed, so a late subscriber would otherwise never hear it
+          // (waitForExit carries the same already-dead guard).
+          if (!alive) { queueMicrotask(fn); return () => {}; }
           exitSubs.add(fn);
           return () => exitSubs.delete(fn);
         },

@@ -224,6 +224,28 @@ c("the session is still live after the bad resize (not a silent zombie)", plane.
 await ncCaller4.close();
 h4.stop({ graceful: false });
 
+// --------------------------------------------------------------------------------------------
+// Establishing over an ALREADY-DEAD pty (the agent process exited between spawn and attach) must
+// surface `process-exit`, never a zombie: the session's onExit is registered AFTER the pty exited,
+// so the bridge only learns of the death if onExit fires for an already-dead pty (waitForExit does;
+// onExit must too).
+console.log("H. establishing over an already-dead pty surfaces `process-exit` (no zombie)");
+const h5 = createRuntime("pty", "mesh-plane-smoke5").spawn("worker-5", { command: "cat", args: [] }, process.cwd());
+process.kill(h5.pid, "SIGKILL");
+await until(() => h5.status() === "exited");
+const s5 = h5.attach(); // attach over the DEAD pty
+const r5 = await plane.establishAttach({ ...CALLER, uid: "g".repeat(26) }, { name: "worker-5", lifecycleUid: "5".repeat(26) }, s5);
+const ncCaller5: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+let end5: string | undefined;
+const rail5 = openSessionRail({
+  nc: ncCaller5, grant: r5.grant, role: "caller",
+  onData: (data) => { const p = decodeTerminalFrame(data); if (p.k === "end") end5 = p.reason; },
+});
+await ncCaller5.flush();
+rail5.send({ k: "ready" } satisfies TerminalFrame);
+c("a session over an already-dead pty surfaces `process-exit` (never a zombie)", await until(() => end5 === "process-exit"), { end5, status: h5.status() });
+await ncCaller5.close();
+
 plane.endAll("closed");
 h2.stop({ graceful: false });
 await ncPlane.close();
