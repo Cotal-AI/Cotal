@@ -2498,7 +2498,21 @@ export class Manager {
     // unconditional: a half-wired endpoint without the seam must fail loud here, not silently
     // allocate off a pre-snapshot roster.
     await this.ep.waitForPresenceSnapshot();
-    const name = this.uniqueName(identityName);
+    // M6 (P2 item 2 spawn-as-action): a HARD-PINNED name — an imperative `--name`/identity override
+    // or a manifest-declared name (opts.resolved) — that collides with a LIVE/provisioning/reserved
+    // incarnation REFUSES loud at accept, BEFORE any reserve/mint/bind (pin 1), never a silent `-2`
+    // suffix (so an address-by-triple caller's pinned name can't be re-pointed). A PERSONA-DERIVED
+    // base name (no pin) keeps uniqueName's collision numbering, so multi-peer `spawn reviewer` twice
+    // still yields reviewer + reviewer-2. The retiring-hold refuse (~2472) is orthogonal and already fired.
+    const hardPinned = opts.identity !== undefined || opts.resolved !== undefined;
+    let name: string;
+    if (hardPinned) {
+      if (this.agents.has(identityName) || this.reserved.has(identityName))
+        return { ok: false, error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already in use by a live or provisioning incarnation; a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
+      name = identityName;
+    } else {
+      name = this.uniqueName(identityName);
+    }
     this.reserved.add(name);
     // Transcript mirroring (opt-in: `--transcript` / COTAL_TRANSCRIPT_DEFAULT=1) → grant the agent pub
     // on its OWN transcript channel; auth-mode publish is default-deny, so without the grant the mirror's
