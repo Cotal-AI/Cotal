@@ -73,7 +73,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionWriterGrants, epAuthBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionWriterGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
 import { epsSubject } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
@@ -1453,12 +1453,14 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // Every backing stream the provisioner pre-creates — the 5 message streams + the KV buckets (a bucket's
   // backing stream is `KV_<bucket>`). `managerBucket` is now pre-created here too (so the supervisor binds
   // its lease open-only); members/membership/delivery are written by other creds but created at setup here.
-  // The two §13.12 AUTHORITY stores (records + auth) join the list for the STATIC manager's start-time
-  // `ensureAuthorityStores` (Unit B): create-or-verify only — the provisioner holds NO value-write on
-  // either (lifecycle state moves only through the key-pinned `lifecycle-executor` cred).
+  // The §13.12 AUTHORITY stores (records + auth + the P2 item 6 session ledger) join the list for the
+  // STATIC manager's start-time `createEndpointStreams` (a superset of ensureAuthorityStores +
+  // createSessionsStore): create-or-verify only — the provisioner holds NO value-write on any of them
+  // (lifecycle state moves through the key-pinned `lifecycle-executor` cred; session rows through the
+  // scoped `session-writer` cred).
   const buckets = [
     presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
-    recordsBucket, epAuthBucket,
+    recordsBucket, epAuthBucket, sessionsBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.

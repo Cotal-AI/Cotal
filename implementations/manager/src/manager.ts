@@ -66,9 +66,16 @@ import {
   rawDigest,
   inspectCredHealth,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
+  newArtifactSigner,
+  sessionsBucket,
+  SESSION_GRANT_MAX_TTL_MS,
   type LifecycleStateTransport,
   type StaticManagedSlotRow,
+  type SignerAnchor,
 } from "@cotal-ai/core";
+// P2 item 6: the manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
+// standup for `attach`, over a dedicated standing session-writer connection.
+import { ManagerSessionPlane, openSessionLedgerKv } from "./session/index.js";
 // P2 item 1 (1a-serve): the manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
@@ -529,6 +536,20 @@ export class Manager {
    *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
   private goalWriterIdentity?: Identity;
   private goalWriterCreds?: string;
+  /** P2 item 6: the manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
+   *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
+   *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
+  private sessionPlane?: ManagerSessionPlane;
+  /** P2 item 6: the standing session-writer connection + its mutable creds holder (the authenticator
+   *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
+   *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
+  private sessionWriter?: { nc: NatsConnection; creds?: string };
+  /** P2 item 6: the STABLE session-writer identity (auth mode) — minted once at registration
+   *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
+   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
+   *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
+  private sessionWriterIdentity?: Identity;
+  private sessionWriterCreds?: string;
   /** P2 item 2: the acceptance replied for each in-flight goalId this incarnation accepted, so an
    *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple) without
    *  a second spawn. Durable cross-incarnation reconstruction rides the must-5 goal-index; here the
@@ -746,6 +767,10 @@ export class Manager {
     // P2 item 2: stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
+    // P2 item 6: stand up the ONE §13.6 session plane for `attach` — AFTER registration too (it
+    // rides the serve grant's epoch + the family-staged session-writer cred), on its own standing
+    // connection disjoint from both the serve and goal-writer creds.
+    await this.startSessionPlane();
     // P2 item 2 must-5 Q-B: reconcile any accepted-but-unterminal goals inherited from a predecessor
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
@@ -841,6 +866,23 @@ export class Manager {
           }
         } catch (e) {
           console.error(`! goal-writer renewal: ${(e as Error).message} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
+        }
+      }
+      // P2 item 6: the manager is also the session-writer's renewal owner — re-mint the SAME nkey
+      // with a fresh bounded exp AND re-stage its new credId into the §13.1 family, through the
+      // scoped executor. Without this the standing session-writer connection dies at its TTL and
+      // `attach` stops establishing sessions until a restart. The connection's authenticator presents
+      // the refreshed credential on its next (re)connect.
+      if (this.sessionWriter && this.sessionWriterCreds && this.auth) {
+        const sw = this.sessionWriter;
+        try {
+          if (inspectCredHealth(this.sessionWriterCreds).state !== "healthy") {
+            const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionWriter(authKv));
+            this.sessionWriterCreds = fresh;
+            sw.creds = fresh;
+          }
+        } catch (e) {
+          console.error(`! session-writer renewal: ${(e as Error).message} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
         }
       }
     } catch (e) {
@@ -1262,6 +1304,7 @@ export class Manager {
     await this.ep.releaseManagerLease(this.leaseRevision);
     await this.stopServiceServe();
     await this.stopGoalWriter();
+    await this.stopSessionPlane();
     await this.ep.stop();
     await this.attach.stop();
   }
@@ -1296,6 +1339,7 @@ export class Manager {
       } catch { /* best effort */ }
       await this.stopServiceServe();
       await this.stopGoalWriter();
+      await this.stopSessionPlane();
       try { await this.ep.stop(); } catch { /* best effort */ }
       try { await this.attach.stop(); } catch { /* best effort */ }
       process.exit(1);
@@ -1948,6 +1992,10 @@ export class Manager {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle
     this.agents.delete(a.name);
+    // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
+    // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
+    // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
+    this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, "target-despawn");
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
     // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
@@ -3650,6 +3698,9 @@ export class Manager {
     // must-5 (b): the STABLE goal-writer identity — a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), minted here so the run block can family-stage it.
     this.goalWriterIdentity = newIdentity();
+    // P2 item 6: the STABLE session-writer identity — another SIBLING in the SAME §13.1 family, so
+    // the takeover barrier revokes a deposed manager's session-writer alongside its goal-writer.
+    this.sessionWriterIdentity = newIdentity();
     const run = async ({ recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => {
       // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
       // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
@@ -3690,10 +3741,15 @@ export class Manager {
       // authKv (the fence is live), so its credId lands in `epcred.<e>.<iid>` and the takeover
       // barrier revokes it. Open mesh: no mint (no credential system; the goal-writer conn is bare).
       const goalWriterCreds = auth ? await this.mintAndStageGoalWriter(authKv) : undefined;
-      return { grant, creds, goalWriterCreds };
+      // P2 item 6: mint + family-stage the session-writer credential HERE too (same executor, same
+      // fence, same §13.1 family), so takeover revokes a deposed manager's session-writer. Open
+      // mesh: no mint (no credential system; the session plane connection stays bare).
+      const sessionWriterCreds = auth ? await this.mintAndStageSessionWriter(authKv) : undefined;
+      return { grant, creds, goalWriterCreds, sessionWriterCreds };
     };
-    const { grant, creds, goalWriterCreds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
+    const { grant, creds, goalWriterCreds, sessionWriterCreds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
     this.goalWriterCreds = goalWriterCreds;
+    this.sessionWriterCreds = sessionWriterCreds;
     // The serve connection presents the CURRENT credential on every (re)connect (the state object
     // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
     // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
@@ -3812,6 +3868,95 @@ export class Manager {
     if (!gw) return;
     this.goalWriter = undefined;
     try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
+  }
+
+  /** P2 item 6: mint the standing `session-writer` credential and STAGE it into this instance's
+   *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv` — EXACTLY the
+   *  {@link mintAndStageGoalWriter} pattern. The gate is observed FIRST because the session-writer's
+   *  grant is EPOCH-scoped (it serves only this incarnation's serving epoch), so the mint pins the
+   *  gate's processEpoch; a successor incarnation (new epoch) gets a differently-scoped writer and
+   *  the family revoke retires this one. Re-minting the SAME nkey on renewal writes a DISTINCT ledger
+   *  row (per-JWT credentialId digest). */
+  private async mintAndStageSessionWriter(authKv: KV): Promise<string> {
+    const auth = this.auth!;
+    const identity = this.sessionWriterIdentity!;
+    const iid = this.managerLifecycleUid;
+    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const observed = await fence.observe();
+    if (observed === null)
+      throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the session-writer cannot join its §13.1 revocation family`);
+    const creds = await mintCreds(auth, identity, "session-writer", { sessionWriter: { endpoint: MANAGER_ENDPOINT, epoch: observed.processEpoch } });
+    const exp = inspectCredHealth(creds).exp;
+    if (exp === undefined)
+      throw new Error(`the session-writer credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
+    await fence.stage({
+      credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
+      credentialKey: identity.id,
+      holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
+      endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
+      generation: observed.generation, processEpoch: observed.processEpoch,
+      registrationRevision: observed.registrationRevision, nameAuthorityRevision: observed.nameAuthorityRevision,
+    });
+    return creds;
+  }
+
+  /** P2 item 6: stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
+   *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-writer` cred
+   *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionWriter});
+   *  an OPEN mesh uses a bare connection (no credential system to mint from). The connection presents
+   *  the CURRENT credential on every (re)connect, so a half-TTL renewal is adopted without reconnecting.
+   *
+   *  The offer SIGNER is a per-incarnation in-memory keypair: the static collapsed path mints AND
+   *  redeems the offer in one call ({@link ManagerSessionPlane.establishAttach}), so the manager
+   *  self-signs and self-verifies its own §13.6 grants and the keypair never leaves the process — a
+   *  holder never verifies the signature (it presents the grant back over the rail; the broker's
+   *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
+   *  sessions bucket (createEndpointStreams provisioned it at registration). */
+  private async startSessionPlane(): Promise<void> {
+    const identity = this.auth ? this.sessionWriterIdentity! : newIdentity();
+    const enc = new TextEncoder();
+    // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
+    // updates `sw.creds` and the next (re)connect presents the refreshed credential.
+    const sw: { nc: NatsConnection; creds?: string } =
+      { nc: undefined as unknown as NatsConnection, creds: this.auth ? this.sessionWriterCreds : undefined };
+    const nc = await connect({
+      servers: this.servers ?? DEFAULT_SERVER,
+      ...(this.auth ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
+      inboxPrefix: `_INBOX_${identity.id}`,
+      maxReconnectAttempts: -1,
+    });
+    nc.closed().then((err) => { if (err) console.error(`! manager session-writer connection closed: ${err.message}`); });
+    sw.nc = nc;
+    const serveEpoch = this.serviceServe?.grant.epoch;
+    if (serveEpoch === undefined)
+      throw new Error("the manager session plane needs the serve grant epoch; registerManagerService must run first");
+    const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.space));
+    const signer = newArtifactSigner();
+    const keyId = `mgr-sessions-${identity.id.slice(0, 12)}`;
+    const anchor: SignerAnchor = {
+      keyId, publicKey: signer.publicKey, owner: MANAGER_ENDPOINT, roles: ["sessions"],
+      scope: { sessions: [MANAGER_ENDPOINT] }, validFrom: Date.now() - 60_000, validTo: Date.now() + SESSION_GRANT_MAX_TTL_MS,
+    };
+    this.sessionPlane = new ManagerSessionPlane({
+      nc, space: this.space,
+      serving: { instanceId: this.managerLifecycleUid, epoch: serveEpoch },
+      signer: { keyId, keyPair: signer }, resolveAnchor: (id) => (id === keyId ? anchor : undefined),
+      ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
+    });
+    this.sessionWriter = sw;
+    console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${this.auth ? "scoped session-writer cred, §13.1 family-staged" : "open/bare"})`);
+  }
+
+  /** Tear the session plane down (best-effort, both exit paths): end every live bridge with the
+   *  honest `manager-restart` reason (this incarnation is going away; any successor takes a new epoch
+   *  and refuses these grants), then drain the session-writer connection. */
+  private async stopSessionPlane(): Promise<void> {
+    const plane = this.sessionPlane;
+    const sw = this.sessionWriter;
+    this.sessionPlane = undefined;
+    this.sessionWriter = undefined;
+    try { plane?.endAll("manager-restart"); } catch { /* best effort */ }
+    if (sw) { try { await sw.nc.drain(); } catch { try { sw.nc.close(); } catch { /* best effort */ } } }
   }
 
   /** P2 item 2 must-5 Q-B — the boot reconcile: a fresh incarnation (a manager restart takes a NEW
