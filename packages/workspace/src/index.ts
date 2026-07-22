@@ -1,4 +1,5 @@
 export * from "./advisory-lock.js";
+export * from "./extension-mutation.js";
 export * from "./auth-paths.js";
 export * from "./agent-health.js";
 export * from "./bin-path.js";

@@ -6,7 +6,8 @@ name: Windows
 # Lanes:
 #   • required — Windows-specific, BROKER-FREE checks: typecheck + build + unit tests + the seam
 #     smokes (resolver / env-isolation / view / core-boundary / preflight), the `.cmd` launch matrix
-#     (smoke:windows) + control-plane seams, and secret-fs ACL hardening. No nats-server needed.
+#     (smoke:windows), update crash barriers, control-plane seams, and secret-fs ACL hardening.
+#     No nats-server needed.
 #   • smoke    — the protocol/security suite (smoke:ci), round-robin sharded across runners by
 #     bin/smoke/shard.mjs (each smoke spins its own broker; shards are separate runners). REQUIRED.
 #   • soak     — the live-broker soak (continue-on-error, non-blocking): server-resolution +
@@ -52,6 +53,8 @@ jobs:
       # reap) + authenticated control-plane seams. Deterministic, broker-free.
       - name: Windows launch + control-plane matrix (smoke:windows)
         run: pnpm smoke:windows
+      - name: Update crash and npm descendant barriers
+        run: pnpm smoke:update-concurrency
       # Secrets at rest: 0o600/0o700 is a no-op on Windows, so secret files/dirs are locked down via
       # an NTFS ACL (icacls). Asserts the broad inherited access is actually stripped.
       - name: Secrets-at-rest ACL hardening (smoke:secret-fs)

@@ -26,6 +26,7 @@ import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
 import { endpoints } from "./commands/endpoints.js";
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
+import { update, updateFlags } from "./commands/update.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -57,6 +58,14 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "seed: re-seed the built-in connectors even when the stamp is current or a downgrade" },
     ],
     run: ext,
+  },
+  {
+    kind: "command",
+    name: "update",
+    group: "Setup",
+    summary: "reconcile first-party extensions and check for a coherent cotal-ai upgrade",
+    flags: updateFlags,
+    run: update,
   },
   {
     kind: "command",
@@ -429,6 +438,7 @@ export { runCli } from "./command.js";
 export { c, statusBadge } from "./ui.js";
 // The full spawn grammar, for the composition root's launch-parity smoke (grammar ⊆ start-op ⊆ MCP).
 export { spawnFlags } from "./commands/spawn.js";
+export { updateFlags } from "./commands/update.js";
 // The launch-client timeout + the manifest launch client, for the same smoke: every launch door
 // must outlive the manager's readiness wait (#159 B1).
 export { START_TIMEOUT_MS } from "./lib/control.js";

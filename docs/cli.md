@@ -32,6 +32,7 @@ runtimes ship this way.
 | Area | Command | Purpose |
 |---|---|---|
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
+| Set up & lifecycle | [`update`](#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
 | Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
 | Set up & lifecycle | [`backup`](#backup-and-restore) | Create an offline full-space or registry-only artifact from a preserved cut |
@@ -86,6 +87,37 @@ seeds persona files, and it launches nothing (no mesh, no web, no manager). Firs
 narrated flow; later runs print a status card. By default it seeds one `default` persona; the
 `david`/`sven`/`me` team is opt-in via `--demo`. See [Getting started](getting-started.md) and, for
 maintainers, [setup internals](setup-internals.md).
+
+## update
+
+```bash
+cotal update [--self]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
+
+Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
+binary: it force-reconciles the four built-in connectors, then reinstalls other `@cotal-ai/*`
+operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
+failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
+with `cotal update --self` as the next command, not an automatic install.
+
+With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
+version it validated, resolves and verifies that package in npm's global root, then launches that
+binary to reconcile connectors and first-party extensions to the new generation. An npx or dev-clone
+invocation therefore installs and continues through a separate global copy; it never claims the
+already-running process changed. If the binary is current, `--self` performs the normal local
+reconcile without reinstalling it.
+
+Third-party extensions are listed with their installed version and recorded spec but are not
+auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
+a future follow-up. A failed connector/extension install, npm metadata check, or requested global
+install is reported and makes the command exit nonzero. Independent extension attempts continue so
+the output includes every failure; an unavailable npm registry does not undo a completed local
+reconcile, but the command still exits nonzero because it could not establish that the install is
+current.
 
 ## up
 
