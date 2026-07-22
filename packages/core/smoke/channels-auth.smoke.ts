@@ -28,7 +28,7 @@ const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.te
 
 mkdirSync(storeDir, { recursive: true });
 const auth = await createSpaceAuth(space);
-writeFileSync(conf, serverConfig(auth, { port, storeDir }));
+writeFileSync(conf, serverConfig(auth, [auth], { port, storeDir }));
 const fd = openSync(log, "w");
 const child = spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] });
 process.on("exit", () => child.kill("SIGTERM"));

@@ -91,7 +91,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const space = `mgr-split-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsplit-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 /** Publish `subject` as a request using `creds`. Auth Violation ⇒ DENIED; anything else (JS-API error,

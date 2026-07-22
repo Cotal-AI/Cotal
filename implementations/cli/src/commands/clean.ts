@@ -7,6 +7,8 @@ import {
   MEMBERSHIP_RW_CREDS_KEY,
   acquireMaintenanceLock,
   agentSecretKeysUnder,
+  assertSingleSpaceBroker,
+  authDir,
   cleanupRestoreFallback,
   deleteSpaceAuth,
   localProcessPath,
@@ -51,11 +53,20 @@ export async function clean(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   if (target === "history") return purgeHistory(values);
+
+  // Everything below acts on the SHARED broker, never one space: `store`/`all` delete the single
+  // JetStream store and (for `all`) the broker trust record every account is signed under, and the
+  // restore-recovery verbs roll the broker-wide preserved source back or delete it. None can be
+  // scoped by a space name, so refuse on a multi-space root HERE - before any branch takes a
+  // maintenance lock or touches the preserved source. Guarding only the `store`/`all` path (below)
+  // left `restore-attempt`/`restore-fallback` a broker-wide bypass.
+  const root = cotalRoot();
+  assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);
+
   if (target === "restore-attempt") {
     // The explicit pre-commit recovery action: roll back one exact stale attempt. A live claim
     // (deadline not elapsed, or any recorded owner alive) is always refused.
     if (!values.attempt) throw new Error("clean restore-attempt requires --attempt <id>");
-    const root = cotalRoot();
     const lock = acquireMaintenanceLock(root);
     try {
       const journal = readMaintenanceJournal(root);
@@ -71,7 +82,6 @@ export async function clean(args: ParsedArgs): Promise<void> {
   }
   if (target === "restore-fallback") {
     if (!values.attempt) throw new Error("clean restore-fallback requires --attempt <id>");
-    const root = cotalRoot();
     const lock = acquireMaintenanceLock(root);
     try {
       const record = cleanupRestoreFallback(lock, values.attempt);
@@ -82,7 +92,8 @@ export async function clean(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  const root = cotalRoot();
+  // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide
+  // refusal already ran above, before this branch could take the lock.
   const lock = acquireMaintenanceLock(root);
   let removed: string[];
   try {
@@ -241,18 +252,24 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
     // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
-    // stray) are removed BEFORE auth.json — a locked/immutable stray UNDER `.cotal/auth` throws HERE,
-    // while the namer is still present, so a re-run still resolves THIS space. Removing the whole dir
-    // (auth.json included) in one raw `rm` would strand a wrong-space retry if such a stray survived
-    // after auth.json had already gone.
+    // stray) are removed BEFORE the trust records — a locked/immutable stray UNDER `.cotal/auth`
+    // throws HERE, while the namer is still present, so a re-run still resolves THIS space. Removing
+    // the whole dir (trust records included) in one raw `rm` would strand a wrong-space retry if such
+    // a stray survived after the namer had already gone. The protected set is exactly what
+    // `deleteSpaceAuth` owns: the account record (the space NAMER `resolveSpace` reads), the broker
+    // record, and the legacy monolith.
     const authDirPath = join(root, ".cotal", "auth");
+    const trustRecord = (entry: string) => entry === "auth.json" || entry === "broker.json" || (entry.startsWith("account.") && entry.endsWith(".json"));
     if (existsSync(authDirPath))
       for (const entry of readdirSync(authDirPath))
-        if (entry !== "auth.json") rm(join(authDirPath, entry), `.cotal/auth/${entry}`);
-    // The space-NAMER (`resolveSpace` above reads it) dies ABSOLUTELY LAST, as a single authoritative
-    // op: the store delete is real for a non-FS store, and on the FS composition it removes the file.
-    if (existsSync(join(authDirPath, "auth.json"))) removed.push(".cotal/auth/auth.json (space signer)");
-    await deleteSpaceAuth(secrets);
+        if (!trustRecord(entry)) rm(join(authDirPath, entry), `.cotal/auth/${entry}`);
+    // The trust records — the space-NAMER last among them — die ABSOLUTELY LAST, as a single
+    // authoritative op: the store delete is real for a non-FS store, and on the FS composition it
+    // removes the same files.
+    if (existsSync(authDirPath))
+      for (const entry of readdirSync(authDirPath))
+        if (trustRecord(entry)) removed.push(`.cotal/auth/${entry} (space trust)`);
+    await deleteSpaceAuth(secrets, space);
     rmSync(authDirPath, { recursive: true, force: true }); // drop the now-empty auth dir (nothing lockable left)
   }
   return removed;

@@ -20,7 +20,9 @@ import {
 } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock,
+  assertSingleSpaceBroker,
   assertStoreIdentity,
+  authDir,
   claimMaintenanceReady,
   getSpaceAuth,
   readMaintenanceJournal,
@@ -331,6 +333,10 @@ export async function backup(args: ParsedArgs): Promise<void> {
     throw new Error("usage: cotal backup create <dir> [--only full|registry] [--store-dir <dir>]");
   const selected = selection(values.only);
   const root = cotalRoot();
+  // The artifact snapshots the whole store but commits to ONE space's trust chain
+  // (`cotal-space-auth-root/v1`), so on a multi-space broker it would silently restore as a
+  // single-tenant root. Refuse rather than emit an artifact that cannot describe what it holds.
+  assertSingleSpaceBroker(authDir(root), "cotal backup");
   const live = liveMeshProcesses(root);
   if (live.length) throw new Error(`backup is offline-only; still running: ${live.join(", ")}. Run \`cotal down --preserve-state\` first`);
   const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));
@@ -353,7 +359,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
-    const auth = ready.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root));
+    const auth = ready.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root), ready.space);
     if (ready.mode !== "open" && (!auth || auth.space !== ready.space))
       throw new Error(`backup requires existing trust material for space ${JSON.stringify(ready.space)}`);
     const authority = selected === "full" ? await authorityFingerprint(root, ready.space, ready.mode) : undefined;

@@ -11,10 +11,12 @@ import {
 import {
   authDir,
   findCotalRoot,
+  getSoleSpaceAuth,
   getSpaceAuth,
+  hasUserAuthState,
   readRenewalRecord,
   remintDaemonCreds,
-  userAuthStateDir,
+  spaceAccountPath,
   workspaceSecretStore,
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
@@ -23,6 +25,7 @@ import { c } from "../ui.js";
 
 export const doctorFlags = [
   { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds; needs the local signer)" },
+  { name: "space", type: "string", description: "target space on a multi-space root (default: the sole space)" },
 ] as const;
 
 /** One inspected credential file: where it lives, what the matrix says it is, and how it looks. */
@@ -45,24 +48,34 @@ interface CredReport {
 export async function doctor(args: ParsedArgs): Promise<void> {
   const sub = args.positionals[0];
   if (sub !== "auth") {
-    console.error(`usage: ${displayCmd()} doctor auth [--fix]  - credential-health diagnosis + repair for this folder's mesh`);
+    console.error(`usage: ${displayCmd()} doctor auth [--fix] [--space <s>]  - credential-health diagnosis + repair for this folder's mesh`);
     process.exitCode = 1;
     return;
   }
   const values = args.values as FlagValues<typeof doctorFlags>;
   const root = findCotalRoot(process.cwd());
-  const auth = await getSpaceAuth(workspaceSecretStore(root));
+  const auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root));
 
   console.log(c.bold("cotal doctor auth"));
   console.log(`  root ${root}`);
   if (!auth) {
+    // An explicitly named space that has no record is a selection error, never "healthy" —
+    // falling through to the open-mesh answer would turn a typo into a green diagnosis.
+    if (values.space) {
+      console.error(c.red(`\n✗ no account record for space "${values.space}" under ${authDir(root)} (expected ${spaceAccountPath(authDir(root), values.space)})`));
+      process.exitCode = 1;
+      return;
+    }
     // An open mesh has no minted credentials at all — nothing to diagnose is a healthy answer,
     // not a silent one.
     console.log(c.green("\nauth: healthy - open mesh (no credential material in this folder)"));
     return;
   }
-  const userMode = existsSync(userAuthStateDir(root, auth.space));
-  console.log(`  space ${auth.space}${userMode ? " · user-auth" : ""} · signer ${c.green("present")} (${join(authDir(root), "auth.json")})`);
+  const userMode = hasUserAuthState(root, auth.space);
+  // A legacy monolith root genuinely holds the signer in auth.json until a write splits it.
+  const acctPath = spaceAccountPath(authDir(root), auth.space);
+  const signerPath = existsSync(acctPath) ? acctPath : join(authDir(root), "auth.json");
+  console.log(`  space ${auth.space}${userMode ? " · user-auth" : ""} · signer ${c.green("present")} (${signerPath})`);
 
   let reports = inventory(root);
   let problems = reports.filter((r) => r.problem);

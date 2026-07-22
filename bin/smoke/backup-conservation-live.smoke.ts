@@ -51,7 +51,7 @@ import {
   type MessageMeta,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
 
 const freePort = () => new Promise<number>((resolvePort, reject) => {
   const server = createServer();
@@ -348,7 +348,7 @@ async function conservationScenario(): Promise<void> {
   try {
     must("up", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
     must("seed registry", run("channels", "set", CHANNEL, "--desc", "conserved", "--space", mesh.space));
-    const auth = loadSpaceAuth(authDir(mesh.root));
+    const auth = loadSoleSpaceAuth(authDir(mesh.root));
     assert.ok(auth, "an auth mesh retains its SpaceAuth");
 
     const sampler = await openSampler(mesh, auth);
@@ -449,7 +449,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
   try {
     must("up", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
     must("seed registry", run("channels", "set", CHANNEL, "--desc", "restored", "--space", mesh.space));
-    const auth = loadSpaceAuth(authDir(mesh.root));
+    const auth = loadSoleSpaceAuth(authDir(mesh.root));
     assert.ok(auth, "an auth mesh retains its SpaceAuth");
 
     const sampler = await openSampler(mesh, auth);

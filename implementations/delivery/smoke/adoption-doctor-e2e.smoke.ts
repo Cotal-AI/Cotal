@@ -57,7 +57,7 @@ try {
   const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
 
   const dir = mkdtempSync(join(tmpdir(), "cotal-e2e-doc-"));
-  writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port, storeDir: join(dir, "js") }));
+  writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port, storeDir: join(dir, "js") }));
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); });
   let up = false;

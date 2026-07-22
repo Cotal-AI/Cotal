@@ -89,7 +89,7 @@ the registry; a missing provider or app throws, never silently falls back
 ## From any directory: the mesh registry
 
 `cotal up` records each running mesh in a machine-local registry
-(`~/.cotal/meshes/<space>.json`: broker URL, the project root holding its creds and
+(`~/.cotal/meshes/space.<key>.json`, named by a case-safe hex encoding of the space: broker URL, the project root holding its creds and
 personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory joins the
 running mesh with the right credentials instead of mistaking the cwd for a space:
 

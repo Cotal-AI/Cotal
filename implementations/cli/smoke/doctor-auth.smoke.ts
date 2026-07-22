@@ -20,10 +20,11 @@ import {
   idFromCreds,
   inspectCredHealth,
   mintCreds,
+  mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
 } from "@cotal-ai/core";
-import { saveSpaceAuth } from "@cotal-ai/workspace";
+import { saveSpaceAuth, spaceAccountPath } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
 let pass = 0,
@@ -47,7 +48,7 @@ check("healthy before the 75% renewal point", inspectCredHealth(bounded, now + 6
 check("near-expiry past the 75% renewal point", inspectCredHealth(bounded, now + 80).state === "near-expiry");
 check("expired at/after exp", inspectCredHealth(bounded, now + 100).state === "expired");
 check("renewAt is 75% of the iat→exp lifetime", Math.abs(inspectCredHealth(bounded, now).renewAt! - (now + 75)) <= 2, inspectCredHealth(bounded, now));
-const unbounded = await mintCreds(auth, newIdentity(), "agent");
+const unbounded = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
 check("unbounded when the JWT has no exp", inspectCredHealth(unbounded, now).state === "unbounded");
 check("unreadable on garbage (reported, not thrown)", inspectCredHealth("not a creds file", now).state === "unreadable");
 
@@ -61,7 +62,7 @@ const dlvId = newIdentity();
 writeFileSync(join(root, ".cotal", "delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
 // membership-rw: UNBOUNDED standing cred (pre-slice-5 mint shape) — a problem.
 const rwId = newIdentity();
-writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth, rwId, "agent"), { mode: 0o600 });
+writeFileSync(join(root, ".cotal", "membership-rw.creds"), await mintCreds(auth, rwId, "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
 // $SYS observer: healthy (bounded 30d at mint). connection-evictor deliberately MISSING (a note).
 writeFileSync(join(root, ".cotal", "membership-observer.creds"), sysObserver, { mode: 0o600 });
 // A static agent cred: unbounded is EXPECTED pre-flip — never a problem.
@@ -105,8 +106,8 @@ try {
   // explicit daemon adoption renders as "not requested" (backstop applies), never "nothing
   // re-signed" (the slice-6 UX-review catch).
   check(
-    "--fix renewal record says adoption was not requested, not 'nothing re-signed'",
-    fixed.out.includes("adoption not requested") && !fixed.out.includes("nothing re-signed"),
+    "--fix renewal record says the daemon reload was not requested, not 'nothing re-signed'",
+    fixed.out.includes("daemon reload not requested by this pass") && !fixed.out.includes("nothing re-signed"),
     fixed.out,
   );
   const dlvAfter = readFileSync(join(root, ".cotal", "delivery.creds"), "utf8");
@@ -126,6 +127,29 @@ try {
     return { out: lines.join("\n"), code };
   })();
   check("`doctor` without `auth` is a loud usage error", wrongSub.code === 1 && wrongSub.out.includes("doctor auth"), wrongSub);
+
+  // The signer line must name the record that actually holds the signer — the split account file
+  // on a split root, never the removed monolith path.
+  check(
+    "signer line names the split account file, not auth.json",
+    first.out.includes(spaceAccountPath(join(root, ".cotal", "auth"), "doctor-smoke")) && !first.out.includes("auth.json"),
+    first.out,
+  );
+  // An explicitly named tenant diagnoses exactly like the sole-space default (healthy here,
+  // since --fix already repaired the staged problems by this point).
+  const explicitSpace = await runDoctor({ space: "doctor-smoke" });
+  check(
+    "explicit --space <tenant> diagnoses it",
+    explicitSpace.code === undefined && explicitSpace.out.includes("space doctor-smoke") && explicitSpace.out.includes("auth: healthy"),
+    explicitSpace,
+  );
+  // A selection error must never read as a healthy open mesh.
+  const unknownSpace = await runDoctor({ space: "nope" });
+  check(
+    "explicit unknown --space fails loud, never 'healthy'",
+    unknownSpace.code === 1 && !unknownSpace.out.includes("healthy") && unknownSpace.out.includes("no account record"),
+    unknownSpace,
+  );
 
   console.log(fail === 0 ? `\nDOCTOR-AUTH SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDOCTOR-AUTH SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = fail === 0 ? 0 : 1;

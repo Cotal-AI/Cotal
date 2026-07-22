@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSpaceAuth, identityFromCreds, mintCreds, mintLifecycleUid, newIdentity, stripSpaceAuth, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, deleteSpaceAuth, getSpaceAuth, loadSpaceAuth, putSpaceAuth, saveSpaceAuth, SPACE_AUTH_KEY } from "../src/auth-paths.js";
+import { authDir, BROKER_AUTH_KEY, brokerAuthPath, deleteSpaceAuth, getSpaceAuth, loadSpaceAuth, putSpaceAuth, saveSpaceAuth, SPACE_AUTH_KEY, spaceAccountKey, spaceAccountPath } from "../src/auth-paths.js";
 import { workspaceSecretStore } from "../src/secret-store-fs.js";
 import { DELIVERY_CREDS_KEY, remintDaemonCreds } from "../src/renewal.js";
 
@@ -61,19 +61,20 @@ const space = "seam-space";
 const auth = await createSpaceAuth(space);
 const root = mkdtempSync(join(tmpdir(), "cotal-spaceauth-store-")); // an EMPTY workspace root — no .cotal/auth
 const authJson = join(authDir(root), "auth.json");
+const signerOnDisk = () => existsSync(authJson) || existsSync(brokerAuthPath(authDir(root))) || existsSync(spaceAccountPath(authDir(root), space));
 try {
   const mem = new MemStore();
 
   // ---- 1. put/get + strip + byte-for-byte local parity ----
-  check("nothing on disk to begin with", !existsSync(authJson));
+  check("nothing on disk to begin with", !signerOnDisk());
   await putSpaceAuth(mem, auth);
-  check("the bundle landed in the injected store (not on disk)", mem.map.has(SPACE_AUTH_KEY) && !existsSync(authJson));
+  check("the trust records landed in the injected store (not on disk)", mem.map.has(BROKER_AUTH_KEY) && mem.map.has(spaceAccountKey(space)) && !mem.map.has(SPACE_AUTH_KEY) && !signerOnDisk());
 
-  const storedRaw = mem.map.get(SPACE_AUTH_KEY)!;
-  const stored = JSON.parse(storedRaw) as SpaceAuth;
+  const storedBroker = JSON.parse(mem.map.get(BROKER_AUTH_KEY)!) as SpaceAuth;
+  const storedAccount = JSON.parse(mem.map.get(spaceAccountKey(space))!) as SpaceAuth;
   check("createSpaceAuth carries sys.signingSeed in memory (pre-strip)", auth.sys.signingSeed !== undefined);
-  check("putSpaceAuth STRIPS sys.signingSeed at rest", stored.sys.signingSeed === undefined);
-  check("putSpaceAuth PERSISTS the data-account signingSeed (minting needs it)", typeof stored.account.signingSeed === "string" && stored.account.signingSeed.length > 0);
+  check("putSpaceAuth STRIPS sys.signingSeed at rest (broker record)", storedBroker.sys.signingSeed === undefined);
+  check("putSpaceAuth PERSISTS the data-account signingSeed (minting needs it)", typeof storedAccount.account.signingSeed === "string" && storedAccount.account.signingSeed.length > 0);
 
   const got = await getSpaceAuth(mem, space);
   check("getSpaceAuth returns the stored bundle", got?.space === space && got?.account.signingSeed === auth.account.signingSeed);
@@ -85,16 +86,18 @@ try {
   try {
     await putSpaceAuth(workspaceSecretStore(fsA), auth);
     saveSpaceAuth(authDir(fsB), auth);
-    check("FS store key maps to the canonical .cotal/auth/auth.json", existsSync(join(authDir(fsA), "auth.json")));
-    check("putSpaceAuth (store) == saveSpaceAuth (FS) byte-for-byte",
-      readFileSync(join(authDir(fsA), "auth.json"), "utf8") === readFileSync(join(authDir(fsB), "auth.json"), "utf8"));
+    check("FS store keys map to the canonical split records", existsSync(brokerAuthPath(authDir(fsA))) && existsSync(spaceAccountPath(authDir(fsA), space)));
+    check("putSpaceAuth (store) == saveSpaceAuth (FS) byte-for-byte (broker record)",
+      readFileSync(brokerAuthPath(authDir(fsA)), "utf8") === readFileSync(brokerAuthPath(authDir(fsB)), "utf8"));
+    check("putSpaceAuth (store) == saveSpaceAuth (FS) byte-for-byte (account record)",
+      readFileSync(spaceAccountPath(authDir(fsA), space), "utf8") === readFileSync(spaceAccountPath(authDir(fsB), space), "utf8"));
   } finally {
     rmSync(fsA, { recursive: true, force: true });
     rmSync(fsB, { recursive: true, force: true });
   }
 
   // ---- 2. the manager's signer source: mint from the injected store, NOT the disk ----
-  check("the disk signer is genuinely absent (loadSpaceAuth undefined)", loadSpaceAuth(authDir(root)) === undefined);
+  check("the disk signer is genuinely absent (loadSpaceAuth undefined)", loadSpaceAuth(authDir(root), space) === undefined);
   const signer = (await getSpaceAuth(mem, space))!;
   const supervisor = await mintCreds(signer, newIdentity(), "supervisor");
   const provisioner = await mintCreds(signer, newIdentity(), "provisioner");
@@ -102,7 +105,7 @@ try {
   check("manager mints its SUPERVISOR cred from the injected-store signer", isCreds(supervisor));
   check("manager mints a PROVISIONER cred from the injected-store signer", isCreds(provisioner));
   check("manager mints a per-agent cred from the injected-store signer", isCreds(agent));
-  check("still no auth.json on disk after minting", !existsSync(authJson));
+  check("still no signer on disk after minting", !signerOnDisk());
 
   // ---- 2b. the STRIPPED signer projection (mint --signer / container form) is ACCEPTED ----
   // stripSpaceAuth keeps only space + account.pub + account.signingSeed (blank operator/account JWTs);
@@ -127,7 +130,7 @@ try {
   const resigned = mem.map.get(DELIVERY_CREDS_KEY)!;
   check("the re-signed cred was written back INTO the injected store", isCreds(resigned));
   check("the daemon identity is preserved across the re-sign", identityFromCreds(resigned).id === deliveryId.id);
-  check("renewal NEVER wrote the signer to disk (auth.json still absent)", !existsSync(authJson));
+  check("renewal NEVER wrote the signer to disk (still absent)", !signerOnDisk());
 
   // HIGH-2 regression: a store whose signer is for a DIFFERENT space must NOT re-sign — that would
   // overwrite the last-good daemon cred with one this space's broker rejects (looking freshly
@@ -182,17 +185,17 @@ try {
 
   // ---- 4. full trust-chain validation + non-material errors ----
   const seed = auth.account.signingSeed; // a real seed we must never see leak into an error string
-  await rejects("expected-space mismatch fails loud, names ONLY the expected label (not the stored one)",
-    () => getSpaceAuth(mem, "some-other-space"), "some-other-space", seed);
+  check("a space with no account record on a live broker reads as ABSENT (split store)",
+    (await getSpaceAuth(mem, "some-other-space")) === undefined);
   const corrupt = new MemStore();
   await corrupt.put(SPACE_AUTH_KEY, "{ not json — SEED_LEAK_CANARY");
   await rejects("corrupt store value fails loud without echoing the bytes",
-    () => getSpaceAuth(corrupt), "not valid JSON", "SEED_LEAK_CANARY");
+    () => getSpaceAuth(corrupt, space), "not valid JSON", "SEED_LEAK_CANARY");
   // HIGH-1 A: a bare `{space:"x"}` is NOT a valid bundle — the whole trust chain is validated.
   const shapeless = new MemStore();
   await shapeless.put(SPACE_AUTH_KEY, JSON.stringify({ space: "seam-space" }));
   await rejects("a bare {space} object fails trust-chain validation, is NOT returned as a signer",
-    () => getSpaceAuth(shapeless), "failed trust-chain validation");
+    () => getSpaceAuth(shapeless, "seam-space"), "failed trust-chain validation");
   // HIGH-1 B: a REAL bundle for "seam-space", relabeled `space:"decoy-space"`, must be REJECTED — the
   // label check alone is forgeable; validateSpaceAuth catches it on the operator JWT name binding.
   // The error must also not echo any stored seed.
@@ -212,9 +215,9 @@ try {
     () => getSpaceAuth(canary, "the-expected-space"), "the-expected-space", "STORED_SPACE_LEAK_CANARY");
 
   // ---- delete ----
-  await deleteSpaceAuth(mem);
-  check("deleteSpaceAuth removes the bundle from the store", (await getSpaceAuth(mem)) === undefined);
-  await deleteSpaceAuth(mem); // idempotent
+  await deleteSpaceAuth(mem, space);
+  check("deleteSpaceAuth removes the trust records from the store", (await getSpaceAuth(mem, space)) === undefined);
+  await deleteSpaceAuth(mem, space); // idempotent
   check("deleteSpaceAuth is idempotent", true);
 
   // ---- grep gate (EXECUTABLE): the two hosted-reachable signer owners must read the signer only

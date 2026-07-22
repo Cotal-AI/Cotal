@@ -51,6 +51,7 @@ import {
   provenance,
   resolveMeshTarget,
   serverFlag,
+  spaceAccountPath,
   spaceFlag,
   userAuthStateDir,
   workspaceSecretStore,
@@ -619,7 +620,7 @@ async function provisionUserForeground(
   // The provisioner cred is INFRA (pre-flip static coexistence, like the manager's own creds) —
   // loaded explicitly here for durable pre-creation only, never for the agent's identity.
   const infra = await getSpaceAuth(store, space); // cross-check the bundle names the space we resolved this root for
-  if (!infra) return fail(`space "${space}" has user-auth state but no auth.json under ${authDir(target.root)} - re-run \`cotal up --user-auth\` here`);
+  if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
   const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, name);
   try {
     // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within

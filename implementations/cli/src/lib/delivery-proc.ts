@@ -6,7 +6,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSpaceAuth, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
@@ -39,7 +39,7 @@ export function deliveryUp(): boolean {
 /** True when this folder runs an authed mesh — the only mode with a delivery daemon (Plane-3 needs the
  *  trusted reader; open dev mode is live-only). */
 function hasAuth(): boolean {
-  return Boolean(loadSpaceAuth(authDir(findCotalRoot())));
+  return listSpaceAccounts(authDir(findCotalRoot())).length > 0;
 }
 
 /** True if an OLD (pre-delivery-daemon) Plane-3-hosting manager is live: a `manager.pid` that is alive
@@ -99,7 +99,7 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   // written to disk). The daemon process reads the file and never holds the signer (a container mounts it
   // read-only). A reuse (daemon already up) mints a throwaway probe cred — the running daemon keeps its
   // own creds file.
-  const auth = (await getSpaceAuth(credsStore()))!;
+  const auth = (await getSoleSpaceAuth(credsStore(), authDir(findCotalRoot())))!;
   const id = newIdentity();
   const creds = await mintCreds(auth, id, "delivery");
   const space = o.space ?? resolveSpace(process.cwd());

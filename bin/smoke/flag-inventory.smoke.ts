@@ -41,7 +41,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
   meshes: { flags: [], positionals: false },
   status: { flags: ["server:string", "space:string"], positionals: false },
-  doctor: { flags: ["fix:boolean"], positionals: true },
+  doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
     flags: [

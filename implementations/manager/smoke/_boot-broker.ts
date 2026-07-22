@@ -29,7 +29,7 @@ export async function bootBroker(auth: SpaceAuth): Promise<Broker> {
   const port = await pickFreePort();
   const servers = `nats://127.0.0.1:${port}`;
   const dir = mkdtempSync(join(tmpdir(), "cotal-smoke-broker-"));
-  writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port, storeDir: join(dir, "js") }));
+  writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port, storeDir: join(dir, "js") }));
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   let up = false;
   for (let i = 0; i < 25; i++) {

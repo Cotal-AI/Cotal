@@ -146,7 +146,7 @@ async function evictRevokedPrincipal(space: string, principal: string): Promise<
   const fallback = (why: string) =>
     `live-connection eviction skipped (${why}) - deny-new is committed and the revoke cannot be re-run; the already-open connection ends at its current bearer's expiry. To evict live connections at revoke time, run \`cotal actor revoke\` from the mesh root (local signer + registry).`;
   const root = findCotalRoot();
-  const auth = await getSpaceAuth(workspaceSecretStore(root));
+  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth) return fallback("no local signer here");
   const mesh = loadMeshes().find((m) => m.space === space);
   if (!mesh) return fallback("mesh not in the local registry");

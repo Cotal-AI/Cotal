@@ -40,10 +40,13 @@ import {
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import {
+  assertSingleSpaceBroker,
   assertUserAuthInfo,
   authDir,
-  loadSpaceAuth,
+  getSoleSpaceAuth,
   getSpaceAuth,
+  hasUserAuthState,
+  loadSoleSpaceAuth,
   putSpaceAuth,
   clearCurrent,
   findMesh,
@@ -175,6 +178,9 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
+    // A restore rewrites the shared store and the trust root under it, from an artifact that names
+    // one space (see `cotal backup`) - it cannot leave the root's other tenants standing.
+    assertSingleSpaceBroker(authDir(cotalRoot()), "cotal up --restore");
     const prepared = await prepareRestore(cotalRoot(), values as RestoreFlags);
     pendingRestores.set(prepared.attemptId, prepared);
     const next = {
@@ -819,7 +825,7 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
   if (mode === "open") return {};
-  const auth = await getSpaceAuth(workspaceSecretStore(root));
+  const auth = await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root));
   if (!auth) throw new Error("same-principal resume requires the existing space trust material");
   const identity = newIdentity();
   return {
@@ -1655,8 +1661,8 @@ export async function startMeshDetached(
  *  enforces for static re-ups, applied to the one boot path that skips authSetup entirely. */
 function refuseOpenOverUserState(open: boolean, space: string): void {
   if (!open) return;
+  if (!hasUserAuthState(cotalRoot(), space)) return;
   const stateDir = userAuthStateDir(cotalRoot(), space);
-  if (!existsSync(stateDir)) return;
   throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
 }
 
@@ -1671,7 +1677,7 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
 function ensureRootForSpace(useAuth: boolean, space: string): void {
   if (!useAuth) return;
   const root = cotalRoot();
-  const existing = loadSpaceAuth(authDir(root));
+  const existing = loadSoleSpaceAuth(authDir(root));
   if (!existing || existing.space === space) return;
   const cwd = process.cwd();
   if (root !== cwd) {
@@ -1834,7 +1840,7 @@ async function authSetup(
     await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
-  if (!user && existsSync(stateDir)) {
+  if (!user && hasUserAuthState(cotalRoot(), space)) {
     throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
   }
   let prepared: AuthPrepared | undefined;
@@ -1858,7 +1864,7 @@ async function authSetup(
   }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  writeFileSync(confPath, serverConfig(auth, [auth], { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

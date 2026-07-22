@@ -43,7 +43,7 @@ const root = mkdtempSync(join(tmpdir(), "cotal-ua-root-"));
 
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { chatSubject, isReachable, mintCreds, newIdentity } = await import("@cotal-ai/core");
-const { authDir, loadSpaceAuth, readRenewalRecord, userAuthStateDir } = await import("@cotal-ai/workspace");
+const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir } = await import("@cotal-ai/workspace");
 const { deleteIdpSession, establishIdpSession, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
@@ -134,8 +134,8 @@ try {
   const stateDir = userAuthStateDir(root, SPACE);
   for (const f of ["callout.json", "issuer.json", "owner-secret.json", "idp.json", "service-keys.json", "auth-service.json"])
     check(`space-scoped state exists: ${f}`, existsSync(join(stateDir, f)));
-  check("auth-service pid file is space-scoped", existsSync(join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`)));
-  const meshFile = join(home, "meshes", `${encodeURIComponent(SPACE)}.json`);
+  check("auth-service pid file is space-scoped", existsSync(join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`)));
+  const meshFile = join(home, "meshes", `${spaceSegment(SPACE)}.json`);
   const mesh = JSON.parse(readFileSync(meshFile, "utf8")) as { mode: string; userAuth?: { idp?: { url?: string } } };
   check('mesh recorded mode "user" with the IdP trust pin', mesh.mode === "user" && mesh.userAuth?.idp?.url === base, mesh);
 
@@ -181,7 +181,7 @@ try {
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
 
   // The witness: a directly-minted static admin tap (pre-flip static+user coexist) on the chat wire.
-  const auth = loadSpaceAuth(authDir(root))!;
+  const auth = loadSoleSpaceAuth(authDir(root))!;
   witnessNc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "admin"))) });
   const got: CotalMessage[] = [];
   witnessNc.subscribe(chatSubject(SPACE, "*", "*", "general"), {
@@ -275,7 +275,7 @@ try {
   const sendOldStatic = await cotal(["send", "msg", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: raw `--creds` send is refused on a known user mesh", sendOldStatic.status !== 0 && sendOldStatic.out.includes("per-user-auth"), sendOldStatic.out);
   // Crash the daemon (SIGKILL — no clean exit, so its stale discovery file survives too).
-  const svcPidPath = join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`);
+  const svcPidPath = join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`);
   const svcPid = Number(readFileSync(svcPidPath, "utf8").trim());
   process.kill(svcPid, "SIGKILL");
   await until(() => { try { process.kill(svcPid, 0); return false; } catch { return true; } });
@@ -292,7 +292,7 @@ try {
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
   const down = await cotal(["down"]);
   check("down exits 0 and stops the user-auth service", down.status === 0 && down.out.includes("user-auth service"), down.out);
-  check("auth-service pid file is gone", !existsSync(join(root, ".cotal", `auth-service.${encodeURIComponent(SPACE)}.pid`)));
+  check("auth-service pid file is gone", !existsSync(join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`)));
   let brokerGone = false;
   for (let i = 0; i < 30 && !brokerGone; i++) { brokerGone = !(await isReachable(SERVER)); if (!brokerGone) await wait(200); }
   check("broker is gone", brokerGone);

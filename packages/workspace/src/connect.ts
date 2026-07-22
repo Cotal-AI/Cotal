@@ -12,7 +12,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { c } from "./colors.js";
-import { findCotalRoot, userAuthStateDir } from "./auth-paths.js";
+import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, getCurrent, removeMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
@@ -159,7 +159,7 @@ function principalFromBearer(bearer: string): { owner: string; actor: string } {
 export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: string | undefined, what: string): void {
   const recorded = findMesh(space);
   const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
-  const knownLocalUser = existsSync(userAuthStateDir(findCotalRoot(), space));
+  const knownLocalUser = hasUserAuthState(findCotalRoot(), space);
   if (!knownRecordedUser && !knownLocalUser) return;
   console.error(
     c.red(
@@ -205,7 +205,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
     // for that very space even when the registry lost (or never had) the entry — treating it as an
     // open broker would credless-connect into a callout denial whose copy sends the operator
     // port-hunting. Name the real state and the recovery instead.
-    if (existsSync(userAuthStateDir(findCotalRoot(), flags.space))) {
+    if (hasUserAuthState(findCotalRoot(), flags.space)) {
       console.error(
         c.red(
           `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,

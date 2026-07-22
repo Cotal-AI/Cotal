@@ -11,12 +11,14 @@ import { createSpaceAuth, mintCreds, newIdentity, probeConnect, rotateSystemAcco
 import {
   acquireMaintenanceLock,
   authDir,
-  loadSpaceAuth,
+  brokerAuthPath,
+  loadSoleSpaceAuth,
   prepareAlternateRestore,
   readMaintenanceJournal,
   releaseMaintenanceLock,
   rollbackRestore,
   saveSpaceAuth,
+  spaceAccountPath,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
 import {
@@ -93,7 +95,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(ready.state, "ready");
 
     if (mode === "auth") {
-      const auth = loadSpaceAuth(authDir(root));
+      const auth = loadSoleSpaceAuth(authDir(root));
       assert.ok(auth, "static scenario retained its SpaceAuth");
       const clone = createAttemptClone(root, join(root, ".cotal", "nats"), `isolation-${Date.now()}`);
       const broker = await startIsolatedBroker({
@@ -137,10 +139,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.ok(originalCheckpoints.length >= 3, "authenticated backup captured Plane-3 and TASK checkpoints");
       assert.ok(originalCheckpoints.some((checkpoint) => checkpoint.stream === taskStream(space) && checkpoint.name === "svc_reviewer"));
 
-      const authPath = join(root, ".cotal", "auth", "auth.json");
+      const authPath = spaceAccountPath(authDir(root), space);
+      const brokerPath = brokerAuthPath(authDir(root));
       const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const attemptsPath = join(root, ".cotal", "maintenance", "attempts");
       const originalAuthText = readFileSync(authPath, "utf8");
+      const originalBrokerText = readFileSync(brokerPath, "utf8");
       const originalAuth = JSON.parse(originalAuthText) as Record<string, any>;
       const foreignAuth = await createSpaceAuth(`${space}_foreign`);
       const journalBefore = readFileSync(journalPath, "utf8");
@@ -150,12 +154,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const malformed: Array<[string, (auth: Record<string, any>) => void, RegExp]> = [
         ["public nkey", (auth) => { auth.account.pub = "not-an-account-key"; }, /invalid encoded key|valid account public nkey/],
         ["seed mismatch", (auth) => { auth.account.seed = auth.account.signingSeed; }, /account\.seed does not match account\.pub/],
-        ["JWT", (auth) => { auth.account.jwt = "not-a-jwt"; }, /currently valid signed NATS JWT/],
+        ["JWT", (auth) => { auth.account.jwt = "not-a-jwt"; }, /invalid jwt/],
         ["untrusted signer", (auth) => {
           auth.account.signingSeed = foreignAuth.account.signingSeed;
           auth.account.signingPub = foreignAuth.account.signingPub;
         }, /active account signing key is not trusted/],
-        ["wrong space", (auth) => { auth.space = `${space}_wrong`; }, /does not match expected space/],
+        ["wrong space", (auth) => { auth.space = `${space}_wrong`; }, /tenant list is not fully readable/],
       ];
       try {
         for (const [label, corrupt, expected] of malformed) {
@@ -178,7 +182,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         writeFileSync(authPath, originalAuthText);
       }
 
-      const validBeforeDrift = loadSpaceAuth(authDir(root));
+      const validBeforeDrift = loadSoleSpaceAuth(authDir(root));
       assert.ok(validBeforeDrift);
       const rotatedSystem = await rotateSystemAccount(validBeforeDrift);
       assert.equal(rotatedSystem.account.pub, validBeforeDrift.account.pub);
@@ -190,7 +194,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const sourceAfterDrift = lstatSync(join(root, ".cotal", "nats"), { bigint: true });
       assert.equal(sourceAfterDrift.dev, sourceBefore.dev);
       assert.equal(sourceAfterDrift.ino, sourceBefore.ino);
+      // The rotation at :186 rewrote broker.json (new system account); the split persists trust as
+      // broker.json + account.<hex>.json, so restoring only the account file would leave the drifted
+      // system account in place and pre-empt the state-drift case below with an authority-fingerprint
+      // refusal. Restore both halves to the pre-rotation trust.
       writeFileSync(authPath, originalAuthText);
+      writeFileSync(brokerPath, originalBrokerText);
 
       const stateDriftArtifact = join(root, "state-drift-backup");
       cpSync(artifact, stateDriftArtifact, { recursive: true });

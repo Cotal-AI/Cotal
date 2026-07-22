@@ -60,6 +60,20 @@ function claims<T>(jwt: string, field: string): ReturnType<typeof decode<T>> {
   }
 }
 
+/** The `iat` (issued-at, seconds) a NATS JWT carries — the monotonic generation marker persistence
+ *  uses to refuse rolling a trust record BACK to an older issue of the same authority (e.g. a stale
+ *  pre-rotation system account). Read-only; fails loud on anything that does not decode as a NATS
+ *  JWT with a sane `iat`, because a generation that cannot be read makes staleness undecidable. */
+export function jwtIssuedAt(jwt: string): number {
+  try {
+    const decoded = decode(jwt);
+    if (!Number.isSafeInteger(decoded.iat) || decoded.iat < 0) throw new Error();
+    return decoded.iat;
+  } catch {
+    throw new Error("jwtIssuedAt: not a decodable NATS JWT with a valid iat");
+  }
+}
+
 /**
  * Validate an existing full space trust bundle before a restore or other state mutation.
  *

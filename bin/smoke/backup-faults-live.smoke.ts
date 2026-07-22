@@ -15,7 +15,7 @@ import {
   spaceBackupInventory,
   type SpaceBackupSelection,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
 import { BACKUP_MANIFEST_FORMAT, type BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 
 const freePort = () => new Promise<number>((resolvePort, reject) => {
@@ -160,7 +160,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
     must("seed TASK durable", spawnSync(tsx, [taskSeedPath, root, server, space, "reviewer"], {
       cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
     }));
-    const auth = loadSpaceAuth(authDir(root));
+    const auth = loadSoleSpaceAuth(authDir(root));
     assert.ok(auth, "authenticated scenario has SpaceAuth");
     // Real messages on a message-class stream: without them the post-replay count comparison below
     // would be a vacuous 0 === 0 and could not witness a duplicated restore.

@@ -51,7 +51,7 @@ const EP = "jobsrv", EP2 = "mgrjob", POOL_A = "pa", POOL_B = "pb";
 const enc = new TextEncoder();
 const tmp = mkdtempSync(join(tmpdir(), "cotal-rclean-"));
 const auth = await createSpaceAuth(SPACE);
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const quiet = () => {};

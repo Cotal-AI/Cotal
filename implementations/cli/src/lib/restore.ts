@@ -613,7 +613,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
       journal = rollbackRestore(lock);
     }
     if (!journal || journal.state !== "ready") throw new Error(`restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`);
-    const auth = journal.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root));
+    const auth = journal.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root), journal.space);
     if (journal.mode !== "open") validateSpaceAuth(auth, journal.space);
     // Compute user-provider continuity before staging too. The later manifest comparison reuses this
     // value, so malformed trust cannot create an attempt target or move the preserved source first.

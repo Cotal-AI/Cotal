@@ -392,7 +392,7 @@ registry.register(
   };
   writeFileSync(join(sandbox, ".cotal", "manager.pid"), "");
   const invalidPid = cotal(["down", "manager"]);
-  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /invalid pidfile/.test(invalidPid.stdout) && !existsSync(join(sandbox, ".cotal", "manager.pid")), invalidPid.stdout + invalidPid.stderr);
+  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(join(sandbox, ".cotal", "manager.pid")), invalidPid.stdout + invalidPid.stderr);
 
   const reservationOwner = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), `removing:${reservationOwner}`);

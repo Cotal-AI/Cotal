@@ -153,7 +153,7 @@ try {
     const currentPath = join(home, "current-mesh");
     writeFileSync(shadowPath, JSON.stringify({ space: "aaa-shadow", server, root, mode: "open", ts: new Date().toISOString() }), { mode: 0o600 });
     writeFileSync(currentPath, SPACE, { mode: 0o600 });
-    ok("canonical-target fixture is isolated and ambiguous", existsSync(join(home, "meshes", `${SPACE}.json`)) && existsSync(shadowPath) && readFileSync(currentPath, "utf8") === SPACE);
+    ok("canonical-target fixture is isolated and ambiguous", existsSync(join(home, "meshes", `space.${Buffer.from(SPACE, "utf8").toString("hex")}.json`)) && existsSync(shadowPath) && readFileSync(currentPath, "utf8") === SPACE);
     const detached = cotalAt(sandbox, ["web", "--detach", "--port", String(WEB_PORT), "--no-open"]);
     ok("implicit detached launch from outside the root exits only after HTTP readiness", detached.status === 0 && /web dashboard ready/.test(detached.stdout), detached.stdout + detached.stderr);
     const webPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
