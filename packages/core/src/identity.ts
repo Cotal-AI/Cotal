@@ -24,6 +24,32 @@ export function newIdentity(): Identity {
   return { id: kp.getPublicKey(), seed };
 }
 
+/** The signing half an authority-bearing artifact needs: `signArtifact` / `mintSessionGrant`
+ *  take exactly `{ sign(input): Uint8Array }`, and the matching `publicKey` is what the
+ *  verifying anchor pins. An nkey KeyPair already satisfies both; this narrows it to the
+ *  artifact surface so a consumer that must not depend on `@nats-io/nkeys` directly (an
+ *  `implementations/*` package) can still sign — core owns the signing primitive. */
+export interface ArtifactSigner {
+  /** The signer's nkey public key (`U…`) — the `SignerAnchor.publicKey` a verifier resolves. */
+  publicKey: string;
+  /** Ed25519 signature over an artifact's canonical signature input. */
+  sign(input: Uint8Array): Uint8Array;
+}
+
+/** Build an artifact signer from an existing nkey seed (e.g. an endpoint's own key material).
+ *  The seed never leaves the process; only signatures + the public key do. */
+export function artifactSignerFromSeed(seed: string): ArtifactSigner {
+  const kp = fromSeed(new TextEncoder().encode(seed));
+  return { publicKey: kp.getPublicKey(), sign: (input) => kp.sign(input) };
+}
+
+/** A fresh artifact signer (its own keypair + seed): for a self-signing endpoint that mints its
+ *  own session grants and registers the matching public key as its `sessions` trust anchor. */
+export function newArtifactSigner(): ArtifactSigner & { seed: string } {
+  const { seed } = newIdentity();
+  return { ...artifactSignerFromSeed(seed), seed };
+}
+
 /** The stable id carried by a creds file: the agent's nkey public key. Derived from the
  *  seed block (format-independent) and cross-checked against the JWT subject — a mismatch
  *  means a corrupt or spliced creds file (a seed paired with someone else's JWT), which
