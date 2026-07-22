@@ -1,4 +1,5 @@
 ---
+"@cotal-ai/core": minor
 "@cotal-ai/workspace": minor
 "@cotal-ai/manager": patch
 "@cotal-ai/cli": patch

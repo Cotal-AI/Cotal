@@ -618,8 +618,13 @@ export class Manager {
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
       // `this.space` gates cross-space signer swaps: a store whose signer is for another space must
-      // not re-sign (it would overwrite the last-good daemon cred with one this broker rejects).
-      const results = await remintDaemonCreds(this.workspaceRoot, this.secrets, this.space);
+      // not re-sign (it would overwrite the last-good daemon cred with one this broker rejects). The
+      // `preflight` proves broker acceptance before overwriting from a STRIPPED signer (the container
+      // form, whose account is not chain-bound to the space) — a wrong-account signer's cred is refused
+      // here, never clobbering the last-good; a FULL bundle skips it (account-bound by its JWT chain).
+      const results = await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
+        preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
+      });
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {

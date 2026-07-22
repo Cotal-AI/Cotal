@@ -129,19 +129,25 @@ import { runDelivery } from "@cotal-ai/delivery";
 await runDelivery({ values: { space, server: brokerUrl }, positionals: [], raw: [] }, store);
 ```
 
-That renewal is a **signer** operation, not the delivery daemon's: `remintDaemonCreds(root, store)`
-(`@cotal-ai/workspace`) reads the full `SpaceAuth` signer **through the same resolved `store`**
-(`getSpaceAuth(store ?? workspaceSecretStore(root))`, key `auth/auth.json`) and re-signs the daemon
-creds (`delivery.creds` and the membership feed's `membership-rw.creds`) back into that store — so the
-injected `store` is BOTH the signer source AND the cred destination, never a split. The reference
-`Manager` runs it on a schedule against its **own** `secretStore` (see below), so passing the manager
-and the delivery daemon the *same* store closes the renewal loop end-to-end on an injected backend:
-the manager reads the signer from the store, re-signs into it, and the daemon adopts each generation
-on a preflight-proven 75% timer. It never throws: it returns per-file results (`skipped: "no-auth"`
-when the store holds no signer under `auth/auth.json`), so the caller must check them or the cred
-still rides to expiry; a malformed stored bundle does still throw from that signer read. A composition
-whose signer lives in KMS/Vault simply injects that store — no bespoke renewal needed — and a
-`--creds` file path must be replaced atomically before the 75% read. The remaining hosted gap is no
+That renewal is a **signer** operation, not the delivery daemon's:
+`remintDaemonCreds(root, space, store?, { preflight? })` (`@cotal-ai/workspace`) reads the `SpaceAuth`
+signer **through the same resolved `store`** (`getSpaceAuth(store ?? workspaceSecretStore(root), space)`,
+key `auth/auth.json`) and re-signs the daemon creds (`delivery.creds` and the membership feed's
+`membership-rw.creds`) back into that store — so the injected `store` is BOTH the signer source AND the
+cred destination, never a split. `space` is **required** and validated against the store's signer, so a
+store swapped to a different space cannot re-sign over the wrong broker's creds. When the signer is the
+**stripped projection** (the `mint --signer`/container form, whose account is not chain-bound to the
+space), `preflight` — a "does the broker accept this cred" proof the caller owns (the reference
+`Manager` passes a `probeConnect` over its `servers`) — is REQUIRED before an overwrite: a wrong-account
+signer's cred is refused, never clobbering the last-good. A full bundle is account-bound by its JWT
+chain and re-signs directly. The reference `Manager` runs it on a schedule against its **own**
+`secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
+renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
+into it, and the daemon adopts each generation on a preflight-proven 75% timer. It never throws: it
+returns per-file results (`skipped: "no-auth"` when the store holds no signer under `auth/auth.json`),
+so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
+KMS/Vault simply injects that store — no bespoke renewal needed — and a `--creds` file path must be
+replaced atomically before the 75% read. The remaining hosted gap is no
 longer signer custody (the signer IS injectable behind the store seam); it is signer **isolation** —
 the seed is still decrypted in-process at the manager's uid (an OS-sandbox / remote-signer concern).
 

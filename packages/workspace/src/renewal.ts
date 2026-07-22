@@ -62,17 +62,33 @@ export interface RemintResult {
  *  so a hosted composition re-signs into the store the daemon renews from, never a divergent one; no
  *  store means the local workspace FS composition (keys = the filenames under `.cotal/`).
  *
- *  `expectedSpace` (the caller's known space — the manager's `this.space`, doctor's resolved space)
- *  is REQUIRED to be validated against the store's signer: the daemon creds are SPACE-SCOPED, so a
- *  store whose signer is for a DIFFERENT space (a swap after start, a misconfigured hosted mount)
+ *  `expectedSpace` (the caller's known space — the manager's `this.space`, doctor's resolved space) is
+ *  a REQUIRED positional and is validated against the store's signer: the daemon creds are SPACE-SCOPED,
+ *  so a store whose signer is for a DIFFERENT space (a swap after start, a misconfigured hosted mount)
  *  must NOT re-sign — that would overwrite each last-good cred with one the space's broker rejects,
- *  breaking the daemon on a value that looks freshly renewed. A signer that fails validation fails
- *  EVERY file (`ok:false`), leaving the standing creds intact toward their loud expiry rather than
- *  clobbering them. The store's ATOMIC put is load-bearing here, because the daemons re-read these
- *  values LIVE (the delivery endpoint's 75% source refresh, the membership feed's 75% renewal fetch).
+ *  breaking the daemon on a value that looks freshly renewed. It is required (not optional) so the
+ *  unsafe no-space call cannot compile — the same claim-exceeds-enforcement trap the cross-space fix
+ *  would otherwise leave for the next caller. A signer that fails validation fails EVERY file
+ *  (`ok:false`), leaving the standing creds intact toward their loud expiry rather than clobbering them.
+ *  The store's ATOMIC put is load-bearing here, because the daemons re-read these values LIVE (the
+ *  delivery endpoint's 75% source refresh, the membership feed's 75% renewal fetch).
+ *
+ *  `opts.preflight` is a disposable "does the broker accept this cred" proof (the caller owns the
+ *  broker context — the manager passes a {@link probeConnect} over `this.servers`). It is REQUIRED to
+ *  overwrite from a STRIPPED signer projection ({@link stripSpaceAuth} — the `mint --signer`/container
+ *  form): a stripped signer has no operator JWT to bind its account to the space, so a wrong-account
+ *  signer with the right label would otherwise mint a broker-rejected cred and CLOBBER the last-good
+ *  daemon cred (availability loss). No preflight ⇒ refuse. A FULL bundle is account-bound by its
+ *  validated JWT chain, so it re-signs directly (the local FS + operator paths, no network).
+ *
  *  Structured per-file results, never throws: a failed remint leaves the old cred running toward its
  *  loud expiry and the caller records/reports the failure. */
-export async function remintDaemonCreds(root: string, store?: SecretStore, expectedSpace?: string): Promise<RemintResult[]> {
+export async function remintDaemonCreds(
+  root: string,
+  expectedSpace: string,
+  store?: SecretStore,
+  opts?: { preflight?: (creds: string) => Promise<boolean> },
+): Promise<RemintResult[]> {
   const s = store ?? workspaceSecretStore(root);
   // Read + FULLY VALIDATE the SIGNER through the SAME store the daemon creds live in (symmetric with
   // the daemon's `runDelivery(args, store)`) — reading it from the FS while writing the daemon creds
@@ -87,6 +103,9 @@ export async function remintDaemonCreds(root: string, store?: SecretStore, expec
     return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, error: (e as Error).message }));
   }
   if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
+  // A stripped signer projection has no operator JWT, so its account is not chain-bound to the space;
+  // its re-signed creds must PROVE broker acceptance before overwriting the last-good (see the docstring).
+  const stripped = !auth.operator?.jwt;
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
     try {
@@ -96,6 +115,16 @@ export async function remintDaemonCreds(root: string, store?: SecretStore, expec
         continue;
       }
       const next = await mintCreds(auth, identityFromCreds(current), profile);
+      if (stripped) {
+        if (!opts?.preflight) {
+          results.push({ file, ok: false, error: "a stripped signer cannot re-sign without a broker preflight - its account is not chain-bound to the space" });
+          continue; // fail-safe: never overwrite the last-good from an unprovable stripped signer
+        }
+        if (!(await opts.preflight(next))) {
+          results.push({ file, ok: false, error: "the broker refused the re-signed cred (wrong-account or unreachable signer) - last-good cred preserved" });
+          continue;
+        }
+      }
       await s.put(file, next);
       results.push({ file, ok: true, fingerprint: credsFingerprint(next) });
     } catch (e) {

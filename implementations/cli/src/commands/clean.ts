@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -240,14 +240,20 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
     for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
-    // The space trust bundle (`auth/auth.json`) is the SPACE-NAMER (`resolveSpace` above reads it), so
-    // it dies ABSOLUTELY LAST — after the failure gate AND after every fallible space-dependent removal
-    // above. Any earlier EPERM/lock therefore leaves it present, so a re-run still names THIS space for
-    // the provider deprovision retry rather than falling back to the default. The store delete is
-    // authoritative (real for a non-FS store); the `rm` clears the FS materialization + the rest of
-    // `.cotal/auth` (callout, creds).
+    // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
+    // stray) are removed BEFORE auth.json — a locked/immutable stray UNDER `.cotal/auth` throws HERE,
+    // while the namer is still present, so a re-run still resolves THIS space. Removing the whole dir
+    // (auth.json included) in one raw `rm` would strand a wrong-space retry if such a stray survived
+    // after auth.json had already gone.
+    const authDirPath = join(root, ".cotal", "auth");
+    if (existsSync(authDirPath))
+      for (const entry of readdirSync(authDirPath))
+        if (entry !== "auth.json") rm(join(authDirPath, entry), `.cotal/auth/${entry}`);
+    // The space-NAMER (`resolveSpace` above reads it) dies ABSOLUTELY LAST, as a single authoritative
+    // op: the store delete is real for a non-FS store, and on the FS composition it removes the file.
+    if (existsSync(join(authDirPath, "auth.json"))) removed.push(".cotal/auth/auth.json (space signer)");
     await deleteSpaceAuth(secrets);
-    rm(join(root, ".cotal", "auth"), ".cotal/auth (space identity + creds)");
+    rmSync(authDirPath, { recursive: true, force: true }); // drop the now-empty auth dir (nothing lockable left)
   }
   return removed;
 }

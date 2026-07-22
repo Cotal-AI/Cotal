@@ -9,7 +9,7 @@
  *      creds manager.start() mints (supervisor + provisioner + agent) — while loadSpaceAuth(authDir)
  *      on the FS is undefined, i.e. the signer is NOT sourced from disk. (manager.ts calling that FS
  *      reader is the manager:479 trap the grep gate + this composition proof close.)
- *   3. THE RENEWAL SPLIT-AUTHORITY FIX (renewal:69): remintDaemonCreds(root, injectedStore) re-signs
+ *   3. THE RENEWAL SPLIT-AUTHORITY FIX (renewal:69): remintDaemonCreds(root, space, injectedStore) re-signs
  *      the daemon cred INTO the same store (identity preserved), with auth.json still absent — and
  *      with NO store passed and an empty disk it is `no-auth`, proving the disk is genuinely empty so
  *      only the injected store made the re-sign possible. Before the fix the signer came from FS and
@@ -26,7 +26,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSpaceAuth, identityFromCreds, mintCreds, mintLifecycleUid, newIdentity, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { createSpaceAuth, identityFromCreds, mintCreds, mintLifecycleUid, newIdentity, stripSpaceAuth, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, deleteSpaceAuth, getSpaceAuth, loadSpaceAuth, putSpaceAuth, saveSpaceAuth, SPACE_AUTH_KEY } from "../src/auth-paths.js";
 import { workspaceSecretStore } from "../src/secret-store-fs.js";
 import { DELIVERY_CREDS_KEY, remintDaemonCreds } from "../src/renewal.js";
@@ -104,11 +104,24 @@ try {
   check("manager mints a per-agent cred from the injected-store signer", isCreds(agent));
   check("still no auth.json on disk after minting", !existsSync(authJson));
 
+  // ---- 2b. the STRIPPED signer projection (mint --signer / container form) is ACCEPTED ----
+  // stripSpaceAuth keeps only space + account.pub + account.signingSeed (blank operator/account JWTs);
+  // `cotal mint --signer` writes exactly that and the documented container mounts it at
+  // /workspace/.cotal/auth/auth.json for `supervise`. Full-chain validation would REJECT it — getSpaceAuth
+  // must accept it structurally and let the manager mint from it, or the container manager cannot boot.
+  const stripMem = new MemStore();
+  await stripMem.put(SPACE_AUTH_KEY, JSON.stringify(stripSpaceAuth(auth))); // exactly the mounted signer.json
+  const strippedSigner = await getSpaceAuth(stripMem, space);
+  check("the stripped container signer is ACCEPTED by getSpaceAuth", strippedSigner?.space === space);
+  check("the manager mints a supervisor cred from the stripped signer", isCreds(await mintCreds(strippedSigner!, newIdentity(), "supervisor")));
+  check("the manager mints a per-agent cred from the stripped signer", isCreds(await mintCreds(strippedSigner!, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() })));
+  await rejects("a stripped signer whose label mismatches the caller's space is refused", () => getSpaceAuth(stripMem, "other-space"), "failed trust-chain validation");
+
   // ---- 3. renewal split-authority fix: re-sign INTO the injected store, disk stays empty ----
   const deliveryId = newIdentity();
   const initialDelivery = await mintCreds(auth, deliveryId, "delivery");
   await mem.put(DELIVERY_CREDS_KEY, initialDelivery);
-  const results = await remintDaemonCreds(root, mem); // root's disk is empty; the signer MUST come from `mem`
+  const results = await remintDaemonCreds(root, space, mem); // root's disk is empty; the signer MUST come from `mem`
   const delivery = results.find((r) => r.file === DELIVERY_CREDS_KEY);
   check("remintDaemonCreds re-signed the delivery cred from the injected-store signer", delivery?.ok === true, delivery);
   const resigned = mem.map.get(DELIVERY_CREDS_KEY)!;
@@ -121,16 +134,33 @@ try {
   // renewed). remintDaemonCreds with the WRONG expected space fails every file and leaves the cred
   // byte-for-byte intact.
   const beforeWrong = mem.map.get(DELIVERY_CREDS_KEY)!;
-  const wrongSpace = await remintDaemonCreds(root, mem, "not-this-space");
+  const wrongSpace = await remintDaemonCreds(root, "not-this-space", mem);
   check("cross-space signer is REFUSED (every file ok:false, none re-signed)", wrongSpace.every((r) => r.ok === false));
   check("the last-good delivery cred is NOT overwritten by a wrong-space signer", mem.map.get(DELIVERY_CREDS_KEY) === beforeWrong);
-  // and the RIGHT space still re-signs (proves the gate is on the space, not a blanket refusal)
-  check("the matching space still re-signs", (await remintDaemonCreds(root, mem, space)).find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+  // and the RIGHT space still re-signs (proves the gate is on the space, not a blanket refusal). The
+  // full bundle in `mem` is account-bound by its JWT chain, so it re-signs with NO preflight.
+  check("the matching FULL-bundle signer re-signs (account-bound, no preflight)", (await remintDaemonCreds(root, space, mem)).find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
+
+  // FINDING-6 regression: a STRIPPED signer (mint --signer / container form) has no JWT chain to bind
+  // its account to the space, so a wrong-account signer with the right LABEL would mint a broker-
+  // rejected cred and CLOBBER the last-good. It must PROVE broker acceptance (injected preflight)
+  // before overwriting; no proof ⇒ refuse. Broker-free via a deterministic preflight callback.
+  const stripStore = new MemStore();
+  await stripStore.put(SPACE_AUTH_KEY, JSON.stringify(stripSpaceAuth(auth)));
+  const goodCred = await mintCreds(auth, newIdentity(), "delivery");
+  await stripStore.put(DELIVERY_CREDS_KEY, goodCred);
+  const noPre = await remintDaemonCreds(root, space, stripStore); // no preflight
+  check("stripped signer WITHOUT a preflight refuses to re-sign", noPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false);
+  check("...and does NOT overwrite the last-good cred", stripStore.map.get(DELIVERY_CREDS_KEY) === goodCred);
+  const rejPre = await remintDaemonCreds(root, space, stripStore, { preflight: async () => false }); // broker refuses
+  check("stripped signer whose cred the broker REFUSES does not overwrite the last-good", rejPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === false && stripStore.map.get(DELIVERY_CREDS_KEY) === goodCred);
+  const okPre = await remintDaemonCreds(root, space, stripStore, { preflight: async () => true }); // broker accepts (legit container renewal)
+  check("stripped signer whose cred the broker ACCEPTS re-signs (container renewal works)", okPre.find((r) => r.file === DELIVERY_CREDS_KEY)?.ok === true);
 
   // The negative: with NO store and an empty disk, the signer is genuinely unreachable → no-auth.
   const emptyRoot = mkdtempSync(join(tmpdir(), "cotal-spaceauth-empty-"));
   try {
-    const noAuth = await remintDaemonCreds(emptyRoot); // FS default over an empty root
+    const noAuth = await remintDaemonCreds(emptyRoot, "any-space"); // FS default over an empty root (no signer → no-auth before validation)
     check("no store + empty disk ⇒ no-auth (proves the disk path was truly empty)",
       noAuth.every((r) => r.skipped === "no-auth"), noAuth);
   } finally {
