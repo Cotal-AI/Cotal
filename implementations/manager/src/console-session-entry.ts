@@ -10,7 +10,7 @@
  * listener with the per-session, rails-only credential the loopback face hands it, open the caller
  * rail with the redeemed grant, and drive xterm — the SAME core rail code the manager serves.
  */
-import { wsconnect } from "@nats-io/nats-core";
+import { wsconnect, credsAuthenticator } from "@nats-io/nats-core";
 import {
   openSessionRail,
   encodeTerminalData,
@@ -18,9 +18,12 @@ import {
   decodeTerminalFrame,
 } from "@cotal-ai/core/session-browser";
 
-// A single browser global (no module system in the served console page).
+// A single browser global (no module system in the served console page). `credsAuthenticator` lets
+// the page present the per-session, rails-only caller credential the loopback face minted (static
+// mesh); an open mesh hands empty creds and the page connects bare.
 (globalThis as unknown as { CotalSession: unknown }).CotalSession = {
   wsconnect,
+  credsAuthenticator,
   openSessionRail,
   encodeTerminalData,
   terminalFrameBytes,

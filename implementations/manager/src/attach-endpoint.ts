@@ -18,10 +18,13 @@ const ASSETS: Record<string, { path: string; type: string }> = {
   "/assets/addon-attach.js": { path: require.resolve("@xterm/addon-attach/lib/addon-attach.js"), type: "text/javascript" },
 };
 
-/** Anything the console page needs to render itself, served from this dir. */
+/** Anything the console page needs to render itself, served from this dir. `session-bundle.js` is
+ *  the pre-built (esbuild) mesh §13.6 session client — present only in a built dist, so the page
+ *  falls back to a clear "bundle not loaded" notice when running from source (P2 item 6). */
 const PAGE: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "console/index.html"), type: "text/html" },
   "/app.js": { path: join(here, "console/app.js"), type: "text/javascript" },
+  "/session-bundle.js": { path: join(here, "console/session-bundle.js"), type: "text/javascript" },
 };
 
 /** One Server-Sent-Events frame: a named event carrying JSON data. */

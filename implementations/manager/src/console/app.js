@@ -1,20 +1,17 @@
-// Cotal console client: one xterm pane per managed agent, each wired straight to
-// the manager's attach WebSocket (addon-attach). We discover agents over HTTP
-// (the manager's /agents list, which it cross-references with mesh presence) and
-// stream the actual terminal bytes over the direct socket — never the mesh.
+// Cotal console client (P2 item 6): one xterm pane per managed agent, each wired to the manager
+// over a mesh §13.6 SESSION — never a 127.0.0.1 terminal socket. Per pane we POST /session/<name>
+// (the loopback face mints a holder-bound offer + a per-session, rails-only caller credential),
+// connect to the broker's WebSocket listener with that credential, open the caller rail with the
+// redeemed grant, and drive xterm over the SAME core rail code the manager serves. Agents are
+// discovered over HTTP (/agents, cross-referenced with mesh presence).
 const { Terminal } = window;
 const { FitAddon } = window.FitAddon;
-const { AttachAddon } = window.AttachAddon;
+const S = window.CotalSession; // the served session bundle (wsconnect + core rail + frame codec)
 
 const grid = document.getElementById("grid");
 const empty = document.getElementById("empty");
 const meta = document.getElementById("meta");
-const panes = new Map(); // name -> { el, term, fit, ws, status }
-
-function wsUrl(name) {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}/attach/${encodeURIComponent(name)}`;
-}
+const panes = new Map(); // name -> { el, term, fit, session, status }
 
 function layout() {
   const n = panes.size;
@@ -41,30 +38,64 @@ function addPane(agent) {
   term.loadAddon(fit);
   term.open(el.querySelector(".term"));
 
-  const ws = new WebSocket(wsUrl(agent.name));
-  ws.binaryType = "arraybuffer";
-  ws.onopen = () => {
-    term.loadAddon(new AttachAddon(ws));
-    fit.fit();
-    sendResize(ws, term);
-  };
-  // addon-attach forwards keystrokes; resize is our own text frame (r:cols,rows).
-  term.onResize(() => sendResize(ws, term));
-
-  const pane = { el, term, fit, ws, status: agent.status };
+  const pane = { el, term, fit, session: undefined, status: agent.status };
   panes.set(agent.name, pane);
   empty.style.display = "none";
   layout();
+  void openSession(agent.name, pane);
 }
 
-function sendResize(ws, term) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(`r:${term.cols},${term.rows}`);
+// Open the mesh §13.6 session for one pane: POST /session, connect over the broker ws with the
+// per-session cred, open the caller rail with the grant, and bridge it to xterm.
+async function openSession(name, pane) {
+  const { term, fit } = pane;
+  if (!S) { term.write("\r\n[cotal: session bundle not loaded]\r\n"); return; }
+  let est;
+  try {
+    const res = await fetch(`/session/${encodeURIComponent(name)}`, { method: "POST" });
+    if (!res.ok) { term.write(`\r\n[cotal: attach failed (${res.status})]\r\n`); return; }
+    est = await res.json();
+  } catch { term.write("\r\n[cotal: attach request failed]\r\n"); return; }
+  const { grant, wsUrl, creds } = est;
+  let nc;
+  try {
+    nc = await S.wsconnect({
+      servers: wsUrl,
+      ...(creds ? { authenticator: S.credsAuthenticator(new TextEncoder().encode(creds)) } : {}),
+    });
+  } catch { term.write("\r\n[cotal: broker connection failed]\r\n"); return; }
+  if (!panes.has(name)) { void nc.close(); return; } // pane removed while connecting
+
+  const rail = S.openSessionRail({
+    nc,
+    grant,
+    role: "caller",
+    onData: (data) => {
+      let frame;
+      try { frame = S.decodeTerminalFrame(data); } catch { return; }
+      if (frame.k === "data") term.write(S.terminalFrameBytes(frame));
+      else if (frame.k === "end") term.write(`\r\n[cotal: session ended - ${frame.reason}]\r\n`);
+      else if (frame.k === "drop") term.write(`\r\n[cotal: ${frame.bytes} bytes dropped - backpressure]\r\n`);
+    },
+    onClose: () => term.write("\r\n[cotal: session closed]\r\n"),
+    onProtocolError: (reason) => term.write(`\r\n[cotal: session error - ${reason}]\r\n`),
+  });
+
+  // The caller's `out` subscription must be live before the serving side replays (EPS is at-most-
+  // once, no retention). flush() forces the SUB, then send `ready` and go.
+  await nc.flush();
+  try { rail.send({ k: "ready" }); } catch { /* the onProtocolError path surfaces it */ }
+  fit.fit();
+  term.onData((bytes) => { try { rail.send(S.encodeTerminalData(bytes)); } catch { /* keystrokes are low-volume */ } });
+  term.onResize(() => { try { rail.send({ k: "resize", cols: term.cols, rows: term.rows }); } catch { /* advisory */ } });
+  pane.session = { nc, rail };
 }
 
 function removePane(name) {
   const p = panes.get(name);
   if (!p) return;
-  try { p.ws.close(); } catch {}
+  try { p.session?.rail.close(); } catch {}
+  try { void p.session?.nc.close(); } catch {}
   p.term.dispose();
   p.el.remove();
   panes.delete(name);
@@ -90,7 +121,7 @@ async function poll() {
       setStatus(a.name, a.status);
     }
     for (const name of [...panes.keys()]) if (!seen.has(name)) removePane(name);
-  } catch (e) {
+  } catch {
     meta.textContent = "manager unreachable";
   }
 }

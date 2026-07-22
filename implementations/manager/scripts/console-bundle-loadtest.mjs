@@ -33,7 +33,7 @@ try {
 
 const cs = sandbox.CotalSession;
 if (!cs) die("the bundle did not define globalThis.CotalSession");
-for (const fn of ["wsconnect", "openSessionRail", "encodeTerminalData", "decodeTerminalFrame", "terminalFrameBytes"]) {
+for (const fn of ["wsconnect", "credsAuthenticator", "openSessionRail", "encodeTerminalData", "decodeTerminalFrame", "terminalFrameBytes"]) {
   if (typeof cs[fn] !== "function") die(`CotalSession.${fn} is not a function (got ${typeof cs[fn]})`);
 }
 
