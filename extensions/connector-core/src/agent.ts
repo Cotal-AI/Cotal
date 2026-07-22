@@ -700,7 +700,9 @@ export class MeshAgent extends EventEmitter {
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }): Promise<ControlReply> {
     this.assertConnected();
     const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };
-    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS });
+    // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
+    // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
+    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
   }
 
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
@@ -713,7 +715,7 @@ export class MeshAgent extends EventEmitter {
   private async managerInvoke(
     command: string,
     args: Record<string, unknown> | undefined,
-    opts: { target?: EpVerbTarget; deadlineMs?: number } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
   ): Promise<ControlReply> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;

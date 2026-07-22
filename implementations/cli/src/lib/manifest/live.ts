@@ -99,7 +99,9 @@ export async function launchAgent(ep: CotalEndpoint, runId: string, name: string
   // #159 B1: `launch` funnels into the same startAgent readiness wait as `start` — the manager
   // replies only on a real outcome (join / exit / ~30s backstop), so the request must outlive it.
   try {
-    const r = await ep.invokeService("manager", "launch", { runId, name }, { deadlineMs: START_TIMEOUT_MS });
+    // P2 item 2 (2b): launch is an ACTION — follow the acceptance to the terminal so `up -f` /
+    // `spawn -f` still returns on the real outcome (join / exit / ~30s uncertain), UX unchanged.
+    const r = await ep.invokeService("manager", "launch", { runId, name }, { deadlineMs: START_TIMEOUT_MS, follow: true });
     if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "launch failed" };
     return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
   } catch (e) {

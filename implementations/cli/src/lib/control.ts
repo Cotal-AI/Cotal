@@ -3,7 +3,9 @@ import {
   DEV_OWNER,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  GOAL_BEARING_COMMANDS,
   invokeCommand,
+  submitAndFollowGoal,
   mintLifecycleUid,
   newIdentity,
   resolveService,
@@ -152,10 +154,14 @@ async function askManagerEp(
       const { name: _dropped, ...rest } = args ?? {};
       sendArgs = Object.keys(rest).length ? rest : undefined;
     }
-    const r = await invokeCommand(nc, space, service, mapped.command, sendArgs, {
-      ...(target ? { target } : {}),
-      deadlineMs: timeoutMs ?? 10_000,
-    });
+    const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000 };
+    const submit = () => invokeCommand(nc, space, service, mapped.command, sendArgs, invokeOpts);
+    // P2 item 2 (2b): a goal-bearing command (spawn/launch) FOLLOWS its acceptance to the goal
+    // terminal, so `spawn --detach` still returns on the real outcome (join / exit / ~30s uncertain)
+    // exactly like the pre-action blocking reply — UX unchanged, no --no-wait.
+    const r = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command)
+      ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit)
+      : await submit();
     if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
