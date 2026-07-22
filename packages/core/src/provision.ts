@@ -74,7 +74,7 @@ import {
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, epAuthBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
-import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
+import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
 import { credsClaims, type Identity } from "./identity.js";
@@ -1256,9 +1256,36 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "pri
   // privileged (ps/start reads) vs admin (any-mode stop/attach) exactly as the ctl tier did.
   const ep = instrumentEpRows(space, pr, epTier);
   return {
-    pub: { allow: ep.pub },
+    // The PRIVILEGED tier (the `cotal ps` instrument) also carries the SCOPED §13.9 records read the
+    // class scatter's freeze rides (P2 item 3): `freezeExpectedSet` enumerates `svc.<endpoint>.*.spec`
+    // and LEADER-reads each frozen slot's svc spec/status before it scatters `ps` on the `all` rail.
+    // The admin tier (stop/attach) never scatters, so it gets no records read.
+    pub: { allow: epTier === "privileged" ? [...ep.pub, ...scatterFreezeReadRows(space)] : ep.pub },
     sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
   };
+}
+
+/** The SCOPED §13.9 records-read rows the class-scatter freeze rides (P2 item 3, `cotal ps`): the
+ *  `svc.*` enumeration consumer + the leader-served per-slot spec/status read of the endpoint's
+ *  `svc` registry — a READ of exactly the service-registration keys, no write, no other bucket. A
+ *  new D32 matrix row. The keyed Direct Get is subject-PINNED to `svc.>`; the enumeration consumer
+ *  and the leader `STREAM.MSG.GET` are STREAM-scoped because the requested key rides the PAYLOAD
+ *  (which a subject grant cannot narrow) — the SAME NAMED RESIDUAL every records reader already
+ *  accepts (the provisioner, the lifecycle/serve executors): for this EPHEMERAL one-shot instrument's
+ *  lifetime it can READ (never write) any records-store row — registration metadata, no secrets. */
+function scatterFreezeReadRows(space: string): string[] {
+  const REC = recordsBucket(space);
+  return [
+    // `kv.keys("svc.<e>.*.spec")` rides an ordered ephemeral consumer over the records bucket.
+    `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,
+    `$JS.API.CONSUMER.INFO.KV_${REC}.>`,
+    `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,
+    // The per-slot spec/status reads (`freezeExpectedSet` + the registration reconcile) are
+    // leader-served `STREAM.MSG.GET` — stream-scoped (NAMED RESIDUAL above), plus the subject-pinned
+    // keyed Direct Get form for any direct-aware read path (scoped to the `svc.` registry prefix).
+    `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+    `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.svc.>`,
+  ];
 }
 
 /** The v0.4 ep-rail rows of an operator INSTRUMENT credential (the 1c grant-migration table's
@@ -1608,9 +1635,13 @@ function endpointServeExecutorPermissions(
   const gateKey = epgateKey(pin.endpoint, pin.instanceId);
   const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
   // The registration writes this ONE instance's spec key plus the endpoint's governance head
-  // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor).
+  // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor), and this
+  // instance's own svc STATUS key (P2 item 3: the manager writes its CONVERGED `ready` status so it
+  // is a §13.5 scatter member — `freezeExpectedSet` requires a status caught up to the current
+  // registration; the write is epoch-fenced by `writeServiceStatus`).
   const recordKeys = [
     recordSpecKey(RECORD_KINDS.svc, [pin.endpoint, assertLifecycleToken(pin.instanceId, "instanceId")]),
+    recordStatusKey(RECORD_KINDS.svc, [pin.endpoint, assertLifecycleToken(pin.instanceId, "instanceId")]),
     recordAtomicKey(GOVERN_HEAD, [pin.endpoint]),
   ];
   return {

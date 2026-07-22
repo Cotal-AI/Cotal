@@ -230,7 +230,13 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
  *  `ctl.<admin>` is today, and the responder maps mode `any` to its admin authorization path. */
 export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): EpCapability[] {
   const caps: EpCapability[] = [
-    ...MANAGER_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    ...MANAGER_READ_SNAP.map((command) => ({
+      endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+      // `ps` is the CLASS-SCATTER read (P2 item 3, `cotal ps` default): the instrument publishes it
+      // on the `all` scatter rail to gather every instance's rows in a multi-manager space. The
+      // other reads stay `one`-only (anycast, or `inst` when a resolve pins `--on`).
+      ...(command === "ps" ? { routes: ["one", "all"] as ("one" | "all")[] } : {}),
+    })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
   ];

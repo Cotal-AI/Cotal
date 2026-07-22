@@ -18,6 +18,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
@@ -25,10 +26,11 @@ import {
   type ContractStoreContext,
 } from "./endpoint-contract-store.js";
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
-import { epCall } from "./endpoint-verbs.js";
+import { epCall, epScatterService } from "./endpoint-verbs.js";
+import { openRecordsBucket } from "./endpoint-records.js";
 import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
-import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
+import type { EpVerbTarget, EpAttributedReply, EpScatterResult } from "./endpoint-verbs.js";
 
 const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => randomBytes(24).toString("base64url");
@@ -284,6 +286,53 @@ export async function invokeCommand(
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
   }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch ?? describeBound });
+}
+
+/**
+ * SCATTER one untargeted command to the LIVE class (§13.5): resolve the command's contract off the
+ * same digest-verified surface {@link invokeCommand} uses, then run the registry-wired scatter —
+ * freeze the expected set from the records registry, publish ONCE on the `all` rail, gather one
+ * attributed reply per instance, and reconcile registration currency post-classification. The
+ * returned `replies` map is keyed by instanceId (per-instance attribution, SPEC §13.5); a frozen
+ * instance that produced no on-time reply is a `missing` slot — reported UNREACHABLE, never silently
+ * omitted. The caller's connection carries the §13.9 records-read grant the freeze/reconcile ride (a
+ * scoped read of the endpoint's `svc` registry); `jsm`/`kv` are opened over it here.
+ *
+ * A scatter addresses EVERY instance, so a targeted command is refused (a per-instance target is
+ * incoherent with the `all` rail) and a handle PINNED to one instance is refused (a pin is the
+ * anti-scatter — use {@link invokeCommand} for `--on`). "No args" marshals to the contract's
+ * canonical empty form exactly as {@link invokeCommand}.
+ */
+export async function scatterCommand(
+  nc: NatsConnection,
+  space: string,
+  service: ResolvedService,
+  command: string,
+  args: Record<string, unknown> | undefined,
+  opts: { deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number },
+): Promise<EpScatterResult> {
+  const resolved = service.commands.get(command);
+  if (resolved === undefined)
+    throw new EpEnvelopeError("not-found", `command "${command}" is not in ${service.endpoint}'s visible surface; describe lists ${[...service.commands.keys()].sort().join(", ") || "(none)"}`);
+  if (resolved.targeted)
+    throw new EpEnvelopeError("bad-request", `command "${command}" is targeted; a class scatter addresses every instance and cannot carry a per-instance target (SPEC 13.5)`);
+  if (service.pinnedInstanceId !== undefined)
+    throw new EpEnvelopeError("bad-request", `a class scatter cannot run on a handle pinned to instance ${service.pinnedInstanceId}; resolve the service unpinned (a pin is the anti-scatter, SPEC 13.5)`);
+  const caller = service.caller;
+  // Same contract-canonical empty-args marshaling as invokeCommand: absent args ride as {} when the
+  // command's input rejects null but accepts the empty object (e.g. an all-optional object input).
+  let sendArgs = args;
+  if (sendArgs === undefined && !resolved.contract.input.validate(null) && resolved.contract.input.validate({}))
+    sendArgs = {};
+  // `checkAPI: false` so the caller needs NO account `$JS.API.INFO` grant: the freeze's reads are the
+  // scoped records-registry rows (a `svc.*` enumeration consumer + a leader `STREAM.MSG.GET`), never
+  // an account probe. The scatter's grant stays exactly the §13.9 records read.
+  const jsm = await jetstreamManager(nc, { checkAPI: false });
+  const kv = await openRecordsBucket(nc, space);
+  return epScatterService(nc, jsm, kv, space, {
+    endpoint: service.endpoint, command, contract: resolved.contract, caller,
+    ...(sendArgs !== undefined ? { args: sendArgs } : {}),
+  }, opts);
 }
 
 /** A digest reference's bare hex, exported so a CLI can print the resolved surface's digests. */

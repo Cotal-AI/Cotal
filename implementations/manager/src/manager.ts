@@ -79,6 +79,8 @@ import {
   serveIssuanceGateKv,
   registerServiceInstance,
   authorizeServeGrant,
+  writeServiceStatus,
+  SERVICE_READY,
   serveEndpoint,
   bindGoal,
   createGoal,
@@ -3667,7 +3669,7 @@ export class Manager {
         ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line) }) } : {}),
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
-      await registerServiceInstance(recordsKv, {
+      const { registrationRevision } = await registerServiceInstance(recordsKv, {
         space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
       });
       // processEpoch comes from the GATE (checklist 4: never derived from the uid string); the
@@ -3678,6 +3680,21 @@ export class Manager {
       const grant = await authorizeServeGrant(recordsKv, {
         space: this.space, endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
         holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
+        readProcessEpoch: async () => {
+          const g = await fence.observe();
+          if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);
+          return g.processEpoch;
+        },
+      });
+      // P2 item 3 (class scatter): write this instance's CONVERGED svc status so it is a §13.5
+      // scatter member — `freezeExpectedSet` skips any instance whose status is absent or lags the
+      // current registration. Instance-side `ready` at the just-registered spec revision, epoch-fenced
+      // to the gate's processEpoch (the same leader-served reader `authorizeServeGrant` used); on a
+      // restart it CAS-updates the predecessor's status forward (the advanced epoch supersedes the old
+      // one). Key-pinned to this instance's own status key on the SAME executor.
+      await writeServiceStatus(recordsKv, {
+        endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
+        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
         readProcessEpoch: async () => {
           const g = await fence.observe();
           if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);

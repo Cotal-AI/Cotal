@@ -1,7 +1,7 @@
 import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
 import { attachClient, detachKey } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -52,50 +52,95 @@ export async function stop(args: ParsedArgs): Promise<void> {
   console.log(c.dim(`✓ stopped ${v.name}${t.auth.bearer ? " - its actor grant is revoked; a respawn re-grants automatically" : ""}`));
 }
 
+type AgentRow = {
+  name: string;
+  role?: string;
+  agent: string;
+  mode: string;
+  mesh: string;
+  authHealth?: string;
+  authReason?: string;
+};
+
+/** Render one managed-agent row (status + optional auth-health line), indented for the per-manager
+ *  grouping a class scatter prints. */
+function printAgentRow(r: AgentRow, indent = ""): void {
+  const status =
+    r.mesh === "absent"
+      ? c.yellow("starting…")
+      : r.mesh === "offline"
+        ? c.dim("offline")
+        : r.mesh === "working"
+          ? c.green("working")
+          : r.mesh === "waiting"
+            ? c.yellow("waiting")
+            : c.cyan(r.mesh);
+  // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
+  // triages "definitely broken" before "might be".
+  const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
+  console.log(
+    `${indent}${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
+      r.agent + " · " + r.mode,
+    )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
+  );
+  // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
+  // operator-exact sentence, verbatim (it already names the repair).
+  if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
-  // `--on <instance>`: pin ps to one manager instance (P2 item 3 multi-manager). Default = class
-  // anycast (whichever instance answers). A class scatter that merges every instance's rows is a
-  // follow-up on the scatter primitive (freezeExpectedSet); today ps is per-instance / anycast.
-  const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
-  failIfNotOk(reply);
-  const rows =
-    (reply.data as Array<{
-      name: string;
-      role?: string;
-      agent: string;
-      mode: string;
-      mesh: string;
-      authHealth?: string;
-      authReason?: string;
-    }>) ?? [];
-  if (!rows.length) {
-    console.log(c.dim("(no managed agents)"));
+  // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
+  // single-manager view. Default = CLASS SCATTER: merge EVERY registered instance's rows below.
+  if (v.on) {
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
+    failIfNotOk(reply);
+    const rows = (reply.data as AgentRow[]) ?? [];
+    if (!rows.length) {
+      console.log(c.dim("(no managed agents)"));
+      return;
+    }
+    for (const r of rows) printAgentRow(r);
     return;
   }
-  for (const r of rows) {
-    const status =
-      r.mesh === "absent"
-        ? c.yellow("starting…")
-        : r.mesh === "offline"
-          ? c.dim("offline")
-          : r.mesh === "working"
-            ? c.green("working")
-            : r.mesh === "waiting"
-              ? c.yellow("waiting")
-              : c.cyan(r.mesh);
-    // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
-    // triages "definitely broken" before "might be".
-    const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
-    console.log(
-      `${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
-        r.agent + " · " + r.mode,
-      )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
-    );
-    // The detached agent's ONLY operator window into a failing bearer refresh: the provider
-    // command's operator-exact sentence, verbatim (it already names the repair).
-    if (r.authHealth && r.authReason) console.log(authColor(`    ${r.authReason}`));
+
+  // DEFAULT CLASS SCATTER (P2 item 3): freeze the live class from the records registry, scatter `ps`
+  // on the `all` rail, and merge with per-instance attribution. A non-answering instance is labeled
+  // unreachable, NEVER silently omitted (pin 3).
+  const scatter = await scatterManager(t.space, t.server, "ps", t.auth);
+  if (!scatter.ok) {
+    console.error(c.red(`✗ ${scatter.error}`));
+    process.exit(1);
+  }
+  // Stable ordering: reachable instances first, then by instance id.
+  const instances = [...scatter.instances].sort(
+    (a, b) => Number(b.reachable) - Number(a.reachable) || a.instanceId.localeCompare(b.instanceId),
+  );
+  // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
+  if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
+    const rows = (instances[0].data as AgentRow[]) ?? [];
+    if (!rows.length) {
+      console.log(c.dim("(no managed agents)"));
+      return;
+    }
+    for (const r of rows) printAgentRow(r);
+    return;
+  }
+  // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
+  for (const inst of instances) {
+    const label = `manager ${inst.instanceId.slice(0, 8)}`;
+    if (!inst.reachable) {
+      console.log(`${c.bold(label)}  ${c.red("unreachable")}`);
+      continue;
+    }
+    if (inst.error) {
+      console.log(`${c.bold(label)}  ${c.red(inst.error)}`);
+      continue;
+    }
+    const rows = (inst.data as AgentRow[]) ?? [];
+    console.log(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
+    for (const r of rows) printAgentRow(r, "  ");
   }
 }
 
