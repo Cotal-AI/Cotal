@@ -38,7 +38,7 @@ import {
   controlServiceSubject,
 } from "@cotal-ai/core";
 import { agentActorTokenKey, agentAuthState, agentCredsDir, agentCredsKey, agentSecretFilePaths, agentSentinelCredsKey, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, hasUserAuthState, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
+import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, ControlRequest, ControlTier, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -139,6 +139,14 @@ export interface ManagerOptions {
    *  as the published binary does. A library composition leaves this off and resolves only what its
    *  composition root imported — a direct `new Manager()` never implicitly reads the machine manifest. */
   installedExtensions?: boolean;
+  /** The {@link SecretStore} for EVERY secret this manager touches — the daemon-cred renewal write side
+   *  (`remintDaemonCreds`) AND the per-agent standing-secret kinds (static creds / actor tokens /
+   *  sentinel creds). ONE store, so a hosted composition (KMS/Vault) can never end up with the manager
+   *  re-signing daemon creds into one store while it reads/writes agent creds through another (split
+   *  authority). Defaults to the workstation FS store over `workspaceRoot`, so a local `cotal up` is
+   *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`), or a
+   *  hosted remint writes one store while the daemon reads another and rides to expiry. */
+  secretStore?: SecretStore;
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
@@ -362,6 +370,9 @@ export class Manager {
   private readonly servers: string | undefined;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
+   *  See {@link ManagerOptions.secretStore}. */
+  private readonly secrets: SecretStore;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
@@ -442,6 +453,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
@@ -596,13 +608,16 @@ export class Manager {
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
    *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
    *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
-   *  (no responder) is recorded honestly: the daemon's 75% source re-read remains the adoption backstop.
+   *  (no responder) is recorded honestly: each daemon's own 75% renewal timer remains the adoption backstop.
    *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
   private async renewDaemonCreds(): Promise<void> {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
-      const results = await remintDaemonCreds(this.workspaceRoot);
+      // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
+      // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
+      // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
+      const results = await remintDaemonCreds(this.workspaceRoot, this.secrets);
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {
@@ -1498,11 +1513,10 @@ export class Manager {
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
     const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
-    // LOCAL composition, hardcoded: until the manager's entry is store-threaded (the same
-    // later slice as its renewal-owner store, with/after the membership-rw reader migration),
-    // a pure-KMS hosted manager CANNOT read the callout material this grant needs — hosted
-    // user-mode spawn via the manager is UNAVAILABLE, not silently degraded, until then.
-    const secrets = workspaceSecretStore(this.workspaceRoot);
+    // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
+    // user-mode spawn reads the callout material from it — the same store the auth-store kinds
+    // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.
+    const secrets = this.secrets;
     const files = agentSecretFilePaths(this.workspaceRoot, name);
     const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = files;
     try {
@@ -1639,9 +1653,9 @@ export class Manager {
     // departed agent, so it must not survive even if the broker teardown below fails or times out. The
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
     // Migrated kinds: the store delete is the authoritative removal; the rmSync clears the FS
-    // materialization (a byte-identical no-op under the local composition, real once the manager
-    // is store-threaded onto a non-FS store).
-    const secrets = workspaceSecretStore(this.workspaceRoot);
+    // materialization (a byte-identical no-op under the local composition, real once the manager's
+    // `secretStore` is a non-FS store).
+    const secrets = this.secrets;
     const files = agentSecretFilePaths(this.workspaceRoot, a.name);
     await secrets.delete(agentCredsKey(a.name));
     rmSync(files.creds, { force: true });
@@ -2271,9 +2285,9 @@ export class Manager {
           }),
         );
         // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
-        // file path, so the cred must exist as a file regardless of the store behind the seam.
-        // LOCAL composition, hardcoded, same posture as provisionUserAgent's grant store above.
-        const secrets = workspaceSecretStore(this.workspaceRoot);
+        // file path, so the cred must exist as a file regardless of the store behind the seam. The
+        // manager's ONE store (injected for hosted, workstation FS locally).
+        const secrets = this.secrets;
         credsPath = agentSecretFilePaths(this.workspaceRoot, name).creds;
         await secrets.put(agentCredsKey(name), creds);
         await materializeSecretToFile(secrets, agentCredsKey(name), credsPath);
@@ -2513,7 +2527,7 @@ export class Manager {
         // composition resolves the key to this same path).
         const st = lstatSync(expected);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
-        const stored = await workspaceSecretStore(this.workspaceRoot).get(agentCredsKey(entry.name));
+        const stored = await this.secrets.get(agentCredsKey(entry.name));
         if (stored === undefined) throw new Error("the credential is not in the secret store");
         credentialText = stored;
         const actual = idFromCreds(credentialText);
@@ -2538,7 +2552,7 @@ export class Manager {
       if (resolve(entry.identity.actorToken.path) !== resolve(files.actorToken) ||
           resolve(entry.identity.sentinelCredential.path) !== resolve(files.sentinelCreds))
         throw new Error(`retained identity references are not the manager-owned paths under ${agentCredsDir(this.workspaceRoot)}`);
-      const secrets = workspaceSecretStore(this.workspaceRoot);
+      const secrets = this.secrets;
       const actorToken = await secrets.get(agentActorTokenKey(entry.name));
       const sentinelCreds = await secrets.get(agentSentinelCredsKey(entry.name));
       if (actorToken === undefined || sentinelCreds === undefined)

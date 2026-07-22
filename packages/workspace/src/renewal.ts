@@ -14,9 +14,10 @@ import { workspaceSecretStore } from "./secret-store-fs.js";
 /**
  * D5 slice 5 class-2 standing renewal — the RENEWAL OWNER'S half, shared by the manager (the
  * resident owner in every mesh mode) and `cotal doctor auth --fix` (the operator repair). The
- * daemon's half is the explicit `reloadCreds` adoption op on the delivery-admin rail (plus the
- * passive 75% source re-read as backstop). Machine-local file work lives here in the workspace
- * layer: implementations never import each other.
+ * daemon's half is the explicit `reloadCreds` adoption op on the delivery-admin rail, plus each
+ * daemon's own 75% renewal timer (the delivery endpoint re-reads its source; the membership feed
+ * preflight-proves each candidate). Machine-local file work lives here in the workspace layer:
+ * implementations never import each other.
  */
 
 /** The canonical secret-store key of the delivery daemon's scoped cred — by the FS convention the
@@ -56,15 +57,14 @@ export interface RemintResult {
  *  identity — the daemon side pins it). Reads and writes through the secret-store seam; `store` is
  *  the renewal owner's injection point, SYMMETRIC with the daemon's `runDelivery(args, store?)`.
  *  The manager — the D5 standing-renewal owner, and a hosted-path caller (manager.ts calls this
- *  unconditionally) — must pass the SAME store it gives the daemon, or a hosted composition
- *  re-signs into one store while the daemon reads another and rides to expiry. Threading the store
- *  through the manager's entry is its own slice; until it lands, hosted end-to-end renewal on an
- *  injected store is NOT yet wired, and no store means the local workspace FS composition (keys =
- *  the filenames under `.cotal/`). The store's ATOMIC put is load-bearing here, because the daemons
- *  re-read these files LIVE (the delivery endpoint's 75% source backstop, the membership rw
- *  reconnect getter) and the plain `writeSecretFile` this replaced could tear such a concurrent
- *  re-read. Structured per-file results, never throws: a failed remint leaves the old cred running
- *  toward its loud expiry and the caller records/reports the failure. */
+ *  unconditionally) — passes the SAME store it gives the daemon (its `ManagerOptions.secretStore`),
+ *  so a hosted composition re-signs into the store the daemon renews from, never a divergent one; no
+ *  store means the local workspace FS composition (keys = the filenames under `.cotal/`). The store's
+ *  ATOMIC put is load-bearing here, because the daemons re-read these values LIVE (the delivery
+ *  endpoint's 75% source refresh, the membership feed's 75% renewal fetch) and the plain
+ *  `writeSecretFile` this replaced could tear such a concurrent read. Structured per-file results,
+ *  never throws: a failed remint leaves the old cred running toward its loud expiry and the caller
+ *  records/reports the failure. */
 export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
   // The daemon cred files are flat under `.cotal/` (space-independent while one root serves one
   // space), so this path carries no explicit space and must resolve the root's own. `soleSpaceOf`

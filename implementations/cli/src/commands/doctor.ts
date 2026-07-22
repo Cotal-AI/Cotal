@@ -72,14 +72,14 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   // --fix: the one safe local repair — re-sign the remintable daemon files (same nkeys), exactly
   // what the manager's renewal pass does, and record the pass so the audit trail stays honest
   // (adoption is the DAEMON's explicit reload, which only the running manager requests — a doctor
-  // fix without a live manager is adopted by the daemon's 75% re-read backstop). Then re-diagnose:
+  // fix without a live manager is adopted by the daemon's own 75% renewal timer). Then re-diagnose:
   // the doctor reports what IS, never what it hopes the fix did.
   if (values.fix && problems.some((r) => isRemintable(r.kind))) {
     console.log(c.dim("\n--fix: re-signing the remintable daemon creds…"));
     const prior = readRenewalRecord(root);
     const results = await remintDaemonCreds(root);
     // A local re-sign is NOT a broker proof: `--fix` has no live admin rail to adopt through, it
-    // relies on the daemon's 75% re-read backstop. So it must NEVER erase a KNOWN broker refusal to
+    // relies on the daemon's 75% renewal timer. So it must NEVER erase a KNOWN broker refusal to
     // green — if the last renewal was refused (e.g. the signer the broker rejects), the re-signed
     // generation is still unproven and may be broker-dead. Carry the refusal forward as an explicit
     // unproven state until a REAL proof (the manager's/daemon's reloadCreds) supersedes it, so the

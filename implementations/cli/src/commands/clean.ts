@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   DELIVERY_CREDS_KEY,
+  MEMBERSHIP_RW_CREDS_KEY,
   acquireMaintenanceLock,
   agentSecretKeysUnder,
   assertSingleSpaceBroker,
@@ -192,13 +193,18 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
     const secrets = workspaceSecretStore(root);
     const failures: string[] = [];
-    try {
-      if ((await secrets.get(DELIVERY_CREDS_KEY)) !== undefined) {
-        await secrets.delete(DELIVERY_CREDS_KEY);
-        removed.push(`.cotal/${DELIVERY_CREDS_KEY}`);
+    for (const key of [DELIVERY_CREDS_KEY, MEMBERSHIP_RW_CREDS_KEY]) {
+      // Migrated kinds: the store delete is authoritative (idempotent on an absent key). Both went
+      // through `store.put` at write time and are read back through the seam, so they must be removed
+      // through it too — never a raw rm below (which would leave a non-FS store's copy authoritative).
+      try {
+        if ((await secrets.get(key)) !== undefined) {
+          await secrets.delete(key);
+          removed.push(`.cotal/${key}`);
+        }
+      } catch (e) {
+        failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
       }
-    } catch (e) {
-      failures.push(`${DELIVERY_CREDS_KEY}: ${e instanceof Error ? e.message : String(e)}`);
     }
     // Per-agent standing secrets (static creds / actor tokens / sentinel creds) are migrated
     // kinds too. Despawn owns the primary delete; this is the crash-residue backstop, enumerated
@@ -230,12 +236,11 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // Creds/records signed by (or tied to) the deleted identity: stale the moment it is gone.
     // The fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds`
     // in up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no
-    // old-operator material survives the reset. (`delivery.creds` is gone already — it is a
-    // migrated kind and went through the store above, never a raw rm.)
+    // old-operator material survives the reset. (`delivery.creds` and `membership-rw.creds` are gone
+    // already — migrated kinds that went through the store above, never a raw rm.)
     for (const f of [
       "manager.delivery-aware",
       "membership-observer.creds",
-      "membership-rw.creds",
       "connection-evictor.creds",
       "membership.json",
       "renewal.json",

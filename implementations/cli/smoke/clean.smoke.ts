@@ -189,7 +189,11 @@ try {
   }
   check("seam: a failed store delete throws, naming the retry", /deprovision failed/.test(seamErr) && /re-run/.test(seamErr), seamErr);
   check("seam: the local identity survives the failed reset (no split authority)", existsSync(join(seamRoot, ".cotal", "auth", "auth.json")));
-  check("seam: derived creds also survive (nothing identity-scoped was swept)", existsSync(join(seamRoot, ".cotal", "membership-rw.creds")));
+  // The RAW identity removal (auth + the raw-rm derived list) must not run once a seam delete fails.
+  // Proxy on a RAW kind (`membership-observer.creds`, a static $SYS cred still swept by rm): `delivery.creds`
+  // and `membership-rw.creds` are MIGRATED kinds deleted in the same seam loop, so — like the per-agent
+  // seam kinds — they may be swept before the abort; only the identity + raw list are gated (checked here).
+  check("seam: the raw identity removal never ran (a raw-swept cred survives)", existsSync(join(seamRoot, ".cotal", "membership-observer.creds")));
   rmSync(seamRoot, { recursive: true, force: true });
 
   // --- the ONE shared pidfile probe (down/clean/status all ride pidfileState) -----------------
