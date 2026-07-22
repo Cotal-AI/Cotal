@@ -50,7 +50,7 @@ export function managerHasDeliveryMarker(): boolean {
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
 export function startManagerDetached(
-  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
+  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
 ): number {
   const fd = openSync(cotalPath("manager.log"), "a");
   const [node, ...self] = selfArgv();
@@ -67,6 +67,8 @@ export function startManagerDetached(
     ...(o.launch ? ["--launch", o.launch] : []),
     ...(o.resumeAttempt ? ["--resume-attempt", o.resumeAttempt] : []),
     ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
+    // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
+    ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -85,7 +87,7 @@ export function startManagerDetached(
  *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
  *  taken as-is. */
 export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
+  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
 ): { running: boolean } {
   if (managerUp()) return { running: true };
   startManagerDetached(o);

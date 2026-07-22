@@ -755,6 +755,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       runtime: values.runtime,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
+      wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
     });
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -1518,7 +1519,7 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
 async function startDeliveryWithBroker(
   space: string,
   server: string,
-  mgr?: { runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string },
+  mgr?: { runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number },
 ): Promise<boolean> {
   try {
     await ensureControlPlane({ space, server, ...mgr });
@@ -1641,6 +1642,7 @@ export async function startMeshDetached(
     launch: opts.launch,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
+    wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
   });
   return {
     server,
@@ -1828,7 +1830,7 @@ async function authSetup(
   space: string,
   host: string = "127.0.0.1",
   user?: { idpUrl?: string },
-): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
+): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot());
   let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
   if (!auth) {
@@ -1860,13 +1862,17 @@ async function authSetup(
     }
   }
   const port = Number(new URL(server).port) || 4222;
+  // P2 item 6: allocate the broker's loopback WebSocket listener port — the console page becomes a
+  // mesh §13.6 session client over it (a NEW same-host attack surface, localhost-bound, no TLS). The
+  // manager's establisher builds its wsUrl from this; threaded to `supervise --ws-port`.
+  const wsPort = await freePort(host);
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  writeFileSync(confPath, serverConfig(auth, { port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds, ...(prepared ? { prepared, stateDir } : {}) };
+  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}) };
 }
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph

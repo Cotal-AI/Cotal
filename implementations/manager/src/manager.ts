@@ -43,7 +43,7 @@ import {
   type Runtime,
   type RuntimeMode,
 } from "./runtime/index.js";
-import { AttachEndpoint } from "./attach-endpoint.js";
+import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
@@ -199,6 +199,10 @@ export interface ManagerOptions {
   workspaceRoot?: string;
   /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
   consolePort?: number;
+  /** P2 item 6: the broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
+   *  the console page becomes a mesh §13.6 session client — `POST /session/<name>` returns the grant +
+   *  a per-session cred + this ws URL. Absent ⇒ no console session client (the route 503s). */
+  wsPort?: number;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
@@ -477,6 +481,9 @@ export interface SpawnAcceptance {
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
+  /** P2 item 6: the broker ws listener port (loopback) `cotal up` allocated, for the console session
+   *  client's wsUrl. Undefined ⇒ no console session client (POST /session 503s). */
+  private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
   /** See {@link ManagerOptions.installedExtensions}. */
@@ -631,12 +638,16 @@ export class Manager {
     this.resumeAttemptId = opts.resumeAttemptId;
     this.resumeRequired = opts.resumeAttemptId !== undefined;
     this.resumeDurableCommitToken = opts.resumeDurableCommitToken;
+    this.wsPort = opts.wsPort;
     this.attach = new AttachEndpoint(
       (name) => this.maintenanceState === "active" && !this.resumeRequired ? this.agents.get(name)?.handle : undefined,
       () => this.list(),
       // Initial /feed replay for a connecting console: the current peer roster.
       () => [{ event: "roster", data: this.ep?.getRoster() ?? [] }],
       opts.consolePort ?? 0,
+      // P2 item 6: the console's mesh §13.6 session establisher — injected ONLY when a broker ws
+      // listener exists (cotal up allocated a wsPort). Never a second plane; it drives THE plane.
+      opts.wsPort !== undefined ? (name) => this.establishConsoleSession(name) : undefined,
     );
   }
 
@@ -4463,6 +4474,31 @@ export class Manager {
     }
     const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
     return { ok: true, data: { grant } };
+  }
+
+  /** P2 item 6: the console's mesh §13.6 session establisher (backing `POST /session/<name>` on the
+   *  loopback face). Drives THE ONE plane — same establishAttach as the ep `attach` command — with
+   *  the loopback OPERATOR as holder (same-host trust boundary), then hands the browser everything it
+   *  needs to open the caller rail over the broker ws listener: the holder-bound grant, a per-session
+   *  RAILS-ONLY caller cred (static mints from the seed, TTL-bound to the session; an open mesh has no
+   *  credential system so the browser connects bare), and the ws URL. NO 127.0.0.1 terminal transport
+   *  — the terminal rides the mesh session. Injected only when a wsPort exists (see the constructor). */
+  private async establishConsoleSession(name: string): Promise<SessionEstablishment> {
+    if (!this.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
+    if (this.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
+    const a = this.agents.get(name);
+    if (!a) throw new Error(`no managed agent "${name}"`);
+    const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
+    // The loopback operator is the console's holder (same-host trust boundary).
+    const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
+    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
+    const creds = this.auth
+      ? await mintCreds(this.auth, newIdentity(), "session-caller", {
+          sessionCaller: { endpoint: MANAGER_ENDPOINT, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+          expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+        })
+      : "";
+    return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */
