@@ -78,11 +78,21 @@ import {
   registerServiceInstance,
   authorizeServeGrant,
   serveEndpoint,
+  bindGoal,
+  createGoal,
+  commitGoalResult,
+  settleGoalUncertain,
+  readGoalResult,
+  goalRefOf,
+  goalProgressTopic,
+  epeSubject,
+  submissionFingerprint,
   EpEnvelopeError,
   type EpCommandDef,
   type EpServeContext,
   type EpServeGrant,
   type EpServeHandle,
+  type GoalRef,
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
@@ -424,7 +434,7 @@ export interface SpawnHooks {
    *  any provision/side-effect — the accept seam: it binds the goal and replies the acceptance. A
    *  THROW here aborts the spawn before provisioning (the existing catch returns the failure and the
    *  finally releases the reserve, so no footprint leaks) — this is the bind-conflict refusal path. */
-  onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string }) => Promise<void> | void;
+  onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string; agentTriple: { owner: string; actor: string; uid: string } }) => Promise<void> | void;
   /** Fires once the child process has been launched (the "launched" progress edge). */
   onLaunched?: () => void;
   /** Fires at the readiness verdict (presence join → succeeded / process exit → failed / window
@@ -432,6 +442,20 @@ export interface SpawnHooks {
    *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
    *  so a terminal-commit failure never disrupts the (already-replied) spawn. */
   onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<void> | void;
+}
+
+/** The spawn-as-action acceptance (P2 item 2 floor): the ALLOCATED agent identity (name + the
+ *  addressing triple item-1 addresses by) plus the goal coordinates (goalId = the request id) and
+ *  the executor coordinate (the manager incarnation its terminal fences on). Carries NO secret
+ *  material (pin 7); it names what was actually allocated, never a requested-but-unallocated name. */
+export interface SpawnAcceptance {
+  name: string;
+  owner: string;
+  actor: string;
+  uid: string;
+  goalId: string;
+  fingerprint: string;
+  executor: { lifecycleUid: string; epoch: number };
 }
 
 export class Manager {
@@ -486,6 +510,11 @@ export class Manager {
    *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
    *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from). */
   private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity };
+  /** P2 item 2: the acceptance replied for each in-flight goalId this incarnation accepted, so an
+   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple) without
+   *  a second spawn. Durable cross-incarnation reconstruction rides the must-5 goal-index; here the
+   *  live map covers same-incarnation retries, with the committed result fact as the fallback. */
+  private goalAcceptances = new Map<string, SpawnAcceptance>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
@@ -1503,7 +1532,9 @@ export class Manager {
         const data = unwrap(await this.opModels(args(ctx)));
         return { catalogs: Array.isArray(data) ? data : [data] };
       }),
-      spawn: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opStart(args(ctx), callerOf(ctx)))),
+      // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
+      // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
+      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
@@ -2184,7 +2215,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks): Promise<ControlReply> {
     // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
     // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
@@ -2232,6 +2263,7 @@ export class Manager {
         shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
       },
       caller,
+      hooks,
     );
   }
 
@@ -2603,7 +2635,14 @@ export class Manager {
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
       // returns the failure and the finally releases the reserve, so a refused accept leaves zero
       // footprint (pin 1). Blocking callers (roster boot) pass no hooks and this is a no-op.
-      await hooks?.onAccepted?.({ name, identity, lifecycleUid });
+      // The ALLOCATED agent's addressing triple (the acceptance floor names what was actually
+      // allocated, never the requested-but-unallocated name). Static/open key on DEV_OWNER + the
+      // freshly-minted nkey; user mode keys on the derived owner (opts.owner, else a u_-owner spawner)
+      // + the alias — derived HERE where the mode and owner source are in scope.
+      const agentTriple = this.userMode
+        ? { owner: opts.owner ?? (spawner && parsePrincipalKey(spawner)?.owner.startsWith("u_") ? parsePrincipalKey(spawner)!.owner : DEV_OWNER), actor: name, uid: lifecycleUid }
+        : { owner: DEV_OWNER, actor: identity.id, uid: lifecycleUid };
+      await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
@@ -3663,6 +3702,127 @@ export class Manager {
     if (!gw) return;
     this.goalWriter = undefined;
     try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
+  }
+
+  /** P2 item 2: publish a goal PROGRESS event on the caller-scoped epe subtree, over the SERVE
+   *  connection (which holds the `epe.<e>.<iid>.<epoch>.>` egress grant; the goal-writer deliberately
+   *  does not). The terminal rides a final event `phase:"terminal"` (Q1 — the caller follows epe to
+   *  the terminal; the durable result fact + inspect/ps are the reconcile authority). A dropped event
+   *  is non-fatal (the terminal is authoritative in the journal). */
+  private emitGoalProgress(ref: GoalRef, epoch: number, event: Record<string, unknown>): void {
+    const nc = this.serviceServe?.nc;
+    if (!nc) return;
+    try {
+      nc.publish(
+        epeSubject(this.space, MANAGER_ENDPOINT, this.managerLifecycleUid, epoch, goalProgressTopic(ref)),
+        new TextEncoder().encode(JSON.stringify({ v: 1, goalId: ref.goalId, ...event })),
+      );
+    } catch (e) {
+      console.error(`! goal progress emit for ${ref.goalId} failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Serve `spawn`/`launch` as an ACTION (P2 item 2). Authz already ran in {@link serveGated}. The
+   *  accept path runs INLINE on the handler ({@link startAgent} with hooks): the goal binds + the
+   *  acceptance replies the moment the identity is minted, BEFORE any provision (pin 1); progress and
+   *  the terminal are driven OFF-handler, so the ~30s readiness wait no longer blocks the reply.
+   *  Returns the acceptance floor payload {name, owner, actor, uid, goalId, fingerprint, executor}
+   *  (the ALLOCATED identity). goalId = the request id (env.id, Q3). */
+  private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
+    const gw = this.goalWriter;
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)");
+    const goalId = ctx.request.id;
+    const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
+    const ref = goalRefOf(ctx.subject, goalId);
+    const executor = { lifecycleUid: this.managerLifecycleUid, epoch: this.serviceServe?.grant.epoch ?? 0 };
+    const epoch = executor.epoch;
+    const acceptedAt = Date.now();
+
+    // Idempotent same-goalId retry (a client re-send): serve the IDENTICAL acceptance without
+    // re-running the accept path — so a HARD-PINNED retry does not trip the M6 same-name refuse and no
+    // name is re-allocated. Same-incarnation rides the live map; the create-only bindGoal in onAccepted
+    // still fences a CONCURRENT same-goalId race (the loser aborts and serves the winner's acceptance).
+    const prior = this.goalAcceptances.get(goalId);
+    if (prior !== undefined) {
+      if (prior.fingerprint !== fingerprint)
+        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
+      return prior;
+    }
+
+    let resolveAccept!: (a: SpawnAcceptance) => void;
+    let rejectAccept!: (e: unknown) => void;
+    const acceptP = new Promise<SpawnAcceptance>((res, rej) => { resolveAccept = res; rejectAccept = rej; });
+    let acceptance: SpawnAcceptance | undefined;
+
+    const bg = run({
+      onAccepted: async ({ name, agentTriple }) => {
+        // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
+        // a create-only CAS per goalId (pin 1 — a refused accept above left zero bind, zero reserve).
+        const b = await bindGoal(gw.ctx, ref, fingerprint);
+        if (!b.bound) {
+          if (b.existing.fingerprint !== fingerprint)
+            throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound to a different submission; one goalId never carries two specs (SPEC 13.6)`);
+          // Lost a concurrent same-goalId race: serve the winner's acceptance and abort THIS provision
+          // (no second spawn). The throw unwinds to the finally, which releases this attempt's reserve.
+          acceptance = this.goalAcceptances.get(goalId) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
+          resolveAccept(acceptance);
+          // Unwind the provision (the acceptance is already served); the code is discarded by the
+          // caller (acceptance !== undefined), so it just aborts this attempt's side-effects.
+          throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already accepted; the cached acceptance is served`);
+        }
+        await createGoal(gw.ctx, ref, {
+          fingerprint,
+          command: ctx.subject.command,
+          caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
+          requestId: goalId,
+          sourceSeq: 0,
+          acceptedAt,
+          readinessDeadlineMs: this.readinessTimeoutMs,
+        });
+        acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, executor };
+        this.goalAcceptances.set(goalId, acceptance);
+        resolveAccept(acceptance);
+        this.emitGoalProgress(ref, epoch, { phase: "handoff" });
+      },
+      onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
+      onOutcome: async (o) => {
+        // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
+        // caller cannot publish it). NON-must-5: the commit takes no executor/resolver (the goal is not
+        // target-pinned yet) — the must-5 block wires assertExecutorCurrency + the own-gate read as the fence belt.
+        try {
+          let fact;
+          if (o.kind === "succeeded") {
+            this.emitGoalProgress(ref, epoch, { phase: "presence" });
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data }));
+          } else if (o.kind === "failed") {
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data }));
+          } else {
+            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }));
+          }
+          this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+        } catch (e) {
+          console.error(`! goal terminal commit for ${goalId} failed: ${(e as Error).message}`);
+        }
+      },
+    });
+    bg.then((reply) => {
+      // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
+      if (acceptance === undefined) rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept"));
+    }).catch((e) => {
+      if (acceptance === undefined) rejectAccept(e);
+      else console.error(`! spawn-as-action async body for ${goalId}: ${(e as Error)?.message ?? String(e)}`);
+    });
+    return acceptP;
+  }
+
+  /** Reconstruct a cached acceptance for a same-goalId retry NOT in the live map (a prior incarnation
+   *  accepted it, or a concurrent winner whose map write this reader has not yet observed): the
+   *  committed terminal's data carries the allocated identity. A still-in-flight goal from a dead
+   *  incarnation reconstructs durably via the must-5 goal-index (later block). Static/open owner. */
+  private async cachedSpawnAcceptance(ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
+    const result = await readGoalResult(this.goalWriter!.ctx, ref);
+    const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
+    return { name: d.name ?? "", owner: DEV_OWNER, actor: d.id ?? "", uid: d.lifecycleUid ?? "", goalId, fingerprint, executor };
   }
 
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS

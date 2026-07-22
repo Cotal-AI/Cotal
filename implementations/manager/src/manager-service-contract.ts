@@ -134,18 +134,28 @@ const SPAWN_INPUT_SCHEMA = {
   },
 } as const;
 
-/** `spawn` success output: `startAgent`'s reply data. */
+/** `spawn` success output (P2 item 2): the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
+ *  (name + the owner/actor/uid addressing triple item 1 addresses by) plus the goal coordinates
+ *  (goalId = the request id) and the executor coordinate (the manager incarnation its terminal
+ *  fences on). No secret material (pin 7). The spawned identity + outcome ride the goal's progress +
+ *  terminal, not this reply — the reply no longer blocks on the ~30s readiness wait. */
 const SPAWN_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["name", "id", "mode", "lifecycleUid"],
+  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
   properties: {
     name: { type: "string" },
-    id: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
-    mode: { type: "string" },
-    lifecycleUid: { type: "string" },
+    owner: { type: "string" },
+    actor: { type: "string" },
+    uid: { type: "string" },
+    goalId: { type: "string" },
+    fingerprint: { type: "string" },
+    executor: {
+      type: "object",
+      additionalProperties: false,
+      required: ["lifecycleUid", "epoch"],
+      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
+    },
   },
 } as const;
 
@@ -342,7 +352,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 3,
+    revision: 4,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
