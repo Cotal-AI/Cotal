@@ -21,6 +21,7 @@ import {
   mintLifecycleUid,
   mkSecretDir,
   newIdentity,
+  actionContext,
   parsePrincipalKey,
   parseShareSelection,
   principalKey,
@@ -35,7 +36,7 @@ import {
   controlServiceSubject,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -462,6 +463,11 @@ export class Manager {
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
    *  in user mode (the named 1a follow-up), and before registration completes. */
   private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
+  /** P2 item 2 (spawn-as-action): the SELF-MEDIATED goal-writer connection + ActionContext — a
+   *  standing connection DISJOINT from the serve credential (Q2), scoped to exactly this endpoint's
+   *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
+   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from). */
+  private goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity };
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
@@ -663,6 +669,9 @@ export class Manager {
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
     await this.registerManagerService();
+    // P2 item 2: stand up the standing goal-writer connection for spawn-as-action — AFTER
+    // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
+    await this.startGoalWriter();
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -1157,6 +1166,7 @@ export class Manager {
     }
     await this.ep.releaseManagerLease(this.leaseRevision);
     await this.stopServiceServe();
+    await this.stopGoalWriter();
     await this.ep.stop();
     await this.attach.stop();
   }
@@ -1190,6 +1200,7 @@ export class Manager {
         else await this.stopRetainedAgentsOnExit();
       } catch { /* best effort */ }
       await this.stopServiceServe();
+      await this.stopGoalWriter();
       try { await this.ep.stop(); } catch { /* best effort */ }
       try { await this.attach.stop(); } catch { /* best effort */ }
       process.exit(1);
@@ -3555,6 +3566,40 @@ export class Manager {
     state.nc = nc;
     this.serviceServe = state;
     console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
+  }
+
+  /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
+   *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh mints a scoped
+   *  `goal-writer` credential ({@link goalWriterGrants} — exactly this endpoint's goal bind/terminal
+   *  facts + goal-record writes + fencing reads, DISJOINT from the serve cred); an OPEN mesh uses a
+   *  bare connection (no credential system to mint from - the broker enforces nothing). The
+   *  connection reconnects unbounded for the incarnation's life; the ActionContext bonds its
+   *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
+   *  goal state across brokers. */
+  private async startGoalWriter(): Promise<void> {
+    const identity = newIdentity();
+    const creds = this.auth
+      ? await mintCreds(this.auth, identity, "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } })
+      : undefined;
+    const enc = new TextEncoder();
+    const nc = await connect({
+      servers: this.servers ?? DEFAULT_SERVER,
+      ...(creds !== undefined ? { authenticator: credsAuthenticator(enc.encode(creds)) } : {}),
+      inboxPrefix: `_INBOX_${identity.id}`,
+      maxReconnectAttempts: -1,
+    });
+    nc.closed().then((err) => { if (err) console.error(`! manager goal-writer connection closed: ${err.message}`); });
+    const ctx = await actionContext(nc, this.space);
+    this.goalWriter = { nc, ctx, creds, identity };
+    console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred" : "open/bare"})`);
+  }
+
+  /** Drain the goal-writer connection (best-effort, both exit paths). */
+  private async stopGoalWriter(): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) return;
+    this.goalWriter = undefined;
+    try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
   }
 
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
