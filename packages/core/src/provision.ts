@@ -73,7 +73,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
 import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -115,7 +115,12 @@ export type Profile =
   // v0.4 control surface (SPEC §13.9): the per-instance endpoint serve credential — EXACTLY the
   // instance's registered rails + epoch-pinned egress, no agent baseline. Consumes only an
   // authorizeServeGrant-branded tuple; re-minted on takeover with the new epoch.
-  | "endpoint-serve";
+  | "endpoint-serve"
+  // v0.4 action surface (P2 item 2, spawn-as-action): the SELF-MEDIATED goal-writer for an endpoint
+  // that accepts action goals inline on its ephemeral handler — EXACTLY that endpoint's goal
+  // bind/terminal facts + goal-record writes ({@link goalWriterGrants}), a dedicated connection
+  // disjoint from the serve credential (Q2). Standing, re-minted on renewal like the serve cred.
+  | "goal-writer";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -179,6 +184,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
+  "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action (P2 item 2); the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential (Q2)" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
 };
@@ -444,6 +450,10 @@ export interface MintOpts {
    *  shortcut"; the standing seed connection never writes the epgate or the epcred family). Ignored
    *  by every other profile. */
   endpointServeExecutor?: { endpoint: string; instanceId: string };
+  /** `goal-writer` profile only (P2 item 2, spawn-as-action): the endpoint whose action goals this
+   *  standing connection may bind + commit ({@link goalWriterGrants}). REQUIRED for that profile;
+   *  ignored by every other. */
+  goalWriter?: { endpoint: string };
   /** `deployer` profile only: which v0.4 ep instrument set its `launch`/`ps` rows carry. Defaults
    *  to `"admin"` (the static operator's ephemeral deploy cred). The user-mode `deployer` VIEW
    *  mints `"privileged"` instead, so a spawn-scoped deploy reaches the manager where its
@@ -741,6 +751,11 @@ export function permissionsFor(
     if (!opts.endpointServeExecutor)
       throw new Error("permissionsFor: endpoint-serve-executor requires opts.endpointServeExecutor ({endpoint, instanceId} of the ONE endpoint instance it may register/serve-mint)");
     return endpointServeExecutorPermissions(space, pr, opts.endpointServeExecutor);
+  }
+  if (profile === "goal-writer") {
+    if (!opts.goalWriter)
+      throw new Error("permissionsFor: goal-writer requires opts.goalWriter ({endpoint} whose action goals this connection binds + commits)");
+    return goalWriterPermissions(space, pr, opts.goalWriter);
   }
   if (profile === "purger") return purgerPermissions(space, pr); // ephemeral history-purge (closure (ii))
   if (profile === "backup") {
@@ -1544,6 +1559,16 @@ function lifecycleExecutorPermissions(
  *  payload); enumeration of the epcred family rides an ordered `keys()` consumer. NAMED RESIDUAL:
  *  for its one-shot lifetime the executor can READ (never write) other auth rows — endpoint/
  *  credential metadata, no bearer bytes; every WRITE stays key-pinned. */
+/** The SELF-MEDIATED goal-writer profile (P2 item 2, spawn-as-action): exactly
+ *  {@link goalWriterGrants} for ITS endpoint — the goal bind + terminal facts, the goal-record KV
+ *  writes, and the leader-served fencing reads — plus the connection-scoped reply inbox. Disjoint
+ *  from the endpoint's serve credential (Q2): a serve connection carries none of these rows, so it
+ *  is broker-denied every goal write. */
+function goalWriterPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string }): Record<string, unknown> {
+  const g = goalWriterGrants(space, pin.endpoint, pr.connId);
+  return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+}
+
 function endpointServeExecutorPermissions(
   space: string,
   pr: MintPrincipal,
