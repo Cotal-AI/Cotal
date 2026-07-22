@@ -3892,7 +3892,10 @@ export class Manager {
   private async mintAndStageGoalWriter(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.goalWriterIdentity!;
-    const iid = this.managerLifecycleUid;
+    // The issuance gate + §13.1 revocation family are keyed by the REGISTRATION instanceId
+    // (the persisted logical id, item 3's split), NOT the per-process lifecycleUid — the barrier
+    // enumerates `epcred.<e>.<managerInstanceId>`, so the goal-writer must stage into that family.
+    const iid = this.managerInstanceId;
     const creds = await mintCreds(auth, identity, "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
     const exp = inspectCredHealth(creds).exp;
     if (exp === undefined)
@@ -3959,7 +3962,7 @@ export class Manager {
     // grant; observe-only (stage/commit/revoke are never called through it — the goal-writer holds
     // no gate/epcred WRITE grant, so a mis-call would broker-deny anyway).
     gw.gate = this.auth
-      ? serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerLifecycleUid })
+      ? serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId })
       : undefined;
     this.goalWriter = gw;
     console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
@@ -3983,7 +3986,9 @@ export class Manager {
   private async mintAndStageSessionWriter(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.sessionWriterIdentity!;
-    const iid = this.managerLifecycleUid;
+    // Registration instanceId (item 3's persisted logical id), not the per-process lifecycleUid:
+    // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the session-writer joins that family.
+    const iid = this.managerInstanceId;
     const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
     const observed = await fence.observe();
     if (observed === null)
@@ -4042,7 +4047,11 @@ export class Manager {
     };
     this.sessionPlane = new ManagerSessionPlane({
       nc, space: this.space,
-      serving: { instanceId: this.managerLifecycleUid, epoch: serveEpoch },
+      // The session's serving identity is the persisted REGISTRATION instanceId (item 3), not the
+      // per-process lifecycleUid: a restarted manager re-registers the SAME logical instanceId with
+      // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
+      // old incarnation's sessions (item 6's restart-refusal composed with item 3's addressing).
+      serving: { instanceId: this.managerInstanceId, epoch: serveEpoch },
       signer: { keyId, keyPair: signer }, resolveAnchor: (id) => (id === keyId ? anchor : undefined),
       ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
     });
@@ -4162,7 +4171,7 @@ export class Manager {
     if (!gate) return; // open mesh: no gate/credential system to fence against
     const observed = await gate.observe();
     if (observed === null)
-      throw new EpEnvelopeError("expired", `the manager's issuance gate for ${MANAGER_ENDPOINT}/${this.managerLifecycleUid} is gone; a retired incarnation never commits a goal terminal (SPEC 13.1/13.6)`);
+      throw new EpEnvelopeError("expired", `the manager's issuance gate for ${MANAGER_ENDPOINT}/${this.managerInstanceId} is gone; a retired incarnation never commits a goal terminal (SPEC 13.1/13.6)`);
     if (observed.processEpoch !== epoch)
       throw new EpEnvelopeError("expired", `the manager's issuance gate epoch is ${observed.processEpoch} but this goal was accepted under epoch ${epoch}; a superseded incarnation never commits a goal terminal (must-5 (a) own-gate belt, SPEC 13.6)`);
   }

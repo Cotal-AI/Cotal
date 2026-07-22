@@ -74,13 +74,15 @@ try {
   mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
   await mgr.start();
   const M = mgr as unknown as {
-    managerLifecycleUid: string;
+    managerInstanceId: string;
     sessionWriterIdentity?: { id: string };
     sessionWriterCreds?: string;
     sessionPlane?: { liveSessions: number };
     mintAndStageSessionWriter(authKv: unknown): Promise<string>;
   };
-  const iid = M.managerLifecycleUid;
+  // The registration gate + §13.1 family are keyed by the persisted registration instanceId
+  // (item 3's split), NOT the per-process lifecycleUid — read/drive at the same key the manager registers under.
+  const iid = M.managerInstanceId;
 
   check("the manager stood up its ONE session plane at boot", M.sessionPlane !== undefined && M.sessionPlane.liveSessions === 0);
   check("the session-writer credential is minted + stashed (auth mode)", typeof M.sessionWriterCreds === "string" && M.sessionWriterCreds.length > 0);

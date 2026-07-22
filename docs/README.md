@@ -78,6 +78,7 @@ For protocol implementers:
 | Doc | Answers |
 |---|---|
 | [Architecture](architecture.md) | How is it built (the thin waist, the pieces), and why? |
+| [Control surface](control-surface.md) | How are the manager and other daemons driven (endpoints, describe/invoke, actions, sessions)? |
 | [Spaces & channels](spaces.md) | What is a space, how does it differ from a channel? |
 | [Transport vs protocol](transport.md) | What is protocol vs transport, and what must a binding provide? |
 | [Presence & delivery](presence-and-delivery.md) | How do presence, the three delivery modes, and durable delivery work? |

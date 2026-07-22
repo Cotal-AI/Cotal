@@ -81,11 +81,13 @@ try {
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 1_500; // short window for a fast corpse settle
   await mgr.start();
   const M = mgr as unknown as {
-    managerLifecycleUid: string;
+    managerInstanceId: string;
     serviceServe?: { creds?: string };
     goalWriterIdentity?: { id: string };
   };
-  const iid = M.managerLifecycleUid;
+  // The registration gate + §13.1 family are keyed by the persisted registration instanceId
+  // (item 3's split), NOT the per-process lifecycleUid — read/drive at the same key the manager registers under.
+  const iid = M.managerInstanceId;
 
   // A caller instrument: an agent cred with the spawn capability + the spawn endpoint capability.
   const id = newIdentity();
@@ -160,7 +162,10 @@ try {
     const gwReadCreds = await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
     const readNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: gwReadCreds }), maxReconnectAttempts: 0 });
     conns.push(readNc);
-    const rctx = await actionContext(readNc, space);
+    // Reading an EXECUTOR-PINNED goal terminal resolves the executor's CURRENT epoch (item 3's (i)
+    // fence): after the synthetic takeover the gate is at epoch obs+1, so the reader looks at
+    // result.<obs+1> and the corpse's fenced (old-epoch) attempt is invisible → no terminal.
+    const rctx = await actionContext(readNc, space, { resolveExecutorEpoch: (execIid) => (execIid === iid ? obs!.processEpoch + 1 : null) });
     const result = await readGoalResult(rctx, ref);
     check("FENCE (a) the superseded corpse never committed a terminal (own-gate currency refused — no wrong terminal)", result === undefined, result);
   }
