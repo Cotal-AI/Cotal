@@ -304,10 +304,16 @@ function childBinding(rt: UpdateRuntime):
 
 export function parseNpmVersion(output: string): string {
   const parsed: unknown = JSON.parse(output.trim());
-  if (typeof parsed !== "string" || !STRICT_SEMVER.test(parsed))
+  // `npm view cotal-ai@latest version --json` returns a bare string ("0.13.2") only while the
+  // registry holds a single published version; once more than one exists npm wraps the field query
+  // in a JSON array (["0.13.2"]) even for the @latest tag. Accept both, and take the highest valid
+  // semver — the @latest query resolves the array to a single element, and the max is the right
+  // answer whether npm hands back one element or the whole version list.
+  const candidates = typeof parsed === "string" ? [parsed] : Array.isArray(parsed) ? parsed : [];
+  const versions = candidates.filter((v): v is string => typeof v === "string" && STRICT_SEMVER.test(v));
+  if (versions.length === 0)
     throw new Error(`npm returned an invalid cotal-ai version: ${JSON.stringify(parsed)}`);
-  compareSemver(parsed, parsed);
-  return parsed;
+  return versions.reduce((max, v) => (compareSemver(v, max) > 0 ? v : max));
 }
 
 const PRE = "(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";

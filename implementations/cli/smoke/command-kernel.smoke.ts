@@ -239,7 +239,14 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(compareSemver("0.13.2", "0.13.2-rc.1") > 0);
   assert.equal(parseNpmVersion('"0.13.2-rc.1"'), "0.13.2-rc.1");
   assert.throws(() => parseNpmVersion('"0.13"'), /invalid cotal-ai version/);
-  assert.throws(() => parseNpmVersion('["0.13.1","0.13.2"]'), /invalid cotal-ai version/);
+  // Real npm wraps `view cotal-ai@latest version --json` in a JSON array once the registry holds more
+  // than one published version — a bare string only appears with a single version. Accept the array
+  // form (the production shape) and take the highest valid semver; reject empty/garbage arrays loudly.
+  assert.equal(parseNpmVersion('["0.13.2"]'), "0.13.2");
+  assert.equal(parseNpmVersion('["0.13.1","0.13.2"]'), "0.13.2");
+  assert.equal(parseNpmVersion('["0.13.2","0.13.10"]'), "0.13.10");
+  assert.throws(() => parseNpmVersion("[]"), /invalid cotal-ai version/);
+  assert.throws(() => parseNpmVersion('["0.13","not-a-version"]'), /invalid cotal-ai version/);
 
   const { rt, events } = updateRuntime({
     extensions: [
