@@ -946,6 +946,30 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
 
+/** The SELF-MEDIATED GOAL-WRITER profile (P2 item 2 "spawn becomes an action"): a standing
+ *  connection that both BINDS a goal at accept AND COMMITS its terminal, for an endpoint that
+ *  accepts action goals INLINE on its ephemeral serve handler (Model B) rather than through a
+ *  separate canonicalizer + effects executor. It is exactly {@link commitPrincipalGrants} (the
+ *  `goal.*.*.*.*.result` terminal + `$KV.<records>.goal.<e>.>` record write + the two leader-served
+ *  `STREAM.MSG.GET` fencing reads the substrate uses) PLUS the ONE row commitPrincipalGrants
+ *  deliberately leaves to the canonicalizer — the goal `.bind` leaf
+ *  (`epf.<e>.goal.*.*.*.*.bind`) — so this single principal owns the whole `accepted → terminal`
+ *  goal-fact chain of its OWN endpoint. The endpoint's SERVE credential
+ *  ({@link import("./endpoint-grants.js").epServePublishRows}) holds NONE of these: a serve
+ *  connection is broker-DENIED every goal write, which is the item-2 privilege separation (the
+ *  dedicated writer is minted on a distinct connection, the serve rails stay serve-only). All of
+ *  commitPrincipalGrants' D32 residuals carry unchanged (payload-blind create-only publish; raw
+ *  `$KV` cannot enforce the per-key CAS the substrate layers on; the two body-selected
+ *  `STREAM.MSG.GET` reads expose EPF + records space-wide). The reply inbox is connection-scoped
+ *  (`_INBOX_<connId>.>`). The `eff`/`wrk`/`receipt`/`cp`/`lease` families in the commit-principal
+ *  base are inert for a goal-only endpoint (the manager writes none) but are the commit-principal
+ *  profile's standard ceiling; a tighter goal-only ceiling is a follow-up if the panel prefers it. */
+export function goalWriterGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const base = commitPrincipalGrants(space, endpoint, connId);
+  const bindLeaf = `${spacePrefix(space)}.epf.${endpointToken(endpoint)}.goal.*.*.*.*.bind`;
+  return { publish: [bindLeaf, ...base.publish], subscribe: base.subscribe };
+}
+
 /** The CONTRACT PUBLISHER principal's rows (§13.9 matrix "Contract-artifact publication" +
  *  the trusted-infra half of "Contract-artifact read"): publish `epc.*` (the digest-hex is ONE
  *  subject token; create-only rides `Nats-Expected-Last-Subject-Sequence: 0` at the typed path,

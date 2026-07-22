@@ -32,7 +32,7 @@ import {
   canonicalizerGrants, canonicalizerWorkGrants, activatorGrants, activatorContext, readPoolOccupancy,
   effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
-  commitPrincipalGrants, contractPublisherGrants,
+  commitPrincipalGrants, goalWriterGrants, contractPublisherGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS,
@@ -287,6 +287,27 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
       "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
       "$JS.API.INFO",
     ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
+  })());
+c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, and nothing else — one principal owns the whole accepted→terminal goal-fact chain",
+  (() => {
+    const g = goalWriterGrants(SPACE, "manager", CONN);
+    return JSON.stringify(g.publish) === JSON.stringify([
+      "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
+      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+      "cotal.epbind.epf.manager.eff.>",
+      "cotal.epbind.epf.manager.receipt.>",
+      "cotal.epbind.epf.manager.wrk.>",
+      "cotal.epbind.epf.manager.cp.>",
+      "$KV.cotal_records_epbind.goal.manager.>",
+      "$KV.cotal_records_epbind.cp.manager.>",
+      "$KV.cotal_records_epbind.lease.manager.>",
+      "$JS.API.STREAM.MSG.GET.EPF_epbind",
+      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
+      "$JS.API.INFO",
+    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+      // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
+      && g.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind"
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
   })());
 c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",
