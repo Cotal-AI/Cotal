@@ -186,6 +186,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.epj.manager.spawn.owner.u_abc.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu",
   ], subscribe: [
     "cotal.d32m.ep.reply.*.*.*.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu.*",
+    // P2 item 2 (2b): a GOAL-BEARING cap (spawn) grants the caller's OWN per-goal progress read
+    // (epGoalProgressGrantRow) so it can follow its spawn to the terminal — caller-triple-pinned.
+    "cotal.d32m.epe.manager.*.*.goal.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu.>",
   ] },
   "serve-rows": { publish: [
     "cotal.d32m.ep.reply.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.*.*.*",
