@@ -52,9 +52,10 @@ export interface SessionBridge {
   /** Terminate the session with a distinct reason (target despawn / manager restart / expiry): the
    *  `end` frame is sent best-effort, then the rail closes and the pty is unsubscribed. Idempotent. */
   end(reason: AttachEndReason): void;
-  /** In-memory observability (smoke assertions): the rail's window stats plus the dropped-byte
-   *  count and whether the reconstruction handshake has gone live. */
-  stats(): { sent: number; ackedThrough: number; delivered: number; inFlight: number; droppedBytes: number; live: boolean };
+  /** In-memory observability (smoke assertions): the rail's window stats, the dropped-byte count
+   *  (backpressure), the dropped-FRAME count (caller frames the codec rejected), and whether the
+   *  reconstruction handshake has gone live. */
+  stats(): { sent: number; ackedThrough: number; delivered: number; inFlight: number; droppedBytes: number; droppedFrames: number; live: boolean };
 }
 
 export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge {
@@ -62,6 +63,7 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   let live = false; // has `ready` been received (backlog replayed, streaming live)?
   let ended = false;
   let droppedBytes = 0;
+  let droppedFrames = 0; // caller frames the codec rejected (observability; NOT a silent black hole)
   const preReadyBuffer: Buffer[] = [];
   let rail!: SessionRail;
 
@@ -132,11 +134,18 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   const onCallerFrame = (data: unknown): void => {
     // A caller frame must NEVER wedge the serving rail. A GARBLED or DEGENERATE frame — e.g. a console
     // fitting before its pane is laid out sends a 0-dim resize, which the §13.6 codec rejects — is
-    // IGNORED, and each pty side effect is best-effort. One bad frame crashing this handler is exactly
-    // the live-e2e "zombie session" class (rail open, no echo, no honest end) that violates pin 4: a
-    // stray/degenerate caller frame drives no pty effect, so drop it and keep the session honest.
+    // dropped, and each pty side effect is best-effort. One bad frame crashing this handler is exactly
+    // the live-e2e "zombie session" class (rail open, no echo, no honest end) that violates pin 4.
+    // But a drop is NEVER a black hole: it is COUNTED + LOGGED so a silent inbound failure (a caller
+    // whose frames all decode-reject) is diagnosable, not invisible.
     let p: TerminalFrame;
-    try { p = decodeTerminalFrame(data); } catch { return; }
+    try {
+      p = decodeTerminalFrame(data);
+    } catch (e) {
+      droppedFrames++;
+      console.error(`! session ${opts.grant.sessionId}: dropped an undecodable caller frame #${droppedFrames} (${(e as Error).message})`);
+      return;
+    }
     switch (p.k) {
       case "ready":
         void goLive();
@@ -181,6 +190,6 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
 
   return {
     end,
-    stats: () => ({ ...rail.stats(), droppedBytes, live }),
+    stats: () => ({ ...rail.stats(), droppedBytes, droppedFrames, live }),
   };
 }

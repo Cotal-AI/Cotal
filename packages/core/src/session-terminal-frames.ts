@@ -97,8 +97,15 @@ function base64Decode(s: string): Uint8Array {
 }
 
 /** Encode raw terminal bytes as a `data` frame (the ruled base64-in-JSON form). Accepts any
- *  Uint8Array (a node Buffer is one). */
+ *  Uint8Array (a node Buffer is one). FAIL-LOUD on a non-Uint8Array: a STRING (e.g. xterm's onData
+ *  keystroke, which is a string, not bytes) would `base64Encode` its chars as NaN→0 and silently
+ *  ship NUL bytes the pty ignores — the browser must UTF-8-encode first. Throwing turns that trap
+ *  into an immediate error instead of a byte stream that vanishes into the terminal (§13.6). */
 export function encodeTerminalData(bytes: Uint8Array): TerminalFrame {
+  // ArrayBuffer.isView is cross-realm safe (a browser/vm-sandbox/node Uint8Array all pass; a string
+  // or plain object does not) — unlike `instanceof Uint8Array`, which fails across realms.
+  if (!ArrayBuffer.isView(bytes))
+    invalid(`encodeTerminalData expects raw bytes (Uint8Array); got ${typeof bytes} — UTF-8-encode a string keystroke first`);
   return { k: "data", b: base64Encode(bytes) };
 }
 

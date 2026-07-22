@@ -89,7 +89,9 @@ async function openSession(name, pane) {
   await nc.flush();
   try { rail.send({ k: "ready" }); } catch { /* the onProtocolError path surfaces it */ }
   fit.fit();
-  term.onData((bytes) => { try { rail.send(S.encodeTerminalData(bytes)); } catch { /* keystrokes are low-volume */ } });
+  // xterm's onData is a STRING, but the §13.6 data frame carries raw bytes — UTF-8-encode it (a raw
+  // string would base64-encode its chars as NUL bytes the pty silently ignores: no echo).
+  term.onData((data) => { try { rail.send(S.encodeTerminalData(new TextEncoder().encode(data))); } catch (e) { console.error("[cotal] keystroke send failed", e); } });
   // Guard the resize: a pane fitting before it is laid out can compute a 0 dimension, which the
   // §13.6 codec rejects — a bad frame the serving side now tolerates, but never emit it in the first place.
   term.onResize(() => { if (term.cols > 0 && term.rows > 0) { try { rail.send({ k: "resize", cols: term.cols, rows: term.rows }); } catch { /* advisory */ } } });
