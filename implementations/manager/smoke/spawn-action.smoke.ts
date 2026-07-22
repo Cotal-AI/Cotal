@@ -57,7 +57,7 @@ const conns: NatsConnection[] = [];
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-for (const n of ["a1", "a2", "j1", "x1", "w1", "dup", "peer"])
+for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 
 // Inline connectors driving the three readiness outcomes (open mesh — no creds needed). `join` is
@@ -87,6 +87,8 @@ const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintL
 let callNc!: NatsConnection;
 const callSpawn = (args: Record<string, unknown>) =>
   epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
+const callDespawn = (t: { actor: string; lifecycleUid: string }) =>
+  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller, args: { graceful: false }, target: { mode: "owner", owner: DEV_OWNER, actor: t.actor, lifecycleUid: t.lifecycleUid } }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
 
 interface ProgressEvent { goalId: string; phase: string; state?: string; data?: unknown }
 // A PERSISTENT collector subscribed to the caller's whole goal subtree BEFORE any spawn, so the
@@ -176,6 +178,17 @@ try {
     const rw = await callSpawn({ name: "w1", agent: "stuck" });
     const fw = await followGoal(acc(rw).goalId as string, 12_000);
     check("M3 readiness window elapsed -> uncertain (bounded, never success)", fw.terminal?.state === "uncertain", fw.terminal);
+  }
+
+  // ── M4: SETTLE RACE - despawn mid-goal drives the cancel terminal (first terminal wins) ──────
+  {
+    const r = await callSpawn({ name: "m4", agent: "stuck" }); // stuck hangs -> the 2s readiness window
+    const acc4 = acc(r);
+    await wait(900); // let the agent provision + become managed, still inside the window
+    const rD = await callDespawn({ actor: acc4.actor as string, lifecycleUid: acc4.uid as string });
+    check("M4 the mid-goal despawn is accepted", rD.reply.ok === true, rD.reply);
+    const f = await followGoal(acc4.goalId as string, 12_000);
+    check("M4 despawn mid-goal settles the goal CANCELLED (first terminal fact wins vs the readiness window)", f.terminal?.state === "cancelled", f.terminal);
   }
 
   // ── M6: HARD-PINNED SAME-ALIAS REFUSE (persona-derived numbers) ───────────────────────────

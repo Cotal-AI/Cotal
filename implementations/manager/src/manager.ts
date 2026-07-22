@@ -81,6 +81,7 @@ import {
   serveEndpoint,
   bindGoal,
   createGoal,
+  transitionGoal,
   commitGoalResult,
   settleGoalUncertain,
   readGoalResult,
@@ -516,6 +517,9 @@ export class Manager {
    *  a second spawn. Durable cross-incarnation reconstruction rides the must-5 goal-index; here the
    *  live map covers same-incarnation retries, with the committed result fact as the fallback. */
   private goalAcceptances = new Map<string, SpawnAcceptance>();
+  /** P2 item 2 (M4): the live spawn goal ref for each managed agent name, so a despawn MID-GOAL
+   *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
+  private agentGoals = new Map<string, GoalRef>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
@@ -3445,6 +3449,7 @@ export class Manager {
   private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean): ControlReply {
     this.stopHandle(a, graceful);
     this.trackStoppedHandle(a, trackNonAdmin);
+    void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // M4: cancel a live spawn goal
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }
 
@@ -3790,6 +3795,7 @@ export class Manager {
         });
         acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, executor };
         this.goalAcceptances.set(goalId, acceptance);
+        this.agentGoals.set(name, ref); // M4: a despawn of this name mid-goal drives the cancel path
         resolveAccept(acceptance);
         this.emitGoalProgress(ref, epoch, { phase: "handoff" });
       },
@@ -3809,6 +3815,7 @@ export class Manager {
             ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }));
           }
           this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+          if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
         } catch (e) {
           console.error(`! goal terminal commit for ${goalId} failed: ${(e as Error).message}`);
         }
@@ -3832,6 +3839,26 @@ export class Manager {
     const result = await readGoalResult(this.goalWriter!.ctx, ref);
     const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
     return { name: d.name ?? "", owner: DEV_OWNER, actor: d.id ?? "", uid: d.lifecycleUid ?? "", goalId, fingerprint, executor };
+  }
+
+  /** M4 (settle race): a despawn MID-GOAL drives the goal's cancel terminal - transition to
+   *  `cancelling`, then commit the `cancel` cause on the goal-writer connection. First-terminal-fact
+   *  wins: if the readiness outcome already committed (succeeded/failed/uncertain) the transition or
+   *  the create-only commit loses gracefully and the readiness terminal stands. Fire-and-forget from
+   *  despawn (the process teardown is authoritative for the agent; this settles the GOAL honestly).
+   *  Cancel rides the despawn's own authorizeNamed reach (pin 5) - there is no cancel-by-goalId. */
+  private async cancelAgentGoal(name: string, mode: "graceful" | "terminate"): Promise<void> {
+    const gw = this.goalWriter;
+    const ref = this.agentGoals.get(name);
+    if (!gw || !ref) return;
+    this.agentGoals.delete(name);
+    try {
+      await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
+      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" } });
+      this.emitGoalProgress(ref, this.serviceServe?.grant.epoch ?? 0, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
+    } catch {
+      // the goal already terminalized (the readiness outcome won the settle race) - nothing to cancel.
+    }
   }
 
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
