@@ -676,25 +676,26 @@ try {
   check("down/stopLocalProcess still CLEARS a valid ESRCH-dead pid (normal stop, no over-refusal)",
     (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(dpPid));
 
-  // The stop-MARKER (`.stopping`) mutual-exclusion reservation: a contender must never reclaim a
-  // marker it cannot prove dead. The old open-then-write left an EMPTY-file window a reader took as
-  // "unattributable → reclaim", stealing a live owner's reservation. Now: (a) an existing marker
-  // whose owner is empty/garbled/live/unknown makes stopLocalProcess FAIL CLOSED (never reclaimed);
-  // (b) only an ESRCH-dead owner is reclaimed. The pidfile itself is a dead pid so the stop proceeds
-  // once the marker is (legitimately) acquired.
+  // The stop-MARKER (`.stopping`) mutual-exclusion reservation. The ATOMIC publish (temp+link) means
+  // a LIVE `down` holding the marker always wrote its own POSITIVE pid - a live holder is never
+  // empty/partial. So the two cases:
+  //  - a LIVE positive-pid owner ⇒ a real concurrent `down`: NOT reclaimed (mutual exclusion), refuse.
+  //  - an UNATTRIBUTABLE owner (empty / 0 / garbled) or an ESRCH-dead pid ⇒ cannot be a live holder
+  //    (atomic publish) or is provably gone ⇒ a stale/crashed reservation: RECLAIMED, so a crashed
+  //    `down` never wedges the next one. The pidfile is a dead pid, so the stop then proceeds.
   const marker = `${dpPid}.stopping`;
-  for (const held of ["", "not-a-pid", String(process.pid)]) {
-    writeFileSync(dpPid, "999999");
-    writeFileSync(marker, held); // a pre-existing reservation this `down` did not create
-    const msg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
-    check(`stop-marker with ${held === String(process.pid) ? "a LIVE" : JSON.stringify(held) === '""' ? "an EMPTY" : "a GARBLED"} owner is NOT reclaimed (fail-closed mutual exclusion)`,
-      msg.includes("not reclaiming") && existsSync(marker) && existsSync(dpPid), { msg });
-    rmSync(marker, { force: true });
-  }
   writeFileSync(dpPid, "999999");
-  writeFileSync(marker, "999999"); // an ESRCH-dead owner: safe to reclaim
-  check("stop-marker with an ESRCH-dead owner IS reclaimed, and the stop then proceeds",
-    (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
+  writeFileSync(marker, String(process.pid)); // a LIVE holder's reservation
+  const liveMarkerMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+  check("stop-marker with a LIVE owner is NOT reclaimed (mutual exclusion holds)",
+    liveMarkerMsg.includes("already being stopped") && existsSync(marker) && existsSync(dpPid), { liveMarkerMsg });
+  rmSync(marker, { force: true });
+  for (const stale of ["", "not-a-pid", "0", "999999"]) {
+    writeFileSync(dpPid, "999999");
+    writeFileSync(marker, stale); // stale/unattributable reservation, cannot be a live holder
+    check(`a stale ${stale === "999999" ? "ESRCH-dead" : stale === "" ? "EMPTY" : JSON.stringify(stale)} marker is reclaimed and the stop proceeds (crashed `+"`down`"+` never wedges the next)`,
+      (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
+  }
 
   console.log("\n26) the PRE-STOP `stopLast` dependant guard fails CLOSED on an unattributable dependant (mayBeRunning)");
   // `cotal down nats` (nats = stopLast) must NOT stop the broker while an unselected dependant (the

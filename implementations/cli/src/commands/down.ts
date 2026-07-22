@@ -249,12 +249,16 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
         if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue; // holder released between publish-refusal and read
         throw readErr;
       }
-      // Reclaim ONLY a valid pid PROVEN dead (ESRCH). With the atomic publish above, an empty marker
-      // can no longer occur during a live publish - so an unparseable/undefined owner is genuine
-      // corruption, and we STILL fail closed on it (it may front a live `down` we cannot identify),
-      // requiring manual removal rather than reclaiming a possibly-live reservation.
-      if (owner === undefined || probeLiveness(owner) !== "dead")
-        throw new Error(`${component.name} may be being stopped by another \`cotal down\` (marker at ${marker}${owner !== undefined ? `, pid ${owner}` : ", unattributable content"}); not reclaiming it - retry, or remove ${marker} if it is stale`);
+      // The atomic publish above is what closes the race: a LIVE `down` holding the marker always
+      // wrote its own POSITIVE pid into it (no empty/partial window), so a live holder is always a
+      // valid pid that is alive/EPERM/unknown - and THOSE we never reclaim (that is the mutual
+      // exclusion). An UNATTRIBUTABLE marker (empty / 0 / negative / garbled) therefore cannot
+      // represent a live holder; it is a stale or crashed reservation, and reclaiming it is both safe
+      // and required so a crashed `down` never wedges the next one. So: reclaim an unattributable
+      // owner or a valid pid PROVEN dead (ESRCH); refuse only a valid pid that is alive or whose
+      // liveness we cannot confirm.
+      if (owner !== undefined && probeLiveness(owner) !== "dead")
+        throw new Error(`${component.name} is already being stopped by another \`cotal down\` (pid ${owner})`);
       rmSync(marker, { force: true });
     }
   }
