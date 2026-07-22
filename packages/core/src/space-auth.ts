@@ -126,3 +126,39 @@ export function validateSpaceAuth(auth: unknown, expectedSpace?: string): SpaceA
     throw new Error("validateSpaceAuth: system account JWT name must be SYS");
   return auth as SpaceAuth;
 }
+
+/**
+ * Validate a bundle READ BACK from the store/disk before minting from it — accepts BOTH a full trust
+ * bundle AND a stripped signer projection ({@link stripSpaceAuth}: `space` + `account.pub` +
+ * `account.signingSeed` only, exactly what `cotal mint --signer` writes and a container mounts as
+ * `.cotal/auth/auth.json` for `supervise`). This is what a reader like the manager needs, because in
+ * the containerized deployment the signer it is handed is the stripped projection, not the full bundle.
+ *
+ * A FULL bundle (it carries an operator JWT) is validated in full via {@link validateSpaceAuth} — the
+ * space↔account↔operator JWT chain catches a relabel. A STRIPPED projection has no JWT chain to bind
+ * the space label, so it validates the mint-critical account material instead: `account.pub` and
+ * `account.signingSeed` must be self-consistent account nkeys (a bare `{space}` or a garbled key is
+ * refused), plus, when `expectedSpace` is given, the label. A wrong-ACCOUNT signer that slips past the
+ * label is still contained — its minted creds are for a different account and the target broker rejects
+ * them (fail-closed). Read-only; returns the same validated object.
+ */
+export function validateSpaceAuthForRead(auth: unknown, expectedSpace?: string): SpaceAuth {
+  const root = record(auth, "auth");
+  const operator = record(root.operator, "operator");
+  // A full bundle carries an operator JWT; the stripped signer projection blanks it. Route a full
+  // bundle through the complete chain validation (which also does the expected-space JWT-name check).
+  if (typeof operator.jwt === "string" && operator.jwt.length > 0)
+    return validateSpaceAuth(auth, expectedSpace);
+  // Stripped signer projection: no chain to bind the label, so validate the mintable account material.
+  const account = record(root.account, "account");
+  const space = string(root.space, "space");
+  if (expectedSpace !== undefined && space !== expectedSpace)
+    throw new Error(`validateSpaceAuthForRead: space "${space}" does not match expected space "${expectedSpace}"`);
+  publicKey(string(account.pub, "account.pub"), "account.pub", "A");
+  const signingPubFromSeed = seedPublicKey(string(account.signingSeed, "account.signingSeed"), "account.signingSeed", "A");
+  // The stripped projection blanks `signingPub`; if a caller kept it, it must still match the seed.
+  if (typeof account.signingPub === "string" && account.signingPub.length > 0 &&
+      publicKey(account.signingPub, "account.signingPub", "A") !== signingPubFromSeed)
+    throw new Error("validateSpaceAuthForRead: account.signingSeed does not match account.signingPub");
+  return auth as SpaceAuth;
+}

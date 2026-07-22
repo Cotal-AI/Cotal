@@ -1,5 +1,19 @@
 # @cotal-ai/connector-core
 
+## 0.13.2
+
+### Patch Changes
+
+- 9e3fdd6: cli: make installed extensions discoverable. Bare `cotal ext` now lists the inventory instead of erroring; `cotal ext list` and the `cotal status` Extensions section lead with the install prefix and state it is a cotal-owned store kept separate from npm's global tree (which is why `npm list -g` never shows these); a new `cotal ext root` prints just the path for scripts, and `status` always renders the section with an explicit empty state. Discoverability only: where extensions install and how they upgrade is unchanged.
+- 666a1a1: docs: a new Connectors page compares every connector feature-by-feature (binding, install, TUI, delivery, resume, tool-sharing, models, containers), and the pi guide moves from Agent frameworks to Connect pi so it sits beside the other connector guides (the site redirects `/agent-frameworks` to `/connect-pi`). The bundled `cotal_docs` pages are regenerated to match.
+- 9625ec6: Add `cotal update` to reconcile first-party connectors and extensions to one generation, report third-party extensions, and check or opt into a serialized, verified global CLI upgrade.
+
+## 0.13.1
+
+### Patch Changes
+
+- 5fb7b23: Add `cotal -v` / `cotal --version`: print the binary version plus each installed extension's, then exit. `cotal status` gains the same report — the Machine section leads with the `cotal-ai` version, and a new Extensions section lists each installed extension with its pinned version, so version skew across the seeded connectors is visible at a glance.
+
 ## 0.13.0
 
 ### Minor Changes

@@ -15,7 +15,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
-import { credsClaims, idFromCreds } from "./identity.js";
+import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
@@ -307,8 +307,9 @@ export class CotalEndpoint extends EventEmitter {
   private plane3?: {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>;
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
-     *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). */
-    reloadMembershipCreds?: () => Promise<unknown>;
+     *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). `expected`
+     *  is the renewal owner's generation token for the rw cred (see {@link reloadCreds}). */
+    reloadMembershipCreds?: (expected?: string) => Promise<unknown>;
     /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
     evictPrincipal?: (principal: string) => Promise<unknown>;
@@ -580,10 +581,29 @@ export class CotalEndpoint extends EventEmitter {
    *  (75% of iat→exp), not a fixed margin — standing creds span hours to days, bearers minutes. */
   private static readonly CREDS_RETRY_MS = 60_000;
 
+  /** The disposable-preflight connect bound for the EXPLICIT reload proof (D5 class-2 adoption). A
+   *  rogue or unreachable candidate must resolve well UNDER the manager's delivery-admin request
+   *  bound, so this stays a few seconds and never blocks the responder. */
+  private static readonly PREFLIGHT_MS = 4_000;
+
+  /** How long the resident wire swap is deferred past the reply on the EXPLICIT reload path. The
+   *  delivery-admin responder rides THIS connection, so `nc.reconnect()` must not run until the
+   *  reply has flushed on the still-live old cred; the old cred stays valid until its exp, so a short
+   *  deferral is safe. */
+  private static readonly RESIDENT_SWAP_DEFER_MS = 250;
+
+  /** The daemon-side deadline for the WHOLE prove-then-adopt transaction (source fetch + preflight +
+   *  commit), kept strictly BELOW the manager's delivery-admin request bound so a slow or hung hosted
+   *  store returns a structured component failure rather than an ambiguous client timeout, and a late
+   *  fetch can never commit after the caller gave up. */
+  private static readonly RELOAD_DEADLINE_MS = 12_000;
+
   /** Fetch fresh creds from the source, pin their identity to ours, cache them, and arm the next
    *  refresh at 75% of the new JWT's lifetime. THROWS on fetch/pin failure — the callers decide the
    *  failure posture (loud-and-retry for the timer, a structured error reply for an explicit
-   *  {@link reloadCreds}). */
+   *  {@link reloadCreds}). This is the PASSIVE-BACKSTOP fetch; the explicit auditable path
+   *  ({@link reloadCreds}) does its own fetch so it can preflight the candidate on a disposable
+   *  connection BEFORE mutating this live cache. */
   private async fetchFreshCreds(): Promise<{ iat?: number; exp?: number }> {
     const creds = await this.credsSource!();
     const id = idFromCreds(creds);
@@ -606,13 +626,15 @@ export class CotalEndpoint extends EventEmitter {
     if (this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
   }
 
-  /** The 75%-of-lifetime renewal timer tick (and rebuild re-fetch) — the passive BACKSTOP behind the
-   *  explicit {@link reloadCreds}. Failure shape mirrors {@link refreshBearer}: THROWS when
-   *  `initial`, else emits "error" and retries. */
+  /** The connectAndBind PRE-CONNECT fetch: pull the freshest source cred and pin it into
+   *  {@link currentCreds} so the connect() that immediately follows presents it — that connect IS the
+   *  proof, so NO preflight and NO live swap here. THROWS when `initial` (no cred to start from), else
+   *  emits and retries. The LIVE-SWAP paths — the 75% timer {@link renewCredsOnTimer} and the explicit
+   *  {@link reloadCreds} — preflight the candidate on a disposable connection instead, so they never
+   *  reconnect the live connection onto an unproven cred. */
   private async refreshCreds(initial = false): Promise<void> {
     try {
       await this.fetchFreshCreds();
-      if (!initial) await this.swapConnectionOntoFreshCreds();
     } catch (e) {
       if (initial) throw e;
       this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
@@ -620,17 +642,123 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Serializes every prove-then-adopt transaction (the 75% timer and the explicit reload) so a timer
+   *  tick and an explicit reload can never interleave their fetch/preflight/commit — the design's
+   *  single-flight requirement. Runs `fn` after any in-flight transaction settles, whatever its
+   *  outcome; the internal chain never rejects. */
+  private credsTxn: Promise<unknown> = Promise.resolve();
+  private runCredsTxn<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.credsTxn.then(fn, fn);
+    this.credsTxn = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  /** Race `p` against a `ms` deadline so a slow/hung SecretStore fetch (or preflight) cannot exceed
+   *  the daemon transaction bound. The underlying promise is not cancellable, so callers also FENCE a
+   *  late commit by re-checking the deadline before mutating {@link currentCreds}. */
+  private static async withDeadline<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(msg)), Math.max(1, ms)); });
+    try { return await Promise.race([p, timeout]); }
+    finally { if (timer) clearTimeout(timer); }
+  }
+
+  /** The one PROVE-then-adopt transaction shared by the 75% timer and the explicit reload (run under
+   *  {@link runCredsTxn}). Fetch (deadline-bounded) → identity-pin → optional `expected` fingerprint →
+   *  PREFLIGHT the candidate on a disposable connection → fence a late commit against the deadline →
+   *  commit {@link currentCreds} → arm the next 75% timer. Because currentCreds is written ONLY after
+   *  the preflight proves broker acceptance, the resident authenticator getter can never present an
+   *  unproven cred (not even on an incidental reconnect), and a rejected candidate leaves the resident
+   *  connection untouched on BOTH the timer and explicit paths. THROWS (structured) on any failure. */
+  private async adoptFreshCreds(opts: { expected?: string; deadline?: number } = {}): Promise<{ iat?: number; exp?: number }> {
+    // ABSOLUTE deadline, captured at the CALLER's entry (reloadCreds / renewCredsOnTimer) BEFORE the
+    // single-flight enqueue, so the queue wait behind an in-flight transaction counts against it. A
+    // reload queued behind a hung-store timer tick can never receive a FRESH budget and commit after
+    // the renewal owner's request bound already elapsed.
+    const deadline = opts.deadline ?? Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
+    // Fence BEFORE any source I/O: if the queue wait already burned the budget, fail structured now and
+    // never touch the store, the preflight, or currentCreds.
+    if (Date.now() > deadline)
+      throw new Error("reloadCreds: the request deadline elapsed while queued behind another credential transaction; nothing adopted");
+    const candidate = await CotalEndpoint.withDeadline(this.credsSource!(), deadline - Date.now(), "reloadCreds: the creds source did not return before the daemon deadline; nothing adopted");
+    const id = idFromCreds(candidate);
+    if (id !== this.connId)
+      throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+    // Non-material message ON PURPOSE: this text flows to the manager's persisted
+    // `RenewalRecord.adoption.error`, so neither the observed nor the expected digest may appear.
+    if (opts.expected !== undefined && credsFingerprint(candidate) !== opts.expected)
+      throw new Error("reloadCreds: re-read credential generation did not match the expected re-signed generation (a different store, or a torn/stale read); nothing adopted");
+    // PREFLIGHT = the proof. A disposable connection presenting exactly the candidate BEFORE the live
+    // cache is touched; a refused cred throws here, leaving the resident connection untouched.
+    const probe = await probeConnect(this.servers, { creds: candidate, tls: this.tls, timeoutMs: Math.max(500, Math.min(CotalEndpoint.PREFLIGHT_MS, deadline - Date.now())) });
+    if (!probe.ok)
+      throw new Error(`reloadCreds: the broker did not accept the re-signed credential (${probe.reason}); nothing adopted`);
+    if (Date.now() > deadline)
+      throw new Error("reloadCreds: the proof exceeded the daemon deadline; nothing adopted"); // fence a late commit
+    // Validate the bounded-window renewal delay BEFORE the commit: credsRenewalDelayMs throws on a cred
+    // lacking a numeric `exp`, and that throw must not leave currentCreds flipped to a candidate the
+    // authenticator would present on the next reconnect (a post-preflight validation failure is a no-op).
+    const delay = credsRenewalDelayMs(candidate);
+    this.currentCreds = candidate;
+    this.armCredsRefresh(delay);
+    return credsClaims(candidate);
+  }
+
+  /** The 75%-of-lifetime renewal timer tick: prove + adopt + swap the LIVE connection. Preflights (it
+   *  reconnects a live connection, so the candidate must be broker-proven first) and is serialized
+   *  with the explicit reload. Never throws — a failed renewal logs and retries while the old cred
+   *  stays live until its expiry. */
+  private async renewCredsOnTimer(): Promise<void> {
+    // Deadline captured HERE, before the enqueue, for the same reason as the explicit reload.
+    const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
+    try {
+      await this.runCredsTxn(() => this.adoptFreshCreds({ deadline }));
+      await this.swapConnectionOntoFreshCreds();
+    } catch (e) {
+      this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
+      this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
+    }
+  }
+
   /** EXPLICIT credential reload — the auditable adoption step of D5 class-2 standing renewal (served
-   *  to the renewal owner via the delivery-admin rail). Re-invokes the source NOW, pins + adopts the
-   *  fresh cred on the live connection, and returns the adopted JWT's window so the caller can record
-   *  proof of adoption. THROWS (structured for the reply) when the source fails — e.g. the creds file
-   *  was not actually re-signed — so "file written" can never masquerade as "daemon adopted". */
-  async reloadCreds(): Promise<{ identity: string; iat?: number; exp?: number }> {
+   *  to the renewal owner via the delivery-admin rail). The PROOF-OF-RECORD is a DISPOSABLE PREFLIGHT
+   *  connection that presents exactly the candidate: it succeeds only when the BROKER accepts this
+   *  re-signed generation, and it runs BEFORE the live cache is touched. So a cred the broker refuses
+   *  throws HERE (structured), the resident connection — and the delivery-admin rail this very reply
+   *  rides — is never disturbed, and "file re-signed" can never masquerade as "daemon adopted".
+   *  `expected` is the renewal owner's generation token (SHA-256 of the JWT it re-signed): a re-read
+   *  that does not match is rejected before the preflight even runs. On success the candidate becomes
+   *  the resident connection's next-presented cred; the wire swap is NOT forced here — the caller
+   *  ({@link handleDeliveryAdmin}) schedules it AFTER the aggregate reply, because the responder rides
+   *  this connection and reconnecting before the reply flushes would strand it (see
+   *  adoption-false-green.smoke.ts). Returns the BROKER-ACCEPTED generation's window (identity/iat/exp):
+   *  the resident wire swap is best-effort and self-healing (the 75% timer + the broker's expiry-close),
+   *  NOT witnessed, so the caller must claim broker acceptance, not verified resident reauth. NEVER a
+   *  fingerprint. */
+  async reloadCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }> {
     if (!this.credsSource)
       throw new Error("reloadCreds: this endpoint has no creds source (a static cred cannot be renewed in place)");
-    const { iat, exp } = await this.fetchFreshCreds();
-    await this.swapConnectionOntoFreshCreds();
+    // Capture the ABSOLUTE deadline at ENTRY, before enqueue, so a reload queued behind a hung-store
+    // 75% timer tick is bounded by the SAME window (queue wait included) and cannot commit/swap after
+    // the renewal owner's request bound has already elapsed and it recorded "no responder".
+    const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
+    // The prove-then-adopt transaction (fetch + preflight + commit) runs under the single-flight so it
+    // cannot interleave with the 75% timer; the wire swap is scheduled by {@link handleDeliveryAdmin}
+    // after the aggregate reply (the responder rides this connection).
+    const { iat, exp } = await this.runCredsTxn(() => this.adoptFreshCreds({ expected, deadline }));
     return { identity: this.connId, iat, exp };
+  }
+
+  /** Arm the resident wire swap for the delivery-admin `reloadCreds` path. Called by
+   *  {@link handleDeliveryAdmin} ONLY after BOTH component proofs have settled and immediately before
+   *  the reply is returned+responded — never from inside {@link reloadCreds} while the aggregate is
+   *  still open, or a slow co-component proof would let `nc.reconnect()` reconnect the admin rail
+   *  before the reply flushes and silently strand it. The short deferral lets the reply flush on the
+   *  still-live old cred first. Best-effort — the proof was the preflight; a transient swap failure is
+   *  retried by the 75% timer and the broker's own expiry-close, both presenting the adopted candidate. */
+  private scheduleResidentSwap(): void {
+    if (this.stopped) return;
+    setTimeout(() => { void this.swapConnectionOntoFreshCreds(); }, CotalEndpoint.RESIDENT_SWAP_DEFER_MS).unref?.();
   }
 
   private armCredsRefresh(delayMs: number): void {
@@ -638,7 +766,7 @@ export class CotalEndpoint extends EventEmitter {
     clearTimeout(this.credsTimer);
     // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
     // lifetimes are hours+ so the floor never engages there.
-    this.credsTimer = setTimeout(() => void this.refreshCreds(), Math.max(1_000, delayMs));
+    this.credsTimer = setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
     this.credsTimer.unref?.();
   }
 
@@ -2132,7 +2260,7 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: () => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown> } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
     this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness };
@@ -2261,13 +2389,39 @@ export class CotalEndpoint extends EventEmitter {
    *  structured failure (e.g. the file was never re-signed), never a silent partial. */
   private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
     if (req.op === "reloadCreds") {
-      try {
-        const delivery = await this.reloadCreds();
-        const membership = this.plane3?.reloadMembershipCreds ? await this.plane3.reloadMembershipCreds() : undefined;
-        return { ok: true, data: { delivery, ...(membership !== undefined ? { membership } : {}) } };
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
+      // The renewal owner's EXPECTED-generation tokens (SHA-256 of each JWT it re-signed), per
+      // component. A missing entry means "no expectation" (the passive backstop still adopts).
+      const expected = (req.args?.expected ?? {}) as { delivery?: string; membership?: string };
+      // Prove BOTH components INDEPENDENTLY (non-short-circuit): one failing must neither hide the
+      // other's outcome nor be masked by it. Top-level `ok` is false if EITHER proof failed, so the
+      // manager can never record a green adoption while a component was refused.
+      // Each component's outcome claims only what is PROVEN: `brokerAccepted` (the preflight) carries
+      // the accepted generation's window; `residentSwap` records that the wire swap is best-effort and
+      // self-healing, NOT witnessed. Neither claims verified resident reauth (that would need a
+      // generation-tied reconnect witness on both connections).
+      const [delivery, membership] = await Promise.all([
+        this.reloadCreds(expected.delivery).then(
+          (brokerAccepted) => ({ ok: true as const, brokerAccepted, residentSwap: "scheduled" as const }),
+          (e) => ({ ok: false as const, error: (e as Error).message }),
+        ),
+        this.plane3?.reloadMembershipCreds
+          ? this.plane3.reloadMembershipCreds(expected.membership).then(
+              (result) => ({ ok: true as const, ...(result as object) }),
+              (e) => ({ ok: false as const, error: (e as Error).message }),
+            )
+          : Promise.resolve({ ok: true as const, skipped: "no-membership-hook" }),
+      ]);
+      const failures = [
+        delivery.ok ? undefined : `delivery: ${delivery.error}`,
+        membership.ok ? undefined : `membership: ${membership.error}`,
+      ].filter((m): m is string => m !== undefined);
+      // Arm the resident wire swap ONLY now — after BOTH proofs settled, right before the reply is
+      // returned+responded — so a slow membership proof can never let the delivery reconnect strand
+      // this reply. Only when delivery actually adopted a new candidate (currentCreds was updated).
+      if (delivery.ok) this.scheduleResidentSwap();
+      return failures.length
+        ? { ok: false, error: failures.join("; "), data: { delivery, membership } }
+        : { ok: true, data: { delivery, membership } };
     }
     if (req.op === "evictPrincipal") {
       // The LIVE-EVICTION executor (D5 slice 6): force-drop a denied principal's connections.
@@ -3397,20 +3551,6 @@ function authOpts(a: AuthOpts) {
  *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
  *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
  *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
-/** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style
- *  renew-early convention: the remaining 25% is the loud-failure window, wide for day-scale standing
- *  creds). Negative when already past it. A source-fed cred WITHOUT a numeric `exp` is fail-loud:
- *  the renewal seam exists precisely for bounded creds, so an unbounded one signals a matrix/caller
- *  mismatch, not a cred to keep silently forever. */
-function credsRenewalDelayMs(creds: string): number {
-  const claims = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
-  if (typeof claims.exp !== "number")
-    throw new Error("creds source returned a cred without a numeric exp - a standing-renewal endpoint requires bounded creds (mint with a lifetime, or pass a static string instead of a source)");
-  const iatMs = (typeof claims.iat === "number" ? claims.iat : Date.now() / 1000) * 1000;
-  const expMs = claims.exp * 1000;
-  return iatMs + 0.75 * (expMs - iatMs) - Date.now();
-}
-
 /** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
  *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
 function bearerExpiryMs(bearer: string): number {

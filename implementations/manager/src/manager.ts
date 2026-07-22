@@ -35,8 +35,8 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, findCotalRoot, loadManagerInstanceIdentity, loadMeshes, loadSpaceAuth, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SpaceAuth } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -150,6 +150,11 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
  *  + drain on a healthy-but-slow broker. */
 const DEPROVISION_TIMEOUT_MS = 15_000;
+/** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
+ * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
+ * daemon's STRUCTURED per-component failure, never a client-side timeout that the catch below would
+ * misrecord as "no delivery-admin responder" (a false negative while the daemon is mid-proof). */
+const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
@@ -216,6 +221,14 @@ export interface ManagerOptions {
    *  as the published binary does. A library composition leaves this off and resolves only what its
    *  composition root imported — a direct `new Manager()` never implicitly reads the machine manifest. */
   installedExtensions?: boolean;
+  /** The {@link SecretStore} for EVERY secret this manager touches — the daemon-cred renewal write side
+   *  (`remintDaemonCreds`) AND the per-agent standing-secret kinds (static creds / actor tokens /
+   *  sentinel creds). ONE store, so a hosted composition (KMS/Vault) can never end up with the manager
+   *  re-signing daemon creds into one store while it reads/writes agent creds through another (split
+   *  authority). Defaults to the workstation FS store over `workspaceRoot`, so a local `cotal up` is
+   *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`), or a
+   *  hosted remint writes one store while the daemon reads another and rides to expiry. */
+  secretStore?: SecretStore;
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
@@ -489,6 +502,9 @@ export class Manager {
   private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
+   *  See {@link ManagerOptions.secretStore}. */
+  private readonly secrets: SecretStore;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
@@ -640,6 +656,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
@@ -676,8 +693,11 @@ export class Manager {
   async start(): Promise<void> {
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
-    // itself creds from the same signing key it uses for the agents it spawns.
-    this.auth = loadSpaceAuth(authDir(this.workspaceRoot));
+    // itself creds from the same signing key it uses for the agents it spawns. The signer comes
+    // through the SecretStore seam (`this.secrets` — the injected `ManagerOptions.secretStore`, or
+    // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
+    // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
+    this.auth = await getSpaceAuth(this.secrets, this.space);
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the
@@ -830,19 +850,39 @@ export class Manager {
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
    *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
    *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
-   *  (no responder) is recorded honestly: the daemon's 75% source re-read remains the adoption backstop.
+   *  (no responder) is recorded honestly: each daemon's own 75% renewal timer remains the adoption backstop.
    *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
   private async renewDaemonCreds(): Promise<void> {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
-      const results = await remintDaemonCreds(this.workspaceRoot);
+      // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
+      // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
+      // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
+      // `this.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
+      // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
+      // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
+      // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.
+      const results = await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
+        preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
+      });
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {
+        // Hand the daemon the EXPECTED generation per component (SHA-256 of the JWT we just
+        // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
+        const expected: { delivery?: string; membership?: string } = {};
+        for (const r of resigned) {
+          if (r.file === DELIVERY_CREDS_KEY && r.fingerprint) expected.delivery = r.fingerprint;
+          else if (r.file === MEMBERSHIP_RW_CREDS_KEY && r.fingerprint) expected.membership = r.fingerprint;
+        }
         try {
-          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", {});
-          adoption = reply.ok ? { ok: true, detail: reply.data } : { ok: false, error: reply.error };
+          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
+          // Keep the per-component aggregate on BOTH outcomes: on a top-level failure `reply.data`
+          // still carries which component adopted and which was refused, which `doctor auth` renders.
+          adoption = reply.ok
+            ? { ok: true, detail: reply.data }
+            : { ok: false, error: reply.error, detail: reply.data };
         } catch (e) {
           adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
         }
@@ -850,6 +890,8 @@ export class Manager {
       for (const r of results.filter((x) => !x.ok && !x.skipped))
         console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
       if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
+      // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
+      // the `doctor auth --fix` writer too), so the results pass straight through.
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
@@ -1950,11 +1992,10 @@ export class Manager {
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
     const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
-    // LOCAL composition, hardcoded: until the manager's entry is store-threaded (the same
-    // later slice as its renewal-owner store, with/after the membership-rw reader migration),
-    // a pure-KMS hosted manager CANNOT read the callout material this grant needs — hosted
-    // user-mode spawn via the manager is UNAVAILABLE, not silently degraded, until then.
-    const secrets = workspaceSecretStore(this.workspaceRoot);
+    // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
+    // user-mode spawn reads the callout material from it — the same store the auth-store kinds
+    // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.
+    const secrets = this.secrets;
     // LIFECYCLE-KEYED family (SPEC 13.1 name-disjointness on the FS): this incarnation's files
     // embed its uid, so no teardown addressed to another incarnation can ever reach them.
     const files = agentLifecycleSecretFilePaths(this.workspaceRoot, name, opts.lifecycleUid);
@@ -2112,7 +2153,7 @@ export class Manager {
     // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
     // Migrated kinds: the store delete is the authoritative removal; the rmSync clears the FS
     // materialization (a byte-identical no-op under the local composition, real once the manager
-    // is store-threaded onto a non-FS store).
+    // `secretStore` is a non-FS store).
     //
     // LIFECYCLE-OWNED (SPEC 13.1, the manager-local half): the family deleted here is the RECORDED
     // one (spawn/adoption), else the lifecycle-keyed derivation for THIS uid — never a name-only
@@ -2120,7 +2161,7 @@ export class Manager {
     // uses. It deliberately CANNOT remove a name-keyed family it holds no record of (an operator's
     // standing `cotal mint` cred, a seeded workstation cred, a pre-split leftover): deleting an
     // unowned same-name file is the exact successor-clobber this ownership discipline removes.
-    const secrets = workspaceSecretStore(this.workspaceRoot);
+    const secrets = this.secrets;
     const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
     if (files.creds) {
       await secrets.delete(agentSecretKeyForFile(files.creds));
@@ -2860,9 +2901,9 @@ export class Manager {
           await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });
         });
         // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
-        // file path, so the cred must exist as a file regardless of the store behind the seam.
-        // LOCAL composition, hardcoded, same posture as provisionUserAgent's grant store above.
-        const secrets = workspaceSecretStore(this.workspaceRoot);
+        // file path, so the cred must exist as a file regardless of the store behind the seam. The
+        // manager's ONE store (injected for hosted, workstation FS locally).
+        const secrets = this.secrets;
         // LIFECYCLE-KEYED (SPEC 13.1 on the FS): the incarnation's cred file embeds its uid, so a
         // replayed/stale teardown can never address a same-name successor's credential.
         credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, name, lifecycleUid).creds;
@@ -3135,7 +3176,7 @@ export class Manager {
         // composition resolves the key to this same path).
         const st = lstatSync(expected);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
-        const stored = await workspaceSecretStore(this.workspaceRoot).get(agentSecretKeyForFile(expected));
+        const stored = await this.secrets.get(agentSecretKeyForFile(expected));
         if (stored === undefined) throw new Error("the credential is not in the secret store");
         credentialText = stored;
         const actual = idFromCreds(credentialText);
@@ -3171,7 +3212,7 @@ export class Manager {
         recordedToken === resolve(f.actorToken) && recordedSentinel === resolve(f.sentinelCreds) && recordedHealth === resolve(f.health);
       if (!matchesFamily(lifecycleFiles) && !matchesFamily(legacyFiles))
         throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot)} (no mixed families, no foreign health path)`);
-      const secrets = workspaceSecretStore(this.workspaceRoot);
+      const secrets = this.secrets;
       const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken));
       const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel));
       if (actorToken === undefined || sentinelCreds === undefined)

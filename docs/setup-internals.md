@@ -93,9 +93,10 @@ fail-loud on collision.
   (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.pid` and
   `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
 
-The **web dashboard** is *not* part of `cotal up`. It ships as the `@cotal-ai/web` extension.
-`cotal setup` installs it automatically by reusing the same path as `cotal ext add @cotal-ai/web`
-(best-effort; failed install leaves the manual retry command). Start it with `cotal web`; it records
+The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
+extension and is seeded automatically by the boot reconcile — the same durable, version-locked path as
+the built-in connectors (`SEEDED_EXTENSIONS`) — so it always matches the CLI version and needs no
+separate install. Start it with `cotal web`; it records
 `.cotal/web.pid`, self-registers that process with `down`, and is addressed as
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
 Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status card.
@@ -131,7 +132,12 @@ the entry is `reconcileSeededConnectors()`, gated in `runCli` before the manifes
 **What ships where.** The connectors are `devDependencies` of `cotal-ai` (not runtime deps), and a
 `prepack` step ([`bin/scripts/copy-seeded-connectors.mjs`](../bin/scripts/copy-seeded-connectors.mjs))
 `npm pack`s each into `bin/seeded-connectors/<name>/` (honoring each connector's own `files`), added to
-the package `files`. `seed/paths.ts:shippedSourceDir` resolves the live `extensions/<pkg>` dir in a
+the package `files`. `SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) is the shared list — the connectors plus
+`web` — and the prepack asserts every bundled payload's `name` and `version` match the umbrella (the
+`fixed` changeset group keeps them lockstep), so a version-skewed payload can never be published; `web`
+also emits `dist/web/vendor/vendor-manifest.json` (name/version/license/sha512) as the auditable
+inventory of its vendored browser libs (marked/DOMPurify ship as opaque `dist` bytes, not runtime deps).
+`seed/paths.ts:shippedSourceDir` resolves the live `extensions/<pkg>` dir in a
 source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install. The reconcile copies
 that payload into the durable store `seed/store/<version>/<name>` and `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
@@ -147,7 +153,9 @@ compare) or under `--force`; an operator-managed official entry (a manual `ext a
 version, no seeded marker) is left untouched on upgrade; a deliberately-removed one stays removed. The
 `ever-seeded` **authority** (`seed/authority.json`, mirrored to a monotonic `.bak`) is the sole arbiter
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never
-resurrects a removal.
+resurrects a removal. Every (re)install is verified before the generation stamp is written — recorded in
+the manifest, present on disk with its entry file resolvable, and at the generation version — so a
+version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the

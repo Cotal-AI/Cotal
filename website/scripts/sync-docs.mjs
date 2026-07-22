@@ -51,10 +51,11 @@ const groups = [
       'docs/watch-a-mesh.md',
       'docs/deploy.md',
       'docs/examples.md',
+      'docs/connectors.md',
       'docs/connect-claude.md',
       'docs/connect-opencode.md',
       'docs/connect-hermes.md',
-      'docs/agent-frameworks.md',
+      'docs/connect-pi.md',
       'docs/build-a-client.md',
       'docs/embedding.md',
     ],
@@ -226,6 +227,32 @@ for (const rel of assetRefs) {
 // here so the hash can never drift from the artifact. public/ is copied into
 // dist verbatim, so the source digest is the served digest.
 const skillsDir = join(pubDir, '.well-known', 'agent-skills');
+
+// Cotal's authored skills have ONE source of truth: implementations/cli/cotal-skills/skills (the same
+// files ship in the CLI package for the Claude Code plugin and drop into ~/.agents/skills). Generate
+// the served copies from it so there is no committed twin to drift. This discovery index is a forward
+// bet (the Cloudflare .well-known/agent-skills RFC is still Draft and no shipping harness consumes it
+// yet), which is why the working cross-vendor path is the .agents/skills drop, not this.
+const canonicalSkillsDir = join(repoRoot, 'implementations', 'cli', 'cotal-skills', 'skills');
+const canonicalSkillNames = new Set(
+  readdirSync(canonicalSkillsDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name),
+);
+// Skills authored directly here (no canonical twin) that must never be treated as generated/removable.
+const committedSkills = new Set(['cotal-setup']);
+// Reconcile FIRST (central removal): drop any previously-generated skill dir that is no longer canonical,
+// so a removed/renamed Cotal skill stops being served and re-indexed. Never touch committed skills.
+for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+  if (!entry.isDirectory() || committedSkills.has(entry.name) || canonicalSkillNames.has(entry.name)) continue;
+  rmSync(join(skillsDir, entry.name), { recursive: true, force: true });
+}
+// Then generate the current canonical set. copyFileSync throws on a missing canonical SKILL.md, failing
+// the sync loudly.
+for (const name of canonicalSkillNames) {
+  const dest = join(skillsDir, name, 'SKILL.md');
+  mkdirSync(dirname(dest), { recursive: true });
+  copyFileSync(join(canonicalSkillsDir, name, 'SKILL.md'), dest);
+}
+
 const skills = [];
 for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;

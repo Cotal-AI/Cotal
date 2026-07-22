@@ -5,13 +5,12 @@ import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
   bindExtensionPeers,
   extensionPackageDir,
-  extensionMutationLockPath,
   extensionProvides,
   installedExtensionVersion,
   loadExtensionsManifest,
   type InstalledExtension,
 } from "./extensions.js";
-import { acquireLock } from "./advisory-lock.js";
+import { claimExtensionMutationLock } from "./extension-mutation.js";
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -44,15 +43,15 @@ function enqueueLoad(load: () => Promise<void>): Promise<void> {
 }
 
 async function withExtensionLock(load: () => Promise<void>): Promise<void> {
-  const held = acquireLock(extensionMutationLockPath(), {
+  const release = claimExtensionMutationLock({
     label: "extension materialization",
     waitMs: 0,
-    onTimeout: (owner) => new Error(`extension install/remove is in progress (pid ${owner.pid}) - retry after the active \`cotal ext\` command finishes`),
+    timeoutMessage: (pid) => `extension install/remove is in progress (pid ${pid}) - retry after the active \`cotal ext\` command finishes`,
   });
   try {
     await load();
   } finally {
-    held.release();
+    release();
   }
 }
 

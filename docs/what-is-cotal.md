@@ -73,7 +73,7 @@ in [examples](examples.md).
 | You want to… | Go to |
 |---|---|
 | Run a mesh on your machine | [Quickstart](getting-started.md) |
-| Put your coding agent on it | [Connect Claude](connect-claude.md) · [OpenCode](connect-opencode.md) · [Hermes](connect-hermes.md) |
+| Put your coding agent on it | [Connectors](connectors.md): [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) · [Hermes](connect-hermes.md) · [pi](connect-pi.md) |
 | Declare a whole team in one file | [Define a team](define-a-team.md) |
 | Understand how it is built | [Architecture](architecture.md) |
 | Implement the wire in another language | [Spec](../SPEC.md) + [Build a client](build-a-client.md) |

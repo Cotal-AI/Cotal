@@ -16,7 +16,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
-import { extensionsDir, importInstalledExtension, type InstalledExtension } from "@cotal-ai/workspace";
+import {
+  claimExtensionUpdatePass,
+  extensionsDir,
+  importInstalledExtension,
+  type InstalledExtension,
+} from "@cotal-ai/workspace";
 
 // Temp config home under the repo so the fixture packages resolve @cotal-ai/core to the repo copy
 // (node walks up to packages/workspace/node_modules), sharing this process's registry singleton.
@@ -74,6 +79,22 @@ try {
     const ext = fakePackage([{ kind: "connector", name: "provided" }]);
     await assert.rejects(importInstalledExtension(ext, { kind: "connector", name: "absent" }), /did not register connector "absent"/);
     assert.throws(() => registry.resolve("connector", "provided"), /no connector registered/, "unadvertised import leaked a key");
+  }
+
+  // 5. Materialization can rewrite shared-peer links, so it must obey the same pass -> writer order as
+  //    add/remove. A whole update pass excludes a direct materializer, not only CLI mutation helpers.
+  {
+    const ref: ExtensionRef = { kind: "connector", name: "pass-excluded" };
+    const ext = fakePackage([ref]);
+    const release = claimExtensionUpdatePass();
+    try {
+      await assert.rejects(
+        importInstalledExtension(ext, ref),
+        /another extension update or mutation is in progress/,
+      );
+    } finally {
+      release();
+    }
   }
 
   console.log("materialize-concurrency.smoke: all assertions passed");

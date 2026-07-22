@@ -1,10 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
+import { agentSkillsHome, canonicalSkillNames, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
+import { cliVersion } from "../lib/version.js";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
@@ -96,6 +98,9 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       p.log.warn(`claude isn't on PATH. Install it (https://claude.com/claude-code), then re-run ${displayCmd()} setup.`);
     else if (!(await runSteps([claudePluginStep()], log, { yes }))) return abort();
   }
+  // The Cotal skills plugin is independent of the mesh connector: install it for ANY Claude Code user
+  // (its own user-scope plugin), since Claude Code does not read the cross-vendor `.agents/skills` dir.
+  if (found.claude && !(await runSteps([skillsPluginStep()], log, { yes }))) return abort();
   for (const name of ["opencode"] as const) {
     if (selected.has(name) && found[name]) {
       p.log.success(`${name} ready (auto-wired when you spawn it)`);
@@ -112,7 +117,14 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   // `cotal setup --demo` (or `--full`). Keeps the default first run to one agent, not a crowd.
   if (demo) seedDemoTeam(log);
 
-  await ensureWebExtension();
+  // Cotal's own skills, for the non-Claude harnesses, via the cross-vendor `.agents/skills` convention.
+  const skills = seedAgentSkills(log);
+  p.log.success(
+    `Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} (${skills.installed.join(", ")}) to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`,
+  );
+  if (skills.backedUp.length)
+    p.log.warn(`Backed up your edited copy before refreshing: ${skills.backedUp.map((b) => `${b.name} -> ${b.path}`).join(", ")} (Cotal manages only its own skills under ~/.agents/skills).`);
+
   await offerGlobalInstall(yes);
 
   markOnboarded(ONBOARD_VERSION);
@@ -135,9 +147,9 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ];
   const tail = demo
-    ? [dim(`Visual dashboard: ${cmd} ext add @cotal-ai/web · then ${cmd} web`)]
+    ? [dim(`Visual dashboard: ${cmd} web`)]
     : [
-        dim(`Want a visual dashboard? ${cmd} ext add @cotal-ai/web · then ${cmd} web`),
+        dim(`Want a visual dashboard? ${cmd} web`),
         dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
       ];
   note(
@@ -253,8 +265,24 @@ export function claudePluginStep(): Step {
       if (!manifestExtensionNames("connector").includes("claude"))
         return "claude connector not installed - skipping the plugin (re-add it: cotal ext add @cotal-ai/connector-claude-code)";
       const claude = await materializeExtension<Connector>({ kind: "connector", name: "claude" });
-      installClaudePlugin(claude);
+      installConnectorPlugin(claude);
       return "cotal@cotal-mesh (local scope)";
+    },
+  };
+}
+
+/** The Claude Code skills-plugin install, as a step. Independent of the mesh connector: it runs whenever
+ *  Claude is on PATH, so a Claude user gets Cotal's authored skills (team-topology today) even with no
+ *  connector, and a repeat `cotal setup` updates them. Installed at user scope (machine-wide). */
+export function skillsPluginStep(): Step {
+  return {
+    name: "claude-skills-plugin",
+    title: "Add Cotal's skills to Claude Code",
+    explain: "Installs Cotal's authored skills (team-topology) as a Claude Code plugin, updatable and removable on their own.",
+    context: [join(homeCotalDir(), "claude-plugin"), CC_DOCS_URL],
+    async run() {
+      installSkillsPlugin();
+      return "cotal-skills@cotal-mesh (user scope)";
     },
   };
 }
@@ -265,8 +293,20 @@ export function claudePluginStep(): Step {
 async function runEnsure(demo: boolean): Promise<void> {
   seedDefaultAgent(); // ensure `cotal spawn` (no name) always has a default to launch
   if (demo) seedDemoTeam(); // `cotal setup --demo` on a configured machine: add the team, then card
-  await ensureWebExtension();
+  ensureSkillsPlugin(); // fail-loud: close the upgrade gap so an onboarded machine re-running setup gets/refreshes (not silently stale) the Claude skills plugin
+  seedAgentSkills(); // reconcile the cross-vendor `.agents/skills` drop so an upgrade + re-run isn't stale
   await readyCard(process.cwd());
+}
+
+/** Install/refresh the Claude skills plugin on a repeat `cotal setup`. FAIL-LOUD: a registry, install,
+ *  update, or version-verification failure aborts `cotal setup` with a nonzero exit rather than leaving
+ *  Claude silently on a stale or missing skill. This is the customer clean-update-path invariant (no
+ *  silent fallback), and it closes the gap where an onboarded machine never re-entered the first-run
+ *  plugin step. Skipped only when Claude isn't on PATH. */
+function ensureSkillsPlugin(): void {
+  if (!onPath("claude")) return;
+  installSkillsPlugin();
+  provenance.wrote("claude skills plugin", claudeMarketDir());
 }
 
 /** True when an installed extension contributes the `web` command (the dashboard moved out to
@@ -279,32 +319,10 @@ function webInstalled(): boolean {
   }
 }
 
-/** Install the dashboard extension once, without turning setup into a launch command. This reuses the
- *  public `ext add` path in a child process so package install, peer linking, command verification,
- *  and manifest writes stay identical to an explicit `cotal ext add @cotal-ai/web`. Best-effort: setup is
- *  still useful on locked-down machines where npm/registry access is unavailable. */
-async function ensureWebExtension(): Promise<void> {
-  if (webInstalled()) return;
-  const spec = defaultWebExtensionSpec();
-  const s = p.spinner();
-  s.start("Installing the web dashboard extension");
-  const [bin, ...argv] = selfArgv();
-  const r = spawnSync(bin, [...argv, "ext", "add", spec], { encoding: "utf8" });
-  if (r.status === 0) {
-    s.stop("Installed the web dashboard extension");
-    if (r.stderr) process.stderr.write(r.stderr);
-    if (r.stdout) process.stdout.write(r.stdout);
-    return;
-  }
-  s.stop("Couldn't install the web dashboard extension");
-  const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-6).join("\n");
-  p.log.warn(`${tail ? `${tail}\n\n` : ""}Install it later with ${dim(`${displayCmd()} ext add @cotal-ai/web`)}.`);
-}
-
-function defaultWebExtensionSpec(): string {
-  const local = join(import.meta.dirname, "..", "..", "..", "web");
-  return existsSync(join(local, "package.json")) ? local : "@cotal-ai/web";
-}
+// The web dashboard is a first-party seeded extension now (@cotal-ai/web, in SEEDED_EXTENSIONS): the
+// boot reconcile installs and version-refreshes it from the umbrella's bundled payload, exactly like
+// the connectors. So setup no longer fetches it — by the time these steps run, the reconcile has
+// already seeded web at the binary's version.
 
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
  *  probes — displaying state is not depending on it), plus the key commands. */
@@ -336,58 +354,201 @@ async function readyCard(cwd: string): Promise<void> {
   );
 }
 
-/** Materialize a stable plugin marketplace under ~/.cotal/claude-plugin (surviving
- *  npx cache eviction) and install the plugin from it. The marketplace name must stay
- *  `cotal-mesh` (the connector's channel ref `plugin:cotal@cotal-mesh` depends on it). */
-function installClaudePlugin(claudeConnector: Connector): void {
-  const { pluginRoot } = claudeConnector;
-  if (!pluginRoot) throw new Error('the "claude" connector ships no plugin assets');
-  for (const f of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"]) {
-    if (!existsSync(join(pluginRoot, f))) {
-      throw new Error(
-        `plugin asset missing: ${join(pluginRoot, f)} (in a dev clone, build it with: pnpm --filter @cotal-ai/connector-claude-code bundle)`,
-      );
-    }
-  }
+/** The shared marketplace dir for the Cotal Claude Code plugins (materialized under ~/.cotal so it
+ *  survives npx cache eviction). The marketplace name must stay `cotal-mesh` (the connector's channel
+ *  ref `plugin:cotal@cotal-mesh` depends on it). Two plugins live here, installed by independent steps:
+ *  `cotal` (the mesh connector, shipped by @cotal-ai/connector-claude-code, `--scope local`) and
+ *  `cotal-skills` (Cotal-authored skills shipped in THIS CLI package, `--scope user`). They install,
+ *  update, and uninstall on their own. */
+function claudeMarketDir(): string {
+  return join(homeCotalDir(), "claude-plugin");
+}
 
-  const marketDir = join(homeCotalDir(), "claude-plugin");
-  const pluginDir = join(marketDir, "cotal");
-  for (const f of [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"]) {
-    cpSync(join(pluginRoot, f), join(pluginDir, f), { recursive: true });
+/** The exact set of plugins Cotal materializes into the shared marketplace. The marketplace manifest is
+ *  built from THIS list (not an arbitrary `readdir`), so a crash remnant like `cotal.old.<pid>` or a
+ *  third-party dir can never be published as a bogus marketplace entry. */
+const COTAL_PLUGINS = ["cotal", "cotal-skills"] as const;
+
+/** Materialize one plugin into the shared marketplace by REPLACING its dir, never merging into a stale
+ *  one: a leftover `hooks/`, `.mcp.json`, or `agents/` in an old plugin dir would be auto-discovered by
+ *  Claude and turn an otherwise data-only plugin into a code surface. Only the allowlisted assets are
+ *  copied into a sibling staging dir; an optional release `version` is stamped into plugin.json (its
+ *  manifest version is Claude's cache key, so a new release must present a new version to update a
+ *  deployed install); then the live dir is moved aside and staging renamed in.
+ *
+ *  The swap keeps a live source at all times: on a FAILED `staging -> dest` rename the moved-aside `old`
+ *  is restored to `dest` before cleanup, and `old` is deleted only once the new dir is safely in place. A
+ *  process crash mid-swap leaves `<name>.old.<pid>`/`<name>.staging.<pid>`; on the next run a leftover
+ *  `old` is restored to `dest` if the live dir was lost, then remnants are swept, and none are ever
+ *  published (the marketplace is built from an explicit plugin list, not a readdir). */
+function materializePluginDir(name: string, root: string, assets: string[], version?: string): void {
+  const marketDir = claudeMarketDir();
+  mkdirSync(marketDir, { recursive: true });
+  const dest = join(marketDir, name);
+  const staging = `${dest}.staging.${process.pid}`;
+  const old = `${dest}.old.${process.pid}`;
+  // Recover, THEN sweep, orphan swap dirs left by a crashed prior run. If `dest` is absent but a crash
+  // left a moved-aside `<name>.old.*` (a previously-live, complete copy), restore it first so we never
+  // delete the only recoverable source before the rebuild proves out. Staging dirs may be half-copied,
+  // so they are only swept, never promoted.
+  const orphans = readdirSync(marketDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && (e.name.startsWith(`${name}.old.`) || e.name.startsWith(`${name}.staging.`)))
+    .map((e) => e.name);
+  if (!existsSync(dest)) {
+    const recoverable = orphans.find((n) => n.startsWith(`${name}.old.`));
+    if (recoverable) renameSync(join(marketDir, recoverable), dest);
   }
+  for (const n of orphans) rmSync(join(marketDir, n), { recursive: true, force: true }); // the recovered one (if any) is already renamed away
+  let movedAside = false; // dest -> old happened
+  let swapped = false; // staging -> dest happened
+  try {
+    for (const f of assets) cpSync(join(root, f), join(staging, f), { recursive: true, dereference: true });
+    if (version) {
+      const pj = join(staging, ".claude-plugin", "plugin.json");
+      const manifest = JSON.parse(readFileSync(pj, "utf8")) as Record<string, unknown>;
+      manifest.version = version;
+      writeFileSync(pj, JSON.stringify(manifest, null, 2) + "\n");
+    }
+    if (existsSync(dest)) {
+      renameSync(dest, old); // move the live dir aside (recoverable) rather than delete-then-rebuild
+      movedAside = true;
+    }
+    renameSync(staging, dest);
+    swapped = true;
+  } finally {
+    // If the swap failed after moving the live dir aside, put it back so the marketplace keeps a source.
+    if (movedAside && !swapped && !existsSync(dest)) {
+      try {
+        renameSync(old, dest);
+      } catch {
+        /* best effort: `old` remains on disk for manual recovery */
+      }
+    }
+    rmSync(staging, { recursive: true, force: true });
+    if (swapped || !movedAside) rmSync(old, { recursive: true, force: true }); // drop the saved copy only once the new dir is in place (or none was saved)
+  }
+}
+
+/** Rewrite marketplace.json to list EXACTLY the Cotal plugins currently materialized, so the connector
+ *  and skills plugins (installed in either order, by independent steps) always coexist, and a removed one
+ *  drops out. Built from the explicit `COTAL_PLUGINS` list (not a `readdir`), so a crash remnant or a
+ *  foreign directory can never be published as a marketplace entry. */
+function writeMarketplaceManifest(): void {
+  const marketDir = claudeMarketDir();
+  const plugins = COTAL_PLUGINS.filter((name) => existsSync(join(marketDir, name, ".claude-plugin", "plugin.json")))
+    .map((name) => ({ name, source: `./${name}` }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   mkdirSync(join(marketDir, ".claude-plugin"), { recursive: true });
   writeFileSync(
     join(marketDir, ".claude-plugin", "marketplace.json"),
-    JSON.stringify(
-      {
-        name: "cotal-mesh",
-        description: "The Cotal mesh adapter for Claude Code: join a shared pub/sub space as a lateral peer.",
-        owner: { name: "Cotal" },
-        plugins: [{ name: "cotal", source: "./cotal" }],
-      },
-      null,
-      2,
-    ),
+    JSON.stringify({ name: "cotal-mesh", description: "Cotal for Claude Code: the mesh connector plus Cotal-authored skills.", owner: { name: "Cotal" }, plugins }, null, 2),
   );
   provenance.wrote("plugin marketplace", marketDir);
+}
 
-  // `add` fails when the marketplace is already registered; refresh it instead.
-  const add = claude("plugin", "marketplace", "add", marketDir);
+/** Register (or refresh) the materialized marketplace with Claude. */
+function registerMarketplace(): void {
+  const add = claude("plugin", "marketplace", "add", claudeMarketDir());
   if (add.status !== 0) {
     const update = claude("plugin", "marketplace", "update", "cotal-mesh");
     if (update.status !== 0) throw new Error(`couldn't register the plugin marketplace:\n${add.output}\n${update.output}`);
   }
-  const install = claude("plugin", "install", "cotal@cotal-mesh", "--scope", "local");
-  if (install.status !== 0 && !/already installed/i.test(install.output)) {
-    throw new Error(`plugin install failed:\n${install.output}`);
+}
+
+/** Install a plugin at `scope`, or UPDATE it if already installed. A bare re-`install` is a no-op that
+ *  keeps the cached (possibly older) version; pairing a release-stamped manifest version with an explicit
+ *  `plugin update` is what actually refreshes a deployed install. Then verify it truly loaded, at
+ *  `expectedVersion` when one is given (so a cache that didn't update is caught, not passed). */
+function installOrUpdatePlugin(name: string, scope: string, expectedVersion?: string): void {
+  registerMarketplace();
+  const install = claude("plugin", "install", `${name}@cotal-mesh`, "--scope", scope);
+  if (install.status !== 0) {
+    if (!/already installed/i.test(install.output)) throw new Error(`plugin install failed (${name}):\n${install.output}`);
+    const update = claude("plugin", "update", `${name}@cotal-mesh`, "--scope", scope);
+    if (update.status !== 0) throw new Error(`plugin update failed (${name}):\n${update.output}`);
   }
-  const list = claude("plugin", "list");
-  if (!list.output.includes("cotal")) throw new Error(`plugin not visible in \`claude plugin list\`:\n${list.output}`);
+  verifyPluginLoaded(name, scope, expectedVersion);
+}
+
+/** Verify a plugin actually loaded at the intended scope via `claude plugin list --json` (exact id,
+ *  scope, enabled, load errors, and version when pinned). The human-output substring check this replaces
+ *  accepted a failed-to-load entry (its name still prints) and let `cotal-skills` satisfy a check for
+ *  `cotal`. For local scope the entry must be THIS project's (there is one `cotal@cotal-mesh` per
+ *  project, some from other projects with load errors), matched by `projectPath`. */
+function verifyPluginLoaded(name: string, scope: string, expectedVersion?: string): void {
+  const r = claude("plugin", "list", "--json");
+  if (r.status !== 0) throw new Error(`\`claude plugin list --json\` failed:\n${r.output}`);
+  let entries: Array<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(r.output) as unknown;
+    entries = Array.isArray(parsed) ? (parsed as Array<Record<string, unknown>>) : [];
+  } catch {
+    throw new Error(`could not parse \`claude plugin list --json\`:\n${r.output}`);
+  }
+  const id = `${name}@cotal-mesh`;
+  const here = resolve(process.cwd());
+  const match = entries.find(
+    (e) => e.id === id && e.scope === scope && (scope !== "local" || (typeof e.projectPath === "string" && resolve(e.projectPath) === here)),
+  );
+  const where = scope === "local" ? `${scope}, project ${here}` : scope;
+  if (!match) throw new Error(`plugin ${id} (scope ${where}) is not present in \`claude plugin list --json\` after install`);
+  if (match.enabled === false) throw new Error(`plugin ${id} installed but disabled`);
+  const errs = (match.errors ?? match.error) as unknown;
+  if (Array.isArray(errs) ? errs.length > 0 : Boolean(errs)) throw new Error(`plugin ${id} loaded with errors: ${JSON.stringify(errs)}`);
+  if (expectedVersion && match.version !== expectedVersion)
+    throw new Error(`plugin ${id} is at version ${String(match.version)}, expected ${expectedVersion} (the update did not take)`);
+}
+
+/** Install the connector plugin (`cotal`, `--scope local`; its lifecycle hooks bind to a locally-installed
+ *  plugin). Called from claudePluginStep when the claude connector is present in the manifest. */
+function installConnectorPlugin(claudeConnector: Connector): void {
+  const { pluginRoot } = claudeConnector;
+  if (!pluginRoot) throw new Error('the "claude" connector ships no plugin assets');
+  for (const f of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"]) {
+    if (!existsSync(join(pluginRoot, f)))
+      throw new Error(`plugin asset missing: ${join(pluginRoot, f)} (in a dev clone, build it with: pnpm --filter @cotal-ai/connector-claude-code bundle)`);
+  }
+  materializePluginDir("cotal", pluginRoot, [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"]);
+  writeMarketplaceManifest();
+  installOrUpdatePlugin("cotal", "local");
+}
+
+/** Install/update the skills plugin (`cotal-skills`, `--scope user` so it is machine-wide, and independent
+ *  of the mesh connector: it carries no code and no core dependency, so it can never be core-skewed). Its
+ *  manifest version is stamped from the running CLI release, so an upgrade actually replaces the cached
+ *  skill in Claude. The canonical `SKILL.md` files are shared with the `.agents/skills` drop and the
+ *  website index (see lib/agent-skills.ts). Runs whenever Claude is on PATH, on first run AND on a repeat
+ *  `cotal setup`. */
+function installSkillsPlugin(): void {
+  const root = join(import.meta.dirname, "..", "..", "cotal-skills");
+  if (!existsSync(join(root, ".claude-plugin", "plugin.json")))
+    throw new Error(`cotal-skills plugin manifest missing at ${join(root, ".claude-plugin")}. Corrupt cotal-ai install.`);
+  canonicalSkillNames(); // fail loud on a missing/corrupt skills bundle before we touch Claude
+  const version = cliVersion();
+  materializePluginDir("cotal-skills", root, [".claude-plugin", "skills"], version);
+  writeMarketplaceManifest();
+  installOrUpdatePlugin("cotal-skills", "user", version);
 }
 
 function claude(...args: string[]): { status: number | null; output: string } {
   const r = spawnSync("claude", args, { encoding: "utf8" });
   return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
+/** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,
+ *  Cursor, OpenCode, Gemini CLI, and Windsurf/Devin all read. Unlike the Claude Code plugin, these
+ *  harnesses have no remote install/update path, so `cotal setup` reconciles the files (install/refresh,
+ *  back up a user's edited copy, remove a retired Cotal skill) and `cotal status` reports skew. Idempotent;
+ *  a re-run after an upgrade brings a deployed install current. */
+function seedAgentSkills(log?: ReturnType<typeof openSetupLog>): AgentSkillsResult {
+  const r = installAgentSkills();
+  provenance.wrote("cross-vendor skills", agentSkillsHome());
+  log?.line(
+    `agent-skills: installed ${r.installed.join(", ")}` +
+      (r.backedUp.length ? `; backed up ${r.backedUp.map((b) => b.path).join(", ")}` : "") +
+      (r.removed.length ? `; removed ${r.removed.join(", ")}` : ""),
+  );
+  return r;
 }
 
 /** Frontmatter marker (a comment line — the parser ignores `#` lines) stamping a demo persona as

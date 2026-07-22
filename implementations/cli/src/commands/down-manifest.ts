@@ -30,7 +30,7 @@ import {
   unlinkFileNoFollow,
   type EpCaller,
 } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, getSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectProbe } from "../lib/manifest/live.js";
@@ -372,7 +372,7 @@ function credSubject(raw: string): string | null {
  *  an open mesh / mismatched checkout (then we connect bare and do local cleanup). `teardown` is the SOLE
  *  cred that keeps `STREAM.DELETE` (deleteSpace + clearChannel) — no read, no forge, no other stream. */
 async function mintIfAuth(root: string, space: string): Promise<{ creds: string; epCaller: EpCaller } | undefined> {
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = await getSpaceAuth(workspaceSecretStore(root));
   if (!auth || auth.space !== space) return undefined;
   // The teardown instrument's ep rows are lifecycle-keyed (1c.2c): mint a fresh uid and return the
   // caller triple so the ps/despawn calls ride the v0.4 rails.

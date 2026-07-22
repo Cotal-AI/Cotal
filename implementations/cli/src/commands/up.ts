@@ -44,11 +44,13 @@ import {
   assertUserAuthInfo,
   authDir,
   loadSpaceAuth,
-  saveSpaceAuth,
+  getSpaceAuth,
+  putSpaceAuth,
   clearCurrent,
   findMesh,
   getCurrent,
   loadMeshes,
+  MEMBERSHIP_RW_CREDS_KEY,
   recordMesh,
   removeMesh,
   setCurrent,
@@ -515,7 +517,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
       let userAuth = held.userAuth;
       if (held.mode === "user") {
-        const auth = loadSpaceAuth(authDir(root));
+        const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
           console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} - \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
           process.exit(1);
@@ -819,7 +821,7 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
   if (mode === "open") return {};
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = await getSpaceAuth(workspaceSecretStore(root));
   if (!auth) throw new Error("same-principal resume requires the existing space trust material");
   const identity = newIdentity();
   // The instrument's ep caller triple (1c.2b): the admin instrument's rows are lifecycle-keyed,
@@ -1106,7 +1108,7 @@ async function ensureRecoveredUserAuth(
   prepared: Pick<PreparedRestore, "mode" | "root" | "space" | "server">,
 ): Promise<{ ok: boolean; userAuth?: UserAuthInfo }> {
   if (prepared.mode !== "user") return { ok: true };
-  const auth = loadSpaceAuth(authDir(prepared.root));
+  const auth = await getSpaceAuth(workspaceSecretStore(prepared.root), prepared.space);
   if (!auth) throw new Error("restored user-auth listener has no retained trust material");
   const stateDir = userAuthStateDir(prepared.root, prepared.space);
   const provider = await resolveAuthProvider().prepareServer({
@@ -1831,12 +1833,13 @@ async function authSetup(
   host: string = "127.0.0.1",
   user?: { idpUrl?: string },
 ): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string }> {
-  const dir = authDir(cotalRoot());
-  let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
+  const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
+  const store = workspaceSecretStore(cotalRoot());
+  let auth: SpaceAuth | undefined = await getSpaceAuth(store, space);
   if (!auth) {
     auth = await createSpaceAuth(space);
-    saveSpaceAuth(dir, auth); // strips the $SYS seed on disk, but leaves the in-memory `auth` intact …
-    await provisionMembershipCreds(auth); // … so the observer can still be minted here (fresh-space only)
+    await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
+    await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && existsSync(stateDir)) {
@@ -1888,8 +1891,11 @@ async function authSetup(
  *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
  *  — a documented migration property, not a silent no-op.
  *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
- *  a cred added here must be added to that removal list too. */
-async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
+ *  a cred added here must be added to that removal list too. `membership-rw.creds` is a MIGRATED kind:
+ *  its write/read/delete all go through the {@link SecretStore} seam (here, the feed reader, and clean),
+ *  so the renewal owner can re-sign it into a hosted store. The observer / evictor / config stay on the
+ *  raw FS (static $SYS creds + non-secret config, not renewable kinds). */
+async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
     const rw = await mintCreds(auth, newIdentity(), "membership-rw");
@@ -1900,7 +1906,7 @@ async function provisionMembershipCreds(auth: SpaceAuth): Promise<void> {
     const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
     mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
     writeSecretFile(cotalPath("membership-observer.creds"), observer);
-    writeSecretFile(cotalPath("membership-rw.creds"), rw);
+    await workspaceSecretStore(root).put(MEMBERSHIP_RW_CREDS_KEY, rw); // migrated kind: through the seam (0600 FS put)
     writeSecretFile(cotalPath("connection-evictor.creds"), evictor);
     writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {

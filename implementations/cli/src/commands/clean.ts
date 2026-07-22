@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   DELIVERY_CREDS_KEY,
+  MEMBERSHIP_RW_CREDS_KEY,
   acquireMaintenanceLock,
   agentSecretKeysUnder,
   cleanupRestoreFallback,
+  deleteSpaceAuth,
   localProcessPath,
   meshesForRoot,
   readMaintenanceJournal,
@@ -181,13 +183,18 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
     const secrets = workspaceSecretStore(root);
     const failures: string[] = [];
-    try {
-      if ((await secrets.get(DELIVERY_CREDS_KEY)) !== undefined) {
-        await secrets.delete(DELIVERY_CREDS_KEY);
-        removed.push(`.cotal/${DELIVERY_CREDS_KEY}`);
+    for (const key of [DELIVERY_CREDS_KEY, MEMBERSHIP_RW_CREDS_KEY]) {
+      // Migrated kinds: the store delete is authoritative (idempotent on an absent key). Both went
+      // through `store.put` at write time and are read back through the seam, so they must be removed
+      // through it too — never a raw rm below (which would leave a non-FS store's copy authoritative).
+      try {
+        if ((await secrets.get(key)) !== undefined) {
+          await secrets.delete(key);
+          removed.push(`.cotal/${key}`);
+        }
+      } catch (e) {
+        failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
       }
-    } catch (e) {
-      failures.push(`${DELIVERY_CREDS_KEY}: ${e instanceof Error ? e.message : String(e)}`);
     }
     // Per-agent standing secrets (static creds / actor tokens / sentinel creds) are migrated
     // kinds too. Despawn owns the primary delete; this is the crash-residue backstop, enumerated
@@ -215,16 +222,16 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       throw new Error(
         `clean all: secret-store deprovision failed (${failures.join("; ")}) - the local identity was NOT removed; the deletes are idempotent, fix the cause and re-run \`cotal clean all --force\``,
       );
-    rm(join(root, ".cotal", "auth"), ".cotal/auth (space identity + creds)");
-    // Creds/records signed by (or tied to) the deleted identity: stale the moment it is gone.
-    // The fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds`
-    // in up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no
-    // old-operator material survives the reset. (`delivery.creds` is gone already — it is a
-    // migrated kind and went through the store above, never a raw rm.)
+    // Creds/records signed by (or tied to) the space identity: stale the moment it is gone. The
+    // fresh-`up` path re-mints every one of these (keep in sync with `provisionMembershipCreds` in
+    // up.ts); sweeping them keeps `doctor auth` honest in between and guarantees no old-operator
+    // material survives the reset. (`delivery.creds` and `membership-rw.creds` went through the store
+    // above, never a raw rm.) These, the pidfiles, and `run/` are removed BEFORE the space namer, so
+    // that if ANY of them fails to remove — an immutable/locked file EPERMs — auth.json is still
+    // present and a re-run resolves THIS space, not the default.
     for (const f of [
       "manager.delivery-aware",
       "membership-observer.creds",
-      "membership-rw.creds",
       "connection-evictor.creds",
       "membership.json",
       "renewal.json",
@@ -233,6 +240,20 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
     for (const [file] of pidfileTargets(space)) rm(join(root, ".cotal", file), `.cotal/${file} (stale pidfile)`);
     rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
+    // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
+    // stray) are removed BEFORE auth.json — a locked/immutable stray UNDER `.cotal/auth` throws HERE,
+    // while the namer is still present, so a re-run still resolves THIS space. Removing the whole dir
+    // (auth.json included) in one raw `rm` would strand a wrong-space retry if such a stray survived
+    // after auth.json had already gone.
+    const authDirPath = join(root, ".cotal", "auth");
+    if (existsSync(authDirPath))
+      for (const entry of readdirSync(authDirPath))
+        if (entry !== "auth.json") rm(join(authDirPath, entry), `.cotal/auth/${entry}`);
+    // The space-NAMER (`resolveSpace` above reads it) dies ABSOLUTELY LAST, as a single authoritative
+    // op: the store delete is real for a non-FS store, and on the FS composition it removes the file.
+    if (existsSync(join(authDirPath, "auth.json"))) removed.push(".cotal/auth/auth.json (space signer)");
+    await deleteSpaceAuth(secrets);
+    rmSync(authDirPath, { recursive: true, force: true }); // drop the now-empty auth dir (nothing lockable left)
   }
   return removed;
 }

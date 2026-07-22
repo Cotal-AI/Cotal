@@ -71,5 +71,6 @@ The shared tool surface and inbound-message model are documented once, for all c
 
 ## See also
 
+- [Connectors](connectors.md): the feature matrix across all connectors
 - [Run a mesh](run-a-mesh.md) · [Define a team](define-a-team.md) · [Watch a mesh](watch-a-mesh.md)
-- [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md)
+- [MCP tools](mcp-tools.md) · [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md) · [Connect pi](connect-pi.md)

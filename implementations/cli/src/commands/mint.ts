@@ -11,7 +11,7 @@ import {
   type ParsedArgs,
   type Profile,
 } from "@cotal-ai/core";
-import { agentCredsKey, agentSecretFilePaths, authDir, loadSpaceAuth, materializeSecretToFile, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentCredsKey, agentSecretFilePaths, getSpaceAuth, materializeSecretToFile, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
 import { c } from "../ui.js";
 
@@ -23,11 +23,11 @@ import { c } from "../ui.js";
 export async function mint(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const values = args.values as { profile?: string; out?: string; signer?: boolean; force?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
-  const dir = authDir(cotalRoot());
+  const store = workspaceSecretStore(cotalRoot());
 
   // `--signer`: no identity, no name — strip this space's auth.json to its account signing material.
   if (values.signer) {
-    const auth = loadSpaceAuth(dir);
+    const auth = await getSpaceAuth(store);
     if (!auth) {
       console.error(c.red("no space auth found here - run `cotal up` first"));
       process.exit(1);
@@ -55,7 +55,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(c.red(`unknown profile "${profile}" - expected agent, observer, or admin`));
     process.exit(1);
   }
-  const auth = loadSpaceAuth(dir);
+  const auth = await getSpaceAuth(store);
   if (!auth) {
     console.error(c.red("no space auth found here - run `cotal up` first"));
     process.exit(1);

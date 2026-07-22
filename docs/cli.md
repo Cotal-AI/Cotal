@@ -32,6 +32,7 @@ runtimes ship this way.
 | Area | Command | Purpose |
 |---|---|---|
 | Set up & lifecycle | [`setup`](#setup) | Guided, configure-only setup (installs, seeds personas; launches nothing) |
+| Set up & lifecycle | [`update`](#update) | Reconcile first-party extensions and check or opt into a coherent CLI upgrade |
 | Set up & lifecycle | [`up`](#up) | Start a local mesh (nats-server + JetStream), or boot a whole manifest with `-f` |
 | Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
 | Set up & lifecycle | [`backup`](#backup-and-restore) | Create an offline full-space or registry-only artifact from a preserved cut |
@@ -87,6 +88,37 @@ seeds persona files, and it launches nothing (no mesh, no web, no manager). Firs
 narrated flow; later runs print a status card. By default it seeds one `default` persona; the
 `david`/`sven`/`me` team is opt-in via `--demo`. See [Getting started](getting-started.md) and, for
 maintainers, [setup internals](setup-internals.md).
+
+## update
+
+```bash
+cotal update [--self]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
+
+Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
+binary: it force-reconciles the four built-in connectors, then reinstalls other `@cotal-ai/*`
+operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
+failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
+with `cotal update --self` as the next command, not an automatic install.
+
+With `--self`, the npm check happens first. When a newer release exists, Cotal installs the exact
+version it validated, resolves and verifies that package in npm's global root, then launches that
+binary to reconcile connectors and first-party extensions to the new generation. An npx or dev-clone
+invocation therefore installs and continues through a separate global copy; it never claims the
+already-running process changed. If the binary is current, `--self` performs the normal local
+reconcile without reinstalling it.
+
+Third-party extensions are listed with their installed version and recorded spec but are not
+auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
+a future follow-up. A failed connector/extension install, npm metadata check, or requested global
+install is reported and makes the command exit nonzero. Independent extension attempts continue so
+the output includes every failure; an unavailable npm registry does not undo a completed local
+reconcile, but the command still exits nonzero because it could not establish that the install is
+current.
 
 ## up
 
@@ -574,7 +606,6 @@ user-auth mesh it rides the read-only admin view over your login, which needs le
 ## web
 
 ```bash
-cotal ext add @cotal-ai/web   # install once
 cotal web [--detach] [--port <n>] [--no-open] [--space <s>]
 ```
 
@@ -586,8 +617,9 @@ cotal web [--detach] [--port <n>] [--no-open] [--space <s>]
 | `--no-open` | off | Don't open the browser |
 
 The browser observability dashboard: presence, channels, and a live feed. It is **not** part of
-`cotal up`: it ships as the `@cotal-ai/web` extension (`cotal setup` installs it automatically; otherwise
-`cotal ext add @cotal-ai/web`). It self-registers `cotal web` into this surface and serves
+`cotal up`: it ships inside `cotal-ai` as the `@cotal-ai/web` extension, seeded automatically on first
+run (like the built-in connectors) so it always matches your CLI version. It self-registers `cotal web`
+into this surface and serves
 `http://cotal.localhost:7799` (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need
@@ -716,9 +748,11 @@ renders its channel / role / ACL graph. See [Define a team](define-a-team.md) an
 ## ext
 
 ```bash
+cotal ext                 # same as `list`
 cotal ext add <npm-package>
 cotal ext remove <name>
 cotal ext list
+cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
 
@@ -728,6 +762,11 @@ providers are lazy-loaded by commands such as `supervise`; local process provide
 `status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical command/process example. Installed packages and their location are described in
 [config](config.md).
+
+Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
+root kept **separate** from npm's own global tree, so these packages never show up in `npm list -g` —
+`cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
+prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
 
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process
@@ -739,7 +778,8 @@ The four first-party agent connectors (`claude`, `opencode`, `hermes`, `pi`) are
 the binary. They are seeded on first run through the **same** `ext add` path a third party uses, and
 appear in `cotal ext list` like any other extension. So you can remove one you do not want
 (`cotal ext remove @cotal-ai/connector-hermes`), and a deliberately-removed connector STAYS removed
-across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way.
+across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way. The web
+dashboard (`@cotal-ai/web`, providing `command:web`) is a fifth built-in seeded on the same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically on the first real
 command of each boot, so you rarely call it):
@@ -748,7 +788,7 @@ command of each boot, so you rarely call it):
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
 | `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). |
-| `--reset` | Discard the record and re-seed all four built-ins. **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
+| `--reset` | Discard the record and re-seed all five built-ins (the four connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 
 The default connector for a bare `cotal spawn` (no `--agent`) is `claude`; set `COTAL_DEFAULT_AGENT`

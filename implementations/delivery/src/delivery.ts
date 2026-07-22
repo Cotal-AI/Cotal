@@ -116,11 +116,12 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
  * seam ships, operating sharded delivery is deferred to the channel-prefix grammar; see core-sub-fabric.md).
  *
  * `store` is the hosted-composition seam: a closed composition root calls this export directly and
- * injects its own {@link SecretStore} (KMS/Vault…) holding the cred under {@link DELIVERY_CREDS_KEY};
- * the registered `deliver` command passes none and gets the workstation FS store (or `--creds`).
- * Injection currently covers the daemon READ path only: the renewal owner's write side
- * (`remintDaemonCreds(root, store?)`) accepts the same store but is not yet threaded through the
- * manager, so hosted end-to-end renewal on an injected store is NOT wired yet.
+ * injects its own {@link SecretStore} (KMS/Vault…) holding the daemon cred under
+ * {@link DELIVERY_CREDS_KEY} AND the membership feed's rw cred under `membership-rw.creds`; the
+ * registered `deliver` command passes none and gets the workstation FS store (or `--creds`). The
+ * renewal owner's write side (`remintDaemonCreds`) is threaded through the manager's
+ * `ManagerOptions.secretStore` too, so a hosted composition renews both daemon kinds end-to-end when
+ * the manager and this daemon are handed the SAME store.
  */
 export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promise<void> {
   const v = args.values as Values;
@@ -186,8 +187,18 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
   // rw connection via this hook.
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
-    reloadMembershipCreds: async () =>
-      membership ? membership.reloadRwCreds() : "membership feed not running (nothing to reload)",
+    reloadMembershipCreds: async (expected?: string) => {
+      if (!membership) {
+        // Absent feed: a FAILURE when the renewal owner EXPECTED a membership generation (it re-signed
+        // membership-rw.creds but the feed that must adopt it is not running), else n/a — a
+        // delivery-only renewal must never be falsely failed by an unprovisioned feed.
+        if (expected !== undefined)
+          throw new Error("membership feed is not running, but a membership generation was expected - nothing adopted");
+        return { skipped: "membership feed not running (nothing to reload)" };
+      }
+      // Symmetric with delivery: claim broker acceptance (the preflight), not verified resident reauth.
+      return { brokerAccepted: await membership.reloadRwCreds(expected), residentSwap: "best-effort" as const };
+    },
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
     evictPrincipal: (principal) => executeEviction(server, principal),
@@ -206,7 +217,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
   // logs and the graph degrades to traffic-only; Plane-3 delivery is never affected.
   try {
-    membership = await startMembership({ space, server });
+    // Pass the INJECTED store (hosted KMS/Vault), NOT credsSrc.store — that one may be an FS store over
+    // an arbitrary `--creds` path, whereas membership-rw lives under the workstation `.cotal/` key. With
+    // no injected store, startMembership falls back to the workstation FS store.
+    membership = await startMembership({ space, server }, store);
   } catch (e) {
     console.error(`! membership: failed to start (${(e as Error).message}) — graph membership degraded, delivery unaffected`);
   }

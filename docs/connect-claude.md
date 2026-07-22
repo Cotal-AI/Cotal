@@ -10,7 +10,8 @@ mesh.
 The shared mesh runtime (agent, `cotal_*` tools, hook relay) lives in
 [`@cotal-ai/connector-core`](../extensions/connector-core); this connector is the thin
 Claude-specific adapter over it. Siblings: [OpenCode](connect-opencode.md) (beta),
-[Hermes](connect-hermes.md) (alpha).
+[Hermes](connect-hermes.md) (alpha), [pi](connect-pi.md) (alpha); the
+[Connectors](connectors.md) matrix compares them feature-by-feature.
 
 ## Set up
 
@@ -24,6 +25,27 @@ tools) and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
+
+`cotal setup` also installs Cotal's authored Agent Skills (`SKILL.md`, the agentskills.io format) for
+coordinating agent teams (today `team-topology`), from one canonical source, on two channels:
+
+- **Claude Code** gets a second, skills-only plugin, `cotal-skills`, from the same `cotal-mesh`
+  marketplace, at **user scope** (machine-wide), and **independent of the mesh connector**: it carries no
+  code and no core dependency, installs whenever Claude is on `PATH` (even with the connector removed),
+  and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
+  is stamped from the running CLI release, so an upgrade + `cotal setup` runs `claude plugin update` and
+  the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
+  runs, so upgraders are not left behind.
+- **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
+  `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it:
+  it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
+  replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
+  your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
+  stale, missing, or has a retired skill to reconcile. This is the working cross-vendor path.
+
+Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
+on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,
+not a channel to rely on today.
 
 ## Spawn a session
 
@@ -74,7 +96,11 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 - **Installed, not `--plugin-dir`.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
   In a clone the marketplace is the repo's `.claude-plugin/marketplace.json`; `cotal setup`
-  (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/`.
+  (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/` (each plugin dir is
+  rebuilt from scratch and atomically replaced, never merged, so no stale file rides in). The
+  `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
+  cotal-skills@cotal-mesh --scope user`); its assets ship inside the CLI package, not the connector, and
+  its version tracks the CLI release so updates land.
 - **Identity-gated.** Connector code requires `COTAL_NAME` *or* `COTAL_LINK`. A plain
   `claude` with no `COTAL_*` env stays inert and never joins, so your own sessions in a
   repo do not appear as stray peers.

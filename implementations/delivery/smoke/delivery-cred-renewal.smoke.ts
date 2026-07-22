@@ -132,9 +132,14 @@ try {
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw"), { mode: 0o600 }); // matrix default TTL
   const adopted = await adminReq(sup, "reloadCreds");
   check("explicit reloadCreds replies ok (auditable adoption)", adopted.ok === true, JSON.stringify(adopted));
-  const data = (adopted.ok ? adopted.data : {}) as { delivery?: { identity?: string; exp?: number }; membership?: { identity?: string; exp?: number } };
-  check("adoption reply proves the delivery endpoint swapped (pinned identity + fresh exp)", data.delivery?.identity === dlvId.id && typeof data.delivery?.exp === "number", JSON.stringify(data));
-  check("adoption reply proves the membership rw conn reloaded (pinned identity + fresh exp)", data.membership?.identity === rwId.id && typeof data.membership?.exp === "number", JSON.stringify(data));
+  const data = (adopted.ok ? adopted.data : {}) as {
+    delivery?: { brokerAccepted?: { identity?: string; exp?: number } };
+    membership?: { brokerAccepted?: { identity?: string; exp?: number } };
+  };
+  // The reply claims BROKER ACCEPTANCE of the generation (the preflight), pinned to our nkey + a fresh
+  // window; the resident swap itself is best-effort/self-healing and deliberately not witnessed.
+  check("reply proves the delivery generation was broker-accepted (pinned identity + fresh exp)", data.delivery?.brokerAccepted?.identity === dlvId.id && typeof data.delivery?.brokerAccepted?.exp === "number", JSON.stringify(data));
+  check("reply proves the membership rw generation was broker-accepted (pinned identity + fresh exp)", data.membership?.brokerAccepted?.identity === rwId.id && typeof data.membership?.brokerAccepted?.exp === "number", JSON.stringify(data));
 
   // Phase 2 — idempotent adoption: an unchanged file whose cred is still ahead of its renewal
   // point re-adopts cleanly (the explicit path may race the backstop; both succeeding is correct).
