@@ -21,9 +21,8 @@ import {
 import {
   acquireMaintenanceLock,
   assertStoreIdentity,
-  authDir,
   claimMaintenanceReady,
-  loadSpaceAuth,
+  getSpaceAuth,
   readMaintenanceJournal,
   recordMaintenanceClaimResources,
   recoverStaleMaintenanceClaim,
@@ -31,6 +30,7 @@ import {
   releaseMaintenanceClaim,
   releaseMaintenanceLock,
   sameStoreIdentity,
+  workspaceSecretStore,
   type MaintenanceReadyRecord,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
@@ -353,7 +353,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
-    const auth = ready.mode === "open" ? undefined : loadSpaceAuth(authDir(root));
+    const auth = ready.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root));
     if (ready.mode !== "open" && (!auth || auth.space !== ready.space))
       throw new Error(`backup requires existing trust material for space ${JSON.stringify(ready.space)}`);
     const authority = selected === "full" ? await authorityFingerprint(root, ready.space, ready.mode) : undefined;

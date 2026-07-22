@@ -11,10 +11,11 @@ import {
 import {
   authDir,
   findCotalRoot,
-  loadSpaceAuth,
+  getSpaceAuth,
   readRenewalRecord,
   remintDaemonCreds,
   userAuthStateDir,
+  workspaceSecretStore,
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
@@ -50,7 +51,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   }
   const values = args.values as FlagValues<typeof doctorFlags>;
   const root = findCotalRoot(process.cwd());
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = await getSpaceAuth(workspaceSecretStore(root));
 
   console.log(c.bold("cotal doctor auth"));
   console.log(`  root ${root}`);
@@ -74,7 +75,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   if (values.fix && problems.some((r) => isRemintable(r.kind))) {
     console.log(c.dim("\n--fix: re-signing the remintable daemon creds…"));
     const prior = readRenewalRecord(root);
-    const results = await remintDaemonCreds(root);
+    const results = await remintDaemonCreds(root, auth.space); // validate the signer against THIS folder's space
     // A local re-sign is NOT a broker proof: `--fix` has no live admin rail to adopt through, it
     // relies on the daemon's 75% renewal timer. So it must NEVER erase a KNOWN broker refusal to
     // green — if the last renewal was refused (e.g. the signer the broker rejects), the re-signed

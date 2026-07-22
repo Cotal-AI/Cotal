@@ -43,7 +43,8 @@ import {
   assertUserAuthInfo,
   authDir,
   loadSpaceAuth,
-  saveSpaceAuth,
+  getSpaceAuth,
+  putSpaceAuth,
   clearCurrent,
   findMesh,
   getCurrent,
@@ -515,7 +516,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
       let userAuth = held.userAuth;
       if (held.mode === "user") {
-        const auth = loadSpaceAuth(authDir(root));
+        const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
           console.error(c.red(`✗ mesh "${held.space}" is user-auth but this root has no trust material under ${authDir(root)} - \`cotal down\` it, restore or re-provision \`.cotal/auth\`, then \`cotal up --user-auth\``));
           process.exit(1);
@@ -818,7 +819,7 @@ function markPendingResumeDegraded(attemptId: string, reason: string): void {
 
 async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): Promise<ControlAuth> {
   if (mode === "open") return {};
-  const auth = loadSpaceAuth(authDir(root));
+  const auth = await getSpaceAuth(workspaceSecretStore(root));
   if (!auth) throw new Error("same-principal resume requires the existing space trust material");
   const identity = newIdentity();
   return {
@@ -1100,7 +1101,7 @@ async function ensureRecoveredUserAuth(
   prepared: Pick<PreparedRestore, "mode" | "root" | "space" | "server">,
 ): Promise<{ ok: boolean; userAuth?: UserAuthInfo }> {
   if (prepared.mode !== "user") return { ok: true };
-  const auth = loadSpaceAuth(authDir(prepared.root));
+  const auth = await getSpaceAuth(workspaceSecretStore(prepared.root), prepared.space);
   if (!auth) throw new Error("restored user-auth listener has no retained trust material");
   const stateDir = userAuthStateDir(prepared.root, prepared.space);
   const provider = await resolveAuthProvider().prepareServer({
@@ -1824,11 +1825,12 @@ async function authSetup(
   host: string = "127.0.0.1",
   user?: { idpUrl?: string },
 ): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
-  const dir = authDir(cotalRoot());
-  let auth: SpaceAuth | undefined = loadSpaceAuth(dir);
+  const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
+  const store = workspaceSecretStore(cotalRoot());
+  let auth: SpaceAuth | undefined = await getSpaceAuth(store, space);
   if (!auth) {
     auth = await createSpaceAuth(space);
-    saveSpaceAuth(dir, auth); // strips the $SYS seed on disk, but leaves the in-memory `auth` intact …
+    await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
     await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir

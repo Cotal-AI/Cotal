@@ -1,14 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  credsClaims,
   credsFingerprint,
   identityFromCreds,
   mintCreds,
   writeSecretFile,
   type Profile,
   type SecretStore,
+  type SpaceAuth,
 } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "./auth-paths.js";
+import { getSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
@@ -59,16 +61,51 @@ export interface RemintResult {
  *  The manager — the D5 standing-renewal owner, and a hosted-path caller (manager.ts calls this
  *  unconditionally) — passes the SAME store it gives the daemon (its `ManagerOptions.secretStore`),
  *  so a hosted composition re-signs into the store the daemon renews from, never a divergent one; no
- *  store means the local workspace FS composition (keys = the filenames under `.cotal/`). The store's
- *  ATOMIC put is load-bearing here, because the daemons re-read these values LIVE (the delivery
- *  endpoint's 75% source refresh, the membership feed's 75% renewal fetch) and the plain
- *  `writeSecretFile` this replaced could tear such a concurrent read. Structured per-file results,
- *  never throws: a failed remint leaves the old cred running toward its loud expiry and the caller
- *  records/reports the failure. */
-export async function remintDaemonCreds(root: string, store?: SecretStore): Promise<RemintResult[]> {
-  const auth = loadSpaceAuth(authDir(root));
-  if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
+ *  store means the local workspace FS composition (keys = the filenames under `.cotal/`).
+ *
+ *  `expectedSpace` (the caller's known space — the manager's `this.space`, doctor's resolved space) is
+ *  a REQUIRED positional and is validated against the store's signer: the daemon creds are SPACE-SCOPED,
+ *  so a store whose signer is for a DIFFERENT space (a swap after start, a misconfigured hosted mount)
+ *  must NOT re-sign — that would overwrite each last-good cred with one the space's broker rejects,
+ *  breaking the daemon on a value that looks freshly renewed. It is required (not optional) so the
+ *  unsafe no-space call cannot compile — the same claim-exceeds-enforcement trap the cross-space fix
+ *  would otherwise leave for the next caller. A signer that fails validation fails EVERY file
+ *  (`ok:false`), leaving the standing creds intact toward their loud expiry rather than clobbering them.
+ *  The store's ATOMIC put is load-bearing here, because the daemons re-read these values LIVE (the
+ *  delivery endpoint's 75% source refresh, the membership feed's 75% renewal fetch).
+ *
+ *  The last-good cred is NEVER overwritten with an UNPROVEN one — a bundle's JWT chain is self-bound,
+ *  not broker-bound (two `createSpaceAuth(space)` calls yield same-named, DIFFERENT-account chains), so
+ *  a same-label alternate signer could mint a broker-dead cred and CLOBBER the last-good (availability
+ *  loss). Proof before overwrite is one of: (1) `opts.preflight` — a disposable "does the broker accept
+ *  this cred" probe the caller owns (the manager passes a {@link probeConnect} over `this.servers`),
+ *  which gates EVERY candidate when supplied; or (2) AUTHORITY CONTINUITY — the candidate is signed by
+ *  the SAME account signing key (`iss`) as the current (last-good, already broker-accepted) cred, the
+ *  same authority the broker trusts, which the OFFLINE local repair (`doctor auth --fix`) relies on. A
+ *  same-label alternate account breaks continuity, so with no preflight it is refused, not clobbered.
+ *
+ *  Structured per-file results, never throws: a failed remint leaves the old cred running toward its
+ *  loud expiry and the caller records/reports the failure. */
+export async function remintDaemonCreds(
+  root: string,
+  expectedSpace: string,
+  store?: SecretStore,
+  opts?: { preflight?: (creds: string) => Promise<boolean> },
+): Promise<RemintResult[]> {
   const s = store ?? workspaceSecretStore(root);
+  // Read + FULLY VALIDATE the SIGNER through the SAME store the daemon creds live in (symmetric with
+  // the daemon's `runDelivery(args, store)`) — reading it from the FS while writing the daemon creds
+  // to an injected store would split authority (signer ← disk, cred ← KMS): the class 3b closed for
+  // daemon creds, here for the signer. `getSpaceAuth(s, expectedSpace)` cross-checks the trust chain
+  // against the caller's space; a wrong-space or malformed signer THROWS (never re-signs).
+  let auth: SpaceAuth | undefined;
+  try {
+    auth = await getSpaceAuth(s, expectedSpace);
+  } catch (e) {
+    // Wrong-space / malformed signer: fail every file, DO NOT overwrite the last-good creds.
+    return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, error: (e as Error).message }));
+  }
+  if (!auth) return REMINTABLE_DAEMON_CREDS.map(({ file }) => ({ file, ok: false, skipped: "no-auth" as const }));
   const results: RemintResult[] = [];
   for (const { file, profile } of REMINTABLE_DAEMON_CREDS) {
     try {
@@ -78,6 +115,29 @@ export async function remintDaemonCreds(root: string, store?: SecretStore): Prom
         continue;
       }
       const next = await mintCreds(auth, identityFromCreds(current), profile);
+      // NEVER overwrite the last-good cred with an UNPROVEN one. A bundle's JWT chain is SELF-bound,
+      // not broker-bound (two `createSpaceAuth(space)` calls yield same-named, DIFFERENT-account chains),
+      // so `expectedSpace` + full-chain validity is not enough. Proof is one of:
+      //  (1) a broker PREFLIGHT — the manager's live "does the broker accept this cred" probe; OR
+      //  (2) AUTHORITY CONTINUITY — the candidate is signed by the SAME account signing key (`iss`) as
+      //      the current (last-good, already broker-accepted) cred, i.e. the same authority the broker
+      //      already trusts. This is what the OFFLINE local repair (`doctor auth --fix`, no live broker)
+      //      relies on. A same-label ALTERNATE account (full OR stripped) breaks continuity, so with no
+      //      preflight it is REFUSED — the last-good is preserved rather than clobbered by a broker-dead cred.
+      let proven: boolean;
+      let why: string;
+      if (opts?.preflight) {
+        proven = await opts.preflight(next);
+        why = "the broker refused the re-signed cred (wrong-account or unreachable signer)";
+      } else {
+        const iss = credsClaims(next).iss;
+        proven = iss !== undefined && iss === credsClaims(current).iss;
+        why = "the re-signed cred's signer is not the last-good cred's authority, and no broker preflight was supplied";
+      }
+      if (!proven) {
+        results.push({ file, ok: false, error: `${why} - last-good cred preserved` });
+        continue;
+      }
       await s.put(file, next);
       results.push({ file, ok: true, fingerprint: credsFingerprint(next) });
     } catch (e) {

@@ -11,7 +11,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -140,6 +140,40 @@ try {
   check("all: personas survive", existsSync(join(allRoot, ".cotal", "agents", "default.md")));
   check("all: logs are left alone", existsSync(join(allRoot, ".cotal", "nats.log")));
   check("all: reports what it removed", removedAll.length >= 9, removedAll);
+
+  // --- HIGH-3: the space-NAMER (auth.json) dies LAST, after every fallible cleanup ------------
+  // If a late removal fails (an immutable/locked derived file, pidfile, or run/ artifact), auth.json
+  // must still be present so a re-run resolves THIS space, not the default. Force a deterministic
+  // late failure via a read-only `run/` dir (its child cannot be unlinked) and prove auth survives.
+  // POSIX-only: on win32 read-only-dir semantics differ (rmSync force overrides), so the probe is
+  // skipped there — the ORDERING in removeLocalState is unconditional; only this failure injection is.
+  if (process.platform !== "win32") {
+    // (a) a locked artifact OUTSIDE .cotal/auth (a read-only run/ dir) — removed before the namer.
+    const stuckRoot = meshRoot();
+    chmodSync(join(stuckRoot, ".cotal", "run"), 0o500); // read-only dir: unlinking run/launch.json throws
+    let threw = false;
+    try { await removeLocalState(stuckRoot, { includeAuth: true }); } catch { threw = true; }
+    check("HIGH-3: a failed late cleanup (read-only run/) throws", threw);
+    check("HIGH-3: auth.json (the space-namer) SURVIVES the failed cleanup", existsSync(join(stuckRoot, ".cotal", "auth", "auth.json")));
+    chmodSync(join(stuckRoot, ".cotal", "run"), 0o700);
+    rmSync(stuckRoot, { recursive: true, force: true });
+    // (b) a locked stray UNDER .cotal/auth itself — auth.json's siblings are removed before it, so
+    // this throws with auth.json still present (the raw `rm(.cotal/auth)` this replaced would have
+    // stranded a wrong-space retry once auth.json had already gone).
+    const authStuck = meshRoot();
+    const lockedDir = join(authStuck, ".cotal", "auth", "locked-stray");
+    mkdirSync(lockedDir, { recursive: true });
+    writeFileSync(join(lockedDir, "held"), "x");
+    chmodSync(lockedDir, 0o500); // read-only dir: its child cannot be unlinked
+    let threwAuth = false;
+    try { await removeLocalState(authStuck, { includeAuth: true }); } catch { threwAuth = true; }
+    check("HIGH-3b: a locked stray UNDER .cotal/auth throws", threwAuth);
+    check("HIGH-3b: auth.json SURVIVES a stray locked under its own dir", existsSync(join(authStuck, ".cotal", "auth", "auth.json")));
+    chmodSync(lockedDir, 0o700);
+    rmSync(authStuck, { recursive: true, force: true });
+  } else {
+    console.log("  · HIGH-3 read-only-dir probe skipped on win32 (chmod dir semantics differ); the namer-last ordering is unconditional");
+  }
 
   // --- `--store-dir` override + already-clean no-op ------------------------------------------
   const customRoot = meshRoot();
