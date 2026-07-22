@@ -7,7 +7,7 @@
  * consumer's import path changes. Pure mechanical split: zero signature/behavior change.
  */
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError } from "./endpoint-error.js";
 import { epsSubject, type EpSessionDir } from "./endpoint-subjects.js";
 import type { SessionGrant } from "./endpoint-session.js";
 

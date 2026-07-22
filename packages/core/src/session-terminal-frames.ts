@@ -22,7 +22,7 @@
  *   serving → caller:  `data` (pty output, incl. the reconstructed backlog), `drop` (a
  *                      backpressure drop-notice — never a silent loss), `end` (a terminal reason).
  */
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError } from "./endpoint-error.js";
 
 /** One terminal-session frame carried in a §13.6 rail data payload. `end.reason` is an
  *  APPLICATION-defined bounded token (the reference manager uses `process-exit` / `closed` /
@@ -62,14 +62,50 @@ function assertReason(v: unknown): string {
   return v;
 }
 
-/** Encode raw terminal bytes as a `data` frame (the ruled base64-in-JSON form). */
-export function encodeTerminalData(bytes: Buffer): TerminalFrame {
-  return { k: "data", b: bytes.toString("base64") };
+// STANDARD base64 (RFC 4648 §4: the standard alphabet + `=` padding — BYTE-EXACT with node's
+// `Buffer.toString("base64")` / `Buffer.from(_, "base64")`), implemented Buffer-free so the codec
+// runs unchanged in the browser console bundle. NOT url-safe (the rail's JSON carries `+`/`/`
+// fine). Both ends run this same code, so the wire stays identical either way.
+const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_INV: Int16Array = (() => { const m = new Int16Array(128).fill(-1); for (let i = 0; i < B64_ALPHABET.length; i++) m[B64_ALPHABET.charCodeAt(i)] = i; return m; })();
+
+function base64Encode(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const has1 = i + 1 < bytes.length, has2 = i + 2 < bytes.length;
+    const b1 = has1 ? bytes[i + 1] : 0, b2 = has2 ? bytes[i + 2] : 0;
+    out += B64_ALPHABET[b0 >> 2];
+    out += B64_ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)];
+    out += has1 ? B64_ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] : "=";
+    out += has2 ? B64_ALPHABET[b2 & 0x3f] : "=";
+  }
+  return out;
 }
 
-/** The bytes carried by a decoded `data` frame. */
-export function terminalFrameBytes(frame: Extract<TerminalFrame, { k: "data" }>): Buffer {
-  return Buffer.from(frame.b, "base64");
+/** Decode STANDARD base64 (already grammar-validated by {@link assertBase64}) to bytes. */
+function base64Decode(s: string): Uint8Array {
+  const clean = s.endsWith("==") ? s.slice(0, -2) : s.endsWith("=") ? s.slice(0, -1) : s;
+  const out = new Uint8Array((clean.length * 6) >> 3);
+  let o = 0, acc = 0, bits = 0;
+  for (let i = 0; i < clean.length; i++) {
+    acc = (acc << 6) | (B64_INV[clean.charCodeAt(i)] & 0x3f);
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out[o++] = (acc >> bits) & 0xff; }
+  }
+  return out;
+}
+
+/** Encode raw terminal bytes as a `data` frame (the ruled base64-in-JSON form). Accepts any
+ *  Uint8Array (a node Buffer is one). */
+export function encodeTerminalData(bytes: Uint8Array): TerminalFrame {
+  return { k: "data", b: base64Encode(bytes) };
+}
+
+/** The bytes carried by a decoded `data` frame, as a Uint8Array (a node Buffer is one; the manager
+ *  bridge decodes utf8 via TextDecoder, the browser writes the bytes straight to xterm). */
+export function terminalFrameBytes(frame: Extract<TerminalFrame, { k: "data" }>): Uint8Array {
+  return base64Decode(frame.b);
 }
 
 /** Fail-loud closed-schema parse of a terminal-session frame from a rail's opaque `data`. An

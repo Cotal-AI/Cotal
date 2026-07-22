@@ -411,12 +411,18 @@ importers:
       '@nats-io/kv':
         specifier: ^3.4.0
         version: 3.4.0
+      '@nats-io/nats-core':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
 
   implementations/web:
     dependencies:

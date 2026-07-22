@@ -47,6 +47,7 @@ import {
   staticRedemptionSeam,
   userModeRedemptionSeam,
   encodeTerminalData,
+  terminalFrameBytes,
   decodeTerminalFrame,
   type TerminalFrame,
 } from "../src/session/index.js";
@@ -158,6 +159,23 @@ console.log("B. the framing codec (raw bytes base64-in-JSON + JSON control frame
   c("an unknown frame kind fails loud (closed schema)", threw);
   let threw2 = false; try { decodeTerminalFrame({ k: "data", b: "not base64!!" }); } catch { threw2 = true; }
   c("a non-base64 byte payload fails loud", threw2);
+
+  // The codec was de-Buffered (browser bundle, item 6): assert it is BYTE-EXACT STANDARD base64
+  // (RFC 4648 known vectors + agreement with node's Buffer, incl. `=` padding) so an alphabet or
+  // padding slip cannot hide — both ends run this exact code, so a slip would silently corrupt.
+  const VECTORS: Array<[string, string]> = [["", ""], ["f", "Zg=="], ["fo", "Zm8="], ["foo", "Zm9v"], ["foob", "Zm9vYg=="], ["fooba", "Zm9vYmE="], ["foobar", "Zm9vYmFy"], ["Man", "TWFu"]];
+  let vecOk = true;
+  for (const [input, expected] of VECTORS) {
+    const enc = encodeTerminalData(Buffer.from(input, "utf8")) as { b: string };
+    if (enc.b !== expected || enc.b !== Buffer.from(input, "utf8").toString("base64")) vecOk = false;
+    const dec = terminalFrameBytes({ k: "data", b: enc.b });
+    if (Buffer.from(dec).toString("utf8") !== input) vecOk = false;
+  }
+  c("base64 is byte-exact STANDARD base64 (RFC 4648 vectors + node agreement, padding preserved)", vecOk);
+  // A full 0..255 byte roundtrip (every byte value survives encode→decode identically).
+  const all = new Uint8Array(256); for (let i = 0; i < 256; i++) all[i] = i;
+  const rt = terminalFrameBytes(encodeTerminalData(all) as { k: "data"; b: string });
+  c("every byte value 0..255 survives encode→decode", rt.length === 256 && [...rt].every((v, i) => v === i) && (encodeTerminalData(all) as { b: string }).b === Buffer.from(all).toString("base64"));
 }
 
 // ---------------------------------------------------------------------------------------------

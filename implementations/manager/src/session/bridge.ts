@@ -128,7 +128,7 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
         void goLive();
         return;
       case "data":
-        session.write(terminalFrameBytes(p).toString("utf8"));
+        session.write(new TextDecoder().decode(terminalFrameBytes(p)));
         return;
       case "resize":
         session.resize(p.cols, p.rows);

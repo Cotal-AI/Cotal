@@ -20,13 +20,14 @@
   "scripts": {
     "test": "tsx smoke/start-model-preflight.smoke.ts && tsx smoke/start-overrides.smoke.ts && tsx smoke/preserve-state.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\"",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\" && pnpm run build:console-bundle",
+    "build:console-bundle": "esbuild src/console-session-entry.ts --bundle --format=iife --platform=browser --target=es2020 --alias:node:crypto=./src/console-crypto-shim.ts --outfile=dist/console/session-bundle.js && node scripts/console-bundle-loadtest.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@lydell/node-pty": "1.2.0-beta.12",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@xterm/addon-attach": "^0.11.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-serialize": "^0.13.0",
@@ -40,8 +41,10 @@
     "@cotal-ai/connector-core": "workspace:*",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
+    "@nats-io/nats-core": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0",
-    "@types/ws": "^8.18.1"
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1"
   },
   "files": [
     "dist"

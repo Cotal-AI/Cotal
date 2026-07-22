@@ -279,7 +279,7 @@ export function meshSessionTransport(nc: NatsConnection, grant: SessionGrant): T
     onData: (data) => {
       let frame;
       try { frame = decodeTerminalFrame(data); } catch { return; } // garbled: the rail already surfaced it
-      if (frame.k === "data") onDataCb?.(terminalFrameBytes(frame));
+      if (frame.k === "data") onDataCb?.(Buffer.from(terminalFrameBytes(frame)));
       else if (frame.k === "end") fireEnd(undefined, frame.reason);
       else if (frame.k === "drop") onDataCb?.(Buffer.from(`\r\n[cotal: ${frame.bytes} bytes dropped - backpressure]\r\n`));
     },
