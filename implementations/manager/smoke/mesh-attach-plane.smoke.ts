@@ -39,6 +39,9 @@ import {
   encodeTerminalData,
   type TerminalFrame,
 } from "../src/session/index.js";
+// dev-only smoke import: the CLI's mesh transport is the real caller consumer; implementations do
+// not import each other in production, but a cross-impl integration smoke may (like attach.smoke.ts).
+import { meshSessionTransport } from "../../cli/src/lib/attach-client.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -139,6 +142,25 @@ c("re-establish after despawn is a fresh session (new sessionId)", r2.grant.sess
 // seam-level holder-binding refusal is exhaustively proven in smoke:mesh-attach. Here we assert the
 // plane never yields a session to a mismatched caller by construction (redeem uses caller = presenter).
 c("the plane redeems as the authenticated attach caller (presenter==holder by construction)", true);
+
+// --------------------------------------------------------------------------------------------
+console.log("E. the CLI mesh transport drives the plane bridge (the real caller consumer)");
+const ncCli: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
+let cliReady = false;
+let cliEnd: string | undefined;
+const cliRx: Buffer[] = [];
+const transport = meshSessionTransport(ncCli, r2.grant);
+transport.onReady(() => { cliReady = true; });
+transport.onData((b) => cliRx.push(b));
+transport.onEnd((_err, reason) => { cliEnd = reason; });
+c("meshSessionTransport fires onReady after the ready handshake", await until(() => cliReady));
+transport.send(Buffer.from("CLITYPE\n", "utf8"));
+c("transport.send → pty echo → transport.onData (duplex over the CLI mesh transport)", await until(() => Buffer.concat(cliRx).toString("utf8").includes("CLITYPE")));
+transport.resize(90, 25);
+c("transport.resize reaches the pty", await until(() => s2.cols === 90 && s2.rows === 25));
+transport.close();
+c("transport.close ends the session (clean detach)", await until(() => cliEnd === "detached"));
+await ncCli.close();
 
 plane.endAll("closed");
 h2.stop({ graceful: false });

@@ -2,7 +2,7 @@ import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs 
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
-import { attachClient, detachKey } from "../lib/attach-client.js";
+import { attachClient, detachKey, wsTerminalTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -111,6 +111,6 @@ export async function attach(args: ParsedArgs): Promise<void> {
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
-  await attachClient(ws);
+  await attachClient(wsTerminalTransport(ws));
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
