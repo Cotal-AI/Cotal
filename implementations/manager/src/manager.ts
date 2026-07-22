@@ -2134,10 +2134,27 @@ export class Manager {
    *  still-live-looking row only costs a numbered suffix, and a missed freshly-joined occupant is
    *  still refused downstream exactly as before. Offline rows do NOT occupy — a properly retired
    *  name stays reusable. */
-  private uniqueName(base: string): string {
+  /** The roster's LIVE occupant names (status !== offline) — occupants this manager may NOT manage
+   *  (a foreground `cotal spawn`, a connector session, ANOTHER manager's agent). Allocating over any
+   *  of them mints a sibling the broker/auth then refuses to admit, surfacing as the 30s launch-
+   *  uncertain black hole. */
+  private liveRosterNames(): Set<string> {
     const live = new Set<string>();
     for (const p of this.ep.getRoster()) if (p.status !== "offline") live.add(p.card.name);
-    return firstFreeName(base, (n) => this.agents.has(n) || this.reserved.has(n) || this.retiring.has(n) || live.has(n));
+    return live;
+  }
+
+  /** THE single name-liveness predicate both the hard-pinned collision refuse (M6, P2 item 2) and
+   *  uniqueName's numbering consult, so they can never drift: a name is taken if this manager
+   *  reserves/manages/retires it OR a roster-live occupant already holds it. Pass a pre-built
+   *  {@link liveRosterNames} set when checking many names in one allocation. */
+  private nameInUse(name: string, live: Set<string> = this.liveRosterNames()): boolean {
+    return this.agents.has(name) || this.reserved.has(name) || this.retiring.has(name) || live.has(name);
+  }
+
+  private uniqueName(base: string): string {
+    const live = this.liveRosterNames();
+    return firstFreeName(base, (n) => this.nameInUse(n, live));
   }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
@@ -2520,8 +2537,13 @@ export class Manager {
     const hardPinned = opts.identity !== undefined || opts.resolved !== undefined;
     let name: string;
     if (hardPinned) {
-      if (this.agents.has(identityName) || this.reserved.has(identityName))
-        return { ok: false, error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already in use by a live or provisioning incarnation; a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
+      // The collision check consults THE SAME liveness source uniqueName uses ({@link nameInUse}:
+      // this manager's agents/reserved/retiring PLUS the roster-live set) - a hard-pinned name
+      // colliding with ANY live incarnation (managed, unmanaged foreground/connector, or another
+      // manager's agent) refuses cleanly at accept, rather than minting the collision and black-
+      // holing on the broker/auth refusal (item 3: a pinned name live under another manager MUST refuse).
+      if (this.nameInUse(identityName))
+        return { ok: false, error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
       name = identityName;
     } else {
       name = this.uniqueName(identityName);
