@@ -1891,10 +1891,27 @@ export function serverConfig(
     /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
      *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
     extraAccounts?: Array<{ pub: string; jwt: string }>;
+    /** OPT-IN NATS websocket listener port (P2 item 6): browsers cannot speak raw NATS TCP, so the
+     *  console session client (a real mesh caller) needs one. This is a NEW ATTACK SURFACE the broker
+     *  did not have — emitted only when set, DEFAULT-BOUND TO LOCALHOST ({@link wsHost}), no TLS
+     *  (dev loopback; a remote/TLS dashboard is a later explicit opt-in). Omit it and no listener
+     *  exists (a broker with no console need adds no surface). */
+    wsPort?: number;
+    /** Bind host for the websocket listener; defaults to loopback. Widening it (a remote dashboard)
+     *  is a deliberate operator choice, never the default. */
+    wsHost?: string;
   },
 ): string {
   const port = opts.port ?? 4222;
   const host = opts.host ?? "127.0.0.1";
+  // The websocket listener (item 6): LOCALHOST by default, no_tls for the dev loopback. Emitted only
+  // when wsPort is set — a broker with no console session client opens no ws surface.
+  const websocket = opts.wsPort === undefined ? "" : `websocket {
+  host: ${opts.wsHost ?? "127.0.0.1"}
+  port: ${opts.wsPort}
+  no_tls: true
+}
+`;
   // A minted "agent" carries its full permission allow-list inline in its user JWT, which the
   // client sends in the CONNECT protocol line. With per-channel + JetStream-API grants that JWT
   // exceeds the 4 KB default max_control_line at ~2 channels, and the server then silently drops
@@ -1907,7 +1924,7 @@ host: ${host}
 port: ${port}
 max_control_line: 65536
 jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
-operator: ${auth.operator.jwt}
+${websocket}operator: ${auth.operator.jwt}
 system_account: ${auth.sys.pub}
 resolver: MEMORY
 resolver_preload: {
