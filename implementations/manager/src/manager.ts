@@ -746,6 +746,10 @@ export class Manager {
     // P2 item 2: stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
+    // P2 item 2 must-5 Q-B: reconcile any accepted-but-unterminal goals inherited from a predecessor
+    // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
+    // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
+    await this.reconcileGoalIndex();
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
@@ -3806,6 +3810,69 @@ export class Manager {
     try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
   }
 
+  /** P2 item 2 must-5 Q-B — the boot reconcile: a fresh incarnation (a manager restart takes a NEW
+   *  instanceId, so the in-memory acceptance map starts empty) inherits the endpoint's accepted-but-
+   *  unterminal goals from any predecessor. Enumerate the durable index over a scoped PROVISIONER
+   *  (records CONSUMER.CREATE; the goal-writer holds NO enumeration grant, exactly the ruling) and
+   *  settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh: a bare
+   *  connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
+   *  accepting (the `goalReconcileDone` gate), so it never races a live goal's acceptance. Never
+   *  fatal — a reconcile failure is logged and the gate opens either way. */
+  private async reconcileGoalIndex(): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) { this.goalReconcileDone = true; return; }
+    try {
+      let refs: GoalRef[] = [];
+      const nc = this.auth
+        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner") }), maxReconnectAttempts: 0 })
+        : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
+      try {
+        const kvm = new Kvm(nc);
+        await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
+        refs = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
+      } finally {
+        await nc.drain().catch(() => nc.close());
+      }
+      for (const ref of refs) {
+        if (this.goalAcceptances.has(ref.goalId)) continue; // never settle a goal THIS incarnation drives
+        try { await this.reconcileOneGoal(ref); }
+        catch (e) { console.error(`! goal reconcile for ${ref.goalId}: ${(e as Error).message}`); }
+      }
+      if (refs.length) console.error(`goal-index boot reconcile: swept ${refs.length} inherited goal(s)`);
+    } catch (e) {
+      console.error(`! goal-index boot reconcile failed: ${(e as Error).message} - accepted goals from a predecessor may stay unsettled until the next restart`);
+    } finally {
+      this.goalReconcileDone = true;
+    }
+  }
+
+  /** Settle ONE inherited goal by evidence: no goal record (a crash between the index write and the
+   *  goal-record create) leaves the pointer untouched (never settle a goal that was never accepted,
+   *  and clearing it would race a live goal mid-creation); a TERMINAL goal clears the index
+   *  (converged — the predecessor committed but died before clearing); a NON-TERMINAL goal settles
+   *  `uncertain` (the accepting incarnation is gone, so the success signal will never reach us — the
+   *  bounded readiness outcome the plan maps the window to). Within the readiness window it arms a
+   *  bounded, unref'd timer to settle at the deadline (an early uncertain would steal a still-possible
+   *  success the substrate guards against). */
+  private async reconcileOneGoal(ref: GoalRef): Promise<void> {
+    const gw = this.goalWriter;
+    if (!gw) return;
+    const status = await readGoalStatus(gw.ctx, ref);
+    if (status === undefined) return; // index points at no goal record: a dead pointer, left for honesty
+    if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, ref); return; }
+    const spec = await readGoalSpec(gw.ctx, ref);
+    if (spec === undefined) return; // a status without its spec is garbled — leave for the next boot
+    const settle = async () => {
+      await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }); // first-terminal-wins: a racing terminal returns the winner, no throw
+      await clearGoalIndex(gw.ctx, ref);
+    };
+    const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
+    if (remaining <= 0) { await settle(); return; }
+    console.error(`goal reconcile ${ref.goalId}: within the readiness window (${remaining}ms) - arming a bounded settle`);
+    const t = setTimeout(() => { settle().catch((e) => console.error(`! goal reconcile settle ${ref.goalId}: ${(e as Error).message}`)); }, remaining + 100);
+    t.unref?.();
+  }
+
   /** P2 item 2: publish a goal PROGRESS event on the caller-scoped epe subtree, over the SERVE
    *  connection (which holds the `epe.<e>.<iid>.<epoch>.>` egress grant; the goal-writer deliberately
    *  does not). The terminal rides a final event `phase:"terminal"` (Q1 — the caller follows epe to
@@ -3854,6 +3921,10 @@ export class Manager {
   private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
     const gw = this.goalWriter;
     if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)");
+    // must-5 Q-B: refuse to accept until the boot reconcile of inherited goals completes, so a fresh
+    // acceptance never races the sweep (settling a live goal mid-flight would steal its real terminal).
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)");
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
