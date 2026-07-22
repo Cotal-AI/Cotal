@@ -168,10 +168,17 @@ export function saveSpaceAuth(dir: string, auth: SpaceAuth): void {
 }
 
 /** Load the space trust material from a local `.cotal/auth/auth.json`, or undefined if never set up.
- *  SYNC + LOCAL FS by design: the workstation-only NAME/PRESENCE callers (resolveSpace, tab-completion,
- *  status, "is a signer here") must stay sync (async would ripple through completion), and the space
- *  NAME is non-secret and never resolved in a hosted context. SIGNER-bearing callers must NOT use this —
- *  they go through {@link getSpaceAuth} so a hosted composition's injected store is the sole authority. */
+ *  SYNC + LOCAL FS by design, for two workstation-only caller classes:
+ *   1. NAME/PRESENCE reads (resolveSpace, tab-completion, status, "is a signer here") — must stay sync
+ *      (async would ripple through completion) and the space NAME is non-secret.
+ *   2. The STATIC-AUTH LOCAL mint composition (mesh-target -> connect/preflight/spawn/join):
+ *      `MeshTarget.auth` is populated ONLY for `mode === "auth"` (single-machine `cotal up`), where the
+ *      signer is on local disk by the static-auth model. Multi-tenant HOSTED runs `mode === "user"`,
+ *      which never touches `target.auth` (it mints nothing from on-disk trust), so no hosted path reaches
+ *      this reader.
+ *  The HOSTED-SERVER signer owners — the manager, {@link remintDaemonCreds}, and the delivery daemon —
+ *  read through {@link getSpaceAuth} instead, so an injected store is the SOLE authority there. Do not
+ *  add a NEW hosted-reachable signer caller on this reader; use {@link getSpaceAuth}. */
 export function loadSpaceAuth(dir: string): SpaceAuth | undefined {
   const f = join(dir, AUTH_FILE);
   if (!existsSync(f)) return undefined;

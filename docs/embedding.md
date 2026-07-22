@@ -130,18 +130,20 @@ await runDelivery({ values: { space, server: brokerUrl }, positionals: [], raw: 
 ```
 
 That renewal is a **signer** operation, not the delivery daemon's: `remintDaemonCreds(root, store)`
-(`@cotal-ai/workspace`) raw-loads the full `SpaceAuth` signer from `root/.cotal/auth/auth.json` and
-re-signs the daemon creds (`delivery.creds` and the membership feed's `membership-rw.creds`) into
-`store` (the injected `store` is only the destination, not signer custody). The reference `Manager`
-runs it on a schedule against its **own** `secretStore` (see below), so passing the manager and the
-delivery daemon the *same* store closes the renewal loop end-to-end on an injected backend: the
-manager re-signs into the store the daemon reads, and the daemon adopts each generation on a
-preflight-proven 75% timer. It never throws: it returns per-file results (`skipped: "no-auth"` when no
-filesystem signer is present), so the caller must check them or the cred still rides to expiry; a
-malformed `auth.json` does still throw from that initial signer load. A composition whose signer is
-not filesystem-resident builds its own renewal from `identityFromCreds` + `mintCreds` instead, and a
-`--creds` file path must be replaced atomically before the 75% read. The remaining hosted gap is
-signer **custody** (the manager still raw-loads `auth.json`), not the store seam.
+(`@cotal-ai/workspace`) reads the full `SpaceAuth` signer **through the same resolved `store`**
+(`getSpaceAuth(store ?? workspaceSecretStore(root))`, key `auth/auth.json`) and re-signs the daemon
+creds (`delivery.creds` and the membership feed's `membership-rw.creds`) back into that store — so the
+injected `store` is BOTH the signer source AND the cred destination, never a split. The reference
+`Manager` runs it on a schedule against its **own** `secretStore` (see below), so passing the manager
+and the delivery daemon the *same* store closes the renewal loop end-to-end on an injected backend:
+the manager reads the signer from the store, re-signs into it, and the daemon adopts each generation
+on a preflight-proven 75% timer. It never throws: it returns per-file results (`skipped: "no-auth"`
+when the store holds no signer under `auth/auth.json`), so the caller must check them or the cred
+still rides to expiry; a malformed stored bundle does still throw from that signer read. A composition
+whose signer lives in KMS/Vault simply injects that store — no bespoke renewal needed — and a
+`--creds` file path must be replaced atomically before the 75% read. The remaining hosted gap is no
+longer signer custody (the signer IS injectable behind the store seam); it is signer **isolation** —
+the seed is still decrypted in-process at the manager's uid (an OS-sandbox / remote-signer concern).
 
 ### The supervisor is a signer, not a scoped daemon
 
@@ -158,18 +160,27 @@ await mgr.start();          // then wire your own SIGINT/SIGTERM -> mgr.stop()
 
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
-grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()` the manager loads the full
-space trust bundle (`.cotal/auth/auth.json`) from `workspaceRoot` and **self-mints** its supervisor
-cred and renewals from the data-account signing seed. In static mode it also mints every per-agent
-cred from that seed; in user mode agents instead receive callout-minted bearers, but the manager
-still holds the signing seed for its own creds and renewal. So a hosted supervisor is a **trusted
-per-tenant account-signer process**, not a least-privilege connect client. It additionally requires a
-`~/.cotal/meshes/<space>.json` registry record and the workspace user-auth marker to start in user
-mode. `ManagerOptions.secretStore` injects the one `SecretStore` the manager reads/writes every secret
-through — its daemon-cred renewal (`remintDaemonCreds`) and its per-agent secret sites — defaulting to
-the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end hosted
-renewal. What is still **not** injectable is the signer itself (the data-account seed the manager mints
-from); the other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
+grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()`
+the manager reads the full space trust bundle **through its `secretStore`** (`getSpaceAuth(this.secrets,
+this.space)`, key `auth/auth.json`) and **self-mints** its supervisor cred and renewals from the
+data-account signing seed. In static mode it also mints every per-agent cred from that seed; in user
+mode agents instead receive callout-minted bearers, but the manager still holds the signing seed for
+its own creds and renewal. So a hosted supervisor is a **trusted per-tenant account-signer process**,
+not a least-privilege connect client. It additionally requires a `~/.cotal/meshes/<space>.json`
+registry record and the workspace user-auth marker to start in user mode. `ManagerOptions.secretStore`
+injects the one `SecretStore` the manager reads/writes every secret through — **the signer itself
+(`auth/auth.json`)**, its daemon-cred renewal (`remintDaemonCreds`), and its per-agent secret sites —
+defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
+hosted renewal. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+signing seed lands on the hosted disk. What remains is signer **isolation** (the seed is decrypted
+in-process at the manager's uid — an OS-sandbox / remote-signer problem, below), not custody. The other
+knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
+
+> Scope note: the **static-auth** operator paths (`cotal spawn`/`join`/`status`/`web`, via
+> `mesh-target` → `connect`/`preflight`) still read the signer from the local `auth.json` (sync
+> `loadSpaceAuth`). That is the single-machine composition, where the signer is on local disk by the
+> static-auth model; multi-tenant hosting runs **user mode**, which never mints from on-disk trust. The
+> store-injectable signer path is the hosted-server set: the manager, `remintDaemonCreds`, and delivery.
 
 **Isolating the signer is an OS-sandbox problem, not a file-permission one.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on

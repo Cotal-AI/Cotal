@@ -24,7 +24,8 @@
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createSpaceAuth, identityFromCreds, mintCreds, mintLifecycleUid, newIdentity, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, deleteSpaceAuth, getSpaceAuth, loadSpaceAuth, putSpaceAuth, saveSpaceAuth, SPACE_AUTH_KEY } from "../src/auth-paths.js";
 import { workspaceSecretStore } from "../src/secret-store-fs.js";
@@ -142,6 +143,15 @@ try {
   check("deleteSpaceAuth removes the bundle from the store", (await getSpaceAuth(mem)) === undefined);
   await deleteSpaceAuth(mem); // idempotent
   check("deleteSpaceAuth is idempotent", true);
+
+  // ---- grep gate (EXECUTABLE): the two hosted-reachable signer owners must read the signer only
+  // through the store seam, never the sync FS `loadSpaceAuth`. A regression that reintroduces a
+  // `loadSpaceAuth` in either would split authority on a hosted store (signer<-disk, cred<-store). ----
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  for (const rel of ["implementations/manager/src/manager.ts", "packages/workspace/src/renewal.ts"]) {
+    const src = readFileSync(join(repoRoot, rel), "utf8");
+    check(`${rel} reads the signer only through the store (no loadSpaceAuth)`, !src.includes("loadSpaceAuth"));
+  }
 
   console.log(`\nSPACE-AUTH-STORE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
