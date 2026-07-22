@@ -3676,6 +3676,18 @@ export class Manager {
     console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
   }
 
+  /** The (i) fence resolver (SPEC 13.6 P2 item 3): this incarnation's CURRENT gate epoch for its
+   *  OWN registration instanceId, else `null` (a foreign/retired instance has no current terminal
+   *  to surface). The serve grant's epoch is fixed for the incarnation — renewals re-mint the same
+   *  nkey at the same epoch; only a NEW registration / takeover barrier advances it, and a successor
+   *  is a DIFFERENT process whose own {@link serviceServe} carries the advanced epoch. So a corpse
+   *  resolves its stale epoch (its terminal parks on the stale-epoch subject) and the successor
+   *  resolves the current one (its settle is what current readers see). */
+  private currentInstanceEpoch(instanceId: string): number | null {
+    if (instanceId === this.managerLifecycleUid && this.serviceServe !== undefined) return this.serviceServe.grant.epoch;
+    return null;
+  }
+
   /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
    *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh mints a scoped
    *  `goal-writer` credential ({@link goalWriterGrants} — exactly this endpoint's goal bind/terminal
@@ -3697,7 +3709,12 @@ export class Manager {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { if (err) console.error(`! manager goal-writer connection closed: ${err.message}`); });
-    const ctx = await actionContext(nc, this.space);
+    // The (i) fence resolver (SPEC 13.6 P2 item 3): resolve an executing instance's CURRENT gate
+    // epoch. This manager reconciles only ITS OWN goals (security pin 4), so it resolves its own
+    // registration instanceId to this incarnation's serve-grant epoch; a foreign/retired instance
+    // is `null` (no current terminal to surface). A successor incarnation carries an ADVANCED epoch
+    // here, so its reads pick the current-epoch subject and the predecessor's terminal is fenced out.
+    const ctx = await actionContext(nc, this.space, { resolveExecutorEpoch: (iid) => this.currentInstanceEpoch(iid) });
     this.goalWriter = { nc, ctx, creds, identity };
     console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred" : "open/bare"})`);
   }
@@ -3780,6 +3797,10 @@ export class Manager {
           fingerprint,
           command: ctx.subject.command,
           caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
+          // The EXECUTING instance (the (i) fence, SPEC 13.6 P2 item 3): this manager's registration
+          // instanceId. Its presence EPOCH-SCOPES the terminal-fact subject, so a superseded
+          // incarnation's terminal is invisible to a current-epoch reader (the successor settle wins).
+          executor: { instanceId: this.managerLifecycleUid },
           requestId: goalId,
           sourceSeq: 0,
           acceptedAt,
@@ -3793,17 +3814,20 @@ export class Manager {
       onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
       onOutcome: async (o) => {
         // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
-        // caller cannot publish it). NON-must-5: the commit takes no executor/resolver (the goal is not
-        // target-pinned yet) — the must-5 block wires assertExecutorCurrency + the own-gate read as the fence belt.
+        // caller cannot publish it). The (i) INSTANT EPOCH FENCE (SPEC 13.6 P2 item 3): the goal is
+        // executor-pinned to this instance, so the terminal commits under THIS incarnation's gate
+        // epoch (`executorEpoch: epoch`). It lands on the epoch-scoped `...result.<epoch>` subject
+        // and the goal-writer's resolveExecutorEpoch fences a superseded committer — a corpse's
+        // terminal is invisible to a current-epoch reader; the successor's settle is what callers see.
         try {
           let fact;
           if (o.kind === "succeeded") {
             this.emitGoalProgress(ref, epoch, { phase: "presence" });
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data }));
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data, executorEpoch: epoch }));
           } else if (o.kind === "failed") {
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data }));
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, executorEpoch: epoch }));
           } else {
-            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }));
+            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), executorEpoch: epoch }));
           }
           this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
         } catch (e) {

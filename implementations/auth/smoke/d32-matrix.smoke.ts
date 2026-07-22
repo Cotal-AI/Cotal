@@ -162,6 +162,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "commit": { publish: [
     "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result",
+    "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result.*",
     "cotal.d32m.epf.jobsrv.eff.>",
     "cotal.d32m.epf.jobsrv.receipt.>",
     "cotal.d32m.epf.jobsrv.wrk.>",

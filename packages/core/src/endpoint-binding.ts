@@ -932,6 +932,10 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   const records = recordsBucket(space);
   const publish = [
     `${p}.epf.${e}.goal.*.*.*.*.result`,
+    // The (i) fence (SPEC 13.6, P2 item 3): an executor-pinned goal's terminal is EPOCH-SCOPED
+    // (`…result.<execEpoch>`), one create-only subject per executor epoch, so the commit principal
+    // publishes both the flat and the epoch-scoped result leaf.
+    `${p}.epf.${e}.goal.*.*.*.*.result.*`,
     `${p}.epf.${e}.eff.>`,
     `${p}.epf.${e}.receipt.>`,
     `${p}.epf.${e}.wrk.>`,
