@@ -1054,11 +1054,15 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
     pub: {
       allow: [
         "$JS.API.INFO",
-        // Singleton manager lease (managerBucket, pre-created at `cotal up`): OPEN-ONLY bind + CAS the one
-        // lease key (acquire/renew/release) + read it. NO STREAM.CREATE (pre-created), DELETE, or PURGE.
+        // Per-instance manager liveness lease (managerBucket, pre-created at `cotal up`): OPEN-ONLY bind +
+        // CAS this instance's own `lease.<instanceId>` key (acquire/renew/release) + read the subtree. P2
+        // item 3 demoted the per-space singleton to per-instance keys, so the write grant spans `lease.*`
+        // (every instance of this space shares this one supervisor principal — the isolation between
+        // instances is the logical-id/CAS boundary, not a cred boundary). NO STREAM.CREATE (pre-created),
+        // DELETE, or PURGE.
         `$JS.API.STREAM.INFO.${MKV}`,
-        `$JS.API.STREAM.MSG.GET.${MKV}`, // readManagerLease + CAS-conflict kv.get (auth-mode kvm.open ⇒ MSG.GET)
-        `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, // the SINGLE lease key (create/update/delete = $KV publishes)
+        `$JS.API.STREAM.MSG.GET.${MKV}`, // readManagerLease (last_by_subj lease.*) + CAS-conflict kv.get
+        `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}.*`, // this instance's lease.<id> key (create/update/delete = $KV publishes)
         // Presence: publish OWN key + watch the roster. Own key only (no peer-key forge — residual 3); no
         // presence-stream purge/delete (no force-offline tamper). No presence kv.get (roster is the in-memory
         // watch cache + sweep), so no STREAM.MSG.GET on presence.

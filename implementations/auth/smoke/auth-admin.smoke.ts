@@ -27,7 +27,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
-  CONTROL_AUTH_ADMIN, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, controlServiceSubject,
+  CONTROL_AUTH_ADMIN, managerLeaseKey, MANAGER_LEASE_TTL_MS, controlServiceSubject,
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, managerBucket,
   mintCreds, mintLifecycleUid, newIdentity, serverConfig, type EvictionResult,
 } from "@cotal-ai/core";
@@ -109,10 +109,14 @@ try {
   await ensureAuthorityStores(jsm, kvm, space);
   await createEndpointStreams(jsm, kvm, space);
   const mgrKv = await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
-  const putLease = async (holder: string) => {
-    await mgrKv.put(MANAGER_LEASE_KEY, new TextEncoder().encode(JSON.stringify({ holder, runtime: "pty", root: "/x", pid: 1, since: Date.now() })));
+  // P2 item 3: the lease is per LOGICAL INSTANCE (`lease.<instanceId>`), not a per-space singleton. These
+  // two ids stand in for two manager instances; the rail's holder-check reads the most-recent live key.
+  const MGR_INST = "mgrinst", OTHER_INST = "otherinst";
+  const putLease = async (holder: string, instanceId: string) => {
+    await mgrKv.put(managerLeaseKey(instanceId), new TextEncoder().encode(JSON.stringify({ holder, instanceId, runtime: "pty", root: "/x", pid: 1, since: Date.now() })));
   };
-  await putLease(MGR_KEY);
+  const dropLease = async (instanceId: string) => { await mgrKv.delete(managerLeaseKey(instanceId)); };
+  await putLease(MGR_KEY, MGR_INST);
 
   // The REAL plane serves the rail.
   plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: gatedEvictor });
@@ -151,19 +155,21 @@ try {
   const uid2 = mintLifecycleUid();
   await ensureRootCredential(wreg, { owner: OWNER, actor: "w2", lifecycleUid: uid2, managerInstance: "smoke" });
   const op2 = "b".repeat(26);
-  // Non-holder: the lease moved to another manager AFTER the requester was minted.
-  await putLease("local.other");
+  // Non-holder: the lease moved to another manager AFTER the requester was minted (MGR's instance is no
+  // longer live; a different instance holds the space).
+  await dropLease(MGR_INST);
+  await putLease("local.other", OTHER_INST);
   const r2 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2, opId: op2 });
   check("a requester that LOST the lease is refused with the lease-loss operator copy (names the holder + FULL no-op + cotal supervise)",
     r2 !== "no-reply" && r2.ok === false && (r2.error ?? "").includes("lost the space lease") && (r2.error ?? "").includes("FULL no-op") && (r2.error ?? "").includes("cotal supervise"), r2);
   check("the refused target is provably UNCHANGED (the full-no-op statement is true)",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w2"))?.mapping.state === "active");
-  // Absent lease (TTL-expired / no manager): fail-closed.
-  await mgrKv.delete(MANAGER_LEASE_KEY);
+  // Absent lease (TTL-expired / no manager): fail-closed. Drop the remaining live key so NO instance holds.
+  await dropLease(OTHER_INST);
   const r3 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: uid2, opId: op2 });
   check("an ABSENT lease refuses fail-closed (no manager holds the space; supervise NEXT)",
     r3 !== "no-reply" && r3.ok === false && (r3.error ?? "").includes("no manager currently holds") && (r3.error ?? "").includes("cotal supervise"), r3);
-  await putLease(MGR_KEY);
+  await putLease(MGR_KEY, MGR_INST);
   // Stale uid: the trigger names a previous incarnation.
   const r4 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: mintLifecycleUid(), opId: op2 });
   check("a STALE incarnation refuses naming the current one (never retires the wrong lifecycle)",

@@ -62,7 +62,7 @@ import {
   membershipBucket,
   aclBucket,
   channelBucket,
-  MANAGER_LEASE_KEY,
+  managerLeaseKey,
   epRequestSubject,
   BASELINE_LIFECYCLE_ENDPOINT,
 } from "../src/index.js";
@@ -209,7 +209,7 @@ try {
   const dmGet = `$JS.API.STREAM.MSG.GET.${DM}`, dlvGet = `$JS.API.STREAM.MSG.GET.${DLV}`;
 
   console.log("supervisor (the always-on daemon — the residual-2 gate):");
-  check("acquire lease (own key) ALLOWED", await tryPublish(supCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, sup.id) === "allowed");
+  check("acquire lease (own per-instance key) ALLOWED", await tryPublish(supCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, sup.id) === "allowed");
   check("publish OWN presence key ALLOWED", await tryPublish(supCreds, `$KV.${presenceBucket(space)}.${principalKey(DEV_OWNER, sup.id).key}`, sup.id) === "allowed");
   // 1d: the supervisor no longer serves ANY manager control tier (that moved to the endpoint-serve
   // credential), so it can neither reply on nor subscribe a `ctl.manager` tier.
@@ -248,7 +248,7 @@ try {
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(provCreds, `$JS.API.STREAM.DELETE.${PKV}`, prov.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED (not a purger)", await tryPublish(provCreds, `$JS.API.STREAM.PURGE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
-  check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, prov.id) === "denied");
+  check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
 
   console.log("agent (lifecycle-keyed binds — a lied COTAL_LIFECYCLE_UID fails at the broker):");
   // The launch-seam spoof gate (D15): an agent's creds pin its OWN lifecycle's exact dm/dlv names,
@@ -326,7 +326,7 @@ try {
   check("write the ACL registry DENIED", await tryPublish(opCreds, `$KV.${aclBucket(space)}.${op.id}`, op.id) === "denied");
   check("STREAM.PURGE the chat stream DENIED", await tryPublish(opCreds, `$JS.API.STREAM.PURGE.${CHAT}`, op.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(opCreds, `$JS.API.STREAM.DELETE.${PKV}`, op.id) === "denied");
-  check("acquire the manager lease DENIED", await tryPublish(opCreds, `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}`, op.id) === "denied");
+  check("acquire the manager lease DENIED", await tryPublish(opCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, op.id) === "denied");
   // The operator posts + reads the roster — it must read NO confidential feed. DLV body-read (symmetric with
   // the DM check above) and chat-HISTORY read (STREAM.MSG.GET on the CHAT stream — distinct from posting):
   check("read a DLV body (MSG.NEXT) DENIED", await tryPublish(opCreds, dlvRead, op.id) === "denied");

@@ -101,6 +101,7 @@ import {
   leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
+  managerLeaseKey,
   chatWildcard,
   assertValidChannel,
   channelInAllow,
@@ -1882,37 +1883,46 @@ export class CotalEndpoint extends EventEmitter {
   private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
     return new TextEncoder().encode(JSON.stringify(info));
   }
-  /** Acquire the singleton manager lease via ATOMIC CAS create. THROWS if a live lease exists (a loud
-   *  refusal-to-start, never a retry) so two managers never split control. A crashed holder's lease
-   *  auto-expires (bucket TTL). Returns the lease revision (for renew). */
+  /** Acquire THIS logical instance's liveness lease via ATOMIC CAS create on its own per-instance key
+   *  ({@link managerLeaseKey}). THROWS only if that SAME instance id already holds a live key (a same-root
+   *  concurrent double-start, or a restart racing the crashed predecessor's not-yet-expired key) — a loud
+   *  refusal, never a retry. A DIFFERENT instance (second workspace root ⇒ different id) creates its OWN
+   *  key and coexists (P2 item 3 demotion). A crashed holder's key auto-expires (bucket TTL). Returns the
+   *  lease revision (for renew). */
   async acquireManagerLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
-    return (await this.managerLeaseRegistry()).create(MANAGER_LEASE_KEY, this.encodeManagerLease({ ...info, since: Date.now() }));
+    return (await this.managerLeaseRegistry()).create(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }));
   }
-  /** Renew the held lease (CAS update against `revision`) before the bucket TTL expires it. Throws if the
-   *  revision moved (lost the lease). Returns the new revision. */
+  /** Renew THIS instance's held key (CAS update against `revision`) before the bucket TTL expires it.
+   *  Throws if the revision moved (lost the lease). Returns the new revision. */
   async renewManagerLease(info: Omit<ManagerLeaseInfo, "since">, revision: number): Promise<number> {
-    return (await this.managerLeaseRegistry()).update(MANAGER_LEASE_KEY, this.encodeManagerLease({ ...info, since: Date.now() }), revision);
+    return (await this.managerLeaseRegistry()).update(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }), revision);
   }
-  /** Release the held lease on clean shutdown so a replacement manager acquires immediately. CAS-guarded
-   *  by `revision`: if we already LOST the lease (renew gap / another manager took over) the stored
-   *  revision has moved, the conditional delete no-ops, and we never delete the replacement's live lease. */
-  async releaseManagerLease(revision?: number): Promise<void> {
+  /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
+   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, the conditional delete
+   *  no-ops. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
+  async releaseManagerLease(instanceId: string, revision?: number): Promise<void> {
     try {
       const kv = await this.managerLeaseRegistry();
-      if (revision === undefined) await kv.delete(MANAGER_LEASE_KEY);
-      else await kv.delete(MANAGER_LEASE_KEY, { previousSeq: revision });
+      if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
+      else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
     } catch { /* not ours / already gone */ }
   }
-  /** Read the live manager lease, or undefined if none (bucket absent / key deleted/expired). Open-only —
-   *  never creates the bucket, so a probe that finds no manager leaves none behind. */
+  /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
+   *  presence/existence check — the most-recently-written live `lease.*` key across all instances (a
+   *  point `last_by_subj` wildcard get, no consumer). Single-instance-exact; the CLI's `spawn -f` reuse
+   *  and `waitLeaseGone` only need "is any manager here". Open-only — never creates the bucket, so a probe
+   *  that finds no manager leaves none behind. (Instance-precise enumeration for the class scatter comes
+   *  from the registration records KV in 3b-4, not this liveness bucket.) */
   async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
     if (!this.nc) return undefined;
     try {
-      const kv = await new Kvm(this.nc).open(managerBucket(this.space));
-      const e = await kv.get(MANAGER_LEASE_KEY);
-      if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-      return e.json<ManagerLeaseInfo>();
+      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
+      const m = await jsm.streams.getMessage(`KV_${managerBucket(this.space)}`, { last_by_subj: `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.*` });
+      const op = m?.header?.get("KV-Operation");
+      if (m === null || op === "DEL" || op === "PURGE" || m.data.length === 0) return undefined;
+      return JSON.parse(new TextDecoder().decode(m.data)) as ManagerLeaseInfo;
     } catch {
+      // 10037 = no message on the subtree (genuinely no manager); any other read error ⇒ none found.
       return undefined;
     }
   }

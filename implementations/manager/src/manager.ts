@@ -698,21 +698,24 @@ export class Manager {
     this.ep.on("error", (e: Error) => console.error(`! manager endpoint: ${e.message}`));
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
-    // Singleton guard: exactly one manager per space. Acquire the lease (atomic CAS create); if a live
-    // manager already holds it, REFUSE to start (fail loud) rather than become a second supervisor that
-    // queue-splits control with the incumbent. A crashed holder's lease auto-expires (bucket TTL).
-    this.leaseInfo = { holder: this.ep.ref().id, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
+    // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
+    // THIS logical instance's own key (atomic CAS create). A DIFFERENT instance (a second manager in a
+    // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
+    // when the SAME instance id is already live (a same-root double-start, or a restart racing the
+    // crashed predecessor's not-yet-expired key), and we REFUSE loud. A crashed holder's key auto-expires
+    // (bucket TTL). Losing this key later stops THIS instance only, never the space (security pin 6).
+    this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
       this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
     } catch (e) {
-      // A live holder ⇒ refuse (the singleton point). Anything else (e.g. a KV/JS error) is a real
-      // failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
+      // Our OWN instance id already holds a live key ⇒ refuse. Anything else (e.g. a KV/JS error) is a
+      // real failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
       const held = await this.ep.readManagerLease().catch(() => undefined);
       await this.ep.stop();
       await this.attach.stop();
       throw new Error(
         held
-          ? `a manager already serves space "${this.space}" (id ${held.holder}, ${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first; one manager per space`
+          ? `manager instance ${this.managerInstanceId} already serves space "${this.space}" from this workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`
           : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
       );
     }
@@ -1241,7 +1244,7 @@ export class Manager {
       // A signal after a partial preservation must never fall back into destructive teardown.
       await this.stopRetainedAgentsOnExit();
     }
-    await this.ep.releaseManagerLease(this.leaseRevision);
+    await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);
     await this.stopServiceServe();
     await this.stopGoalWriter();
     await this.ep.stop();
@@ -1259,16 +1262,19 @@ export class Manager {
     try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
   }
 
-  /** Refresh the singleton lease before the bucket TTL expires it. On loss (missed the TTL, or another
-   *  manager took over after a gap) FAIL CLOSED: stop serving control at once so we can't double-process
-   *  with the new holder, and exit. We deliberately do NOT re-acquire (a replacement may already be live
-   *  while we'd still be serving) and do NOT release the key — it now belongs to that replacement. */
+  /** Refresh THIS instance's liveness lease before the bucket TTL expires it. On loss (missed the TTL —
+   *  this instance stalled past the renew window) FAIL CLOSED for THIS INSTANCE ONLY: stop serving +
+   *  tear down OUR managed agents + exit, so a stalled instance can't keep double-processing under a key
+   *  a same-id restart may re-acquire. Keyed per instance, so this NEVER frees or touches a sibling
+   *  manager's key and NEVER freezes the space (security pin 6) — the sibling keeps serving. We do NOT
+   *  re-acquire (a same-id restart may already be live) and do NOT release the key (it may be the
+   *  restart's). A DIFFERENT instance losing ITS key is a separate, independent event. */
   private async renewLease(): Promise<void> {
     try {
       if (!this.leaseInfo || this.leaseRevision === undefined) return;
       this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
     } catch (e) {
-      console.error(`! manager lost its singleton lease for space "${this.space}" (${(e as Error).message}) - shutting down to avoid two managers serving it`);
+      console.error(`! manager instance ${this.managerInstanceId} lost its liveness lease for space "${this.space}" (${(e as Error).message}) - shutting down THIS instance (its serving only; siblings keep the space)`);
       if (this.leaseTimer) clearInterval(this.leaseTimer);
       // Tear down our managed agents' footprints too (#159 B2) — this exit path leaks them otherwise. Do
       // NOT release the lease key (it may belong to the replacement holder). Best-effort, like ep/attach.

@@ -189,10 +189,15 @@ export async function openAuthAdminListener(opts: {
       return { ok: false, error: `op "${String(req.op)}" not supported on the auth admin service` };
     const args = parseRetireArgs(req.args);
 
-    // THE RAIL-TIME LEASE RE-CHECK (fresh, leader-served, fail-closed).
+    // THE RAIL-TIME LEASE RE-CHECK (fresh, leader-served, fail-closed). P2 item 3 demoted the lease to
+    // per-instance liveness keys (`lease.<instanceId>`); this existence check reads the most-recent live
+    // key across the subtree and requires holder == the subject-attributed requester (every instance of
+    // one space shares that holder principal, so any live manager instance passes — security pin 5's
+    // intent). Instance-precise verification (the requester's OWN registration record / lease, not merely
+    // "some live manager") is 3b-3's refinement; today one manager per space keeps this exact.
     let lease: ManagerLeaseInfo | undefined;
     try {
-      const m = await jsm.streams.getMessage(`KV_${managerBucket(space)}`, { last_by_subj: `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}` });
+      const m = await jsm.streams.getMessage(`KV_${managerBucket(space)}`, { last_by_subj: `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}.*` });
       // A DEL/PURGE marker (a gracefully-stopped manager DELETES its lease) and a TTL-expunged
       // row both read ABSENT — never parsed, never a crash-shaped refusal.
       const op = m?.header?.get("KV-Operation");
