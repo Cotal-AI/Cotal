@@ -217,23 +217,11 @@ const LAUNCH_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "name"],
   properties: { runId: { type: "string", minLength: 1 }, name: { type: "string", minLength: 1 } },
 } as const;
-const LAUNCH_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["name", "id", "mode", "lifecycleUid", "requested", "runId", "newlyStarted"],
-  properties: {
-    name: { type: "string" },
-    id: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
-    mode: { type: "string" },
-    lifecycleUid: { type: "string" },
-    requested: { type: "string" },
-    runId: { type: "string" },
-    hash: { type: "string" },
-    newlyStarted: { type: "boolean" },
-  },
-} as const;
+/** `launch` success output (P2 item 2, ruling 3): the SAME ACTION ACCEPTANCE floor as `spawn` - the
+ *  allocated identity + goal coordinates. The manifest details (requested/runId/hash) that the
+ *  pre-action reply carried are re-derivable by the deploy caller (it submitted the runId + name) and
+ *  are not part of the goal acceptance; the spawned outcome rides the goal terminal. */
+const LAUNCH_OUTPUT_SCHEMA = SPAWN_OUTPUT_SCHEMA;
 
 // The resume/preservation family (admin maintenance coordination). Inputs pin the coordination
 // keys; the INVENTORY payload and the plan/result outputs stay OPEN objects — their deep schema

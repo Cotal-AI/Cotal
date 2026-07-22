@@ -1560,7 +1560,10 @@ export class Manager {
       // deployer bearer would then bypass owner-equality (operator launch) despite the view holding
       // no admin rows. Uniform owner-equality removes that divergence in the least-privilege
       // direction (consistent with the delta-(b) tier narrowing the panel endorsed).
-      launch: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opLaunch(args(ctx), callerOf(ctx), false))),
+      // P2 item 2 (ruling 3): manifest `launch` is an ACTION through the SAME chokepoint as spawn -
+      // the manifest resolve + owner-equality authz run in opLaunch's accept path, then the goal
+      // drives progress + terminal. The acceptance floor is the allocated identity + goal coords.
+      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h))),
       resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
       commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
@@ -2372,7 +2375,7 @@ export class Manager {
    *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
    *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
    *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
-  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
+  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks): Promise<ControlReply> {
     const runId = String(args.runId ?? "").trim();
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
@@ -2401,7 +2404,7 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner, runId), caller);
+    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner, runId), caller, hooks);
     if (reply.ok)
       // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
       // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
