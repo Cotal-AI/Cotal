@@ -116,7 +116,7 @@ try {
   );
   // The cross-PASTE vector the key segmentation cannot see: this space's documents copied under
   // another space's keys. The issuer's in-document binding still refuses.
-  cpSync(join(root, ".cotal", "auth", SPACE), join(root, ".cotal", "auth", "other-space"), { recursive: true });
+  cpSync(userAuthStateDir(root, SPACE), userAuthStateDir(root, "other-space"), { recursive: true });
   await rejects(
     "the same state cannot be fingerprinted as another space",
     () => cotalAuthProvider.trustFingerprint({ store, dir, space: "other-space" }),
@@ -191,7 +191,7 @@ try {
     () => cotalAuthProvider.validateRetainedAgent({ store, dir, space: "other-space", owner: OWNER, actor: "worker", actorToken: retained.actorToken, sentinelCreds: retained.sentinelCreds }),
     "not space",
   );
-  rmSync(join(root, ".cotal", "auth", "other-space"), { recursive: true, force: true });
+  rmSync(userAuthStateDir(root, "other-space"), { recursive: true, force: true });
   await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("fingerprint and retained-agent validation do not mutate provider state", snapshot(dir) === beforeReads);
 
