@@ -427,6 +427,11 @@ export interface SpawnHooks {
   onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string }) => Promise<void> | void;
   /** Fires once the child process has been launched (the "launched" progress edge). */
   onLaunched?: () => void;
+  /** Fires at the readiness verdict (presence join → succeeded / process exit → failed / window
+   *  elapsed → uncertain), carrying the succeeded reply data — the async serve body commits the goal
+   *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
+   *  so a terminal-commit failure never disrupts the (already-replied) spawn. */
+  onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<void> | void;
 }
 
 export class Manager {
@@ -2796,17 +2801,19 @@ export class Manager {
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
       // launched".
       const readiness = await this.awaitReadiness(managed);
-      if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail }; // failed → already reaped
+      if (!readiness.ok && !readiness.uncertain) { await hooks?.onOutcome?.({ kind: "failed", data: { error: readiness.detail } }); return { ok: false, error: readiness.detail }; } // failed → already reaped
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
-      if (!readiness.ok) return { ok: false, error: readiness.detail }; // uncertain — non-success, but kept
+      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain" }); return { ok: false, error: readiness.detail }; } // uncertain — non-success, but kept
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
       // would never match and down -f would treat the agent as foreign).
       // `lifecycleUid` rides the reply so callers that record this spawn (the manifest ledger) can
       // later address the incarnation's lifecycle-keyed artifacts without re-deriving by name.
-      return { ok: true, data: { name, role, agent, id: managed.id, mode: handle.kind, lifecycleUid } };
+      const okData = { name, role, agent, id: managed.id, mode: handle.kind, lifecycleUid };
+      await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
+      return { ok: true, data: okData };
     } catch (e) {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
