@@ -92,11 +92,13 @@ function skipAutoReconcile(argv: string[]): boolean {
   const [name, sub] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
+  if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
   // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
   // `cotal supervise --roster`, the agent supervisor + container entrypoint) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
+  if (name === "ext" && sub === "root") return true; // a side-effect-free path print: no seed noise, so `$(cotal ext root)` stays exactly one line even on first run
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   return false;

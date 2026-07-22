@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import {
   cacheExtension,
   cacheLocalProcess,
   bindExtensionPeers,
+  beginExtensionNpmMutation,
   cmdSpawnSpec,
   extensionPackageDir,
   extensionLocalProcesses,
@@ -28,10 +29,13 @@ import {
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
-import { claimExtensionMutation } from "../lib/ext-mutation.js";
+import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { seedStoreDir } from "../seed/paths.js";
+
+/** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
+export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
 
 /** Classify a `cotal ext add` spec as a local path (vs a registry name). A path is a relative `.`/`./`/
  *  `.\` spec or an absolute one on the NATIVE platform — POSIX `/…`, Windows drive `C:\…` / `C:/…`, or
@@ -60,27 +64,76 @@ export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAb
 
 export async function ext(args: ParsedArgs): Promise<void> {
   const [sub, ...rest] = args.positionals;
-  if (sub === "add" && rest[0]) return add(rest[0]);
+  // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
+  // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
+  // global tree), so erroring here left the honest answer undiscoverable.
+  if (!sub) return list();
+  if (sub === "add" && rest[0]) return addExtension(rest[0]);
+  if (sub === "__update-add" && rest[0] && rest[1]) {
+    if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
+      throw new Error("internal update extension replay must be launched by its recorded parent");
+    if (!extensionUpdatePassOwnedBy(process.ppid))
+      throw new Error("internal update extension replay requires its parent to own the extension update pass");
+    return addExtension(rest[1], rest[0], true);
+  }
   if (sub === "remove" && rest[0]) return remove(rest[0]);
   if (sub === "list" && !rest.length) return list();
+  // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
+  // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
+  if (sub === "root" && !rest.length) {
+    console.log(extensionsDir());
+    return;
+  }
   if (sub === "seed" && !rest.length) {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
     return runSeed({ repair, reset, force });
   }
-  console.error(c.red("usage: cotal ext <add <npm-package> | remove <name> | list | seed [--repair|--reset|--force]>"));
-  process.exit(1);
+  throw new Error("usage: cotal ext <add <npm-package> | remove <name> | list | root | seed [--repair|--reset|--force]>");
 }
 
-function npm(args: string[], cwd: string): { status: number | null; output: string } {
+async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
-  const r = spawnSync(file, spawnArgs, { cwd, encoding: "utf8", windowsVerbatimArguments });
-  // Fold r.error (a spawn failure — ENOENT, EINVAL, …) into the output: it is the ONLY signal when a
-  // launch fails before the child runs (status null, empty stdio), so it can't produce a blank error.
-  const output = `${r.error ? `spawn error: ${r.error.message}\n` : ""}${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
-  return { status: r.status, output };
+  const env = { ...process.env };
+  delete env[EXT_UPDATE_PARENT_ENV];
+  const mutation = beginExtensionNpmMutation();
+  let published = false;
+  let preservePending = false;
+  try {
+    const child = spawn(file, spawnArgs, { cwd, env, windowsVerbatimArguments });
+    let spawnError = "";
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.once("error", (e) => { spawnError = `spawn error: ${e.message}\n`; });
+    if (child.pid !== undefined) {
+      try {
+        mutation.markLive(child.pid);
+        published = true;
+      } catch (e) {
+        spawnError = `could not journal npm child ${child.pid}: ${(e as Error).message}\n`;
+        preservePending = true;
+      }
+    }
+    const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>
+      child.once("close", (status, signal) => resolveClose({ status, signal })),
+    );
+    if (published) mutation.complete(
+      closed.status,
+      closed.signal,
+      closed.signal !== null
+        ? `npm intermediary terminated by ${closed.signal}`
+        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
+    );
+    return { status: spawnError ? null : closed.status, output: `${spawnError}${stdout}${stderr}`.trim() };
+  } catch (e) {
+    return { status: null, output: `spawn error: ${(e as Error).message}` };
+  } finally {
+    if (!published && !preservePending) mutation.clear();
+  }
 }
 
 /** Import an installed extension package (its declared entry) so it self-registers. */
@@ -108,7 +161,7 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
-async function add(spec: string): Promise<void> {
+export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false): Promise<void> {
   const dir = extensionsDir();
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
   const isPath = isPathSpec(spec);
@@ -117,13 +170,17 @@ async function add(spec: string): Promise<void> {
   // dependencies (a heuristic that binds to the wrong key if the prefix ever drifted, and that made
   // re-adding an installed extension impossible).
   const pkg = packageNameFromSpec(resolved, isPath);
+  if (expectedPkg !== undefined && pkg !== expectedPkg)
+    throw new Error(`recorded extension ${expectedPkg} now resolves to ${pkg} from spec "${spec}" - refusing to install a different package`);
   // A seed child runs UNDER the reconcile's mutation lock (its parent already holds it for the whole
   // run); claiming again would deadlock against the parent's live PID. It skips the claim, records a
   // liveness marker (so a post-crash repair won't race it), and stamps its entry `source:"seeded"`.
   // Authenticated: only an `ext add` whose marker matches the LIVE reconcile lock AND whose spec is a
   // staged official-connector path qualifies — a forged `COTAL_EXT_SEEDING` can't skip the lock.
   const seeding = isAuthenticSeedChild() && isPath && resolved.startsWith(seedStoreDir() + sep);
-  const releaseMutation = seeding ? () => {} : claimExtensionMutation();
+  const releaseMutation = seeding
+    ? () => {}
+    : claimExtensionMutation(borrowMutation ? { borrowUpdateParent: process.ppid } : {});
   // Upgrade the parent's pending marker to a live one carrying this child's PID, as the first act — so
   // a repair after a parent SIGKILL sees the exact orphan identity and refuses to race it.
   if (seeding) markSeedChildLive(process.env.COTAL_EXT_SEEDING as string, Number(process.env.COTAL_EXT_SEEDING_PARENT));
@@ -160,7 +217,7 @@ async function add(spec: string): Promise<void> {
 
   let committed = false;
   let restored = false;
-  const restore = (): void => {
+  const restore = async (): Promise<void> => {
     if (restored || committed) return;
     restored = true;
     if (rollbackDir) {
@@ -168,24 +225,28 @@ async function add(spec: string): Promise<void> {
       renameSync(rollbackDir, dir);
       rmSync(rollbackRoot!, { recursive: true, force: true });
     } else {
-      npm(["remove", "--no-audit", "--no-fund", pkg], dir);
+      await npm(["remove", "--no-audit", "--no-fund", pkg], dir);
       linkExtensionPeers(manifest.extensions.map((entry) => entry.pkg), pkg);
     }
   };
+  let wasInterrupted = false;
   const interrupted = (): void => {
-    restore();
-    if (seeding) clearChildMarker();
-    releaseMutation();
-    process.exit(130);
+    wasInterrupted = true;
   };
   process.once("SIGINT", interrupted);
   process.once("SIGTERM", interrupted);
   try {
     await installCandidate();
+    if (wasInterrupted) throw new Error("extension install interrupted");
     committed = true;
     if (rollbackRoot) rmSync(rollbackRoot, { recursive: true, force: true });
   } catch (e) {
-    restore();
+    await restore();
+    if (wasInterrupted) {
+      if (seeding) clearChildMarker();
+      releaseMutation();
+      process.exit(130);
+    }
     throw e;
   } finally {
     process.removeListener("SIGINT", interrupted);
@@ -198,7 +259,7 @@ async function add(spec: string): Promise<void> {
   // links the running binary's copy below (one core instance is the whole point).
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir);
+  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir);
   if (r.status !== 0) {
     fail(pkg, `npm install failed:\n${r.output.split("\n").slice(-8).join("\n")}`);
   }
@@ -309,17 +370,14 @@ function packageNameFromSpec(resolved: string, isPath: boolean): string {
     try {
       meta = JSON.parse(readFileSync(join(resolved, "package.json"), "utf8")) as { name?: string };
     } catch (e) {
-      console.error(c.red(`✗ can't read ${join(resolved, "package.json")}: ${(e as Error).message}`));
-      process.exit(1);
+      throw new Error(`can't read ${join(resolved, "package.json")}: ${(e as Error).message}`);
     }
     if (meta.name) return meta.name;
-    console.error(c.red(`✗ ${join(resolved, "package.json")} declares no "name"`));
-    process.exit(1);
+    throw new Error(`${join(resolved, "package.json")} declares no "name"`);
   }
   const m = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/.exec(resolved);
   if (m) return m[1];
-  console.error(c.red(`✗ unsupported extension spec "${resolved}" - use a local path or a registry name[@version]`));
-  process.exit(1);
+  throw new Error(`unsupported extension spec "${resolved}" - use a local path or a registry name[@version]`);
 }
 
 async function remove(pkg: string): Promise<void> {
@@ -360,7 +418,7 @@ async function removeUnlocked(pkg: string): Promise<void> {
       try { writeFileSync(fd, `removing:${process.pid}`); } finally { closeSync(fd); }
       reservations.push(pidPath);
     }
-    const r = npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
+    const r = await npm(["remove", "--no-audit", "--no-fund", pkg], extensionsDir());
     if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
     const remaining = manifest.extensions.filter((e) => e.pkg !== pkg);
     linkExtensionPeers(remaining.map((entry) => entry.pkg), pkg);
@@ -420,6 +478,12 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
 
 function list(): void {
   const { extensions } = loadExtensionsManifest();
+  // Lead with the store's real location and its ownership, so the inventory is self-explaining: these
+  // packages are cotal-managed and kept out of npm's global prefix by design, which is exactly why
+  // `npm list -g` never shows them. Resolve the path dynamically — never hard-code it.
+  console.log(c.dim(`Extension root: ${extensionsDir()}`));
+  console.log(c.dim("Managed by `cotal ext`; kept separate from npm's global prefix, so `npm list -g` does not include these."));
+  console.log("");
   if (!extensions.length) {
     console.log(c.dim("(no extensions installed - add one with `cotal ext add <npm-package>`)"));
     return;
@@ -427,4 +491,6 @@ function list(): void {
   for (const e of extensions) {
     console.log(`${c.bold(e.pkg)}@${e.version}  ${c.dim(extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`).join(", "))}`);
   }
+  console.log("");
+  console.log(c.dim("Manage with `cotal ext add`/`cotal ext remove`; `cotal ext --help` for all commands."));
 }
