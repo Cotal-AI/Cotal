@@ -80,9 +80,16 @@ try {
 
   check("A (first in the single-flight) fails at its source deadline, nothing adopted", !a.ok && /did not return before the daemon deadline/i.test(a.msg), a);
   check("B (queued behind A) also fails - nothing adopted", !b.ok, b);
-  check("B fences on the SHARED entry deadline (queue message), not a fresh source-timeout", /elapsed while queued/i.test(b.msg), b);
-  // The load-bearing assertion: B finished within the manager's request bound. The bug gave B a fresh
+  // B fails with one of the two EXPECTED structured messages, never a stray error. Which one is a
+  // sub-ms race: B's entry deadline is captured microseconds after A's (same tick), so when A rejects
+  // at ~12s and B dequeues, if `now > deadline` the pre-I/O fence fires ("elapsed while queued"),
+  // else B falls through to `withDeadline(source, ~0ms)` and rejects with the source-timeout. BOTH are
+  // the SAME correct outcome (B bounded by its entry deadline, nothing adopted) — the message is not
+  // the discriminator, the TIMING bound below is. Asserting on the message alone would flake ~1/6.
+  check("B fails structured (entry fence OR ~0-budget source timeout), not a stray error", /elapsed while queued|did not return before the daemon deadline/i.test(b.msg), b);
+  // THE load-bearing assertion: B finished within the manager's request bound. The bug gave B a fresh
   // 12s AFTER the ~12s queue wait (~24s); the fix bounds B by the same window it entered with (~12s).
+  // This is the real fresh-budget discriminator and never flaked (~12001ms across runs).
   check("B finished within the manager's 15s request bound (no fresh budget after the queue wait)", b.ms < MANAGER_BOUND_MS, `${b.ms}ms`);
   check("B waited behind A rather than returning instantly (it really was queued)", b.ms >= 10_000, `${b.ms}ms`);
 
