@@ -57,6 +57,7 @@ import {
   epAuthBucket,
   ensureAuthorityStores,
   ensureContractStore,
+  createEndpointStreams,
   contractStoreContext,
   publishContractArtifact,
   contractArtifactCanonicalBytes,
@@ -3560,7 +3561,12 @@ export class Manager {
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
       const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds }), maxReconnectAttempts: 0 });
       try {
-        await ensureContractStore(await jetstreamManager(provNc), this.space);
+        // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
+        // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
+        // wrote to EPF/EPE), so the manager ensures the full set here over the provisioner (whose
+        // STREAM.CREATE now covers them), idempotently - createEndpointStreams is a superset of
+        // ensureContractStore + ensureAuthorityStores, fail-loud on drift. Auth + open both run this.
+        await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.space);
       } finally {
         await provNc.drain().catch(() => provNc.close());
       }

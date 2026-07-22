@@ -73,7 +73,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, epAuthBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
 import { recordsBucket, recordSpecKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -1442,7 +1442,13 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // The §13.7 CONTRACT store (EPC) joins the list for the static manager's start-time
   // `ensureContractStore` (P2 item 1, 1c): create-or-verify only — the provisioner holds no
   // artifact-publish grant on it (publication rides the scoped endpoint-serve executor).
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), ...buckets].flatMap((s) => [
+  // The seven §13.12 ENDPOINT streams join the list (P2 item 2): spawn-as-action makes the manager
+  // the first EPF (goal facts) + EPE (progress) writer, and nothing provisioned the endpoint streams
+  // before (no manager code wrote to them), so `createEndpointStreams` now runs at the manager's
+  // start-time ensure over this provisioner. Create-or-verify only (idempotent, fail-loud on drift);
+  // the provisioner holds no value-write on any of them (goal facts ride the scoped goal-writer cred).
+  const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName].map((f) => f(space));
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), ...endpointStreams, ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
