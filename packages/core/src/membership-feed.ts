@@ -41,7 +41,7 @@ import {
   principalFromConnz,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
-import { credsClaims, idFromCreds } from "./identity.js";
+import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import type { ChannelMembership } from "./types.js";
 
 export interface MembershipFeedOpts {
@@ -53,12 +53,15 @@ export interface MembershipFeedOpts {
    *  `rotation-renewed` ($SYS seed dies at `up`), so its only renewal is a system-account rotation +
    *  broker restart — a new process, never a live reload. */
   observerCreds: string;
-  /** Scoped DATA-account read/write creds (conn B — members read + feed write), or a SOURCE that
-   *  re-reads them (D5 slice 5 class 2: the manager re-signs the creds file for the SAME nkey; the
-   *  getter is re-evaluated per (re)connect attempt, so the broker's expiry-close renews the
-   *  connection from the refreshed file). A read that swaps the nkey fails loud — the feed's identity
-   *  (inbox scope + self-presence check) is pinned to the first read. */
-  rwCreds: string | (() => string);
+  /** Scoped DATA-account read/write creds (conn B — members read + feed write): a literal string, or
+   *  a SOURCE (D5 slice 5 class 2) that reads them through the {@link SecretStore} seam — the manager
+   *  re-signs the SAME nkey into the store and the feed adopts it. May be async (a hosted `store.get`)
+   *  or sync (a local FS read / literal). A source-fed cred is renewed on a 75% timer that PROVES each
+   *  candidate on a disposable preflight before conn B ever presents it; conn B's authenticator only
+   *  ever presents the last BROKER-PROVEN generation, so an incidental reconnect can never carry an
+   *  unproven cred. A read that swaps the nkey fails loud — the feed's identity (inbox scope +
+   *  self-presence check) is pinned to the first read. */
+  rwCreds: string | (() => string | Promise<string>);
   /** Safety reconcile interval (ms) — primary signal (no SUB/UNSUB event exists). Default 15000. */
   intervalMs?: number;
   /** Connect/disconnect-event → re-poll debounce (ms); coalesces connect storms. Default 400. */
@@ -76,14 +79,46 @@ export interface MembershipFeedOpts {
 export interface MembershipFeedHandle {
   /** Force an immediate reconcile (also used by tests). Never throws — errors are logged. */
   poll(): Promise<void>;
-  /** Explicitly adopt a re-signed rw creds file on conn B (D5 class-2 renewal): validated re-read
-   *  (pinned nkey) + forced reconnect, returning the adopted JWT window as proof. THROWS when the
-   *  re-read fails (missing/swapped file) — adoption must never be assumed. */
-  reloadRwCreds(): Promise<{ identity: string; iat?: number; exp?: number }>;
+  /** Explicitly adopt a re-signed rw cred on conn B (D5 class-2 renewal): fetch from the source
+   *  (deadline-bounded), validate the identity pin, optional fingerprint match against the renewal
+   *  owner's `expected` generation, a DISPOSABLE PREFLIGHT proving the broker accepts the bytes, then
+   *  commit the proven cache and best-effort reconnect — returning the BROKER-ACCEPTED generation's
+   *  window (the resident conn-B swap is best-effort, not witnessed). Runs under the same single-flight
+   *  as the 75% timer, so the two can never interleave. THROWS when the source fetch fails
+   *  (missing/swapped cred), the fingerprint does not match `expected`, the broker refuses the
+   *  preflight, or the deadline elapses. Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
+  reloadRwCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }>;
   stop(): Promise<void>;
 }
 
 const enc = (s: string) => new TextEncoder().encode(s);
+
+/** The disposable-preflight connect bound for the rw-cred adoption proof — mirrors the endpoint's: a
+ *  rogue/unreachable candidate must resolve fast, well under the manager's delivery-admin request bound. */
+const MEMBERSHIP_PREFLIGHT_MS = 4_000;
+
+/** The daemon-side deadline for the WHOLE rw prove-then-adopt transaction (source fetch + preflight +
+ *  commit), kept strictly BELOW the manager's delivery-admin request bound (15s) so a slow/hung hosted
+ *  store returns a structured component failure rather than an ambiguous client timeout, and a late
+ *  fetch can never commit after the caller gave up. Mirrors {@link CotalEndpoint}'s RELOAD_DEADLINE_MS. */
+const MEMBERSHIP_RELOAD_DEADLINE_MS = 12_000;
+
+/** How soon a FAILED 75% rw renewal retries (the old cred stays live to its expiry meanwhile). */
+const MEMBERSHIP_CREDS_RETRY_MS = 60_000;
+
+/** Prove the broker ACCEPTS these creds on a throwaway connection — the D5 class-2 adoption
+ *  proof-of-record for conn B. `reconnect:false` + `maxReconnectAttempts:0` so a refused cred
+ *  REJECTS fast instead of entering a retry loop; a genuine accept returns true. Presents exactly
+ *  the candidate, so the proof is unambiguous. */
+async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const probe = await connect({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+    await probe.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
 const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server before a loud under-report)
 
 /** Connect, wire the triggers + safety poll, and run an immediate first reconcile. */
@@ -105,21 +140,34 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   });
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
-  const readRw = typeof opts.rwCreds === "function" ? opts.rwCreds : () => opts.rwCreds as string;
-  const rwSelfId = idFromCreds(readRw()); // conn B's own nkey — the data-account self-presence check below
-  // Pin every re-read to the first read's nkey: a renewal (manager re-signs the file) keeps the
-  // identity; a swapped file would silently break the inbox scope + self-presence check, so it throws
-  // inside the authenticator instead (the connect attempt fails loud and retries).
-  const rwCredsPinned = () => {
-    const creds = readRw();
+  // The rw source: async-capable (a hosted `store.get`) or sync (a local FS read / literal). Read ONCE
+  // up front to pin conn B's identity and seed the proven cache; thereafter the source is re-read only
+  // by a preflight-proven adoption (the 75% timer or the explicit reload), never inside the sync
+  // authenticator (nats-core's Authenticator is synchronous and a `store.get` cannot live there).
+  const rwIsSource = typeof opts.rwCreds === "function";
+  const readRw = rwIsSource ? (opts.rwCreds as () => string | Promise<string>) : () => opts.rwCreds as string;
+  const initialRw = await Promise.resolve(readRw());
+  const rwSelfId = idFromCreds(initialRw); // conn B's own nkey — the data-account self-presence check below
+  // Pin every candidate to the first read's nkey: a renewal (manager re-signs the cred) keeps the
+  // identity; a swapped cred would silently break the inbox scope + self-presence check, so it throws
+  // (the adoption fails structured and nothing is committed).
+  const pinRwIdentity = (creds: string): string => {
     const id = idFromCreds(creds);
     if (id !== rwSelfId) throw new Error(`membership rw creds re-read returned identity ${id}, expected ${rwSelfId} - a renewal may not swap the feed's nkey`);
     return creds;
   };
+  // The LAST BROKER-PROVEN rw cred — the ONLY value conn B's synchronous authenticator ever presents.
+  // Seeded from the initial fetch (that first connect is its own proof, like the endpoint's initial
+  // connect); advanced ONLY by a preflight-proven adoption (the 75% timer or an explicit reload). So an
+  // incidental reconnect (broker expiry-close, a network blip) can never present an unproven or
+  // broker-refused generation and strand conn B — closing the membership half of the D5 blocker.
+  let currentRwCreds = initialRw;
   const connB = await connect({
     servers: opts.servers,
-    // Re-wrapped per (re)connect attempt so each attempt signs with the freshest (pinned) file read.
-    authenticator: (nonce?: string) => credsAuthenticator(enc(rwCredsPinned()))(nonce),
+    // Synchronous per (re)connect attempt: presents the last BROKER-PROVEN cred, never a fresh
+    // un-preflighted source read. The 75% timer / explicit reload advance `currentRwCreds` only AFTER a
+    // disposable preflight proves the broker accepts the candidate.
+    authenticator: (nonce?: string) => credsAuthenticator(enc(currentRwCreds))(nonce),
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
@@ -131,6 +179,92 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   const kvm = new Kvm(connB);
   const feedKv: KV = await kvm.open(membershipBucket(space));
   const membersKv: KV = await openMembersRegistry(connB, space);
+
+  // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
+  // Mirrors the endpoint's delivery.creds renewal (adoptFreshCreds / renewCredsOnTimer / runCredsTxn).
+  // The feed previously had NO credential-refresh timer — only the poll loop and a per-reconnect source
+  // re-read; that re-read was the sole self-heal and it presented UNPROVEN bytes. Replaced by a proven
+  // cache advanced under a single-flight transaction, plus this timer as the active self-heal.
+  let rwStopped = false;
+  let rwTimer: ReturnType<typeof setTimeout> | undefined;
+  const armRwRefresh = (delayMs: number): void => {
+    if (rwStopped) return;
+    if (rwTimer) clearTimeout(rwTimer);
+    rwTimer = setTimeout(() => void renewRwOnTimer(), Math.max(1_000, delayMs)); // 1s floor: second-scale test TTLs
+    rwTimer.unref?.();
+  };
+  // Single-flight: serialize the 75% timer and the explicit reload over the WHOLE prove-then-adopt
+  // transaction (fetch → preflight → commit), so a timer tick can never overwrite the cache with C while
+  // an explicit reload is proving B and then reporting B adopted. Runs `fn` after any in-flight txn
+  // settles, whatever its outcome; the internal chain never rejects.
+  let rwTxn: Promise<unknown> = Promise.resolve();
+  const runRwTxn = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const next = rwTxn.then(fn, fn);
+    rwTxn = next.then(() => undefined, () => undefined);
+    return next;
+  };
+  // Race a slow/hung source fetch or preflight against the transaction deadline; the underlying promise
+  // is not cancellable, so a late commit is also fenced by re-checking the deadline before mutating the
+  // cache (mirrors {@link CotalEndpoint.withDeadline}).
+  const withRwDeadline = async <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error(msg)), Math.max(1, ms)); });
+    try { return await Promise.race([p, timeout]); }
+    finally { if (t) clearTimeout(t); }
+  };
+  // The one PROVE-then-adopt transaction (run under runRwTxn), shared by the 75% timer and the explicit
+  // reload. Fetch (deadline-bounded) → identity-pin → optional expected-generation match → disposable
+  // preflight → late-commit fence → advance the proven cache → arm the next 75% timer. `currentRwCreds`
+  // is written ONLY after the preflight proves broker acceptance, so a rejected candidate leaves conn B
+  // on the last-proven cred. THROWS (structured) on any failure.
+  const adoptRwCreds = async (a: { expected?: string; deadline: number }): Promise<{ iat?: number; exp?: number }> => {
+    // Fence BEFORE any source I/O: a reload queued behind a hung-store timer tick that already burned the
+    // budget fails structured now — it never re-reads the source, preflights, or commits (the absolute
+    // deadline was captured at the CALLER's entry, so the queue wait counts against it).
+    if (Date.now() > a.deadline)
+      throw new Error("reloadRwCreds: the request deadline elapsed while queued behind another credential transaction; nothing adopted");
+    const candidate = pinRwIdentity(await withRwDeadline(Promise.resolve(readRw()), a.deadline - Date.now(), "reloadRwCreds: the rw creds source did not return before the daemon deadline; nothing adopted"));
+    // Non-material message ON PURPOSE: this text flows to the manager's persisted
+    // `RenewalRecord.adoption.error`, so neither the observed nor the expected digest may appear.
+    if (a.expected !== undefined && credsFingerprint(candidate) !== a.expected)
+      throw new Error("reloadRwCreds: re-read credential generation did not match the expected re-signed generation; nothing adopted");
+    // Compute the bounded-window renewal delay BEFORE any commit or preflight: credsRenewalDelayMs throws
+    // on a cred lacking a numeric `exp`, and that throw must NOT leave `currentRwCreds` flipped to a
+    // candidate the authenticator would then present on the next reconnect (a post-preflight validation
+    // failure must be a true no-op on the cache).
+    const delay = credsRenewalDelayMs(candidate);
+    // An UNCHANGED generation past its own renewal point is a MISSED remint (the renewal owner has not
+    // re-signed yet), not a candidate to adopt. Adopting it would recommit the same cred, floor the next
+    // timer to 1s (delay <= 0), and reconnect EVERY second for the JWT's remaining 25% of life. Fail it
+    // like a renewal error so `renewRwOnTimer` retries at 60s with NO resident reconnect. The explicit
+    // reload's `expected` already rejects a stale read; this covers the timer path (no expectation sent).
+    if (candidate === currentRwCreds && delay <= 0)
+      throw new Error("reloadRwCreds: the rw source still holds the previous generation past its renewal point (the renewal owner has not re-signed it - run `cotal doctor auth --fix` or restart the manager); nothing adopted");
+    if (!(await brokerAcceptsCreds(opts.servers, candidate, Math.max(500, Math.min(MEMBERSHIP_PREFLIGHT_MS, a.deadline - Date.now())))))
+      throw new Error("reloadRwCreds: the broker did not accept the re-signed rw credential; nothing adopted");
+    if (Date.now() > a.deadline)
+      throw new Error("reloadRwCreds: the proof exceeded the daemon deadline; nothing adopted"); // fence a late commit
+    currentRwCreds = candidate; // commit ONLY after identity pin + fingerprint + delay/claims validation + preflight
+    armRwRefresh(delay);
+    return credsClaims(candidate);
+  };
+  // The 75%-of-lifetime renewal tick: prove + adopt + swap conn B onto the fresh cred. conn B is NOT the
+  // delivery-admin rail (that reply rides the delivery endpoint's connection), so the reconnect is inline
+  // and a failure just logs + retries while the last-proven cred stays live to its expiry.
+  async function renewRwOnTimer(): Promise<void> {
+    const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS; // captured before the enqueue, like the reload
+    try {
+      await runRwTxn(() => adoptRwCreds({ deadline }));
+      await connB.reconnect().catch(() => {});
+    } catch (e) {
+      log(`rw creds refresh failed (graph feed writer; delivery unaffected): ${(e as Error).message} - retrying; conn B dies at the current JWT's expiry if renewal keeps failing`);
+      armRwRefresh(MEMBERSHIP_CREDS_RETRY_MS);
+    }
+  }
+  // Arm the FIRST 75% timer, but ONLY for a source-fed cred — a literal `rwCreds` string has no renewal
+  // seam (nothing re-reads it). A source-fed cred must be bounded (credsRenewalDelayMs is fail-loud on a
+  // missing `exp`), which surfaces a misconfigured source at startup rather than silently never renewing.
+  if (rwIsSource) armRwRefresh(credsRenewalDelayMs(currentRwCreds));
 
   let stopped = false;
   let polling = false;
@@ -306,18 +440,25 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
 
   return {
     poll,
-    async reloadRwCreds() {
-      // Explicit class-2 adoption for conn B (D5 slice 5): validate the re-read (the pinned getter
-      // throws on a swapped nkey or a missing file) and force a reconnect so the fresh cred is on
-      // the wire NOW — never waiting for the broker's expiry-close. The observer conn (A) is
-      // rotation-renewed and deliberately not reloadable.
-      const { exp, iat } = credsClaims(rwCredsPinned());
-      await connB.reconnect().catch(() => {}); // already-reconnecting is a no-op; its loop re-reads the getter
+    async reloadRwCreds(expected?: string) {
+      // Explicit class-2 adoption for conn B (D5 slice 5). Capture the ABSOLUTE deadline at ENTRY,
+      // before the single-flight enqueue, so a reload queued behind a hung-store 75% tick is bounded by
+      // the SAME window (the queue wait counts) and can never commit/swap after the renewal owner's
+      // request bound has already elapsed. The prove-then-adopt transaction runs under runRwTxn so it
+      // cannot interleave with the timer; the observer conn (A) is rotation-renewed and not reloadable.
+      const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS;
+      const { iat, exp } = await runRwTxn(() => adoptRwCreds({ expected, deadline }));
+      // Best-effort resident swap: the preflight was the proof, and conn B is not the reply rail, so the
+      // reconnect is inline (no strand risk) and a transient failure self-heals — the 75% timer and the
+      // broker's expiry-close both present the now-proven `currentRwCreds`.
+      await connB.reconnect().catch(() => {});
       return { identity: rwSelfId, iat, exp };
     },
     async stop() {
       stopped = true;
+      rwStopped = true;
       clearInterval(timer);
+      if (rwTimer) clearTimeout(rwTimer);
       if (debounce) clearTimeout(debounce);
       try { subConnect.unsubscribe(); subDisconnect.unsubscribe(); } catch { /* draining */ }
       await Promise.allSettled([connA.drain(), connB.drain()]);

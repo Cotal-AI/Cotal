@@ -44,8 +44,8 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `DELIVERY_CREDS_KEY` | `@cotal-ai/delivery` | the secret-store key the delivery cred is read under. |
-| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process. |
+| `DELIVERY_CREDS_KEY`, `MEMBERSHIP_RW_CREDS_KEY` | `@cotal-ai/workspace` | the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. |
+| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 
 **Provisioning and minting** (all `@cotal-ai/core`)
@@ -131,15 +131,17 @@ await runDelivery({ values: { space, server: brokerUrl }, positionals: [], raw: 
 
 That renewal is a **signer** operation, not the delivery daemon's: `remintDaemonCreds(root, store)`
 (`@cotal-ai/workspace`) raw-loads the full `SpaceAuth` signer from `root/.cotal/auth/auth.json` and
-re-signs the cred into `store` (the injected `store` is only the destination, not signer custody). So
-a separate trusted renewal-owner process, under the same signer isolation as the manager, runs it on
-a schedule; the reference manager does exactly this, but against its *workspace* store, not your
-injected one. It never throws: it returns per-file results (`skipped: "no-auth"` when no filesystem
-signer is present), so the caller must check them or the cred still rides to expiry; a malformed
-`auth.json` does still throw from that initial signer load. A composition whose signer is not
-filesystem-resident builds its own renewal from `identityFromCreds` + `mintCreds` instead, and a
-`--creds` file path must be replaced atomically before the 75% read. This is a hosted-composability
-gap, not a solved seam.
+re-signs the daemon creds (`delivery.creds` and the membership feed's `membership-rw.creds`) into
+`store` (the injected `store` is only the destination, not signer custody). The reference `Manager`
+runs it on a schedule against its **own** `secretStore` (see below), so passing the manager and the
+delivery daemon the *same* store closes the renewal loop end-to-end on an injected backend: the
+manager re-signs into the store the daemon reads, and the daemon adopts each generation on a
+preflight-proven 75% timer. It never throws: it returns per-file results (`skipped: "no-auth"` when no
+filesystem signer is present), so the caller must check them or the cred still rides to expiry; a
+malformed `auth.json` does still throw from that initial signer load. A composition whose signer is
+not filesystem-resident builds its own renewal from `identityFromCreds` + `mintCreds` instead, and a
+`--creds` file path must be replaced atomically before the 75% read. The remaining hosted gap is
+signer **custody** (the manager still raw-loads `auth.json`), not the store seam.
 
 ### The supervisor is a signer, not a scoped daemon
 
@@ -163,8 +165,11 @@ cred from that seed; in user mode agents instead receive callout-minted bearers,
 still holds the signing seed for its own creds and renewal. So a hosted supervisor is a **trusted
 per-tenant account-signer process**, not a least-privilege connect client. It additionally requires a
 `~/.cotal/meshes/<space>.json` registry record and the workspace user-auth marker to start in user
-mode. There is no `SecretStore`/minter injection on `ManagerOptions` yet; the only knobs are
-`workspaceRoot` and the process-global `COTAL_HOME`.
+mode. `ManagerOptions.secretStore` injects the one `SecretStore` the manager reads/writes every secret
+through — its daemon-cred renewal (`remintDaemonCreds`) and its per-agent secret sites — defaulting to
+the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end hosted
+renewal. What is still **not** injectable is the signer itself (the data-account seed the manager mints
+from); the other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
 
 **Isolating the signer is an OS-sandbox problem, not a file-permission one.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
@@ -222,18 +227,21 @@ The primitives above are present as exports, but three capabilities are **not** 
 from the public contract today. Each is tied to work in flight; a host either waits for the seam or
 scopes the capability out. None is a wire concern.
 
-1. **Delivery broker-sourced membership graph and immediate live eviction.** The delivery daemon
-   also reads `membership-observer.creds`, `membership-rw.creds`, `connection-evictor.creds`, and
-   `membership.json` (`{accountId}`) from a fixed on-disk path. The creds are mintable from public
-   primitives (`mintMembershipObserverCreds`, `mintConnectionEvictorCreds`, `mintCreds(..., "membership-rw")`,
-   `accountId = auth.account.pub`), but there is no exported path contract and no store injection for
-   them, and the provisioning wrapper is private. Missing files degrade membership to traffic-only
-   and make live eviction refuse (loudly), so this is a real capability, not convenience. The
-   supported delivery contract here is the Plane-3 durable backstop; broker-sourced membership and
-   immediate live eviction wait for the membership-store seam.
-2. **Supervisor secret threading.** As above, `Manager` has no `SecretStore`/minter injection; a
-   hosted supervisor runs on a filesystem-resident signer bundle plus mesh-registry record. The
-   store-threading seam is in flight.
+1. **Delivery immediate live eviction and a fully-hosted membership feed.** The renewable
+   `membership-rw.creds` is now a `SecretStore` kind — `startMembership` reads it through the injected
+   store and the manager re-signs it there, so the graph feed's writer renews end-to-end on a hosted
+   backend (its data connection adopts each generation on a preflight-proven 75% timer). What still
+   reads from a fixed on-disk path are the *static* `membership-observer.creds` and
+   `connection-evictor.creds` ($SYS creds, mintable only at `up`) and `membership.json`
+   (`{accountId}`, non-secret config); those, plus the private provisioning wrapper, keep immediate
+   live eviction and a fully-hosted feed a partial gap. Missing files degrade membership to
+   traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
+   Plane-3 durable backstop.
+2. **Supervisor signer custody.** The store side has landed: `ManagerOptions.secretStore` injects the
+   one `SecretStore` the manager reads/writes every secret through (its daemon-cred renewal and its
+   per-agent kinds). What remains is the *signer* — the manager still raw-loads the `SpaceAuth` bundle
+   from `workspaceRoot`, so a hosted supervisor is still a filesystem-resident per-tenant account-signer
+   process plus mesh-registry record.
 3. **Many spaces per broker.** No published "add a tenant account under one shared operator" API;
    the exports compose the one-space reference shape. This is the multi-space operator layer.
 4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
@@ -258,8 +266,9 @@ place and keep:
 | auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
-| membership/eviction creds + `membership.json` | scoped creds/config | workspace filesystem | none (see gap 1) |
-| manager agent creds, actor tokens, sentinel creds | lifecycle authority | workspace filesystem | none (no store seam yet) |
+| `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
+| membership-observer / connection-evictor creds + `membership.json` | scoped $SYS creds / config | workspace filesystem | none (see gap 1) |
+| manager agent creds, actor tokens, sentinel creds | lifecycle authority | `SecretStore` | `SecretStore` (manager `secretStore`) |
 | `~/.cotal/meshes/<space>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
 | auth-health, renewal records | non-secret diagnostics | workspace filesystem | `workspaceRoot` |
 
