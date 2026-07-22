@@ -101,6 +101,7 @@ async function askManagerEp(
   auth: ControlAuth,
   reach: ControlReach,
   timeoutMs?: number,
+  instanceId?: string,
 ): Promise<ControlReply> {
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
@@ -114,7 +115,9 @@ async function askManagerEp(
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+    // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
+    // multi-manager space addresses the intended manager, never whichever wins the class anycast.
+    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}) });
     let target: EpVerbTarget | undefined;
     let sendArgs = args;
     if (mapped.targeted) {
@@ -186,10 +189,11 @@ export async function askManager(
   auth: ControlAuth = {},
   reach: ControlReach = "owner",
   timeoutMs?: number,
+  instanceId?: string,
 ): Promise<ControlReply> {
   // A user bearer or a minted static instrument carries its own ep caller triple: ride it.
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerEp(space, server, op, args, auth, reach, timeoutMs);
+    return askManagerEp(space, server, op, args, auth, reach, timeoutMs, instanceId);
   // A raw `--creds` file with NO minted triple is a pre-1c generation's cred (no ep rows). The ctl
   // rail it used to ride is gone (1d), so refuse loud with the recovery rather than hang.
   if (auth.creds)
@@ -197,7 +201,7 @@ export async function askManager(
   // OPEN mesh: no credential system. The manager registered its service under DEV_OWNER and the
   // broker enforces nothing, so synthesize a fresh DEV_OWNER caller triple and connect bare.
   const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
-  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs);
+  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs, instanceId);
 }
 
 export function failIfNotOk(reply: ControlReply): void {

@@ -26,7 +26,7 @@ import {
 } from "./endpoint-contract-store.js";
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall } from "./endpoint-verbs.js";
-import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller } from "./endpoint-subjects.js";
+import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 
@@ -56,6 +56,10 @@ export interface ResolvedService {
   caller: EpCaller;
   responder: { instanceId: string; epoch: number };
   commands: Map<string, ResolvedCommand>;
+  /** Set when the service was resolved PINNED to one instance's `inst` route (P2 item 3 `--on`):
+   *  {@link invokeCommand} then routes commands to that exact instance, never the class `one` queue,
+   *  so a multi-manager space can be addressed per-instance. Absent ⇒ class anycast (the default). */
+  pinnedInstanceId?: string;
 }
 
 /**
@@ -74,12 +78,16 @@ export async function describeEndpoint(
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number } = {},
+  opts: { deadlineMs?: number; instanceId?: string } = {},
 ): Promise<{ answer: DescribeAnswer; responder: { instanceId: string; epoch: number } }> {
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const n = nonce();
   const requestId = nonce();
-  const subject = epRequestSubject(space, { route: { mode: "one" }, endpoint, command: "describe", caller, nonce: n });
+  // P2 item 3 `--on <instance>`: PIN the describe to one instance's `inst` route so a multi-manager
+  // space resolves the exact instance addressed, not whichever wins the class `one` queue. Default =
+  // class anycast (mode "one"), unchanged for every existing caller.
+  const route: EpRoute = opts.instanceId !== undefined ? { mode: "inst", instanceId: opts.instanceId } : { mode: "one" };
+  const subject = epRequestSubject(space, { route, endpoint, command: "describe", caller, nonce: n });
   const env = {
     v: 1, id: requestId, op: { endpoint, command: "describe" }, class: "ephemeral",
     replyExpected: true, deadlineMs, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor },
@@ -196,7 +204,7 @@ export async function resolveService(
   space: string,
   endpoint: string,
   caller: EpCaller,
-  opts: { deadlineMs?: number } = {},
+  opts: { deadlineMs?: number; instanceId?: string } = {},
 ): Promise<ResolvedService> {
   const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, opts);
   const store = await contractStoreContext(nc, space);
@@ -216,7 +224,7 @@ export async function resolveService(
       });
     }
   }
-  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands };
+  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
 }
 
 /**
@@ -264,7 +272,14 @@ export async function invokeCommand(
       throw new EpEnvelopeError("failed-precondition", `the ${service.endpoint} instance ${instanceId} answered but this service handle resolved against ${service.responder.instanceId}; a different queue winner is a superseded-or-split responder - re-resolve the service to adopt it (SPEC 13.2)`);
     return service.responder.epoch;
   };
-  return epCall(nc, space, { mode: "one" }, {
+  // P2 item 3 `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
+  // describe resolved to, at its resolved epoch), never the class `one` queue — so the command reaches
+  // the addressed manager in a multi-manager space. Unpinned ⇒ class anycast `one` (unchanged). The
+  // describeBound currency check still holds: an inst-routed reply carries that instance's id.
+  const route = service.pinnedInstanceId !== undefined
+    ? { mode: "inst" as const, instanceId: service.pinnedInstanceId, epoch: service.responder.epoch }
+    : { mode: "one" as const };
+  return epCall(nc, space, route, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),

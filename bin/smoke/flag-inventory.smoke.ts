@@ -67,7 +67,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
       "file:string:f", "live-only:boolean", "model:string", "name:string", "no-transcript:boolean",
-      "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
+      "on:string", "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
       "server:string", "share-tools:string", "space:string", "subscribe:string",
       "transcript:boolean", "variant:string",
     ],
@@ -114,7 +114,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string"], positionals: false },
-  ps: { flags: [...TARGET], positionals: false },
+  ps: { flags: [...TARGET, "on:string"], positionals: false },
   attach: { flags: [...TARGET, "name:string"], positionals: false },
   deliver: {
     flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string"],

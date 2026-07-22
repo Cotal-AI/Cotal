@@ -16,7 +16,7 @@ const nameFlag = (what: string) =>
   ({ name: "name", type: "string", value: "<n>", description: what }) as const;
 
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)")] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" }] as const satisfies readonly FlagSpec[];
 export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)")] as const satisfies readonly FlagSpec[];
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
@@ -55,7 +55,10 @@ export async function stop(args: ParsedArgs): Promise<void> {
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
-  const reply = await askManager(t.space, t.server, "ps", undefined, t.auth);
+  // `--on <instance>`: pin ps to one manager instance (P2 item 3 multi-manager). Default = class
+  // anycast (whichever instance answers). A class scatter that merges every instance's rows is a
+  // follow-up on the scatter primitive (freezeExpectedSet); today ps is per-instance / anycast.
+  const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
   failIfNotOk(reply);
   const rows =
     (reply.data as Array<{
