@@ -24,9 +24,11 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
 import {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, epCall,
-  registry, type Connector, type EpCaller, type LaunchOpts, type LaunchSpec,
+  actionContext, readGoalResult, listGoalIndex, recordsBucket,
+  registry, type ActionContext, type Connector, type EpCaller, type GoalRef, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -57,7 +59,7 @@ const conns: NatsConnection[] = [];
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer"])
+for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 
 // Inline connectors driving the three readiness outcomes (open mesh — no creds needed). `join` is
@@ -139,6 +141,13 @@ try {
   const followNc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
   conns.push(followNc);
   startProgressCollector(followNc); // subscribe BEFORE any spawn so handoff/launched are captured
+  // A read context that OUTLIVES a manager crash (must-5 M5): reads the durable goal result fact +
+  // the reconcile index directly off the broker, so the successor's reconcile is observed at the source.
+  const readNc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
+  conns.push(readNc);
+  const rctx: ActionContext = await actionContext(readNc, SPACE);
+  const goalRef = (goalId: string): GoalRef => ({ endpoint: MANAGER_ENDPOINT, caller, goalId });
+  const idxKv = await new Kvm(readNc).open(recordsBucket(SPACE));
 
   // ── M1: ACCEPT SHAPE ──────────────────────────────────────────────────────────────────────
   {
@@ -205,6 +214,37 @@ try {
     // A second persona-derived "dup" numbers to dup-2 (multi-peer preserved).
     const r3 = await callSpawn({ name: "dup", agent: "stuck" });
     check("M6 a second persona-derived spawn numbers (dup-2)", acc(r3).name === "dup-2", acc(r3));
+  }
+
+  // ── M5: MANAGER KILL MID-GOAL → the SUCCESSOR reconciles (must-5 Q-B; never drops an accepted goal) ──
+  {
+    const pollResult = async (ref: GoalRef, ms: number) => {
+      for (let i = 0; i * 100 < ms; i++) { const r = await readGoalResult(rctx, ref); if (r) return r; await wait(100); }
+      return readGoalResult(rctx, ref);
+    };
+    const r = await callSpawn({ name: "recon", agent: "stuck" }); // accepts, never joins → stays within the readiness window
+    const goalId = acc(r).goalId as string;
+    const ref = goalRef(goalId);
+    await wait(400); // let it provision + write the durable index (goal accepted, still in-flight)
+    check("M5 the inherited goal has no terminal before the crash (accepted, in-flight)", (await readGoalResult(rctx, ref)) === undefined);
+    check("M5 the reconcile index carries the in-flight goal", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).some((g) => g.goalId === goalId), goalId);
+    // CRASH: drop the goal-writer FIRST so the graceful shutdown cannot settle the goal (the
+    // child-exit's terminal commit then fails on the closed connection) — the goal is orphaned
+    // exactly as after a real crash, an accepted goal with no terminal and a live index entry.
+    (mgr as unknown as { goalWriter?: { nc: NatsConnection } }).goalWriter?.nc.close();
+    await mgr!.stop();
+    mgr = undefined;
+    await wait(2200); // past the 2s readiness deadline, so the successor's sweep settles uncertain at once
+    // The SUCCESSOR: same space + workspace, a FRESH instanceId — its boot reconcile settles the orphan.
+    const mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
+    (mgr2 as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    await mgr2.start();
+    mgr = mgr2;
+    const successorIid = (mgr2 as unknown as { managerLifecycleUid: string }).managerLifecycleUid;
+    check("M5 the successor is a FRESH incarnation (a new instanceId)", successorIid !== managerIid, { successorIid, managerIid });
+    const after = await pollResult(ref, 4_000);
+    check("M5 the successor reconciled the inherited goal to a terminal, never dropped (uncertain)", after?.state === "uncertain", after);
+    check("M5 the reconcile cleared the index entry (goal terminal)", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).every((g) => g.goalId !== goalId), goalId);
   }
 
   console.log(`\nspawn-action open-mesh functional smoke: ${pass} passed, ${fail} failed`);
