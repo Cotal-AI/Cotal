@@ -123,9 +123,16 @@ try {
   try { await invokeCommand(nc, space, service, "spawn", { name: "w1", bogus: 1 }, { currentEpoch }); }
   catch (e) { badCode = e instanceof EpEnvelopeError ? e.code : (e as Error).message; }
   check("a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)", badCode === "bad-request", badCode);
+  // P2 item 2: spawn is an ACTION - invoke returns the acceptance floor (before the agent is live).
   const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot }, { currentEpoch, deadlineMs: 30_000 });
-  const w1 = rSpawn.reply.data as { name: string; id: string; lifecycleUid: string };
-  check("invoke spawn boots a REAL agent", rSpawn.reply.ok === true && w1.name === "w1" && w1.lifecycleUid.length >= 26, rSpawn.reply);
+  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string };
+  check("invoke spawn accepts the goal (acceptance floor: name + goalId)", rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string", rSpawn.reply);
+  // Poll the managed set until the agent joins - its id + lifecycleUid are the targeting coordinates.
+  const M = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string }> };
+  let live: { id: string; lifecycleUid: string } | undefined;
+  for (let i = 0; i < 80 && !live; i++) { live = M.agents.get("w1"); if (!live) await wait(250); }
+  const w1 = live!;
+  check("invoke spawn boots a REAL agent that joins + is managed", !!w1 && w1.lifecycleUid.length >= 26, w1);
 
   console.log("4. invoke targeted despawn + the generic target guards");
   let noTarget: string | undefined;
