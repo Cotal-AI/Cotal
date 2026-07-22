@@ -41,8 +41,9 @@ import type { AttachEndReason } from "./bridge.js";
 
 const TERMINAL = new Set(["closed", "expired", "superseded", "retired"]);
 
-/** A manager-local {@link SessionLedger} over `session.<id>` rows in the auth bucket KV. Drives the
- *  SAME core row/key types as implementations/auth's ledger with the manager's own KV CAS: the
+/** A manager-local {@link SessionLedger} over `session.<id>` rows in the DEDICATED sessions bucket
+ *  KV (never the auth bucket — §13.9 subject-blindness confinement). Drives the SAME core row/key
+ *  types as implementations/auth's ledger with the manager's own KV CAS: the
  *  one-use is `createIssuing`'s create-only CAS; finalize/terminal/revoke are revision-pinned
  *  updates (a lost CAS returns false / retries on the next sweep, never a silent overwrite). */
 export function kvManagerSessionLedger(kv: KV): SessionLedger {
@@ -101,7 +102,7 @@ export interface ManagerSessionPlaneDeps {
    *  manager self-signs and self-verifies its own offers). */
   signer: { keyId: string; keyPair: { sign(input: Uint8Array): Uint8Array } };
   resolveAnchor: AnchorResolver;
-  /** The auth-bucket KV holding the `session.<id>` ledger rows. */
+  /** The DEDICATED sessions-bucket KV holding the `session.<id>` ledger rows (never the auth bucket). */
   ledgerKv: KV;
   /** Session lifetime (§13.6 live-class) + the bounded flow window. */
   ttlMs: number;
@@ -190,8 +191,9 @@ export class ManagerSessionPlane {
   }
 }
 
-/** Open the auth-bucket KV a plane's ledger needs (the `session.<id>` rows live in the §13.12 auth
- *  store). Split out so the manager can build the plane from its own bucket handle. */
-export async function openSessionLedgerKv(nc: NatsConnection, authBucket: string): Promise<KV> {
-  return new Kvm(nc).open(authBucket);
+/** Open the DEDICATED sessions-bucket KV a plane's ledger needs (the `session.<id>` rows live in
+ *  the §13.6 session store — {@link sessionsBucket}, NOT the auth bucket). Split out so the manager
+ *  can build the plane from its own bucket handle. */
+export async function openSessionLedgerKv(nc: NatsConnection, bucket: string): Promise<KV> {
+  return new Kvm(nc).open(bucket);
 }

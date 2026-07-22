@@ -128,11 +128,14 @@ export interface EndpointStreamOptions {
 
 /**
  * Create (idempotently) the §13.12 per-space control-surface resources: the seven JetStream
- * streams, the work-pool WorkQueue, and the two KV buckets. Privileged — runs at space setup.
- * `jsm.streams.add`/`kvm.create` are idempotent for an identical config and FAIL LOUD on a
- * config delta, which is wanted: a drifted resource is an operator error, never silently adopted.
+ * streams, the work-pool WorkQueue, and the KV buckets (records + auth + the §13.6 session ledger).
+ * Privileged — runs at space setup. `jsm.streams.add`/`kvm.create` are idempotent for an identical
+ * config and FAIL LOUD on a config delta, which is wanted: a drifted resource is an operator error,
+ * never silently adopted.
  *
- * Sessions (`eps`) are deliberately absent: core-only, never captured (§13.12).
+ * The session byte SUBJECTS (`eps`) are deliberately absent: core-only, never captured (§13.12).
+ * Only the durable `session.<id>` ledger rows are captured — in their own dedicated bucket
+ * ({@link createSessionsStore}), never the auth bucket.
  */
 export async function createEndpointStreams(
   jsm: JetStreamManager,
@@ -213,6 +216,12 @@ export async function createEndpointStreams(
   });
   await ensureContractStore(jsm, space);
   await ensureAuthorityStores(jsm, kvm, space);
+  // P2 item 6: the DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
+  // uncaptured (above), but the `session.<id>` ledger rows are a captured authority KV — kept in
+  // their own bucket so the manager's standing session-writer's bucket-blind STREAM.MSG.GET reads
+  // ONLY session rows (the §13.9 subject-blindness structural fix). Provisioned here so every mesh
+  // that ensures the endpoint streams (auth + open both run this at the manager's boot) has it.
+  await createSessionsStore(jsm, kvm, space);
 }
 
 /**

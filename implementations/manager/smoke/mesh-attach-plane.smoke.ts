@@ -23,7 +23,9 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
+  createSessionsStore,
   ensureAuthorityStores,
+  sessionsBucket,
   epAuthBucket,
   newArtifactSigner,
   openSessionRail,
@@ -72,10 +74,15 @@ if (!up) { console.log("  ✗ FAIL: broker never came up"); process.exit(1); }
 
 const ncPlane: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
 const kvm = new Kvm(ncPlane);
-// The §13.12 auth store (allow_direct=false, leader-served) — the SAME stores the manager ensures
-// on an open mesh (withOpenServeConnection). Kvm.open binds lazily, so this create-first is required.
-await ensureAuthorityStores(await jetstreamManager(ncPlane), kvm, SPACE);
-const ledgerKv = await kvm.open(epAuthBucket(SPACE));
+const jsmPlane = await jetstreamManager(ncPlane);
+// The DEDICATED §13.6 sessions store (allow_direct=false, leader-served) — where the manager's
+// session ledger rows live, split OUT of the auth bucket for §13.9 subject-blindness confinement.
+// Kvm.open binds lazily, so this create-first is required. Also ensure the auth store, so the
+// confinement assertion below can prove a session row NEVER lands there.
+await createSessionsStore(jsmPlane, kvm, SPACE);
+await ensureAuthorityStores(jsmPlane, kvm, SPACE);
+const ledgerKv = await kvm.open(sessionsBucket(SPACE));
+const authKv = await kvm.open(epAuthBucket(SPACE));
 
 const plane = new ManagerSessionPlane({
   nc: ncPlane, space: SPACE, serving: SERVING,
@@ -103,6 +110,10 @@ const rowEntry = await ledgerKv.get(sessionLedgerKey(grant.sessionId));
 const row = rowEntry && rowEntry.operation === "PUT" ? JSON.parse(new TextDecoder().decode(rowEntry.value)) as { state: string; holder: { principal: string } } : undefined;
 c("the session ledger row is durably `active` (the one-use record)", row?.state === "active");
 c("the ledger row is holder-bound to the attach caller principal", row?.holder.principal === "dev.cli");
+// Dedicated-bucket confinement (P2 item 6): the row lives in the sessions bucket, NEVER the auth
+// bucket — so the standing writer's bucket-blind read exposes session rows only, never creds/gates.
+const authEntry = await authKv.get(sessionLedgerKey(grant.sessionId));
+c("the session row is ABSENT from the auth bucket (dedicated-bucket confinement)", authEntry === null || authEntry.operation !== "PUT", authEntry?.operation);
 
 // --------------------------------------------------------------------------------------------
 console.log("B. the caller rail drives the terminal end to end");
