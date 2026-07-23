@@ -2,7 +2,7 @@
 // registry needs — a name authority, a per-instance issuance gate (§13.1), and the content-store
 // reader — wired to the review contracts. These are the reference stub implementations the core
 // smoke tests use; a production space provisions them through the auth/delivery layer instead.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,8 +39,11 @@ export async function startBroker(): Promise<Broker> {
     [`port: ${port}`, `host: "127.0.0.1"`, `max_control_line: 65536`, `max_payload: 8388608`, `jetstream { store_dir: "${join(dir, "js")}" }`, ""].join("\n"),
   );
   const child = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+  let spawnError: Error | undefined;
+  child.on("error", (e) => (spawnError = e));
   const url = `nats://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) {
+    if (spawnError) throw new Error(`could not start nats-server (${spawnError.message}); install it: brew install nats-server`);
     if (await isReachable(url)) return { url, stop: () => child.kill("SIGKILL") };
     await new Promise((r) => setTimeout(r, 100));
   }

@@ -1,6 +1,6 @@
 // Mock end-to-end smoke: broker up, reviewer daemon with 3 instances, orchestrator on the fixture
 // PR. Proves the transport + vote without model quota, and checks the isolation the mechanism needs.
-// Run: pnpm --filter @cotal-ai/example-05-quorum-code-review smoke  (needs nats-server on PATH)
+// Run: pnpm run smoke  (needs nats-server on PATH)
 import { mintLifecycleUid, epCallerReplyFilter, type EpCaller } from "@cotal-ai/core";
 import { startBroker, connectNats } from "./space.js";
 import { startReviewer } from "./reviewer.js";

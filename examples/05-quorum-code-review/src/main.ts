@@ -7,6 +7,7 @@
 // tears everything down. `--mock` returns canned findings (no model quota, no network needed).
 import { mintLifecycleUid } from "@cotal-ai/core";
 import { fetchPrPacket } from "./github.js";
+import { canaryModel } from "./personas.js";
 import { startBroker } from "./space.js";
 import { startReviewer } from "./reviewer.js";
 import { reviewPr } from "./orchestrator.js";
@@ -32,6 +33,11 @@ async function main() {
   if (!url && !mock) {
     console.error("usage: pnpm run review -- <github-pr-url> [--instances N] [--k K] [--mock]");
     process.exit(2);
+  }
+  if (!mock) {
+    process.stdout.write("model canary... ");
+    await canaryModel();
+    console.log("ok");
   }
   const space = "review";
   const packet = url ? await fetchPrPacket(url) : SAMPLE_PR;

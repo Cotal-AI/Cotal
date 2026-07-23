@@ -65,7 +65,9 @@ minted by the auth layer for a secured space, and is out of scope here.
 - Node ≥ 20, pnpm, and `nats-server` on PATH (macOS: `brew install nats-server`).
 - Build core once, from the repo root: `pnpm install && pnpm -r build`.
 - For a **real** run (not `--mock`): `opencode` on PATH with a configured model
-  (`COTAL_REVIEW_MODEL`, default `openai/gpt-5.5`); `GITHUB_TOKEN` is optional (lifts the rate limit).
+  (`COTAL_REVIEW_MODEL`, default `openai/gpt-5.5`); `GITHUB_TOKEN` is optional (lifts the rate limit);
+  `COTAL_REVIEW_TIMEOUT_MS` caps each model call (default 600000). A real run starts with a model
+  canary — one tiny call — so a missing CLI or an exhausted quota fails fast instead of hanging.
 
 ## Run it
 

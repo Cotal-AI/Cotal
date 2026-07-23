@@ -117,6 +117,29 @@ function runOpencode(promptPath: string): Promise<string> {
   });
 }
 
+/** Fail-fast preflight: one tiny model call so a missing CLI or an unconfigured model surfaces as a
+ *  single clear error before the broker and daemon come up. */
+export function canaryModel(timeoutMs = 120_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("opencode", ["run", "Reply with exactly: OK", "--model", MODEL, "--format", "default"], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`model canary timed out after ${timeoutMs}ms (model ${MODEL}); exhausted quotas make opencode hang silently`));
+    }, timeoutMs);
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0 && stdout.trim().length) resolve();
+      else reject(new Error(`model canary failed (exit ${code}, model ${MODEL}); is opencode authenticated for this provider?`));
+    });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error(`could not run the opencode CLI (${e.message}); install it and configure ${MODEL}, or use --mock`));
+    });
+  });
+}
+
 /** One persona review through the OpenCode CLI. Parse failure degrades to zero findings (a partial
  *  run), never a malformed reply — the wire schema would reject one anyway. */
 export async function runReview(persona: Persona, packet: PrPacket): Promise<Finding[]> {
@@ -125,7 +148,13 @@ export async function runReview(persona: Persona, packet: PrPacket): Promise<Fin
   const promptPath = join(dir, `${persona}-prompt.md`);
   try {
     await writeFile(promptPath, promptFor(persona, packet));
-    const stdout = await runOpencode(promptPath);
+    let stdout: string;
+    try {
+      stdout = await runOpencode(promptPath);
+    } catch (e) {
+      console.warn(`  [${persona}] opencode call failed (${(e as Error).message}); contributing zero findings`);
+      return [];
+    }
     try {
       return extractFindings(stdout, maxFindings);
     } catch (e) {
