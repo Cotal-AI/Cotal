@@ -148,6 +148,25 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
+  examples/05-quorum-code-review:
+    dependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/cmux:
     devDependencies:
       '@cotal-ai/core':

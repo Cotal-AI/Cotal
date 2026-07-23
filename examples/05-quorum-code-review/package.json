@@ -1,0 +1,22 @@
+{
+  "name": "@cotal-ai/example-05-quorum-code-review",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "review": "tsx src/main.ts",
+    "smoke": "tsx src/smoke.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/kv": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}
