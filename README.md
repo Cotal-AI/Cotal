@@ -78,11 +78,19 @@ JetStream has run in production for years. We didn't invent the hard parts.
 
 ## Quick start
 
-Cotal's guided setup is one command on a fresh machine:
+One command, on a machine with nothing installed:
 
 ```bash
-npx cotal-ai setup  # checks your machine, installs `cotal`, and configures your first agent mesh
+curl -fsSL https://get.cotal.ai | sh
 ```
+
+It works out your platform, installs a verified Node if you do not have one, puts `cotal`
+on your PATH without sudo, and hands you to guided setup. Everything lands inside your home
+directory and nothing needs root. The script is served as plain text at
+[get.cotal.ai](https://get.cotal.ai) so you can read it in a browser tab before you run it,
+and it lives at [`install.sh`](install.sh) in this repo.
+
+Already have Node 22+? `npm install -g cotal-ai` does the same job.
 
 Or skip the terminal and paste one line into any coding agent, which sets everything up itself:
 

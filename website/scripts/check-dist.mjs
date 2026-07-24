@@ -91,6 +91,19 @@ function scan(dir) {
 }
 scan(dist);
 
+// The installer is served to `curl … | sh`, so its safety properties have to survive the
+// build, not just exist in the repo. The last executable line must be the single `main "$@"`
+// invocation: that is what makes a truncated download define functions and then do nothing.
+const installer = readFileSync(join(dist, 'install.sh'), 'utf8');
+if (!installer.startsWith('#!/bin/sh')) fail('install.sh lost its POSIX sh shebang');
+const lastLine = installer.trimEnd().split('\n').pop();
+if (lastLine !== 'main "$@"')
+  fail(`install.sh must end with 'main "$@"' for truncation safety, found: ${lastLine}`);
+if (installer.split('\n').filter((l) => /^main "\$@"$/.test(l)).length !== 1)
+  fail('install.sh must invoke main exactly once, on its last line');
+if (!/^set -eu$/m.test(installer)) fail('install.sh lost `set -eu`');
+if (!/SHASUMS256\.txt/.test(installer)) fail('install.sh lost its Node checksum verification');
+
 console.log(
-  'check-dist: llms.txt task links present, robots.txt + agent-skills intact, no repo-relative link leaks',
+  'check-dist: llms.txt task links present, robots.txt + agent-skills intact, install.sh truncation-safe, no repo-relative link leaks',
 );

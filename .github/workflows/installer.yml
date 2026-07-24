@@ -1,0 +1,96 @@
+name: Installer
+
+# install.sh is the first thing most people run, on a machine we know nothing about, so it
+# gets its own gate rather than riding along with CI. The container matrix covers the Linux
+# configurations (no Node, old Node, musl, wget-only, each shell); macOS gets a real run on
+# the only honest macOS oracle there is.
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'install.sh'
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  lint:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: shellcheck (POSIX sh)
+        run: shellcheck -s sh install.sh
+      - name: shellcheck (test harness)
+        run: shellcheck install/test-matrix.sh
+      - name: Parses under dash, not just bash
+        run: sudo apt-get install -y -qq dash && dash -n install.sh
+      - name: Truncation-safe
+        # A cut-off download must define functions and do nothing. Proven by feeding every
+        # prefix of the script to sh and requiring that none of them install anything.
+        run: |
+          total=$(wc -l < install.sh)
+          for pct in 10 25 50 75 90 99; do
+            n=$(( total * pct / 100 ))
+            head -n "$n" install.sh | sh >/dev/null 2>&1 || true
+            if [ -e "$HOME/.local/bin/cotal" ] || [ -e "$HOME/.local/share/cotal" ]; then
+              echo "::error::a ${pct}% prefix of install.sh had side effects"
+              exit 1
+            fi
+          done
+          echo "no prefix of install.sh has side effects"
+
+  matrix:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Onboarding matrix
+        run: ./install/test-matrix.sh
+
+  macos:
+    timeout-minutes: 15
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dry run reports without changing anything
+        run: |
+          sh install.sh --dry-run
+          test ! -e "$HOME/.local/share/cotal" || { echo "::error::--dry-run wrote something"; exit 1; }
+      - name: Install, on the runner's own Node
+        run: sh install.sh --no-setup
+      - name: The launcher works and is pinned to a good Node
+        run: |
+          "$HOME/.local/bin/cotal" --version
+          node_used=$("$HOME/.local/share/cotal/nodebin/node" -v)
+          major=${node_used#v}; major=${major%%.*}
+          test "$major" -ge 22 || { echo "::error::launcher pinned Node $node_used"; exit 1; }
+      - name: Re-running upgrades in place and does not stack PATH blocks
+        run: |
+          sh install.sh --no-setup
+          blocks=$(cat "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc" 2>/dev/null | grep -c '^# cotal$' || true)
+          test "$blocks" -le 1 || { echo "::error::wrote $blocks PATH blocks"; exit 1; }
+      - name: Vendored Node path, including checksum verification
+        run: |
+          rm -rf "$HOME/.local/share/cotal" "$HOME/.local/bin/cotal"
+          sh install.sh --no-setup --vendor-node
+          "$HOME/.local/bin/cotal" --version
+
+  installer-ok:
+    # One required status to gate on, the same shape ci.yml uses.
+    if: always()
+    needs: [lint, matrix, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fan in
+        run: |
+          [ "${{ needs.lint.result }}" = success ] &&
+          [ "${{ needs.matrix.result }}" = success ] &&
+          [ "${{ needs.macos.result }}" = success ] || exit 1
