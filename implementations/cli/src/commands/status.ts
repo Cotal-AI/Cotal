@@ -18,7 +18,7 @@ import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
-import { c, statusBadge } from "../ui.js";
+import { c, offlineDetail, statusBadge } from "../ui.js";
 
 export const statusFlags = [spaceFlag, serverFlag] as const;
 
@@ -328,7 +328,14 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
     );
     for (const p of roster.slice(0, 8)) {
       const label = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
-      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : ""}`);
+      // Offline rows read as dead (issue #286): retained ts/activity are qualified, never bare.
+      const detail =
+        p.status === "offline"
+          ? c.dim(` - ${offlineDetail(p)}`)
+          : p.activity
+            ? c.dim(` - ${p.activity}`)
+            : "";
+      console.log(`    ${statusBadge(p.status)}  ${label}${detail}`);
     }
     if (roster.length > 8) console.log(c.dim(`    +${roster.length - 8} more`));
     row("channels", channels.length ? channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none");

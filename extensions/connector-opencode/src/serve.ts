@@ -139,6 +139,10 @@ async function main(): Promise<void> {
       OPENCODE_SERVER_USERNAME: USERNAME,
       OPENCODE_SERVER_PASSWORD: SECRET,
       OPENCODE_DB: dbPath,
+      // Lifeline for the plugin inside the serve: this shim can only forward signals it can catch —
+      // a SIGKILL of the shim would orphan the serve, whose plugin then heartbeats a dead agent as
+      // live forever (issue #286). The plugin polls this pid and folds the serve up when it's gone.
+      COTAL_OPENCODE_SHIM_PID: String(process.pid),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

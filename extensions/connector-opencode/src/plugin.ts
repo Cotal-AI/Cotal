@@ -48,6 +48,11 @@ const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
 const INTERRUPT_INTENT_TTL_MS = 30_000;
 
+/** Single-flight guard for shutdown(). The control plane and the shim lifeline can race into
+ *  it; set synchronously before the first await, so a second entry can't fall through to
+ *  process.exit(0) while the winner's teardown is still publishing offline. */
+let stopping = false;
+
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
   if (!hasIdentity()) {
@@ -127,6 +132,13 @@ export const cotal: Plugin = async () => {
   // hijacked or absent control plane.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
   const shutdown = async (): Promise<void> => {
+    if (stopping) return; // single-flight: the first caller owns the teardown and the exit
+    stopping = true;
+    // Bounded tail: the clean leave awaits broker I/O (the offline put, the connection drain), and
+    // a half-open remote broker can stretch a drain toward ping-timeout scale. Cap it — unref'd so
+    // the timer itself never holds the process, cleared when the cooperative path completes.
+    const hardExit = setTimeout(() => process.exit(0), 10_000);
+    hardExit.unref?.();
     try {
       controlServer?.close();
     } catch {
@@ -136,6 +148,7 @@ export const cotal: Plugin = async () => {
       await safeStatus("offline");
       await agent.stop();
     } finally {
+      clearTimeout(hardExit);
       process.exit(0);
     }
   };
@@ -150,6 +163,45 @@ export const cotal: Plugin = async () => {
       fatalBind: true,
       onShutdown: () => void shutdown(),
     });
+  }
+
+  // Shim lifeline. The serve shim forwards only the signals it can CATCH (SIGINT/SIGTERM) — a hard
+  // stop is a SIGKILL of the shim (the manager's runtime sends exactly that), which no handler sees,
+  // so it orphans this serve process. The plugin lives in here and would keep heartbeating presence:
+  // a dead agent that shows `○ idle` (with its last activity) on the mesh forever, and whose stale
+  // name wedges the next same-name spawn (issue #286). The shim plumbs its pid via env; poll it with
+  // signal 0 (a liveness probe on every platform — nothing is delivered) and, once the shim is gone,
+  // leave the mesh cleanly and exit via the same cooperative shutdown path the control plane uses.
+  const shimPid = Number(process.env.COTAL_OPENCODE_SHIM_PID ?? "");
+  if (Number.isInteger(shimPid) && shimPid > 0) {
+    // The trigger kills our own log stream: the dead shim was the only reader of this serve's
+    // stderr pipe, so the lifeline's log() below queues an async EPIPE 'error' that would crash
+    // the serve BEFORE the offline publish reaches the broker (the ghost would then die by KV
+    // TTL, not by the clean leave). Swallow stderr stream errors — stderr only: it is the one
+    // stream this plugin writes; the host's stdout is not ours to shield.
+    process.stderr.on("error", () => {});
+    const lifeline = setInterval(() => {
+      try {
+        process.kill(shimPid, 0);
+      } catch {
+        // ANY failure means the shim is gone — deliberately not narrowed to ESRCH:
+        //  · ESRCH — the pid is free: the shim died and was reaped.
+        //  · EPERM — the pid now belongs to another uid: the shim (our uid) is dead and the pid
+        //    was recycled by a foreign process, so shutting down is still correct.
+        //  · An unreaped shim corpse (zombie) still probes alive, so the lifeline waits out the
+        //    reap — bounded in practice (the manager's runtime auto-reaps; init adopts orphans).
+        //  · Residual: a SAME-uid recycle within one poll window keeps the probe alive — an
+        //    irreducible pid-probe blind spot, vanishingly narrow; the manager-side group-kill
+        //    follow-up closes it from the other end.
+        clearInterval(lifeline);
+        log(`serve shim (pid ${shimPid}) is gone — leaving the mesh and exiting`);
+        void shutdown();
+      }
+    }, 2_000);
+    // Optional-chained for timer-handle variance across hosts/test harnesses, not because any
+    // supported runtime lacks unref (node and bun both ship Timer.unref) — the poll must never
+    // hold an otherwise-finished process open.
+    lifeline.unref?.();
   }
 
   function pendingForWake(): number {
@@ -209,6 +261,11 @@ export const cotal: Plugin = async () => {
     transcript?.reset(); // hard session boundary: drop any buffered parts so `/new` never mirrors them
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
+      // Clear the replaced session's presence on the wire: its own idle/error events no longer
+      // pass ours(), so a leftover "retrying: …" or tool name would ride the heartbeat (fresh ts,
+      // so no TTL/stale sweep ever catches it) forever — the #286 leak, one session boundary over.
+      // Boot adoption (no previous) has nothing to clear.
+      void safeStatus("idle", "");
       if (pendingForWake() > 0) void drive();
     }
   }
@@ -408,7 +465,10 @@ export const cotal: Plugin = async () => {
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
-          await safeStatus("idle");
+          // Clear the retained activity (""), not just the status: a transient "retrying: …" or
+          // tool name would otherwise survive into idle — and into the agent's retained offline
+          // record — reading as if it were still doing that forever (issue #286).
+          await safeStatus("idle", "");
           // Publish what the agent did this turn BEFORE driving the next batch, so a fresh turn's parts
           // don't bleed in. The mirror is an observability side-channel: surface a publish failure but
           // keep it OFF the turn loop, so a transport hiccup can never wedge the agent.
@@ -425,7 +485,7 @@ export const cotal: Plugin = async () => {
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {
-            await safeStatus("idle");
+            await safeStatus("idle", ""); // idle clears retained activity (issue #286) — see session.idle
           } else if (s.type === "retry") {
             await safeStatus("working", `retrying: ${s.message}`);
           }
@@ -444,7 +504,7 @@ export const cotal: Plugin = async () => {
             if (interrupted) ackSurfaced(); // explicit user Stop/Cancel: treat the surfaced batch as dismissed, not failed
             else abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
           }
-          await safeStatus("idle");
+          await safeStatus("idle", ""); // idle clears retained activity (issue #286) — see session.idle
           if (!interrupted) scheduleErrorRetry();
           else clearErrorRetry(true);
           break;

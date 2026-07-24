@@ -1,6 +1,6 @@
 import type { ParsedArgs, Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
-import { c, statusBadge } from "../ui.js";
+import { c, offlineDetail, statusBadge } from "../ui.js";
 
 /** List the mesh presence roster, including infrastructure endpoints such as the manager. */
 export async function endpoints(args: ParsedArgs): Promise<void> {
@@ -38,7 +38,15 @@ export function printEndpoints(roster: Presence[], space: string): void {
   const labelWidth = Math.max(...rows.map((row) => row.label.length));
   const kindWidth = Math.max(...rows.map((row) => row.kind.length));
   for (const row of rows) {
-    const activity = row.presence.activity ? `  ${c.dim(row.presence.activity)}` : "";
-    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${activity}`);
+    // An offline row must read as dead (issue #286): presence retains activity/ts on offline by
+    // design, so qualify them — `last seen <relative>` plus `was: <activity>` — never a bare
+    // activity that renders exactly like a live agent's.
+    const detail =
+      row.presence.status === "offline"
+        ? `  ${c.dim(offlineDetail(row.presence))}`
+        : row.presence.activity
+          ? `  ${c.dim(row.presence.activity)}`
+          : "";
+    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${detail}`);
   }
 }

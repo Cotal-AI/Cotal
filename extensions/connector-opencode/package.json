@@ -29,6 +29,8 @@
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@nats-io/kv": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
     "@opencode-ai/plugin": "^1.16.2",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4"
