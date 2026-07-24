@@ -1,38 +1,32 @@
 #!/usr/bin/env node
 /**
- * Composition root for the `cotal` operator CLI, published as `cotal-ai`. Importing an
- * implementation self-registers its commands into the shared registry — base mesh commands
- * plus `spawn`/`console` (@cotal-ai/cli) and the manager's control plane + daemon runners
- * (@cotal-ai/manager). The root just picks which surfaces to pull in; `runCli` resolves
- * whatever registered. A new surface (another connector, a control client …) is one more import line.
+ * Executable entry for the `cotal` CLI (published as `cotal-ai`): a Node-version preflight, then a
+ * hand-off to the real composition root (./run.js) via dynamic import.
+ *
+ * Why this file exists separately: the CLI's UI stack (ink, @clack/prompts, string-width) and the
+ * bundled `nats-server` optional dependency (@eplightning/nats-server-*) all require Node >= 22 —
+ * and npm SILENTLY SKIPS an optional dependency whose `engines` the running Node doesn't satisfy,
+ * so on an older Node the bundled broker is never installed at all. On top of that, string-width
+ * uses a Node-20+ regex flag that is a hard parse error on older Node. An ESM entry parses its whole
+ * static-import graph before its own body runs, so a version check inside ./run.ts would come too
+ * late — it would crash while parsing string-width. This shim therefore keeps ZERO static imports
+ * of that chain: the check runs first, and ./run.js is only pulled in (dynamically) once it passes.
  */
-// NOTE: registration order across these imports is NOT guaranteed (tsx's entry interop can
-// evaluate the smaller daemon graphs first) — display order is a non-goal here; `help` ranks
-// its groups explicitly (GROUP_ORDER in @cotal-ai/cli).
-import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
-import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
-import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
-import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
-import { registry } from "@cotal-ai/core";
+const MIN_NODE_MAJOR = 22;
+const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
 
-// A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
-// or a shell's process substitution (`source <(cotal completion bash)`). Node otherwise turns the
-// closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
-// 0. Registered before any command can write.
-process.stdout.on("error", (e: NodeJS.ErrnoException) => {
-  if (e.code === "EPIPE") process.exit(0);
-  throw e;
-});
+if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
+  process.stderr.write(
+    `\ncotal-ai requires Node.js >= ${MIN_NODE_MAJOR}, but this is ${process.version}.\n` +
+      `The bundled nats-server broker (and the CLI's UI stack) need Node >= ${MIN_NODE_MAJOR}; on an\n` +
+      `older Node, npm silently skips the broker binary and the CLI cannot start.\n\n` +
+      `Install a newer Node (https://nodejs.org). With nvm:\n` +
+      `  nvm install ${MIN_NODE_MAJOR} && nvm use ${MIN_NODE_MAJOR}\n\n` +
+      `If you already ran cotal once under the old Node, also clear the npx cache so the bundled\n` +
+      `nats-server is fetched cleanly, then retry:\n` +
+      `  rm -rf ~/.npm/_npx        # or: npx clear-npx-cache\n\n`,
+  );
+  process.exit(1);
+}
 
-// The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
-// install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
-// connector (and like the `@cotal-ai/orca` runtime already is). `runCli` seeds them on first run and
-// materializes each lazily when a command resolves it; the default agent is `COTAL_DEFAULT_AGENT`
-// (else claude), resolved manager-side. The old `"cotal"` default-agent alias is gone with them.
-//
-// Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
-// the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
-// runtimes, connectors, and local process components all self-register from those packages. Library
-// roots keep the explicit-import model.
-const argv = process.argv.slice(2);
-await runCli(registry, argv, { extensions: true });
+await import("./run.js");
