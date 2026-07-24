@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { hostname } from "node:os";
 import {
   normalizeMentions,
   subjectMatches,
@@ -38,6 +39,12 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
   if (config.connector) meta.connector = config.connector;
+  // WHICH MACHINE this agent runs on. A mesh spans hosts (a manager on another box launches into
+  // its own machine), so "where is this agent actually running" is not answerable from the roster
+  // without it. This process IS the agent's session, so its own hostname is the authoritative
+  // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
+  // is not on. Advisory display metadata, never an authorization or routing input.
+  meta.host = hostname();
   return Object.keys(meta).length ? meta : undefined;
 }
 

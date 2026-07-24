@@ -194,7 +194,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
 
-  const httpServer = createServer(async (req, res) => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
 
@@ -295,6 +295,23 @@ export async function web(args: ParsedArgs): Promise<void> {
       return;
     }
     res.writeHead(404).end("not found");
+  };
+
+  // A route handler talks to the broker, so ANY of them can reject — a JetStream request that
+  // times out (a slow or briefly unreachable broker, e.g. a mesh reached over a relayed overlay
+  // link) rejects inside the async handler. `createServer(async …)` does not await its listener,
+  // so such a rejection became an unhandled rejection and killed the whole dashboard process on
+  // the first slow request. The dashboard is a read-only observer: one failed route must degrade
+  // to a 500, never take down the server. Reply only when nothing has been written yet — a /feed
+  // stream (or any partially-sent response) is already committed to its status line.
+  const httpServer = createServer((req, res) => {
+    void handleRequest(req, res).catch((e: unknown) => {
+      const why = e instanceof Error ? e.message : String(e);
+      console.error(c.red(`! ${req.method ?? "GET"} ${req.url ?? "/"} failed: ${why}`));
+      if (res.headersSent) return void res.end();
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: why }));
+    });
   });
 
   // Comment ping keeps idle SSE connections alive through proxies.

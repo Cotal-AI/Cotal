@@ -85,11 +85,24 @@ export async function preflightTarget(
  * dead one (refused/timeout) prunes. An EXPLICIT call (never wired into resolution itself), so
  * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
  * manager control commands) invoke it; `<TAB>` completion must not.
+ *
+ * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive and, for a mesh this
+ * machine did not start, unrecoverable: only `cotal up` writes registry records, so a wrongly
+ * pruned remote mesh cannot be re-registered. `isReachable`'s default budget is 1s, which a
+ * perfectly healthy broker across a slow or jittery link (a relayed overlay VPN, a loaded host)
+ * misses routinely — one such blip silently unregistered a live remote mesh. So a first failure
+ * only makes it a CANDIDATE: confirm with a second, longer probe and prune only if that also
+ * fails. A live-but-slow broker keeps its entry; a genuinely dead one still prunes on the next
+ * sweep, one extra probe later.
  */
+const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
+
 export async function pruneStaleMeshes(): Promise<void> {
   await Promise.all(
     loadMeshes().map(async (m) => {
-      if (!(await isReachable(m.server))) removeMesh(m.space);
+      if (await isReachable(m.server)) return;
+      if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
+      removeMesh(m.space);
     }),
   );
 }
