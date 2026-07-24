@@ -7,5 +7,5 @@
     "declarationMap": false,
     "sourceMap": false
   },
-  "include": ["cotal.ts"]
+  "include": ["cotal.ts", "run.ts"]
 }
