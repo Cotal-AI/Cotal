@@ -27,8 +27,10 @@ It is two-tier, gated on a machine marker.
   no longer launches; mode is now `cotal up [--open]`'s concern (an unknown-option error names
   them, no silent no-op).
 
-**Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced), then
-print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
+**Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced),
+re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
+run — so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
+installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
 dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.

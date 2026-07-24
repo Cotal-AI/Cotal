@@ -295,6 +295,13 @@ async function runEnsure(demo: boolean): Promise<void> {
   if (demo) seedDemoTeam(); // `cotal setup --demo` on a configured machine: add the team, then card
   ensureSkillsPlugin(); // fail-loud: close the upgrade gap so an onboarded machine re-running setup gets/refreshes (not silently stale) the Claude skills plugin
   seedAgentSkills(); // reconcile the cross-vendor `.agents/skills` drop so an upgrade + re-run isn't stale
+  // A repeat `npx cotal-ai setup` on an onboarded machine that still lacks a durable `cotal` must
+  // ALSO get the global-install offer — the first-run stamp is written once, so without this any
+  // second setup (declined/failed install the first time, or a machine onboarded before the offer
+  // existed) never installs `cotal`. The offer no-ops for a dev clone (`!isNpx()`) or an already
+  // installed `cotal` (`cotalOnPath()`), so only the npx-without-cotal case is affected. Before the
+  // card so its hints render `cotal` rather than `npx cotal-ai`.
+  await offerGlobalInstall(false);
   await readyCard(process.cwd());
 }
 
