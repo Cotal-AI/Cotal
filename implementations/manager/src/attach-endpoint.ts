@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -24,6 +25,23 @@ const PAGE: Record<string, { path: string; type: string }> = {
   "/app.js": { path: join(here, "console/app.js"), type: "text/javascript" },
 };
 
+/**
+ * The address the attach endpoint binds and advertises: the host of the mesh broker this manager is
+ * attached to. Keeping the two in step is the whole point — a client that reached the control plane
+ * to request an attach URL demonstrably has a route to that address, whereas a hardcoded
+ * `127.0.0.1` resolves to the client's own machine.
+ *
+ * With no server URL there is no mesh address to follow, so this is loopback: the conservative
+ * default and exactly the endpoint's previous behavior. An unparseable URL is a caller bug and
+ * throws rather than quietly binding somewhere the operator did not ask for.
+ */
+export function attachHost(servers: string | undefined): string {
+  if (!servers) return "127.0.0.1";
+  const first = servers.split(",")[0].trim();
+  if (!first) return "127.0.0.1";
+  return new URL(first).hostname || "127.0.0.1";
+}
+
 /** One Server-Sent-Events frame: a named event carrying JSON data. */
 export interface FeedEvent {
   event: string;
@@ -34,7 +52,22 @@ export interface FeedEvent {
  * The manager's local HTTP + WebSocket face. It hosts the **console** (a
  * lightweight xterm.js page) and bridges each agent's PTY to the browser — and to
  * `cotal attach` — over a direct socket, never the mesh, so owning the terminal
- * keeps the manager off the message hot path. Bound to loopback.
+ * keeps the manager off the message hot path.
+ *
+ * **Where it binds, and why it needs a token.** A mesh can span machines: the manager that owns an
+ * agent's PTY may sit on another host than the operator running `cotal attach`. So this endpoint
+ * binds the SAME address the mesh's broker is bound to and advertises that address in its URLs — a
+ * loopback mesh keeps a loopback-only console (unchanged), and a mesh the operator deliberately
+ * exposed gets an attach face reachable from the same places. Hardcoding `127.0.0.1` instead made
+ * every remote attach fail with ECONNREFUSED against the *client's own* loopback.
+ *
+ * That reachability is exactly why the whole surface is credentialed. This face carries terminal
+ * READ AND WRITE for every managed agent, so once it can leave the box, "unauthenticated but
+ * loopback-only" stops being a safe position. Every route, the WS upgrade included, requires the
+ * endpoint token: the CLI receives it inside the attach URL over the already-authenticated and
+ * authorized mesh control plane, and a browser gets it once via `?t=` on the console URL and
+ * carries it thereafter in a same-origin cookie. No unauthenticated path, and no bind-dependent
+ * branch — a loopback endpoint checks the token exactly like a remote one.
  *
  * Routes: `GET /` console page, `GET /agents` the managed roster (JSON),
  * `GET /feed` the live mesh feed (SSE: presence roster + comms), static assets
@@ -47,6 +80,7 @@ export class AttachEndpoint {
   #http: Server;
   #wss: WebSocketServer;
   #port: number;
+  #host: string;
   #sse = new Set<ServerResponse>();
   #ping?: ReturnType<typeof setInterval>;
 
@@ -56,14 +90,27 @@ export class AttachEndpoint {
     /** Events replayed to each console as it connects to `/feed` (e.g. the current roster). */
     private readonly snapshot: () => FeedEvent[],
     port = 0,
+    /** Bind address, and the host advertised in {@link url} / {@link consoleUrl}. Defaults to
+     *  loopback; the manager passes the mesh broker's host so attach is reachable from wherever the
+     *  mesh is. A wildcard bind still advertises loopback, since a wildcard is not a dialable name. */
+    host = "127.0.0.1",
+    /** The endpoint credential. Generated per manager process; required on every route. */
+    private readonly token: string = randomBytes(32).toString("hex"),
   ) {
     this.#port = port;
+    this.#host = host;
     this.#http = createServer((req, res) => this.#onRequest(req, res));
     this.#wss = new WebSocketServer({ noServer: true });
     this.#http.on("upgrade", (req, socket, head) => {
       const path = (req.url ?? "/").split("?")[0];
       if (!path.startsWith("/attach/")) {
         socket.destroy();
+        return;
+      }
+      // The PTY stream is terminal read+write: no token, no upgrade. Checked before the agent name
+      // is even resolved, so an unauthenticated caller cannot probe which agents exist.
+      if (!this.#authorized(req)) {
+        socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
         return;
       }
       let name: string;
@@ -79,8 +126,22 @@ export class AttachEndpoint {
     });
   }
 
+  /** Constant-time check of the endpoint token, taken from `?t=`, the same-origin cookie the console
+   *  page is served with, or a bearer header. Length-mismatched candidates are rejected before
+   *  `timingSafeEqual`, which throws on unequal lengths. */
+  #authorized(req: IncomingMessage): boolean {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const cookie = /(?:^|;\s*)cotal_attach=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
+    const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
+    const presented = url.searchParams.get("t") ?? cookie ?? bearer;
+    if (!presented) return false;
+    const a = Buffer.from(presented);
+    const b = Buffer.from(this.token);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
   async start(): Promise<void> {
-    await new Promise<void>((resolve) => this.#http.listen(this.#port, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => this.#http.listen(this.#port, this.#host, resolve));
     const addr = this.#http.address();
     if (addr && typeof addr === "object") this.#port = addr.port;
     // Comment ping keeps idle SSE connections from being dropped; no-op with none.
@@ -102,19 +163,41 @@ export class AttachEndpoint {
     for (const res of this.#sse) this.#writeEvent(res, event, data);
   }
 
-  /** The ws URL a client uses to attach to `name`. */
-  url(name: string): string {
-    return `ws://127.0.0.1:${this.#port}/attach/${encodeURIComponent(name)}`;
+  /** A wildcard bind is not a dialable address — advertise loopback for it, the one host a wildcard
+   *  is always reachable on locally. */
+  get #advertised(): string {
+    if (this.#host === "0.0.0.0" || this.#host === "::" || this.#host === "[::]") return "127.0.0.1";
+    return this.#host.includes(":") && !this.#host.startsWith("[") ? `[${this.#host}]` : this.#host;
   }
 
-  /** The console page URL. */
+  /** The ws URL a client uses to attach to `name`. Carries the endpoint token: this URL only ever
+   *  travels as the reply to an authenticated, authorized control-plane `attach` request. */
+  url(name: string): string {
+    return `ws://${this.#advertised}:${this.#port}/attach/${encodeURIComponent(name)}?t=${this.token}`;
+  }
+
+  /** The console page URL. The token rides the query once; the page is served with a cookie that
+   *  carries it on every later request from that browser. */
   consoleUrl(): string {
-    return `http://127.0.0.1:${this.#port}/`;
+    return `http://${this.#advertised}:${this.#port}/?t=${this.token}`;
   }
 
   #onRequest(req: IncomingMessage, res: ServerResponse): void {
     try {
       const path = (req.url ?? "/").split("?")[0];
+      // Every route is credentialed — the roster, the live feed, and the console that can drive any
+      // agent's terminal. Rejected before anything is read or served.
+      if (!this.#authorized(req)) {
+        res.writeHead(401, { "content-type": "text/plain" });
+        res.end("unauthorized - this endpoint requires the manager's attach token");
+        return;
+      }
+      // The console page is the one entry point a human opens by URL, so it is where the browser
+      // picks up the credential: token in the query once, then a same-origin cookie that carries it
+      // on every later asset, /agents, /feed, and WS upgrade. HttpOnly so page scripts can't read
+      // it back out; SameSite=Strict so another origin can never drive a cross-site request with it.
+      if (path === "/" && new URL(req.url ?? "/", "http://localhost").searchParams.get("t"))
+        res.setHeader("set-cookie", `cotal_attach=${this.token}; Path=/; HttpOnly; SameSite=Strict`);
       if (path === "/agents") {
         const body = JSON.stringify(this.list());
         res.writeHead(200, { "content-type": "application/json" });

@@ -3,6 +3,7 @@
 "@cotal-ai/workspace": patch
 "@cotal-ai/cli": patch
 "@cotal-ai/web": patch
+"@cotal-ai/manager": patch
 ---
 
 Report which machine an agent runs on, and fix three defects that only appear once a mesh spans hosts.
@@ -30,6 +31,17 @@ slow or jittery link misses routinely. Deletion is destructive and, for a mesh t
 not start, unrecoverable, since only `cotal up` writes registry records. A first failure now only
 makes an entry a candidate; it is pruned only if a second, longer probe also fails. A genuinely
 dead mesh still prunes.
+
+**`cotal attach` could not reach a manager on another machine.** The manager's attach face bound a
+hardcoded `127.0.0.1` and advertised that same literal in the URL it handed back, so a remote
+operator dialed their own loopback and got `ECONNREFUSED`. It now binds and advertises the host the
+mesh broker is on: a loopback mesh keeps a loopback-only endpoint, and a mesh the operator exposed
+gets an attach face reachable from the same places. Because that face can now leave the box, and it
+carries terminal read and write for every managed agent plus the roster and live feed, the entire
+surface is credentialed with a per-manager token: the CLI receives it inside the attach URL over the
+already-authenticated control plane, a browser gets it once via `?t=` and then a same-origin
+HttpOnly cookie, and every route and the WebSocket upgrade answer `401` without it. There is no
+unauthenticated path and no bind-dependent branch.
 
 **A timed-out request killed the whole dashboard.** `cotal web` passed an async listener to
 `createServer`, so a rejection inside any route (for example a JetStream call timing out against a

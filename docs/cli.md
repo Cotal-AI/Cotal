@@ -438,6 +438,14 @@ under your owner) need only the `spawn` scope; another owner's agent needs `admi
 row ([identity & auth](identity-and-auth.md)). Launch detached agents with
 [`spawn --detach`](#spawn).
 
+`attach` streams over the manager's own HTTP/WS face rather than the mesh, so **it reaches as far as
+the mesh does**: that endpoint binds and advertises the same host the broker is bound to. A loopback
+mesh keeps a loopback-only endpoint; on a mesh you deliberately exposed (`up --host <addr>`), you can
+attach to an agent whose manager runs on another machine. The whole endpoint — the console page, the
+managed roster, the live feed, and the PTY stream — requires a per-manager token, which the CLI
+receives inside the attach URL over the authenticated control plane, so an unauthenticated caller
+gets a `401` on every route.
+
 ## personas
 
 ```bash

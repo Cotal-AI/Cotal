@@ -45,7 +45,7 @@ import {
   type Runtime,
   type RuntimeMode,
 } from "./runtime/index.js";
-import { AttachEndpoint } from "./attach-endpoint.js";
+import { AttachEndpoint, attachHost } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
@@ -127,7 +127,9 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
-  /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
+  /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. It binds, and advertises, the
+   *  host the mesh broker is on ({@link ManagerOptions.servers}), so `cotal attach` reaches a manager
+   *  running on another machine; a loopback mesh keeps a loopback-only endpoint. */
   consolePort?: number;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
@@ -472,6 +474,12 @@ export class Manager {
       // Initial /feed replay for a connecting console: the current peer roster.
       () => [{ event: "roster", data: this.ep?.getRoster() ?? [] }],
       opts.consolePort ?? 0,
+      // Attach reachability FOLLOWS the mesh's: the operator already decided where this space is
+      // reachable when they bound the broker, and a client that reached the control plane to ask
+      // for this URL has, by construction, a route to that same address. A loopback mesh therefore
+      // keeps the previous loopback-only endpoint; an exposed one gets an attach face on the same
+      // address instead of handing out a `127.0.0.1` URL that resolves to the CLIENT's own machine.
+      attachHost(opts.servers),
     );
   }
 
