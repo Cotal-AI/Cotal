@@ -1,72 +1,155 @@
 #!/usr/bin/env bash
+# cotal-wall — a live grid of every Cotal agent pane in a tmux session, with an
+# auto-watcher that adds/removes cells as the coordinator spawns and despawns
+# per-app groups. Each cell is a real nested tmux client attached to the source
+# session's window for one agent, so keystrokes (and Escape) reach the real Pi
+# InteractiveMode in that pane. Mouse focus is on; click a cell to drive it.
+#
+# Usage: cotal-wall [source_session]
+#   source_session defaults to cotal-wallet-audit.
+# Re-running kills the old wall + watcher and rebuilds (safe to spam).
 set -euo pipefail
 
 source_session="${1:-cotal-wallet-audit}"
 wall_session="${COTAL_WALL_SESSION:-cotal-wall}"
 view_prefix="${wall_session}-view"
+state_file="${COTAL_WALL_STATE:-/tmp/cotal-wall-${source_session}.state}"
+watch_pid_file="${COTAL_WALL_WATCH_PID:-/tmp/cotal-wall-${source_session}.watch.pid}"
+poll="${COTAL_WALL_POLL:-2}"
 
 if ! command -v tmux >/dev/null 2>&1; then
-  echo "cotal-wall: tmux is not installed" >&2
-  exit 1
+  echo "cotal-wall: tmux is not installed" >&2; exit 1
 fi
 if ! tmux has-session -t "=$source_session" 2>/dev/null; then
-  echo "cotal-wall: source session '$source_session' does not exist" >&2
-  exit 1
+  echo "cotal-wall: source session '$source_session' does not exist" >&2; exit 1
 fi
 
-if (( $# > 1 )); then
-  windows=("${@:2}")
-else
-  mapfile -t windows < <(
-    tmux list-windows -t "=$source_session" -F '#{window_name}' |
-      grep -vE '^(bash|workmux-dashboard)$' |
-      head -n 4
-  )
-fi
+# Windows we never show as cells.
+is_excluded() {
+  case "$1" in
+    bash|workmux-dashboard) return 0 ;;
+    cotal-wall|cotal-wall-*|"$wall_session"|"$wall_session"-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
-if (( ${#windows[@]} != 4 )); then
-  echo "cotal-wall: expected exactly four agent windows; found ${#windows[@]}" >&2
-  printf '  %s\n' "${windows[@]}" >&2
-  echo "usage: cotal-wall [session] [window1 window2 window3 window4]" >&2
-  exit 1
-fi
-
-for window in "${windows[@]}"; do
-  if ! tmux list-windows -t "=$source_session" -F '#{window_name}' | grep -Fxq -- "$window"; then
-    echo "cotal-wall: no window '$window' in session '$source_session'" >&2
-    exit 1
-  fi
-done
-
-# Each grouped view session shares the source session's windows but maintains an
-# independent current-window selection. That lets four nested tmux clients watch
-# four different live Cotal windows without moving or cloning their actual panes.
-tmux kill-session -t "=$wall_session" 2>/dev/null || true
-for index in 0 1 2 3; do
-  view="${view_prefix}-${index}"
-  tmux kill-session -t "=$view" 2>/dev/null || true
-  tmux new-session -d -s "$view" -t "=$source_session"
-  tmux select-window -t "${view}:=${windows[$index]}"
-done
+# Source agent windows in tmux order, exclusions removed. Printed one per line.
+list_source_windows() {
+  tmux list-windows -t "=$source_session" -F '#{window_name}' 2>/dev/null \
+    | while IFS= read -r w; do is_excluded "$w" || printf '%s\n' "$w"; done
+}
 
 client_command() {
+  # Unset TMUX so the nested client attaches to the view session, not re-nests.
   printf 'exec env -u TMUX tmux attach-session -t %q' "$1"
 }
 
-tmux new-session -d -s "$wall_session" -n agents "$(client_command "${view_prefix}-0")"
-for index in 1 2 3; do
-  tmux split-window -d -t "${wall_session}:agents" "$(client_command "${view_prefix}-${index}")"
-done
-tmux select-layout -t "${wall_session}:agents" tiled >/dev/null
+# Tear down any previous wall + watcher for this source session.
+if [[ -f "$watch_pid_file" ]]; then
+  kill "$(cat "$watch_pid_file")" 2>/dev/null || true
+  rm -f "$watch_pid_file"
+fi
+tmux kill-session -t "=$wall_session" 2>/dev/null || true
+# Kill any leftover view sessions from a prior run.
+while IFS='|' read -r _ view _; do
+  [[ -n "${view:-}" ]] && tmux kill-session -t "=$view" 2>/dev/null || true
+done < "$state_file" 2>/dev/null || true
+rm -f "$state_file"
 
-# Mouse focus makes the wall practical: click a cell, type into the real Pi UI,
-# and press Escape to interrupt. The option is local to the wall session.
+# --- Initial build: one cell per currently-live agent window -----------------
+mapfile -t initial < <(list_source_windows)
+if (( ${#initial[@]} == 0 )); then
+  echo "cotal-wall: no agent windows in '$source_session' yet" >&2
+  echo "  (the coordinator will spawn groups as it runs; the watcher adds them live)" >&2
+  # Start with a placeholder pane so the wall session exists for the watcher.
+  tmux new-session -d -s "$wall_session" -n agents "echo 'cotal-wall: waiting for agent windows…'; sleep 30"
+  placeholder=1
+else
+  placeholder=0
+  first=1
+  for w in "${initial[@]}"; do
+    view="${view_prefix}-${w//\./-}"
+    tmux new-session -d -s "$view" -t "=$source_session"
+    tmux select-window -t "${view}:=${w}"
+    if (( first )); then
+      tmux new-session -d -s "$wall_session" -n agents "$(client_command "$view")"
+      first=0
+    else
+      tmux split-window -d -t "${wall_session}:agents" "$(client_command "$view")"
+    fi
+    printf '%s|%s|\n' "$w" "$view" >> "$state_file"
+  done
+  tmux select-layout -t "${wall_session}:agents" tiled >/dev/null
+fi
 tmux set-option -t "$wall_session" mouse on
+
+# --- Auto-watcher: add/remove cells as source windows appear/despawn ----------
+watcher() {
+  while tmux has-session -t "=$wall_session" 2>/dev/null; do
+    mapfile -t desired < <(list_source_windows)
+    changed=0
+    # Add new windows.
+    for w in "${desired[@]:-}"; do
+      [[ -z "$w" ]] && continue
+      if ! grep -qxF "^${w}|" "$state_file" 2>/dev/null; then
+        view="${view_prefix}-${w//\./-}"
+        tmux new-session -d -s "$view" -t "=$source_session" 2>/dev/null || continue
+        tmux select-window -t "${view}:=${w}" 2>/dev/null || true
+        # If the wall was started with a placeholder, replace it.
+        if [[ "${placeholder:-0}" == "1" ]] && ! tmux list-panes -t "${wall_session}:agents" -F '#{pane_id}' 2>/dev/null | grep -q .; then
+          tmux new-window -d -t "${wall_session}" -n agents "$(client_command "$view")"
+          placeholder=0
+        elif ! tmux list-windows -t "=$wall_session" -F '#{window_name}' 2>/dev/null | grep -qx agents; then
+          tmux new-window -d -t "$wall_session" -n agents "$(client_command "$view")"
+        else
+          tmux split-window -d -t "${wall_session}:agents" "$(client_command "$view")"
+        fi
+        printf '%s|%s|\n' "$w" "$view" >> "$state_file"
+        changed=1
+      fi
+    done
+    # Remove gone windows.
+    gone=()
+    while IFS='|' read -r w view _; do
+      [[ -z "${w:-}" ]] && continue
+      if ! printf '%s\n' "${desired[@]:-}" | grep -qxF "$w"; then
+        gone+=("$w|$view")
+      fi
+    done < "$state_file" 2>/dev/null
+    for entry in "${gone[@]:-}"; do
+      [[ -z "$entry" ]] && continue
+      w="${entry%%|*}"; view="${entry#*|}"
+      # Kill the wall pane whose content is this view client.
+      pane=$(tmux list-panes -t "${wall_session}:agents" -F '#{pane_id} #{pane_current_command} #{pane_title}' 2>/dev/null \
+        | awk -v v="$view" 'index($0, v) {print $1; exit}')
+      [[ -n "${pane:-}" ]] && tmux kill-pane -t "$pane" 2>/dev/null || true
+      tmux kill-session -t "=$view" 2>/dev/null || true
+      grep -vxF "${w}|${view}|" "$state_file" > "${state_file}.tmp" 2>/dev/null && mv "${state_file}.tmp" "$state_file" || true
+      changed=1
+    done
+    if (( changed )); then
+      # Never kill the last pane; re-tile if any remain.
+      live=$(tmux list-panes -t "${wall_session}:agents" -F '#{pane_id}' 2>/dev/null | wc -l)
+      if (( live > 1 )); then
+        tmux select-layout -t "${wall_session}:agents" tiled >/dev/null 2>&1 || true
+      fi
+    fi
+    sleep "$poll"
+  done
+  # Wall is gone: clean up all view sessions + state.
+  while IFS='|' read -r _ view _; do
+    [[ -n "${view:-}" ]] && tmux kill-session -t "=$view" 2>/dev/null || true
+  done < "$state_file" 2>/dev/null || true
+  rm -f "$state_file" "$watch_pid_file"
+}
+export -f watcher list_source_windows client_command is_excluded
+export source_session wall_session view_prefix state_file watch_pid_file poll
+nohup bash -c watcher >/dev/null 2>&1 &
+echo $! > "$watch_pid_file"
 
 if [[ "${COTAL_WALL_NO_ATTACH:-}" == "1" ]]; then
   exit 0
 fi
-
 if [[ -n "${TMUX:-}" ]]; then
   exec tmux switch-client -t "$wall_session"
 else
