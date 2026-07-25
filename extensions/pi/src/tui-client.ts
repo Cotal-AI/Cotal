@@ -7,6 +7,7 @@ import { MeshAgent, configFromEnv, launchEnv, type AgentConfig, type InboxItem }
 import { writeRpc, readJsonLines } from "./rpc-frames.js";
 import { PROVIDER_KEYS } from "./connector.js";
 import { createTuiRenderer, type TuiRenderer } from "./tui-render.js";
+import { autoReplyEnabled, maybeDeliverAutoReply } from "./reply-policy.js";
 
 // Run the operator's `pi` first so the peer uses the same host version and installed
 // extensions (approval gates, providers, and model catalog) as the interactive session.
@@ -79,6 +80,7 @@ function tmuxChildEnv(env: Record<string, string>): Record<string, string> {
  */
 export async function runTuiClient(config: AgentConfig = configFromEnv()): Promise<void> {
   const mesh = new MeshAgent(config);
+  const autoReply = autoReplyEnabled();
   mesh.start();
 
   const renderer: TuiRenderer & { _setStreaming?: (on: boolean) => void } = createTuiRenderer();
@@ -376,7 +378,7 @@ export async function runTuiClient(config: AgentConfig = configFromEnv()): Promi
             const to = turn.origin;
             const reply = turnReplyText(ev.messages ?? []);
             turn.commit();   // SOLE ack site
-            if (to && reply) deliver(to, reply);
+            maybeDeliverAutoReply(autoReply, to, reply, deliver);
             setMeshStatus("idle");
             pump();
             break;

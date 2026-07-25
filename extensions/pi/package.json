@@ -17,6 +17,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx reply-policy.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

@@ -18,6 +18,7 @@ import {
 import type { AgentSessionEvent, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 import { z } from "zod";
+import { autoReplyEnabled, maybeDeliverAutoReply } from "./reply-policy.js";
 
 function log(e: unknown): void {
   process.stderr.write(`[pi-peer] ${e instanceof Error ? e.message : String(e)}\n`);
@@ -138,6 +139,7 @@ export function resolveModel(ref: string, registry: ModelRegistry): Model<Api> {
  */
 export async function runPiPeer(config: AgentConfig = configFromEnv()): Promise<void> {
   const mesh = new MeshAgent(config);
+  const autoReply = autoReplyEnabled();
   mesh.start();
 
   const authStorage = AuthStorage.create();
@@ -248,7 +250,7 @@ export async function runPiPeer(config: AgentConfig = configFromEnv()): Promise<
         const reply = turnReplyText(event.messages);
         turn.commit(); // ack the surfaced run — clean or failed both consume (no retry-loop)
         streaming = false;
-        if (to && reply) deliver(to, reply);
+        maybeDeliverAutoReply(autoReply, to, reply, deliver);
         pump(); // next scope
         break;
       }
@@ -284,6 +286,7 @@ export async function runPiPeer(config: AgentConfig = configFromEnv()): Promise<
  */
 export async function runInteractivePeer(config: AgentConfig = configFromEnv()): Promise<void> {
   const mesh = new MeshAgent(config);
+  const autoReply = autoReplyEnabled();
   mesh.start();
 
   const cwd = process.cwd();
@@ -408,7 +411,7 @@ export async function runInteractivePeer(config: AgentConfig = configFromEnv()):
         if (turn.inFlight) turn.commit();
         streaming = false;
         setStatus("idle");
-        if (to && reply) deliver(to, reply);
+        maybeDeliverAutoReply(autoReply, to, reply, deliver);
         pump();
         break;
       }

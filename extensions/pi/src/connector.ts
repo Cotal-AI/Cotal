@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, launchEnv } from "@cotal-ai/connector-core";
+import { autoReplyEnabled } from "./reply-policy.js";
 
 /** The peer loop runs via tsx when launched from source (.ts, dev) or via node directly
  *  when launched from built dist (.js). Using node for the built artifact matters: the
@@ -80,6 +81,15 @@ export const piConnector: Connector = {
         throw new Error(`agent file ${opts.configPath}: peerMode must be "tui", "interactive", or "headless" (got ${JSON.stringify(peerMode)})`);
       if (!process.env.PI_PEER_MODE && (peerMode === "tui" || peerMode === "interactive"))
         env.PI_PEER_MODE = peerMode;
+
+      // Generic Pi peers automatically route final assistant text back to the
+      // turn origin. Explicit-DM workflows can opt out per persona without
+      // affecting inbound delivery, acknowledgements, or presence.
+      const autoReply = def.meta?.autoReply;
+      if (autoReply !== undefined) {
+        autoReplyEnabled(autoReply, `agent file ${opts.configPath}: autoReply`);
+        env.PI_PEER_AUTO_REPLY = autoReply;
+      }
     }
     // Optional operator override for the host Pi executable. The TUI defaults to the
     // operator's PATH-resolved `pi`; forward an explicit pin through the isolated child env.
