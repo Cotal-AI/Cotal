@@ -1,5 +1,7 @@
 # @cotal-ai/web
 
+## 0.14.4
+
 ## 0.14.3
 
 ### Patch Changes
