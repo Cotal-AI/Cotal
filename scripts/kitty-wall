@@ -1,0 +1,643 @@
+#!/usr/bin/env bash
+# kitty-wall — live Cotal worker panes plus one rotating utility pane in kitty.
+#
+# Workers each get a dedicated, full-height kitty pane. Coordinator, report
+# gates, and completion gates share one full-height utility pane that follows
+# the most recently active utility window. Every visible pane is a real tmux
+# client, so mouse focus, typing, Enter, and Escape reach the source Pi TUI.
+#
+# Manual utility navigation (workers are never included):
+#   Alt+Left / Alt+Up    previous coordinator/gate
+#   Alt+Right / Alt+Down next coordinator/gate
+#
+# Kitty control uses only a user-private Unix socket under XDG_RUNTIME_DIR.
+# There is no TCP listener, web server, SSH service, or remote-machine access.
+set -Eeuo pipefail
+umask 077
+
+mode="wall"
+cycle_direction=""
+cycle_wall_name=""
+if [[ "${1:-}" == "--cycle-utility" ]]; then
+  mode="cycle"
+  cycle_direction="${2:-next}"
+  source_session="${3:-cotal-wallet-audit}"
+  cycle_wall_name="${4:-}"
+else
+  source_session="${1:-cotal-wallet-audit}"
+fi
+
+script_path=$(readlink -f "${BASH_SOURCE[0]}")
+wall_name="${cycle_wall_name:-${KITTY_WALL_NAME:-kitty-wall}}"
+poll="${KITTY_WALL_POLL:-2}"
+font_size="${KITTY_WALL_FONT_SIZE:-9.0}"
+start_as="${KITTY_WALL_START_AS:-maximized}"
+worker_percent="${KITTY_WALL_WORKER_PERCENT:-78}"
+layout="splits"
+
+if [[ ! "$worker_percent" =~ ^[0-9]+$ ]] || (( worker_percent < 50 || worker_percent > 95 )); then
+  echo "kitty-wall: KITTY_WALL_WORKER_PERCENT must be an integer from 50 to 95" >&2
+  exit 1
+fi
+utility_percent=$(( 100 - worker_percent ))
+
+safe_source="${source_session//[^a-zA-Z0-9_.-]/-}"
+runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+view_prefix="${KITTY_WALL_VIEW_PREFIX:-${wall_name}-view-${safe_source}}"
+utility_key="__utility"
+utility_view="${view_prefix}-utility"
+socket_path="${KITTY_WALL_SOCKET_PATH:-${runtime_dir}/${wall_name}-${safe_source}.sock}"
+socket_address="unix:${socket_path}"
+state_file="${KITTY_WALL_STATE:-${runtime_dir}/${wall_name}-${safe_source}.state}"
+pid_file="${KITTY_WALL_PID_FILE:-${runtime_dir}/${wall_name}-${safe_source}.pid}"
+manual_file="${KITTY_WALL_MANUAL_FILE:-${runtime_dir}/${wall_name}-${safe_source}.utility-manual}"
+kitty_log="${KITTY_WALL_LOG:-${runtime_dir}/${wall_name}-${safe_source}.kitty.log}"
+wall_title="${KITTY_WALL_TITLE:-Cotal Kitty Wall — ${source_session}}"
+
+find_executable() {
+  local name="$1" fallback="$2" found
+  if found=$(command -v "$name"); then
+    printf '%s\n' "$found"
+  elif [[ -x "$fallback" ]]; then
+    printf '%s\n' "$fallback"
+  else
+    return 1
+  fi
+}
+
+if ! kitty_bin=$(find_executable kitty "$HOME/.local/kitty.app/bin/kitty"); then
+  echo "kitty-wall: kitty is not installed" >&2
+  exit 1
+fi
+if ! kitten_bin=$(find_executable kitten "$HOME/.local/kitty.app/bin/kitten"); then
+  echo "kitty-wall: kitten is not installed" >&2
+  exit 1
+fi
+if ! tmux_bin=$(find_executable tmux /usr/bin/tmux); then
+  echo "kitty-wall: tmux is not installed" >&2
+  exit 1
+fi
+if ! python_bin=$(find_executable python3 /usr/bin/python3); then
+  echo "kitty-wall: python3 is required to parse kitty's JSON state" >&2
+  exit 1
+fi
+
+log() {
+  printf 'kitty-wall: %s\n' "$*" >&2
+}
+
+process_alive() {
+  local output
+  output=$(kill -0 "$1" 2>&1)
+}
+
+tmux_has_session() {
+  local output
+  output=$("$tmux_bin" has-session -t "=$1" 2>&1)
+}
+
+if ! tmux_has_session "$source_session"; then
+  log "source session '$source_session' does not exist"
+  exit 1
+fi
+
+is_excluded() {
+  case "$1" in
+    bash|workmux-dashboard) return 0 ;;
+    cotal-wall|cotal-wall-*|kitty-wall|kitty-wall-*|"$wall_name"|"$wall_name"-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_worker_name() {
+  case "$1" in worker|worker-*) return 0 ;; *) return 1 ;; esac
+}
+
+is_utility_name() {
+  case "$1" in
+    coordinator|coordinator-*|report-gate|report-gate-*|completion-gate|completion-gate-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Records: global window id | session-local index | name | output activity.
+list_source_windows() {
+  local output id index name activity
+  if ! output=$("$tmux_bin" list-windows -t "=$source_session" \
+    -F '#{window_id}|#{window_index}|#{window_name}|#{window_activity}' 2>&1); then
+    return 1
+  fi
+  while IFS='|' read -r id index name activity; do
+    [[ -n "$id" ]] || continue
+    is_excluded "$name" || printf '%s|%s|%s|%s\n' "$id" "$index" "$name" "$activity"
+  done <<< "$output"
+}
+
+kitty_rc() {
+  "$kitten_bin" @ --to "$socket_address" "$@"
+}
+
+kitty_json() {
+  local output
+  if ! output=$(kitty_rc ls 2>&1); then
+    return 1
+  fi
+  printf '%s\n' "$output"
+}
+
+first_kitty_window_id() {
+  "$python_bin" -c '
+import json, sys
+for os_window in json.load(sys.stdin):
+    for tab in os_window.get("tabs", []):
+        for window in tab.get("windows", []):
+            print(window["id"])
+            raise SystemExit(0)
+raise SystemExit(1)
+'
+}
+
+list_kitty_window_ids() {
+  "$python_bin" -c '
+import json, sys
+for os_window in json.load(sys.stdin):
+    for tab in os_window.get("tabs", []):
+        for window in tab.get("windows", []):
+            print(window["id"])
+'
+}
+
+focused_source_id_from_json() {
+  "$python_bin" -c '
+import json, sys
+for os_window in json.load(sys.stdin):
+    for tab in os_window.get("tabs", []):
+        for window in tab.get("windows", []):
+            if window.get("is_focused"):
+                value = window.get("user_vars", {}).get("kitty_wall_source_id", "")
+                if value:
+                    print(value)
+                    raise SystemExit(0)
+raise SystemExit(1)
+'
+}
+
+extract_created_id() {
+  local output="$1" line created=""
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[0-9]+$ ]] && created="$line"
+  done <<< "$output"
+  [[ -n "$created" ]] || return 1
+  printf '%s\n' "$created"
+}
+
+set_view_status() {
+  local view="$1" output
+  output=$("$tmux_bin" set-option -t "$view" status 1 2>&1) || true
+  output=$("$tmux_bin" set-option -t "$view" status-position bottom 2>&1) || true
+  output=$("$tmux_bin" set-option -t "$view" status-style 'bg=default,fg=colour244' 2>&1) || true
+  output=$("$tmux_bin" set-option -t "$view" 'status-format[0]' '#[align=centre]#{window_name}' 2>&1) || true
+  output=$("$tmux_bin" set-option -t "$view" status-left '' 2>&1) || true
+  output=$("$tmux_bin" set-option -t "$view" status-right '' 2>&1) || true
+}
+
+close_kitty_window() {
+  local kitty_id="$1" output
+  output=$(kitty_rc close-window --ignore-no-match --match "id:${kitty_id}" 2>&1) || true
+}
+
+kill_view_session() {
+  local view="$1" output
+  if tmux_has_session "$view"; then
+    output=$("$tmux_bin" kill-session -t "=$view" 2>&1) || true
+  fi
+}
+
+cleanup_view_sessions() {
+  local output session ignored
+  if ! output=$("$tmux_bin" list-sessions -F '#{session_name}' 2>&1); then
+    return 0
+  fi
+  while IFS= read -r session; do
+    case "$session" in
+      "$view_prefix"-*) ignored=$("$tmux_bin" kill-session -t "=$session" 2>&1) || true ;;
+    esac
+  done <<< "$output"
+}
+
+cycle_utility() {
+  local direction="$1" output current_id="" target_pos target_id target_index target_name
+  local utility_kitty_id="" key state_name state_view state_kitty ignored
+  local -a ids=() indexes=() names=()
+  local pos=-1 i count
+
+  case "$direction" in
+    next|right|down) direction=next ;;
+    prev|previous|left|up) direction=prev ;;
+    *) return 1 ;;
+  esac
+  tmux_has_session "$utility_view" || return 1
+  output=$(list_source_windows) || return 1
+  while IFS='|' read -r target_id target_index target_name _; do
+    is_utility_name "$target_name" || continue
+    ids+=("$target_id")
+    indexes+=("$target_index")
+    names+=("$target_name")
+  done <<< "$output"
+  count=${#ids[@]}
+  (( count > 0 )) || return 1
+
+  current_id=$("$tmux_bin" display-message -p -t "${utility_view}:" '#{window_id}' 2>&1) || current_id=""
+  for (( i=0; i<count; i++ )); do
+    [[ "${ids[$i]}" == "$current_id" ]] && { pos=$i; break; }
+  done
+  if [[ "$direction" == next ]]; then
+    target_pos=$(( (pos + 1 + count) % count ))
+  else
+    (( pos >= 0 )) || pos=0
+    target_pos=$(( (pos - 1 + count) % count ))
+  fi
+  target_id="${ids[$target_pos]}"
+  target_index="${indexes[$target_pos]}"
+  target_name="${names[$target_pos]}"
+
+  output=$("$tmux_bin" select-window -t "${utility_view}:${target_index}" 2>&1) || return 1
+  set_view_status "$utility_view"
+  printf '%s|%s\n' "$target_id" "$(date +%s)" > "$manual_file"
+
+  if [[ -r "$state_file" ]]; then
+    while IFS='|' read -r key state_name state_view state_kitty; do
+      if [[ "$key" == "$utility_key" ]]; then utility_kitty_id="$state_kitty"; break; fi
+    done < "$state_file"
+  fi
+  if [[ -n "$utility_kitty_id" && -S "$socket_path" ]]; then
+    ignored=$(kitty_rc set-window-title --match "id:${utility_kitty_id}" "utility: ${target_name}" 2>&1) || true
+    ignored=$(kitty_rc set-user-vars --match "id:${utility_kitty_id}" \
+      "kitty_wall_active_utility_id=${target_id}" 2>&1) || true
+    ignored=$(kitty_rc focus-window --match "id:${utility_kitty_id}" 2>&1) || true
+  fi
+}
+
+if [[ "$mode" == cycle ]]; then
+  cycle_utility "$cycle_direction"
+  exit $?
+fi
+
+stop_previous_wall() {
+  local old_pid="" cmdline="" ignored
+  if [[ -r "$pid_file" ]]; then read -r old_pid < "$pid_file" || true; fi
+  if [[ "$old_pid" =~ ^[0-9]+$ ]] && process_alive "$old_pid"; then
+    if [[ -r "/proc/${old_pid}/cmdline" ]]; then
+      cmdline=$(tr '\0' ' ' < "/proc/${old_pid}/cmdline")
+    fi
+    if [[ "$cmdline" == *kitty-wall* ]]; then
+      log "replacing existing wall (pid $old_pid)"
+      ignored=$(kill "$old_pid" 2>&1) || true
+      for _ in {1..50}; do process_alive "$old_pid" || break; sleep 0.1; done
+    fi
+  fi
+  if [[ -S "$socket_path" ]]; then
+    ignored=$(kitty_rc close-window --ignore-no-match --match all 2>&1) || true
+    for _ in {1..30}; do [[ -S "$socket_path" ]] || break; sleep 0.1; done
+  fi
+  rm -f "$pid_file" "$state_file" "$socket_path" "$kitty_log" "$manual_file"
+  cleanup_view_sessions
+}
+
+stop_previous_wall
+printf '%s\n' "$$" > "$pid_file"
+
+kitty_pid=""
+placeholder_id=""
+cleaning=0
+last_layout_signature=$'\x1f'
+utility_selected_source=""
+utility_selected_name=""
+utility_selected_activity=0
+
+declare -A current_name=()
+declare -A current_view=()
+declare -A current_kitty=()
+
+write_state() {
+  local tmp="${state_file}.tmp" key
+  : > "$tmp"
+  for key in "${!current_view[@]}"; do
+    [[ -n "${current_kitty[$key]+present}" ]] || continue
+    printf '%s|%s|%s|%s\n' "$key" "${current_name[$key]}" \
+      "${current_view[$key]}" "${current_kitty[$key]}" >> "$tmp"
+  done
+  mv "$tmp" "$state_file"
+}
+
+cleanup() {
+  local ignored
+  (( cleaning == 0 )) || return 0
+  cleaning=1
+  trap - EXIT INT TERM
+  if [[ -S "$socket_path" ]]; then
+    ignored=$(kitty_rc close-window --ignore-no-match --match all 2>&1) || true
+  fi
+  if [[ "$kitty_pid" =~ ^[0-9]+$ ]] && process_alive "$kitty_pid"; then
+    ignored=$(kill "$kitty_pid" 2>&1) || true
+    ignored=$(wait "$kitty_pid" 2>&1) || true
+  fi
+  cleanup_view_sessions
+  rm -f "$state_file" "$pid_file" "$socket_path" "$manual_file"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+placeholder_command='printf "kitty-wall: waiting for agent windows in %s…\n" "$KITTY_WALL_SOURCE"; exec sleep infinity'
+
+"$kitty_bin" \
+  --class "$wall_name" \
+  --name "$wall_name" \
+  --title "$wall_title" \
+  --listen-on "$socket_address" \
+  --start-as="$start_as" \
+  --override allow_remote_control=socket-only \
+  --override "enabled_layouts=${layout}" \
+  --override "font_size=${font_size}" \
+  --override tab_bar_style=hidden \
+  --override window_padding_width=0 \
+  --override confirm_os_window_close=0 \
+  --override remember_window_size=no \
+  --override "map=alt+left launch --type=background ${script_path} --cycle-utility prev ${source_session} ${wall_name}" \
+  --override "map=alt+up launch --type=background ${script_path} --cycle-utility prev ${source_session} ${wall_name}" \
+  --override "map=alt+right launch --type=background ${script_path} --cycle-utility next ${source_session} ${wall_name}" \
+  --override "map=alt+down launch --type=background ${script_path} --cycle-utility next ${source_session} ${wall_name}" \
+  env "KITTY_WALL_SOURCE=${source_session}" bash -c "$placeholder_command" \
+  > "$kitty_log" 2>&1 &
+kitty_pid=$!
+
+initial_json=""
+for _ in {1..100}; do
+  if ! process_alive "$kitty_pid"; then
+    ignored=$(wait "$kitty_pid" 2>&1) || true
+    log "kitty exited before its local control socket became ready"
+    exit 1
+  fi
+  if initial_json=$(kitty_json); then break; fi
+  sleep 0.1
+done
+[[ -n "$initial_json" ]] || { log "timed out waiting for kitty's local control socket"; exit 1; }
+chmod 600 "$socket_path"
+placeholder_id=$(printf '%s' "$initial_json" | first_kitty_window_id) || {
+  log "could not discover kitty's initial window"; exit 1;
+}
+ignored=$(kitty_rc set-tab-title --match "window_id:${placeholder_id}" "$wall_title" 2>&1) || true
+ignored=$(kitty_rc set-window-title --match "id:${placeholder_id}" "waiting for agents" 2>&1) || true
+: > "$state_file"
+
+first_current_kitty_id() {
+  local key
+  for key in "${!current_kitty[@]}"; do printf '%s\n' "${current_kitty[$key]}"; return 0; done
+  return 1
+}
+
+split_bias() {
+  local rest="$1" total="$2" bias
+  (( rest > 0 && total > 0 )) || return 1
+  bias=$(( (100 * rest + total / 2) / total ))
+  (( bias < 1 )) && bias=1
+  (( bias > 99 )) && bias=99
+  printf '%s\n' "$bias"
+}
+
+ensure_view() {
+  local key="$1" index="$2" view output
+  if [[ "$key" == "$utility_key" ]]; then view="$utility_view"; else view="${view_prefix}-${key#@}"; fi
+  if ! tmux_has_session "$view"; then
+    output=$("$tmux_bin" new-session -d -s "$view" -t "=$source_session" 2>&1) || {
+      log "failed to create view '$view': $output"; return 1;
+    }
+  fi
+  output=$("$tmux_bin" select-window -t "${view}:${index}" 2>&1) || {
+    log "failed to select window index $index in '$view': $output"; return 1;
+  }
+  set_view_status "$view"
+  printf '%s\n' "$view"
+}
+
+launch_cell() {
+  local key="$1" title="$2" view="$3" anchor="$4" location="${5:-}" bias="${6:-}"
+  local output kitty_id ignored
+  local -a args=(launch --type=window --match "window_id:${anchor}" --dont-take-focus \
+    --title "$title" --var "kitty_wall_source_id=${key}" --env TMUX)
+  if [[ -n "$location" ]]; then args+=(--location "$location" --next-to "id:${anchor}"); fi
+  [[ -z "$bias" ]] || args+=(--bias "$bias")
+  args+=("$tmux_bin" attach-session -t "=$view")
+  output=$(kitty_rc "${args[@]}" 2>&1) || { log "failed to launch '$title': $output"; return 1; }
+  kitty_id=$(extract_created_id "$output") || { log "kitty returned no id for '$title': $output"; return 1; }
+  ignored=$(kitty_rc set-window-title --match "id:${kitty_id}" "$title" 2>&1) || true
+  printf '%s\n' "$kitty_id"
+}
+
+launch_placeholder() {
+  local anchor="$1" output new_id ignored
+  output=$(kitty_rc launch --type=window --match "window_id:${anchor}" --dont-take-focus \
+    --location split --next-to "id:${anchor}" --bias 50 --title "waiting for agents" \
+    --var kitty_wall_placeholder=1 --env "KITTY_WALL_SOURCE=${source_session}" \
+    bash -c "$placeholder_command" 2>&1) || return 1
+  new_id=$(extract_created_id "$output") || return 1
+  ignored=$(kitty_rc set-window-title --match "id:${new_id}" "waiting for agents" 2>&1) || true
+  printf '%s\n' "$new_id"
+}
+
+select_utility() {
+  local source_id="$1" index="$2" name="$3" activity="$4" output ignored
+  output=$("$tmux_bin" select-window -t "${utility_view}:${index}" 2>&1) || return 1
+  set_view_status "$utility_view"
+  utility_selected_source="$source_id"
+  utility_selected_name="$name"
+  utility_selected_activity="$activity"
+  if [[ -n "${current_kitty[$utility_key]+present}" ]]; then
+    ignored=$(kitty_rc set-window-title --match "id:${current_kitty[$utility_key]}" \
+      "utility: ${name}" 2>&1) || true
+    ignored=$(kitty_rc set-user-vars --match "id:${current_kitty[$utility_key]}" \
+      "kitty_wall_active_utility_id=${source_id}" 2>&1) || true
+    current_name["$utility_key"]="$name"
+    write_state
+  fi
+}
+
+choose_utility() {
+  local -n order_ref="$1" index_ref="$2" name_ref="$3" activity_ref="$4"
+  local manual_id="" manual_since=0 id activity best_id="" best_activity=-1
+  if [[ -r "$manual_file" ]]; then IFS='|' read -r manual_id manual_since < "$manual_file" || true; fi
+  [[ "$manual_since" =~ ^[0-9]+$ ]] || manual_since=0
+
+  if [[ -n "$manual_id" && -n "${name_ref[$manual_id]+present}" ]]; then
+    best_id="$manual_id"
+    best_activity="${activity_ref[$manual_id]}"
+    for id in "${order_ref[@]}"; do
+      activity="${activity_ref[$id]}"
+      if (( activity > manual_since && activity > best_activity )) && [[ "$id" != "$manual_id" ]]; then
+        best_id="$id"
+        best_activity="$activity"
+      fi
+    done
+    if [[ "$best_id" != "$manual_id" ]]; then rm -f "$manual_file"; fi
+  else
+    [[ -z "$manual_id" ]] || rm -f "$manual_file"
+    if [[ -n "$utility_selected_source" && -n "${name_ref[$utility_selected_source]+present}" ]]; then
+      best_id="$utility_selected_source"
+      best_activity="${activity_ref[$best_id]}"
+    fi
+    for id in "${order_ref[@]}"; do
+      activity="${activity_ref[$id]}"
+      if [[ -z "$best_id" ]] || (( activity > best_activity )); then
+        best_id="$id"
+        best_activity="$activity"
+      fi
+    done
+  fi
+  [[ -n "$best_id" ]] || return 1
+  printf '%s\n' "$best_id"
+}
+
+reconcile() {
+  local source_output="$1" kitty_state="$2"
+  local id index name activity kitty_id anchor ignored focused="" candidate="" view
+  local layout_signature="workers:" rebuild=0 i rest total bias first_id first_kitty remainder
+  local -a worker_order=() utility_order=() live_ids=()
+  local -A source_index=() source_name=() source_activity=() desired_worker=() live_kitty=()
+
+  while IFS='|' read -r id index name activity; do
+    [[ -n "$id" ]] || continue
+    [[ "$activity" =~ ^[0-9]+$ ]] || activity=0
+    source_index["$id"]="$index"
+    source_name["$id"]="$name"
+    source_activity["$id"]="$activity"
+    if is_worker_name "$name"; then
+      worker_order+=("$id")
+      desired_worker["$id"]=1
+      layout_signature+="${id}:${name};"
+    elif is_utility_name "$name"; then
+      utility_order+=("$id")
+    fi
+  done <<< "$source_output"
+  layout_signature+="|utility=$(( ${#utility_order[@]} > 0 ? 1 : 0 ))"
+
+  mapfile -t live_ids < <(printf '%s' "$kitty_state" | list_kitty_window_ids)
+  for kitty_id in "${live_ids[@]}"; do live_kitty["$kitty_id"]=1; done
+  [[ "$layout_signature" == "$last_layout_signature" ]] || rebuild=1
+  for id in "${!current_kitty[@]}"; do
+    [[ -n "${live_kitty[${current_kitty[$id]}]+present}" ]] || rebuild=1
+  done
+  if [[ -n "$placeholder_id" && -z "${live_kitty[$placeholder_id]+present}" ]]; then
+    placeholder_id=""
+    rebuild=1
+  fi
+
+  if (( ${#utility_order[@]} > 0 )); then
+    candidate=$(choose_utility utility_order source_index source_name source_activity) || return 1
+  fi
+
+  if (( rebuild )); then
+    focused=$(printf '%s' "$kitty_state" | focused_source_id_from_json) || true
+    if [[ -z "$placeholder_id" ]]; then
+      if ! anchor=$(first_current_kitty_id); then
+        (( ${#live_ids[@]} > 0 )) || return 1
+        anchor="${live_ids[0]}"
+      fi
+      placeholder_id=$(launch_placeholder "$anchor") || return 1
+    fi
+    ignored=$(kitty_rc goto-layout --match "window_id:${placeholder_id}" "$layout" 2>&1) || true
+    for id in "${!current_kitty[@]}"; do close_kitty_window "${current_kitty[$id]}"; done
+    current_kitty=()
+
+    for id in "${!current_view[@]}"; do
+      if [[ "$id" == "$utility_key" ]]; then
+        (( ${#utility_order[@]} > 0 )) && continue
+      elif [[ -n "${desired_worker[$id]+present}" ]]; then
+        continue
+      fi
+      kill_view_session "${current_view[$id]}"
+      unset 'current_name[$id]' 'current_view[$id]'
+    done
+
+    for id in "${worker_order[@]}"; do
+      view=$(ensure_view "$id" "${source_index[$id]}") || return 1
+      current_view["$id"]="$view"
+      current_name["$id"]="${source_name[$id]}"
+    done
+    if [[ -n "$candidate" ]]; then
+      view=$(ensure_view "$utility_key" "${source_index[$candidate]}") || return 1
+      current_view["$utility_key"]="$view"
+      current_name["$utility_key"]="${source_name[$candidate]}"
+      utility_selected_source="$candidate"
+      utility_selected_name="${source_name[$candidate]}"
+      utility_selected_activity="${source_activity[$candidate]}"
+    else
+      utility_selected_source=""
+      utility_selected_name=""
+      utility_selected_activity=0
+    fi
+
+    if (( ${#worker_order[@]} > 0 )); then
+      first_id="${worker_order[0]}"
+      first_kitty=$(launch_cell "$first_id" "${source_name[$first_id]}" \
+        "${current_view[$first_id]}" "$placeholder_id" vsplit 50) || return 1
+      current_kitty["$first_id"]="$first_kitty"
+      close_kitty_window "$placeholder_id"
+      placeholder_id=""
+
+      if [[ -n "$candidate" ]]; then
+        kitty_id=$(launch_cell "$utility_key" "utility: ${source_name[$candidate]}" \
+          "${current_view[$utility_key]}" "$first_kitty" vsplit "$utility_percent") || return 1
+        current_kitty["$utility_key"]="$kitty_id"
+        ignored=$(kitty_rc set-user-vars --match "id:${kitty_id}" \
+          "kitty_wall_active_utility_id=${candidate}" 2>&1) || true
+      fi
+
+      remainder="$first_kitty"
+      total=${#worker_order[@]}
+      for (( i=1; i<total; i++ )); do
+        rest=$(( total - i ))
+        bias=$(split_bias "$rest" "$(( rest + 1 ))")
+        id="${worker_order[$i]}"
+        kitty_id=$(launch_cell "$id" "${source_name[$id]}" "${current_view[$id]}" \
+          "$remainder" vsplit "$bias") || return 1
+        current_kitty["$id"]="$kitty_id"
+        remainder="$kitty_id"
+      done
+    elif [[ -n "$candidate" ]]; then
+      kitty_id=$(launch_cell "$utility_key" "utility: ${source_name[$candidate]}" \
+        "${current_view[$utility_key]}" "$placeholder_id" vsplit 50) || return 1
+      current_kitty["$utility_key"]="$kitty_id"
+      close_kitty_window "$placeholder_id"
+      placeholder_id=""
+    fi
+
+    write_state
+    last_layout_signature="$layout_signature"
+    if [[ -n "$focused" && -n "${current_kitty[$focused]+present}" ]]; then
+      ignored=$(kitty_rc focus-window --match "id:${current_kitty[$focused]}" 2>&1) || true
+    fi
+    log "layout rebuilt: workers=${#worker_order[@]}, utility=$(( ${#utility_order[@]} > 0 ? 1 : 0 )), workers=${worker_percent}%"
+  fi
+
+  if [[ -n "$candidate" ]] && {
+    [[ "$candidate" != "$utility_selected_source" ]] ||
+    [[ "${source_name[$candidate]}" != "$utility_selected_name" ]];
+  }; then
+    select_utility "$candidate" "${source_index[$candidate]}" \
+      "${source_name[$candidate]}" "${source_activity[$candidate]}" || return 1
+  fi
+}
+
+log "watching '$source_session' in kitty pid $kitty_pid (workers=${worker_percent}%, utility=${utility_percent}%)"
+log "utility keys: Alt+Left/Up previous, Alt+Right/Down next"
+log "kitty diagnostics: $kitty_log"
+
+while process_alive "$kitty_pid"; do
+  source_output=$(list_source_windows) || { log "source session '$source_session' ended"; break; }
+  current_json=$(kitty_json) || break
+  reconcile "$source_output" "$current_json" || log "reconciliation failed; retrying"
+  sleep "$poll"
+done
+
+log "wall closed; cleaning up view sessions"
