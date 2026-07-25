@@ -70,7 +70,18 @@ export async function preflightTarget(
     throw new Error("preflightTarget: a user-mode target cannot be credless-probed - the caller owns the user connect (see preflightOrExit's user branch)");
   const creds =
     probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "probe") : undefined);
-  const probe = await probeConnect(target.server, creds ? { creds } : {});
+  const auth = creds ? { creds } : {};
+  let probe = await probeConnect(target.server, auth);
+  if (probe.ok) return { ok: true };
+  // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
+  // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
+  // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely, and
+  // the verdict here is destructive: a registry-sourced failure DELETES the entry, and for a mesh
+  // this machine did not start that is unrecoverable, since only `cotal up` writes registry records.
+  // The observed failure mode was exactly this — a live, reachable mesh reported as "no mesh
+  // running (stale registry entry - removed)" because the handshake needed more than a second.
+  // So a first failure only makes it a candidate; re-probe with a budget that fits a real network.
+  probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return { ok: true };
   const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));
   return { ok: false, kind, prune };
@@ -96,6 +107,10 @@ export async function preflightTarget(
  * sweep, one extra probe later.
  */
 const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
+
+/** The confirming budget for a single target's preflight. Larger than {@link PRUNE_CONFIRM_TIMEOUT_MS}
+ *  because this probe completes an AUTH HANDSHAKE, not just a TCP+INFO liveness check. */
+const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
 
 export async function pruneStaleMeshes(): Promise<void> {
   await Promise.all(
