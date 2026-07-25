@@ -85,6 +85,16 @@ try {
   check("url() advertises the bound host, not loopback", remote.url("a").startsWith("ws://100.98.80.110:"), remote.url("a"));
   const wild = new AttachEndpoint(() => undefined, () => [], () => [], 0, "0.0.0.0", TOKEN);
   check("a wildcard bind advertises loopback (not a dialable name)", wild.url("a").startsWith("ws://127.0.0.1:"), wild.url("a"));
+  // An address this machine does not own: a manager pointed at a broker on ANOTHER host. It must
+  // say which address and why, not surface a bare errno from deep inside startup.
+  const orphan = new AttachEndpoint(() => undefined, () => [], () => [], 0, "203.0.113.7", TOKEN);
+  let bindErr = "";
+  try { await orphan.start(); await orphan.stop(); } catch (e) { bindErr = (e as Error).message; }
+  check(
+    "binding an address this host lacks fails with operator-legible guidance",
+    bindErr.includes("203.0.113.7") && bindErr.includes("must run on the machine"),
+    bindErr,
+  );
 } finally {
   await ep.stop();
 }

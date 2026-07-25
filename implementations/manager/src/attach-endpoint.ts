@@ -141,7 +141,31 @@ export class AttachEndpoint {
   }
 
   async start(): Promise<void> {
-    await new Promise<void>((resolve) => this.#http.listen(this.#port, this.#host, resolve));
+    // The bind host is the BROKER's, which is right when the manager is co-located with it (every
+    // `cotal up` stack). A manager pointed at a broker on ANOTHER machine does not own that address,
+    // and `listen` fails EADDRNOTAVAIL. Say so in operator terms instead of surfacing a bare errno
+    // from deep inside startup: the address is the diagnosis, and the two real resolutions are to
+    // run the manager on the broker's host or to give this space a broker address this host owns.
+    await new Promise<void>((resolve, reject) => {
+      const onError = (e: NodeJS.ErrnoException) => {
+        if (e.code === "EADDRNOTAVAIL" || e.code === "EADDRINUSE") {
+          reject(
+            new Error(
+              e.code === "EADDRINUSE"
+                ? `the manager's attach endpoint cannot bind ${this.#host}:${this.#port} - that port is already in use on this host`
+                : `the manager's attach endpoint cannot bind ${this.#host} - this machine has no such address. The attach face binds the broker's host, so the manager must run on the machine the broker is bound to.`,
+            ),
+          );
+          return;
+        }
+        reject(e);
+      };
+      this.#http.once("error", onError);
+      this.#http.listen(this.#port, this.#host, () => {
+        this.#http.off("error", onError);
+        resolve();
+      });
+    });
     const addr = this.#http.address();
     if (addr && typeof addr === "object") this.#port = addr.port;
     // Comment ping keeps idle SSE connections from being dropped; no-op with none.
