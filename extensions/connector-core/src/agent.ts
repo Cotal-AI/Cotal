@@ -511,11 +511,11 @@ export class MeshAgent extends EventEmitter {
    *  persona file's `model:`, and `opts.cwd` roots the new peer at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal start` carries, so
    *  the agent and operator spawn doors share one control-op contract. */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; cwd?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; cwd?: string; as?: string }): Promise<ControlReply> {
     this.assertConnected();
     return this.ep.requestControl(CONTROL_PRIVILEGED, {
       op: "start",
-      args: { name, role, agent: opts?.agent, model: opts?.model, cwd: opts?.cwd },
+      args: { name, role, agent: opts?.agent, model: opts?.model, cwd: opts?.cwd, as: opts?.as },
     });
   }
 

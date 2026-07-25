@@ -472,9 +472,16 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_spawn",
       title: "Cotal: spawn a new teammate",
       description:
-        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use when the team needs another agent.",
+        "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer (and, when the manager runs the cmux runtime, appears in its own tab). Use when the team needs another agent. By default the peer joins under the persona file's own `name:` (auto-numbered on collision); pass `as` to override the identity name (e.g. `as=worker-app-hive`) while keeping the persona body, peerMode, ACLs, and model from the file.",
       schema: {
-        name: z.string().describe("Which persona to spawn — the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken). Fails if no such persona file exists — spawn an existing persona, don't invent a name."),
+        name: z.string().describe("Which persona to spawn — the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered, e.g. socrates-2, if that's taken) unless `as` is set. Fails if no such persona file exists — spawn an existing persona, don't invent a name."),
+        as: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
+          .optional()
+          .describe(
+            "Optional identity-name override. The peer joins under THIS name (auto-numbered on collision) instead of the persona file's `name:` — e.g. `as=worker-app-hive` to name the peer after the app it owns. The persona body, peerMode, ACLs, and model still come from the persona file; only the identity name changes. Use this to make peers self-documenting in the roster and tmux.",
+          ),
         role: z
           .string()
           .optional()
@@ -494,17 +501,18 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
           ),
       },
-      async run(agent, _config, { name, role, agent: agentType, model, cwd }: { name: string; role?: string; agent?: string; model?: string; cwd?: string }) {
+      async run(agent, _config, { name, as, role, agent: agentType, model, cwd }: { name: string; as?: string; role?: string; agent?: string; model?: string; cwd?: string }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, cwd });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, cwd, as });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${reply.error ?? "manager refused"}`);
           const d = reply.data as { name?: string; mode?: string } | undefined;
-          const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
+          const askedFor = as ?? name;
+          const actual = d?.name ?? askedFor; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
           const who = role ? `${actual}/${role}` : actual;
-          // Make the rename unmissable: a colliding caller must see it asked for `name` but got
+          // Make the rename unmissable: a colliding caller must see it asked for `name`/`as` but got
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
-          const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
+          const lead = actual !== askedFor ? `"${askedFor}" was taken — spawning ${who} instead` : `Spawning ${who}`;
           return ok(`${lead}${mode ? ` (${mode})` : ""} — it will appear in the roster shortly.`);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);

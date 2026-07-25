@@ -102,6 +102,11 @@ export interface StartAgentOpts {
    *  workspaceRoot. Lets different agents run in different repos/folders. A relative path is
    *  resolved against the manager's workspace root. Omitted → the agent uses workspaceRoot. */
   cwd?: string;
+  /** Optional identity-name override. When set, the spawned peer presents under THIS name
+   *  (auto-numbered on collision) instead of the persona file's `name:`. The persona body,
+   *  peerMode, ACLs, and model still come from the file — only the mesh identity (and the tmux
+   *  window label) change. Used to name peers after the app they own, e.g. `worker-app-hive`. */
+  as?: string;
 }
 
 interface ManagedAgent {
@@ -429,6 +434,7 @@ export class Manager {
         model: args.model ? String(args.model) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
+        as: args.as ? String(args.as).trim() : undefined,
       },
       caller,
     );
@@ -553,7 +559,7 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      identityName = def.name;
+      identityName = (opts.as ?? def.name).trim();
       role = opts.role ?? def.role;
       subscribe = def.subscribe;
       // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
