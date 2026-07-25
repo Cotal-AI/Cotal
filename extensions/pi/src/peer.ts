@@ -341,6 +341,7 @@ export async function runInteractivePeer(config: AgentConfig = configFromEnv()):
   };
 
   const sessionManager = SessionManager.inMemory();
+  sessionManager.appendSessionInfo(config.name);
   const initial = await createRuntime({ cwd, agentDir, sessionManager });
   const runtime = new AgentSessionRuntime(
     initial.session,
