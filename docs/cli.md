@@ -438,6 +438,19 @@ under your owner) need only the `spawn` scope; another owner's agent needs `admi
 row ([identity & auth](identity-and-auth.md)). Launch detached agents with
 [`spawn --detach`](#spawn).
 
+`attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
+**loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
+address down, which is what lets you attach to an agent whose manager runs on another machine. A
+bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
+`supervise --console-host <host>`.
+
+Because that face carries terminal read and write for every managed agent, it is credentialed in two
+tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,
+single-use and short-lived, so one authorized attach can never be re-pointed at someone else's
+agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
+manager's output. The roster, the live feed, and the PTY stream all answer `401` without one; the
+static console shell is served openly, since it describes no agent.
+
 ## personas
 
 ```bash

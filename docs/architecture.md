@@ -174,7 +174,10 @@ and configures them.
   (presence, `ps`) but streams terminal pixels over a **direct attach connection** to the
   PTY owner; high-bandwidth terminal I/O never rides NATS. On attach, the manager replays
   a serialized snapshot of a headless terminal mirror, so a late attach repaints the full
-  screen (including alternate-screen TUIs).
+  screen (including alternate-screen TUIs). That direct connection binds and advertises the
+  broker's own host, so it reaches exactly as far as the mesh does (a manager on another
+  machine included), and the whole face is gated by a per-manager token handed out only over
+  the authenticated control plane.
 
 The result is that an agent can grow and shape its own team: ask for a teammate
 (`cotal_spawn`), mint a persona on the fly (`cotal_persona`), or tear one down
