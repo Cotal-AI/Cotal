@@ -34,16 +34,23 @@ check("attachHost: an unparseable URL throws, never a silent bind", threw);
 
 // --- the live endpoint ------------------------------------------------------------------------
 const TOKEN = "a".repeat(64);
-const ep = new AttachEndpoint(() => undefined, () => [{ name: "x" }], () => [], 0, "127.0.0.1", TOKEN);
+const live = { kind: "pty", status: () => "running", attach: () => ({
+  onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
+  cols: 80, rows: 24, snapshot: async () => "",
+}) };
+const known: Record<string, unknown> = { nobody: live, mine: live, victim: live };
+const ep = new AttachEndpoint((n: string) => known[n] as never, () => [{ name: "x" }], () => [], 0, "127.0.0.1", TOKEN);
 await ep.start();
 const base = ep.consoleUrl().replace(/\/\?t=.*$/, "");
 
 const get = async (path: string, init?: RequestInit): Promise<Response> => fetch(`${base}${path}`, init);
 
 try {
-  // Unauthenticated: nothing is readable, including the roster and the feed.
-  for (const p of ["/", "/agents", "/feed", "/app.js"])
+  // Data routes are credentialed; the static console shell is not (it describes no agent).
+  for (const p of ["/agents", "/feed"])
     check(`unauthenticated GET ${p} → 401`, (await get(p)).status === 401);
+  for (const p of ["/", "/app.js"])
+    check(`static shell GET ${p} is served without a credential`, (await get(p)).status === 200);
 
   // Wrong tokens are refused, including one of the right length (so the check is not length-only).
   check("wrong-length token → 401", (await get("/agents?t=nope")).status === 401);
@@ -51,16 +58,25 @@ try {
 
   // Each accepted credential channel.
   check("token by query → 200", (await get(`/agents?t=${TOKEN}`)).status === 200);
-  check("token by cookie → 200", (await get("/agents", { headers: { cookie: `cotal_attach=${TOKEN}` } })).status === 200);
+  check("a cookie is NOT accepted as a credential", (await get("/agents", { headers: { cookie: `cotal_attach=${TOKEN}` } })).status === 401);
   check("token by bearer → 200", (await get("/agents", { headers: { authorization: `Bearer ${TOKEN}` } })).status === 200);
 
-  // The console page is where a browser picks the credential up for every later request.
+  // NO cookie: cookies are host-scoped, not port-scoped, so one set here would be sent to every
+  // other HTTP service on this host and would collide between two managers on one box.
   const page = await get(`/?t=${TOKEN}`);
-  const cookie = page.headers.get("set-cookie") ?? "";
-  check("console page sets the credential cookie", page.status === 200 && cookie.includes(`cotal_attach=${TOKEN}`), cookie);
-  check("cookie is HttpOnly + SameSite=Strict", /HttpOnly/i.test(cookie) && /SameSite=Strict/i.test(cookie), cookie);
+  check("console page is served", page.status === 200);
+  check("console page sets NO cookie", (page.headers.get("set-cookie") ?? "") === "", page.headers.get("set-cookie"));
 
   // The WS upgrade — the one that carries terminal write access.
+  const upgradeTo = (pathAndQuery: string): Promise<string> =>
+    new Promise((resolve) => {
+      const ws = new WebSocket(`${base.replace("http", "ws")}${pathAndQuery}`);
+      const done = (v: string) => { try { ws.close(); } catch { /* already closing */ } resolve(v); };
+      ws.on("unexpected-response", (_req, res) => done(`http-${res.statusCode}`));
+      ws.on("open", () => done("upgraded"));
+      ws.on("error", (e) => done(`error:${(e as Error).message}`));
+      setTimeout(() => done("timeout"), 4000);
+    });
   const upgrade = (qs: string): Promise<string> =>
     new Promise((resolve) => {
       const ws = new WebSocket(`${base.replace("http", "ws")}/attach/nobody${qs}`);
@@ -74,11 +90,24 @@ try {
   const anon = await upgrade("");
   check("unauthenticated WS upgrade refused with 401", anon === "http-401", anon);
   const authed = await upgrade(`?t=${TOKEN}`);
-  check("token-bearing WS upgrade is accepted", authed === "upgraded", authed);
+  check("console token upgrade is accepted (the operator drives every agent)", authed === "upgraded", authed);
+
+  // THE BYPASS: a capability issued for one agent must not attach another. `url()` mints a ticket
+  // bound to the name the manager just authorized; swapping the path must be refused.
+  const issued = new URL(ep.url("mine"));
+  const ticket = issued.searchParams.get("t") ?? "";
+  const swapped = await upgradeTo(`/attach/victim?t=${ticket}`);
+  check("a ticket for 'mine' CANNOT attach 'victim'", swapped === "http-401", swapped);
+
+  const fresh = new URL(ep.url("mine")).searchParams.get("t") ?? "";
+  check("a ticket redeems for its own agent", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "upgraded");
+  check("...and only once (single use)", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "http-401");
+  check("two issues produce different tickets", ticket !== fresh);
 
   // What the manager hands back over the control plane.
   const url = ep.url("agent one");
-  check("url() carries the token", url.includes(`t=${TOKEN}`), url);
+  check("url() carries a credential", /[?&]t=[0-9a-f]{64}\b/.test(url), url);
+  check("url() does NOT hand out the manager-wide console token", !url.includes(TOKEN), url);
   check("url() percent-encodes the agent name", url.includes("/attach/agent%20one"), url);
 
   const remote = new AttachEndpoint(() => undefined, () => [], () => [], 0, "100.98.80.110", TOKEN);

@@ -11,9 +11,17 @@ const empty = document.getElementById("empty");
 const meta = document.getElementById("meta");
 const panes = new Map(); // name -> { el, term, fit, ws, status }
 
+// The console token, taken once from this page's own URL and kept only in memory. Deliberately not
+// stored in a cookie: cookies are host-scoped and not port-scoped, so a cookie set here would be
+// sent to every other HTTP service on this host, and two managers on one host would clobber each
+// other's. The manager serves the static shell openly and requires this on the routes that carry
+// real data (/agents) and on the attach socket.
+const TOKEN = new URLSearchParams(location.search).get("t") ?? "";
+const withToken = (path) => `${path}${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(TOKEN)}`;
+
 function wsUrl(name) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}/attach/${encodeURIComponent(name)}`;
+  return `${proto}://${location.host}${withToken(`/attach/${encodeURIComponent(name)}`)}`;
 }
 
 function layout() {
@@ -81,7 +89,7 @@ function setStatus(name, status) {
 
 async function poll() {
   try {
-    const agents = await (await fetch("/agents")).json();
+    const agents = await (await fetch(withToken("/agents"))).json();
     meta.textContent = `${agents.length} agent${agents.length === 1 ? "" : "s"} · space ${agents[0]?.space ?? ""}`.trim();
     const seen = new Set();
     for (const a of agents) {

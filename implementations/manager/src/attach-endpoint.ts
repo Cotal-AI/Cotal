@@ -42,6 +42,11 @@ export function attachHost(servers: string | undefined): string {
   return new URL(first).hostname || "127.0.0.1";
 }
 
+/** How long an issued attach capability stays redeemable. The client redeems it immediately (the
+ *  control-plane reply goes straight into a connect), so this only has to cover that round trip;
+ *  short means a URL that leaked into a log or shell history is already dead. */
+const ATTACH_TICKET_TTL_MS = 120_000;
+
 /** One Server-Sent-Events frame: a named event carrying JSON data. */
 export interface FeedEvent {
   event: string;
@@ -83,6 +88,8 @@ export class AttachEndpoint {
   #host: string;
   #sse = new Set<ServerResponse>();
   #ping?: ReturnType<typeof setInterval>;
+  /** Redeemable attach capabilities: token → the ONE agent it may attach, and when it lapses. */
+  #tickets = new Map<string, { name: string; expires: number }>();
 
   constructor(
     private readonly lookup: (name: string) => AgentHandle | undefined,
@@ -107,17 +114,19 @@ export class AttachEndpoint {
         socket.destroy();
         return;
       }
-      // The PTY stream is terminal read+write: no token, no upgrade. Checked before the agent name
-      // is even resolved, so an unauthenticated caller cannot probe which agents exist.
-      if (!this.#authorized(req)) {
-        socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-        return;
-      }
       let name: string;
       try {
         name = decodeURIComponent(path.slice("/attach/".length));
       } catch {
         socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      // Terminal read+write, so the capability must name THIS agent: a ticket issued for one agent
+      // must never attach another. Redeemed against the decoded name — the name is parsed first only
+      // because the check needs it, and a malformed name is refused before any credential is looked
+      // at, so neither order leaks the other's outcome.
+      if (!this.#redeemAttach(req, name)) {
+        socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
         return;
       }
       this.#wss.handleUpgrade(req, socket, head, (ws) => {
@@ -126,18 +135,56 @@ export class AttachEndpoint {
     });
   }
 
-  /** Constant-time check of the endpoint token, taken from `?t=`, the same-origin cookie the console
-   *  page is served with, or a bearer header. Length-mismatched candidates are rejected before
-   *  `timingSafeEqual`, which throws on unequal lengths. */
-  #authorized(req: IncomingMessage): boolean {
+  /** The credential a request presents, from `?t=` or a bearer header. */
+  #presented(req: IncomingMessage): string | undefined {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const cookie = /(?:^|;\s*)cotal_attach=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
-    const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
-    const presented = url.searchParams.get("t") ?? cookie ?? bearer;
+    return url.searchParams.get("t") ?? /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1] ?? undefined;
+  }
+
+  /** Constant-time equality — `timingSafeEqual` throws on unequal lengths, so screen those first. */
+  #sameSecret(presented: string | undefined, secret: string): boolean {
     if (!presented) return false;
     const a = Buffer.from(presented);
-    const b = Buffer.from(this.token);
+    const b = Buffer.from(secret);
     return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  /** The MANAGER-WIDE credential: the operator's own console session. It reaches every agent, which
+   *  is not an escalation — it is only ever printed to the manager process's own output, and anyone
+   *  who can read that already controls the process. Never handed to a mesh caller. */
+  #authorized(req: IncomingMessage): boolean {
+    return this.#sameSecret(this.#presented(req), this.token);
+  }
+
+  /**
+   * Redeem an attach capability for EXACTLY `name`.
+   *
+   * The per-name control-plane authorization (`Manager.opAttach` → `authorizeNamed`) is only real if
+   * the credential it hands back is bound to the agent it authorized. A manager-wide token is not:
+   * a caller legitimately authorized for its own agent could edit `/attach/mine` to `/attach/victim`
+   * and the endpoint, checking only "is this the manager's token", would attach it — silently
+   * defeating the owner-domain and cross-owner admin boundaries on a user-auth mesh. So a mesh
+   * caller receives a ticket that names one agent, expires, and is consumed on redemption.
+   *
+   * The console token is also accepted here, because the console legitimately drives every agent.
+   */
+  #redeemAttach(req: IncomingMessage, name: string): boolean {
+    const presented = this.#presented(req);
+    if (!presented) return false;
+    if (this.#sameSecret(presented, this.token)) return true; // operator console: all agents
+    const ticket = this.#tickets.get(presented);
+    if (!ticket) return false;
+    this.#tickets.delete(presented); // single use, redeemed or not
+    if (ticket.expires < Date.now()) return false;
+    // Compare the BOUND name against the requested one in constant time, so a redemption cannot be
+    // probed character-by-character for another agent's name.
+    return this.#sameSecret(name, ticket.name);
+  }
+
+  /** Drop expired tickets so an idle manager doesn't accumulate them. */
+  #sweepTickets(): void {
+    const now = Date.now();
+    for (const [t, v] of this.#tickets) if (v.expires < now) this.#tickets.delete(t);
   }
 
   async start(): Promise<void> {
@@ -194,10 +241,19 @@ export class AttachEndpoint {
     return this.#host.includes(":") && !this.#host.startsWith("[") ? `[${this.#host}]` : this.#host;
   }
 
-  /** The ws URL a client uses to attach to `name`. Carries the endpoint token: this URL only ever
-   *  travels as the reply to an authenticated, authorized control-plane `attach` request. */
+  /**
+   * The ws URL a client uses to attach to `name`, carrying a capability bound to THAT agent.
+   *
+   * Called once per authorized control-plane `attach` request, so the ticket inherits exactly the
+   * authorization the manager just performed for this caller and this agent. It is single-use and
+   * short-lived: the client redeems it immediately, and a leaked URL (shell history, a log, a
+   * `Referer`) is spent or expired rather than a standing key to someone's terminal.
+   */
   url(name: string): string {
-    return `ws://${this.#advertised}:${this.#port}/attach/${encodeURIComponent(name)}?t=${this.token}`;
+    this.#sweepTickets();
+    const ticket = randomBytes(32).toString("hex");
+    this.#tickets.set(ticket, { name, expires: Date.now() + ATTACH_TICKET_TTL_MS });
+    return `ws://${this.#advertised}:${this.#port}/attach/${encodeURIComponent(name)}?t=${ticket}`;
   }
 
   /** The console page URL. The token rides the query once; the page is served with a cookie that
@@ -209,19 +265,23 @@ export class AttachEndpoint {
   #onRequest(req: IncomingMessage, res: ServerResponse): void {
     try {
       const path = (req.url ?? "/").split("?")[0];
-      // Every route is credentialed — the roster, the live feed, and the console that can drive any
-      // agent's terminal. Rejected before anything is read or served.
-      if (!this.#authorized(req)) {
-        res.writeHead(401, { "content-type": "text/plain" });
-        res.end("unauthorized - this endpoint requires the manager's attach token");
-        return;
+      // Every DATA route is credentialed: the managed roster and the live mesh feed both describe
+      // real agents. The console shell (its HTML, its script, the vendored xterm assets) is static
+      // and carries nothing about this mesh, so it stays open — that is what lets the page load and
+      // then present the token, held in memory from its own URL, on the requests that do matter.
+      //
+      // Deliberately NOT a cookie. Cookies are host-scoped, not port-scoped: a `cotal_attach` cookie
+      // set by a manager on one port would be sent by the browser to EVERY other HTTP service on
+      // that host, handing a terminal credential to anything the operator happens to visit, and two
+      // managers on one host would silently overwrite each other's. `Secure` fixes neither, and is
+      // unavailable over plain HTTP anyway.
+      if (path === "/agents" || path === "/feed") {
+        if (!this.#authorized(req)) {
+          res.writeHead(401, { "content-type": "text/plain" });
+          res.end("unauthorized - this endpoint requires the manager's console token");
+          return;
+        }
       }
-      // The console page is the one entry point a human opens by URL, so it is where the browser
-      // picks up the credential: token in the query once, then a same-origin cookie that carries it
-      // on every later asset, /agents, /feed, and WS upgrade. HttpOnly so page scripts can't read
-      // it back out; SameSite=Strict so another origin can never drive a cross-site request with it.
-      if (path === "/" && new URL(req.url ?? "/", "http://localhost").searchParams.get("t"))
-        res.setHeader("set-cookie", `cotal_attach=${this.token}; Path=/; HttpOnly; SameSite=Strict`);
       if (path === "/agents") {
         const body = JSON.stringify(this.list());
         res.writeHead(200, { "content-type": "application/json" });
