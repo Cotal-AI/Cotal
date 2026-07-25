@@ -41,6 +41,8 @@ export interface PreparedAgent {
   description?: string;
   /** Effective persona body (manifest `instructions` REPLACES the file body; sole body for inline). */
   body?: string;
+  /** Connector-owned scalar launch hints from the persona file (for example Pi's `peerMode`). */
+  meta?: Record<string, string>;
   /** Effective merged capabilities. */
   capabilities: string[];
   capabilitySource: "manifest" | "persona" | "none";
@@ -135,6 +137,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       role,
       description,
       body,
+      meta: persona?.meta,
       capabilities,
       capabilitySource,
       policy,

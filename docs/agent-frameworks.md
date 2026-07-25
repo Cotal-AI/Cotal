@@ -43,14 +43,12 @@ running tool, `agent_end` → `idle`), and drives the loop with the session's ow
 `prompt()` to wake an idle session into a turn and `steer()` to fold a *same-scope* message
 into a *live* one (true mid-turn drive, before the next LLM call; a different-scope message
 waits for its own turn, so a private DM is never folded into a channel reply), with `abort()`
-to interrupt. No external
-channel, host process, or keystrokes — inbound `"incoming"` calls a method on the embedded
-session. pi has no built-in permission gate, but in TUI mode (`PI_PEER_MODE=tui`, or the
-agent file's `peerMode: tui` frontmatter hint) any pi extension that calls `ctx.ui.*`
-(approval gates, prompts, selects, editors) is rendered live in the peer's tmux pane and
-becomes operator-answerable per-pane (e.g. an edit-approval gate); headless peers
-(unset/`headless`) run unattended (sandbox/containerize per pi's own guidance). It needs
-Node ≥22.19 and a provider key in the env.
+to interrupt. In `interactive` mode (`PI_PEER_MODE=interactive`, or the agent file's
+`peerMode: interactive` frontmatter hint), the adapter passes the embedded runtime to pi's
+real `InteractiveMode`, so the normal editor, transcript, tool rendering, and `ctx.ui.*`
+approval dialogs are live in the peer's tmux pane. The legacy `tui` mode remains the RPC
+child plus dependency-free Cotal renderer; headless peers (unset/`headless`) run unattended.
+It needs Node ≥22.19 and a provider key in the env.
 
 A `Connector` extension (`buildLaunch`) lets the manager spawn it: it launches the peer via
 `tsx` (dev) or `node` (built `dist/`) and forwards the launcher's identity (`COTAL_ID`), minted

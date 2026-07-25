@@ -2,16 +2,20 @@ import { MeshAgent, InboxTurn, configFromEnv } from "@cotal-ai/connector-core";
 import type { InboxItem, AgentConfig } from "@cotal-ai/connector-core";
 import { loadAgentFile } from "@cotal-ai/core";
 import {
+  AgentSessionRuntime,
   AuthStorage,
   DefaultResourceLoader,
+  InteractiveMode,
   ModelRegistry,
   SessionManager,
   SettingsManager,
   createAgentSession,
+  createAgentSessionFromServices,
+  createAgentSessionServices,
   defineTool,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 
 function log(e: unknown): void {
@@ -24,7 +28,7 @@ function log(e: unknown): void {
  * mis-route or duplicate a reply. These just let it see who is present and report its own
  * status. Mirrors the openai-agents / vercel-ai adapters.
  */
-function buildTools(mesh: MeshAgent) {
+export function buildTools(mesh: MeshAgent) {
   const cotal_roster = defineTool({
     name: "cotal_roster",
     label: "Cotal roster",
@@ -74,6 +78,10 @@ function scopeKey(item: InboxItem): string {
   return item.kind === "channel" && item.channel ? `channel:${item.channel}` : `dm:${item.fromId}`;
 }
 
+function framed(item: InboxItem): string {
+  return `from ${item.fromName} via ${item.kind}: ${item.text}`;
+}
+
 /** Pull this turn's final assistant text from the agent_end payload (not the session-wide
  *  last message), so a turn that produced no text never re-delivers a previous reply. */
 function turnReplyText(messages: readonly unknown[]): string | undefined {
@@ -104,7 +112,7 @@ function turnReplyText(messages: readonly unknown[]): string | undefined {
  * to pi's default model. (TUI mode passes the string to pi's CLI which fuzzy-
  * resolves it; headless runs in-process where only exact resolution is public.)
  */
-function resolveModel(ref: string, registry: ModelRegistry): Model<Api> {
+export function resolveModel(ref: string, registry: ModelRegistry): Model<Api> {
   const avail = registry.getAvailable();
   const r = ref.trim().toLowerCase();
   if (!r) throw new Error("pi peer: empty persona model");
@@ -281,4 +289,164 @@ export async function runPiPeer(config: AgentConfig = configFromEnv()): Promise<
 
   // Keep alive.
   await new Promise<void>(() => {});
+}
+
+/**
+ * Interactive native peer: the same embedded MeshAgent/AgentSession bridge as
+ * runPiPeer, but with Pi's own InteractiveMode owning the real terminal UI.
+ * This is deliberately separate from the legacy RPC renderer in tui-client.ts.
+ */
+export async function runInteractivePeer(config: AgentConfig = configFromEnv()): Promise<void> {
+  const mesh = new MeshAgent(config);
+  mesh.start();
+
+  const cwd = process.cwd();
+  const agentDir = getAgentDir();
+  const authStorage = AuthStorage.create();
+  const modelRegistry = ModelRegistry.create(authStorage);
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const def = process.env.COTAL_AGENT_FILE ? loadAgentFile(process.env.COTAL_AGENT_FILE) : undefined;
+  const appendSystemPrompt = def?.persona ? [def.persona] : undefined;
+
+  const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+    cwd: runtimeCwd,
+    agentDir: runtimeAgentDir,
+    sessionManager,
+    sessionStartEvent,
+  }) => {
+    const services = await createAgentSessionServices({
+      cwd: runtimeCwd,
+      agentDir: runtimeAgentDir,
+      authStorage,
+      modelRegistry,
+      settingsManager:
+        runtimeCwd === cwd ? settingsManager : SettingsManager.create(runtimeCwd, runtimeAgentDir),
+      resourceLoaderOptions: { appendSystemPrompt },
+    });
+    const model = process.env.COTAL_MODEL
+      ? resolveModel(process.env.COTAL_MODEL, services.modelRegistry)
+      : undefined;
+    const created = await createAgentSessionFromServices({
+      services,
+      sessionManager,
+      sessionStartEvent,
+      model,
+      customTools: buildTools(mesh),
+    });
+    return {
+      ...created,
+      services,
+      diagnostics: services.diagnostics,
+    };
+  };
+
+  const sessionManager = SessionManager.inMemory();
+  const initial = await createRuntime({ cwd, agentDir, sessionManager });
+  const runtime = new AgentSessionRuntime(
+    initial.session,
+    initial.services,
+    createRuntime,
+    initial.diagnostics,
+    initial.modelFallbackMessage,
+  );
+  const interactive = new InteractiveMode(runtime);
+  await interactive.init();
+
+  const session = runtime.session;
+  const turn = new InboxTurn(mesh);
+  let streaming = false;
+  let shuttingDown = false;
+
+  const setStatus = (status: "idle" | "working", activity?: string): void => {
+    void mesh.setStatus(status, activity).catch(log);
+  };
+
+  const deliver = (to: InboxItem, text: string): void => {
+    if (to.kind === "channel" && to.channel) void mesh.send(text, to.channel).catch(log);
+    else void mesh.dm(to.fromId, text).catch(log);
+  };
+
+  function pump(): void {
+    if (turn.inFlight || session.isStreaming || shuttingDown) return;
+    turn.drop((item) => !actionable(mesh, item));
+    const origin = turn.start();
+    if (!origin) {
+      setStatus("idle");
+      return;
+    }
+    setStatus("working", "thinking");
+    void session.prompt(framed(origin)).catch((error) => {
+      log(error);
+      turn.commit();
+      setStatus("idle");
+      pump();
+    });
+  }
+
+  function foldSameScope(): void {
+    if (!turn.origin || !session.isStreaming) return;
+    for (const item of turn.extend((i, o) => actionable(mesh, i) && scopeKey(i) === scopeKey(o))) {
+      void session.steer(framed(item)).catch(log);
+    }
+  }
+
+  mesh.on("incoming", () => {
+    if (session.isStreaming) foldSameScope();
+    else pump();
+  });
+  mesh.on("wake", () => pump());
+
+  session.subscribe((event: AgentSessionEvent) => {
+    switch (event.type) {
+      case "agent_start":
+        streaming = true;
+        setStatus("working", "thinking");
+        foldSameScope();
+        break;
+      case "tool_execution_start":
+        setStatus("working", `running ${event.toolName}`);
+        break;
+      case "tool_execution_end":
+        setStatus("working", "thinking");
+        break;
+      case "agent_end": {
+        if (event.willRetry) break;
+        const to = turn.origin;
+        const reply = turnReplyText(event.messages);
+        if (turn.inFlight) turn.commit();
+        streaming = false;
+        setStatus("idle");
+        if (to && reply) deliver(to, reply);
+        pump();
+        break;
+      }
+    }
+  });
+
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    turn.abandon();
+    try {
+      await session.abort();
+      interactive.stop();
+      await runtime.dispose();
+      await mesh.stop();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
+
+  pump();
+  try {
+    await interactive.run();
+  } finally {
+    if (!shuttingDown) {
+      interactive.stop();
+      await runtime.dispose();
+      await mesh.stop();
+    }
+  }
 }

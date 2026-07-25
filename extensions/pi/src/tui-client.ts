@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,11 +8,12 @@ import { writeRpc, readJsonLines } from "./rpc-frames.js";
 import { PROVIDER_KEYS } from "./connector.js";
 import { createTuiRenderer, type TuiRenderer } from "./tui-render.js";
 
-// Resolve the `pi` wrapper the same way connector.ts resolves `tsx`: as the
-// extension's own node_modules/.bin entry (pnpm provides it for the
-// @earendil-works/pi-coding-agent dependency). Spawn PI_CLI directly, matching
-// how the connector spawns TSX as the command.
-const PI_CLI = fileURLToPath(new URL("../node_modules/.bin/pi", import.meta.url));
+// Run the operator's `pi` first so the peer uses the same host version and installed
+// extensions (approval gates, providers, and model catalog) as the interactive session.
+// COTAL_PI_CLI is an explicit escape hatch for a pinned binary; otherwise PATH resolves
+// the global `pi`. Do not silently fall back to the connector package's bundled Pi: its
+// dependency version can be incompatible with the operator's installed extensions.
+const PI_CLI = process.env.COTAL_PI_CLI?.trim() || "pi";
 
 // ---- helpers duplicated from peer.ts. Kept inline rather than shared via a
 // `peer-util.ts` because the two paths diverge in places (e.g. `actionable`
@@ -56,6 +56,18 @@ function turnReplyText(messages: readonly unknown[]): string | undefined {
 
 function log(e: unknown): void {
   process.stderr.write(`[pi-peer] ${e instanceof Error ? e.message : String(e)}\n`);
+}
+
+/** Preserve the exact tmux pane identity for Pi extensions such as workmux-status.
+ * The outer Cotal tmux launcher preserves these values from the new pane's shell;
+ * launchEnv intentionally excludes multiplexer metadata, so forward only these two
+ * non-secret identifiers explicitly to the interactive Pi child. */
+function tmuxChildEnv(env: Record<string, string>): Record<string, string> {
+  for (const key of ["TMUX", "TMUX_PANE"] as const) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 /**
@@ -101,7 +113,7 @@ export async function runTuiClient(config: AgentConfig = configFromEnv()): Promi
   const child = spawn(PI_CLI, childArgs, {
     cwd: process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],
-    env: launchEnv({ providerKeys: PROVIDER_KEYS }),
+    env: tmuxChildEnv(launchEnv({ providerKeys: PROVIDER_KEYS })),
   });
 
   // turn/pending/streaming/halt — the loop state.

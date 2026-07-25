@@ -10,3 +10,6 @@ remotion/out/
 .runs/
 examples/02-self-improving-console/harness/.*.log
 product
+
+# local working folder for the mesh-native SDD kit (lives in its own repo: code-reaper)
+gsd-decomposition/

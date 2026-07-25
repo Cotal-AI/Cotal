@@ -19,6 +19,8 @@ export interface MeshLaunchAgent {
   description?: string;
   /** Persona body — materialized to a transient, non-authoritative file the connector reads. */
   body?: string;
+  /** Connector-owned scalar launch hints (for example Pi's `peerMode`). */
+  meta?: Record<string, string>;
   capabilities?: string[];
   /** Effective merged read set — the sole creds authority (not re-read from any file). */
   subscribe: string[];

@@ -163,6 +163,7 @@ const isolated = tmux.isolatedCommand({ FOO: "bar baz", X: "1" }, "/usr/bin/env"
 ok("isolatedCommand starts with 'env -i'", isolated.startsWith("env -i"));
 ok("isolatedCommand contains FOO=", isolated.includes("FOO="));
 ok("isolatedCommand contains quoted command", isolated.includes("'/usr/bin/env'"));
+ok("isolatedCommand preserves dynamic TMUX identity", isolated.includes('TMUX="${TMUX-}"') && isolated.includes('TMUX_PANE="${TMUX_PANE-}"'));
 
 const merged = tmux.mergedCommand({ FOO: "bar" }, "echo", ["hello"]);
 ok("mergedCommand starts with 'env'", merged.startsWith("env"));

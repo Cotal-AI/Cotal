@@ -26,6 +26,7 @@ const LaunchAgentSchema = z.strictObject({
   model: z.string().optional(),
   description: z.string().optional(),
   body: z.string().optional(),
+  meta: z.record(z.string(), z.string()).optional(),
   capabilities: z.array(z.string().regex(TOKEN, "capability must be a safe token ([A-Za-z0-9_-])")).optional(),
   subscribe: z.array(z.string()),
   allowSubscribe: z.array(z.string()),
@@ -109,8 +110,9 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
 }
 
 /** Materialize one resolved agent's persona to a transient file the connector reads, and return its
- *  path. Carries only what a connector needs (identity/role/model/description + body) plus a loud
- *  generated-artifact header — never ACL/capability frontmatter (creds come from the spec's policy). */
+ *  path. Carries only what a connector needs (identity/role/model/description + body + connector
+ *  metadata) plus a loud generated-artifact header — never ACL/capability frontmatter (creds come
+ *  from the spec's policy). */
 export function materializePersona(root: string, runId: string, a: MeshLaunchAgent): string {
   // 0700 dirs created component-by-component, refusing a symlinked parent (writes can't escape the
   // run tree); plus a lexical direct-child check on the final path as belt-and-suspenders.
@@ -121,6 +123,13 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   if (a.role) fm.push(`role: ${scalar(a.role)}`);
   if (a.model) fm.push(`model: ${scalar(a.model)}`);
   if (a.description) fm.push(`description: ${scalar(a.description)}`);
+  if (a.meta) {
+    for (const [key, value] of Object.entries(a.meta)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key))
+        throw new Error(`launch agent "${a.name}": unsafe persona metadata key ${JSON.stringify(key)}`);
+      fm.push(`${key}: ${scalar(value)}`);
+    }
+  }
   fm.push("---", "");
   const src = a.personaPath ?? "the manifest";
   const header = `<!-- Generated runtime artifact from a cotal mesh manifest (run ${runId}). Do NOT edit — regenerated on each launch and deleted by \`cotal down\`. Edit ${src} instead. This file is not a reusable persona and carries no access authority. -->`;

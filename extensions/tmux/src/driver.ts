@@ -200,7 +200,13 @@ export function isolatedCommand(
   command: string,
   args: string[],
 ): string {
-  return ["env", "-i", ...envPairs(env), shellQuote(command), ...args.map(shellQuote)].join(" ");
+  // Preserve the pane identity that tmux injects into the new window's shell.
+  // Cotal still runs the agent under env -i, but workmux (and similar tmux-aware
+  // tooling) must resolve the exact child pane rather than the manager's parent
+  // pane. These expansions happen in the new pane's shell before env replaces
+  // the environment; quoted parameter expansion keeps the values data-only.
+  const tmuxIdentity = ['TMUX="${TMUX-}"', 'TMUX_PANE="${TMUX_PANE-}"'];
+  return ["env", "-i", ...envPairs(env), ...tmuxIdentity, shellQuote(command), ...args.map(shellQuote)].join(" ");
 }
 
 /** Shell command string that runs `command args` with extra `env` merged into the inherited env. */

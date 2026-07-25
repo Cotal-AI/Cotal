@@ -75,6 +75,9 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
+      '@cotal-ai/pi':
+        specifier: workspace:*
+        version: link:../extensions/pi
       '@cotal-ai/tmux':
         specifier: workspace:*
         version: link:../extensions/tmux
