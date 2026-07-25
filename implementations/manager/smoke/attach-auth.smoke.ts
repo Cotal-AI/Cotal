@@ -18,6 +18,13 @@ import WebSocket from "ws";
 import { AttachEndpoint, attachHost } from "../src/attach-endpoint.js";
 import { dialableAttachUrl } from "../../cli/src/commands/agents.js"; // dev-only smoke import: the operator client lives in @cotal-ai/cli
 
+/** A running handle for endpoints that only exercise URL shape — `url()` now requires one, since a
+ *  capability is bound to the incarnation it was issued against. */
+const anyLive = { kind: "pty", status: () => "running", attach: () => ({
+  onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
+  cols: 80, rows: 24, snapshot: async () => "",
+}) };
+
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond || extra === undefined ? "" : ` — ${JSON.stringify(extra)}`}`);
@@ -37,7 +44,7 @@ check("attachHost: an unparseable URL throws, never a silent bind", threw);
 check("attachHost: strips IPv6 brackets for the bind address", attachHost("nats://[::1]:4222") === "::1");
 check("attachHost: strips brackets for a full IPv6 literal", attachHost("nats://[2001:db8::1]:4222") === "2001:db8::1");
 {
-  const v6 = new AttachEndpoint(() => undefined, () => [], () => [], 0, attachHost("nats://[::1]:4222"), "d".repeat(64));
+  const v6 = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, attachHost("nats://[::1]:4222"), "d".repeat(64));
   let ok = false, why = "";
   try { await v6.start(); ok = true; await v6.stop(); } catch (e) { why = (e as Error).message; }
   check("an IPv6 broker URL yields a bindable attach host", ok, why);
@@ -118,19 +125,40 @@ try {
   check("...and only once (single use)", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "http-401");
   check("two issues produce different tickets", ticket !== fresh);
 
+  // A NAME IS A REUSABLE SLOT. A ticket issued for one incarnation must not attach a same-name
+  // SUCCESSOR that takes the slot inside the TTL — on a user-auth mesh that successor can belong to
+  // a different owner, so name-only binding would be a cross-owner terminal handover.
+  {
+    const successor = { kind: "pty", status: () => "running", attach: () => ({
+      onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
+      cols: 80, rows: 24, snapshot: async () => "",
+    }) };
+    const issued2 = new URL(ep.url("mine")).searchParams.get("t") ?? "";
+    known.mine = successor as never; // the original exits; a same-name successor takes the slot
+    const afterSwap = await upgradeTo(`/attach/mine?t=${issued2}`);
+    check("a ticket does NOT survive a same-name successor taking the slot", afterSwap === "http-401", afterSwap);
+    known.mine = live as never; // restore
+  }
+
+  // Issuing for an agent that is not running is a caller bug, not a silently dead ticket.
+  let noAgent = "";
+  try { ep.url("does-not-exist"); } catch (e) { noAgent = (e as Error).message; }
+  check("url() refuses to issue for an unknown agent", noAgent.includes("no such running agent"), noAgent);
+
   // What the manager hands back over the control plane.
+  known["agent one"] = live as never;
   const url = ep.url("agent one");
   check("url() carries a credential", /[?&]t=[0-9a-f]{64}\b/.test(url), url);
   check("url() does NOT hand out the manager-wide console token", !url.includes(TOKEN), url);
   check("url() percent-encodes the agent name", url.includes("/attach/agent%20one"), url);
 
-  const remote = new AttachEndpoint(() => undefined, () => [], () => [], 0, "100.98.80.110", TOKEN);
+  const remote = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "100.98.80.110", TOKEN);
   check("url() advertises the bound host, not loopback", remote.url("a").startsWith("ws://100.98.80.110:"), remote.url("a"));
-  const wild = new AttachEndpoint(() => undefined, () => [], () => [], 0, "0.0.0.0", TOKEN);
+  const wild = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "0.0.0.0", TOKEN);
   check("a wildcard bind advertises loopback (not a dialable name)", wild.url("a").startsWith("ws://127.0.0.1:"), wild.url("a"));
   // An address this machine does not own: a manager pointed at a broker on ANOTHER host. It must
   // say which address and why, not surface a bare errno from deep inside startup.
-  const orphan = new AttachEndpoint(() => undefined, () => [], () => [], 0, "203.0.113.7", TOKEN);
+  const orphan = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "203.0.113.7", TOKEN);
   let bindErr = "";
   try { await orphan.start(); await orphan.stop(); } catch (e) { bindErr = (e as Error).message; }
   check(
