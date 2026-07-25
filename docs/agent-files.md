@@ -48,7 +48,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `launchOptions` | map | Opaque per-connector launch options forwarded **raw** to the harness (Claude flags, OpenCode agent config; Hermes and pi have no option surface and fail loud). A CLI `--opt key=value` overrides a key set here. See [run a mesh](run-a-mesh.md#spawning-agents). |
 | `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. On a per-user-auth mesh, `role:<r>` additionally lets the agent delegate role `r` when spawning ([identity & auth](identity-and-auth.md)); `admin` is never a persona capability. |
 | `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
-| *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. |
+| *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. The connector-owned keys are the exception: `connector`, `model`, `variant`, and `host` (the machine the session runs on) are overlaid from the live session, so a file cannot declare a harness or a host it is not on. |
 
 The three channel verbs on one card, with the common recipes:
 [Channels & permissions](channels-and-permissions.md). Attention semantics (`quiet` /
