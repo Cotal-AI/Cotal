@@ -4,7 +4,7 @@
 import type { DocsBundle } from "./docs.js";
 
 export const DOCS_BUNDLE: DocsBundle = {
-  "version": "0.14.2",
+  "version": "0.14.3",
   "generatedFrom": "docs/*.md + SPEC.md + spec/cotal.schema.json",
   "pages": [
     {
