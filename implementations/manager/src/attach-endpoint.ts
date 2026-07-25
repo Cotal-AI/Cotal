@@ -105,8 +105,9 @@ export class AttachEndpoint {
   #host: string;
   #sse = new Set<ServerResponse>();
   #ping?: ReturnType<typeof setInterval>;
-  /** Redeemable attach capabilities: token → the ONE agent it may attach, and when it lapses. */
-  #tickets = new Map<string, { name: string; expires: number }>();
+  /** Redeemable attach capabilities: token → the ONE INCARNATION it may attach, and when it lapses.
+   *  `handle` is the identity that actually matters — see {@link AttachEndpoint.url}. */
+  #tickets = new Map<string, { name: string; handle: AgentHandle; expires: number }>();
 
   constructor(
     private readonly lookup: (name: string) => AgentHandle | undefined,
@@ -195,7 +196,14 @@ export class AttachEndpoint {
     if (ticket.expires < Date.now()) return false;
     // Compare the BOUND name against the requested one in constant time, so a redemption cannot be
     // probed character-by-character for another agent's name.
-    return this.#sameSecret(name, ticket.name);
+    if (!this.#sameSecret(name, ticket.name)) return false;
+    // A NAME IS A REUSABLE SLOT, not an identity. Binding the capability to the name alone leaves it
+    // valid for whoever occupies that slot at redemption time: if the authorized agent exits and a
+    // same-name successor — possibly a different owner's — takes the slot inside the TTL, the
+    // untouched URL would attach the successor's terminal. Bind to the incarnation instead. The
+    // handle object IS that identity: the manager creates a new one per spawn, so a successor can
+    // never compare equal to its predecessor.
+    return this.lookup(name) === ticket.handle;
   }
 
   /** Drop expired tickets so an idle manager doesn't accumulate them. */
@@ -268,8 +276,10 @@ export class AttachEndpoint {
    */
   url(name: string): string {
     this.#sweepTickets();
+    const handle = this.lookup(name);
+    if (!handle) throw new Error(`cannot issue an attach capability for "${name}": no such running agent`);
     const ticket = randomBytes(32).toString("hex");
-    this.#tickets.set(ticket, { name, expires: Date.now() + ATTACH_TICKET_TTL_MS });
+    this.#tickets.set(ticket, { name, handle, expires: Date.now() + ATTACH_TICKET_TTL_MS });
     return `ws://${this.#advertised}:${this.#port}/attach/${encodeURIComponent(name)}?t=${ticket}`;
   }
 
