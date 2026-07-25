@@ -336,7 +336,12 @@ export async function runInteractivePeer(config: AgentConfig = configFromEnv()):
     initial.diagnostics,
     initial.modelFallbackMessage,
   );
-  const interactive = new InteractiveMode(runtime);
+  // A persona may declare a `bootPrompt:` scalar in its frontmatter to self-start on
+  // session boot (otherwise the interactive peer sits idle until a DM arrives). It lands
+  // in `def.meta` alongside other unmodelled scalar keys. Fed to InteractiveMode as its
+  // native `initialMessage` so the boot turn renders through the real TUI like any other.
+  const bootPrompt = def?.meta?.bootPrompt;
+  const interactive = new InteractiveMode(runtime, bootPrompt ? { initialMessage: bootPrompt } : undefined);
   await interactive.init();
 
   const session = runtime.session;
