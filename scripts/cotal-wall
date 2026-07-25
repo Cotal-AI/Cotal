@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_session="${1:-cotal-wallet-audit}"
+wall_session="${COTAL_WALL_SESSION:-cotal-wall}"
+view_prefix="${wall_session}-view"
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "cotal-wall: tmux is not installed" >&2
+  exit 1
+fi
+if ! tmux has-session -t "=$source_session" 2>/dev/null; then
+  echo "cotal-wall: source session '$source_session' does not exist" >&2
+  exit 1
+fi
+
+if (( $# > 1 )); then
+  windows=("${@:2}")
+else
+  mapfile -t windows < <(
+    tmux list-windows -t "=$source_session" -F '#{window_name}' |
+      grep -vE '^(bash|workmux-dashboard)$' |
+      head -n 4
+  )
+fi
+
+if (( ${#windows[@]} != 4 )); then
+  echo "cotal-wall: expected exactly four agent windows; found ${#windows[@]}" >&2
+  printf '  %s\n' "${windows[@]}" >&2
+  echo "usage: cotal-wall [session] [window1 window2 window3 window4]" >&2
+  exit 1
+fi
+
+for window in "${windows[@]}"; do
+  if ! tmux list-windows -t "=$source_session" -F '#{window_name}' | grep -Fxq -- "$window"; then
+    echo "cotal-wall: no window '$window' in session '$source_session'" >&2
+    exit 1
+  fi
+done
+
+# Each grouped view session shares the source session's windows but maintains an
+# independent current-window selection. That lets four nested tmux clients watch
+# four different live Cotal windows without moving or cloning their actual panes.
+tmux kill-session -t "=$wall_session" 2>/dev/null || true
+for index in 0 1 2 3; do
+  view="${view_prefix}-${index}"
+  tmux kill-session -t "=$view" 2>/dev/null || true
+  tmux new-session -d -s "$view" -t "=$source_session"
+  tmux select-window -t "${view}:=${windows[$index]}"
+done
+
+client_command() {
+  printf 'exec env -u TMUX tmux attach-session -t %q' "$1"
+}
+
+tmux new-session -d -s "$wall_session" -n agents "$(client_command "${view_prefix}-0")"
+for index in 1 2 3; do
+  tmux split-window -d -t "${wall_session}:agents" "$(client_command "${view_prefix}-${index}")"
+done
+tmux select-layout -t "${wall_session}:agents" tiled >/dev/null
+
+# Mouse focus makes the wall practical: click a cell, type into the real Pi UI,
+# and press Escape to interrupt. The option is local to the wall session.
+tmux set-option -t "$wall_session" mouse on
+
+if [[ "${COTAL_WALL_NO_ATTACH:-}" == "1" ]]; then
+  exit 0
+fi
+
+if [[ -n "${TMUX:-}" ]]; then
+  exec tmux switch-client -t "$wall_session"
+else
+  exec tmux attach-session -t "$wall_session"
+fi
