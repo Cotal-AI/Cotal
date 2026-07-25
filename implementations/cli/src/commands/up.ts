@@ -767,6 +767,10 @@ export async function up(args: ParsedArgs): Promise<void> {
     // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
     const controlPlane = await startDeliveryWithBroker(space, server, {
       runtime: values.runtime,
+      // The address the broker was bound to. This is what lets `cotal attach` reach this manager
+      // from another machine; without it the attach face stays loopback-only, so exposing terminals
+      // is never a side effect of anything but the operator binding the mesh somewhere reachable.
+      attachHost: host,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
     });
@@ -1529,7 +1533,7 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
 async function startDeliveryWithBroker(
   space: string,
   server: string,
-  mgr?: { runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string },
+  mgr?: { runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string },
 ): Promise<boolean> {
   try {
     await ensureControlPlane({ space, server, ...mgr });
@@ -1650,6 +1654,8 @@ export async function startMeshDetached(
   const controlPlane = await startDeliveryWithBroker(space, server, {
     runtime: opts.runtime,
     launch: opts.launch,
+    // See the foreground path: the broker's bind address is what makes attach reachable off-box.
+    attachHost: host,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
   });
