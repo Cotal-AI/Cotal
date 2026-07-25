@@ -487,6 +487,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--server <url>` | the local mesh | Broker URL |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
+| `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
 | `--roster <file>` | — | Declarative roster to boot at startup |
 | `--launch <spec>` | — | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
 | `--spawn <names>` | — | Comma-separated personas to pre-spawn at startup |
