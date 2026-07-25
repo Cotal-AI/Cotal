@@ -123,6 +123,7 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   if (a.role) fm.push(`role: ${scalar(a.role)}`);
   if (a.model) fm.push(`model: ${scalar(a.model)}`);
   if (a.description) fm.push(`description: ${scalar(a.description)}`);
+  if (a.capabilities?.length) fm.push(`capabilities: [${a.capabilities.join(", ")}]`);
   if (a.meta) {
     for (const [key, value] of Object.entries(a.meta)) {
       if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key))
