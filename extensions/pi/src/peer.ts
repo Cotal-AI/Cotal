@@ -1,4 +1,4 @@
-import { MeshAgent, InboxTurn, configFromEnv } from "@cotal-ai/connector-core";
+import { MeshAgent, InboxTurn, configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import type { InboxItem, AgentConfig } from "@cotal-ai/connector-core";
 import { loadAgentFile } from "@cotal-ai/core";
 import {
@@ -17,49 +17,35 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
+import { z } from "zod";
 
 function log(e: unknown): void {
   process.stderr.write(`[pi-peer] ${e instanceof Error ? e.message : String(e)}\n`);
 }
 
-/**
- * Read-only / awareness tools. Replies are NOT sent by the model — the run loop delivers
- * the agent's final text on the right delivery mode (see runPiPeer), so the model can't
- * mis-route or duplicate a reply. These just let it see who is present and report its own
- * status. Mirrors the openai-agents / vercel-ai adapters.
- */
+/** Render the canonical connector-core Cotal tool surface as native Pi tools.
+ * Connector-core owns tool names, schemas, capability filtering, ACL errors, and
+ * behavior; this adapter only translates Zod schemas/results into Pi's TypeBox
+ * tool contract. `cotal_inbox` is forced to peek because the peer loop owns
+ * acknowledgement and draining it from a model tool would race delivery. */
 export function buildTools(mesh: MeshAgent) {
-  const cotal_roster = defineTool({
-    name: "cotal_roster",
-    label: "Cotal roster",
-    description: "List the peers currently present on the Cotal mesh.",
-    parameters: Type.Object({}),
-    execute: async () => {
-      const peers = mesh.roster();
-      const text = peers.length
-        ? peers
-            .map((p) => `${p.card.name}${p.card.role ? `/${p.card.role}` : ""} [${p.status}]`)
-            .join("\n")
-        : "roster is empty";
-      return { content: [{ type: "text", text }], details: {} };
-    },
+  return cotalToolSpecs(mesh.config, "pi").map((spec) => {
+    const jsonSchema = spec.schema
+      ? z.toJSONSchema(z.object(spec.schema))
+      : { type: "object", properties: {}, additionalProperties: false };
+    return defineTool({
+      name: spec.name,
+      label: spec.title,
+      description: spec.description,
+      parameters: Type.Unsafe<Record<string, unknown>>(jsonSchema),
+      execute: async (_id, params) => {
+        const args = spec.name === "cotal_inbox" ? { ...params, peek: true } : params;
+        const result = await spec.run(mesh, mesh.config, args);
+        const text = result.isError ? `⚠ ${result.text}` : result.text;
+        return { content: [{ type: "text", text }], details: { isError: result.isError === true } };
+      },
+    });
   });
-
-  const cotal_status = defineTool({
-    name: "cotal_status",
-    label: "Cotal status",
-    description: "Update this peer's presence status on the mesh.",
-    parameters: Type.Object({
-      status: Type.Union([Type.Literal("idle"), Type.Literal("waiting"), Type.Literal("working")]),
-      activity: Type.Optional(Type.String()),
-    }),
-    execute: async (_id, params) => {
-      await mesh.setStatus(params.status, params.activity);
-      return { content: [{ type: "text", text: `status set to ${params.status}` }], details: {} };
-    },
-  });
-
-  return [cotal_roster, cotal_status];
 }
 
 /** Actionable = a DM, an anycast to our role, or a channel message that names us — and not
