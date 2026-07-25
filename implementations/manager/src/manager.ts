@@ -494,7 +494,6 @@ export class Manager {
       const refErr = this.nameError(ref);
       if (refErr) return { ok: false, error: refErr };
     }
-    const agent = opts.agent ?? "cotal";
 
     // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
     // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
@@ -517,6 +516,21 @@ export class Manager {
       if (!existsSync(configPath))
         return { ok: false, error: `no persona "${ref}" — ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
     }
+
+    // Load the persona def early on the spawn path (no `opts.resolved`) so its frontmatter `agent:`
+    // hint can pick the connector when the caller didn't pass one explicitly — a spawned peer does
+    // NOT inherit the manifest's top-level `agent:` (only rostered launches do), so without this
+    // the persona's `agent: pi` would be inert and every cotal_spawn would fall back to "cotal".
+    // Manifest launches carry their own agent type via `opts.agent`, so they skip this read.
+    let def: AgentDef | undefined;
+    if (!opts.resolved) {
+      try {
+        def = loadAgentFile(configPath);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    const agent = opts.agent ?? def?.meta?.agent ?? "cotal";
 
     // Connector + harness preflight before reserving a slot or minting — a missing connector or a
     // missing `claude`/`opencode` binary fails here with a clear name, not obscurely at process
@@ -553,20 +567,16 @@ export class Manager {
       capabilities = r.capabilities;
       model = opts.model ?? r.model;
     } else {
-      let def: AgentDef;
-      try {
-        def = loadAgentFile(configPath);
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
-      identityName = (opts.as ?? def.name).trim();
-      role = opts.role ?? def.role;
-      subscribe = def.subscribe;
+      // `def` was loaded early (above) so the connector type could read its `agent:` hint; reuse it.
+      const d = def!;
+      identityName = (opts.as ?? d.name).trim();
+      role = opts.role ?? d.role;
+      subscribe = d.subscribe;
       // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
       // boundary); runtime durable joins are re-authorized against the committed ACL by the daemon.
-      allowSubscribe = def.allowSubscribe ?? def.subscribe ?? ["general"];
-      allowPublish = def.allowPublish;
-      capabilities = def.capabilities;
+      allowSubscribe = d.allowSubscribe ?? d.subscribe ?? ["general"];
+      allowPublish = d.allowPublish;
+      capabilities = d.capabilities;
     }
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
