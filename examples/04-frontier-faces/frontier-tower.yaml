@@ -10,10 +10,14 @@ apiVersion: cotal/v1
 kind: Mesh
 space: frontier
 
-# A fresh OPEN broker on its own port — the default :4222 is usually taken by another mesh.
+# A fresh broker on its own port; the default :4222 is usually taken by another mesh.
+# AUTH mode: the studio mints a cred per agent (+ its own operator seat) scoped to exactly the
+# channels below, so the broker enforces the topology. It also buys the web dashboard's graph its
+# membership spokes: those come from a system-account CONNZ feed that only an authed space
+# provisions (an open broker has none, and the graph degrades to traffic-only edges).
 broker:
   servers: nats://127.0.0.1:4299
-  auth: false
+  auth: true
 
 # Every agent is an OpenCode-hosted persona; model/role/face come from the .md frontmatter.
 agent: opencode
@@ -46,3 +50,15 @@ channels:
     description: Ask the founders about Cotal, the wire protocol they built.
     subscribe: [sven, david]
     allowPublish: [sven, david]
+
+  # Craft, and the last moat when agents generate everything.
+  taste-and-slop:
+    description: Craft, and the last moat when agents generate everything.
+    subscribe: [steve, rayan, sven, garry, david]
+    allowPublish: [steve, rayan, sven, garry, david]
+
+  # Control vs. emergence, a human at the gate or environments that self-correct?
+  gates-vs-gardens:
+    description: Control vs. emergence, a human at the gate or environments that self-correct?
+    subscribe: [sven, david, rayan, mira]
+    allowPublish: [sven, david, rayan, mira]

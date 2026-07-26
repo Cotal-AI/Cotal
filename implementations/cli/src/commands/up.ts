@@ -463,6 +463,13 @@ export async function up(args: ParsedArgs): Promise<void> {
     if (startupLock) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
     let server = values.server ?? DEFAULT_SERVER;
     const host = values.host ?? "127.0.0.1";
+    // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
+    // every later client use. They must name the SAME address. Left independent, `--host <non-loopback>`
+    // bound correctly and was then probed on the loopback default, found nothing, timed out, and
+    // SIGTERM'd a broker that had started perfectly — so `--host` alone could never succeed.
+    // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
+    // pair rather than starting a broker nothing can reach.
+    if (values.host) server = reconcileHostAndServer(values.host, values.server);
     const restoredAttempt = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     if (restoredAttempt?.reentry) {
       if (!restoredAttempt.listenerProof)
@@ -760,6 +767,10 @@ export async function up(args: ParsedArgs): Promise<void> {
     // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
     const controlPlane = await startDeliveryWithBroker(space, server, {
       runtime: values.runtime,
+      // The address the broker was bound to. This is what lets `cotal attach` reach this manager
+      // from another machine; without it the attach face stays loopback-only, so exposing terminals
+      // is never a side effect of anything but the operator binding the mesh somewhere reachable.
+      attachHost: host,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
     });
@@ -1391,8 +1402,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // broker + launch all agree on the same values.
   const eff = applyUpOverrides(prepared, opts);
   const m = eff.manifest;
-  const server = m.broker?.servers ?? DEFAULT_SERVER;
   const host = m.broker?.host ?? "127.0.0.1";
+  // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
+  // an explicit `broker.servers` would otherwise bind one address and be probed at another.
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers) : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: opts.idp ?? m.broker?.idp } : undefined; // flag > manifest
   const runtime = m.runtime ?? "pty";
@@ -1520,7 +1533,7 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
 async function startDeliveryWithBroker(
   space: string,
   server: string,
-  mgr?: { runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string },
+  mgr?: { runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string },
 ): Promise<boolean> {
   try {
     await ensureControlPlane({ space, server, ...mgr });
@@ -1641,6 +1654,8 @@ export async function startMeshDetached(
   const controlPlane = await startDeliveryWithBroker(space, server, {
     runtime: opts.runtime,
     launch: opts.launch,
+    // See the foreground path: the broker's bind address is what makes attach reachable off-box.
+    attachHost: host,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
   });
@@ -1748,6 +1763,38 @@ async function waitReady(server: string, creds?: string): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
+}
+
+/** Wildcard binds mean "every interface", so they are NOT an address a client can be told to dial:
+ *  the probe/registry URL stays whatever it already is (loopback by default), which the wildcard
+ *  bind necessarily covers. */
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
+
+/**
+ * Reconcile the bind address (`--host`, manifest `broker.host`) with the broker URL the readiness
+ * probe, the mesh registry, and every later client use.
+ *
+ * They must name the same address. Left independent, `--host <non-loopback>` bound correctly and was
+ * then probed at the loopback default: the probe found nothing, timed out, and the caller SIGTERM'd
+ * a broker that had started perfectly, so `--host` alone could never succeed. With no explicit URL,
+ * derive one from the host (keeping the URL's port); with both, refuse a contradicting pair rather
+ * than starting a broker that nothing can reach.
+ */
+function reconcileHostAndServer(host: string, explicitServer: string | undefined): string {
+  const url = new URL(explicitServer ?? DEFAULT_SERVER);
+  if (WILDCARD_HOSTS.has(host)) return explicitServer ?? DEFAULT_SERVER;
+  // An unbracketed IPv6 literal cannot be assigned to a URL host — bracket it so the URL parses.
+  const literal = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  if (!explicitServer) return `nats://${literal}:${url.port || "4222"}`;
+  if (url.hostname !== new URL(`nats://${literal}:1`).hostname) {
+    console.error(
+      c.red(
+        `✗ --host ${host} and --server ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,
+      ),
+    );
+    process.exit(1);
+  }
+  return explicitServer;
 }
 
 async function serverWithFreePort(server: string, host: string): Promise<string> {

@@ -130,7 +130,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--server <url>` | auto (free local port) | Listen URL override |
-| `--host <host>` | — | Bind host override |
+| `--host <host>` | — | Bind host override. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL |
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | — | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
@@ -438,6 +438,19 @@ under your owner) need only the `spawn` scope; another owner's agent needs `admi
 row ([identity & auth](identity-and-auth.md)). Launch detached agents with
 [`spawn --detach`](#spawn).
 
+`attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
+**loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
+address down, which is what lets you attach to an agent whose manager runs on another machine. A
+bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
+`supervise --console-host <host>`.
+
+Because that face carries terminal read and write for every managed agent, it is credentialed in two
+tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,
+single-use and short-lived, so one authorized attach can never be re-pointed at someone else's
+agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
+manager's output. The roster, the live feed, and the PTY stream all answer `401` without one; the
+static console shell is served openly, since it describes no agent.
+
 ## personas
 
 ```bash
@@ -474,6 +487,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--server <url>` | the local mesh | Broker URL |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
+| `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
 | `--roster <file>` | — | Declarative roster to boot at startup |
 | `--launch <spec>` | — | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
 | `--spawn <names>` | — | Comma-separated personas to pre-spawn at startup |

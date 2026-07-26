@@ -56,6 +56,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
     process.exit(1);
   }
   const consolePort = v["console-port"] ? Number(v["console-port"]) : undefined;
+  // Where the console/attach face binds. Absent → loopback, so a bare `cotal supervise` keeps a
+  // machine-local endpoint. `cotal up` passes the address it bound the broker to when that address
+  // is reachable, which is what lets `cotal attach` reach this manager from another machine.
+  const attachHost = v["console-host"];
   // Construction resolves the runtime (createRuntime) — which fails loud on an unusable env, e.g. the
   // pty runtime under Bun. Render that as one actionable line, not a raw stack (this also lands in
   // `.cotal/manager.log` for a detached `cotal up` daemon).
@@ -69,6 +73,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       servers: server,
       runtime,
       consolePort,
+      attachHost,
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
@@ -171,6 +176,7 @@ const managerCommands: Command[] = [
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
+      { name: "console-host", type: "string", value: "<host>", description: "bind host for the console + attach endpoint (default: loopback)" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },

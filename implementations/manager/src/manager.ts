@@ -45,7 +45,7 @@ import {
   type Runtime,
   type RuntimeMode,
 } from "./runtime/index.js";
-import { AttachEndpoint } from "./attach-endpoint.js";
+import { AttachEndpoint, attachHost } from "./attach-endpoint.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
@@ -127,8 +127,15 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
-  /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
+  /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
+  /** Bind address for that endpoint, and the host it advertises in attach/console URLs. Defaults to
+   *  loopback, which keeps the endpoint reachable only from this machine. `cotal up` passes the
+   *  address it bound the broker to, so `cotal attach` can reach a manager on another machine; set
+   *  it yourself only if you intend to expose terminal access (see the security note on
+   *  {@link AttachEndpoint}). A wildcard here binds every interface and still advertises loopback,
+   *  since a wildcard is not an address a client can dial. */
+  attachHost?: string;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
@@ -472,6 +479,14 @@ export class Manager {
       // Initial /feed replay for a connecting console: the current peer roster.
       () => [{ event: "roster", data: this.ep?.getRoster() ?? [] }],
       opts.consolePort ?? 0,
+      // Loopback unless the OPERATOR said otherwise. A broker *dial* address is not a manager *bind*
+      // address: deriving one from the other breaks every topology where they differ (a manager
+      // supervising a broker on another host cannot bind that host's address at all, and a failover
+      // list's first entry need not be the server actually selected), and it would silently couple
+      // terminal exposure to `up --host`. Exposure is therefore an explicit decision, which
+      // `cotal up` passes down when it binds the broker somewhere reachable; every other caller — an
+      // embedded Manager, a bare `cotal supervise` — keeps the loopback-only endpoint it always had.
+      opts.attachHost ?? "127.0.0.1",
     );
   }
 

@@ -1,5 +1,105 @@
 # @cotal-ai/cli
 
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.5
+- @cotal-ai/workspace@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- eccf48c: Make `cotal attach` reach a manager on another machine, and credential that endpoint properly.
+
+  The manager's attach face bound a hardcoded `127.0.0.1` and advertised that same literal in the URL
+  it handed back over the control plane, so a remote operator dialed their own loopback and got
+  `ECONNREFUSED`. Attach only ever worked when the manager happened to be on the same box.
+
+  **Where it binds is now an explicit decision.** The endpoint takes a bind address, still loopback by
+  default, so a bare `cotal supervise` and an embedded `Manager` keep exactly the machine-local
+  endpoint they have always had. `cotal up` passes the address it bound the broker to (via a new
+  `supervise --console-host`), which is what makes a remote attach work. The broker's _dial_ address is
+  deliberately not reused as the _bind_ address: a manager may supervise a broker on another host and
+  cannot bind that address at all, and a failover list's first entry need not be the server actually
+  selected. Where the manager can only name loopback — a wildcard bind — the client substitutes the
+  broker address its own control connection reached, so `up --host 0.0.0.0` works too instead of
+  silently handing back an unreachable URL.
+
+  **The endpoint is now credentialed, in two tiers.** It carries terminal read and write for every
+  managed agent, plus the managed roster and the live mesh feed, so once it can leave the machine
+  "unauthenticated but loopback-only" stops being a safe position. A mesh caller receives a **ticket**
+  bound to the one agent the manager just authorized, single-use and short-lived; this is what makes
+  the existing per-agent owner/admin check real, since a manager-wide token would let a caller
+  legitimately authorized for its own agent swap the path and take over another owner's terminal. The
+  **console token** is the operator's own, reaches every agent because the console drives all of them,
+  and is printed solely to the manager's own output. The roster, feed, and PTY stream answer `401`
+  without a credential; the static console shell stays open, since it describes no agent.
+
+  Credentials never ride a cookie: cookies are host-scoped rather than port-scoped, so one set here
+  would be sent to every other HTTP service on the same host and would collide between two managers on
+  one box. The console URL carries its token in the fragment, which a browser never sends to a server,
+  and the console page is served `no-store` with `Referrer-Policy: no-referrer`.
+
+  Also fixes an IPv6 regression in the same area: `URL.hostname` returns an IPv6 literal bracketed
+  (`[::1]`), which `listen()` treats as a DNS name and fails `ENOTFOUND`. Brackets are stripped for the
+  bind and restored for the advertised URL. An address this host does not own now fails with the
+  address named and the resolutions spelled out, rather than a bare errno from deep inside startup.
+
+  Covered by a new `smoke:attach-auth` in the CI gate (38 checks), including the cross-agent path-swap
+  that the first design allowed.
+
+  - @cotal-ai/core@0.14.4
+  - @cotal-ai/workspace@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- fce3199: Report which machine an agent runs on, and fix three defects that only appear once a mesh spans hosts.
+
+  **`meta.host` on the agent card.** A mesh can span machines: a manager on another box launches
+  agents into its own host, so "where is this agent actually running" was unanswerable from the
+  roster. Each session now publishes its own `os.hostname()` as `meta.host`, overlaid last like
+  `meta.connector` so an agent file cannot claim a host it is not on. It is advisory display
+  metadata only, never an authorization or routing input, and the dashboard renders it with no
+  change (unknown meta keys already display generically). `SPEC.md` records it alongside the other
+  reserved `meta` keys.
+
+  **`cotal up --host <addr>` killed the broker it had just started.** The bind address and the
+  broker URL were tracked independently, so `--host` bound one address while the readiness probe
+  still used the loopback default. The probe found nothing, timed out, and the caller SIGTERM'd a
+  broker that had started correctly, which made `--host` alone impossible to use. The two are now
+  reconciled: with no explicit `--server`, the URL is derived from the host; a contradicting pair is
+  refused with one sentence instead of starting something unreachable; and wildcard binds
+  (`0.0.0.0`, `::`) correctly keep a dialable loopback URL rather than advertising the wildcard. The
+  manifest path (`broker.host` without `broker.servers`) had the same defect and shares the fix.
+
+  **One slow probe silently unregistered a live mesh.** `pruneStaleMeshes` deleted any registry
+  entry that failed a single reachability check whose budget is 1s, which a healthy broker across a
+  slow or jittery link misses routinely. Deletion is destructive and, for a mesh this machine did
+  not start, unrecoverable, since only `cotal up` writes registry records. A first failure now only
+  makes an entry a candidate; it is pruned only if a second, longer probe also fails. A genuinely
+  dead mesh still prunes.
+
+  **A timed-out request killed the whole dashboard.** `cotal web` passed an async listener to
+  `createServer`, so a rejection inside any route (for example a JetStream call timing out against a
+  slow broker) became an unhandled rejection and took the process down on the first slow request.
+  The dashboard is a read-only observer: a failing route now returns 500 and the server stays up.
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes

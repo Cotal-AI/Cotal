@@ -45,9 +45,9 @@ join the same surface; `cotal down` with no names retains whole-stack behavior.
 ```bash
 cotal spawn                        # foreground: your default agent, in this terminal
 cotal spawn reviewer --detach      # supervised: the manager runs it in a PTY
-cotal attach reviewer              # watch/type into a detached agent (Ctrl-] detaches)
+cotal attach --name reviewer       # watch/type into a detached agent (Ctrl-] detaches)
 cotal ps                           # what the manager is running
-cotal stop reviewer                # stop one
+cotal stop --name reviewer         # stop one
 ```
 
 How a spawn resolves:

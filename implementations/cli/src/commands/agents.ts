@@ -112,6 +112,33 @@ export async function attach(args: ParsedArgs): Promise<void> {
   failIfNotOk(reply);
   const { ws } = reply.data as { ws: string };
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
-  await attachClient(ws);
+  await attachClient(dialableAttachUrl(ws, t.server));
   console.error(c.dim(`\ndetached from ${v.name}`));
+}
+
+/** Hosts that only ever mean "this machine", so a manager advertising one has told us nothing about
+ *  where IT is. */
+const SELF_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"]);
+
+/**
+ * The attach URL to actually dial.
+ *
+ * The manager advertises the host it was told to bind, but it cannot always name an address the
+ * CLIENT can reach: bound to a wildcard it has no single dialable name and falls back to loopback,
+ * and loopback means *this* machine, which for a remote manager is the wrong box entirely (the
+ * original ECONNREFUSED). The client, though, does know one address that provably works — the
+ * broker address its own control connection just used to ask this question. So when the manager
+ * advertises a self-only host and we reached the mesh somewhere else, dial there instead. Port,
+ * path, and the capability token are preserved untouched.
+ *
+ * A manager that named a real host is left alone: it may legitimately sit somewhere other than its
+ * broker, and it knows its own address better than we do.
+ */
+export function dialableAttachUrl(ws: string, server: string): string {
+  const u = new URL(ws);
+  if (!SELF_HOSTS.has(u.hostname)) return ws;
+  const brokerHost = new URL(server.split(",")[0].trim()).hostname;
+  if (!brokerHost || SELF_HOSTS.has(brokerHost)) return ws;
+  u.hostname = brokerHost;
+  return u.toString();
 }

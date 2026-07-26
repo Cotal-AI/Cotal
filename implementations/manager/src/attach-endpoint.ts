@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -24,6 +25,34 @@ const PAGE: Record<string, { path: string; type: string }> = {
   "/app.js": { path: join(here, "console/app.js"), type: "text/javascript" },
 };
 
+/**
+ * The address the attach endpoint binds and advertises: the host of the mesh broker this manager is
+ * attached to. Keeping the two in step is the whole point — a client that reached the control plane
+ * to request an attach URL demonstrably has a route to that address, whereas a hardcoded
+ * `127.0.0.1` resolves to the client's own machine.
+ *
+ * With no server URL there is no mesh address to follow, so this is loopback: the conservative
+ * default and exactly the endpoint's previous behavior. An unparseable URL is a caller bug and
+ * throws rather than quietly binding somewhere the operator did not ask for.
+ */
+export function attachHost(servers: string | undefined): string {
+  if (!servers) return "127.0.0.1";
+  const first = servers.split(",")[0].trim();
+  if (!first) return "127.0.0.1";
+  const hostname = new URL(first).hostname;
+  if (!hostname) return "127.0.0.1";
+  // `URL.hostname` returns an IPv6 literal in its BRACKETED form (`[::1]`), which is a URL
+  // construct, not an address. `server.listen()` treats a bracketed string as a DNS name and fails
+  // ENOTFOUND, so a manager on an IPv6 broker URL would die at startup. Strip here: this value is a
+  // BIND address, and `#advertised` puts the brackets back for the URL form.
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+}
+
+/** How long an issued attach capability stays redeemable. The client redeems it immediately (the
+ *  control-plane reply goes straight into a connect), so this only has to cover that round trip;
+ *  short means a URL that leaked into a log or shell history is already dead. */
+const ATTACH_TICKET_TTL_MS = 120_000;
+
 /** One Server-Sent-Events frame: a named event carrying JSON data. */
 export interface FeedEvent {
   event: string;
@@ -34,7 +63,33 @@ export interface FeedEvent {
  * The manager's local HTTP + WebSocket face. It hosts the **console** (a
  * lightweight xterm.js page) and bridges each agent's PTY to the browser — and to
  * `cotal attach` — over a direct socket, never the mesh, so owning the terminal
- * keeps the manager off the message hot path. Bound to loopback.
+ * keeps the manager off the message hot path.
+ *
+ * **Where it binds, and why it is credentialed.** A mesh can span machines: the manager that owns an
+ * agent's PTY may sit on another host than the operator running `cotal attach`. Hardcoding
+ * `127.0.0.1` made every remote attach fail with ECONNREFUSED against the *client's own* loopback.
+ * The bind address is therefore an explicit option (default loopback, so nothing is exposed by
+ * accident); `cotal up` passes the address it bound the broker to. A broker DIAL address is
+ * deliberately NOT used as the bind: a manager may supervise a broker on another host and could not
+ * bind that address at all. Where the manager can only name loopback (a wildcard bind), the CLIENT
+ * substitutes the broker address its own control connection reached.
+ *
+ * Reachability is why the surface is credentialed, in two tiers. This face carries terminal READ AND
+ * WRITE for every managed agent, plus the roster and the live feed, so once it can leave the box
+ * "unauthenticated but loopback-only" stops being a safe position.
+ *
+ *  - **Attach tickets** are what a mesh caller gets: minted per authorized `attach` request, bound to
+ *    the ONE agent the manager just authorized, single-use, short-lived. This is what makes the
+ *    per-agent/owner check real — a manager-wide token would let a caller authorized for its own
+ *    agent swap the path and take over anyone's terminal.
+ *  - **The console token** is the operator's own: it reaches every agent, because the console
+ *    legitimately drives all of them, and it is printed solely to this manager process's output
+ *    (so it is as sensitive as `.cotal/manager.log`, and never handed to a mesh caller).
+ *
+ * Credentials travel in `?t=` or a bearer header, never a cookie: cookies are host-scoped, not
+ * port-scoped, so one set here would be sent to every other HTTP service on this host and would
+ * collide between two managers on one box. The console URL carries its token in the FRAGMENT, which
+ * a browser never sends to a server.
  *
  * Routes: `GET /` console page, `GET /agents` the managed roster (JSON),
  * `GET /feed` the live mesh feed (SSE: presence roster + comms), static assets
@@ -47,8 +102,12 @@ export class AttachEndpoint {
   #http: Server;
   #wss: WebSocketServer;
   #port: number;
+  #host: string;
   #sse = new Set<ServerResponse>();
   #ping?: ReturnType<typeof setInterval>;
+  /** Redeemable attach capabilities: token → the ONE INCARNATION it may attach, and when it lapses.
+   *  `handle` is the identity that actually matters — see {@link AttachEndpoint.url}. */
+  #tickets = new Map<string, { name: string; handle: AgentHandle; expires: number }>();
 
   constructor(
     private readonly lookup: (name: string) => AgentHandle | undefined,
@@ -56,8 +115,15 @@ export class AttachEndpoint {
     /** Events replayed to each console as it connects to `/feed` (e.g. the current roster). */
     private readonly snapshot: () => FeedEvent[],
     port = 0,
+    /** Bind address, and the host advertised in {@link url} / {@link consoleUrl}. Defaults to
+     *  loopback; the manager passes the mesh broker's host so attach is reachable from wherever the
+     *  mesh is. A wildcard bind still advertises loopback, since a wildcard is not a dialable name. */
+    host = "127.0.0.1",
+    /** The endpoint credential. Generated per manager process; required on every route. */
+    private readonly token: string = randomBytes(32).toString("hex"),
   ) {
     this.#port = port;
+    this.#host = host;
     this.#http = createServer((req, res) => this.#onRequest(req, res));
     this.#wss = new WebSocketServer({ noServer: true });
     this.#http.on("upgrade", (req, socket, head) => {
@@ -73,14 +139,105 @@ export class AttachEndpoint {
         socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
         return;
       }
+      // Terminal read+write, so the capability must name THIS agent: a ticket issued for one agent
+      // must never attach another. Redeemed against the decoded name — the name is parsed first only
+      // because the check needs it, and a malformed name is refused before any credential is looked
+      // at, so neither order leaks the other's outcome.
+      if (!this.#redeemAttach(req, name)) {
+        socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        return;
+      }
       this.#wss.handleUpgrade(req, socket, head, (ws) => {
         this.#onConnection(ws, name).catch(() => ws.close());
       });
     });
   }
 
+  /** The credential a request presents, from `?t=` or a bearer header. */
+  #presented(req: IncomingMessage): string | undefined {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    return url.searchParams.get("t") ?? /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1] ?? undefined;
+  }
+
+  /** Constant-time equality — `timingSafeEqual` throws on unequal lengths, so screen those first. */
+  #sameSecret(presented: string | undefined, secret: string): boolean {
+    if (!presented) return false;
+    const a = Buffer.from(presented);
+    const b = Buffer.from(secret);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  /** The MANAGER-WIDE credential: the operator's own console session. It reaches every agent, which
+   *  is not an escalation — it is only ever printed to the manager process's own output, and anyone
+   *  who can read that already controls the process. Never handed to a mesh caller. */
+  #authorized(req: IncomingMessage): boolean {
+    return this.#sameSecret(this.#presented(req), this.token);
+  }
+
+  /**
+   * Redeem an attach capability for EXACTLY `name`.
+   *
+   * The per-name control-plane authorization (`Manager.opAttach` → `authorizeNamed`) is only real if
+   * the credential it hands back is bound to the agent it authorized. A manager-wide token is not:
+   * a caller legitimately authorized for its own agent could edit `/attach/mine` to `/attach/victim`
+   * and the endpoint, checking only "is this the manager's token", would attach it — silently
+   * defeating the owner-domain and cross-owner admin boundaries on a user-auth mesh. So a mesh
+   * caller receives a ticket that names one agent, expires, and is consumed on redemption.
+   *
+   * The console token is also accepted here, because the console legitimately drives every agent.
+   */
+  #redeemAttach(req: IncomingMessage, name: string): boolean {
+    const presented = this.#presented(req);
+    if (!presented) return false;
+    if (this.#sameSecret(presented, this.token)) return true; // operator console: all agents
+    const ticket = this.#tickets.get(presented);
+    if (!ticket) return false;
+    this.#tickets.delete(presented); // single use, redeemed or not
+    if (ticket.expires < Date.now()) return false;
+    // Compare the BOUND name against the requested one in constant time, so a redemption cannot be
+    // probed character-by-character for another agent's name.
+    if (!this.#sameSecret(name, ticket.name)) return false;
+    // A NAME IS A REUSABLE SLOT, not an identity. Binding the capability to the name alone leaves it
+    // valid for whoever occupies that slot at redemption time: if the authorized agent exits and a
+    // same-name successor — possibly a different owner's — takes the slot inside the TTL, the
+    // untouched URL would attach the successor's terminal. Bind to the incarnation instead. The
+    // handle object IS that identity: the manager creates a new one per spawn, so a successor can
+    // never compare equal to its predecessor.
+    return this.lookup(name) === ticket.handle;
+  }
+
+  /** Drop expired tickets so an idle manager doesn't accumulate them. */
+  #sweepTickets(): void {
+    const now = Date.now();
+    for (const [t, v] of this.#tickets) if (v.expires < now) this.#tickets.delete(t);
+  }
+
   async start(): Promise<void> {
-    await new Promise<void>((resolve) => this.#http.listen(this.#port, "127.0.0.1", resolve));
+    // The bind host is the BROKER's, which is right when the manager is co-located with it (every
+    // `cotal up` stack). A manager pointed at a broker on ANOTHER machine does not own that address,
+    // and `listen` fails EADDRNOTAVAIL. Say so in operator terms instead of surfacing a bare errno
+    // from deep inside startup: the address is the diagnosis, and the two real resolutions are to
+    // run the manager on the broker's host or to give this space a broker address this host owns.
+    await new Promise<void>((resolve, reject) => {
+      const onError = (e: NodeJS.ErrnoException) => {
+        if (e.code === "EADDRNOTAVAIL" || e.code === "EADDRINUSE") {
+          reject(
+            new Error(
+              e.code === "EADDRINUSE"
+                ? `the manager's attach endpoint cannot bind ${this.#host}:${this.#port} - that port is already in use on this host`
+                : `the manager's attach endpoint cannot bind ${this.#host} - this machine has no such address. The attach face binds the broker's host, so the manager must run on the machine the broker is bound to.`,
+            ),
+          );
+          return;
+        }
+        reject(e);
+      };
+      this.#http.once("error", onError);
+      this.#http.listen(this.#port, this.#host, () => {
+        this.#http.off("error", onError);
+        resolve();
+      });
+    });
     const addr = this.#http.address();
     if (addr && typeof addr === "object") this.#port = addr.port;
     // Comment ping keeps idle SSE connections from being dropped; no-op with none.
@@ -102,19 +259,66 @@ export class AttachEndpoint {
     for (const res of this.#sse) this.#writeEvent(res, event, data);
   }
 
-  /** The ws URL a client uses to attach to `name`. */
-  url(name: string): string {
-    return `ws://127.0.0.1:${this.#port}/attach/${encodeURIComponent(name)}`;
+  /** A wildcard bind is not a dialable address — advertise loopback for it, the one host a wildcard
+   *  is always reachable on locally. */
+  get #advertised(): string {
+    if (this.#host === "0.0.0.0" || this.#host === "::" || this.#host === "[::]") return "127.0.0.1";
+    return this.#host.includes(":") && !this.#host.startsWith("[") ? `[${this.#host}]` : this.#host;
   }
 
-  /** The console page URL. */
+  /**
+   * The ws URL a client uses to attach to `name`, carrying a capability bound to THAT agent.
+   *
+   * Called once per authorized control-plane `attach` request, so the ticket inherits exactly the
+   * authorization the manager just performed for this caller and this agent. It is single-use and
+   * short-lived: the client redeems it immediately, and a leaked URL (shell history, a log, a
+   * `Referer`) is spent or expired rather than a standing key to someone's terminal.
+   */
+  url(name: string): string {
+    this.#sweepTickets();
+    const handle = this.lookup(name);
+    if (!handle) throw new Error(`cannot issue an attach capability for "${name}": no such running agent`);
+    const ticket = randomBytes(32).toString("hex");
+    this.#tickets.set(ticket, { name, handle, expires: Date.now() + ATTACH_TICKET_TTL_MS });
+    return `ws://${this.#advertised}:${this.#port}/attach/${encodeURIComponent(name)}?t=${ticket}`;
+  }
+
+  /** The console page URL. The token rides the FRAGMENT, which a browser never sends to a server:
+   *  it stays out of this endpoint's request handling, out of any proxy's logs, and out of the
+   *  `Referer` a click on the page would otherwise leak. The page reads it from `location.hash` and
+   *  keeps it in memory. (It is still printed to the manager's own log, which is the operator's own
+   *  file — see the class note.) */
   consoleUrl(): string {
-    return `http://127.0.0.1:${this.#port}/`;
+    return `http://${this.#advertised}:${this.#port}/#t=${this.token}`;
   }
 
   #onRequest(req: IncomingMessage, res: ServerResponse): void {
     try {
       const path = (req.url ?? "/").split("?")[0];
+      // Every DATA route is credentialed: the managed roster and the live mesh feed both describe
+      // real agents. The console shell (its HTML, its script, the vendored xterm assets) is static
+      // and carries nothing about this mesh, so it stays open — that is what lets the page load and
+      // then present the token, held in memory from its own URL, on the requests that do matter.
+      //
+      // Deliberately NOT a cookie. Cookies are host-scoped, not port-scoped: a `cotal_attach` cookie
+      // set by a manager on one port would be sent by the browser to EVERY other HTTP service on
+      // that host, handing a terminal credential to anything the operator happens to visit, and two
+      // managers on one host would silently overwrite each other's. `Secure` fixes neither, and is
+      // unavailable over plain HTTP anyway.
+      // The console shell must not be cached or leak a referrer: the page holds a terminal-capable
+      // credential in memory, and a stale cached copy would keep working against a restarted
+      // manager whose token has rotated.
+      if (PAGE[path]) {
+        res.setHeader("cache-control", "no-store");
+        res.setHeader("referrer-policy", "no-referrer");
+      }
+      if (path === "/agents" || path === "/feed") {
+        if (!this.#authorized(req)) {
+          res.writeHead(401, { "content-type": "text/plain" });
+          res.end("unauthorized - this endpoint requires the manager's console token");
+          return;
+        }
+      }
       if (path === "/agents") {
         const body = JSON.stringify(this.list());
         res.writeHead(200, { "content-type": "application/json" });
