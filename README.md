@@ -90,7 +90,9 @@ directory and nothing needs root. The script is served as plain text at
 [get.cotal.ai](https://get.cotal.ai) so you can read it in a browser tab before you run it,
 and it lives at [`install.sh`](install.sh) in this repo.
 
-Already have Node 22+? `npm install -g cotal-ai` does the same job.
+Already have Node 22+? `npm install -g cotal-ai` works too. It is not quite the same job: it
+installs into npm's global prefix (which may need `sudo`) and gives you no pinned runtime, so
+changing your system Node later can break Cotal.
 
 Or skip the terminal and paste one line into any coding agent, which sets everything up itself:
 

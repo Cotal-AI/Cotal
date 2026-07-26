@@ -32,20 +32,30 @@ jobs:
         run: shellcheck install/test-matrix.sh
       - name: Parses under dash, not just bash
         run: sudo apt-get install -y -qq dash && dash -n install.sh
-      - name: Truncation-safe
-        # A cut-off download must define functions and do nothing. Proven by feeding every
-        # prefix of the script to sh and requiring that none of them install anything.
+      - name: Truncation-safe at byte granularity
+        # A cut-off download must define functions and do nothing. A real pipe breaks
+        # mid-line, not on a line boundary, so this cuts by BYTE. The tail bytes matter most:
+        # a bare `main` is a complete command, which is why the invocation is brace-wrapped.
         run: |
-          total=$(wc -l < install.sh)
-          for pct in 10 25 50 75 90 99; do
-            n=$(( total * pct / 100 ))
-            head -n "$n" install.sh | sh >/dev/null 2>&1 || true
+          total=$(wc -c < install.sh)
+          fail=0
+          # Every byte of the final 40, plus a spread across the whole file.
+          offsets=$(seq $(( total - 40 )) $(( total - 1 )))
+          for pct in 5 10 25 40 50 60 75 90 95 99; do
+            offsets="$offsets $(( total * pct / 100 ))"
+          done
+          for n in $offsets; do
+            [ "$n" -gt 0 ] || continue
+            rm -rf "$HOME/.local/share/cotal" "$HOME/.local/bin/cotal"
+            head -c "$n" install.sh > /tmp/prefix.sh
+            timeout 20 sh /tmp/prefix.sh --dry-run >/dev/null 2>&1 || true
             if [ -e "$HOME/.local/bin/cotal" ] || [ -e "$HOME/.local/share/cotal" ]; then
-              echo "::error::a ${pct}% prefix of install.sh had side effects"
-              exit 1
+              echo "::error::a ${n}-byte prefix of install.sh had side effects"
+              fail=1
             fi
           done
-          echo "no prefix of install.sh has side effects"
+          [ "$fail" = 0 ] || exit 1
+          echo "no byte-prefix of install.sh has side effects"
 
   matrix:
     timeout-minutes: 30

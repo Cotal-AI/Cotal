@@ -57,7 +57,7 @@ Requirements:
 `cotal setup` is configure-only: it prepares your machine and starts nothing. The first
 time, it walks you through:
 
-1. **Checks.** Verifies Node 20+ and locates a `nats-server` (the bundled one, or your
+1. **Checks.** Verifies Node 22+ and locates a `nats-server` (the bundled one, or your
    own on PATH). Located only; nothing starts.
 2. **Picks connectors.** Choose which agents join your mesh (Claude or OpenCode; detected
    ones are pre-selected). Claude installs a plugin, because its wake channel needs one.

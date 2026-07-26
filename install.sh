@@ -31,8 +31,9 @@
 #   rm -rf ~/.cotal                                  # your meshes, agents and credentials
 #   then delete the `# cotal` block from your shell rc.
 #
-# Apache-2.0. Everything below runs inside main(), which is invoked on the very last
-# line, so a download cut short defines functions and then does nothing at all.
+# Apache-2.0. Everything below runs inside main(), invoked by the brace-wrapped last line.
+# A compound command is not executed until its closing brace is parsed, so a download cut
+# short at ANY byte defines some functions and then does nothing at all.
 
 set -eu
 
@@ -94,7 +95,6 @@ init_term() {
 }
 
 # Every writer goes through printf '%s' so nothing we print is ever read as a format string.
-say() { printf '%s\n' "$*"; }
 blank() { printf '\n'; }
 ok_line() { printf '  %s%s%s %s\n' "$C_GREEN" "$S_OK" "$C_OFF" "$*"; }
 warn_line() { printf '  %s%s%s %s\n' "$C_YELLOW" "$S_WARN" "$C_OFF" "$*"; }
@@ -155,10 +155,40 @@ spin_stop() {
 }
 
 TMPDIR_SELF=""
+LOCKDIR=""
+# shellcheck disable=SC2329  # invoked from the EXIT/INT/TERM/HUP traps set in main
 cleanup() {
   spin_stop
   [ -n "$TMPDIR_SELF" ] && [ -d "$TMPDIR_SELF" ] && rm -rf "$TMPDIR_SELF"
+  [ -n "$LOCKDIR" ] && [ -d "$LOCKDIR" ] && rm -rf "$LOCKDIR"
   return 0
+}
+
+# Two installers writing the same prefix at once corrupt each other: npm stages and renames
+# inside it, so a concurrent pair can finish "successfully" and leave no working cotal at
+# all. Observed intermittently, which is worse than a clean failure. mkdir is atomic, so one
+# install proceeds and the rest say so and stop.
+acquire_install_lock() {
+  _lock="$INSTALL_DIR/.install-lock"
+  if mkdir "$_lock" 2>/dev/null; then
+    LOCKDIR="$_lock"
+    printf '%s\n' "$$" >"$_lock/pid" 2>/dev/null || true
+    return 0
+  fi
+  _owner=$(cat "$_lock/pid" 2>/dev/null || printf '')
+  if [ -n "$_owner" ] && kill -0 "$_owner" 2>/dev/null; then
+    die "Another Cotal install is already running (pid $_owner)." \
+      "They would overwrite each other inside $(tildify "$INSTALL_DIR")." \
+      "Wait for it to finish, then run this again."
+  fi
+  # The owner is gone, so the lock is stale: take it over rather than block forever.
+  rm -rf "$_lock"
+  mkdir "$_lock" 2>/dev/null ||
+    die "Could not claim the install lock at $(tildify "$_lock")." \
+      "Remove it by hand if no other install is running:" \
+      "  rm -rf $_lock"
+  LOCKDIR="$_lock"
+  printf '%s\n' "$$" >"$_lock/pid" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------------------
@@ -400,8 +430,11 @@ refuse_musl() {
 # Node
 # ---------------------------------------------------------------------------------------
 
-INSTALL_DIR="${COTAL_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/cotal}"
-BIN_DIR="${COTAL_BIN_DIR:-$HOME/.local/bin}"
+# ${HOME:-} rather than $HOME: these are evaluated when the script loads, before main() can
+# run its checks, and under `set -u` a bare $HOME with HOME unset would abort here with a raw
+# "HOME: unbound variable" instead of the readable message main() has waiting.
+INSTALL_DIR="${COTAL_INSTALL_DIR:-${XDG_DATA_HOME:-${HOME:-}/.local/share}/cotal}"
+BIN_DIR="${COTAL_BIN_DIR:-${HOME:-}/.local/bin}"
 NODE_BIN="" NPM_BIN="" NODE_LABEL="" NODE_VENDORED=0
 LOG=""
 
@@ -579,11 +612,33 @@ write_launcher() {
   cat >"$_tmp" <<EOF
 #!/bin/sh
 # Cotal launcher, written by https://get.cotal.ai
-# Pins the Node this install was verified against, so a change to the system Node
-# can never leave Cotal running on a runtime it was not installed for.
+# Pins the Node this install was verified against, so a change to the system Node can never
+# leave Cotal running on a runtime it was not installed for.
 COTAL_ROOT="$INSTALL_DIR"
+
+# When the pin was a Node this installer did not own, the user can still remove it later.
+# Say so in one clear line instead of letting them hit the raw
+# "/usr/bin/env: 'node': No such file or directory", which is the exact confusion this
+# whole installer exists to prevent.
+if [ ! -x "\$COTAL_ROOT/nodebin/node" ]; then
+  echo "cotal: the Node runtime this install was pinned to is no longer there." >&2
+  echo "       (expected \$COTAL_ROOT/nodebin/node)" >&2
+  echo "" >&2
+  echo "Repair it by re-running the installer:" >&2
+  echo "  curl -fsSL https://get.cotal.ai | sh" >&2
+  echo "" >&2
+  echo "To stop depending on the system Node entirely, add --vendor-node:" >&2
+  echo "  curl -fsSL https://get.cotal.ai | sh -s -- --vendor-node" >&2
+  exit 1
+fi
+
 PATH="\$COTAL_ROOT/nodebin:\$PATH"
 export PATH
+# Tells cotal-ai's own Node-version preflight that this install pinned a runtime, so if the
+# pin is ever REPLACED by an older Node (rather than removed, which is caught above) it can
+# point at the installer instead of at generic nvm advice.
+COTAL_LAUNCHER=1
+export COTAL_LAUNCHER
 # Keep \`cotal update\` and \`cotal ext add\` inside the prefix this installer created,
 # rather than a system-wide npm root that would need sudo.
 npm_config_prefix="\$COTAL_ROOT"
@@ -630,15 +685,24 @@ setup_path() {
     bash)
       # Linux logs you into an interactive shell reading .bashrc; macOS Terminal starts a
       # login shell reading .bash_profile. Prefer whichever this box already uses.
-      if [ "$OS" = "darwin" ]; then _candidates="$HOME/.bash_profile $HOME/.bashrc"; else _candidates="$HOME/.bashrc $HOME/.bash_profile"; fi
-      PATH_RC=""
-      for _c in $_candidates; do
-        if [ -f "$_c" ]; then
-          PATH_RC="$_c"
-          break
-        fi
-      done
-      [ -n "$PATH_RC" ] || PATH_RC=$(printf '%s' "$_candidates" | cut -d' ' -f1)
+      #
+      # Held in two variables rather than one space-separated list on purpose: a $HOME
+      # containing a space would word-split the list, and the fallback would then name a
+      # truncated path OUTSIDE the home directory and append the PATH block to it.
+      if [ "$OS" = "darwin" ]; then
+        _first="$HOME/.bash_profile"
+        _second="$HOME/.bashrc"
+      else
+        _first="$HOME/.bashrc"
+        _second="$HOME/.bash_profile"
+      fi
+      if [ -f "$_first" ]; then
+        PATH_RC="$_first"
+      elif [ -f "$_second" ]; then
+        PATH_RC="$_second"
+      else
+        PATH_RC="$_first"
+      fi
       _line="export PATH=\"$BIN_DIR:\$PATH\""
       ;;
     fish)
@@ -651,15 +715,43 @@ setup_path() {
       ;;
   esac
 
-  if [ -f "$PATH_RC" ] && grep -qF "$_marker" "$PATH_RC" 2>/dev/null; then
-    PATH_STATE="already"
+  # Containment, enforced rather than assumed: this installer writes nothing outside $HOME,
+  # so a computed rc path that escaped it is a bug, and appending to it would be the damage.
+  # Refuse and fall back to printing the line for the user to add.
+  case "$PATH_RC" in
+    "$HOME"/*) ;;
+    *)
+      PATH_STATE="manual"
+      return 0
+      ;;
+  esac
+
+  mkdir -p "$(dirname "$PATH_RC")" 2>/dev/null || {
+    PATH_STATE="manual"
     return 0
-  fi
-  mkdir -p "$(dirname "$PATH_RC")"
-  if ! { printf '\n%s\n%s\n' "$_marker" "$_line" >>"$PATH_RC"; } 2>/dev/null; then
+  }
+
+  # Checking for the marker and then appending is a read-modify-write, and two installers
+  # racing can both see "absent" and both append, leaving two blocks. mkdir is atomic on
+  # every POSIX filesystem, so it is the lock. A stale lock is not worth a reaper: fall back
+  # to printing the line rather than risk a duplicate.
+  _lock="$PATH_RC.cotal-lock"
+  if ! mkdir "$_lock" 2>/dev/null; then
     PATH_STATE="manual"
     return 0
   fi
+
+  if [ -f "$PATH_RC" ] && grep -qF "$_marker" "$PATH_RC" 2>/dev/null; then
+    rmdir "$_lock" 2>/dev/null || true
+    PATH_STATE="already"
+    return 0
+  fi
+  if ! { printf '\n%s\n%s\n' "$_marker" "$_line" >>"$PATH_RC"; } 2>/dev/null; then
+    rmdir "$_lock" 2>/dev/null || true
+    PATH_STATE="manual"
+    return 0
+  fi
+  rmdir "$_lock" 2>/dev/null || true
   PATH_STATE="added:$PATH_RC"
   PATH="$BIN_DIR:$PATH"
   export PATH
@@ -812,7 +904,13 @@ dry_run_report() {
   fi
   blank
   head_line "Would not touch"
-  dim_line "  anything outside \$HOME · any system directory · sudo"
+  # Report the boundary that actually applies. The default install is contained in $HOME, but
+  # COTAL_INSTALL_DIR / COTAL_BIN_DIR / XDG_DATA_HOME can point anywhere, and claiming
+  # containment we are not delivering would be the wrong kind of reassuring.
+  case "$INSTALL_DIR$BIN_DIR" in
+    "${HOME:-/dev/null}"*"${HOME:-/dev/null}"*) dim_line "  anything outside \$HOME · any system directory · sudo" ;;
+    *) dim_line "  any system directory · sudo   (note: you have redirected the install outside \$HOME)" ;;
+  esac
   blank
 }
 
@@ -848,9 +946,21 @@ main() {
     exit 0
   fi
 
-  mkdir -p "$INSTALL_DIR"
+  # First write of the run. A read-only or unwritable home is common enough (locked-down
+  # images, a misowned $HOME) that it deserves a real message rather than a raw mkdir error.
+  if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+    die "Cannot create $(tildify "$INSTALL_DIR")." \
+      "This installer writes only inside your home directory, so it needs that to be" \
+      "writable by you. Check the permissions:" \
+      "  ls -ld $(dirname "$INSTALL_DIR")" \
+      "" \
+      "Or send it somewhere else:" \
+      "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
+  fi
+  acquire_install_lock
   LOG="$INSTALL_DIR/install.log"
-  : >"$LOG"
+  : >"$LOG" 2>/dev/null || die "Cannot write $(tildify "$LOG")." \
+    "The install directory exists but is not writable by you."
 
   ok_line "$PLATFORM_LABEL"
   [ -n "$PLATFORM_NOTE" ] && dim_line "  $PLATFORM_NOTE"
@@ -879,4 +989,9 @@ main() {
   next_steps
 }
 
-main "$@"
+# The brace group is what makes truncation safety hold at BYTE granularity, not just at line
+# boundaries. A bare `main "$@"` can be cut to a bare `main`, which is a complete command: the
+# installer would then run with NO arguments, silently turning `sh -s -- --dry-run` into a real
+# install. A compound command is not executed until its closing brace is parsed, so every
+# partial prefix of this line is a syntax error that does nothing.
+{ main "$@"; exit $?; }
