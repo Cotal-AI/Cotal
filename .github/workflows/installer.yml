@@ -26,10 +26,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: shellcheck (POSIX sh)
-        run: shellcheck -s sh install.sh
-      - name: shellcheck (test harness)
-        run: shellcheck install/test-matrix.sh
+      # Pinned rather than the runner's preinstalled shellcheck: that version moves with the
+      # runner image, so the same commit can lint clean one week and fail the next on a newly
+      # added check. Bump this deliberately.
+      - name: shellcheck (POSIX sh, pinned)
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 -s sh install.sh
+      - name: shellcheck (test harness, pinned)
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 install/test-matrix.sh
       - name: Parses under dash, not just bash
         run: sudo apt-get install -y -qq dash && dash -n install.sh
       - name: Truncation-safe at byte granularity

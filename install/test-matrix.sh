@@ -96,7 +96,7 @@ runs_on_22_plus() {
 refuses_musl() { [ "$rc" != 0 ] && grep -q 'does not support musl' <<<"$out"; }
 fails_with() { [ "$rc" != 0 ] && grep -q "$1" <<<"$out"; }
 wrote_rc() { grep -q '# cotal' <<<"$(printf '%s' "$rc_files")" && grep -q "$1" <<<"$rc_touched"; }
-no_mojibake() { ! grep -qP '[^\x00-\x7F]' <<<"$out"; }
+no_mojibake() { ! LC_ALL=C grep -q '[^ -~]' <<<"$out"; }
 no_ansi() { ! grep -q $'\033\[' <<<"$out"; }
 no_setup_handoff() { ! grep -q 'Starting guided setup' <<<"$out"; }
 single_path_block() { [ "$path_blocks" = 1 ] || {

@@ -61,7 +61,7 @@ C_OFF="" C_BRAND="" C_BOLD="" C_DIM="" C_GREEN="" C_RED="" C_YELLOW=""
 TTY=0   # stdout is a terminal: drives the banner, the spinner, and in-place redraws
 COLOR=0 # ...and we are also allowed to color it
 UTF8=0
-S_OK="+" S_NO="x" S_WARN="!" S_DOT="-"
+S_OK="+" S_NO="x" S_WARN="!" S_DOT="-" S_SEP="-"
 SPIN_FRAMES="- \\ | /"
 
 init_term() {
@@ -89,7 +89,7 @@ init_term() {
     *UTF-8* | *utf8* | *UTF8* | *utf-8*) UTF8=1 ;;
   esac
   if [ "$UTF8" = 1 ]; then
-    S_OK="✓" S_NO="✗" S_WARN="!" S_DOT="·"
+    S_OK="✓" S_NO="✗" S_WARN="!" S_DOT="·" S_SEP="·"
     SPIN_FRAMES="⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏"
   fi
 }
@@ -156,7 +156,7 @@ spin_stop() {
 
 TMPDIR_SELF=""
 LOCKDIR=""
-# shellcheck disable=SC2329  # invoked from the EXIT/INT/TERM/HUP traps set in main
+# shellcheck disable=SC2329,SC2317  # invoked from the EXIT/INT/TERM/HUP traps set in main
 cleanup() {
   spin_stop
   [ -n "$TMPDIR_SELF" ] && [ -d "$TMPDIR_SELF" ] && rm -rf "$TMPDIR_SELF"
@@ -384,11 +384,11 @@ detect_platform() {
   fi
 
   if [ "$OS" = "darwin" ]; then
-    PLATFORM_LABEL="macOS $(sw_vers -productVersion 2>/dev/null || echo '') · $ARCH"
+    PLATFORM_LABEL="macOS $(sw_vers -productVersion 2>/dev/null || echo '') $S_SEP $ARCH"
   else
     # shellcheck source=/dev/null
     _distro=$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-Linux}" || printf 'Linux')
-    PLATFORM_LABEL="$_distro · $ARCH"
+    PLATFORM_LABEL="$_distro $S_SEP $ARCH"
     case "$(uname -r)" in
       *microsoft* | *Microsoft* | *WSL*) PLATFORM_NOTE="running under WSL" ;;
     esac
@@ -449,7 +449,7 @@ resolve_node() {
     if [ "$_sys_major" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
       NODE_BIN="$_sys_node"
       NPM_BIN=$(command -v npm)
-      NODE_LABEL="$("$NODE_BIN" -v) · already on this machine"
+      NODE_LABEL="$("$NODE_BIN" -v) $S_SEP already on this machine"
       return 0
     fi
   fi
@@ -465,7 +465,7 @@ vendor_node() {
   if [ -x "$_dir/bin/node" ] && [ -x "$_dir/bin/npm" ]; then
     NODE_BIN="$_dir/bin/node"
     NPM_BIN="$_dir/bin/npm"
-    NODE_LABEL="$NODE_PIN · already installed by Cotal"
+    NODE_LABEL="$NODE_PIN $S_SEP already installed by Cotal"
     NODE_VENDORED=1
     return 0
   fi
@@ -519,13 +519,14 @@ vendor_node() {
   mv "$_dir.partial" "$_dir"
   spin_stop
 
-  [ -x "$_dir/bin/node" ] && [ -x "$_dir/bin/npm" ] ||
+  if [ ! -x "$_dir/bin/node" ] || [ ! -x "$_dir/bin/npm" ]; then
     die "The unpacked Node archive has no node/npm where they were expected." \
       "Looked in: $_dir/bin"
+  fi
 
   NODE_BIN="$_dir/bin/node"
   NPM_BIN="$_dir/bin/npm"
-  NODE_LABEL="$NODE_PIN · downloaded and verified against nodejs.org"
+  NODE_LABEL="$NODE_PIN $S_SEP downloaded and verified against nodejs.org"
   NODE_VENDORED=1
 }
 
@@ -814,7 +815,7 @@ summary() {
   else
     head_line "Cotal $INSTALLED_VERSION"
   fi
-  dim_line "$(tildify "$BIN_DIR/cotal") · installed in ${ELAPSED}s"
+  dim_line "$(tildify "$BIN_DIR/cotal") $S_SEP installed in ${ELAPSED}s"
 
   if [ -n "$AGENTS_FOUND" ]; then
     blank
@@ -908,8 +909,8 @@ dry_run_report() {
   # COTAL_INSTALL_DIR / COTAL_BIN_DIR / XDG_DATA_HOME can point anywhere, and claiming
   # containment we are not delivering would be the wrong kind of reassuring.
   case "$INSTALL_DIR$BIN_DIR" in
-    "${HOME:-/dev/null}"*"${HOME:-/dev/null}"*) dim_line "  anything outside \$HOME · any system directory · sudo" ;;
-    *) dim_line "  any system directory · sudo   (note: you have redirected the install outside \$HOME)" ;;
+    "${HOME:-/dev/null}"*"${HOME:-/dev/null}"*) dim_line "  anything outside \$HOME $S_SEP any system directory $S_SEP sudo" ;;
+    *) dim_line "  any system directory $S_SEP sudo   (note: you have redirected the install outside \$HOME)" ;;
   esac
   blank
 }
@@ -925,9 +926,10 @@ main() {
   trap 'cleanup; exit 130' INT TERM HUP
 
   banner
-  [ -n "${HOME:-}" ] && [ -d "$HOME" ] ||
+  if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then
     die "HOME is not set to a directory this installer can write to." \
       "Cotal installs entirely under \$HOME; set it and run this again."
+  fi
   require_unprivileged
   detect_platform
   detect_agents
@@ -938,7 +940,7 @@ main() {
     # Report the runtime decision without acting on it: probe the system Node only.
     if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm &&
       [ "$(node_major "$(command -v node)")" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
-      NODE_LABEL="$(node -v) · already on this machine"
+      NODE_LABEL="$(node -v) $S_SEP already on this machine"
     else
       NODE_VENDORED=1
     fi
