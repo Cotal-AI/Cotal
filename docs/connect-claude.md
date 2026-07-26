@@ -248,6 +248,45 @@ Claude process's environment, so share only when you're fine with that teammate 
 the key), and memory adds up, because a heavy server boots once per spawn, multiplied
 across a team.
 
+## Running many claude agents at once
+
+Every `claude` agent on a host normally shares the operator's one Claude login (macOS Keychain, or
+`~/.claude/.credentials.json` on Linux/Windows). That login's OAuth **refresh token is single-use and
+rotates**: once several claude sessions try to refresh at the same time, the first wins and the rest
+get `invalid_grant` and drop to *"Not logged in"* — a cascade that gets reliable at a handful of
+concurrent agents. Per-agent `CLAUDE_CONFIG_DIR` does **not** fix this on macOS: the token lives in a
+fixed shared Keychain item that `CLAUDE_CONFIG_DIR` does not scope.
+
+The fix is a **long-lived, non-rotating token**. Run it once on the host:
+
+```bash
+claude setup-token          # one browser login; prints an sk-ant-oat01-… token (~1 year)
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…   # in the env that starts the mesh (cotal up / supervise)
+```
+
+The connector forwards `CLAUDE_CODE_OAUTH_TOKEN` (only when set) to every claude spawn, so all agents
+authenticate off the **same static bearer** — nothing to rotate, nothing to race. It runs on your
+Pro/Max subscription, same as a normal login.
+
+Caveats:
+
+- **Opt-in.** With no token set, nothing changes — concurrent subscription-OAuth logins still cascade.
+  There is no host-side auto-fix for that on macOS; the token is the supported path.
+- **Precedence.** `CLAUDE_CODE_OAUTH_TOKEN` overrides the `~/.claude` login, but `ANTHROPIC_API_KEY`
+  and `ANTHROPIC_AUTH_TOKEN` in the same env override *it* (and switch billing to that key). A token
+  left over from another account or org will silently authenticate every agent as that identity — set
+  it deliberately.
+- **Shared, not isolated.** The token is the whole account's bearer and lands in each agent's
+  environment (the same rail an MCP server's shared secret takes, rendered into an owner-only launcher
+  by the tmux/cmux runtimes). Every agent on the host can use it; it does not isolate agents from each
+  other.
+- **Restart to change it.** A detached `cotal supervise` / `cotal up` captures the env at startup;
+  rotating or revoking the token means re-exporting it and restarting the manager. Expired tokens need
+  a fresh `claude setup-token`.
+
+Containers already do this (`deploy/docker/compose.yaml` injects `CLAUDE_CODE_OAUTH_TOKEN`); this is
+the same credential for local spawns.
+
 ## Feedback
 
 `cotal_feedback` works out of the box: without a key it posts to the public intake at
