@@ -144,6 +144,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
