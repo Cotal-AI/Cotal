@@ -482,6 +482,21 @@ absolutize() {
 }
 INSTALL_DIR=$(absolutize "$INSTALL_DIR")
 BIN_DIR=$(absolutize "$BIN_DIR")
+
+# Resolve a file's DIRECTORY physically (killing `..` and symlinks) while keeping its
+# basename, so a path becomes canonical without repointing at a symlink's versioned target.
+# Falls back to the input when the directory does not exist; callers check what they need.
+canonical_file() {
+  _cf_dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || {
+    printf '%s\n' "$1"
+    return 0
+  }
+  [ -n "$_cf_dir" ] || {
+    printf '%s\n' "$1"
+    return 0
+  }
+  printf '%s\n' "$_cf_dir/$(basename "$1")"
+}
 NODE_BIN="" NPM_BIN="" NODE_LABEL="" NODE_VENDORED=0
 LOG=""
 
@@ -491,11 +506,11 @@ node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo
 # Fall through to a vendored runtime only when there is nothing here good enough.
 resolve_node() {
   if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm; then
-    _sys_node=$(command -v node)
+    _sys_node=$(canonical_file "$(command -v node)")
     _sys_major=$(node_major "$_sys_node")
     if [ "$_sys_major" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null; then
       NODE_BIN="$_sys_node"
-      NPM_BIN=$(command -v npm)
+      NPM_BIN=$(canonical_file "$(command -v npm)")
       NODE_LABEL="$("$NODE_BIN" -v) $S_SEP already on this machine"
       return 0
     fi
@@ -766,6 +781,18 @@ setup_path() {
   # Containment, enforced rather than assumed: this installer writes nothing outside $HOME,
   # so a computed rc path that escaped it is a bug, and appending to it would be the damage.
   # Refuse and fall back to printing the line for the user to add.
+  #
+  # Three checks, because a lexical prefix test alone is not containment. ZDOTDIR (or
+  # XDG_CONFIG_HOME) can be $HOME/../elsewhere, which starts with "$HOME/" and still lands
+  # outside it; and either could be a symlink pointing anywhere. So: reject `..` outright,
+  # THEN prefix-test (both before anything is created), and finally re-test the physically
+  # resolved path against the physically resolved $HOME to catch a symlinked escape.
+  case "$PATH_RC" in
+    ../* | */../* | */..)
+      PATH_STATE="manual"
+      return 0
+      ;;
+  esac
   case "$PATH_RC" in
     "$HOME"/*) ;;
     *)
@@ -778,6 +805,15 @@ setup_path() {
     PATH_STATE="manual"
     return 0
   }
+
+  _real_home=$(cd "$HOME" 2>/dev/null && pwd -P) || _real_home="$HOME"
+  case "$(canonical_file "$PATH_RC")" in
+    "$_real_home"/*) ;;
+    *)
+      PATH_STATE="manual"
+      return 0
+      ;;
+  esac
 
   # Checking for the marker and then appending is a read-modify-write, and two installers
   # racing can both see "absent" and both append, leaving two blocks. mkdir is atomic on

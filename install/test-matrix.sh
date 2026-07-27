@@ -257,6 +257,35 @@ regressions() {
     echo VERDICT=ok
   '
 
+  # A lexical "starts with $HOME/" test is not containment. ZDOTDIR (or XDG_CONFIG_HOME) can
+  # be $HOME/../elsewhere, which passes that test and still writes outside HOME, and either
+  # can be a symlink pointing anywhere. Both escapes are checked.
+  regression rc-escape node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester
+    mkdir -p /home/tester/home /home/tester/escape && chown -R tester /home/tester
+    su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/../escape SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o 2>&1
+    if grep -q "^# cotal$" /home/tester/escape/.zshrc 2>/dev/null; then echo "dot-dot escaped HOME"; exit 1; fi
+    su tester -c "ln -s /home/tester/escape /home/tester/home/link"
+    su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/link SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o2 2>&1
+    if grep -q "^# cotal$" /home/tester/escape/.zshrc 2>/dev/null; then echo "symlink escaped HOME"; exit 1; fi
+    # Refusing must not mean failing: the install still lands, it just prints the PATH line.
+    su tester -c "HOME=/home/tester/home /home/tester/home/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "install did not complete"; exit 1; }
+    echo VERDICT=ok
+  '
+
+  # `command -v node` returns a RELATIVE path when PATH holds a relative entry. A relative
+  # symlink target in nodebin/ then resolves against nodebin/, where it does not exist, so
+  # the install reports success and the launcher can never start.
+  regression relative-path-node node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester && chown -R tester /home/tester
+    su tester -c "cd \$HOME && mkdir -p relbin && ln -s /usr/local/bin/node relbin/node && ln -s /usr/local/bin/npm relbin/npm"
+    su tester -c "cd \$HOME && PATH=relbin:\$PATH sh /install.sh --no-setup --no-modify-path" >/tmp/o 2>&1
+    pin=$(readlink /home/tester/.local/share/cotal/nodebin/node)
+    case "$pin" in /*) ;; *) echo "pinned a relative path: $pin"; exit 1 ;; esac
+    su tester -c "cd / && \$HOME/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "launcher broken after a relative-PATH install"; exit 1; }
+    echo VERDICT=ok
+  '
+
   # The pin can be a Node this installer does not own, and the user may remove it later.
   # That must produce the launcher own message, never the raw
   # "/usr/bin/env: node: No such file or directory" this whole installer exists to prevent.
