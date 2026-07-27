@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, openSync, closeSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
@@ -52,7 +52,16 @@ export function managerHasDeliveryMarker(): boolean {
 export function startManagerDetached(
   o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
 ): number {
-  const fd = openSync(cotalPath("manager.log"), "a");
+  // 0600: the manager prints its console URL here, and that URL carries the console token — a
+  // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
+  // `.cotal` is already 0700, so this is defence in depth rather than the boundary, but a log the
+  // group/world can read is a needless second copy of that credential.
+  const fd = openSync(cotalPath("manager.log"), "a", 0o600);
+  // The mode above only applies when the file is CREATED, so every log that already exists from an
+  // earlier version would keep its 0644. Narrow those too. Best-effort: a filesystem that cannot
+  // represent the mode (or a Windows volume, where `.cotal`'s ACL is the real control) is not a
+  // reason to refuse to start the manager.
+  try { chmodSync(cotalPath("manager.log"), 0o600); } catch { /* mode is defence in depth, not the boundary */ }
   const [node, ...self] = selfArgv();
   const args = [
     ...self,

@@ -130,7 +130,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--server <url>` | auto (free local port) | Listen URL override |
-| `--host <host>` | — | Bind host override. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL |
+| `--host <host>` | — | Bind host override. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#ps-stop-attach) working |
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | — | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
@@ -443,6 +443,14 @@ row ([identity & auth](identity-and-auth.md)). Launch detached agents with
 address down, which is what lets you attach to an agent whose manager runs on another machine. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
+
+That address is **recorded on the mesh** and carried forward, because it is a decision rather than
+something later commands can work out for themselves (a broker dial address is not a manager bind
+address). Every later manager launch for the same mesh reuses it — a same-root `cotal up` repair,
+adopting a preserved or restored listener, a `spawn -f` manifest deploy — so a manager replacement
+does not quietly move a reachable attach face back to loopback. Passing `--host` again overrides it,
+so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
+and records nothing.
 
 Because that face carries terminal read and write for every managed agent, it is credentialed in two
 tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,

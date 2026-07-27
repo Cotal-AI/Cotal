@@ -27,6 +27,7 @@ import {
   type MembershipSnapshot,
   type Presence,
 } from "@cotal-ai/core";
+import { findMesh } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
@@ -218,9 +219,13 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       const launchReady = launchHeld
         ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS, tier))
         : false;
+      // A manifest deploy can be the thing that stands a manager up, and it never carries a `--host`
+      // of its own — so it reads the mesh's recorded exposure, or it would quietly replace a
+      // reachable attach face with a loopback-only one.
+      const attachHost = findMesh(space)?.attachHost;
       if (!launchHeld) {
         // Nobody owns the space — stand up a manager (it acquires the lease on boot).
-        startManagerDetached({ space, server: connection.server, runtime });
+        startManagerDetached({ space, server: connection.server, runtime, attachHost });
       } else if (!launchReady) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
@@ -229,7 +234,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
           console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check .cotal/manager.log`));
           process.exit(1);
         }
-        startManagerDetached({ space, server: connection.server, runtime });
+        startManagerDetached({ space, server: connection.server, runtime, attachHost });
       }
       // else: a live manager already answered — reuse it. All paths converge here: confirm a manager is
       // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
