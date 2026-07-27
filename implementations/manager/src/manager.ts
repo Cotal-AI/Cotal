@@ -284,7 +284,8 @@ export interface StartAgentOpts {
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
-   *  the connector. Imperative-only: never set from `resolved` (a manifest carries no prompt). */
+   *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
+   *  and rejects this flag alongside it (one source, no merge). */
   prompt?: string;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
@@ -2173,6 +2174,7 @@ export class Manager {
     let model = opts.model;
     let variant = opts.variant;
     let launchOptions = opts.launchOptions;
+    let prompt = opts.prompt;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -2188,6 +2190,8 @@ export class Manager {
       model = opts.model ?? r.model;
       variant = opts.variant ?? r.variant;
       launchOptions = mergeLaunchOptions(r.launchOptions, opts.launchOptions);
+      prompt = r.prompt; // the guard above rejected an imperative prompt — one source
+
     } else {
       let def: AgentDef;
       try {
@@ -2353,8 +2357,8 @@ export class Manager {
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
         resume: opts.resume,
-        // Initial prompt (imperative-only; the resolved guard above keeps manifests prompt-free).
-        prompt: opts.prompt,
+        // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
+        prompt,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) falls back to `["general"]`, which its

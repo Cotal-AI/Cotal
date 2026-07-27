@@ -41,7 +41,7 @@ export function renderTopology(p: PreparedManifest): string {
   out.push("", c.bold(`Agents (${p.agents.length})`));
   for (const a of p.agents) {
     const src = a.persona ? `persona ${a.persona}` : "inline";
-    const meta = [a.agentType, a.model ? `model ${a.model}` : undefined, a.role ? `role ${a.role}` : undefined]
+    const meta = [a.agentType, a.model ? `model ${a.model}` : undefined, a.role ? `role ${a.role}` : undefined, a.prompt ? "kickoff prompt" : undefined]
       .filter(Boolean)
       .join(" · ");
     out.push(`  ${c.bold(a.name)}  ${c.dim(meta + " · " + src)}`);
