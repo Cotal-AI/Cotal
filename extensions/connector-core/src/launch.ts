@@ -72,11 +72,15 @@ const OS_ENV_ALLOW = [
   "PUBLIC",
 ] as const;
 
-/** Model-provider API keys a key-based connector may forward to its child. claude needs none
- *  (macOS Keychain / OAuth token, not an env key) → strong isolation for free; opencode/hermes
- *  need the key for the provider behind the agent's model → forward just these, by NAME, only if
- *  present. This is the single chokepoint for model-key forwarding — the seam for spawner-
- *  conditional gating (per-agent model auth) later. Never `...process.env`. */
+/** Model-provider API keys a key-based connector may forward to its child. opencode/hermes need the
+ *  key for the provider behind the agent's model → forward just these, by NAME, only if present.
+ *  claude usually auths via its own shared credential store (Keychain / ~/.claude), but forwards ONE
+ *  named credential of its own — `CLAUDE_CODE_OAUTH_TOKEN` (see the claude connector's
+ *  CLAUDE_CRED_KEYS): a non-rotating `setup-token` bearer so concurrent spawns don't race the
+ *  rotating subscription refresh token (issue #260). Each connector passes its OWN credential
+ *  name(s) as `providerKeys` to {@link launchEnv}; this shared list is opencode/hermes's set. This
+ *  is the single chokepoint for model-key forwarding — the seam for spawner-conditional gating
+ *  (per-agent model auth) later. Never `...process.env`. */
 export const MODEL_PROVIDER_KEYS = [
   "OPENCODE_API_KEY",
   "ANTHROPIC_API_KEY",

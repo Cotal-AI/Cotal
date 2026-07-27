@@ -22,6 +22,19 @@ const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
  *  MCP server (see buildLaunch's --strict-mcp-config). */
 const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
 
+/** claude's model credential, forwarded to a spawn BY NAME only when the operator has it set (the
+ *  `providerKeys` rail — see launchEnv). `CLAUDE_CODE_OAUTH_TOKEN` is the long-lived (~1yr),
+ *  NON-rotating token minted by `claude setup-token`. Forwarding it is the fix for the concurrent-
+ *  spawn logout cascade (issue #260): claude's subscription login is a single-use ROTATING refresh
+ *  token in one shared credential store (macOS Keychain / `~/.claude/.credentials.json`), so N
+ *  concurrent sessions race on refresh — the first to rotate invalidates the rest (`invalid_grant`).
+ *  Setting `CLAUDE_CONFIG_DIR` per agent does NOT fix this on macOS (the token lives in a FIXED
+ *  shared Keychain item, not scoped by that dir). A static env bearer sidesteps rotation entirely —
+ *  precedence rank 5 beats a `.credentials.json` (rank 6); sharing ONE across many sessions causes no
+ *  cascade. This is exactly the credential `deploy/` already uses for multi-agent containers. Only
+ *  forwarded when present, so a single-agent subscription login is unaffected. */
+const CLAUDE_CRED_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN"] as const;
+
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -40,17 +53,21 @@ export const claudeConnector: Connector = {
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
-    // claude auths via macOS Keychain / an OAuth token, not an env key → forward NO provider key.
-    // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
-    // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
-    // by name). The operator's unrelated secrets don't reach the child (P3).
+    // claude normally auths via its OWN shared credential store (macOS Keychain /
+    // ~/.claude/.credentials.json), not an env key. The one credential we DO forward is
+    // CLAUDE_CODE_OAUTH_TOKEN (CLAUDE_CRED_KEYS, `providerKeys`, by name, only when set): a non-
+    // rotating token that lets many concurrent spawns share one credential without the refresh-token
+    // logout cascade (issue #260). Beyond that the OS allow-list (PATH/HOME/TERM/…) is the only thing
+    // inherited from the manager env, plus — only when a shared server declares them via `${VAR}` —
+    // the named secrets it needs (mcpKeys, by name). The operator's unrelated secrets don't reach the
+    // child (P3).
     // The session's local control endpoint: the in-process MCP server LISTENS on it (auth), and the
     // lifecycle hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read
     // path+token from the env — never recomputed from public identity — and the manager keeps the
     // pair (returned as `control` below) to drive a cooperative shutdown on Windows.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
+      ...launchEnv({ providerKeys: CLAUDE_CRED_KEYS, mcpKeys: mcpServerEnvKeys(shared) }),
       ...aclEnv(opts),
       ...userAuthEnv(opts),
       COTAL_SPACE: opts.space,

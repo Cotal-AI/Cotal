@@ -69,6 +69,32 @@ who's present, and unread counts. The full tool surface is the
 agent's toolset matches what it can actually invoke. Clearing retained history is
 operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
 
+## Running many claude agents at once
+
+Every spawned `claude` agent uses your machine's own Claude login (the macOS Keychain, or
+`~/.claude/.credentials.json` on Linux/Windows). A subscription login stores a **single-use,
+rotating** OAuth refresh token in that one shared place, so several `claude` agents refreshing at
+once race: the first to refresh rotates the token and the rest get `invalid_grant` and drop to
+"Not logged in", cascading across every agent on the box. (Setting a per-agent `CLAUDE_CONFIG_DIR`
+does not help on macOS, where the token lives in a fixed shared Keychain item.)
+
+The fix is a **long-lived, non-rotating** token, shared by every agent. Mint one once:
+
+```bash
+claude setup-token                     # one browser login; prints an sk-ant-oat01-… token (~1yr)
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…
+cotal up                               # the manager forwards the token to every claude spawn
+```
+
+Cotal forwards `CLAUDE_CODE_OAUTH_TOKEN` (only when set) into each spawned `claude`, so all agents
+authenticate off the one static token and never race a refresh. It runs on your Pro/Max
+subscription, the same as a normal login. Notes:
+
+- A single agent needs none of this; it only matters once several `claude` agents run concurrently.
+- `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the manager's shell take precedence over the
+  token (and bill per API usage), so leave them unset unless that is what you want.
+- This is the same credential the [containerized deploy](deploy.md) uses.
+
 ## How it binds
 
 Claude Code exposes four integration surfaces, and three of them collapse into a single
