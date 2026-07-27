@@ -218,6 +218,45 @@ regressions() {
     esac
   '
 
+  # The install lock publishes its owner atomically (a symlink whose target IS the pid).
+  # A mkdir-then-write-a-pid-file lock has a window where it is held but unattributed, and a
+  # second installer arriving in that window reads no owner, calls it stale, and steals a
+  # LIVE lock. All three states are checked here: live, stale, and not-ours.
+  regression lock-states node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester
+    mkdir -p /home/tester/.local/share/cotal && chown -R tester /home/tester
+    # (a) live owner: must refuse
+    LIVE=$(su tester -c "sleep 300 >/dev/null 2>&1 & echo \$!")
+    su tester -c "ln -s $LIVE /home/tester/.local/share/cotal/.install-lock"
+    out=$(su tester -c "cd \$HOME && sh /install.sh --no-setup" 2>&1 || true)
+    case "$out" in *"Another Cotal install is already running"*) ;; *) echo "live lock not refused"; exit 1 ;; esac
+    [ ! -e /home/tester/.local/bin/cotal ] || { echo "installed despite a live lock"; exit 1; }
+    kill $LIVE 2>/dev/null || true
+    # (b) not ours (a directory): must refuse, never ln -s INTO it
+    su tester -c "rm -f /home/tester/.local/share/cotal/.install-lock; mkdir -p /home/tester/.local/share/cotal/.install-lock"
+    out=$(su tester -c "cd \$HOME && sh /install.sh --no-setup" 2>&1 || true)
+    case "$out" in *"in the way of the install lock"*) ;; *) echo "directory lock not refused"; exit 1 ;; esac
+    [ ! -e /home/tester/.local/bin/cotal ] || { echo "installed despite a foreign lock"; exit 1; }
+    # (c) stale owner: must take over and finish
+    su tester -c "rm -rf /home/tester/.local/share/cotal/.install-lock; ln -s 999999 /home/tester/.local/share/cotal/.install-lock"
+    su tester -c "cd \$HOME && sh /install.sh --no-setup" >/tmp/c 2>&1 || { echo "stale lock not recovered"; tail -4 /tmp/c; exit 1; }
+    su tester -c "\$HOME/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "no cotal after stale-lock recovery"; exit 1; }
+    [ ! -e /home/tester/.local/share/cotal/.install-lock ] || { echo "lock leaked"; exit 1; }
+    echo VERDICT=ok
+  '
+
+  # The launcher bakes its paths in and is then run from every directory on the machine, so a
+  # relative override must be made absolute before anything records it.
+  regression relative-dirs node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester
+    su tester -c "cd \$HOME && mkdir -p work && cd work && COTAL_INSTALL_DIR=./cot COTAL_BIN_DIR=./cotbin sh /install.sh --no-setup --no-modify-path" >/tmp/o 2>&1
+    root=$(grep "^COTAL_ROOT=" /home/tester/work/cotbin/cotal)
+    case "$root" in *\"/home/tester/work/cot\"*) ;; *) echo "launcher kept a relative root: $root"; exit 1 ;; esac
+    # The real test: run it from somewhere else entirely.
+    su tester -c "cd / && /home/tester/work/cotbin/cotal --version" >/dev/null 2>&1 || { echo "launcher broken outside its install dir"; exit 1; }
+    echo VERDICT=ok
+  '
+
   # The pin can be a Node this installer does not own, and the user may remove it later.
   # That must produce the launcher own message, never the raw
   # "/usr/bin/env: node: No such file or directory" this whole installer exists to prevent.

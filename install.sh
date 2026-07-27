@@ -160,35 +160,69 @@ LOCKDIR=""
 cleanup() {
   spin_stop
   [ -n "$TMPDIR_SELF" ] && [ -d "$TMPDIR_SELF" ] && rm -rf "$TMPDIR_SELF"
-  [ -n "$LOCKDIR" ] && [ -d "$LOCKDIR" ] && rm -rf "$LOCKDIR"
+  [ -n "$LOCKDIR" ] && [ -L "$LOCKDIR" ] && rm -f "$LOCKDIR"
   return 0
 }
 
 # Two installers writing the same prefix at once corrupt each other: npm stages and renames
 # inside it, so a concurrent pair can finish "successfully" and leave no working cotal at
-# all. Observed intermittently, which is worse than a clean failure. mkdir is atomic, so one
-# install proceeds and the rest say so and stop.
+# all. Observed intermittently, which is worse than a clean failure. Creating a symlink is
+# atomic, so one install proceeds and the rest say so and stop.
 acquire_install_lock() {
   _lock="$INSTALL_DIR/.install-lock"
-  if mkdir "$_lock" 2>/dev/null; then
-    LOCKDIR="$_lock"
-    printf '%s\n' "$$" >"$_lock/pid" 2>/dev/null || true
-    return 0
-  fi
-  _owner=$(cat "$_lock/pid" 2>/dev/null || printf '')
-  if [ -n "$_owner" ] && kill -0 "$_owner" 2>/dev/null; then
-    die "Another Cotal install is already running (pid $_owner)." \
-      "They would overwrite each other inside $(tildify "$INSTALL_DIR")." \
-      "Wait for it to finish, then run this again."
-  fi
-  # The owner is gone, so the lock is stale: take it over rather than block forever.
-  rm -rf "$_lock"
-  mkdir "$_lock" 2>/dev/null ||
-    die "Could not claim the install lock at $(tildify "$_lock")." \
+  _tries=0
+  while :; do
+    # `ln -s target name` creates name INSIDE name when name is an existing directory, and
+    # would then report success while holding no lock at all. A directory here is not ours
+    # (an older version left it, or something unrelated did), so refuse rather than guess.
+    if [ -d "$_lock" ] && [ ! -L "$_lock" ]; then
+      die "Something is in the way of the install lock at $(tildify "$_lock")." \
+        "Remove it if no other install is running:" \
+        "  rm -rf $_lock"
+    fi
+    # A symlink, not a directory: creating one is a single atomic operation that fails if the
+    # name already exists, AND its target string carries the owner's pid. `mkdir` then
+    # write-a-pid-file has a window between the two where the lock is held but unattributed,
+    # and a second installer arriving in that window reads no owner, concludes "stale", and
+    # steals a live lock. There is no such window here: the owner ships with the lock.
+    if ln -s "$$" "$_lock" 2>/dev/null; then
+      LOCKDIR="$_lock"
+      return 0
+    fi
+    # ln -s failing with nothing at that path means the failure was not "already exists":
+    # the filesystem has no symlinks, or the directory is not writable. Say which, rather
+    # than blame a lock that is not there.
+    if [ ! -e "$_lock" ] && [ ! -L "$_lock" ]; then
+      die "Could not create the install lock at $(tildify "$_lock")." \
+        "The filesystem may not support symlinks, or $(tildify "$INSTALL_DIR") may not be" \
+        "writable by you. Install somewhere else:" \
+        "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
+    fi
+    _owner=$(readlink "$_lock" 2>/dev/null || printf '')
+    if [ -z "$_owner" ]; then
+      die "Something is in the way of the install lock at $(tildify "$_lock")." \
+        "Remove it if no other install is running:" \
+        "  rm -rf $_lock"
+    fi
+    # kill -0 answers "may I signal this pid", not "is this my installer". A pid recycled by
+    # an unrelated process therefore reads as a live owner. That is rare, and fail-closed is
+    # the right default, but it must never be a dead end: print the way out every time.
+    if kill -0 "$_owner" 2>/dev/null; then
+      die "Another Cotal install is already running (pid $_owner)." \
+        "They would overwrite each other inside $(tildify "$INSTALL_DIR")." \
+        "Wait for it to finish, then run this again." \
+        "" \
+        "If you are sure no other install is running, clear the lock:" \
+        "  rm -f $_lock"
+    fi
+    # The owner is gone, so the lock is stale. Drop it and retry rather than assume the retry
+    # wins: another installer may be doing exactly the same thing right now.
+    rm -f "$_lock" 2>/dev/null || true
+    _tries=$((_tries + 1))
+    [ "$_tries" -lt 5 ] || die "Could not claim the install lock at $(tildify "$_lock")." \
       "Remove it by hand if no other install is running:" \
-      "  rm -rf $_lock"
-  LOCKDIR="$_lock"
-  printf '%s\n' "$$" >"$_lock/pid" 2>/dev/null || true
+      "  rm -f $_lock"
+  done
 }
 
 # ---------------------------------------------------------------------------------------
@@ -435,6 +469,19 @@ refuse_musl() {
 # "HOME: unbound variable" instead of the readable message main() has waiting.
 INSTALL_DIR="${COTAL_INSTALL_DIR:-${XDG_DATA_HOME:-${HOME:-}/.local/share}/cotal}"
 BIN_DIR="${COTAL_BIN_DIR:-${HOME:-}/.local/bin}"
+
+# The launcher bakes these paths in and is then run from every directory on the machine, so a
+# relative override (COTAL_INSTALL_DIR=./cotal) has to become absolute before anything records
+# it. Otherwise the install works from the directory it was made in and nowhere else.
+absolutize() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    ./*) printf '%s\n' "$PWD/${1#./}" ;;
+    *) printf '%s\n' "$PWD/$1" ;;
+  esac
+}
+INSTALL_DIR=$(absolutize "$INSTALL_DIR")
+BIN_DIR=$(absolutize "$BIN_DIR")
 NODE_BIN="" NPM_BIN="" NODE_LABEL="" NODE_VENDORED=0
 LOG=""
 
