@@ -34,6 +34,22 @@ check("token is env-only, never in argv (token hygiene)", !a.args.some((x) => x.
 check("unrelated operator secret does NOT bleed into the spawn (P3)", a.env[SENTINEL] === undefined);
 check("HOME still forwarded (OS allow-list intact)", typeof a.env.HOME === "string" || typeof a.env.USERPROFILE === "string");
 
+// ANTHROPIC_API_KEY is NOT a claude-connector model credential: it must NOT reach a spawn by default
+// (the connector forwards only CLAUDE_CRED_KEYS), so an API key in the manager shell can't override a
+// spawn's login. The ONE documented exception is an operator-shared MCP server that references it via
+// `${ANTHROPIC_API_KEY}` — then it rides in on the mcpKeys (shared-secret) path, by design.
+const API_KEY = "sk-ant-api-SMOKE-TEST-VALUE";
+process.env.ANTHROPIC_API_KEY = API_KEY;
+const noApi = claudeConnector.buildLaunch({ space: "smoke", name: "worker-noapi" });
+check("ANTHROPIC_API_KEY absent by default (not a claude model cred)", noApi.env.ANTHROPIC_API_KEY === undefined, noApi.env.ANTHROPIC_API_KEY);
+const withApi = claudeConnector.buildLaunch({
+  space: "smoke",
+  name: "worker-mcp",
+  mcpServers: { db: { command: "node", env: { KEY: "${ANTHROPIC_API_KEY}" } } },
+});
+check("ANTHROPIC_API_KEY present ONLY when a shared MCP server references it", withApi.env.ANTHROPIC_API_KEY === API_KEY, withApi.env.ANTHROPIC_API_KEY);
+delete process.env.ANTHROPIC_API_KEY;
+
 // token UNSET → absent (named-forward only; a single subscription login is unaffected).
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const c = claudeConnector.buildLaunch({ space: "smoke", name: "worker-c" });

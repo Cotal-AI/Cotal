@@ -92,9 +92,16 @@ authenticate off the one static token and never race a refresh. It runs on your 
 subscription, the same as a normal login. Notes:
 
 - A single agent needs none of this; it only matters once several `claude` agents run concurrently.
-- The token is the only model credential the connector forwards to a `claude` spawn: an
-  `ANTHROPIC_API_KEY` sitting in the manager's shell is **not** passed through, so it neither reaches
-  nor overrides a spawned agent. It still governs any `claude` you run yourself in that shell.
+- The token is the only model credential the connector forwards as such. An `ANTHROPIC_API_KEY` in
+  the manager's shell is **not** passed through on its own, so it won't override a spawn's login. (The
+  one exception is if you share an MCP server whose config references `${ANTHROPIC_API_KEY}`: that
+  named secret then rides into the child by the MCP-secret path.)
+- The token is forwarded as-is, never validated. A stale, expired, or wrong-account token overrides
+  the stored login (it wins precedence) and every spawn will fail with "Not logged in". Recover by
+  re-minting (`claude setup-token`) or unsetting the var, then restart the manager (`cotal down` /
+  `cotal up`) so it picks up the new environment.
+- Every spawned agent can read this long-lived token from its own environment (the same posture as
+  any forwarded model key); treat a `setup-token` like the year-long credential it is.
 - This is the same credential the [containerized deploy](deploy.md) uses.
 
 ## How it binds
