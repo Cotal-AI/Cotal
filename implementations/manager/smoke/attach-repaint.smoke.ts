@@ -94,7 +94,7 @@ async function testEndpointOrdering(): Promise<void> {
   await ep.start();
   try {
     const got: string[] = [];
-    const ws = new WebSocket(ep.url("a"));
+    const ws = new WebSocket(ep.url("a", handle));
     ws.on("message", (d: Buffer) => got.push(d.toString("utf8")));
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => resolve());

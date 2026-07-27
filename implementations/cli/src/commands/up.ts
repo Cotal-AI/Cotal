@@ -572,10 +572,17 @@ export async function up(args: ParsedArgs): Promise<void> {
           console.error(
             c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
           );
-        const controlPlane = await startDeliveryWithBroker(held.space, server, { runtime: values.runtime });
+        // A repair replaces the manager, so it must carry the mesh's recorded exposure forward — a
+        // bare `cotal up` here has no `--host` of its own, and dropping it silently moves the attach
+        // face back to loopback while everything else keeps working.
+        const controlPlane = await startDeliveryWithBroker(held.space, server, {
+          runtime: values.runtime,
+          attachHost: attachHostFor(held.space, values.host),
+        });
         if (!controlPlane) process.exitCode = 1;
       }
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ts: new Date().toISOString() });
+      const heldAttachHost = attachHostFor(held.space, values.host);
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ts: new Date().toISOString() });
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -602,7 +609,10 @@ export async function up(args: ParsedArgs): Promise<void> {
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       channels: values.channels,
-      host,
+      // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
+      // default itself, and what it records must distinguish "the operator asked for this address"
+      // from "nobody asked", or every mesh would persist an exposure decision it never made.
+      host: values.host,
       runtime: values.runtime,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
@@ -755,10 +765,19 @@ export async function up(args: ParsedArgs): Promise<void> {
     // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
     // so the record must exist by the time it boots. A manager/delivery failure after this leaves
     // a recorded-but-degraded mesh — the documented, healable posture.
+    // Resolve exposure BEFORE recording. This path also serves a RESUME of an already-recorded mesh
+    // (`down --preserve-state` then a bare `up`), where the operator's `--host` lives only in the
+    // registry — and the record below is written whole, so reading it afterwards would find the
+    // field this very call had just erased.
+    const effectiveAttachHost = attachHostFor(space, values.host);
     recordOurMesh({
       space, server, root: cotalRoot(),
       mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
       ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+      // Only a real decision is persisted — an explicit `--host` now, or one carried forward from a
+      // previous launch. The bare case stays absent rather than recording the loopback default as
+      // though the operator had chosen it.
+      ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
       ts: new Date().toISOString(),
     });
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
@@ -770,7 +789,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       // The address the broker was bound to. This is what lets `cotal attach` reach this manager
       // from another machine; without it the attach face stays loopback-only, so exposing terminals
       // is never a side effect of anything but the operator binding the mesh somewhere reachable.
-      attachHost: host,
+      attachHost: effectiveAttachHost,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
     });
@@ -1093,16 +1112,22 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
 async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Promise<void> {
   await proveOrdinaryResumeListener(pending);
   const svc = await ensureRecoveredUserAuth(pending);
+  // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
+  // record built without this field would erase the operator's decision, and the adopted manager
+  // below would then be launched loopback-only from an entry that no longer remembers otherwise.
+  const adoptAttachHost = attachHostFor(pending.space);
   recordOurMesh({
     space: pending.space,
     server: pending.server,
     root: pending.root,
     mode: pending.mode,
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+    ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
     ts: new Date().toISOString(),
   });
   const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, {
     runtime: pending.runtime,
+    attachHost: adoptAttachHost,
     resumeAttempt: pending.attemptId,
     resumeCommitToken: pending.managerCommit?.durableCommitToken,
   });
@@ -1134,16 +1159,21 @@ async function ensureRecoveredUserAuth(
 async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<void> {
   await provePreparedRestoreListener(prepared);
   const svc = await ensureRecoveredUserAuth(prepared);
+  // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
+  // `recordOurMesh` rewrites the entry, or a restore silently demotes the mesh to loopback attach.
+  const restoreAttachHost = attachHostFor(prepared.space);
   recordOurMesh({
     space: prepared.space,
     server: prepared.server,
     root: prepared.root,
     mode: prepared.mode,
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+    ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
     ts: new Date().toISOString(),
   });
   const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, {
     runtime: prepared.runtime,
+    attachHost: restoreAttachHost,
     resumeAttempt: prepared.attemptId,
     resumeCommitToken: prepared.managerCommit?.durableCommitToken,
   });
@@ -1462,7 +1492,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   let controlPlane = false;
   let authService = true;
   try {
-    ({ pid, controlPlane, authService } = await startMeshDetached({ server, space: m.space, open, userAuth, host, seed: manifestToChannels(eff), runtime, launch: specPath }));
+    // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
+    // manifest actually declared is an exposure decision worth persisting.
+    ({ pid, controlPlane, authService } = await startMeshDetached({ server, space: m.space, open, userAuth, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -1644,10 +1676,16 @@ export async function startMeshDetached(
   // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
   // authoritative registry entry at boot (marker-without-registry refuses). Detached: the entry
   // outlives this process — `cotal down` removes it.
+  // Same capture-before-record as the foreground path: this also runs for a bare `up --detach` that
+  // RESUMES an already-recorded mesh, whose exposure decision exists only in the registry entry the
+  // call below rewrites.
+  const effectiveAttachHost = attachHostFor(space, opts.host);
   recordOurMesh({
     space, server, root: cotalRoot(),
     mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+    // Persist only a real decision — declared now, or carried forward — never the loopback default.
+    ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
     ts: new Date().toISOString(),
   });
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
@@ -1655,7 +1693,7 @@ export async function startMeshDetached(
     runtime: opts.runtime,
     launch: opts.launch,
     // See the foreground path: the broker's bind address is what makes attach reachable off-box.
-    attachHost: host,
+    attachHost: effectiveAttachHost,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
   });
@@ -1716,6 +1754,22 @@ async function claimSpace(space: string, server: string, root: string): Promise<
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
   removeMesh(space); // the prior holder's broker is gone — reclaim the name
+}
+
+/**
+ * The manager attach/console BIND host for a launch into `space`.
+ *
+ * Exposure is an operator DECISION, made at `up --host` and recorded on the mesh entry. Every later
+ * launch for the same mesh — a same-root repair, adopting a preserved or restored listener, a
+ * manifest deploy — has no `--host` of its own to consult, so it reads the decision back. Without
+ * this a replacement manager falls to loopback and remote `cotal attach` dies at the first repair,
+ * silently: the broker and every agent stay up, only the terminal face moves.
+ *
+ * An explicit host on THIS invocation always wins, so an operator can widen or narrow exposure by
+ * saying so. Absent both, undefined — the manager's own loopback default, unchanged.
+ */
+export function attachHostFor(space: string, explicit?: string): string | undefined {
+  return explicit ?? findMesh(space)?.attachHost;
 }
 
 /** Record this mesh in the registry, and set it as the `current` default when there's no usable one

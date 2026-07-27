@@ -3072,6 +3072,12 @@ export class Manager {
     // mesh, the caller's owner-domain) on the privileged tier, any agent on admin.
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
+    // A name is a reusable slot and the authorization above can await (user mode reads the ledger).
+    // If the slot was stopped and refilled while we waited, everything below would act on a
+    // successor this caller was never authorized for — so re-assert the incarnation, then keep
+    // working from the handle we authorized rather than re-resolving the name.
+    if (this.agents.get(name) !== a)
+      return { ok: false, error: `agent "${name}" was replaced during authorization - retry` };
     // Only pty streams over the WS attach endpoint. External runtimes are watched natively,
     // and each handle's attach() throws with the right per-runtime guidance.
     if (a.handle.kind !== "pty") {
@@ -3081,7 +3087,7 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
-    return { ok: true, data: { ws: this.attach.url(name) } };
+    return { ok: true, data: { ws: this.attach.url(name, a.handle) } };
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */

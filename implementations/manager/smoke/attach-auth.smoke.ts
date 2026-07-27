@@ -48,7 +48,7 @@ check("attachHost: strips brackets for a full IPv6 literal", attachHost("nats://
   let ok = false, why = "";
   try { await v6.start(); ok = true; await v6.stop(); } catch (e) { why = (e as Error).message; }
   check("an IPv6 broker URL yields a bindable attach host", ok, why);
-  check("...and advertises it re-bracketed", ok && v6.url("a").startsWith("ws://[::1]:"), ok ? v6.url("a") : why);
+  check("...and advertises it re-bracketed", ok && v6.url("a", anyLive as never).startsWith("ws://[::1]:"), ok ? v6.url("a", anyLive as never) : why);
 }
 
 // --- the live endpoint ------------------------------------------------------------------------
@@ -115,12 +115,12 @@ try {
 
   // THE BYPASS: a capability issued for one agent must not attach another. `url()` mints a ticket
   // bound to the name the manager just authorized; swapping the path must be refused.
-  const issued = new URL(ep.url("mine"));
+  const issued = new URL(ep.url("mine", live as never));
   const ticket = issued.searchParams.get("t") ?? "";
   const swapped = await upgradeTo(`/attach/victim?t=${ticket}`);
   check("a ticket for 'mine' CANNOT attach 'victim'", swapped === "http-401", swapped);
 
-  const fresh = new URL(ep.url("mine")).searchParams.get("t") ?? "";
+  const fresh = new URL(ep.url("mine", live as never)).searchParams.get("t") ?? "";
   check("a ticket redeems for its own agent", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "upgraded");
   check("...and only once (single use)", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "http-401");
   check("two issues produce different tickets", ticket !== fresh);
@@ -133,29 +133,43 @@ try {
       onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
       cols: 80, rows: 24, snapshot: async () => "",
     }) };
-    const issued2 = new URL(ep.url("mine")).searchParams.get("t") ?? "";
+    const issued2 = new URL(ep.url("mine", live as never)).searchParams.get("t") ?? "";
     known.mine = successor as never; // the original exits; a same-name successor takes the slot
     const afterSwap = await upgradeTo(`/attach/mine?t=${issued2}`);
     check("a ticket does NOT survive a same-name successor taking the slot", afterSwap === "http-401", afterSwap);
+    known.mine = live as never; // restore
+
+    // ...and the same slot-reuse race one step EARLIER, which the swap above does not reach: the
+    // successor arrives DURING authorization, before the ticket is issued. `opAttach` resolves the
+    // name, awaits authorization (user mode reads the ledger), and only then asks for a capability.
+    // Re-resolving the name at issuance would hand out a valid ticket for an incarnation nobody
+    // authorized. `url()` takes the AUTHORIZED handle and refuses when the slot has moved under it.
+    known.mine = successor as never; // the swap lands while the caller is still awaiting authz
+    let raced = "";
+    try { ep.url("mine", live as never); } catch (e) { raced = (e as Error).message; }
+    check("url() refuses a capability when the slot moved during authorization", raced.includes("replaced during authorization"), raced);
+    // The successor itself is still attachable — this closes a race, it does not wedge the slot.
+    const okAfter = new URL(ep.url("mine", successor as never)).searchParams.get("t") ?? "";
+    check("...while the successor's OWN authorized handle still issues", (await upgradeTo(`/attach/mine?t=${okAfter}`)) === "upgraded");
     known.mine = live as never; // restore
   }
 
   // Issuing for an agent that is not running is a caller bug, not a silently dead ticket.
   let noAgent = "";
-  try { ep.url("does-not-exist"); } catch (e) { noAgent = (e as Error).message; }
+  try { ep.url("does-not-exist", live as never); } catch (e) { noAgent = (e as Error).message; }
   check("url() refuses to issue for an unknown agent", noAgent.includes("no such running agent"), noAgent);
 
   // What the manager hands back over the control plane.
   known["agent one"] = live as never;
-  const url = ep.url("agent one");
+  const url = ep.url("agent one", live as never);
   check("url() carries a credential", /[?&]t=[0-9a-f]{64}\b/.test(url), url);
   check("url() does NOT hand out the manager-wide console token", !url.includes(TOKEN), url);
   check("url() percent-encodes the agent name", url.includes("/attach/agent%20one"), url);
 
   const remote = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "100.98.80.110", TOKEN);
-  check("url() advertises the bound host, not loopback", remote.url("a").startsWith("ws://100.98.80.110:"), remote.url("a"));
+  check("url() advertises the bound host, not loopback", remote.url("a", anyLive as never).startsWith("ws://100.98.80.110:"), remote.url("a", anyLive as never));
   const wild = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "0.0.0.0", TOKEN);
-  check("a wildcard bind advertises loopback (not a dialable name)", wild.url("a").startsWith("ws://127.0.0.1:"), wild.url("a"));
+  check("a wildcard bind advertises loopback (not a dialable name)", wild.url("a", anyLive as never).startsWith("ws://127.0.0.1:"), wild.url("a", anyLive as never));
   // An address this machine does not own: a manager pointed at a broker on ANOTHER host. It must
   // say which address and why, not surface a bare errno from deep inside startup.
   const orphan = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "203.0.113.7", TOKEN);
