@@ -41,6 +41,13 @@ jobs:
         # A cut-off download must define functions and do nothing. A real pipe breaks
         # mid-line, not on a line boundary, so this cuts by BYTE. The tail bytes matter most:
         # a bare `main` is a complete command, which is why the invocation is brace-wrapped.
+        #
+        # --dry-run is the invocation on purpose. It is what distinguishes the two outcomes
+        # that matter: a prefix that runs main WITH the caller's argv performs a dry run and
+        # leaves nothing, while a prefix that runs a bare `main` loses the flag and performs a
+        # REAL install, which the artifact check below then catches. Note the complete script
+        # legitimately runs here, so "the last byte executes" is the expected result, not a
+        # finding: at total-1 only the trailing newline is missing and nothing has been lost.
         run: |
           total=$(wc -c < install.sh)
           fail=0

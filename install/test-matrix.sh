@@ -268,6 +268,11 @@ regressions() {
     su tester -c "ln -s /home/tester/escape /home/tester/home/link"
     su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/link SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o2 2>&1
     if grep -q "^# cotal$" /home/tester/escape/.zshrc 2>/dev/null; then echo "symlink escaped HOME"; exit 1; fi
+    # The rc FILE itself as a symlink out of HOME: `>>` follows it, so containment has to
+    # resolve the final component, not just the directory holding it.
+    su tester -c "rm -f /home/tester/home/.zshrc; ln -s /home/tester/escape/zshrc /home/tester/home/.zshrc"
+    su tester -c "HOME=/home/tester/home SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o3 2>&1
+    if grep -q "^# cotal$" /home/tester/escape/zshrc 2>/dev/null; then echo "rc-file symlink escaped HOME"; exit 1; fi
     # Refusing must not mean failing: the install still lands, it just prints the PATH line.
     su tester -c "HOME=/home/tester/home /home/tester/home/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "install did not complete"; exit 1; }
     echo VERDICT=ok

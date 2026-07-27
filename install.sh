@@ -483,6 +483,24 @@ absolutize() {
 INSTALL_DIR=$(absolutize "$INSTALL_DIR")
 BIN_DIR=$(absolutize "$BIN_DIR")
 
+# Resolve a path COMPLETELY, following the final component too. Used for anything we are
+# about to write through, because `>>` follows a symlink and lands wherever it points:
+# ~/.zshrc can be a link out of $HOME, and containment has to see the real destination.
+# The opposite of canonical_file below, which is for paths we only need to name.
+resolved_target() {
+  _rt="$1"
+  _rt_hops=0
+  while [ -L "$_rt" ] && [ "$_rt_hops" -lt 32 ]; do
+    _rt_link=$(readlink "$_rt" 2>/dev/null) || break
+    case "$_rt_link" in
+      /*) _rt="$_rt_link" ;;
+      *) _rt="$(dirname "$_rt")/$_rt_link" ;;
+    esac
+    _rt_hops=$((_rt_hops + 1))
+  done
+  canonical_file "$_rt"
+}
+
 # Resolve a file's DIRECTORY physically (killing `..` and symlinks) while keeping its
 # basename, so a path becomes canonical without repointing at a symlink's versioned target.
 # Falls back to the input when the directory does not exist; callers check what they need.
@@ -807,7 +825,7 @@ setup_path() {
   }
 
   _real_home=$(cd "$HOME" 2>/dev/null && pwd -P) || _real_home="$HOME"
-  case "$(canonical_file "$PATH_RC")" in
+  case "$(resolved_target "$PATH_RC")" in
     "$_real_home"/*) ;;
     *)
       PATH_STATE="manual"
