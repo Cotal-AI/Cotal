@@ -86,13 +86,15 @@ export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…
 cotal up                               # the manager forwards the token to every claude spawn
 ```
 
-Cotal forwards `CLAUDE_CODE_OAUTH_TOKEN` (only when set) into each spawned `claude`, so all agents
+Export it in the shell that runs `cotal up` (or `cotal supervise`): the manager reads it from its
+own environment and forwards it (only when set) into each spawned `claude`, so all agents
 authenticate off the one static token and never race a refresh. It runs on your Pro/Max
 subscription, the same as a normal login. Notes:
 
 - A single agent needs none of this; it only matters once several `claude` agents run concurrently.
-- `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the manager's shell take precedence over the
-  token (and bill per API usage), so leave them unset unless that is what you want.
+- The token is the only model credential the connector forwards to a `claude` spawn: an
+  `ANTHROPIC_API_KEY` sitting in the manager's shell is **not** passed through, so it neither reaches
+  nor overrides a spawned agent. It still governs any `claude` you run yourself in that shell.
 - This is the same credential the [containerized deploy](deploy.md) uses.
 
 ## How it binds
