@@ -250,8 +250,11 @@ regressions() {
   regression relative-dirs node:22-bookworm-slim '
     useradd -m -s /bin/bash tester
     su tester -c "cd \$HOME && mkdir -p work && cd work && COTAL_INSTALL_DIR=./cot COTAL_BIN_DIR=./cotbin sh /install.sh --no-setup --no-modify-path" >/tmp/o 2>&1
-    root=$(grep "^COTAL_ROOT=" /home/tester/work/cotbin/cotal)
-    case "$root" in *\"/home/tester/work/cot\"*) ;; *) echo "launcher kept a relative root: $root"; exit 1 ;; esac
+    # Strip the quoting and assert on the VALUE, so this does not re-break the next time the
+    # serialisation changes. What matters is that the recorded root is absolute.
+    root=$(grep "^COTAL_ROOT=" /home/tester/work/cotbin/cotal | sed -e "s/^COTAL_ROOT=//" | tr -d "\"\\047")
+    case "$root" in /*) ;; *) echo "launcher kept a relative root: $root"; exit 1 ;; esac
+    case "$root" in */work/cot) ;; *) echo "launcher lost the install path: $root"; exit 1 ;; esac
     # The real test: run it from somewhere else entirely.
     su tester -c "cd / && /home/tester/work/cotbin/cotal --version" >/dev/null 2>&1 || { echo "launcher broken outside its install dir"; exit 1; }
     echo VERDICT=ok
@@ -261,32 +264,49 @@ regressions() {
   # be $HOME/../elsewhere, which passes that test and still writes outside HOME, and either
   # can be a symlink pointing anywhere. Both escapes are checked.
   regression rc-escape node:22-bookworm-slim '
+    # Each case gets its OWN $HOME. Sharing one made the later cases dead code: the first
+    # install leaves a `# cotal` marker in that HOME rc, so setup_path short-circuits at
+    # "already" and never reaches the containment code the later cases exist to exercise.
     useradd -m -s /bin/bash tester
-    mkdir -p /home/tester/home /home/tester/escape && chown -R tester /home/tester
-    su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/../escape SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o 2>&1
-    if grep -q "^# cotal$" /home/tester/escape/.zshrc 2>/dev/null; then echo "dot-dot escaped HOME"; exit 1; fi
-    su tester -c "ln -s /home/tester/escape /home/tester/home/link"
-    su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/link SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o2 2>&1
-    if grep -q "^# cotal$" /home/tester/escape/.zshrc 2>/dev/null; then echo "symlink escaped HOME"; exit 1; fi
-    # The rc FILE itself as a symlink out of HOME: `>>` follows it, so containment has to
-    # resolve the final component, not just the directory holding it.
-    su tester -c "rm -f /home/tester/home/.zshrc; ln -s /home/tester/escape/zshrc /home/tester/home/.zshrc"
-    su tester -c "HOME=/home/tester/home SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o3 2>&1
-    if grep -q "^# cotal$" /home/tester/escape/zshrc 2>/dev/null; then echo "rc-file symlink escaped HOME"; exit 1; fi
-    # mkdir -p must not run before the destination is known to be inside HOME: a ZDOTDIR
-    # through a symlink used to create directories out there and only then refuse.
-    su tester -c "rm -f /home/tester/home/.zshrc"
-    mkdir -p /tmp/outside && chown tester /tmp/outside
-    su tester -c "ln -sf /tmp/outside /home/tester/home/link"
-    su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/link/newdir SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o4 2>&1
-    if [ -d /tmp/outside/newdir ]; then echo "created /tmp/outside/newdir before refusing"; exit 1; fi
-    # A link chain longer than the resolver walks must refuse, not accept the unresolved tail.
-    su tester -c "rm -f /home/tester/home/link /home/tester/home/.zshrc; touch /tmp/outside/final"
-    su tester -c "cd /home/tester/home && ln -s /tmp/outside/final l0 && i=1; while [ \$i -le 40 ]; do ln -s l\$((i-1)) l\$i; i=\$((i+1)); done; ln -s l40 .zshrc"
-    su tester -c "HOME=/home/tester/home SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o5 2>&1
-    if grep -q "^# cotal$" /tmp/outside/final 2>/dev/null; then echo "long symlink chain escaped HOME"; exit 1; fi
-    # Refusing must not mean failing: the install still lands, it just prints the PATH line.
-    su tester -c "HOME=/home/tester/home /home/tester/home/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "install did not complete"; exit 1; }
+    mkdir -p /tmp/outside && chown -R tester /tmp/outside /home/tester
+    fresh() { rm -rf "/home/tester/h$1"; mkdir -p "/home/tester/h$1"; chown tester "/home/tester/h$1"; }
+    esc() { grep -rqs "^# cotal$" /tmp/outside 2>/dev/null; }
+
+    # (a) ZDOTDIR with a .. component
+    fresh a
+    su tester -c "HOME=/home/tester/ha ZDOTDIR=/home/tester/ha/../../outside SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/a 2>&1
+    esc && { echo "dot-dot escaped HOME"; exit 1; }
+
+    # (b) ZDOTDIR as a symlink out of HOME
+    fresh b
+    su tester -c "ln -s /tmp/outside /home/tester/hb/link"
+    su tester -c "HOME=/home/tester/hb ZDOTDIR=/home/tester/hb/link SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/b 2>&1
+    esc && { echo "ZDOTDIR symlink escaped HOME"; exit 1; }
+
+    # (c) the rc FILE itself is a symlink out of HOME
+    fresh c
+    su tester -c "ln -s /tmp/outside/zshrc /home/tester/hc/.zshrc"
+    su tester -c "HOME=/home/tester/hc SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/c 2>&1
+    esc && { echo "rc-file symlink escaped HOME"; exit 1; }
+
+    # (d) mkdir -p must not create anything outside HOME before the check refuses
+    fresh d
+    su tester -c "ln -s /tmp/outside /home/tester/hd/link"
+    su tester -c "HOME=/home/tester/hd ZDOTDIR=/home/tester/hd/link/newdir SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/d 2>&1
+    [ -d /tmp/outside/newdir ] && { echo "created /tmp/outside/newdir before refusing"; exit 1; }
+
+    # (e) a link chain longer than the resolver walks must refuse, not accept the tail.
+    # 33 links on purpose: it must sit ABOVE any short resolver limit and BELOW the kernel
+    # limit of 40. A 41-link chain proves nothing, because the kernel rejects the open with
+    # ELOOP before a short resolver could ever matter.
+    fresh e
+    su tester -c "touch /tmp/outside/final"
+    su tester -c "cd /home/tester/he && ln -s /tmp/outside/final l0 && i=1; while [ \$i -le 32 ]; do ln -s l\$((i-1)) l\$i; i=\$((i+1)); done; ln -s l32 .zshrc"
+    su tester -c "HOME=/home/tester/he SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/e 2>&1
+    esc && { echo "long symlink chain escaped HOME"; exit 1; }
+
+    # Refusing must never mean failing: the install itself still has to land.
+    su tester -c "HOME=/home/tester/he /home/tester/he/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "install did not complete"; exit 1; }
     echo VERDICT=ok
   '
 
@@ -322,7 +342,7 @@ regressions() {
     useradd -m tester
     # The path is built with printf (34 is ASCII ") and passed through a file, so the
     # harness own quoting can never be what fails the test.
-    printf /tmp/weird%chome 34 > /tmp/hp
+    printf "/tmp/weird\\042home" > /tmp/hp
     hp=$(cat /tmp/hp)
     mkdir -p "$hp" && chown -R tester "$hp"
     su tester -c "H=\$(cat /tmp/hp); HOME=\$H sh /install.sh --no-setup --no-modify-path" >/tmp/o 2>&1 || { echo install-failed; tail -4 /tmp/o; exit 1; }
