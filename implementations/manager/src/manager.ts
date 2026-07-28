@@ -46,7 +46,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, attachHost } from "./attach-endpoint.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
@@ -284,7 +284,8 @@ export interface StartAgentOpts {
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
-   *  the connector. Imperative-only: never set from `resolved` (a manifest carries no prompt). */
+   *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
+   *  and rejects this flag alongside it (one source, no merge). */
   prompt?: string;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
@@ -2036,7 +2037,9 @@ export class Manager {
   }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
-   *  manager. The request carries a `{ runId, name }`, NEVER a path: the manager derives + validates
+   *  manager. The request carries `{ runId, name }` — plus, for a deploy from another checkout or
+   *  host, the resolved `spec` itself inline (validated as untrusted input and persisted under THIS
+   *  manager's `.cotal/run/` first) — NEVER a path: the manager derives + validates
    *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
    *  `loadLaunchSpec`'s untrusted-input + `validateLaunchPolicy` contract), materializes the named
    *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
@@ -2049,10 +2052,26 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
     let spec;
-    try {
-      spec = launchSpecForRun(this.workspaceRoot, runId);
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
+    if (args.spec !== undefined) {
+      // REMOTE deploy: the caller pushes the resolved spec inline over the control plane instead of
+      // sharing this checkout's disk. Same untrusted-input contract as the file path (strict schema,
+      // safe names, policy re-validation), then persisted under OUR `.cotal/run/<runId>.json` so
+      // stale-restart and retained resume read the same on-disk source either way. Still never a
+      // path: the payload is the spec itself, and where it lands is derived here.
+      try {
+        spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
+        if (spec.runId !== runId)
+          return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
+        persistLaunchSpec(this.workspaceRoot, spec);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    } else {
+      try {
+        spec = launchSpecForRun(this.workspaceRoot, runId);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
     }
     const la = spec.agents.find((a) => a.name === name);
     if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
@@ -2173,6 +2192,7 @@ export class Manager {
     let model = opts.model;
     let variant = opts.variant;
     let launchOptions = opts.launchOptions;
+    let prompt = opts.prompt;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -2188,6 +2208,8 @@ export class Manager {
       model = opts.model ?? r.model;
       variant = opts.variant ?? r.variant;
       launchOptions = mergeLaunchOptions(r.launchOptions, opts.launchOptions);
+      prompt = r.prompt; // the guard above rejected an imperative prompt — one source
+
     } else {
       let def: AgentDef;
       try {
@@ -2353,8 +2375,8 @@ export class Manager {
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
         resume: opts.resume,
-        // Initial prompt (imperative-only; the resolved guard above keeps manifests prompt-free).
-        prompt: opts.prompt,
+        // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
+        prompt,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) falls back to `["general"]`, which its
@@ -3072,6 +3094,12 @@ export class Manager {
     // mesh, the caller's owner-domain) on the privileged tier, any agent on admin.
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
+    // A name is a reusable slot and the authorization above can await (user mode reads the ledger).
+    // If the slot was stopped and refilled while we waited, everything below would act on a
+    // successor this caller was never authorized for — so re-assert the incarnation, then keep
+    // working from the handle we authorized rather than re-resolving the name.
+    if (this.agents.get(name) !== a)
+      return { ok: false, error: `agent "${name}" was replaced during authorization - retry` };
     // Only pty streams over the WS attach endpoint. External runtimes are watched natively,
     // and each handle's attach() throws with the right per-runtime guidance.
     if (a.handle.kind !== "pty") {
@@ -3081,7 +3109,7 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
-    return { ok: true, data: { ws: this.attach.url(name) } };
+    return { ok: true, data: { ws: this.attach.url(name, a.handle) } };
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */

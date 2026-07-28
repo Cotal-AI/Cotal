@@ -273,13 +273,21 @@ export class AttachEndpoint {
    * authorization the manager just performed for this caller and this agent. It is single-use and
    * short-lived: the client redeems it immediately, and a leaked URL (shell history, a log, a
    * `Referer`) is spent or expired rather than a standing key to someone's terminal.
+   *
+   * `expected` is the handle the caller actually authorized, and it is REQUIRED. A name is a reusable
+   * slot, and authorization is async (a user-mode ledger read), so between the caller resolving the
+   * name and arriving here the slot can have been stopped and refilled by a same-name successor.
+   * Re-resolving the name would then mint a valid ticket for an agent nobody authorized. Binding to
+   * the caller's own handle closes that window: if the slot moved, there is no capability to issue.
    */
-  url(name: string): string {
+  url(name: string, expected: AgentHandle): string {
     this.#sweepTickets();
     const handle = this.lookup(name);
     if (!handle) throw new Error(`cannot issue an attach capability for "${name}": no such running agent`);
+    if (handle !== expected)
+      throw new Error(`cannot issue an attach capability for "${name}": it was replaced during authorization`);
     const ticket = randomBytes(32).toString("hex");
-    this.#tickets.set(ticket, { name, handle, expires: Date.now() + ATTACH_TICKET_TTL_MS });
+    this.#tickets.set(ticket, { name, handle: expected, expires: Date.now() + ATTACH_TICKET_TTL_MS });
     return `ws://${this.#advertised}:${this.#port}/attach/${encodeURIComponent(name)}?t=${ticket}`;
   }
 

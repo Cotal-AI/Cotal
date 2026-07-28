@@ -130,7 +130,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--server <url>` | auto (free local port) | Listen URL override |
-| `--host <host>` | — | Bind host override. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL |
+| `--host <host>` | — | Bind host override. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#ps-stop-attach) working |
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | — | JetStream store directory |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
@@ -164,6 +164,7 @@ without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 cotal down
 cotal down --preserve-state [--store-dir <dir>]
 cotal down manager [delivery auth web nats ...]
+cotal down web [--space <name>]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 ```
 
@@ -171,13 +172,17 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | — | Tear down this manifest's deploy |
 | `--run <id>` | — | Tear down one `spawn -f` run by id |
+| `--space <name>` | current mesh | With components: the mesh whose target-addressed components (e.g. `web`) to stop |
 | `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 
 Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
-the broker running, and `cotal down web` is available when the web extension is installed. The
+the broker running, and `cotal down web` is available when the web extension is installed. A
+component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
+resolves the mesh exactly like `cotal web` (registry current mesh first, `--space` to name one), so
+it works from any directory; the other components always stop under the folder you run it in. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
@@ -443,6 +448,14 @@ row ([identity & auth](identity-and-auth.md)). Launch detached agents with
 address down, which is what lets you attach to an agent whose manager runs on another machine. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
+
+That address is **recorded on the mesh** and carried forward, because it is a decision rather than
+something later commands can work out for themselves (a broker dial address is not a manager bind
+address). Every later manager launch for the same mesh reuses it — a same-root `cotal up` repair,
+adopting a preserved or restored listener, a `spawn -f` manifest deploy — so a manager replacement
+does not quietly move a reachable attach face back to loopback. Passing `--host` again overrides it,
+so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
+and records nothing.
 
 Because that face carries terminal read and write for every managed agent, it is credentialed in two
 tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,

@@ -32,6 +32,12 @@ export interface LocalProcess extends Extension {
   readonly clearsMesh?: boolean;
   /** Hide this process from status unless the selected mesh uses per-user auth. */
   readonly visibleWhen?: "user-auth";
+  /** Which mesh root a selective stop resolves this process's pidfile under. Absent: the folder the
+   *  command runs in (the broker stack `up` started there). `"target"`: the machine mesh-target
+   *  resolution (registry current mesh first, then the folder) — for a process whose START is
+   *  target-resolved from any directory and records its pidfile under the TARGET mesh's root; a
+   *  cwd-only stop would miss the live process. Bare whole-stack sweeps stay folder-scoped. */
+  readonly rootedAt?: "target";
 }
 
 /** Resolve a declarative local-process path, rejecting absolute/traversal templates. */

@@ -52,6 +52,7 @@ const resolved: MeshLaunchAgent = {
   launchOptions: { temperature: "0.2" },
   description: "Quick web researcher.",
   body: "Research the web; report in 3 bullets.",
+  prompt: "Kick off: post your research plan in #general.",
   capabilities: ["spawn"],
   subscribe: ["general", "ops"],
   allowSubscribe: ["general", "ops", "review"],
@@ -92,6 +93,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
 };
 let seenVariant: string | undefined;
 let seenLaunchOptions: Record<string, unknown> | undefined;
+let seenPrompt: string | undefined;
 const recCon: Connector = {
   kind: "connector",
   name: "smoke-launch",
@@ -100,6 +102,7 @@ const recCon: Connector = {
   buildLaunch: (opts) => {
     seenVariant = opts.variant;
     seenLaunchOptions = opts.launchOptions;
+    seenPrompt = opts.prompt;
     return { command: "true", args: [], env: {} };
   },
 };
@@ -117,6 +120,10 @@ registry.register(recCon);
   check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
   check("variant is forwarded to the connector", seenVariant === "high", seenVariant);
   check("launchOptions forwarded to the connector (via resolved)", JSON.stringify(seenLaunchOptions) === JSON.stringify({ temperature: "0.2" }), seenLaunchOptions);
+  check("manifest kickoff prompt forwarded to the connector (via resolved)", seenPrompt === "Kick off: post your research plan in #general.", seenPrompt);
+  // One source: an imperative --prompt alongside a resolved launch is a caller contract error.
+  const rej = await mgr.startAgent({ ...launchAgentToStartOpts(resolved, personaPath), prompt: "imperative override" });
+  check("imperative prompt alongside resolved is rejected", rej.ok === false && /prompt/.test(rej.error ?? ""), JSON.stringify(rej));
 
   const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);
@@ -151,6 +158,8 @@ function writeSpec(name: string, body: unknown): string {
   throws("unsafe capability token rejected", () => loadLaunchSpec(writeSpec("a3.json", agent1({ capabilities: ["spawn x"] }))));
   throws("non-alphanumeric hash rejected", () => loadLaunchSpec(writeSpec("a4.json", agent1({ hash: "../../etc" }))));
   throws("empty variant rejected", () => loadLaunchSpec(writeSpec("a5.json", agent1({ variant: "" }))));
+  throws("empty prompt rejected", () => loadLaunchSpec(writeSpec("a6.json", agent1({ prompt: "" }))));
+  check("kickoff prompt loads through the strict schema", loadLaunchSpec(writeSpec("a7.json", agent1({ prompt: "go" }))).agents[0].prompt === "go");
   // Policy re-validation at the manager boundary — --launch must not be a looser manifest format.
   throws("wildcard scope in launch policy rejected", () => loadLaunchSpec(writeSpec("p1.json", agent1({ subscribe: ["team.>"], allowSubscribe: ["team.>"] }))));
   throws("subscribe ⊄ allowSubscribe rejected", () => loadLaunchSpec(writeSpec("p2.json", agent1({ subscribe: ["general"], allowSubscribe: [] }))));
@@ -220,6 +229,28 @@ function writeSpec(name: string, body: unknown): string {
   }
   const bad = await op({ runId: runId2, name: "ghost" });
   check("opLaunch rejects an unknown agent name", bad.ok === false);
+
+  // --- INLINE spec: the remote-deploy path (spec pushed over the control plane, no shared disk) --
+  const runId3 = "cafebabe03";
+  const spec3: MeshLaunchSpec = {
+    apiVersion: "cotal-launch/v1",
+    space: "demo",
+    runId: runId3,
+    agents: [{
+      name: "pusher", agent: "smoke-launch", role: "researcher", model: "opus", body: "Inline persona.",
+      subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"], personaPath: undefined, hash: "def456",
+    }],
+  };
+  const inline = await op({ runId: runId3, name: "pusher", spec: spec3 });
+  check("opLaunch boots from an INLINE spec (no pre-shared run file)", inline.ok === true, inline.error);
+  check("inline spec persisted under the MANAGER's own run tree", existsSync(join(root, ".cotal", "run", `${runId3}.json`)));
+  check("persisted spec round-trips through launchSpecForRun", launchSpecForRun(root, runId3).agents[0].name === "pusher");
+  const mism = await op({ runId: "aaaaaaaa04", name: "pusher", spec: spec3 });
+  check("inline spec runId mismatch rejected", mism.ok === false && /does not match/.test(mism.error ?? ""), mism.error);
+  const evil = await op({ runId: runId3, name: "pusher", spec: { ...spec3, agents: [{ ...spec3.agents[0], name: "../evil" }] } });
+  check("invalid inline spec rejected (unsafe agent name)", evil.ok === false);
+  const again = await op({ runId: runId3, name: "pusher", spec: spec3 });
+  check("re-push of the same inline spec is idempotent (collision-numbered spawn)", again.ok === true && (again.data as { name?: string })?.name === "pusher-2", JSON.stringify(again));
 }
 
 // --- symlinked parent dir refused (writes can't escape the run tree) ----------------------------

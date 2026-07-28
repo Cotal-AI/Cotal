@@ -33,6 +33,14 @@ export interface MeshEntry {
    *  broker truth: it lives under the user's protected registry dir and is trusted the way the
    *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
   userAuth?: UserAuthInfo;
+  /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
+   *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
+   *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind
+   *  address (see the note in `Manager`'s constructor), so nothing downstream can reconstruct it.
+   *  Every later manager launch for this mesh — same-root repair, adopting a preserved listener,
+   *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
+   *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
+  attachHost?: string;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }

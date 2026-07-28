@@ -22,6 +22,10 @@ export interface MeshLaunchAgent {
   description?: string;
   /** Persona body — materialized to a transient, non-authoritative file the connector reads. */
   body?: string;
+  /** Kickoff prompt auto-submitted at session start (the manifest's `prompt:`), forwarded to the
+   *  connector exactly like the imperative `--prompt`. Part of the launch form: re-submitted on
+   *  every (re)start under this entry, and hash-covered so a change marks a running agent stale. */
+  prompt?: string;
   capabilities?: string[];
   /** Effective merged read set — the sole creds authority (not re-read from any file). */
   subscribe: string[];
