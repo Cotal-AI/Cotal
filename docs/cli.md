@@ -164,6 +164,7 @@ without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 cotal down
 cotal down --preserve-state [--store-dir <dir>]
 cotal down manager [delivery auth web nats ...]
+cotal down web [--space <name>]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 ```
 
@@ -171,13 +172,17 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | — | Tear down this manifest's deploy |
 | `--run <id>` | — | Tear down one `spawn -f` run by id |
+| `--space <name>` | current mesh | With components: the mesh whose target-addressed components (e.g. `web`) to stop |
 | `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 
 Bare `cotal down` stops the whole local stack in dependency order. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
-the broker running, and `cotal down web` is available when the web extension is installed. The
+the broker running, and `cotal down web` is available when the web extension is installed. A
+component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
+resolves the mesh exactly like `cotal web` (registry current mesh first, `--space` to name one), so
+it works from any directory; the other components always stop under the folder you run it in. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.

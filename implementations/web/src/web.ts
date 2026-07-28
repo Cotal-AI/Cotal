@@ -40,6 +40,9 @@ export const webProcess: LocalProcess = {
   label: "web dashboard",
   order: 40,
   pidFile: "web.pid",
+  // The dashboard starts target-resolved from any directory and claims its pidfile under the
+  // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
+  rootedAt: "target",
 };
 
 function pidAlive(pid: number): boolean {
