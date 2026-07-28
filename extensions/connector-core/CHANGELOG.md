@@ -1,5 +1,7 @@
 # @cotal-ai/connector-core
 
+## 0.14.9
+
 ## 0.14.8
 
 ## 0.14.7
