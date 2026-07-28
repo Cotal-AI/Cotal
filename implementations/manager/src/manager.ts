@@ -46,7 +46,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, attachHost } from "./attach-endpoint.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
@@ -2037,7 +2037,9 @@ export class Manager {
   }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
-   *  manager. The request carries a `{ runId, name }`, NEVER a path: the manager derives + validates
+   *  manager. The request carries `{ runId, name }` — plus, for a deploy from another checkout or
+   *  host, the resolved `spec` itself inline (validated as untrusted input and persisted under THIS
+   *  manager's `.cotal/run/` first) — NEVER a path: the manager derives + validates
    *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
    *  `loadLaunchSpec`'s untrusted-input + `validateLaunchPolicy` contract), materializes the named
    *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
@@ -2050,10 +2052,26 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
     let spec;
-    try {
-      spec = launchSpecForRun(this.workspaceRoot, runId);
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
+    if (args.spec !== undefined) {
+      // REMOTE deploy: the caller pushes the resolved spec inline over the control plane instead of
+      // sharing this checkout's disk. Same untrusted-input contract as the file path (strict schema,
+      // safe names, policy re-validation), then persisted under OUR `.cotal/run/<runId>.json` so
+      // stale-restart and retained resume read the same on-disk source either way. Still never a
+      // path: the payload is the spec itself, and where it lands is derived here.
+      try {
+        spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
+        if (spec.runId !== runId)
+          return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
+        persistLaunchSpec(this.workspaceRoot, spec);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    } else {
+      try {
+        spec = launchSpecForRun(this.workspaceRoot, runId);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
     }
     const la = spec.agents.find((a) => a.name === name);
     if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };

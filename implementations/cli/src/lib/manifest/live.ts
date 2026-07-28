@@ -5,7 +5,7 @@
  * deployer-view deploy (the manager's owner-equality authorization governs there). (Channel-registry
  * reads use `readChannelRegistry`, which connects itself.)
  */
-import { CotalEndpoint, CONTROL_ADMIN, type ControlReply, type ControlTier, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, CONTROL_ADMIN, type ControlReply, type ControlTier, type MeshLaunchSpec, type Presence } from "@cotal-ai/core";
 import { START_TIMEOUT_MS } from "../control.js";
 
 export interface MeshConn {
@@ -89,9 +89,11 @@ export async function waitLeaseGone(ep: CotalEndpoint, timeoutMs: number): Promi
  *  a static operator deploy (the `launch` op is operator-only there; a spawn-capable agent must
  *  not reach it), on the PRIVILEGED tier for a user-mode deployer-view deploy (the manager
  *  enforces spec-owner === caller-owner). The manager derives `.cotal/run/<runId>.json` itself;
- *  we pass the runId, never a path. */
-export async function launchAgent(ep: CotalEndpoint, runId: string, name: string, tier: ControlTier = CONTROL_ADMIN): Promise<ControlReply> {
+ *  we pass the runId, never a path. When the serving manager lives in ANOTHER checkout/host, pass
+ *  `spec` and the resolved spec rides the control plane inline — the manager validates it as
+ *  untrusted input and persists it under its own run tree before launching. */
+export async function launchAgent(ep: CotalEndpoint, runId: string, name: string, tier: ControlTier = CONTROL_ADMIN, spec?: MeshLaunchSpec): Promise<ControlReply> {
   // #159 B1: `launch` funnels into the same startAgent readiness wait as `start` — the manager
   // replies only on a real outcome (join / exit / ~30s backstop), so the request must outlive it.
-  return ep.requestControl(tier, { op: "launch", args: { runId, name } }, START_TIMEOUT_MS);
+  return ep.requestControl(tier, { op: "launch", args: { runId, name, ...(spec ? { spec } : {}) } }, START_TIMEOUT_MS);
 }
