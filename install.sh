@@ -32,8 +32,11 @@
 #   then delete the `# cotal` block from your shell rc.
 #
 # Apache-2.0. Everything below runs inside main(), invoked by the brace-wrapped last line.
-# A compound command is not executed until its closing brace is parsed, so a download cut
-# short at ANY byte defines some functions and then does nothing at all.
+# A compound command is not executed until its closing brace is parsed, so any prefix that is
+# missing a syntactically meaningful byte of that line defines some functions and then does
+# nothing. (A prefix missing only the trailing newline is the whole program, and runs, with
+# exactly the arguments the caller passed. What can never happen is main running with argv
+# the caller did not give it, which is what a bare `main` at the end would allow.)
 
 set -eu
 
@@ -85,7 +88,10 @@ init_term() {
     C_RED="${ESC}[31m"
     C_YELLOW="${ESC}[33m"
   fi
-  case "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" in
+  # Effective locale, in POSIX precedence order. Matching all three at once let LC_ALL=C
+  # with LANG=en_US.UTF-8 still print Unicode, which is exactly backwards.
+  _loc="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+  case "$_loc" in
     *UTF-8* | *utf8* | *UTF8* | *utf-8*) UTF8=1 ;;
   esac
   if [ "$UTF8" = 1 ]; then
@@ -112,6 +118,14 @@ die() {
   printf '  %sStuck? %s%s\n' "$C_DIM" "$ISSUES_URL" "$C_OFF"
   blank
   exit 1
+}
+
+# A value emitted as shell SOURCE (the launcher, an rc line) must be a safe literal, not
+# pasted between quotes. A path may legally contain " $ ` \ and a newline, and pasting one
+# into COTAL_ROOT="..." produces a launcher that does not parse, or worse, one that runs
+# something. Single quotes with the '"'"' escape are the only form with no metacharacters.
+shquote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
 # `~/x` instead of `/home/someone/x`, so paths stay readable and shareable.
@@ -168,6 +182,13 @@ cleanup() {
 # inside it, so a concurrent pair can finish "successfully" and leave no working cotal at
 # all. Observed intermittently, which is worse than a clean failure. Creating a symlink is
 # atomic, so one install proceeds and the rest say so and stop.
+# The lock owner, as "<host>:<pid>". A bare pid says nothing off this machine: on a shared or
+# NFS home, or across PID namespaces, another host's live pid simply does not exist here and
+# `kill -0` would call a running install stale. Staleness is only ever judged for our own host.
+lock_owner_id() {
+  printf '%s:%s\n' "$(uname -n 2>/dev/null || printf 'unknown')" "$$"
+}
+
 acquire_install_lock() {
   _lock="$INSTALL_DIR/.install-lock"
   _tries=0
@@ -185,7 +206,7 @@ acquire_install_lock() {
     # write-a-pid-file has a window between the two where the lock is held but unattributed,
     # and a second installer arriving in that window reads no owner, concludes "stale", and
     # steals a live lock. There is no such window here: the owner ships with the lock.
-    if ln -s "$$" "$_lock" 2>/dev/null; then
+    if ln -s "$(lock_owner_id)" "$_lock" 2>/dev/null; then
       LOCKDIR="$_lock"
       return 0
     fi
@@ -204,11 +225,23 @@ acquire_install_lock() {
         "Remove it if no other install is running:" \
         "  rm -rf $_lock"
     fi
+    _owner_host=${_owner%:*}
+    _owner_pid=${_owner##*:}
+    # Another host holds it: we cannot ask whether that process is alive, so we never assume
+    # it is dead. Refusing is the only safe answer on a shared or networked home.
+    if [ "$_owner_host" != "$(uname -n 2>/dev/null || printf 'unknown')" ]; then
+      die "Another Cotal install holds the lock from host \"$_owner_host\" (pid $_owner_pid)." \
+        "This install directory is shared with another machine, and whether that install is" \
+        "still running cannot be determined from here." \
+        "" \
+        "Wait for it to finish. If you are sure it is gone, clear the lock:" \
+        "  rm -f $_lock"
+    fi
     # kill -0 answers "may I signal this pid", not "is this my installer". A pid recycled by
     # an unrelated process therefore reads as a live owner. That is rare, and fail-closed is
     # the right default, but it must never be a dead end: print the way out every time.
-    if kill -0 "$_owner" 2>/dev/null; then
-      die "Another Cotal install is already running (pid $_owner)." \
+    if kill -0 "$_owner_pid" 2>/dev/null; then
+      die "Another Cotal install is already running (pid $_owner_pid)." \
         "They would overwrite each other inside $(tildify "$INSTALL_DIR")." \
         "Wait for it to finish, then run this again." \
         "" \
@@ -490,8 +523,12 @@ BIN_DIR=$(absolutize "$BIN_DIR")
 resolved_target() {
   _rt="$1"
   _rt_hops=0
-  while [ -L "$_rt" ] && [ "$_rt_hops" -lt 32 ]; do
-    _rt_link=$(readlink "$_rt" 2>/dev/null) || break
+  while [ -L "$_rt" ]; do
+    # Linux follows 40 links. Stopping short and then treating the still-unresolved link as
+    # canonical is how a long chain walks straight past a containment check, so running out
+    # of hops is a refusal, not an answer.
+    [ "$_rt_hops" -lt 40 ] || return 1
+    _rt_link=$(readlink "$_rt" 2>/dev/null) || return 1
     case "$_rt_link" in
       /*) _rt="$_rt_link" ;;
       *) _rt="$(dirname "$_rt")/$_rt_link" ;;
@@ -604,6 +641,22 @@ vendor_node() {
       "Looked in: $_dir/bin"
   fi
 
+  # A correct checksum says the bytes are authentic, not that they run here. Official Node 22+
+  # is built against glibc 2.28, so on an older distribution the download and the checksum both
+  # succeed and npm then dies with "version GLIBC_2.28 not found" several steps later, after we
+  # have already announced the runtime as good. Ask the binary itself, now.
+  if ! _node_check=$("$_dir/bin/node" -v 2>&1); then
+    rm -rf "$_dir"
+    die "Node $NODE_PIN downloaded and verified, but it cannot run on this system." \
+      "$(printf '%s' "$_node_check" | head -1)" \
+      "" \
+      "Official Node $NODE_MIN_MAJOR+ builds require glibc 2.28 or newer (Debian 10," \
+      "Ubuntu 18.10, RHEL 8 and later). This machine is older than that." \
+      "" \
+      "Install a Node $NODE_MIN_MAJOR+ built for this distribution, then run this again;" \
+      "it will use yours instead of downloading one."
+  fi
+
   NODE_BIN="$_dir/bin/node"
   NPM_BIN="$_dir/bin/npm"
   NODE_LABEL="$NODE_PIN $S_SEP downloaded and verified against nodejs.org"
@@ -690,12 +743,13 @@ show_log_tail() {
 write_launcher() {
   mkdir -p "$BIN_DIR"
   _tmp="$BIN_DIR/.cotal.$$"
+  _root_lit=$(shquote "$INSTALL_DIR")
   cat >"$_tmp" <<EOF
 #!/bin/sh
 # Cotal launcher, written by https://get.cotal.ai
 # Pins the Node this install was verified against, so a change to the system Node can never
 # leave Cotal running on a runtime it was not installed for.
-COTAL_ROOT="$INSTALL_DIR"
+COTAL_ROOT=${_root_lit}
 
 # When the pin was a Node this installer did not own, the user can still remove it later.
 # Say so in one clear line instead of letting them hit the raw
@@ -761,7 +815,7 @@ setup_path() {
   case "$_shell" in
     zsh)
       PATH_RC="${ZDOTDIR:-$HOME}/.zshrc"
-      _line="export PATH=\"$BIN_DIR:\$PATH\""
+      _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       ;;
     bash)
       # Linux logs you into an interactive shell reading .bashrc; macOS Terminal starts a
@@ -784,11 +838,11 @@ setup_path() {
       else
         PATH_RC="$_first"
       fi
-      _line="export PATH=\"$BIN_DIR:\$PATH\""
+      _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       ;;
     fish)
       PATH_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
-      _line="fish_add_path \"$BIN_DIR\""
+      _line="fish_add_path $(shquote "$BIN_DIR")"
       ;;
     *)
       PATH_STATE="manual"
@@ -819,13 +873,37 @@ setup_path() {
       ;;
   esac
 
+  _real_home=$(cd "$HOME" 2>/dev/null && pwd -P) || _real_home="$HOME"
+
+  # Resolve the nearest EXISTING ancestor before creating anything. mkdir -p on a path that
+  # runs through a symlink out of $HOME creates directories out there, and discovering the
+  # escape afterwards does not un-create them. `$HOME/link -> /tmp/outside` with
+  # ZDOTDIR=$HOME/link/newdir made /tmp/outside/newdir before the check ever ran.
+  _anc=$(dirname "$PATH_RC")
+  while [ ! -d "$_anc" ] && [ "$_anc" != "/" ] && [ "$_anc" != "." ]; do
+    _anc=$(dirname "$_anc")
+  done
+  _anc_real=$(cd "$_anc" 2>/dev/null && pwd -P) || _anc_real=""
+  case "$_anc_real" in
+    "$_real_home" | "$_real_home"/*) ;;
+    *)
+      PATH_STATE="manual"
+      return 0
+      ;;
+  esac
+
   mkdir -p "$(dirname "$PATH_RC")" 2>/dev/null || {
     PATH_STATE="manual"
     return 0
   }
 
-  _real_home=$(cd "$HOME" 2>/dev/null && pwd -P) || _real_home="$HOME"
-  case "$(resolved_target "$PATH_RC")" in
+  # And the final destination itself, following the rc file if it is a link. A refusal from
+  # resolved_target (an unresolvable chain) is a refusal here too.
+  _rc_real=$(resolved_target "$PATH_RC") || {
+    PATH_STATE="manual"
+    return 0
+  }
+  case "$_rc_real" in
     "$_real_home"/*) ;;
     *)
       PATH_STATE="manual"
@@ -983,6 +1061,15 @@ hand_off_to_setup() {
 # Dry run
 # ---------------------------------------------------------------------------------------
 
+# A real path-boundary test. "$HOME"* would call /tmp/h-escape a child of /tmp/h.
+under_home() {
+  [ -n "${HOME:-}" ] || return 1
+  case "$1" in
+    "$HOME" | "$HOME"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 plan_line() { printf '    %s%-46s%s %s%s%s\n' "$C_OFF" "$1" "$C_OFF" "$C_DIM" "$2" "$C_OFF"; }
 
 dry_run_report() {
@@ -1009,10 +1096,12 @@ dry_run_report() {
   # Report the boundary that actually applies. The default install is contained in $HOME, but
   # COTAL_INSTALL_DIR / COTAL_BIN_DIR / XDG_DATA_HOME can point anywhere, and claiming
   # containment we are not delivering would be the wrong kind of reassuring.
-  case "$INSTALL_DIR$BIN_DIR" in
-    "${HOME:-/dev/null}"*"${HOME:-/dev/null}"*) dim_line "  anything outside \$HOME $S_SEP any system directory $S_SEP sudo" ;;
-    *) dim_line "  any system directory $S_SEP sudo   (note: you have redirected the install outside \$HOME)" ;;
-  esac
+  if under_home "$INSTALL_DIR" && under_home "$BIN_DIR"; then
+    dim_line "  anything outside \$HOME $S_SEP any system directory $S_SEP sudo"
+  else
+    dim_line "  any system directory $S_SEP sudo"
+    warn_line "you have redirected the install outside \$HOME, so the usual containment does not apply"
+  fi
   blank
 }
 

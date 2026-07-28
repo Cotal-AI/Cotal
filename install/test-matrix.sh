@@ -227,7 +227,7 @@ regressions() {
     mkdir -p /home/tester/.local/share/cotal && chown -R tester /home/tester
     # (a) live owner: must refuse
     LIVE=$(su tester -c "sleep 300 >/dev/null 2>&1 & echo \$!")
-    su tester -c "ln -s $LIVE /home/tester/.local/share/cotal/.install-lock"
+    su tester -c "ln -s $(uname -n):$LIVE /home/tester/.local/share/cotal/.install-lock"
     out=$(su tester -c "cd \$HOME && sh /install.sh --no-setup" 2>&1 || true)
     case "$out" in *"Another Cotal install is already running"*) ;; *) echo "live lock not refused"; exit 1 ;; esac
     [ ! -e /home/tester/.local/bin/cotal ] || { echo "installed despite a live lock"; exit 1; }
@@ -238,7 +238,7 @@ regressions() {
     case "$out" in *"in the way of the install lock"*) ;; *) echo "directory lock not refused"; exit 1 ;; esac
     [ ! -e /home/tester/.local/bin/cotal ] || { echo "installed despite a foreign lock"; exit 1; }
     # (c) stale owner: must take over and finish
-    su tester -c "rm -rf /home/tester/.local/share/cotal/.install-lock; ln -s 999999 /home/tester/.local/share/cotal/.install-lock"
+    su tester -c "rm -rf /home/tester/.local/share/cotal/.install-lock; ln -s $(uname -n):999999 /home/tester/.local/share/cotal/.install-lock"
     su tester -c "cd \$HOME && sh /install.sh --no-setup" >/tmp/c 2>&1 || { echo "stale lock not recovered"; tail -4 /tmp/c; exit 1; }
     su tester -c "\$HOME/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "no cotal after stale-lock recovery"; exit 1; }
     [ ! -e /home/tester/.local/share/cotal/.install-lock ] || { echo "lock leaked"; exit 1; }
@@ -273,6 +273,18 @@ regressions() {
     su tester -c "rm -f /home/tester/home/.zshrc; ln -s /home/tester/escape/zshrc /home/tester/home/.zshrc"
     su tester -c "HOME=/home/tester/home SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o3 2>&1
     if grep -q "^# cotal$" /home/tester/escape/zshrc 2>/dev/null; then echo "rc-file symlink escaped HOME"; exit 1; fi
+    # mkdir -p must not run before the destination is known to be inside HOME: a ZDOTDIR
+    # through a symlink used to create directories out there and only then refuse.
+    su tester -c "rm -f /home/tester/home/.zshrc"
+    mkdir -p /tmp/outside && chown tester /tmp/outside
+    su tester -c "ln -sf /tmp/outside /home/tester/home/link"
+    su tester -c "HOME=/home/tester/home ZDOTDIR=/home/tester/home/link/newdir SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o4 2>&1
+    if [ -d /tmp/outside/newdir ]; then echo "created /tmp/outside/newdir before refusing"; exit 1; fi
+    # A link chain longer than the resolver walks must refuse, not accept the unresolved tail.
+    su tester -c "rm -f /home/tester/home/link /home/tester/home/.zshrc; touch /tmp/outside/final"
+    su tester -c "cd /home/tester/home && ln -s /tmp/outside/final l0 && i=1; while [ \$i -le 40 ]; do ln -s l\$((i-1)) l\$i; i=\$((i+1)); done; ln -s l40 .zshrc"
+    su tester -c "HOME=/home/tester/home SHELL=/bin/zsh sh /install.sh --no-setup" >/tmp/o5 2>&1
+    if grep -q "^# cotal$" /tmp/outside/final 2>/dev/null; then echo "long symlink chain escaped HOME"; exit 1; fi
     # Refusing must not mean failing: the install still lands, it just prints the PATH line.
     su tester -c "HOME=/home/tester/home /home/tester/home/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "install did not complete"; exit 1; }
     echo VERDICT=ok
@@ -288,6 +300,45 @@ regressions() {
     pin=$(readlink /home/tester/.local/share/cotal/nodebin/node)
     case "$pin" in /*) ;; *) echo "pinned a relative path: $pin"; exit 1 ;; esac
     su tester -c "cd / && \$HOME/.local/bin/cotal --version" >/dev/null 2>&1 || { echo "launcher broken after a relative-PATH install"; exit 1; }
+    echo VERDICT=ok
+  '
+
+  # A verified checksum says the bytes are authentic, not that they run. Node 22+ needs
+  # glibc 2.28, so an older distribution used to get a "verified" runtime and then a raw
+  # GLIBC error from npm several steps later.
+  regression old-glibc ubuntu:18.04 '
+    apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+    useradd -m -s /bin/bash tester
+    out=$(su tester -c "cd \$HOME && sh /install.sh --no-setup" 2>&1 || true)
+    case "$out" in *"cannot run on this system"*) ;; *) echo "no compatibility diagnosis: $(printf %s "$out" | tail -3)"; exit 1 ;; esac
+    case "$out" in *"glibc 2.28"*) ;; *) echo "did not name the real requirement"; exit 1 ;; esac
+    [ ! -e /home/tester/.local/bin/cotal ] || { echo "left a launcher behind after failing"; exit 1; }
+    echo VERDICT=ok
+  '
+
+  # Paths become shell SOURCE in the launcher and the rc line, so a legal but awkward path
+  # must be serialised, not pasted between quotes.
+  regression hostile-path node:22-bookworm-slim '
+    useradd -m tester
+    # The path is built with printf (34 is ASCII ") and passed through a file, so the
+    # harness own quoting can never be what fails the test.
+    printf /tmp/weird%chome 34 > /tmp/hp
+    hp=$(cat /tmp/hp)
+    mkdir -p "$hp" && chown -R tester "$hp"
+    su tester -c "H=\$(cat /tmp/hp); HOME=\$H sh /install.sh --no-setup --no-modify-path" >/tmp/o 2>&1 || { echo install-failed; tail -4 /tmp/o; exit 1; }
+    v=$(su tester -c "H=\$(cat /tmp/hp); HOME=\$H \"\$H/.local/bin/cotal\" --version" 2>&1 | head -1)
+    case "$v" in cotal-ai*) echo VERDICT=ok ;; *) echo "launcher does not parse: $v"; exit 1 ;; esac
+  '
+
+  # A pid means nothing off the host that wrote it. Another machine holding the lock must be
+  # refused, never judged stale by a local kill -0.
+  regression cross-host-lock node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester
+    mkdir -p /home/tester/.local/share/cotal && chown -R tester /home/tester
+    su tester -c "ln -s someotherhost:12345 /home/tester/.local/share/cotal/.install-lock"
+    out=$(su tester -c "cd \$HOME && sh /install.sh --no-setup" 2>&1 || true)
+    case "$out" in *"holds the lock from host"*) ;; *) echo "cross-host lock not refused"; exit 1 ;; esac
+    [ ! -e /home/tester/.local/bin/cotal ] || { echo "installed despite another host holding the lock"; exit 1; }
     echo VERDICT=ok
   '
 
@@ -418,6 +469,19 @@ main() {
     esac
     shift
   done
+
+  # A name that matches nothing used to print "0 passed" and exit 0, so a typo in CI read as
+  # a pass. Check the requested names against the table before running anything.
+  if [ ${#WANT[@]} -gt 0 ]; then
+    known=$(scenarios | cut -d'~' -f1; grep -oE '^  regression [a-z-]+' "$0" | awk '{print $2}')
+    for w in "${WANT[@]}"; do
+      grep -qx -- "$w" <<<"$known" || {
+        echo "unknown scenario: $w" >&2
+        echo "known: $(tr '\n' ' ' <<<"$known")" >&2
+        exit 2
+      }
+    done
+  fi
 
   [ -f "$SCRIPT" ] || {
     echo "no install.sh at $SCRIPT" >&2
