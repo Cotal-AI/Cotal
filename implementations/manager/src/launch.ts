@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, lstatSync } from "node:fs";
+import { readFileSync, writeFileSync, lstatSync, renameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
@@ -53,8 +54,21 @@ const LaunchSpecSchema = z.strictObject({
   agents: z.array(LaunchAgentSchema),
 });
 
-/** Parse + strictly validate a launch spec file. Throws on any deviation (it's untrusted, local
- *  though it is) — including an agent name that isn't a safe mesh/file token (no path traversal). */
+/** Parse + strictly validate a launch spec from untrusted JSON (a file OR an inline control-op
+ *  payload). Throws on any deviation — including an agent name that isn't a safe mesh/file token
+ *  (no path traversal). */
+export function parseLaunchSpec(json: unknown, label: string): MeshLaunchSpec {
+  const r = LaunchSpecSchema.safeParse(json);
+  if (!r.success)
+    throw new Error(`${label}: ${r.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ")}`);
+  for (const a of r.data.agents) {
+    assertValidName(a.name); // names the transient file → must be safe
+    validateLaunchPolicy(a); // don't let --launch be a looser second manifest format
+  }
+  return r.data;
+}
+
+/** Parse + strictly validate a launch spec file ({@link parseLaunchSpec} on its contents). */
 export function loadLaunchSpec(path: string): MeshLaunchSpec {
   let json: unknown;
   try {
@@ -62,14 +76,22 @@ export function loadLaunchSpec(path: string): MeshLaunchSpec {
   } catch (e) {
     throw new Error(`launch spec ${path}: ${(e as Error).message}`);
   }
-  const r = LaunchSpecSchema.safeParse(json);
-  if (!r.success)
-    throw new Error(`launch spec ${path}: ${r.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ")}`);
-  for (const a of r.data.agents) {
-    assertValidName(a.name); // names the transient file → must be safe
-    validateLaunchPolicy(a); // don't let --launch be a looser second manifest format
-  }
-  return r.data;
+  return parseLaunchSpec(json, `launch spec ${path}`);
+}
+
+/** Persist a PUSHED (inline) launch spec under this manager's own `.cotal/run/<runId>.json`, so a
+ *  remote deploy leaves the same on-disk source the file path would: stale-restart and retained
+ *  resume ({@link launchSpecForRun}) read one place either way. Atomic temp-then-rename (exclusive
+ *  temp, never follows a pre-planted symlink), replacing any prior content for the runId — the
+ *  deploying CLI owns runId reuse semantics, the manager just holds the current spec. Callers pass
+ *  an already-validated spec, so `runId` is a safe token. */
+export function persistLaunchSpec(root: string, spec: MeshLaunchSpec): string {
+  const dir = ensureDirNoSymlink(root, ".cotal", "run");
+  const path = join(dir, `${spec.runId}.json`);
+  const tmp = join(dir, `.${spec.runId}.${randomBytes(4).toString("hex")}.tmp`);
+  writeFileSync(tmp, JSON.stringify(spec, null, 2), { mode: 0o600, flag: "wx" });
+  renameSync(tmp, path);
+  return path;
 }
 
 /** Resolve + load the launch spec for a run id, deriving the path from a known root rather than
@@ -142,8 +164,13 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   const src = a.personaPath ?? "the manifest";
   const header = `<!-- Generated runtime artifact from a cotal mesh manifest (run ${runId}). Do NOT edit - regenerated on each launch and deleted by \`cotal down\`. Edit ${src} instead. This file is not a reusable persona and carries no access authority. -->`;
   const body = a.body ? `${a.body.trim()}\n` : "";
-  // `wx`: exclusive create — fails rather than following a symlink pre-planted at the path.
-  writeFileSync(path, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
+  // Atomic replace via an exclusive temp (never follows a symlink pre-planted at either path): the
+  // file is a derived artifact of the spec, so regenerating is always correct — a plain `wx` here
+  // made RE-launching an agent in the same run (a re-apply after a partial deploy failure, or a
+  // re-pushed remote spec) fail EEXIST on a leftover from the first attempt.
+  const tmp = resolve(dir, `.${a.name}.${randomBytes(4).toString("hex")}.tmp`);
+  writeFileSync(tmp, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
+  renameSync(tmp, path);
   return path;
 }
 

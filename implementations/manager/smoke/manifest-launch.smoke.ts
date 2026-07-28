@@ -229,6 +229,28 @@ function writeSpec(name: string, body: unknown): string {
   }
   const bad = await op({ runId: runId2, name: "ghost" });
   check("opLaunch rejects an unknown agent name", bad.ok === false);
+
+  // --- INLINE spec: the remote-deploy path (spec pushed over the control plane, no shared disk) --
+  const runId3 = "cafebabe03";
+  const spec3: MeshLaunchSpec = {
+    apiVersion: "cotal-launch/v1",
+    space: "demo",
+    runId: runId3,
+    agents: [{
+      name: "pusher", agent: "smoke-launch", role: "researcher", model: "opus", body: "Inline persona.",
+      subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"], personaPath: undefined, hash: "def456",
+    }],
+  };
+  const inline = await op({ runId: runId3, name: "pusher", spec: spec3 });
+  check("opLaunch boots from an INLINE spec (no pre-shared run file)", inline.ok === true, inline.error);
+  check("inline spec persisted under the MANAGER's own run tree", existsSync(join(root, ".cotal", "run", `${runId3}.json`)));
+  check("persisted spec round-trips through launchSpecForRun", launchSpecForRun(root, runId3).agents[0].name === "pusher");
+  const mism = await op({ runId: "aaaaaaaa04", name: "pusher", spec: spec3 });
+  check("inline spec runId mismatch rejected", mism.ok === false && /does not match/.test(mism.error ?? ""), mism.error);
+  const evil = await op({ runId: runId3, name: "pusher", spec: { ...spec3, agents: [{ ...spec3.agents[0], name: "../evil" }] } });
+  check("invalid inline spec rejected (unsafe agent name)", evil.ok === false);
+  const again = await op({ runId: runId3, name: "pusher", spec: spec3 });
+  check("re-push of the same inline spec is idempotent (collision-numbered spawn)", again.ok === true && (again.data as { name?: string })?.name === "pusher-2", JSON.stringify(again));
 }
 
 // --- symlinked parent dir refused (writes can't escape the run tree) ----------------------------
