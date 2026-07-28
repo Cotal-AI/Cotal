@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/auth",
   "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 ↔ Plane 2).",
-  "version": "0.14.7",
+  "version": "0.14.8",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
