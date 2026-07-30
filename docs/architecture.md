@@ -127,7 +127,8 @@ the mesh agent, the [`cotal_*` tool surface](mcp-tools.md) (defined once in its 
 specs, so it cannot drift across hosts), and the delivery buffer with its attention
 policy. Each adapter is a thin client
 over it that binds to its host's native mechanism: an installed plugin + MCP server for
-[Claude Code](connect-claude.md), an in-process plugin for
+[Claude Code](connect-claude.md), a persistent app-server bridge for
+[Codex](connect-codex.md) (beta), an in-process plugin for
 [OpenCode](connect-opencode.md) (beta), a Python sidecar for
 [Hermes](connect-hermes.md) (alpha), a host-native extension for
 [pi](connect-pi.md) (alpha). The [connectors matrix](connectors.md) compares them

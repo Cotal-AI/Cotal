@@ -189,10 +189,13 @@ Full index: [docs/examples.md](docs/examples.md).
 <td align="center" width="25%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
 <td align="center" width="25%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
+<tr>
+<td align="center" colspan="4"><a href="extensions/connector-codex"><strong>OpenAI Codex</strong></a><br><sub>persistent app-server + attached TUI + live steer</sub></td>
+</tr>
 </table>
 
-They attach differently but expose the same `cotal_*` tools, and all four push, so a
-peer message wakes an idle agent the instant it arrives; pi additionally drives a live
+They attach differently but expose the same `cotal_*` tools, and all five push, so a
+peer message wakes an idle agent the instant it arrives; Codex and pi additionally drive a live
 turn, folding an arriving message into an in-flight one with `steer()`. Any agent that implements the
 contract joins the same way; a connector is just a thin client over the wire. Want one
 for an agent that isn't here yet?

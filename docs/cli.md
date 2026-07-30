@@ -774,12 +774,12 @@ whose lifecycle provider is gone.
 
 ### Built-in connectors are seeded extensions
 
-The four first-party agent connectors (`claude`, `opencode`, `hermes`, `pi`) are not compiled into
+The five first-party agent connectors (`claude`, `codex`, `opencode`, `hermes`, `pi`) are not compiled into
 the binary. They are seeded on first run through the **same** `ext add` path a third party uses, and
 appear in `cotal ext list` like any other extension. So you can remove one you do not want
 (`cotal ext remove @cotal-ai/connector-hermes`), and a deliberately-removed connector STAYS removed
 across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way. The web
-dashboard (`@cotal-ai/web`, providing `command:web`) is a fifth built-in seeded on the same path.
+dashboard (`@cotal-ai/web`, providing `command:web`) is a sixth built-in seeded on the same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically on the first real
 command of each boot, so you rarely call it):
@@ -788,7 +788,7 @@ command of each boot, so you rarely call it):
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
 | `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). |
-| `--reset` | Discard the record and re-seed all five built-ins (the four connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
+| `--reset` | Discard the record and re-seed all six built-ins (the five connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 
 The default connector for a bare `cotal spawn` (no `--agent`) is `claude`; set `COTAL_DEFAULT_AGENT`
