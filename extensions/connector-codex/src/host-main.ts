@@ -234,20 +234,24 @@ async function main(): Promise<void> {
         void shutdown(1);
       }
     });
+    const initialPrompt =
+      process.env.COTAL_CODEX_PROMPT?.trim() ||
+      "Join the Cotal mesh now: call cotal_orientation, then remain available for peer messages. Do not modify files or start unrelated work.";
     bridge = new CodexBridge({
       peer,
       agent,
       model: process.env.COTAL_CODEX_MODEL?.trim() || undefined,
       effort: process.env.COTAL_CODEX_EFFORT?.trim() || undefined,
       developerInstructions,
-      initialPrompt: process.env.COTAL_CODEX_PROMPT,
+      initialPrompt,
       threadConfig: withCotalMcp(parseThreadConfig(), mcpServer.url, mcpToken),
-      onFatal: (error) => {
-        log(error.message);
-        if (!stopping) void shutdown(1);
-      },
     });
     const threadId = await bridge.start();
+    // Codex 0.146 does not materialize an empty thread/start as a rollout. Start the explicit
+    // orientation-only bootstrap turn first, then fence on the stored rollout before attaching the
+    // real TUI. This avoids both a blind sleep and the `no rollout found` resume race.
+    bridge.activate();
+    await bridge.waitUntilStored(STARTUP_TIMEOUT_MS);
 
     // The TUI is a second app-server client on the same persistent thread. Strip COTAL_* so it is
     // only a viewer/operator surface and can never create a second mesh identity.
@@ -266,7 +270,6 @@ async function main(): Promise<void> {
     children.add(tui);
     failIfUnexpected("tui", tui);
     attached = true;
-    bridge.activate();
     log(`ready — thread=${threadId} space="${config.space}" name="${config.name}"`);
   } catch (error) {
     log(`startup failed: ${errorMessage(error)}`);

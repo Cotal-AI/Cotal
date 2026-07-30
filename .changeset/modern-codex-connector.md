@@ -6,4 +6,4 @@
 "cotal-ai": minor
 ---
 
-Add a persistent Codex app-server connector with live TUI attachment, completion-safe mesh delivery, mid-turn steering, and connector-core tools.
+Add a persistent Codex app-server connector with live TUI attachment, completion-safe mesh delivery, in-process reconciliation for uncertain turns, mid-turn steering, connector-core tools, and a Node-compatible packaged ESM host.

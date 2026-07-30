@@ -18,10 +18,10 @@
     }
   },
   "scripts": {
-    "test": "tsx --test smoke/*.test.ts",
+    "test": "pnpm run build && tsx --test smoke/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {

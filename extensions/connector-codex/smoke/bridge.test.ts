@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { InboxItem } from "@cotal-ai/connector-core";
 import {
   CodexBridge,
@@ -89,11 +90,19 @@ class FakePeer extends EventEmitter implements AppServerPeer {
     resolve: (value: unknown) => void;
   };
   nextTurn = 1;
+  threadReadFailures = 0;
 
   async request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     this.calls.push({ method, params });
     if (method === "initialize") return { userAgent: "fake" };
     if (method === "thread/start") return { thread: { id: "thread-1" } };
+    if (method === "thread/read") {
+      if (this.threadReadFailures > 0) {
+        this.threadReadFailures -= 1;
+        throw new AppServerResponseError(-32600, "no rollout found");
+      }
+      return { thread: { id: "thread-1", path: fileURLToPath(import.meta.url) } };
+    }
     if (method === "turn/start") {
       if (this.deferredTurnStart) return this.deferredTurnStart.promise;
       return { turn: { id: `turn-${this.nextTurn++}`, status: "inProgress" } };
@@ -150,20 +159,32 @@ async function startedBridge(opts: { activate?: boolean } = {}): Promise<{
   agent: FakeAgent;
   peer: FakePeer;
   bridge: CodexBridge;
-  fatals: Error[];
 }> {
   const agent = new FakeAgent();
   const peer = new FakePeer();
-  const fatals: Error[] = [];
   const bridge = new CodexBridge({
     peer,
     agent,
-    onFatal: (error) => fatals.push(error),
   });
   await bridge.start();
   if (opts.activate !== false) bridge.activate();
-  return { agent, peer, bridge, fatals };
+  return { agent, peer, bridge };
 }
+
+test("waits for the stored thread before a remote TUI may attach", async () => {
+  const agent = new FakeAgent();
+  const peer = new FakePeer();
+  peer.threadReadFailures = 2;
+  const bridge = new CodexBridge({ peer, agent });
+
+  await bridge.start();
+  await bridge.waitUntilStored(500);
+
+  assert.equal(
+    peer.calls.filter((call) => call.method === "thread/read").length,
+    3,
+  );
+});
 
 test("queues startup traffic and acks only after successful completion", async () => {
   const agent = new FakeAgent();
@@ -224,8 +245,8 @@ test("does not replay a steer accepted across a completion-response race", async
   assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 0);
 });
 
-test("fails closed when a timed-out steer has an uncertain outcome", async () => {
-  const { agent, peer, bridge, fatals } = await startedBridge();
+test("recovers a timed-out steer only after the active turn reaches a clean boundary", async () => {
+  const { agent, peer, bridge } = await startedBridge();
   peer.notification("turn/started", { threadId: "thread-1", turn: { id: "turn-live" } });
   peer.deferSteer();
   agent.push(item("uncertain"));
@@ -242,12 +263,27 @@ test("fails closed when a timed-out steer has an uncertain outcome", async () =>
   await bridge.settled();
 
   assert.deepEqual(agent.acked, []);
-  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 0);
-  assert.match(fatals[0]?.message ?? "", /outcome is uncertain/);
+  const recovery = peer.calls.find((call) => call.method === "turn/start");
+  const recoveryText = (
+    recovery?.params.input as Array<{ type: string; text: string }>
+  )[0].text;
+  assert.match(recoveryText, /outcome is uncertain/i);
+  assert.match(recoveryText, /uncertain/);
+
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-1" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed" },
+  });
+  await bridge.settled();
+  assert.deepEqual(agent.acked, ["uncertain"]);
 });
 
-test("fails closed if a concurrent turn replaces a just-started mesh turn", async () => {
-  const { agent, peer, bridge, fatals } = await startedBridge();
+test("holds a raced turn/start batch without replacing the active turn", async () => {
+  const { agent, peer, bridge } = await startedBridge();
   peer.deferTurnStart();
   agent.push(item("diverged"));
   await new Promise((resolve) => setImmediate(resolve));
@@ -262,11 +298,40 @@ test("fails closed if a concurrent turn replaces a just-started mesh turn", asyn
   await bridge.settled();
 
   assert.deepEqual(agent.acked, []);
-  assert.match(fatals[0]?.message ?? "", /started mesh turn.*human-turn/);
+  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 1);
+});
+
+test("does not lose a batch when completion arrives before turn/start responds", async () => {
+  const { agent, peer, bridge } = await startedBridge();
+  peer.deferTurnStart();
+  agent.push(item("early-completion"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "mesh-turn" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "mesh-turn", status: "completed" },
+  });
+  peer.deferredTurnStart?.resolve({
+    turn: { id: "mesh-turn", status: "inProgress" },
+  });
+  await bridge.settled();
+
+  assert.deepEqual(agent.acked, []);
+  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 2);
+  const recoveryText = (
+    peer.calls.filter((call) => call.method === "turn/start")[1].params
+      .input as Array<{ type: string; text: string }>
+  )[0].text;
+  assert.match(recoveryText, /early-completion/);
+  assert.match(recoveryText, /outcome is uncertain/i);
 });
 
 test("a human-only interrupted turn does not tear down the connector", async () => {
-  const { peer, bridge, fatals } = await startedBridge();
+  const { peer, bridge } = await startedBridge();
   peer.notification("turn/started", {
     threadId: "thread-1",
     turn: { id: "human-turn" },
@@ -277,7 +342,7 @@ test("a human-only interrupted turn does not tear down the connector", async () 
   });
   await bridge.settled();
 
-  assert.deepEqual(fatals, []);
+  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 0);
 });
 
 test("keeps pull-only inbox traffic out of automatic turns", async () => {
@@ -336,8 +401,8 @@ test("keeps DM senders and channels in separate turn scopes", async () => {
   assert.match(nextText, /channel-a/);
 });
 
-test("steering rejection falls back safely and a failed turn forces recovery", async () => {
-  const { agent, peer, bridge, fatals } = await startedBridge();
+test("steering rejection falls back safely and a failed mesh turn recovers in-process", async () => {
+  const { agent, peer, bridge } = await startedBridge();
   peer.notification("turn/started", { threadId: "thread-1", turn: { id: "turn-live" } });
   peer.rejectSteer = true;
   agent.push(item("m3"));
@@ -359,8 +424,109 @@ test("steering rejection falls back safely and a failed turn forces recovery", a
   });
   await bridge.settled();
   assert.deepEqual(agent.acked, []);
-  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 1);
-  assert.match(fatals[0]?.message ?? "", /ended failed/);
+  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 2);
+});
+
+test("an interrupted mesh batch stays exact, recovers once, and does not blend queued scopes", async () => {
+  const { agent, peer, bridge } = await startedBridge();
+  const first = item("interrupted", "RECOVERY-ACK");
+  first.fromId = "peer-a";
+  agent.push(first);
+  await bridge.settled();
+
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-1" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "interrupted" },
+  });
+  await bridge.settled();
+  const laterDm = item("later-dm");
+  laterDm.fromId = "peer-a";
+  agent.push(laterDm, channelItem("later-channel", "general"));
+  await bridge.settled();
+
+  assert.deepEqual(agent.acked, []);
+  const starts = peer.calls.filter((call) => call.method === "turn/start");
+  assert.equal(starts.length, 2);
+  const recoveryText = (
+    starts[1].params.input as Array<{ type: string; text: string }>
+  )[0].text;
+  assert.match(recoveryText, /outcome is uncertain/i);
+  assert.match(recoveryText, /interrupted/);
+  assert.match(recoveryText, /RECOVERY-ACK/);
+  assert.doesNotMatch(recoveryText, /later-dm|later-channel/);
+
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-2" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-2", status: "completed" },
+  });
+  await bridge.settled();
+  assert.deepEqual(agent.acked, ["interrupted"]);
+  assert.ok(
+    agent.statuses.some(
+      ([status, activity]) => status === "idle" && activity === "",
+    ),
+  );
+
+  const afterRecovery = peer.calls.filter((call) => call.method === "turn/start");
+  assert.equal(afterRecovery.length, 3);
+  const laterDmText = (
+    afterRecovery[2].params.input as Array<{ type: string; text: string }>
+  )[0].text;
+  assert.match(laterDmText, /later-dm/);
+  assert.doesNotMatch(laterDmText, /interrupted|later-channel/);
+
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-3" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-3", status: "completed" },
+  });
+  await bridge.settled();
+  assert.deepEqual(agent.acked, ["interrupted", "later-dm"]);
+
+  const channelStart = peer.calls.filter((call) => call.method === "turn/start")[3];
+  const channelText = (
+    channelStart.params.input as Array<{ type: string; text: string }>
+  )[0].text;
+  assert.match(channelText, /later-channel/);
+  assert.doesNotMatch(channelText, /interrupted|later-dm/);
+});
+
+test("a failed recovery stays held without acknowledgement or an automatic retry loop", async () => {
+  const { agent, peer, bridge } = await startedBridge();
+  agent.push(item("held"));
+  await bridge.settled();
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-1" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "failed" },
+  });
+  await bridge.settled();
+  peer.notification("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-2" },
+  });
+  peer.notification("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-2", status: "interrupted" },
+  });
+  await bridge.settled();
+
+  assert.deepEqual(agent.acked, []);
+  assert.equal(peer.calls.filter((call) => call.method === "turn/start").length, 2);
 });
 
 test("rejects server requests for another thread", async () => {

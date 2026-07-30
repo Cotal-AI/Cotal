@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { setImmediate } from "node:timers/promises";
+import { existsSync } from "node:fs";
+import { setImmediate, setTimeout as delay } from "node:timers/promises";
 import { formatInjection, type InboxItem } from "@cotal-ai/connector-core";
 import {
   AppServerResponseError,
@@ -27,10 +28,29 @@ export interface BridgeAgent extends EventEmitter {
 
 interface ActiveTurn {
   id: string;
-  surfacedIds: Set<string>;
+  batches: ReservedBatch[];
+  uncertainBatches: ReservedBatch[];
   scope?: string;
   pendingSteers: number;
   completion?: { status: unknown };
+  recovery: boolean;
+}
+
+interface ReservedBatch {
+  ids: string[];
+  scope?: string;
+  text: string;
+}
+
+interface Recovery {
+  batches: ReservedBatch[];
+  reason: string;
+  automatic: boolean;
+}
+
+interface PendingStart {
+  batches: ReservedBatch[];
+  recovery: boolean;
 }
 
 function textInput(text: string): { type: "text"; text: string } {
@@ -49,7 +69,8 @@ export function inboxScope(item: InboxItem): string {
  *
  * Inbox ids are reserved while a turn/start or turn/steer request is uncertain, then acknowledged
  * only after the matching explicit `turn/completed` event reports `completed`. Failed, interrupted,
- * timed-out, and connection-lost work remains in the MeshAgent inbox for durable redelivery.
+ * and uncertain work stays reserved in the live MeshAgent and gets one reconciliation turn before
+ * any later inbox scope is surfaced.
  */
 export class CodexBridge {
   private readonly peer: AppServerPeer;
@@ -58,15 +79,15 @@ export class CodexBridge {
   private readonly effort?: string;
   private readonly developerInstructions?: string;
   private readonly threadConfig?: Record<string, unknown>;
-  private readonly onFatal?: (error: Error) => void;
   private readonly reservedIds = new Set<string>();
   private readonly tasks = new Set<Promise<unknown>>();
   private threadId?: string;
   private activeTurn?: ActiveTurn;
+  private recovery?: Recovery;
+  private pendingStart?: PendingStart;
   private initialPrompt?: string;
   private active = false;
   private stopping = false;
-  private failed = false;
   private driving = false;
   private driveAgain = false;
   private lastStatus?: {
@@ -82,7 +103,6 @@ export class CodexBridge {
     developerInstructions?: string;
     threadConfig?: Record<string, unknown>;
     initialPrompt?: string;
-    onFatal?: (error: Error) => void;
   }) {
     this.peer = opts.peer;
     this.agent = opts.agent;
@@ -90,7 +110,6 @@ export class CodexBridge {
     this.effort = opts.effort;
     this.developerInstructions = opts.developerInstructions;
     this.threadConfig = opts.threadConfig;
-    this.onFatal = opts.onFatal;
     this.initialPrompt = opts.initialPrompt?.trim() || undefined;
     this.peer.on("notification", (message: RpcMessage) =>
       this.track(this.onNotification(message)),
@@ -142,9 +161,48 @@ export class CodexBridge {
     return threadId;
   }
 
+  /**
+   * Fence TUI attachment on the app-server's stored-thread view. Codex 0.146 can return from
+   * `thread/start` before a concurrent `codex resume --remote` can discover the rollout; attaching
+   * in that window exits with `no rollout found`. `thread/read` is the protocol's stored-thread
+   * boundary, so poll it instead of sleeping or starting a synthetic model turn.
+   */
+  async waitUntilStored(timeoutMs = 15_000): Promise<void> {
+    if (!this.threadId) throw new Error("Codex thread has not started");
+    const deadline = Date.now() + timeoutMs;
+    let lastError: unknown;
+    while (true) {
+      try {
+        const result = (await this.peer.request("thread/read", {
+          threadId: this.threadId,
+          includeTurns: false,
+        })) as { thread?: { id?: unknown; path?: unknown } };
+        if (
+          result.thread?.id === this.threadId &&
+          typeof result.thread.path === "string" &&
+          existsSync(result.thread.path)
+        )
+          return;
+        lastError = new Error(
+          result.thread?.id !== this.threadId
+            ? "thread/read returned a different or missing thread id"
+            : "thread/read returned before the rollout path existed",
+        );
+      } catch (error) {
+        lastError = error;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        throw new Error(
+          `Codex thread ${this.threadId} did not become attachable within ${timeoutMs}ms: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+        );
+      await delay(Math.min(50, remaining));
+    }
+  }
+
   /** Release the startup gate after the attached TUI has been spawned. */
   activate(): void {
-    if (this.stopping || this.failed) return;
+    if (this.stopping) return;
     this.active = true;
     this.queueDrive();
   }
@@ -196,7 +254,7 @@ export class CodexBridge {
   }
 
   private queueDrive(): void {
-    if (!this.active || this.stopping || this.failed || !this.threadId) return;
+    if (!this.active || this.stopping || !this.threadId) return;
     if (this.driving) {
       this.driveAgain = true;
       return;
@@ -222,6 +280,7 @@ export class CodexBridge {
   }
 
   private unreservedInbox(): InboxItem[] {
+    if (this.recovery || this.activeTurn?.recovery) return [];
     const candidates = this.agent
       .peekInbox("automatic")
       .filter((item) => !this.reservedIds.has(item.id));
@@ -232,12 +291,25 @@ export class CodexBridge {
 
   private async driveOnce(): Promise<boolean> {
     if (!this.threadId || this.stopping) return false;
+    if (this.recovery) {
+      if (this.activeTurn || !this.recovery.automatic) return false;
+      return this.startRecovery(this.recovery);
+    }
     const items = this.unreservedInbox();
     const injection = formatInjection(items);
     const prompt = this.initialPrompt;
     if (!prompt && !injection) return false;
     const text = [prompt, injection].filter(Boolean).join("\n\n");
     const ids = items.map((item) => item.id);
+    let batch: ReservedBatch | undefined;
+    if (ids.length > 0) {
+      if (!injection) throw new Error("Cotal inbox formatter returned no batch text");
+      batch = {
+        ids,
+        scope: items[0] ? inboxScope(items[0]) : undefined,
+        text: injection,
+      };
+    }
     for (const id of ids) this.reservedIds.add(id);
 
     if (this.activeTurn) {
@@ -251,8 +323,8 @@ export class CodexBridge {
           expectedTurnId,
         });
         if (this.activeTurn === turn) {
-          for (const id of ids) turn.surfacedIds.add(id);
-          turn.scope ??= items[0] ? inboxScope(items[0]) : undefined;
+          if (batch) turn.batches.push(batch);
+          turn.scope ??= batch?.scope;
           turn.pendingSteers -= 1;
           this.initialPrompt = undefined;
           if (turn.completion) {
@@ -266,19 +338,18 @@ export class CodexBridge {
       } catch (error) {
         if (this.activeTurn === turn) {
           turn.pendingSteers -= 1;
+          if (!(error instanceof AppServerResponseError) && batch)
+            turn.uncertainBatches.push(batch);
           if (turn.completion)
             await this.completeTurn(turn, turn.completion.status);
         }
-        this.release(ids);
         if (!(error instanceof AppServerResponseError)) {
-          this.failed = true;
-          this.onFatal?.(
-            new Error(
-              `Codex turn/steer outcome is uncertain; restarting without acknowledging its inbox work: ${(error as Error).message}`,
-            ),
+          process.stderr.write(
+            `[cotal-codex] turn/steer outcome is uncertain; holding its inbox batch until the active turn completes: ${(error as Error).message}\n`,
           );
           return false;
         }
+        this.release(ids);
         // A completion may have won the race. If its event already cleared the turn, the queued
         // batch can safely become a fresh turn; otherwise wait for that authoritative event.
         if (!this.activeTurn) this.queueDrive();
@@ -289,6 +360,11 @@ export class CodexBridge {
       }
     }
 
+    const pendingStart: PendingStart = {
+      batches: batch ? [batch] : [],
+      recovery: false,
+    };
+    this.pendingStart = pendingStart;
     try {
       const result = (await this.peer.request("turn/start", {
         threadId: this.threadId,
@@ -297,36 +373,172 @@ export class CodexBridge {
       })) as { turn?: { id?: string } };
       const turnId = result.turn?.id;
       if (!turnId) throw new Error("codex turn/start returned no turn id");
+      if (this.pendingStart === pendingStart) this.pendingStart = undefined;
+      if (
+        !this.activeTurn &&
+        this.recoveryOwnsAny(pendingStart.batches)
+      )
+        return false;
       if (!this.activeTurn)
         this.activeTurn = {
           id: turnId,
-          surfacedIds: new Set(),
-          scope: items[0] ? inboxScope(items[0]) : undefined,
+          batches: pendingStart.batches,
+          uncertainBatches: [],
+          scope: batch?.scope,
           pendingSteers: 0,
+          recovery: false,
         };
       if (this.activeTurn.id !== turnId) {
-        this.release(ids);
-        this.failed = true;
-        this.onFatal?.(
-          new Error(
-            `Codex started mesh turn ${turnId}, but concurrent turn ${this.activeTurn.id} became active; restarting without acknowledging its inbox work`,
-          ),
+        for (const candidate of pendingStart.batches)
+          if (
+            !this.activeTurn.uncertainBatches.includes(candidate) &&
+            !this.activeTurn.batches.includes(candidate)
+          )
+            this.activeTurn.uncertainBatches.push(candidate);
+        process.stderr.write(
+          `[cotal-codex] mesh turn ${turnId} raced with active turn ${this.activeTurn.id}; holding its inbox batch for reconciliation at the active turn boundary\n`,
         );
         return false;
       }
-      for (const id of ids) this.activeTurn.surfacedIds.add(id);
+      this.confirmPendingStart(this.activeTurn, pendingStart);
       this.initialPrompt = undefined;
       await this.safeStatus("working");
       return true;
     } catch (error) {
-      this.release(ids);
+      if (this.pendingStart === pendingStart) this.pendingStart = undefined;
+      const attached = this.activeTurn
+        ? pendingStart.batches.some(
+            (candidate) =>
+              this.activeTurn?.uncertainBatches.includes(candidate) ||
+              this.activeTurn?.batches.includes(candidate),
+          )
+        : false;
+      if (error instanceof AppServerResponseError && this.activeTurn) {
+        this.activeTurn.uncertainBatches =
+          this.activeTurn.uncertainBatches.filter(
+            (candidate) => !pendingStart.batches.includes(candidate),
+          );
+      }
+      if (!attached || error instanceof AppServerResponseError) this.release(ids);
       process.stderr.write(
         `[cotal-codex] turn/start failed; batch remains queued: ${(error as Error).message}\n`,
       );
-      this.failed = true;
-      this.onFatal?.(error as Error);
+      if (!(error instanceof AppServerResponseError) && batch && !attached) {
+        for (const id of batch.ids) this.reservedIds.add(id);
+        this.recovery = {
+          batches: [batch],
+          reason: `turn/start outcome is uncertain: ${(error as Error).message}`,
+          automatic: false,
+        };
+        await this.safeStatus(
+          "waiting",
+          "Cotal inbox batch held after uncertain turn/start",
+        );
+      }
       return false;
     }
+  }
+
+  private async startRecovery(recovery: Recovery): Promise<boolean> {
+    if (!this.threadId || this.stopping || this.recovery !== recovery) return false;
+    const ids = recovery.batches.flatMap((batch) => batch.ids);
+    const exactBatch = recovery.batches.map((batch) => batch.text).join("\n\n");
+    const text = [
+      "COTAL RECOVERY: the previous mesh-originated turn did not reach a clean successful boundary, so its outcome is uncertain.",
+      `Reason: ${recovery.reason}.`,
+      "Do not blindly repeat commands, tool calls, messages, or other external actions. First inspect and reconcile the current state, then perform only work that is still missing. Treat the reserved inbox batch below as the exact recovery scope; newer inbox traffic is intentionally queued for later turns.",
+      `Reserved Cotal inbox ids: ${ids.join(", ")}`,
+      exactBatch,
+    ].join("\n\n");
+    const pendingStart: PendingStart = {
+      batches: recovery.batches,
+      recovery: true,
+    };
+    this.pendingStart = pendingStart;
+    this.recovery = undefined;
+    try {
+      const result = (await this.peer.request("turn/start", {
+        threadId: this.threadId,
+        input: [textInput(text)],
+        ...(this.effort ? { effort: this.effort } : {}),
+      })) as { turn?: { id?: string } };
+      const turnId = result.turn?.id;
+      if (!turnId) throw new Error("codex recovery turn/start returned no turn id");
+      if (this.pendingStart === pendingStart) this.pendingStart = undefined;
+      if (
+        !this.activeTurn &&
+        this.recoveryOwnsAny(pendingStart.batches)
+      )
+        return false;
+      if (!this.activeTurn)
+        this.activeTurn = {
+          id: turnId,
+          batches: pendingStart.batches,
+          uncertainBatches: [],
+          scope: recovery.batches[0]?.scope,
+          pendingSteers: 0,
+          recovery: true,
+        };
+      if (this.activeTurn.id !== turnId) {
+        for (const candidate of pendingStart.batches)
+          if (
+            !this.activeTurn.uncertainBatches.includes(candidate) &&
+            !this.activeTurn.batches.includes(candidate)
+          )
+            this.activeTurn.uncertainBatches.push(candidate);
+        await this.safeStatus(
+          "waiting",
+          "Cotal recovery held after concurrent Codex turn",
+        );
+        return false;
+      }
+      this.confirmPendingStart(this.activeTurn, pendingStart);
+      this.activeTurn.scope = recovery.batches[0]?.scope;
+      this.activeTurn.recovery = true;
+      await this.safeStatus("working", "Reconciling interrupted Cotal work");
+      return false;
+    } catch (error) {
+      if (this.pendingStart === pendingStart) this.pendingStart = undefined;
+      let attached = this.activeTurn
+        ? pendingStart.batches.some(
+            (candidate) =>
+              this.activeTurn?.uncertainBatches.includes(candidate) ||
+              this.activeTurn?.batches.includes(candidate),
+          )
+        : false;
+      if (error instanceof AppServerResponseError && this.activeTurn) {
+        this.activeTurn.uncertainBatches =
+          this.activeTurn.uncertainBatches.filter(
+            (candidate) => !pendingStart.batches.includes(candidate),
+          );
+        attached = false;
+      }
+      if (!attached) this.recovery = { ...recovery, automatic: false };
+      process.stderr.write(
+        `[cotal-codex] recovery turn/start failed; exact inbox batch remains held in-process: ${(error as Error).message}\n`,
+      );
+      await this.safeStatus(
+        "waiting",
+        "Cotal recovery batch held for operator attention",
+      );
+      return false;
+    }
+  }
+
+  private confirmPendingStart(turn: ActiveTurn, pending: PendingStart): void {
+    turn.uncertainBatches = turn.uncertainBatches.filter(
+      (candidate) => !pending.batches.includes(candidate),
+    );
+    for (const batch of pending.batches)
+      if (!turn.batches.includes(batch)) turn.batches.push(batch);
+    turn.recovery ||= pending.recovery;
+  }
+
+  private recoveryOwnsAny(batches: ReservedBatch[]): boolean {
+    return (
+      this.recovery?.batches.some((candidate) => batches.includes(candidate)) ??
+      false
+    );
   }
 
   private release(ids: Iterable<string>): void {
@@ -346,7 +558,14 @@ export class CodexBridge {
         const id = (params.turn as { id?: unknown } | undefined)?.id;
         if (typeof id !== "string") return;
         if (this.activeTurn?.id !== id)
-          this.activeTurn = { id, surfacedIds: new Set(), pendingSteers: 0 };
+          this.activeTurn = {
+            id,
+            batches: [],
+            uncertainBatches: [...(this.pendingStart?.batches ?? [])],
+            scope: this.pendingStart?.batches[0]?.scope,
+            pendingSteers: 0,
+            recovery: this.pendingStart?.recovery ?? false,
+          };
         await this.safeStatus("working");
         this.queueDrive();
         return;
@@ -385,28 +604,43 @@ export class CodexBridge {
 
   private async completeTurn(turn: ActiveTurn, status: unknown): Promise<void> {
     if (this.activeTurn !== turn) return;
-    const ids = [...turn.surfacedIds];
+    const surfacedIds = turn.batches.flatMap((batch) => batch.ids);
+    const uncertainIds = turn.uncertainBatches.flatMap((batch) => batch.ids);
     this.activeTurn = undefined;
     const completed = status === "completed";
-    if (!completed && ids.length === 0) {
+    if (!completed && surfacedIds.length === 0 && uncertainIds.length === 0) {
       await this.safeStatus("idle");
       this.queueDrive();
       return;
     }
-    if (!completed) this.failed = true;
-    if (completed) this.agent.drainInboxIds(ids);
-    this.release(ids);
-    await this.safeStatus("idle");
-    // A successful turn is a safe boundary for the next queued batch. Failed/interrupted work
-    // waits for a supervised restart; the connector never guesses whether to replay.
-    if (completed) this.queueDrive();
-    else {
-      this.onFatal?.(
-        new Error(
-          `Codex turn ${turn.id} ended ${String(status)}; restarting without acknowledging its inbox work`,
-        ),
-      );
+    if (completed && surfacedIds.length > 0) {
+      this.agent.drainInboxIds(surfacedIds);
+      this.release(surfacedIds);
     }
+    const recoveryBatches = completed
+      ? turn.uncertainBatches
+      : [...turn.batches, ...turn.uncertainBatches];
+    if (recoveryBatches.length > 0) {
+      this.recovery = {
+        batches: recoveryBatches,
+        reason: `turn ${turn.id} ended ${String(status)}`,
+        automatic: !turn.recovery,
+      };
+      await this.safeStatus(
+        "waiting",
+        turn.recovery
+          ? "Cotal recovery failed; exact batch held for operator attention"
+          : "Cotal turn outcome uncertain; reconciling exact inbox batch",
+      );
+      if (!turn.recovery) this.queueDrive();
+      else
+        process.stderr.write(
+          `[cotal-codex] recovery turn ${turn.id} ended ${String(status)}; exact inbox batch remains held in-process\n`,
+        );
+      return;
+    }
+    await this.safeStatus("idle", turn.recovery ? "" : undefined);
+    this.queueDrive();
   }
 
   private async onServerRequest(message: RpcMessage): Promise<void> {

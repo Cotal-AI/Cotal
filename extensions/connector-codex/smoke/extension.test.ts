@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { codexConnector } from "../src/extension.js";
 import { codexChildEnv } from "../src/env.js";
 
@@ -72,4 +74,17 @@ test("unsupported resume, transcript, and shared-server modes fail before launch
       }),
     /mcpServers sharing is not implemented/,
   );
+});
+
+test("the published ESM host bundle loads its CommonJS websocket dependency", () => {
+  const host = fileURLToPath(new URL("../dist/host.js", import.meta.url));
+  const run = spawnSync(process.execPath, [host], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "" },
+  });
+  const output = `${run.stdout}${run.stderr}`;
+
+  assert.notEqual(run.status, 0, "a host without Cotal launch configuration must fail closed");
+  assert.doesNotMatch(output, /Dynamic require of .* is not supported/);
+  assert.match(output, /COTAL_|cotal-codex/i);
 });
