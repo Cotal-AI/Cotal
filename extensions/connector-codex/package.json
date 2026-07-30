@@ -1,0 +1,48 @@
+{
+  "name": "@cotal-ai/connector-codex",
+  "description": "Cotal connector for Codex: a live app-server session joined to the mesh.",
+  "version": "0.14.9",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "extensions/connector-codex"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "test": "tsx --test smoke/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": ">=0.1.0"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/connector-core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.23.0",
+    "zod": "^4.4.3"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
