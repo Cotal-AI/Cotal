@@ -27,7 +27,7 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
   throw e;
 });
 
-// The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
+// The five agent connectors (claude/codex/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
 // connector (and like the `@cotal-ai/orca` runtime already is). `runCli` seeds them on first run and
 // materializes each lazily when a command resolves it; the default agent is `COTAL_DEFAULT_AGENT`

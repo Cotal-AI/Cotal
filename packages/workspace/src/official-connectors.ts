@@ -1,5 +1,5 @@
 /**
- * The four first-party agent connectors, name → npm package. This is NOT authority — a connector is
+ * The five first-party agent connectors, name → npm package. This is NOT authority — a connector is
  * usable only once installed (seeded on first run, or `cotal ext add`ed) and imported, exactly like
  * a third-party one. It is the operator-UX source of truth so an absent official connector names its
  * REAL package in the install hint, and the seeder knows which built-ins to seed. A third-party
@@ -10,13 +10,14 @@
  */
 export const OFFICIAL_CONNECTORS: Readonly<Record<string, string>> = {
   claude: "@cotal-ai/connector-claude-code",
+  codex: "@cotal-ai/connector-codex",
   opencode: "@cotal-ai/connector-opencode",
   hermes: "@cotal-ai/connector-hermes",
   pi: "@cotal-ai/pi",
 };
 
 /** A first-party extension the umbrella (`cotal-ai`) bundles and versions in lockstep: its npm package
- *  plus the repo-relative source dir the prepack copy and dev seeding resolve it from. This is the four
+ *  plus the repo-relative source dir the prepack copy and dev seeding resolve it from. This is the five
  *  connectors PLUS the web dashboard — every first-party piece the binary ships and the seed reconcile
  *  keeps at the binary's own version, so `npm i -g cotal-ai@X` carries them all at X with no separate
  *  fetch and no version skew. A third-party `cotal ext add`ed package is NOT here; it versions on its

@@ -4,7 +4,7 @@
  * prefix with no repo on the resolution path, and proves the PUBLISHED seed path:
  *
  *  - the `cotal-ai` tarball ships the `seeded-connectors/<name>` payloads (prepack) with concrete deps
- *  - a first command on the installed binary seeds all four built-ins from those bundled payloads
+ *  - a first command on the installed binary seeds all five connectors from those bundled payloads
  *    (`shippedSourceDir` published branch), installing each from the durable store under the isolated
  *    config (never a repo path). Driven through the `.bin/cotal` SYMLINK npm publishes, the way a user
  *    reaches an installed binary: `process.argv[1]` is then the link, whose parents hold no
@@ -76,7 +76,7 @@ try {
   // as the generation, so a skewed payload would be installed and treated as current (F1). The prepack
   // asserts this too; the tarball is the last place to catch it before a customer install.
   const umbrellaVersion = (JSON.parse(packedPkg) as { version: string }).version;
-  for (const n of ["claude", "opencode", "hermes", "pi", "web"]) {
+  for (const n of ["claude", "codex", "opencode", "hermes", "pi", "web"]) {
     const seededPkg = JSON.parse(
       execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { encoding: "utf8" }),
     ) as { version: string };
@@ -127,7 +127,7 @@ try {
   }
   const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const out = list.stdout ?? "";
-  for (const n of ["claude", "opencode", "hermes", "pi"]) {
+  for (const n of ["claude", "codex", "opencode", "hermes", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
   check("seeded command:web (the dashboard) from the bundled payload", out.includes("command:web"), list.stderr);
@@ -137,10 +137,10 @@ try {
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
   check("connector installed from the durable store under the isolated config (pubDir branch)", Boolean(hermes && hermes.spec.startsWith(cfg)), hermes?.spec);
-  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
+  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-codex", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
   const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
   const allSeeded = seededEntries.every((e) => e.source === "seeded");
-  check("all five first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 5);
+  check("all six first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 6);
   const webEntry = manifest.extensions.find((e) => e.pkg === "@cotal-ai/web");
   check("web installed from the durable store under the isolated config (bundled, not npm-fetched)", Boolean(webEntry && webEntry.spec.startsWith(cfg)), webEntry?.spec);
 
@@ -150,6 +150,7 @@ try {
   // payload (a self-contained esbuild bundle each), so a dropped shim can never ship again.
   const extRoot = join(cfg, "cotal", "extensions", "node_modules");
   const launchShims: Record<string, string> = {
+    "@cotal-ai/connector-codex": "dist/host.js",
     "@cotal-ai/connector-opencode": "dist/serve.js",
     "@cotal-ai/connector-hermes": "dist/launch.js",
   };

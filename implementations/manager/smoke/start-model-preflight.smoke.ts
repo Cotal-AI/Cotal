@@ -8,7 +8,7 @@
  *   1. Preflight REJECT — a connector whose `requires` binary is off PATH fails before any
  *      credential/side effect, with a stable, PATH-content-independent error.
  *   2. Model THREADING — `--model` rides StartAgentOpts → buildLaunch's LaunchOpts verbatim.
- *   3. Model PRECEDENCE — across the three real connectors: flag > agent-file `model:`, the flag
+ *   3. Model PRECEDENCE — across the four real connectors: flag > agent-file `model:`, the flag
  *      applies with no agent file, and the file is the fallback (the actual bug the fix closes).
  *   4. ACL THREADING — the resolved read/post set rides StartAgentOpts → LaunchOpts and each
  *      connector forwards it as COTAL_SUBSCRIBE / COTAL_ALLOW_*. Guards the bug where creds were
@@ -46,6 +46,7 @@ import { Manager } from "../src/manager.js";
 import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle } from "@cotal-ai/core";
 // Import the real connectors so they self-register (and expose their objects for the buildLaunch matrix).
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
+import { codexConnector } from "@cotal-ai/connector-codex";
 import { opencodeConnector } from "@cotal-ai/connector-opencode";
 import { hermesConnector } from "@cotal-ai/connector-hermes";
 
@@ -55,12 +56,12 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
-// Hermes is Unix-only — its buildLaunch THROWS on win32 by design (AF_UNIX bridge + Python sidecar).
-// This smoke is CI-gated on both OSes (`pnpm test`), so on Windows we skip the Hermes buildLaunch rows
-// (claude + opencode still run) and instead assert the Unix-only guard fires. `connectors` is the set
+// Hermes and Codex are Unix-only — their buildLaunch methods THROW on win32 by design.
+// This smoke is CI-gated on both OSes (`pnpm test`), so on Windows we skip their buildLaunch rows
+// (claude + opencode still run) and instead assert the Unix-only guards fire. `connectors` is the set
 // whose buildLaunch is exercised per-platform.
 const onWin = process.platform === "win32";
-const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnector, opencodeConnector, hermesConnector];
+const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnector, codexConnector, opencodeConnector, hermesConnector];
 
 // A workspace with no cotal *config*. A manager spawn now REQUIRES a discoverable persona (no
 // silent default-ACL fallback), so seed a minimal `.cotal/agents/<name>.md` per spawned name —
@@ -162,17 +163,19 @@ registry.register(recNoResumeCon);
   check("persona allowPublish threads into LaunchOpts", JSON.stringify(lastOpts?.allowPublish) === '["team"]', lastOpts?.allowPublish);
 }
 
-// 3 — Model PRECEDENCE across the three real connectors (direct buildLaunch; no PATH/broker need).
+// 3 — Model PRECEDENCE across the four real connectors (direct buildLaunch; no PATH/broker need).
 {
   const dir = mkdtempSync(join(tmpdir(), "cotal-start-af-"));
   const af = join(dir, "tester.md");
   writeFileSync(af, "---\nname: tester\nmodel: opus\n---\nbody persona\n");
   const base = { space: "smoke", name: "tester" };
   const claudeModel = (s: LaunchSpec) => { const i = s.args.indexOf("--model"); return i >= 0 ? s.args[i + 1] : undefined; };
+  const codexModel = (s: LaunchSpec) => s.env!.COTAL_CODEX_MODEL;
   const ocModel = (s: LaunchSpec) => JSON.parse(s.env!.OPENCODE_CONFIG_CONTENT).model as string | undefined;
   const hermesModel = (s: LaunchSpec) => s.env!.HERMES_MODEL;
 
   check("claude.requires == [claude]", JSON.stringify(claudeConnector.requires) === '["claude"]');
+  check("codex.requires == [codex]", JSON.stringify(codexConnector.requires) === '["codex"]');
   check("opencode.requires == [opencode]", JSON.stringify(opencodeConnector.requires) === '["opencode"]');
   check("hermes.requires == [hermes]", JSON.stringify(hermesConnector.requires) === '["hermes"]');
 
@@ -182,25 +185,32 @@ registry.register(recNoResumeCon);
     let threw = false;
     try { hermesConnector.buildLaunch({ ...base }); } catch { threw = true; }
     check("hermes: buildLaunch throws (Unix-only) on win32", threw);
+    threw = false;
+    try { codexConnector.buildLaunch({ ...base }); } catch { threw = true; }
+    check("codex: buildLaunch throws (Unix-only) on win32", threw);
   }
 
   // flag wins over the agent file's `model:`
   check("claude: flag beats frontmatter", claudeModel(claudeConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
+  if (!onWin) check("codex: flag beats frontmatter", codexModel(codexConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
   check("opencode: flag beats frontmatter", ocModel(opencodeConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
   if (!onWin) check("hermes: flag beats frontmatter", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af, model: "sonnet" })) === "sonnet");
 
   // flag applies with NO agent file (the gap the fix closes)
   check("claude: flag with no agent file", claudeModel(claudeConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
+  if (!onWin) check("codex: flag with no agent file", codexModel(codexConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
   check("opencode: flag with no agent file", ocModel(opencodeConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
   if (!onWin) check("hermes: flag with no agent file", hermesModel(hermesConnector.buildLaunch({ ...base, model: "sonnet" })) === "sonnet");
 
   // no flag → agent-file model is the fallback (incl. Hermes, whose launcher previously ignored it)
   check("claude: no flag → frontmatter opus", claudeModel(claudeConnector.buildLaunch({ ...base, configPath: af })) === "opus");
+  if (!onWin) check("codex: no flag → frontmatter opus", codexModel(codexConnector.buildLaunch({ ...base, configPath: af })) === "opus");
   check("opencode: no flag → frontmatter opus", ocModel(opencodeConnector.buildLaunch({ ...base, configPath: af })) === "opus");
   if (!onWin) check("hermes: no flag → frontmatter opus", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af })) === "opus");
 
   // nothing set → no model applied
   check("claude: nothing → no --model", claudeModel(claudeConnector.buildLaunch({ ...base })) === undefined);
+  if (!onWin) check("codex: nothing → no COTAL_CODEX_MODEL", codexModel(codexConnector.buildLaunch({ ...base })) === undefined);
   check("opencode: nothing → no config.model", ocModel(opencodeConnector.buildLaunch({ ...base })) === undefined);
   if (!onWin) check("hermes: nothing → no HERMES_MODEL", hermesModel(hermesConnector.buildLaunch({ ...base })) === undefined);
 
@@ -270,9 +280,9 @@ registry.register(recNoResumeCon);
     check("claude: prompt+resume → --resume still emitted", a.includes("--resume"), a);
     check("claude: prompt+resume → --fork-session still emitted", a.includes("--fork-session"), a);
   }
-  // opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
-  // Hermes is excluded on win32 (its buildLaunch throws Unix-only regardless — asserted in §3).
-  const unsupportedResume = onWin ? [opencodeConnector] : [opencodeConnector, hermesConnector];
+  // codex + opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
+  // Codex/Hermes are excluded on win32 (their buildLaunch throws Unix-only regardless — asserted in §3).
+  const unsupportedResume = onWin ? [opencodeConnector] : [codexConnector, opencodeConnector, hermesConnector];
   for (const con of unsupportedResume) {
     let threw = false;
     let spec: LaunchSpec | undefined;
@@ -299,6 +309,7 @@ registry.register(recNoResumeCon);
 // mint, no buildLaunch) — mirrors the harness preflight; the buildLaunch throw stays the backstop.
 {
   check("claude supportsResume === true", claudeConnector.supportsResume === true);
+  check("codex supportsResume falsy", !codexConnector.supportsResume, codexConnector.supportsResume);
   check("opencode supportsResume falsy", !opencodeConnector.supportsResume, opencodeConnector.supportsResume);
   check("hermes supportsResume falsy", !hermesConnector.supportsResume, hermesConnector.supportsResume);
 
