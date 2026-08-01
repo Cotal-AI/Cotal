@@ -13,6 +13,50 @@ const LAUNCH_COMMAND = FROM_BUILD
   : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
 /**
+ * Every model-provider API key Hermes itself can read, beyond the shared
+ * {@link MODEL_PROVIDER_KEYS}. Hermes is model-agnostic across its own provider registry
+ * (hermes_cli, pinned 0.16 line), and each of these names is that registry's dedicated
+ * `api_key_env_vars` entry for one model provider — without them the P3 filter strips the
+ * key before it reaches the gateway, so e.g. the opencode-go provider could never
+ * authenticate in a managed or containerized spawn. Still forwarded BY NAME, never
+ * `...process.env`.
+ *
+ * Deliberately excluded: generic cross-tool credentials Hermes also accepts
+ * (`GH_TOKEN`/`GITHUB_TOKEN`/`COPILOT_GITHUB_TOKEN`, `HF_TOKEN`, `ANTHROPIC_TOKEN`,
+ * `CLAUDE_CODE_OAUTH_TOKEN`) — auto-forwarding an operator's VCS or Claude session
+ * credential into every gateway would silently widen its blast radius — and `LM_API_KEY`
+ * (LM Studio is a localhost server a managed gateway cannot reach anyway).
+ */
+const HERMES_PROVIDER_KEYS: readonly string[] = [
+  ...MODEL_PROVIDER_KEYS,
+  "OPENCODE_GO_API_KEY",
+  "OPENCODE_ZEN_API_KEY",
+  "XAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GLM_API_KEY",
+  "ZAI_API_KEY",
+  "Z_AI_API_KEY",
+  "KIMI_API_KEY",
+  "KIMI_CODING_API_KEY",
+  "KIMI_CN_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY",
+  "DASHSCOPE_API_KEY",
+  "ALIBABA_CODING_PLAN_API_KEY",
+  "STEPFUN_API_KEY",
+  "ARCEEAI_API_KEY",
+  "GMI_API_KEY",
+  "NVIDIA_API_KEY",
+  "KILOCODE_API_KEY",
+  "XIAOMI_API_KEY",
+  "TOKENHUB_API_KEY",
+  "OLLAMA_API_KEY",
+  "AZURE_FOUNDRY_API_KEY",
+];
+
+/**
  * The Hermes (Nous Research) connector. Unlike Claude Code / Codex — where the harness *is* the
  * process and an MCP server rides inside it — Hermes runs as a long-lived **gateway daemon** that
  * spins up a fresh `AIAgent` per inbound message. So the mesh endpoint can't live inside a
@@ -42,11 +86,11 @@ export const hermesConnector: Connector = {
     // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
     if (opts.launchOptions && Object.keys(opts.launchOptions).length)
       throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
-    // OS allow-list + the named model-provider key (Hermes is model-agnostic; any one unlocks a
+    // OS allow-list + the named model-provider keys (Hermes is model-agnostic; any one unlocks a
     // provider), forwarded BY NAME — never `...process.env` — so the operator's unrelated secrets
     // don't reach the gateway child (P3).
     const env: Record<string, string> = {
-      ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
+      ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS }),
       ...aclEnv(opts),
       ...userAuthEnv(opts),
       COTAL_SPACE: opts.space,
