@@ -120,7 +120,10 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
     stdio: "ignore",
   });
   const deadline = Date.now() + 90000;
-  while (Date.now() < deadline && seededOnDisk() < 5) await new Promise((r) => setTimeout(r, 1000));
+  // Wait for the COMPLETE seed commit (the stamp lands after all six extensions + authority),
+  // not the connector subtotal — killing mid-commit would tear the web seed / cursor state.
+  while (Date.now() < deadline && !(seededOnDisk() >= 5 && existsSync(join(seedDir(cfg), "stamp.json"))))
+    await new Promise((r) => setTimeout(r, 1000));
   child.kill("SIGKILL");
   check("direct `supervise` seeds all five connectors on a fresh config (public command, not exempted)", seededOnDisk() === 5);
 }
@@ -272,6 +275,30 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   rmSync(join(seedDir(cfg), "stamp.json"), { force: true }); // force a real reconcile
   cotal(cfg, ["ext", "seed"]);
   check("authority union: a truncated authority does not resurrect a removed connector", !listNames(cfg).includes("hermes"));
+}
+
+// ── 8b. a built-in added at an UNCHANGED generation still seeds (fast-path coverage) ─────────────
+{
+  const cfg = track(freshCfg());
+  listNames(cfg);
+  // Simulate a prefix stamped BEFORE codex joined the built-in set: strip codex from the manifest,
+  // its installed files, and BOTH authority records (never-seeded, not removed) — while the stamp
+  // stays at the CURRENT generation. The old generation-only fast path NOOPed forever here.
+  const mp = manifestPath(cfg);
+  const m = readJson(mp);
+  m.extensions = m.extensions.filter((e: { pkg: string }) => e.pkg !== "@cotal-ai/connector-codex");
+  writeJson(mp, m);
+  rmSync(join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-codex"), { recursive: true, force: true });
+  for (const f of ["authority.json", "authority.bak.json"]) {
+    const p2 = join(seedDir(cfg), f);
+    if (existsSync(p2)) {
+      const a = readJson(p2);
+      a.everSeeded = (a.everSeeded as string[]).filter((n) => n !== "codex");
+      writeJson(p2, a);
+    }
+  }
+  const names = listNames(cfg); // any auto command must notice the unaccounted built-in and seed it
+  check("same-generation built-in add: auto reconcile seeds the missing built-in", names.includes("codex"), names);
 }
 
 // ── 9. operator-pinned official entry not auto-refreshed on upgrade (source-aware) ───────────────

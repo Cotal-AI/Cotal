@@ -291,6 +291,36 @@ try {
   const exitCode = await Promise.race([hostExit, sleep(15_000).then(() => "timeout" as const)]);
   check("app-server death kills the host nonzero", typeof exitCode === "number" && exitCode !== 0, exitCode);
 
+  // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
+  // join the mesh at startup — never advertise online and fail only at the first model turn.
+  const noauthEnv: NodeJS.ProcessEnv = { ...cleanEnv };
+  delete noauthEnv.OPENAI_API_KEY;
+  const noauth = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...noauthEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "noauthpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_NOAUTH: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let noauthErr = "";
+  noauth.stderr!.setEncoding("utf8");
+  noauth.stderr!.on("data", (d: string) => (noauthErr += d));
+  const noauthExit = await Promise.race([
+    new Promise<number | null>((r) => noauth.on("exit", (code) => r(code))),
+    sleep(20_000).then(() => "timeout" as const),
+  ]);
+  check(
+    "unauthenticated codex refuses to join the mesh (fatal at startup)",
+    typeof noauthExit === "number" && noauthExit !== 0 && /no credentials/.test(noauthErr),
+    { noauthExit, err: noauthErr.slice(-200) },
+  );
+
   console.log(`\nCODEX HOST SMOKE PASSED ✅  (${pass} checks)`);
 } finally {
   host?.kill("SIGTERM");

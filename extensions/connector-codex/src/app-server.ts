@@ -61,7 +61,16 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   method: string;
+  timer: ReturnType<typeof setTimeout>;
 }
+
+/** Deadline on every JSON-RPC request. Without one, a wedged child leaves `initialize` /
+ *  `turn/start` / `turn/steer` pending FOREVER — the steer-settlement barrier then never
+ *  resolves and the whole delivery loop buffers behind a turn that cannot end. A timed-out
+ *  request rejects (the host's retry rails take over); repeated consecutive timeouts mean the
+ *  child is dead-but-breathing, so the driver kills it and the host exits for a clean respawn. */
+const REQUEST_TIMEOUT_MS = 60_000;
+const FATAL_CONSECUTIVE_TIMEOUTS = 3;
 
 /** One decoded line off the app-server: a response, a notification, or a server→client request. */
 interface RpcMessage {
@@ -142,13 +151,27 @@ export class AppServerDriver extends EventEmitter {
     child.stdout!.on("data", (d: string) => this.onData(d));
     child.stderr!.setEncoding("utf8");
     child.stderr!.on("data", (d: string) => this.log(`app-server: ${d.trimEnd()}`));
-    child.on("exit", (code) => {
-      for (const p of this.pending.values()) p.reject(new Error(`app-server exited (${p.method})`));
+    // ONE-SHOT finalizer for every way the child can die. A spawn failure (ENOENT/EACCES)
+    // emits `error` + `close` but never `exit` — an exit-only handler would leave `initialize`
+    // pending forever while the mesh endpoint sits connected with no Codex behind it.
+    let finalized = false;
+    const finalize = (code: number): void => {
+      if (finalized) return;
+      finalized = true;
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        p.reject(new Error(`app-server gone (${p.method})`));
+      }
       this.pending.clear();
       this.activeTurnId = undefined;
-      this.emit("closed", code ?? 0);
+      this.emit("closed", code);
+    };
+    child.on("exit", (code, signal) => finalize(code ?? (signal ? 1 : 0)));
+    child.on("close", (code, signal) => finalize(code ?? (signal ? 1 : 0)));
+    child.on("error", (e) => {
+      this.log(`app-server spawn/pipe error: ${e.message}`);
+      finalize(1);
     });
-    child.on("error", (e) => this.emit("error", e));
 
     const init = (await this.request("initialize", {
       clientInfo: { name: "cotal", title: "Cotal", version: "0.0.0" },
@@ -181,10 +204,13 @@ export class AppServerDriver extends EventEmitter {
   /** Begin a new user turn — wakes the session. */
   async startTurn(text: string): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
-    await this.request("turn/start", {
+    const res = (await this.request("turn/start", {
       threadId: this.threadId,
       input: [{ type: "text", text, text_elements: [] }],
-    });
+    })) as { turn?: { id?: string } };
+    // The response precedes the turn/started notification on the wire — adopt the id here too,
+    // so the terminal-event correlation can never miss a very fast turn.
+    if (!this.activeTurnId && res?.turn?.id) this.activeTurnId = res.turn.id;
   }
 
   /** Inject input into the turn currently in flight (true mid-turn steer). Returns false when
@@ -205,6 +231,12 @@ export class AppServerDriver extends EventEmitter {
       this.log(`steer declined: ${(e as Error).message}`);
       return false;
     }
+  }
+
+  /** The account state Codex reports (`account/read`): `account` is null when no credentials
+   *  resolve; `requiresOpenaiAuth` is false for fully custom model providers. */
+  async readAccount(): Promise<{ account?: unknown; requiresOpenaiAuth?: boolean }> {
+    return (await this.request("account/read", {})) as { account?: unknown; requiresOpenaiAuth?: boolean };
   }
 
   /** Cancel the in-flight turn, if any (its surfaced messages then redeliver — see host.ts). */
@@ -229,12 +261,25 @@ export class AppServerDriver extends EventEmitter {
 
   // ---- JSON-RPC plumbing ---------------------------------------------------
 
+  private consecutiveTimeouts = 0;
+
   private request(method: string, params?: Record<string, unknown>): Promise<unknown> {
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       if (!this.writeLine({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) }))
         return reject(new Error("app-server not running"));
-      this.pending.set(id, { resolve, reject, method });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        this.consecutiveTimeouts++;
+        this.log(`request ${method} timed out (${REQUEST_TIMEOUT_MS}ms, ${this.consecutiveTimeouts} consecutive)`);
+        if (this.consecutiveTimeouts >= FATAL_CONSECUTIVE_TIMEOUTS) {
+          this.log("app-server unresponsive — killing it so the host can exit and redeliver");
+          this.child?.kill("SIGKILL"); // the exit finalizer rejects the rest + emits closed
+        }
+        reject(new Error(`${method} timed out after ${REQUEST_TIMEOUT_MS}ms`));
+      }, REQUEST_TIMEOUT_MS);
+      timer.unref?.();
+      this.pending.set(id, { resolve, reject, method, timer });
     });
   }
 
@@ -270,8 +315,10 @@ export class AppServerDriver extends EventEmitter {
     // Response to one of our requests (id, no method).
     if (msg.id !== undefined && msg.method === undefined) {
       const p = this.pending.get(msg.id as number);
-      if (!p) return;
+      if (!p) return; // unknown/expired id — a late reply after its timeout already rejected
       this.pending.delete(msg.id as number);
+      clearTimeout(p.timer);
+      this.consecutiveTimeouts = 0; // the child is alive and answering
       if (msg.error) p.reject(new Error(msg.error.message ?? "app-server error"));
       else p.resolve(msg.result);
       return;
@@ -336,10 +383,22 @@ export class AppServerDriver extends EventEmitter {
       case "turn/failed": // terminal, but turn/completed (status:"failed") follows on the same turn
         return;
       case "turn/completed": {
+        // Terminal events are correlated by EXACT turn id: a stale or duplicated terminal for
+        // an old turn must never close the live one (and so ack the live turn's surfaced ids).
+        // Fail closed on ambiguity: an id mismatch is ignored; a MISSING/unknown status is
+        // reported as "interrupted" (no ack → redeliver) rather than assumed successful.
         const turn = params.turn as { id?: string; status?: TurnStatus } | undefined;
-        const turnId = turn?.id ?? this.activeTurnId;
+        if (!this.activeTurnId || !turn?.id || turn.id !== this.activeTurnId) {
+          if (turn?.id !== undefined || this.activeTurnId !== undefined)
+            this.log(`ignoring turn/completed for ${turn?.id ?? "?"} (active: ${this.activeTurnId ?? "none"})`);
+          return;
+        }
+        const status: TurnStatus =
+          turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted"
+            ? turn.status
+            : "interrupted";
         this.activeTurnId = undefined;
-        this.emit("turnCompleted", { turnId, status: turn?.status ?? "completed" });
+        this.emit("turnCompleted", { turnId: turn.id, status });
         return;
       }
       default:

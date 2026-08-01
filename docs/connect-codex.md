@@ -11,11 +11,12 @@ mid-turn is **steered into the running turn** instead of waiting for it to end.
 options that are not wired **fail loud** rather than degrade: resuming a session (`--resume`)
 and tool-sharing (`connectors.codex.mcpServers`). See [Limits](#limits).
 
-## No install needed
+## Install
 
-Codex needs no setup step; you only need an authenticated `codex` binary on your PATH (a
-ChatGPT-plan login or an `OPENAI_API_KEY`). There is no plugin to install; the connector
-auto-wires at spawn.
+The connector ships with the CLI as a seeded extension (`@cotal-ai/connector-codex`) — no
+separate install step and no Codex-side plugin. You only need an authenticated `codex` binary
+on your PATH (a ChatGPT-plan login or an `OPENAI_API_KEY`). If an older install is missing it,
+`cotal ext seed --repair` (or `cotal ext add @cotal-ai/connector-codex`) brings it in.
 
 ## Spawn it
 
@@ -56,7 +57,7 @@ Codex TUI runs on).
   single mesh endpoint. No sidecar processes.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
   turn completes. A failed turn retries with backoff; an interrupted turn or a crash leaves the
-  batch to redeliver. (The shared bounded-inbox overflow rule applies: under extreme bursts an
+  batch to redeliver (to the same incarnation, or a manager-supervised same-lifecycle restart). (The shared bounded-inbox overflow rule applies: under extreme bursts an
   evicted in-flight id cannot redeliver.)
 - **Isolated, never written.** Each agent gets a private `CODEX_HOME` (one hashed directory
   per space+name under `.cotal/codex/`, rooted at the manager's workspace): your `~/.codex`

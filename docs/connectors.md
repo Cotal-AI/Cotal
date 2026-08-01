@@ -11,7 +11,7 @@ not support throws; nothing silently degrades.
 |---|---|---|---|---|---|
 | Maturity | stable | beta | beta | alpha | alpha |
 | Binds via | installed plugin + MCP server | in-process plugin (native runtime) | host-mode peer driving `codex app-server` | native Python plugin, socket-bridged | native pi extension, in-process |
-| Install | `cotal setup` | none, just `opencode` on PATH | none, just an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` 0.16; Unix only | pi 0.79.10 (one copied file for interactive/SDK) |
+| Install | `cotal setup` | none, just `opencode` on PATH | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` 0.16; Unix only | pi 0.79.10 (one copied file for interactive/SDK) |
 | Watch the real TUI | ✓ | ✓ | ✗ (live activity feed via `cotal attach`) | ✗ (headless gateway) | ✓ |
 | Inbound delivery | hook drain at turn start + idle-wake nudge | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | steered into the live turn |
 | Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | — | ✓ |

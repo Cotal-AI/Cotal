@@ -125,6 +125,13 @@ process.stdin.on("data", (d) => {
         reply(id, { thread: { id: THREAD }, model: "fake-model" });
         notify("thread/started", { thread: { id: THREAD } });
         break;
+      case "account/read":
+        // FAKE_CODEX_NOAUTH=1 simulates a logged-out codex (auth-honesty smoke case).
+        reply(id, {
+          account: process.env.FAKE_CODEX_NOAUTH === "1" ? null : { type: "fake", planType: "test" },
+          requiresOpenaiAuth: true,
+        });
+        break;
       case "turn/start": {
         const text = (params?.input ?? []).map((i) => i.text ?? "").join("\n");
         if (text.includes("REJECTSTART") && !rejectStartUsed) {

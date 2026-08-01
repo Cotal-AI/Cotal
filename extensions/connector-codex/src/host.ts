@@ -26,7 +26,7 @@
  * broken launch and fails loud — this binary is never run standalone by an operator.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
@@ -93,6 +93,17 @@ function prepareCodexHome(space: string, name: string): string {
   const agentHome = join(root, `${slug || "agent"}-${key}`);
   if (!resolve(agentHome).startsWith(resolve(root) + sep))
     throw new Error(`codex home ${agentHome} escapes ${root} — refusing`);
+  // The data root is agent-writable workspace: a prior (or sibling) agent could have PLANTED a
+  // symlink at any managed level, redirecting the mkdir/harden/rm/link below into the operator's
+  // real CODEX_HOME (worst case: deleting their real auth.json through the link). Refuse a
+  // symlink at every managed component, fail closed, before touching anything.
+  for (const p of [join(dataRoot, ".cotal"), root, agentHome]) {
+    try {
+      if (lstatSync(p).isSymbolicLink()) throw new Error(`refusing symlinked managed path: ${p}`);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+  }
   mkdirSync(agentHome, { recursive: true });
   hardenPrivate(agentHome, "dir");
   // The operator's real codex home: their CODEX_HOME if set (forwarded by the connector), else
@@ -104,9 +115,13 @@ function prepareCodexHome(space: string, name: string): string {
   // authority stays codex — we don't pre-judge it).
   const operatorHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
   const operatorAuth = join(operatorHome, "auth.json");
-  if (resolve(agentHome) !== operatorHome && existsSync(operatorAuth)) {
+  // ALWAYS clear the managed auth entry first: a codex rename-over can have turned the link
+  // into a stale regular credential, and if the operator has since logged out (source auth
+  // removed) that stale copy must NOT survive to authenticate this agent. Only then re-link
+  // to a source that currently exists.
+  if (resolve(agentHome) !== operatorHome) {
     rmSync(join(agentHome, "auth.json"), { force: true });
-    symlinkSync(operatorAuth, join(agentHome, "auth.json"));
+    if (existsSync(operatorAuth)) symlinkSync(operatorAuth, join(agentHome, "auth.json"));
   }
   return agentHome;
 }
@@ -296,9 +311,13 @@ export async function runCodexHost(): Promise<void> {
    *  transient model/upstream error) and `interrupted` (an operator/shutdown cancel) both leave
    *  the ids un-acked so the batch redelivers — failed with backoff, so a permanently failing
    *  batch can't hot-loop. Waits for any in-flight steer RPC first, so the ack set is settled. */
+  let boundaryGen = 0; // bumped per turn boundary: a boundary's ASYNC tail (flush/status/pump)
+  // must no-op once a newer boundary exists, or T1's stale tail would overwrite T2's presence
+  // and pump T2's failed batch past its backoff.
   function completeTurn(status: string): void {
     const settle = steerSettled;
     void settle.finally(() => {
+      const gen = ++boundaryGen;
       const wasOpen = awaitingTurnEnd;
       awaitingTurnEnd = false;
       const ids = surfaced;
@@ -308,7 +327,9 @@ export async function runCodexHost(): Promise<void> {
       else clearErrorRetry(true);
       void (async () => {
         if (transcript) await transcript.flush().catch((e) => log(`transcript publish failed: ${(e as Error).message}`));
+        if (gen !== boundaryGen) return; // a newer turn boundary owns presence + the next drive
         await safeStatus("idle");
+        if (gen !== boundaryGen) return;
         if (pendingPullHint) {
           void drive(pendingPullHint); // the latched focus pull — drive() consumes the latch only on ACCEPT
         } else if (status !== "failed" && agent.pendingWake() > 0) {
@@ -375,7 +396,12 @@ export async function runCodexHost(): Promise<void> {
     const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`;
     pendingPullHint = hint; // latched until a turn ACCEPTS it (steer accept / startTurn success)
     if (driver.busy || awaitingTurnEnd) {
-      void driver.steer(hint).then((accepted) => {
+      // Ride the SAME settlement rail as batch steers, so a turn boundary racing this steer
+      // waits for its outcome before deciding anything — an accept means the live turn saw the
+      // hint (accept happened-before the terminal on the wire), so the latch clears.
+      const rpc = driver.steer(hint);
+      steerSettled = rpc.catch(() => false);
+      void rpc.then((accepted) => {
         if (accepted && pendingPullHint === hint) pendingPullHint = undefined;
       });
     } else {
@@ -426,6 +452,22 @@ export async function runCodexHost(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
 
   const threadId = await driver.start();
+  // Auth honesty: `thread/start` succeeds even UNAUTHENTICATED (Codex builds the session
+  // locally), so without this probe the peer would advertise online, soak deliveries, and only
+  // fail on its first model turn. A definitive "no credentials" is fatal NOW, before presence.
+  // A probe the running codex can't answer is logged, not fatal — codex stays the auth
+  // authority and its first turn surfaces the error instead.
+  try {
+    const acct = await driver.readAccount();
+    if (acct.requiresOpenaiAuth !== false && !acct.account && !process.env.OPENAI_API_KEY)
+      throw new Error(
+        "codex reports no credentials (account/read: none) and OPENAI_API_KEY is not set — " +
+          "run `codex login` (file-backed store) or provide OPENAI_API_KEY; refusing to join the mesh unauthenticated",
+      );
+  } catch (e) {
+    if ((e as Error).message.includes("no credentials")) throw e;
+    log(`auth probe unavailable (${(e as Error).message}) — auth errors will surface on the first turn`);
+  }
   agent.setContextId(threadId);
   if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
   ready = true;
