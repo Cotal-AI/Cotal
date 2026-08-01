@@ -12,10 +12,10 @@ not support throws; nothing silently degrades.
 | Maturity | stable | beta | beta | alpha | alpha |
 | Binds via | installed plugin + MCP server | in-process plugin (native runtime) | host-mode peer driving `codex app-server` | native Python plugin, socket-bridged | native pi extension, in-process |
 | Install | `cotal setup` | none, just `opencode` on PATH | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` 0.16; Unix only | pi 0.79.10 (one copied file for interactive/SDK) |
-| Watch the real TUI | ✓ | ✓ | ✗ (live activity feed via `cotal attach`) | ✗ (headless gateway) | ✓ |
+| Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ |
 | Inbound delivery | hook drain at turn start + idle-wake nudge | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | steered into the live turn |
 | Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | — | ✓ |
-| Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (dynamic tools are start-only upstream) | ✗ | ✗ |
+| Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ |
 | Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ |
@@ -27,7 +27,8 @@ three sanctioned surfaces (an MCP server for tools, lifecycle hooks for presence
 at turn boundaries, and a research-preview channel that only wakes an idle session). Codex has
 no plugin runtime either and its MCP client cannot wake an idle session, so the connector runs
 a host-mode peer over Codex's own app-server protocol (the one the Codex TUI runs on): real
-wake, mid-turn steer, and the `cotal_*` tools served natively as dynamic tools. Hermes runs a
+wake, mid-turn steer, and the `cotal_*` tools served from the host over a loopback MCP endpoint
+— which is also what keeps them working on a turn typed into the attached Codex TUI. Hermes runs a
 native plugin inside its Python gateway, bridged to the connector over a local socket; the
 gateway model starts a fresh agent per inbound message, so there is no live turn to steer.
 

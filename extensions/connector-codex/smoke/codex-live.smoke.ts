@@ -1,8 +1,8 @@
 /**
  * Live E2E for the Codex connector — drives the REAL `codex` binary end to end. Spins up its
  * own nats-server + a real mesh, launches the host peer (tsx host-main.ts) as a child, then DMs
- * it and asserts the model replies BACK OVER THE MESH via its cotal_dm dynamic tool — proving
- * wake (turn/start), the dynamic-tool surface, presence, and ack in one pass against the
+ * it and asserts the model replies BACK OVER THE MESH via its cotal_dm tool — proving wake
+ * (turn/start), the loopback MCP tool surface, presence, and ack in one pass against the
  * installed binary. Needs an AUTHENTICATED codex, so it is gated behind `COTAL_E2E_CODEX=1`
  * (without the flag it skips and stays green in CI).
  *

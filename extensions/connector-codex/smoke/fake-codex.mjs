@@ -1,9 +1,15 @@
 // A fake `codex app-server` for the host smoke: speaks just enough of the JSON-RPC v2
 // protocol to drive the host's turn loop, and journals everything it sees to
 // FAKE_CODEX_LOG (JSONL) so the smoke can assert on it. Turn behavior is scripted by
-// the injected text: TOOL:roster → issue an item/tool/call first; SLOW → hold the turn
-// open ~1.2s (a steer window); HANG → hold until an interrupt arrives, else self-
-// interrupt after ~1s; FAIL → complete with status "failed"; default → complete.
+// the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
+// SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
+// arrives, else self-interrupt after ~1s; FAIL → complete with status "failed";
+// default → complete.
+//
+// Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
+// websocket at all, they are fetched over the loopback HTTP endpoint named in its own
+// `-c mcp_servers.cotal.url` with the bearer token from its env. That is what makes the
+// smoke exercise the same path a TUI-initiated turn takes.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
 
@@ -25,6 +31,69 @@ if (argv[0] === "resume") {
   journal({ ev: "tui", argv, tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null });
   if (process.env.FAKE_CODEX_TUI_EXIT === "1") setTimeout(() => process.exit(0), 300);
   await new Promise(() => {});
+}
+
+// ---- the cotal_* MCP endpoint (what the host serves, and what real codex dials) ----------
+// The URL rides argv as a `-c` override; the token rides env BY NAME, never argv.
+const cfgValue = (key) => {
+  for (let i = 0; i < argv.length - 1; i++)
+    if (argv[i] === "-c" && argv[i + 1].startsWith(`${key}=`)) return argv[i + 1].slice(key.length + 1).replace(/^"|"$/g, "");
+  return undefined;
+};
+const MCP_URL = cfgValue("mcp_servers.cotal.url");
+const MCP_TOKEN = process.env.COTAL_MCP_TOKEN;
+// Proves the env boundary in BOTH directions at once: the child gets the one capability it
+// needs and none of the agent's mesh identity.
+journal({
+  ev: "env",
+  mcpTokenPresent: Boolean(MCP_TOKEN),
+  cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== "COTAL_MCP_TOKEN"),
+});
+
+/** The endpoint answers SSE (`data: {…}`) for a POSTed request; plain JSON otherwise. */
+const parseRpc = (text) => {
+  const data = text.split("\n").filter((l) => l.startsWith("data:"));
+  const payload = data.length ? data[data.length - 1].slice(5).trim() : text;
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return { raw: text };
+  }
+};
+
+/** Minimal streamable-HTTP MCP client: initialize → initialized → tools/call. */
+async function mcpCall(tool, args, { token = MCP_TOKEN } = {}) {
+  if (!MCP_URL) throw new Error("no mcp_servers.cotal.url on argv");
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  const init = await fetch(MCP_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-codex", version: "0.0.0" } },
+    }),
+  });
+  if (!init.ok) return { httpStatus: init.status };
+  const sid = init.headers.get("mcp-session-id");
+  await init.text();
+  const withSession = { ...headers, ...(sid ? { "mcp-session-id": sid } : {}) };
+  await fetch(MCP_URL, {
+    method: "POST",
+    headers: withSession,
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  });
+  const res = await fetch(MCP_URL, {
+    method: "POST",
+    headers: withSession,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } }),
+  });
+  return { httpStatus: res.status, body: parseRpc(await res.text()) };
 }
 
 let nextServerId = 1000;
@@ -101,15 +170,22 @@ async function runTurn(text) {
   }
 
   if (text.includes("TOOL:roster")) {
-    const res = await serverRequest("item/tool/call", {
-      threadId: THREAD,
-      turnId,
-      callId: `call_${turnSeq}`,
-      namespace: null,
-      tool: "cotal_roster",
-      arguments: {},
-    });
-    journal({ ev: "toolReply", turnId, result: res });
+    // The model calls a cotal tool. Exactly as real codex does it: over MCP, from THIS process,
+    // with no involvement from whichever client happens to own the turn.
+    try {
+      const res = await mcpCall("cotal_roster", {});
+      journal({ ev: "toolReply", turnId, result: res });
+    } catch (e) {
+      journal({ ev: "toolReply", turnId, error: String(e) });
+    }
+    // The same call without the bearer token must be refused — loopback alone is not the
+    // boundary on a shared machine.
+    try {
+      const bad = await mcpCall("cotal_roster", {}, { token: "" });
+      journal({ ev: "toolReplyNoAuth", turnId, httpStatus: bad.httpStatus });
+    } catch (e) {
+      journal({ ev: "toolReplyNoAuth", turnId, error: String(e) });
+    }
   }
   if (text.includes("SLOW")) await new Promise((r) => setTimeout(r, 1200));
   if (text.includes("HANG") && !hangUsed) {

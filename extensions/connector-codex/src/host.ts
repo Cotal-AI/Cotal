@@ -7,8 +7,10 @@
  *    (`turn/start`); a DIRECTED message (DM / anycast / @mention) arriving mid-turn is
  *    steered INTO the live turn (`turn/steer`, race-safe via expectedTurnId) — ambient
  *    chatter waits for the turn boundary so it can't derail the work in flight;
- *  • the cotal_* tools are served over the same app-server pipe (dynamicTools →
- *    item/tool/call → tools.ts), so the model replies itself via cotal_send / cotal_dm;
+ *  • the cotal_* tools are served by THIS process over a loopback MCP endpoint (mcp.ts), so the
+ *    model replies itself via cotal_send / cotal_dm — and, because the app-server is the MCP
+ *    client, they work on a turn someone typed into the attached TUI just as well as on a
+ *    mesh-driven one;
  *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxIds-acked
  *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
  *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn leaves them
@@ -57,7 +59,7 @@ import {
   type InboxItem,
 } from "@cotal-ai/connector-core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
-import { buildCotalTools } from "./tools.js";
+import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
 import { createTranscriptMirror } from "./transcript.js";
 import { launchTui } from "./tui.js";
 
@@ -191,7 +193,32 @@ function configOverrides(model: string | undefined, variant: string | undefined)
     );
   if (!approval) overrides.push(["approval_policy", '"never"']);
   if (!has("sandbox_mode")) overrides.push(["sandbox_mode", '"workspace-write"']);
+  // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
+  // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
+  // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.
+  const stolen = overrides.find(([k]) => k === `mcp_servers.${MCP_SERVER_NAME}` || k.startsWith(`mcp_servers.${MCP_SERVER_NAME}.`));
+  if (stolen)
+    throw new Error(
+      `codex connector: ${stolen[0]} is reserved — mcp_servers.${MCP_SERVER_NAME}.* is how this agent reaches the mesh ` +
+        `and cannot be overridden. Use a different MCP server name for your own tools.`,
+    );
   return overrides;
+}
+
+/** Point the child at the cotal_* tools this host is serving (mcp.ts). Appended LAST, and codex
+ *  resolves a repeated key to the last `-c`, so this is authoritative over anything else. */
+function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
+  const p = `mcp_servers.${MCP_SERVER_NAME}`;
+  return [
+    [`${p}.url`, `"${mcp.url}"`],
+    // By NAME, never by value: a token on argv is world-readable in the process table.
+    [`${p}.bearer_token_env_var`, `"${MCP_TOKEN_ENV}"`],
+    // Pre-approve this server's tools. Codex otherwise raises an elicitation ("Allow the cotal
+    // MCP server to run tool X?") per call, which for a mesh-driven turn nobody is watching would
+    // hang the turn forever. These are the agent's own mesh voice — the same surface every other
+    // connector exposes ungated — so standing approval is the honest setting, not a loosening.
+    [`${p}.default_tools_approval_mode`, '"approve"'],
+  ];
 }
 
 export async function runCodexHost(): Promise<void> {
@@ -208,16 +235,20 @@ export async function runCodexHost(): Promise<void> {
   // (a later auth failure can't retract a presence interval already seen by the roster).
   const agent = new MeshAgent(config);
 
-  const surface = buildCotalTools(agent, config);
   const codexHome = prepareCodexHome(config.space, config.name);
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || undefined;
+  // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
+  // with nothing left behind to reap.
+  const baseOverrides = configOverrides(model, variant);
+  // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
+  // URL and codex dials it while starting the thread.
+  const mcp = await startCotalMcp(agent, config, log);
   const driver = new AppServerDriver({
     cwd: process.cwd(),
     codexHome,
-    configOverrides: configOverrides(model, variant),
+    configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
     developerInstructions: developerInstructions(config, persona),
-    dynamicTools: surface.tools,
-    onToolCall: (call) => surface.dispatch(call),
+    extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
     bin: codexBin,
     log,
   });
@@ -434,7 +465,7 @@ export async function runCodexHost(): Promise<void> {
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
-    } else if (item.type === "dynamicToolCall" || item.type === "mcpToolCall") {
+    } else if (item.type === "mcpToolCall") {
       feed(`⚒ ${item.tool ?? "?"}`);
       void safeStatus("working", String(item.tool ?? ""));
     }
@@ -455,6 +486,11 @@ export async function runCodexHost(): Promise<void> {
     stopTui();
     try {
       await driver.stop();
+    } catch {
+      /* leaving anyway */
+    }
+    try {
+      await mcp.close();
     } catch {
       /* leaving anyway */
     }
@@ -651,6 +687,11 @@ export async function runCodexHost(): Promise<void> {
       /* ignore */
     }
     try {
+      await mcp.close(); // the tools existed only for the codex we just stopped
+    } catch {
+      /* ignore */
+    }
+    try {
       await safeStatus("offline");
       await agent.stop();
     } finally {
@@ -676,15 +717,17 @@ export async function runCodexHost(): Promise<void> {
   // launch that bypasses it): fail with a clear message naming the binary rather than a raw
   // ENOENT from the spawn. An absolute COTAL_CODEX_BIN override (tests) skips the PATH scan.
   const bin = process.env.COTAL_CODEX_BIN?.trim() || "codex";
-  if (!bin.includes(sep) && !onPath(bin))
+  if (!bin.includes(sep) && !onPath(bin)) {
+    await mcp.close();
     throw new Error(`the codex connector needs \`${bin}\` on PATH — install the Codex CLI and authenticate it`);
+  }
 
-  const threadId = await driver.start();
-  // From here on the app-server is a LISTENING server, not a stdio child that dies with our
-  // pipes: nothing reaps it if this function throws. Any startup failure past this point must
-  // take it down explicitly, or a refused launch (the auth check just below is the common one)
-  // leaves an orphaned codex holding a port and this agent's isolated home.
+  // From here on TWO things outlive a thrown error unless we take them down: the MCP endpoint
+  // this process is serving, and (once started) the app-server — a LISTENING server, not a stdio
+  // child that dies with our pipes. A refused launch (the auth check below is the common one)
+  // would otherwise leave an orphaned codex holding a port and this agent's isolated home.
   try {
+    const threadId = await driver.start();
     // Auth honesty: `thread/start` succeeds even UNAUTHENTICATED (Codex builds the session
     // locally), so without this probe the peer would advertise online, soak deliveries, and only
     // fail on its first model turn. A definitive "no credentials" is fatal NOW, before presence.
@@ -722,6 +765,7 @@ export async function runCodexHost(): Promise<void> {
   } catch (e) {
     stopTui();
     await driver.stop().catch(() => {});
+    await mcp.close().catch(() => {});
     throw e;
   }
 }

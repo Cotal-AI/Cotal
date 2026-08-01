@@ -5,15 +5,16 @@
  * delivery-loop invariants the connector promises:
  *
  *   1. launch surface: argv carries the operator's -c overrides + the autonomy defaults only
- *      where unset; thread/start carries the cotal_* dynamicTools + the persona/mesh
- *      developerInstructions;
+ *      where unset; the cotal_* tools are wired as a bearer-authenticated MCP server and
+ *      thread/start carries the persona/mesh developerInstructions;
  *   2. wake: a DM drives a real turn carrying the rendered batch;
  *   3. ack-on-completion: a completed turn's batch never redelivers;
  *   4. steer: a directed message arriving mid-turn is steered INTO the live turn;
  *   5. interrupt: an interrupted turn's batch is NOT acked and redelivers immediately;
  *   6. failed: a failed turn's batch is NOT acked — it retries with backoff, and the loop
  *      is released afterwards;
- *   7. tools: a model-initiated item/tool/call round-trips into the shared cotal_* surface;
+ *   7. tools: a model-initiated MCP tools/call round-trips into the shared cotal_* surface,
+ *      and the same call without the bearer token is refused;
  *   8. crash: an unexpected app-server death kills the host nonzero (no wedged endpoint);
  *   9. races: a transiently rejected turn/start retries; a steer whose accept collides with
  *      the turn's completion in ONE chunk never loses the message (it redelivers).
@@ -29,7 +30,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { AppServerDriver } from "../src/app-server.js";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -169,12 +169,27 @@ try {
     "thread/start",
     () => logEntries().find((e) => e.ev === "recv" && e.method === "thread/start")?.params,
   );
-  const toolNames = ((threadStart.dynamicTools as { name: string }[] | undefined) ?? []).map((t) => t.name);
+  // The cotal_* surface is an MCP server this host serves, NOT client-provided dynamicTools: a
+  // dynamic tool is routed to whoever owns the turn, so it would vanish the moment a human typed
+  // into the attached TUI. Assert the child is pointed at the endpoint, that its tools are
+  // pre-approved (an elicitation nobody is watching would hang a mesh-driven turn forever), and
+  // that the bearer token is passed by env NAME so it never lands in the process table.
+  const argvStr = argv.join(" ");
+  check("child argv: cotal tools wired as an MCP server", /mcp_servers\.cotal\.url="http:\/\/127\.0\.0\.1:\d+\/mcp"/.test(argvStr), argv);
   check(
-    "thread/start carries the shared cotal_* tools",
-    ["cotal_send", "cotal_dm", "cotal_roster", "cotal_status", "cotal_inbox"].every((n) => toolNames.includes(n)),
-    toolNames,
+    "child argv: MCP bearer passed by env NAME, never by value",
+    argvStr.includes('mcp_servers.cotal.bearer_token_env_var="COTAL_MCP_TOKEN"'),
+    argv,
   );
+  check(
+    "child argv: cotal's own tools are pre-approved (no unanswerable elicitation)",
+    argvStr.includes('mcp_servers.cotal.default_tools_approval_mode="approve"'),
+    argv,
+  );
+  check("thread/start no longer carries dynamicTools", threadStart.dynamicTools === undefined, threadStart.dynamicTools);
+  const childEnv = await waitFor("fake env", () => logEntries().find((e) => e.ev === "env"));
+  check("child receives the MCP token, and NOTHING else COTAL_*", childEnv.mcpTokenPresent === true && (childEnv.cotalLeak as string[]).length === 0, childEnv);
+  check("MCP token never rides argv by value", !/mcp_servers\.cotal\.bearer_token=/.test(argvStr), argv);
   const instructions = String(threadStart.developerInstructions ?? "");
   check(
     "developerInstructions carry the mesh identity",
@@ -239,14 +254,17 @@ try {
   const t6 = await waitFor("post-fail turn", () => turnStarts().find((t) => t.includes("after-fail")));
   check("loop released after the failed batch settled", !t6.includes("FAIL this"), t6);
 
-  // (7) dynamic tool round trip into the shared surface.
+  // (7) the cotal_* MCP surface: the app-server calls it ITSELF over loopback HTTP, which is why
+  // it works identically on a mesh-driven turn and one typed into the attached TUI.
   await sleep(300);
   await dm("TOOL:roster please");
   const toolReply = await waitFor("tool reply", () =>
     logEntries().find((e) => e.ev === "toolReply"),
   );
-  const replyText = JSON.stringify(toolReply.result ?? "");
-  check("item/tool/call round-trips (roster shows the operator)", replyText.includes("operator"), replyText);
+  const replyText = JSON.stringify(toolReply.result ?? toolReply.error ?? "");
+  check("MCP tools/call round-trips (roster shows the operator)", replyText.includes("operator"), replyText);
+  const noAuth = await waitFor("unauthenticated tool call", () => logEntries().find((e) => e.ev === "toolReplyNoAuth"));
+  check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
 
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
@@ -356,6 +374,20 @@ try {
   const t8 = await waitFor("post-crash turn", () => turnStarts().find((t) => t.includes("post-crash")));
   check("turn loop healthy after the restart", t8 !== undefined);
   check("host still alive after recovery", hostExited === "alive", hostExited);
+  // The MCP endpoint belongs to the HOST, not the app-server, so it outlives the crash — and the
+  // brand-new child must still be able to authenticate to it (fresh process, same bearer env).
+  const toolRepliesBefore = logEntries().filter((e) => e.ev === "toolReply").length;
+  await dm("TOOL:roster after crash");
+  const postCrashTool = await waitFor("tool reply on the restarted app-server", () =>
+    logEntries().filter((e) => e.ev === "toolReply").length > toolRepliesBefore
+      ? logEntries().filter((e) => e.ev === "toolReply").at(-1)
+      : undefined,
+  );
+  check(
+    "cotal tools still reachable after an app-server restart (endpoint outlives the child)",
+    JSON.stringify(postCrashTool.result ?? postCrashTool.error ?? "").includes("operator"),
+    postCrashTool,
+  );
 
   // (8b) the restart budget is BOUNDED: a codex that dies every incarnation is a crash loop, and
   // the host must give up loudly rather than respawn forever (an endless silent respawn would
@@ -389,48 +421,6 @@ try {
     /crashes in \d+s/.test(loopErr) && (loopErr.match(/restarting it \(/g) ?? []).length === 3,
     { restarts: (loopErr.match(/restarting it \(/g) ?? []).length, err: loopErr.slice(-300) },
   );
-
-  // (8c) a tool call still running when the child dies must NEVER be answered into the NEXT
-  // incarnation. Server request ids restart per process, so a stale reply could satisfy a
-  // DIFFERENT new-child request with the wrong tool output. Driven at the driver seam with a
-  // gated onToolCall so the ordering is deterministic rather than raced.
-  const pinLog = join(dir, "pin.log.jsonl");
-  const pinEntries = (): LogEntry[] =>
-    existsSync(pinLog)
-      ? readFileSync(pinLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
-      : [];
-  let releaseTool!: (r: { text: string; isError?: boolean }) => void;
-  const toolGate = new Promise<{ text: string; isError?: boolean }>((r) => (releaseTool = r));
-  const prevLogEnv = process.env.FAKE_CODEX_LOG;
-  process.env.FAKE_CODEX_LOG = pinLog; // the driver forwards our env to the child
-  const pin = new AppServerDriver({
-    cwd: dir,
-    codexHome: dir,
-    configOverrides: new Map(),
-    developerInstructions: "pin",
-    dynamicTools: [],
-    onToolCall: () => toolGate, // never resolves until we say so
-    bin: BIN,
-    log: () => {},
-  });
-  await pin.start();
-  await pin.startTurn("TOOL:roster held");
-  await waitFor("pin: incarnation 1 issued the tool call", () => pinEntries().find((e) => e.ev === "serverRequest"));
-  await pin.stop(); // the asking incarnation dies with the tool still running
-  await waitFor("pin: incarnation 1 gone", () => (pinEntries().filter((e) => e.ev === "argv").length === 1 ? true : undefined));
-  await sleep(200);
-  await pin.start(); // incarnation 2
-  await waitFor("pin: incarnation 2 up", () => (pinEntries().filter((e) => e.ev === "argv").length === 2 ? true : undefined));
-  releaseTool({ text: "reply owed to the DEAD incarnation" });
-  await sleep(800); // ample time for a leaked write to land
-  check(
-    "a tool reply owed to a dead app-server is dropped, never written into the new one",
-    pinEntries().filter((e) => e.ev === "stray").length === 0,
-    pinEntries().filter((e) => e.ev === "stray"),
-  );
-  await pin.stop();
-  if (prevLogEnv === undefined) delete process.env.FAKE_CODEX_LOG;
-  else process.env.FAKE_CODEX_LOG = prevLogEnv;
 
   // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
   // join the mesh at startup — never advertise online and fail only at the first model turn.

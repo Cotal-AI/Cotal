@@ -34,6 +34,7 @@
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
     "smoke:codex-dist": "tsx extensions/connector-codex/smoke/codex-dist.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
+    "smoke:codex-tui-live": "tsx extensions/connector-codex/smoke/codex-tui-live.smoke.ts",
     "smoke:view": "tsx implementations/cli/smoke/view.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
     "smoke:control-reply-bound": "tsx packages/core/smoke/control-reply-bound.smoke.ts",

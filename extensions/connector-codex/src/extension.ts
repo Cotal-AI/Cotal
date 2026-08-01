@@ -122,14 +122,15 @@ export const codexConnector: Connector = {
   listModels: listCodexModels,
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
-    // Resuming isn't wired: app-server 0.145 accepts `dynamicTools` ONLY on thread/start —
-    // thread/fork and thread/resume can't carry the cotal_* tool surface, so a forked thread
-    // would come up mute on the mesh (silent degradation). Throw until codex adds dynamicTools
-    // to fork. (`codex exec resume` is a same-thread HIJACK and is never an option.)
+    // Resuming isn't wired: a thread brought up with `thread/resume` does not carry the cotal_*
+    // MCP surface. Verified against codex-cli 0.145.0 — the resume succeeds and the turn runs,
+    // but the model answers "mesh_ping tool unavailable" — so a resumed agent would come up mute
+    // on the mesh (silent degradation). Throw until a resumed thread gets its configured MCP
+    // servers. (`codex exec resume` is a same-thread HIJACK and is never an option.)
     if (opts.resume)
       throw new Error(
-        "codex connector: resuming an existing session (resume) is not supported — codex app-server " +
-          "only accepts dynamic tools on thread/start, so a forked thread would lose the cotal_* tools",
+        "codex connector: resuming an existing session (resume) is not supported — a resumed codex " +
+          "thread comes up without the cotal_* MCP tools, so the agent would be mute on the mesh",
       );
     // Tool-sharing isn't wired: rendering operator MCP servers into the per-agent codex config
     // means resolving `${VAR}` secret refs into a child config surface; that expansion story is a

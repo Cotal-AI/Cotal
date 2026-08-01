@@ -154,7 +154,7 @@ try {
 
   // Declared-unsupported features fail loud.
   throws(
-    "resume is refused (dynamicTools is thread/start-only)",
+    "resume is refused (a resumed thread has no cotal_* MCP tools)",
     () => codexConnector.buildLaunch({ space: "s", name: "n", resume: "0199-abc" }),
     /resum/i,
   );

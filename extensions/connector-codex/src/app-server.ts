@@ -1,16 +1,18 @@
 /**
  * Codex app-server driver — a JSON-RPC 2.0 client that owns a `codex app-server` child and
  * drives one live thread: start a turn (wake), steer a turn already in flight (true mid-turn
- * injection), or interrupt one. The cotal_* tools ride the SAME connection as app-server
- * **dynamicTools**: the server calls back with `item/tool/call` and this driver dispatches into
- * the host's handler — no MCP sidecar process, no second mesh endpoint.
+ * injection), or interrupt one.
  *
  * The child is run as a **shared server** (`--listen ws://…`), not a private stdio pipe, because
  * that is what lets the operator attach the REAL Codex TUI to the very same thread the mesh
  * drives (`codex resume --remote …`, see tui.ts). A stdio app-server has exactly one client and
  * no way in. Multi-client is a designed app-server capability: `thread/resume` on a *running*
- * thread rejoins it, and the server fans events out to every attached client while routing a
- * dynamic-tool call back to the client that registered the tool — this host.
+ * thread rejoins it, and the server fans its event stream out to every attached client.
+ *
+ * The cotal_* tools deliberately do NOT ride this connection. A client-provided `dynamicTools`
+ * call is routed to whichever client owns the turn, so it would break the moment a human typed
+ * into the attached TUI; they are served over a loopback MCP endpoint instead, where the
+ * app-server itself is the client and every turn can reach them (see mcp.ts).
  *
  * The listener is loopback-only AND authenticated: `--ws-auth capability-token` with a 0600
  * token file inside the agent's private CODEX_HOME. Without it any local process could connect
@@ -18,8 +20,8 @@
  *
  * Protocol: app-server **v2** (the API the Codex TUI itself runs on — feature
  * `tui_app_server` is permanently on), verified live against codex-cli 0.145.0.
- * `initialize` must declare `capabilities.experimentalApi: true` or `thread/start`
- * rejects `dynamicTools`. Every protocol shape this connector depends on lives in
+ * `initialize` declares `capabilities.experimentalApi: true`, which the experimental v2
+ * surface requires. Every protocol shape this connector depends on lives in
  * THIS file, so a Codex upgrade has one blast radius; regenerate the reference
  * bindings with `codex app-server generate-ts --experimental` to diff on drift.
  */
@@ -29,27 +31,6 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
-
-/** A dynamic (client-provided) tool, as `thread/start` accepts it. */
-export interface DynamicTool {
-  type: "function";
-  name: string;
-  description: string;
-  inputSchema: unknown;
-}
-
-/** One `item/tool/call` from the server: the model invoked a dynamic tool. */
-export interface ToolCall {
-  callId: string;
-  tool: string;
-  arguments: unknown;
-}
-
-/** What the host's dispatcher returns for a tool call. */
-export interface ToolReply {
-  text: string;
-  isError?: boolean;
-}
 
 /** A thread item as the notifications carry it — only the fields the host reads. */
 export interface ThreadItem {
@@ -61,7 +42,7 @@ export interface ThreadItem {
   /** commandExecution */
   command?: string;
   exitCode?: number | null;
-  /** dynamicToolCall / mcpToolCall */
+  /** mcpToolCall */
   tool?: string;
   status?: string;
   arguments?: unknown;
@@ -120,10 +101,9 @@ export interface DriverOpts {
   configOverrides: readonly (readonly [string, string])[];
   /** Persona → `thread/start.developerInstructions`. */
   developerInstructions?: string;
-  /** The cotal_* surface, rendered by the host (tools.ts). */
-  dynamicTools: DynamicTool[];
-  /** Dispatch one model-invoked tool call; the reply text is fed back into the turn. */
-  onToolCall: (call: ToolCall) => Promise<ToolReply>;
+  /** Extra env for the child, applied AFTER the COTAL_* scrub. The MCP bearer token rides here:
+   *  the child genuinely needs that one capability, while everything else COTAL_* stays hidden. */
+  extraEnv?: Record<string, string>;
   /** Binary override (tests point this at a fake server). */
   bin?: string;
   log?: (m: string) => void;
@@ -163,10 +143,6 @@ export class AppServerDriver extends EventEmitter {
     this.log = opts.log ?? ((m) => process.stderr.write(`[cotal-codex] ${m}\n`));
   }
 
-  /** Which app-server incarnation is live. Bumped by every `start()`; work in flight for an
-   *  older generation must never be written into the current child. */
-  private gen = 0;
-
   get busy(): boolean {
     return this.activeTurnId !== undefined;
   }
@@ -178,9 +154,6 @@ export class AppServerDriver extends EventEmitter {
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
-    // The generation bump fences anything still in flight for the dead incarnation (see
-    // onServerRequest) from being written into the new one.
-    this.gen++;
     // A fresh capability token per incarnation: a restarted app-server invalidates the old one,
     // so a stale TUI (or anything that scraped the previous token) cannot drive the new child.
     const token = randomBytes(32).toString("hex");
@@ -204,6 +177,7 @@ export class AppServerDriver extends EventEmitter {
     const env: Record<string, string> = { CODEX_HOME: this.opts.codexHome };
     for (const [k, v] of Object.entries(process.env))
       if (v !== undefined && !k.startsWith("COTAL_") && k !== "CODEX_HOME") env[k] = v;
+    for (const [k, v] of Object.entries(this.opts.extraEnv ?? {})) env[k] = v;
     const child = spawn(this.opts.bin ?? "codex", args, {
       cwd: this.opts.cwd,
       env,
@@ -285,7 +259,7 @@ export class AppServerDriver extends EventEmitter {
 
     const init = (await this.request("initialize", {
       clientInfo: { name: "cotal", title: "Cotal", version: "0.0.0" },
-      // dynamicTools is gated behind this capability (0.145: "requires experimentalApi").
+      // The experimental v2 surface this driver speaks is gated behind this capability.
       capabilities: { experimentalApi: true },
     })) as { userAgent?: string };
     this.notify("initialized");
@@ -294,7 +268,6 @@ export class AppServerDriver extends EventEmitter {
     const started = (await this.request("thread/start", {
       cwd: this.opts.cwd,
       ...(this.opts.developerInstructions ? { developerInstructions: this.opts.developerInstructions } : {}),
-      dynamicTools: this.opts.dynamicTools,
     })) as { thread?: { id?: string }; model?: string };
     const id = started.thread?.id;
     if (!id) throw new Error("thread/start returned no thread id");
@@ -475,51 +448,20 @@ export class AppServerDriver extends EventEmitter {
       else p.resolve(msg.result);
       return;
     }
-    // Server→client request (id AND method): dynamic tool calls + approvals.
-    if (msg.id !== undefined && msg.method) return this.onServerRequest(msg.id, msg.method, msg.params ?? {});
+    // Server→client request (id AND method): approvals and elicitations.
+    if (msg.id !== undefined && msg.method) return this.onServerRequest(msg.id, msg.method);
     // Notification (method, no id).
     if (msg.method) this.onNotification(msg.method, msg.params ?? {});
   }
 
-  private onServerRequest(id: number | string, method: string, params: Record<string, unknown>): void {
-    if (method === "item/tool/call") {
-      const call: ToolCall = {
-        callId: String(params.callId ?? ""),
-        tool: String(params.tool ?? ""),
-        arguments: params.arguments,
-      };
-      // Dispatch async; the turn blocks on this reply, exactly like any tool. success:false
-      // surfaces a tool error to the model (it sees the text and can react) — a dispatch THROW
-      // still must answer, or the turn hangs forever.
-      //
-      // PINNED to the incarnation that asked. If the child dies while a tool is running and the
-      // host restarts it, `writeLine` would otherwise deliver this reply into the NEW child —
-      // and since server request ids restart per process, it could satisfy a DIFFERENT new-child
-      // request with the wrong tool output. A reply whose asker is gone is dropped: the dead
-      // child's turn died with it, and the batch re-drives on the new thread.
-      const gen = this.gen;
-      void this.opts
-        .onToolCall(call)
-        .catch((e) => ({ text: `tool ${call.tool} failed: ${(e as Error).message}`, isError: true }))
-        .then((r) => {
-          if (gen !== this.gen) {
-            this.log(`dropping ${call.tool} reply for a dead app-server incarnation (${gen} != ${this.gen})`);
-            return;
-          }
-          this.writeLine({
-            jsonrpc: "2.0",
-            id,
-            result: { contentItems: [{ type: "inputText", text: r.text }], success: !r.isError },
-          });
-        });
-      return;
-    }
+  private onServerRequest(id: number | string, method: string): void {
     // Approvals. The host enforces approval_policy=never at launch (host.ts refuses an override
-    // to any interactive mode a headless session cannot honestly answer), so these shouldn't
-    // fire. If one arrives anyway, DECLINE with the method's own response shape — an unattended
-    // host must never grant authority the policy didn't, and an unanswered request would hang
-    // the turn forever. Method-specific: a generic suffix match must not answer shapes it
-    // doesn't know (item/permissions/requestApproval wants {permissions, scope}, not a decision).
+    // to any interactive mode a headless session cannot honestly answer) and pre-approves its
+    // OWN MCP tools (`default_tools_approval_mode=approve`), so these shouldn't fire. If one
+    // arrives anyway, DECLINE with the method's own response shape — an unattended host must
+    // never grant authority the policy didn't, and an unanswered request would hang the turn
+    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know
+    // (item/permissions/requestApproval wants {permissions, scope}, not a decision).
     this.emit("waiting", method);
     if (method === "execCommandApproval" || method === "applyPatchApproval")
       return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision

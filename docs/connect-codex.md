@@ -7,9 +7,9 @@ same `cotal_*` tool surface, the same message delivery and attention model as th
 connectors, plus mid-turn steering (previously pi-only): a directed peer message arriving
 mid-turn is **steered into the running turn** instead of waiting for it to end.
 
-**Beta** means the everyday path (spawn, coordinate, watch the activity feed) works; the spawn
-options that are not wired **fail loud** rather than degrade: resuming a session (`--resume`)
-and tool-sharing (`connectors.codex.mcpServers`). See [Limits](#limits).
+**Beta** means the everyday path (spawn into the real Codex TUI, coordinate, watch) works; the
+spawn options that are not wired **fail loud** rather than degrade: resuming a session
+(`--resume`) and tool-sharing (`connectors.codex.mcpServers`). See [Limits](#limits).
 
 ## Install
 
@@ -46,15 +46,19 @@ unknown value fails at request time, server-side.
 
 Codex has no in-process plugin runtime and its MCP client cannot wake an idle session, so the
 connector runs Codex's own client/server split: a small **host process** embeds the mesh
-endpoint and drives a headless `codex app-server` thread over JSON-RPC (the same protocol the
-Codex TUI runs on).
+endpoint and drives a `codex app-server` thread over JSON-RPC (the same protocol the Codex TUI
+runs on). The app-server runs as an authenticated loopback **listener** rather than a private
+pipe, which is what lets Codex's own TUI attach to the very thread the mesh is driving.
 
 - **Wake and steer.** An inbound batch starts a real turn (`turn/start`). A DIRECTED message
   (DM, anycast, @mention) arriving mid-turn is injected into the live turn (`turn/steer`);
   ambient channel chatter waits for the turn boundary so it can't derail work in flight.
-- **Native tools, one endpoint.** The shared `cotal_*` tools ride the same pipe as app-server
-  *dynamic tools*: the model calls them like any tool, and they execute against the host's
-  single mesh endpoint. No sidecar processes.
+- **Native tools, one endpoint.** The host serves the shared `cotal_*` tools itself, on a
+  loopback MCP endpoint that only the agent's own `codex` can reach (bearer token, passed by env
+  name so it never appears in the process table). The model calls them like any tool and they
+  execute against the host's single mesh endpoint — no sidecar process, no second identity. The
+  app-server is the MCP client, so the tools work the same on a turn a peer message started and
+  on one **you** typed into the TUI.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
   turn completes. A failed turn retries with backoff, and an interrupted turn leaves the batch to
   redeliver. If the Codex app-server itself dies, the host restarts it in place (same mesh
@@ -77,26 +81,30 @@ Codex TUI runs on).
   sandbox per spawn with `--opt` (below); an interactive `approval_policy` is refused loud:
   a headless host has nobody to answer approval prompts, and would otherwise have to
   auto-answer them, silently nullifying the policy you asked for.
-- **Watch it, and talk to it.** The host renders agent messages, commands, and tool calls to its
-  terminal, and reads that terminal back: a line you type is a real user turn, starting one when
-  the agent is idle and steering into the running turn when it is busy. In the foreground that is
-  your keyboard; detached it is the manager's pty, which is exactly what `cotal attach` streams
-  and drives. `--transcript` mirrors the feed to `tr-<name>`.
+- **It really is Codex.** `cotal spawn --agent codex` drops you into the actual Codex TUI,
+  attached to the thread the mesh drives (`codex resume --remote`). Mesh turns render as they
+  happen, and anything you type is a real user turn on that same thread with the `cotal_*` tools
+  still available. In the foreground that is your terminal; detached it is the manager's pty,
+  which is exactly what `cotal attach` streams and drives. With no terminal at all (a container,
+  `deploy/`, a smoke) the host stays headless and prints a one-line activity feed instead — the
+  same peer either way, only the UI differs. `--transcript` mirrors the feed to `tr-<name>`.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
   the model id is reported from the started thread.
 
 `--opt k=v` launch options render as codex `-c k=v` config overrides on the app-server child
 (top-level keys, scalar values; write TOML inline-table text yourself for nested values). The
-connector's own defaults and selectors ride the same rail and yield to yours.
+connector's own defaults and selectors ride the same rail and yield to yours — except
+`mcp_servers.cotal.*`, which is how the agent reaches the mesh and is refused loud rather than
+silently overridden.
 
 ## Limits
 
-- **No Codex TUI.** A managed agent gives you the host's terminal (feed plus typed input, above),
-  not Codex's own interactive app. That app drives an app-server thread of its own, and a thread
-  Cotal did not start cannot carry the `cotal_*` tools, so hosting it would mean a Codex session
-  that is mute on the mesh.
-- **No session resume.** `cotal spawn --resume <id>` throws: codex app-server accepts dynamic
-  tools only on `thread/start`, so a forked thread would come up without the `cotal_*` surface.
+- **The TUI is local-only.** The app-server listener binds loopback and nothing else, so
+  attaching Codex's UI to an agent on another machine needs your own SSH port-forward; there is
+  no built-in remote attach. `cotal attach` (which streams the manager's pty) is the supported
+  way to reach a detached agent.
+- **No session resume.** `cotal spawn --resume <id>` throws: a resumed codex thread comes up
+  without its configured MCP servers, so the agent would be mute on the mesh.
 - **No tool-sharing.** `connectors.codex.mcpServers` is not implemented and throws if set.
 - **Experimental upstream surface.** `codex app-server` is labeled experimental by OpenAI (it
   is also what the Codex TUI itself runs on). The connector pins every protocol shape in one
