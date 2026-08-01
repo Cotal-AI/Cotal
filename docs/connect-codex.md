@@ -94,8 +94,8 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
 `--opt k=v` launch options render as codex `-c k=v` config overrides on the app-server child
 (top-level keys, scalar values; write TOML inline-table text yourself for nested values). The
 connector's own defaults and selectors ride the same rail and yield to yours — except
-`mcp_servers.cotal.*`, which is how the agent reaches the mesh and is refused loud rather than
-silently overridden.
+`mcp_servers`, which is how the agent reaches the mesh: the whole namespace is refused loud (at
+spawn, not at launch) rather than silently overridden.
 
 ## Limits
 

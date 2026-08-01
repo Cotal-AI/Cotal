@@ -79,6 +79,10 @@ const LISTEN_TIMEOUT_MS = 30_000;
 /** How long to wait for codex to finish connecting to the cotal MCP server. Generous: it is a
  *  loopback handshake, but it happens while the thread is still coming up. */
 const MCP_READY_TIMEOUT_MS = 30_000;
+/** How long {@link AppServerDriver.stop} waits for a SIGTERM'd child before SIGKILL. */
+const STOP_GRACE_MS = 3_000;
+/** Sentinel key in the MCP status map meaning "this incarnation is gone". Not a server name. */
+const MCP_DEAD = "\u0000dead";
 
 /** Written into the thread at start so a rollout exists on disk for the TUI to resume. It lands
  *  in model-visible history, so it reads as a plain statement of fact rather than an instruction. */
@@ -184,6 +188,14 @@ export class AppServerDriver extends EventEmitter {
    *  event because the `ready` can land before anyone waits for it. */
   private readonly mcpStatus = new Map<string, { status: string; error?: string }>();
   private readonly mcpWaiters = new Set<() => void>();
+  /** Set by {@link stop}: this driver has been torn down ON PURPOSE, so the child's death is
+   *  expected and must not be recovered from. */
+  private terminal = false;
+
+  /** Has this driver been deliberately stopped? The host's crash rail asks before restarting. */
+  get stopped(): boolean {
+    return this.terminal;
+  }
   private endpoint?: RemoteEndpoint;
   private readonly opts: DriverOpts;
   private readonly log: (m: string) => void;
@@ -225,6 +237,7 @@ export class AppServerDriver extends EventEmitter {
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
+    this.terminal = false;
     this.mcpStatus.clear();
     // A fresh capability token per incarnation: a restarted app-server invalidates the old one,
     // so a stale TUI (or anything that scraped the previous token) cannot drive the new child.
@@ -293,6 +306,11 @@ export class AppServerDriver extends EventEmitter {
       this.pending.clear();
       this.liveTurns.clear();
       this.ownedTurns.clear();
+      // Whoever is awaiting MCP readiness is awaiting THIS child's. Releasing them here (rather
+      // than leaving them armed) is what stops the NEXT incarnation's `ready` from resolving a
+      // dead generation's continuation, which would run two recovery tails over one host.
+      this.mcpStatus.set(MCP_DEAD, { status: "gone" });
+      for (const w of [...this.mcpWaiters]) w();
       try {
         this.ws?.close();
       } catch {
@@ -439,6 +457,7 @@ export class AppServerDriver extends EventEmitter {
    */
   async awaitMcpReady(name: string, timeoutMs = MCP_READY_TIMEOUT_MS): Promise<void> {
     const settled = (): { done: boolean; err?: string } => {
+      if (this.mcpStatus.has(MCP_DEAD)) return { done: true, err: "the app-server died before its tools were ready" };
       const s = this.mcpStatus.get(name);
       if (!s) return { done: false };
       if (s.status === "ready") return { done: true };
@@ -489,14 +508,42 @@ export class AppServerDriver extends EventEmitter {
     }
   }
 
+  /**
+   * Stop for good. DELIBERATE teardown, so it is marked terminal first: the child's death would
+   * otherwise reach the host's crash-recovery rail, which would spawn a REPLACEMENT app-server
+   * while the caller is busy exiting — leaving a listening codex orphaned behind a dead host.
+   *
+   * It also REAPS rather than just signalling. A SIGTERM that returns immediately leaves the
+   * caller free to exit while the child is still winding down; a listening app-server is not
+   * reaped by our pipes closing the way a stdio child was.
+   */
   async stop(): Promise<void> {
+    this.terminal = true;
     try {
       this.ws?.close();
     } catch {
       /* ignore */
     }
     this.ws = undefined;
-    this.child?.kill("SIGTERM");
+    const child = this.child;
+    if (child && child.exitCode === null && !child.killed) {
+      child.kill("SIGTERM");
+      await new Promise<void>((res) => {
+        const timer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL"); // a child that ignores SIGTERM must not outlive us
+          } catch {
+            /* already gone */
+          }
+          res();
+        }, STOP_GRACE_MS);
+        timer.unref?.();
+        child.once("exit", () => {
+          clearTimeout(timer);
+          res();
+        });
+      });
+    }
     // The listener is going away, so the token on disk is only a scrape target now.
     if (this.endpoint) rmSync(this.endpoint.tokenFile, { force: true });
   }
@@ -631,8 +678,14 @@ export class AppServerDriver extends EventEmitter {
         // TUI reaches this host too, and its completion says nothing about the batch WE surfaced
         // into OUR turn — acking on it would drop peer messages nobody ever saw.
         const turn = params.turn as { id?: string; status?: TurnStatus } | undefined;
-        if (!turn?.id || !this.liveTurns.delete(turn.id)) {
-          this.log(`ignoring turn/completed for ${turn?.id ?? "?"} (not a live turn)`);
+        // A turn is closable if we ever SAW it start or if we CLAIMED it. Requiring both would
+        // wedge the host on a turn whose `turn/started` never arrived (or arrived out of order):
+        // the terminal would be discarded as unknown while the host still waits for a boundary
+        // that can no longer come.
+        const wasLive = turn?.id ? this.liveTurns.delete(turn.id) : false;
+        const wasOwned = turn?.id ? this.ownedTurns.has(turn.id) : false;
+        if (!turn?.id || (!wasLive && !wasOwned)) {
+          this.log(`ignoring turn/completed for ${turn?.id ?? "?"} (neither live nor ours)`);
           return;
         }
         const status: TurnStatus =

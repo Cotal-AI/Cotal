@@ -356,6 +356,18 @@ function onChunk(d) {
           write({ jsonrpc: "2.0", id, error: { code: -32000, message: "transient: try again" } });
           break;
         }
+        if (text.includes("NOSTART")) {
+          // Accept the turn (so the host CLAIMS it from this response) but never emit
+          // `turn/started`; then terminate it. A host that needs both events to close its ledger
+          // waits forever for a boundary that can no longer come.
+          const tid = `turn_nostart_${++turnSeq}`;
+          reply(id, { turn: { id: tid, status: "inProgress" } });
+          setTimeout(
+            () => notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } }),
+            300,
+          );
+          break;
+        }
         if (text.includes("SAMECHUNK")) {
           // The adversarial timing: the turn/start RESPONSE, turn/started, and turn/completed all
           // arrive in ONE stdout write, so the client processes both notifications synchronously

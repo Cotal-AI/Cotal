@@ -542,7 +542,11 @@ export async function runCodexHost(): Promise<void> {
     // Exiting here instead would win the race against its own `driver.stop()` and terminate
     // before the endpoint ever departed, which is exactly what the control-socket path exists
     // to prevent.
-    if (shuttingDown) return;
+    // A DELIBERATE teardown owns the rest of this process's life: `shuttingDown` for a
+    // cooperative stop, and `driver.stopped` for a fatal or a failed startup, where the child's
+    // death is our own SIGTERM coming back. Recovering from either would spawn a REPLACEMENT
+    // app-server while the caller is exiting, and that listening child would outlive us.
+    if (shuttingDown || driver.stopped) return;
     // FIRST, synchronously: the UI was attached to a listener that no longer exists, so its own
     // exit is imminent and is NOT an operator quit. Retiring it here (rather than after the
     // replacement is up) is what stops that exit from racing recovery into a full shutdown and

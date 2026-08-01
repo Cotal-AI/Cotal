@@ -296,6 +296,24 @@ try {
   const tSolo = await waitFor("post-solo turn", () => turnStarts().find((t) => t.includes("after-solo")));
   check("the pumped batch was acked with its own turn", !tSolo.includes("stranded-during-tui"), tSolo);
 
+  // (7d) a turn we CLAIMED but never saw start. The claim comes from the turn/start response;
+  // if closing the ledger also required a `turn/started` we never got, the host would wait for a
+  // boundary that can no longer arrive and the loop would wedge permanently.
+  await sleep(300);
+  await dm("NOSTART please");
+  await waitFor("nostart turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("NOSTART")),
+    ),
+  );
+  await sleep(1200);
+  await dm("after-nostart");
+  const tNoStart = await waitFor("post-nostart turn", () => turnStarts().find((t) => t.includes("after-nostart")), 25_000);
+  check("a terminal for a claimed-but-never-started turn still closes the ledger", tNoStart !== undefined);
+
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
   await sleep(300);
@@ -654,6 +672,28 @@ try {
     "a refused launch takes its app-server down with it (no orphaned codex)",
     orphanPid !== undefined && !alive(orphanPid),
     { orphanPid },
+  );
+  // ...and it must not have RESTARTED one on the way out. A deliberate teardown SIGTERMs the
+  // child, and if that death reaches the crash-recovery rail it spawns a replacement while the
+  // host is exiting — a listening codex left behind a dead host, invisible to a check that only
+  // watches the first pid.
+  const noauthBoots = (
+    !existsSync(noauthLog)
+      ? []
+      : readFileSync(noauthLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as { ev: string; pid?: number })
+  ).filter((e) => e.ev === "argv");
+  check(
+    "a refused launch boots exactly ONE app-server (teardown never enters the restart rail)",
+    noauthBoots.length === 1,
+    noauthBoots.length,
+  );
+  check(
+    "no app-server this refused launch started is still alive",
+    noauthBoots.every((e) => e.pid === undefined || !alive(e.pid)),
+    noauthBoots.map((e) => e.pid),
   );
 
   // (12) the Codex TUI. `cotal spawn --agent codex` must land the operator in Codex proper,
