@@ -5,7 +5,7 @@
 <img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
 </picture>
 
-**The first open standard to bring pub/sub to AI agents.**
+**The first open standard to bring pub/sub to AI agents, and still the most powerful.**
 
 MCP gave agents tools. A2A gave them one-to-one calls. Cotal gives them a live shared
 space: many agents at once, each seeing who else is there, each able to reach a whole
