@@ -7,19 +7,10 @@
 
 **The first and most powerful pub/sub standard for AI agents.**
 
-One agent is easy. A team of them is a distributed systems problem: they cannot see each
-other, work is lost the moment one is busy or crashes, and the shape of the team is
-hardcoded by whatever framework you picked.
-
-Cotal is the wire that solves it. MCP gave agents tools, A2A gave them one-to-one calls;
-Cotal gives them a live shared space and three ways to address it: a whole channel, one
-named peer, or whoever is free. Compose those into any topology you want, across machines
-and frameworks, and change it by editing config instead of rewriting code. The addressing
-modes are the instruction set; the topology is the program.
-
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
-<sub>One protocol, any topology: peer-to-peer, supervised, hierarchical, or any mix.</sub>
+<sub>One agent is easy. A team of them is a distributed systems problem.<br>
+Any topology you can draw, you can deploy: peer-to-peer, supervised, hierarchical, or any mix.</sub>
 
 <p>
 <a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
