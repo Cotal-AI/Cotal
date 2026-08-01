@@ -1,5 +1,7 @@
 # @cotal-ai/connector-claude-code
 
+## 0.14.10
+
 ## 0.14.9
 
 ## 0.14.8
