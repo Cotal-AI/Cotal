@@ -195,9 +195,10 @@ export class AppServerDriver extends EventEmitter {
    *  about to name, whose notifications overtook its response. JSON-RPC does not order a
    *  notification after the response to a request in flight, so this cannot be assumed away. */
   private readonly pendingStarts = new Set<number>();
-  /** Terminals held back by that ambiguity, in arrival order. Drained the moment no `turn/start`
-   *  is outstanding, so each one is finally classified against a settled ownership set. */
-  private buffered: { turnId: string; status: TurnStatus }[] = [];
+  /** Terminals held back by that ambiguity, in arrival order, each carrying whether its turn was
+   *  ever seen live. Drained the moment no `turn/start` is outstanding, so each one is finally
+   *  classified against a settled ownership set by the same rule the live path uses. */
+  private buffered: { turnId: string; status: TurnStatus; wasLive: boolean }[] = [];
   /** Per-incarnation record of what codex says about each configured MCP server, from its
    *  `mcpServer/startupStatus/updated` notifications. Kept as state rather than consumed as an
    *  event because the `ready` can land before anyone waits for it. */
@@ -227,9 +228,15 @@ export class AppServerDriver extends EventEmitter {
    * kept going would set the context id, mark the peer ready, replace the TUI and drive over an
    * incarnation it no longer owns — and its failure branch would `die()`/`stop()` the SUCCESSOR's
    * child, turning one crash into a dead agent. Stale tails must return, silently.
+   *
+   * A DELIBERATE stop invalidates every tail too, and does not bump the generation — the child is
+   * not being replaced, it is being retired. Without `!terminal` here, a shutdown landing while a
+   * tail awaits startup or readiness leaves that tail authoritative: its failure branch turns a
+   * requested clean exit into a fatal one, and its success branch marks the peer ready and drives
+   * into a mesh that is already being torn down.
    */
   isCurrent(gen: number): boolean {
-    return this.generation === gen;
+    return this.generation === gen && !this.terminal;
   }
   private endpoint?: RemoteEndpoint;
   private readonly opts: DriverOpts;
@@ -734,6 +741,12 @@ export class AppServerDriver extends EventEmitter {
     this.buffered = [];
     for (const t of held) {
       const owned = this.ownedTurns.delete(t.turnId);
+      // The same closability rule the live path applies — deferred, not waived. A turn nobody
+      // claimed and nobody ever saw start is still not ours to close.
+      if (!owned && !t.wasLive) {
+        this.log(`ignoring turn/completed for ${t.turnId} (neither live nor ours)`);
+        continue;
+      }
       this.emit("turnCompleted", { turnId: t.turnId, status: t.status, owned });
     }
   }
@@ -774,26 +787,34 @@ export class AppServerDriver extends EventEmitter {
         // TUI reaches this host too, and its completion says nothing about the batch WE surfaced
         // into OUR turn — acking on it would drop peer messages nobody ever saw.
         const turn = params.turn as { id?: string; status?: TurnStatus } | undefined;
-        // A turn is closable if we ever SAW it start or if we CLAIMED it. Requiring both would
-        // wedge the host on a turn whose `turn/started` never arrived (or arrived out of order):
-        // the terminal would be discarded as unknown while the host still waits for a boundary
-        // that can no longer come.
-        const wasLive = turn?.id ? this.liveTurns.delete(turn.id) : false;
-        const wasOwned = turn?.id ? this.ownedTurns.has(turn.id) : false;
-        if (!turn?.id || (!wasLive && !wasOwned)) {
-          this.log(`ignoring turn/completed for ${turn?.id ?? "?"} (neither live nor ours)`);
+        if (!turn?.id) {
+          this.log("ignoring turn/completed with no turn id");
           return;
         }
+        const wasLive = this.liveTurns.delete(turn.id);
+        const wasOwned = this.ownedTurns.has(turn.id);
         const status: TurnStatus =
           turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted"
             ? turn.status
             : "interrupted";
-        // Ownership is only decidable once no `turn/start` of ours is outstanding. Until then this
-        // terminal may belong to the turn that request is about to name (`turn/started` and
-        // `turn/completed` are free to overtake the response), and calling it foreign would strand
-        // the host's armed accounting on a boundary that has already gone by. Hold it instead.
+        // HOLD FIRST, decide later. While one of our `turn/start` requests is outstanding, an
+        // unclaimed terminal is undecidable: it may belong to the turn that request is about to
+        // name. `turn/started` and `turn/completed` may each overtake the response independently,
+        // so the terminal can arrive with the turn never having been seen live AND not yet
+        // claimed — which is exactly what the closability test below discards. Testing closability
+        // first would therefore drop our own turn's boundary and leave the host armed forever,
+        // while the late response claimed an already-dead id. `wasLive` rides along so the
+        // decision, once it can be made, is the same one this code would have made now.
         if (!wasOwned && this.pendingStarts.size > 0) {
-          this.buffered.push({ turnId: turn.id, status });
+          this.buffered.push({ turnId: turn.id, status, wasLive });
+          return;
+        }
+        // A turn is closable if we ever SAW it start or if we CLAIMED it. Requiring both would
+        // wedge the host on a turn whose `turn/started` never arrived (or arrived out of order):
+        // the terminal would be discarded as unknown while the host still waits for a boundary
+        // that can no longer come.
+        if (!wasLive && !wasOwned) {
+          this.log(`ignoring turn/completed for ${turn.id} (neither live nor ours)`);
           return;
         }
         const owned = this.ownedTurns.delete(turn.id);

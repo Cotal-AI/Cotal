@@ -335,6 +335,27 @@ try {
   check("a terminal arriving before its own turn/start response still closes the ledger", tLate !== undefined);
   check("the LATERESP batch was acked, not redelivered", !tLate.includes("LATERESP please"), tLate);
 
+  // (7f) the THIRD valid ordering, and the one that survives both fixes above unless the hold
+  // happens FIRST: the terminal arrives before `turn/started` (which never comes) AND before the
+  // response. The turn is neither live nor claimed at that instant, so a closability test applied
+  // ahead of the pending-start check throws away our own boundary, and the late response then
+  // claims a turn that is already gone.
+  await sleep(300);
+  await dm("TERMONLY please");
+  await waitFor("termonly turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("TERMONLY")),
+    ),
+  );
+  await sleep(800);
+  await dm("after-termonly");
+  const tTerm = await waitFor("post-termonly turn", () => turnStarts().find((t) => t.includes("after-termonly")), 25_000);
+  check("a terminal preceding BOTH its start notification and its response still closes the ledger", tTerm !== undefined);
+  check("the TERMONLY batch was acked, not redelivered", !tTerm.includes("TERMONLY please"), tTerm);
+
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
   await sleep(300);
@@ -652,6 +673,68 @@ try {
   );
   genPeer.kill("SIGTERM");
   await Promise.race([once(genPeer, "exit"), sleep(8_000)]);
+
+  // (10b-3) SHUTDOWN DURING THE LAUNCH. A retirement can land while the launch tail is parked in
+  // `awaitMcpReady`. That tail is not superseded by a newer generation — nothing replaced its
+  // child, the child is being RETIRED — so a currentness test that only compares generations
+  // leaves it authoritative: its failure branch turns a requested clean exit into a fatal one, and
+  // its success branch would mark the peer ready and drive into a mesh already being torn down.
+  //
+  // The broker here is a DEAD port so the clean shutdown must wait out its bounded mesh-leave
+  // grace, giving a misbehaving tail room to be seen. The DISCRIMINATOR is the stand-down line,
+  // not the exit code: a tail that wrongly stays authoritative still races shutdown's own
+  // `process.exit`, so it does not reliably get to report itself. The stand-down is logged
+  // synchronously the moment the tail resumes, so its absence is proof the tail carried on.
+  const deadServers = `nats://127.0.0.1:${await freePort()}`;
+  const shutLaunchLog = join(dir, "shutlaunch.log.jsonl");
+  const shutLaunch = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "shutlaunchpeer",
+      COTAL_SERVERS: deadServers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: shutLaunchLog,
+      FAKE_CODEX_MCP_SLOW: "20000", // park the launch tail in awaitMcpReady
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let shutLaunchErr = "";
+  shutLaunch.stderr!.setEncoding("utf8");
+  shutLaunch.stderr!.on("data", (d: string) => (shutLaunchErr += d));
+  // Wait until the thread is up, which is when the tail enters the readiness wait.
+  await waitFor("shutlaunch thread started", () =>
+    !existsSync(shutLaunchLog)
+      ? undefined
+      : readFileSync(shutLaunchLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as LogEntry)
+          .find((e) => e.ev === "recv" && e.method === "thread/start"),
+    30_000,
+  );
+  await sleep(400);
+  shutLaunch.kill("SIGTERM");
+  const shutLaunchExit = await Promise.race([
+    new Promise<number | null>((r) => shutLaunch.on("exit", (code) => r(code))),
+    sleep(30_000).then(() => "timeout" as const),
+  ]);
+  check("a shutdown during the launch exits cleanly, not fatally", shutLaunchExit === 0, {
+    shutLaunchExit,
+    err: shutLaunchErr.slice(-300),
+  });
+  check(
+    "the parked launch tail stood down for the shutdown instead of staying authoritative",
+    /stood down/.test(shutLaunchErr) && !/fatal:/.test(shutLaunchErr),
+    shutLaunchErr.slice(-300),
+  );
+  check(
+    "a peer retired mid-launch never announced itself ready",
+    !/^\[cotal-codex\] ready —/m.test(shutLaunchErr),
+    shutLaunchErr.slice(-300),
+  );
 
   // (10c) the app-server capability token is written FAIL-CLOSED. The agent's home sits under
   // agent-writable workspace, so a sibling (or this agent's own command) can pre-plant

@@ -325,6 +325,9 @@ export async function runCodexHost(): Promise<void> {
   // ---- the turn loop -------------------------------------------------------
   let ready = false; // thread up — never drive before then
   let agentStarted = false; // the mesh endpoint has been connected (once per process, ever)
+  let shuttingDown = false; // a retirement owns the rest of this process (see shutdown() below);
+  // declared here, with the rest of the loop's state, because the launch/restart tails read it to
+  // decide whether they are still allowed to act — long before shutdown() itself is defined
   let driving = false; // re-entrancy guard around an in-flight turn/start
   let steering = false; // serialize steer batches
   let awaitingTurnEnd = false; // a driven turn is open — its surfaced ids ack at the boundary
@@ -522,6 +525,14 @@ export async function runCodexHost(): Promise<void> {
    *  failure branch would `die()` — killing the very child that is replacing it. Stale tails
    *  return silently and let the live one finish the job. */
   const superseded = (gen: number): boolean => {
+    // `shuttingDown` is checked separately from the driver's own terminal flag because there is a
+    // window between the two: `shutdown()` sets this first and only reaches `driver.stop()` after
+    // retiring the UI and interrupting the live turn. A tail resuming inside that window would
+    // still see a live, current driver and carry on into a mesh that is already leaving.
+    if (shuttingDown) {
+      log(`app-server incarnation ${gen} stood down — a shutdown owns the rest of this process`);
+      return true;
+    }
     if (driver.isCurrent(gen)) return false;
     log(`app-server incarnation ${gen} was superseded — leaving the rest to the current one`);
     return true;
@@ -769,7 +780,6 @@ export async function runCodexHost(): Promise<void> {
   // frees the slot and deprovisions, and a later same-name spawn is a successor with its own
   // delivery frontier, so redelivery to it is NOT promised. (Unlike the in-place app-server
   // restart above, which keeps the lifecycle and really does re-drive the batch.)
-  let shuttingDown = false;
   /** `code` carries out what actually happened: 0 for a retirement someone asked for, nonzero when
    *  the session is ending because something broke (a crashed UI), so the manager and the operator
    *  see a failure rather than a clean goodbye. */

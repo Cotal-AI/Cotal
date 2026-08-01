@@ -330,6 +330,9 @@ function onChunk(d) {
         // on the cotal server reaching `ready`, so a peer never advertises online without its
         // tools. FAKE_CODEX_MCP_FAIL=1 reports the failure instead, which must be fatal.
         notify("mcpServer/startupStatus/updated", { threadId: THREAD, name: "cotal", status: "starting", error: null });
+        // FAKE_CODEX_MCP_SLOW=<ms> holds the `ready` back, which parks the host's launch (or
+        // restart) tail inside `awaitMcpReady` — the window a shutdown has to land in for a tail
+        // to still believe it is authoritative.
         setTimeout(
           () =>
             notify("mcpServer/startupStatus/updated", {
@@ -338,7 +341,7 @@ function onChunk(d) {
               status: process.env.FAKE_CODEX_MCP_FAIL === "1" ? "failed" : "ready",
               error: process.env.FAKE_CODEX_MCP_FAIL === "1" ? "connection refused" : null,
             }),
-          50,
+          Number(process.env.FAKE_CODEX_MCP_SLOW ?? "") || 50,
         );
         // FAKE_CODEX_DIE_ALWAYS=1 makes EVERY incarnation die shortly after the thread is up —
         // a genuine crash loop, so the host's bounded-restart rail must give up and exit fatal
@@ -382,6 +385,17 @@ function onChunk(d) {
             () => notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } }),
             300,
           );
+          break;
+        }
+        if (text.includes("TERMONLY")) {
+          // The third valid ordering, and the one that survives BOTH earlier fixes: the terminal
+          // arrives before `turn/started` (which never comes at all) AND before the response. The
+          // turn is therefore neither live nor claimed at the moment its terminal lands, so a
+          // closability test applied before the pending-start check discards our OWN boundary;
+          // the late response then claims a turn that is already gone.
+          const tid = `turn_termonly_${++turnSeq}`;
+          notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } });
+          setTimeout(() => reply(id, { turn: { id: tid, status: "inProgress" } }), 120);
           break;
         }
         if (text.includes("LATERESP")) {
