@@ -18,6 +18,8 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org)
 
+**[Quick start](#quick-start)** · [Docs](https://docs.cotal.ai) · [Examples](#examples) · [FAQ](#faq)
+
 </div>
 
 ## What is Cotal
@@ -36,6 +38,48 @@ Because the standard is open, you extend it the same way: bring your own agents,
 connect anything that speaks the contract. It runs on [NATS and JetStream](https://nats.io),
 messaging infrastructure proven in production for years; the reference implementation is
 TypeScript.
+
+## Quick start
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+Installs into your home directory, no sudo, then runs guided setup. Read it first at
+[get.cotal.ai](https://get.cotal.ai), or preview it with `| sh -s -- --dry-run`.
+
+On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`.
+Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
+
+Setup gets your machine ready and **starts nothing**. Then:
+
+```bash
+cotal up --detach  # start the mesh
+cotal spawn        # put your agent on it and talk to it (Ctrl-C to leave)
+cotal web          # watch it in the browser
+cotal down         # stop everything
+```
+
+One agent, on a real mesh, that you can talk to. Add a second and they can see each other, which
+is the whole point.
+
+`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, plus the
+server-side delivery daemon for durable delivery). `cotal up --open` gives you a loopback-only,
+live-only mesh with no auth.
+
+Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
+session you drive); then `cotal spawn david` and watch with `cotal console`.
+
+> [!TIP]
+> **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
+> pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
+> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
+
+**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), each agent
+in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) or
+[Orca](https://www.onorca.dev/) terminal, [OpenCode](extensions/connector-opencode) or
+[Hermes](extensions/connector-hermes) instead of Claude. Install flags, requirements and
+uninstall are in [docs/getting-started.md](docs/getting-started.md).
 
 ## How it works
 
@@ -75,114 +119,6 @@ Cotal reuses A2A's data shapes to stay interoperable: identity is an A2A `AgentC
 reuse A2A `Message`/`Part`. It does not adopt A2A's HTTP/JSON-RPC transport, `Task`
 RPCs, or request/response server model. Only the shapes carry over. Underneath, NATS +
 JetStream has run in production for years. We didn't invent the hard parts.
-
-## Quick start
-
-One command, on a machine with nothing installed:
-
-```bash
-curl -fsSL https://get.cotal.ai | sh
-```
-
-That is the whole install. It works out your platform, uses your Node if it is 22 or newer and
-otherwise downloads an official build and checks it against the SHA-256 sums published beside it
-on nodejs.org, puts `cotal` in `~/.local/bin`, adds that to your PATH once in a block you can
-delete, and then hands you straight to guided setup.
-
-No sudo, no system directories, nothing outside your home directory. Piping it into `sudo sh` is
-refused outright rather than obeyed.
-
-**Want to read it first?** Good instinct, and it is why the script is served as plain text: open
-[get.cotal.ai](https://get.cotal.ai) in a browser tab, or read [`install.sh`](install.sh) here. To
-see exactly what it would do to *your* machine, changing nothing:
-
-```bash
-curl -fsSL https://get.cotal.ai | sh -s -- --dry-run
-```
-
-Anything after `-s --` goes to the installer: `--no-setup` to install without running setup,
-`--yes` for a non-interactive default install, `--no-modify-path` to leave your shell rc alone,
-`--vendor-node` to always use Cotal's own Node, `--version <ver>` to pin a release, `--help` for
-the full list.
-
-The installer covers macOS and Linux with glibc. Alpine and other musl systems are refused up
-front rather than half-installed, because Cotal's terminal layer ships prebuilt binaries for
-glibc only.
-
-**On Windows, or already have Node 22+?** Cotal runs natively on Windows, and the installer is a
-POSIX shell script, so use npm there:
-
-```bash
-npm install -g cotal-ai
-cotal setup
-```
-
-That is not quite the same job as the installer: it uses npm's global prefix (which may need
-`sudo`) and pins no runtime, so changing your system Node later can break Cotal.
-
-**Or skip the terminal entirely** and paste one line into any coding agent, which sets everything
-up itself:
-
-```text
-Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
-```
-
-### What setup does
-
-Guided setup gets your machine ready and **starts nothing**. It checks Node, locates a
-`nats-server`, lets you pick which agents join the mesh (Claude installs a small plugin because
-its wake channel needs one; OpenCode wires itself up when you spawn it), and seeds one `default`
-agent for you to edit. The browser dashboard needs no install: it ships inside `cotal-ai` and is
-seeded on first run, so `cotal web` works out of the box.
-
-If a step cannot finish and you have Claude Code on your PATH, setup offers to hand you to an
-interactive Claude with the failure context, then retries. Set `COTAL_SKIP_ASSIST=1` if you would
-rather it just fail.
-
-### Your first mesh
-
-```bash
-cotal up --detach  # start the local mesh + delivery daemon + manager
-cotal spawn        # launch your default agent here and talk to it (Ctrl-C to leave)
-cotal web          # open the browser view of the mesh
-cotal status       # detailed setup, process, registry, and live mesh status
-cotal down         # stop the mesh, delivery daemon, manager, and web
-```
-
-`cotal up` then `cotal spawn` is the shortest path to something live: one agent, on a real mesh,
-that you can talk to. Add a second agent and they can see each other, which is the whole point.
-
-`cotal web` and `cotal console` watch the same live space, so you can leave either open while you
-work. `cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, with the
-server-side delivery daemon for the durable backstop). Pass `cotal up --open` for a frictionless
-open, loopback-only, live-only mesh (no auth, no daemon).
-
-Want the guided team too? Add it explicitly, then spawn the teammates you want:
-
-```bash
-cotal setup --demo  # add david (engineer), sven (guide), and me (driving session)
-cotal spawn david   # or: cotal spawn sven / cotal spawn me
-cotal console       # terminal view of presence, channels, and messages
-```
-
-> [!NOTE]
-> **Want each teammate in its own terminal?** Run the manager with `cotal supervise --runtime cmux`
-> (a **[cmux](https://cmux.com)** tab per agent), `--runtime tmux` (a **[tmux](https://github.com/tmux/tmux/wiki)** window per agent), or `--runtime orca` (an **[Orca](https://www.onorca.dev/)** terminal in the matching worktree). Otherwise they run in the
-> background on the same mesh, watched with `cotal console` or the dashboard.
-
-> [!TIP]
-> **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
-> pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
-> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
-
-**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), agents in
-cmux/tmux/Orca terminals, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
-instead of Claude, or the guided expert team (`cotal setup --demo`). Start at
-[docs/getting-started.md](docs/getting-started.md).
-
-**Changed your mind?** `rm -rf ~/.local/share/cotal ~/.local/bin/cotal` removes what the installer
-wrote, `rm -rf ~/.cotal` removes your meshes, agents and credentials, and the `# cotal` block in
-your shell rc can be deleted.
 
 ## The web dashboard
 
