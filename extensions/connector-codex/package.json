@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/connector-codex",
-  "description": "Cotal connector for OpenAI Codex: a host-mode peer driving codex app-server, with the cotal_* tools as dynamic tools.",
+  "description": "Cotal connector for OpenAI Codex: a host-mode peer driving codex app-server, with Codex's own TUI attached and the cotal_* tools served over a loopback MCP endpoint.",
   "version": "0.14.11",
   "license": "Apache-2.0",
   "repository": {

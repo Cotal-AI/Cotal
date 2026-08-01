@@ -435,7 +435,16 @@ export async function runCodexHost(): Promise<void> {
     // Observe it for presence only.
     if (!owned) {
       void (async () => {
-        if (!driver.busy) await safeStatus("idle");
+        if (driver.busy) return; // another turn (ours or theirs) is still running
+        await safeStatus("idle");
+        // ...but the boundary still has to PUMP. Traffic that arrived while the human's turn was
+        // running was buffered (steerPending declines when we have no turn of our own), and if
+        // this is the last live turn nothing else will come along to drive it. Without this a DM
+        // delivered during a standalone TUI turn sits in the inbox until unrelated traffic
+        // happens to wake the loop. `drive()` is self-guarding, so this cannot double-drive.
+        if (driver.busy) return;
+        if (pendingPullHint) void drive(pendingPullHint);
+        else if (agent.pendingWake() > 0) void drive();
       })();
       return;
     }
@@ -534,6 +543,11 @@ export async function runCodexHost(): Promise<void> {
     // before the endpoint ever departed, which is exactly what the control-socket path exists
     // to prevent.
     if (shuttingDown) return;
+    // FIRST, synchronously: the UI was attached to a listener that no longer exists, so its own
+    // exit is imminent and is NOT an operator quit. Retiring it here (rather than after the
+    // replacement is up) is what stops that exit from racing recovery into a full shutdown and
+    // destroying the very lifecycle this handler exists to preserve.
+    stopTui();
     ready = false;
     driving = false;
     awaitingTurnEnd = false;
@@ -574,9 +588,7 @@ export async function runCodexHost(): Promise<void> {
       await transcript?.flush().catch(() => {});
       ready = true;
       log(`app-server restarted — thread ${tid}`);
-      // The old UI was attached to a listener that no longer exists (new port, new token, new
-      // thread), so replace it rather than leave a dead window on the operator's terminal.
-      stopTui();
+      // The old UI was retired synchronously above; bring one up on the new listener.
       startTui();
       await safeStatus("idle");
       // Unconditional re-drive: the crashed turn's ids were never acked, so they are still in the

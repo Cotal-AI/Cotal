@@ -279,6 +279,23 @@ try {
   );
   check("a foreign (TUI-owned) turn never acks the host's batch", redeliveredForeign === true);
 
+  // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
+  // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
+  // foreign terminal is not our boundary, so nothing else is coming. The host must still pump at
+  // that edge, or the message sits in the inbox until unrelated traffic happens to wake the loop.
+  await sleep(300);
+  await dm("SOLOTUI hold");
+  await waitFor("solo TUI turn started", () => logEntries().find((e) => e.ev === "soloTuiTurn"));
+  await dm("stranded-during-tui");
+  const pumped = await waitFor("buffered DM driven after the TUI turn", () =>
+    turnStarts().find((t) => t.includes("stranded-during-tui")),
+  );
+  check("a DM arriving during a standalone TUI turn is driven when that turn ends", pumped !== undefined, pumped);
+  await sleep(500);
+  await dm("after-solo");
+  const tSolo = await waitFor("post-solo turn", () => turnStarts().find((t) => t.includes("after-solo")));
+  check("the pumped batch was acked with its own turn", !tSolo.includes("stranded-during-tui"), tSolo);
+
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
   await sleep(300);
@@ -402,6 +419,56 @@ try {
     JSON.stringify(postCrashTool.result ?? postCrashTool.error ?? "").includes("operator"),
     postCrashTool,
   );
+
+  // (8d) app-server crash with the TUI ATTACHED. A real TUI holds a websocket to the listener
+  // and exits the moment it disappears. If that exit is read as "the operator quit the session"
+  // it triggers a cooperative shutdown, which races crash recovery and retires the lifecycle —
+  // destroying exactly the same-lifecycle redrive the restart rail exists to preserve. The old
+  // UI must be retired as EXPECTED synchronously, before the replacement is awaited.
+  const tcLog = join(dir, "tuicrash.log.jsonl");
+  const tcEntries = (): LogEntry[] =>
+    existsSync(tcLog) ? readFileSync(tcLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry) : [];
+  const tuiCrash = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "tuicrashpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: tcLog,
+      COTAL_CODEX_TUI: "1",
+      FAKE_CODEX_TUI_ATTACH: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let tcExited: number | null | "alive" = "alive";
+  tuiCrash.on("exit", (code) => (tcExited = code));
+  await waitFor("tuicrash: TUI attached to the listener", () => tcEntries().find((e) => e.ev === "tuiAttached"));
+  const tcOnline = await waitFor("tuicrash peer online", () =>
+    operator.getRoster().find((p) => p.card.name === "tuicrashpeer")?.card.id,
+  );
+  const tcBootsBefore = tcEntries().filter((e) => e.ev === "argv" && !(e.argv ?? []).includes("resume")).length;
+  await operator.unicast(tcOnline, "DIE now");
+  await waitFor("tuicrash: app-server died", () => tcEntries().find((e) => e.ev === "died"));
+  // (The old UI may die either way — SIGTERM'd by the synchronous retirement, or on its own when
+  // the socket drops. Which one wins is a race and not the invariant; the invariant is that
+  // neither outcome shuts the agent down.)
+  await waitFor(
+    "tuicrash: app-server respawned",
+    () => (tcEntries().filter((e) => e.ev === "argv" && !(e.argv ?? []).includes("resume")).length > tcBootsBefore ? true : undefined),
+    30_000,
+  );
+  await sleep(1500); // a mis-classified TUI exit would have called shutdown() by now
+  check("a TUI dying with its crashed app-server does NOT shut the agent down", tcExited === "alive", tcExited);
+  check(
+    "a replacement TUI is attached to the new listener",
+    tcEntries().filter((e) => e.ev === "tui").length >= 2,
+    tcEntries().filter((e) => e.ev === "tui").length,
+  );
+  tuiCrash.kill("SIGTERM");
+  await Promise.race([once(tuiCrash, "exit"), sleep(8_000)]);
 
   // (8b) the restart budget is BOUNDED: a codex that dies every incarnation is a crash loop, and
   // the host must give up loudly rather than respawn forever (an endless silent respawn would

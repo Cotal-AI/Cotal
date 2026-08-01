@@ -30,6 +30,23 @@ if (argv[0] === "resume") {
   const tokenEnv = argv[argv.indexOf("--remote-auth-token-env") + 1];
   journal({ ev: "tui", argv, tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null });
   if (process.env.FAKE_CODEX_TUI_EXIT === "1") setTimeout(() => process.exit(0), 300);
+  // FAKE_CODEX_TUI_ATTACH=1 behaves like the real TUI: it holds a websocket to the listener and
+  // DIES when that listener goes away. That is what makes an app-server crash with a UI attached
+  // testable — the host must read that exit as "the transport died", not "the operator quit".
+  if (process.env.FAKE_CODEX_TUI_ATTACH === "1") {
+    const remote = argv[argv.indexOf("--remote") + 1];
+    const { WebSocket } = await import("ws");
+    const sock = new WebSocket(remote, { headers: { Authorization: `Bearer ${process.env[tokenEnv] ?? ""}` } });
+    sock.on("open", () => journal({ ev: "tuiAttached" }));
+    sock.on("close", () => {
+      journal({ ev: "tuiTransportGone" });
+      process.exit(0);
+    });
+    sock.on("error", () => {
+      journal({ ev: "tuiTransportGone" });
+      process.exit(0);
+    });
+  }
   await new Promise(() => {});
 }
 
@@ -122,6 +139,13 @@ wss.on("connection", (ws, req) => {
     ws.close(1008, "unauthorized");
     return;
   }
+  // The FIRST client is the host — that connection is the protocol channel. Later clients are
+  // observers (the attached TUI), exactly as the real listener treats them: they see the stream
+  // but must never displace the host's channel.
+  if (sock) {
+    journal({ ev: "observer" });
+    return;
+  }
   journal({ ev: "connected" });
   sock = ws;
   ws.on("message", (data) => onChunk(String(data)));
@@ -149,6 +173,7 @@ let hangUsed = false; // HANG is one-shot: its REDELIVERED batch must complete n
 let failUsed = false; // FAIL is one-shot: its RETRIED batch must complete normally
 let rejectStartUsed = false; // REJECTSTART rejects the first matching turn/start RPC, once
 let activeTurnIsRace = false; // RACE: answer a steer and complete the turn in ONE write
+let soloUsed = false; // SOLOTUI is one-shot
 let foreignUsed = false; // FOREIGN is one-shot: the REDELIVERED batch must complete normally
 
 async function runTurn(text) {
@@ -187,6 +212,21 @@ async function runTurn(text) {
     } catch (e) {
       journal({ ev: "toolReplyNoAuth", turnId, error: String(e) });
     }
+  }
+  if (text.includes("SOLOTUI") && !soloUsed) {
+    // A turn the human started with NOTHING of ours open. The host must still pump its buffered
+    // traffic when this ends — otherwise a DM that arrived while someone was typing sits in the
+    // inbox until unrelated traffic happens to wake the loop.
+    soloUsed = true;
+    const solo = `turn_solo_${turnSeq}`;
+    activeTurn = undefined;
+    notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
+    await new Promise((r) => setTimeout(r, 200));
+    notify("turn/started", { threadId: THREAD, turn: { id: solo, status: "inProgress" } });
+    journal({ ev: "soloTuiTurn", id: solo });
+    await new Promise((r) => setTimeout(r, 2500));
+    notify("turn/completed", { threadId: THREAD, turn: { id: solo, status: "completed" } });
+    return;
   }
   if (text.includes("FOREIGN") && !foreignUsed) {
     // A turn this host did NOT start — what the attached TUI produces when a human types. The
