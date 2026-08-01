@@ -59,6 +59,12 @@ import { createTranscriptMirror } from "./transcript.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
+/** App-server crash recovery budget: more than MAX_RESTARTS crashes inside the window is a crash
+ *  loop, not a blip, and the host dies loudly rather than respawning forever. */
+const RESTART_WINDOW_MS = 120_000;
+const MAX_RESTARTS = 3;
+/** How often a presence update latched while the endpoint was still connecting is retried. */
+const STATUS_FLUSH_MS = 500;
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-codex] ${msg}\n`);
@@ -198,11 +204,45 @@ export async function runCodexHost(): Promise<void> {
     log,
   });
 
-  const safeStatus = async (status: "idle" | "working" | "waiting" | "offline", activity?: string): Promise<void> => {
+  // Presence is best-effort and must never throw into the turn loop — but it must also never
+  // LIE. The mesh connect runs in the background, so an auto-prompt (`--prompt`) can open a real
+  // turn while the endpoint is still connecting; dropping that "working" would leave the roster
+  // showing the default `idle` for the whole first turn. So the latest desired status is latched
+  // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
+  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string };
+  let desired: Presence | undefined;
+  let flushTimer: ReturnType<typeof setInterval> | undefined;
+  function armStatusFlush(): void {
+    if (flushTimer) return;
+    flushTimer = setInterval(() => {
+      if (!desired || !agent.connected) {
+        if (!desired) {
+          clearInterval(flushTimer);
+          flushTimer = undefined;
+        }
+        return;
+      }
+      const want = desired;
+      desired = undefined;
+      clearInterval(flushTimer);
+      flushTimer = undefined;
+      agent.setStatus(want.status, want.activity).catch(() => {
+        if (!desired) desired = want; // nothing newer intervened — keep trying
+        armStatusFlush();
+      });
+    }, STATUS_FLUSH_MS);
+    flushTimer.unref?.();
+  }
+  const safeStatus = async (status: Presence["status"], activity?: string): Promise<void> => {
+    desired = { status, activity };
+    if (!agent.connected) return armStatusFlush();
+    const want = desired;
+    desired = undefined;
     try {
-      if (agent.connected) await agent.setStatus(status, activity);
+      await agent.setStatus(status, activity);
     } catch {
-      /* presence is best-effort — never throw into the turn loop */
+      if (!desired) desired = want;
+      armStatusFlush();
     }
   };
 
@@ -381,16 +421,68 @@ export async function runCodexHost(): Promise<void> {
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
     transcript?.observe(item);
   });
+  /** Fatal: no Codex behind this endpoint and no way back. Go offline and exit nonzero rather
+   *  than linger "connected but dead", soaking redeliveries no turn can ever run. */
+  async function die(reason: string): Promise<never> {
+    log(`fatal: ${reason}`);
+    await safeStatus("offline");
+    try {
+      await agent.stop();
+    } catch {
+      /* leaving anyway */
+    }
+    process.exit(1);
+  }
+
+  // App-server crash recovery. The manager RETIRES a lifecycle when its process exits
+  // (freeSlot → deprovision); it never restarts one, and a later same-name spawn is a successor
+  // with its own delivery frontier. So exiting here would strand the un-acked in-flight batch.
+  // The host owns the child, so it restarts the CHILD instead: the mesh endpoint stays connected
+  // on the SAME lifecycle, credential, and durable, the batch's ids are still un-acked in this
+  // agent's inbox, and clearing `surfaced` (never acking it) is what makes them re-drive into the
+  // new thread. Bounded — a crash LOOP is fatal, never an endless silent respawn.
+  let restartAt: number[] = [];
   driver.on("closed", (code: number) => {
-    // An UNEXPECTED app-server exit (not our own shutdown) is a dead session, whatever the
-    // child's exit code: stop the endpoint and exit nonzero so the manager sees a failure —
-    // a lingering "offline but connected" host would keep soaking redeliveries no turn can
-    // ever run (the wedge R1 flagged). Un-acked in-flight batches redeliver to a successor.
-    log(`app-server exited (${code}) — leaving the mesh`);
-    void safeStatus("offline")
-      .then(() => agent.stop())
-      .finally(() => process.exit(shuttingDown ? 0 : 1));
+    if (shuttingDown) {
+      process.exit(0);
+      return;
+    }
+    ready = false;
+    driving = false;
+    awaitingTurnEnd = false;
+    surfaced = []; // deliberately NOT acked — these ids re-drive on the new thread
+    boundaryGen++; // the dead turn's async tail must not drive or re-present the new one
+    clearErrorRetry(true);
+    const now = Date.now();
+    restartAt = restartAt.filter((t) => now - t < RESTART_WINDOW_MS);
+    restartAt.push(now);
+    if (restartAt.length > MAX_RESTARTS) {
+      void die(`app-server exited (${code}) — ${restartAt.length} crashes in ${RESTART_WINDOW_MS / 1000}s`);
+      return;
+    }
+    log(`app-server exited (${code}) — restarting it (${restartAt.length}/${MAX_RESTARTS})`);
+    void safeStatus("waiting", "restarting codex");
+    void (async () => {
+      let tid: string;
+      try {
+        tid = await driver.start();
+      } catch (e) {
+        // A respawn that never comes up is terminal (a crashed child re-emits `closed` and is
+        // handled above; this path is a spawn/handshake failure with no retry left in it).
+        await die(`app-server restart failed: ${(e as Error).message}`);
+        return;
+      }
+      agent.setContextId(tid);
+      ready = true;
+      log(`app-server restarted — thread ${tid}`);
+      await safeStatus("idle");
+      // Unconditional re-drive: the crashed turn's ids were never acked, so they are still in the
+      // inbox — `drive()` picks them up (and no-ops when the inbox is genuinely empty).
+      if (pendingPullHint) void drive(pendingPullHint);
+      else void drive();
+    })();
   });
+  driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
   driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
 
   // Inbound mesh traffic. Busy: steer directed items into the live turn, buffer ambient. Idle: a

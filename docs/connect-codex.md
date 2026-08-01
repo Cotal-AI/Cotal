@@ -56,16 +56,22 @@ Codex TUI runs on).
   *dynamic tools* — the model calls them like any tool, and they execute against the host's
   single mesh endpoint. No sidecar processes.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
-  turn completes. A failed turn retries with backoff; an interrupted turn or a crash leaves the
-  batch to redeliver (to the same incarnation, or a manager-supervised same-lifecycle restart). (The shared bounded-inbox overflow rule applies: under extreme bursts an
-  evicted in-flight id cannot redeliver.)
+  turn completes. A failed turn retries with backoff, and an interrupted turn leaves the batch to
+  redeliver. If the Codex app-server itself dies, the host restarts it in place — same mesh
+  identity, credential, and durable — and re-drives the un-acked batch into the new thread; a
+  crash *loop* (more than 3 in 2 minutes) is fatal rather than an endless respawn. (The shared
+  bounded-inbox overflow rule applies: under extreme bursts an evicted in-flight id cannot
+  redeliver.)
 - **Isolated, never written.** Each agent gets a private `CODEX_HOME` (one hashed directory
   per space+name under `.cotal/codex/`, rooted at the manager's workspace): your `~/.codex`
   config.toml, hooks, and MCP servers never load into a managed agent, and Codex's per-project
   trust records never touch your real config. Your `auth.json` is symlinked in (re-linked each
   launch), so ChatGPT-plan token refreshes never fork. Without an `auth.json` (or an
   `OPENAI_API_KEY`) the launch fails loud at thread start — keyring-stored credentials are not
-  wired through the isolated home; use the file store or the env key for managed agents.
+  wired through the isolated home; use the file store or the env key for managed agents. That
+  symlink is why managed Codex agents are **POSIX-only** today: on Windows without Developer
+  Mode the link fails, and the launch fails loud rather than copying `auth.json` (a copy would
+  fork the token and break plan refreshes).
 - **Autonomy defaults.** Spawned agents run `approval_policy=never` +
   `sandbox_mode=workspace-write` so a supervised agent never stalls on an approval. Tune the
   sandbox per spawn with `--opt` (below); an interactive `approval_policy` is refused loud —

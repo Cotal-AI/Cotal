@@ -131,8 +131,12 @@ export class AppServerDriver extends EventEmitter {
     return this.activeTurnId;
   }
 
-  /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id. */
+  /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
+   *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
+    // Drop any partial line the previous child left mid-write, or it would prefix-corrupt the
+    // new child's first protocol line.
+    this.buf = "";
     const args = ["app-server"];
     for (const [k, v] of this.opts.configOverrides) args.push("-c", `${k}=${v}`);
     // The child inherits the host's (already allow-listed) env, minus COTAL_* — the codex

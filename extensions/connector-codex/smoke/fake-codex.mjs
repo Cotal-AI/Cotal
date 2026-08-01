@@ -4,9 +4,10 @@
 // the injected text: TOOL:roster → issue an item/tool/call first; SLOW → hold the turn
 // open ~1.2s (a steer window); HANG → hold until an interrupt arrives, else self-
 // interrupt after ~1s; FAIL → complete with status "failed"; default → complete.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
 const logPath = process.env.FAKE_CODEX_LOG;
+const DIED_MARK = `${logPath ?? "/tmp/fake-codex"}.died`;
 const journal = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
@@ -75,7 +76,14 @@ async function runTurn(text) {
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
     return;
   }
-  if (text.includes("DIE")) process.exit(3); // the app-server crashed mid-turn
+  if (text.includes("DIE") && !existsSync(DIED_MARK)) {
+    // The app-server crashes mid-turn. One-shot ACROSS PROCESSES (a marker file — the restart is
+    // a brand-new process): the host respawns us, re-drives the same un-acked batch, and THAT
+    // turn must complete, which is what tells recovery apart from a crash loop.
+    writeFileSync(DIED_MARK, "1");
+    journal({ ev: "died", turnId });
+    process.exit(3);
+  }
   const status = text.includes("FAIL") && !failUsed ? "failed" : "completed";
   if (status === "failed") failUsed = true;
   if (status === "completed")
@@ -124,6 +132,10 @@ process.stdin.on("data", (d) => {
       case "thread/start":
         reply(id, { thread: { id: THREAD }, model: "fake-model" });
         notify("thread/started", { thread: { id: THREAD } });
+        // FAKE_CODEX_DIE_ALWAYS=1 makes EVERY incarnation die shortly after the thread is up —
+        // a genuine crash loop, so the host's bounded-restart rail must give up and exit fatal
+        // instead of respawning forever.
+        if (process.env.FAKE_CODEX_DIE_ALWAYS === "1") setTimeout(() => process.exit(4), 150);
         break;
       case "account/read":
         // FAKE_CODEX_NOAUTH=1 simulates a logged-out codex (auth-honesty smoke case).

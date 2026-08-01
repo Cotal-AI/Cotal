@@ -19,7 +19,10 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 if (process.platform === "win32") {
-  console.log("SKIP codex dist smoke — POSIX shim (Windows bundle load is covered by smoke:windows)");
+  // Managed Codex agents are POSIX-only by design: the isolated CODEX_HOME symlinks the
+  // operator's auth.json, which needs Developer Mode on Windows (docs/connect-codex.md). There
+  // is no Windows Codex case anywhere in the suite — this is a stated limitation, not coverage.
+  console.log("SKIP codex dist smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
   process.exit(0);
 }
 

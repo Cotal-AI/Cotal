@@ -31,7 +31,10 @@ import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 
 if (process.platform === "win32") {
-  console.log("SKIP codex host smoke — the fake-binary shim is POSIX (Windows launch is covered by smoke:windows)");
+  // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
+  // operator's auth.json — see docs/connect-codex.md), so there is no Windows Codex case in the
+  // suite at all. This skip records that limitation; it is not covered elsewhere.
+  console.log("SKIP codex host smoke — managed Codex agents are POSIX-only (symlinked auth.json)");
   process.exit(0);
 }
 
@@ -294,13 +297,66 @@ try {
   const t9c = await waitFor("post-samechunk turn", () => turnStarts().find((t) => t.includes("after-samechunk")));
   check("same-chunk terminal does not wedge the loop (next DM drives)", t9c !== undefined);
 
-  // (8) unexpected app-server death mid-turn: the host must EXIT nonzero (a lingering
-  // offline-but-connected endpoint would soak redeliveries no turn can run).
+  // (8) unexpected app-server death mid-turn. The manager RETIRES a lifecycle on process exit
+  // (freeSlot → deprovision) rather than restarting it, and a same-name successor gets a fresh
+  // delivery frontier — so a host that exited here would STRAND the un-acked in-flight batch.
+  // The host must instead restart the CHILD on the same mesh lifecycle and re-drive that batch.
+  // Proof: the host stays alive, a SECOND app-server process boots, and the same message text
+  // starts a new turn that completes — end to end, not just "the host exited nonzero".
   await sleep(300);
-  const hostExit = new Promise<number | null>((r) => host!.on("exit", (code) => r(code)));
+  const boots = () => logEntries().filter((e) => e.ev === "argv").length;
+  const bootsBefore = boots();
+  const startsBefore = turnStarts().filter((t) => t.includes("DIE now")).length;
+  let hostExited: number | null | "alive" = "alive";
+  host!.on("exit", (code) => (hostExited = code));
   await dm("DIE now");
-  const exitCode = await Promise.race([hostExit, sleep(15_000).then(() => "timeout" as const)]);
-  check("app-server death kills the host nonzero", typeof exitCode === "number" && exitCode !== 0, exitCode);
+  await waitFor("app-server death recorded", () => logEntries().find((e) => e.ev === "died"));
+  await waitFor("app-server respawned (second boot)", () => (boots() > bootsBefore ? true : undefined));
+  check("host SURVIVES the app-server crash (lifecycle preserved)", hostExited === "alive", hostExited);
+  // The un-acked batch re-drives into the NEW thread — this is the redelivery the docs promise.
+  await waitFor(
+    "crashed batch re-driven on the restarted thread",
+    () => (turnStarts().filter((t) => t.includes("DIE now")).length > startsBefore ? true : undefined),
+  );
+  check("un-acked crashed batch redelivers to the SAME incarnation", true);
+  // ...and the loop is healthy afterwards: a fresh DM still drives a turn on the new thread.
+  await dm("post-crash");
+  const t8 = await waitFor("post-crash turn", () => turnStarts().find((t) => t.includes("post-crash")));
+  check("turn loop healthy after the restart", t8 !== undefined);
+  check("host still alive after recovery", hostExited === "alive", hostExited);
+
+  // (8b) the restart budget is BOUNDED: a codex that dies every incarnation is a crash loop, and
+  // the host must give up loudly rather than respawn forever (an endless silent respawn would
+  // hold a live mesh identity in front of a Codex that can never run a turn).
+  const looper = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "looppeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_DIE_ALWAYS: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let loopErr = "";
+  looper.stderr!.setEncoding("utf8");
+  looper.stderr!.on("data", (d: string) => (loopErr += d));
+  const loopExit = await Promise.race([
+    new Promise<number | null>((r) => looper.on("exit", (code) => r(code))),
+    sleep(30_000).then(() => "timeout" as const),
+  ]);
+  check("crash LOOP is fatal, not an endless respawn", typeof loopExit === "number" && loopExit !== 0, {
+    loopExit,
+    err: loopErr.slice(-200),
+  });
+  check(
+    "the fatal names the crash loop, and only the bounded number of restarts were attempted",
+    /crashes in \d+s/.test(loopErr) && (loopErr.match(/restarting it \(/g) ?? []).length === 3,
+    { restarts: (loopErr.match(/restarting it \(/g) ?? []).length, err: loopErr.slice(-300) },
+  );
 
   // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
   // join the mesh at startup — never advertise online and fail only at the first model turn.
