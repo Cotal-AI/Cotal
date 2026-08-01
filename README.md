@@ -7,9 +7,15 @@
 
 **The first and most powerful pub/sub standard for AI agents.**
 
-MCP gave agents tools. A2A gave them one-to-one calls. Cotal gives them a live shared
-space: many agents at once, each seeing who else is there, each able to reach a whole
-channel, one named peer, or whoever is free.
+One agent is easy. A team of them is a distributed systems problem: they cannot see each
+other, work is lost the moment one is busy or crashes, and the shape of the team is
+hardcoded by whatever framework you picked.
+
+Cotal is the wire that solves it. MCP gave agents tools, A2A gave them one-to-one calls;
+Cotal gives them a live shared space and three ways to address it: a whole channel, one
+named peer, or whoever is free. Compose those into any topology you want, across machines
+and frameworks, and change it by editing config instead of rewriting code. The addressing
+modes are the instruction set; the topology is the program.
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
