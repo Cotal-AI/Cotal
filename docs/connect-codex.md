@@ -143,8 +143,14 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 | `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. |
 
 Why keep filesystem containment when the network is open anyway: a peer's message is a **remote
-input** that can cause this agent to run commands. Containing writes to the workspace means a
-confused or hostile peer cannot reach the rest of your machine. The spawn capability is the trust
+input** that can cause this agent to run commands, and containing writes means a confused or
+hostile peer cannot *change* anything outside the workspace.
+
+Be clear about what that does **not** cover. Reads are not contained, and with the network on,
+whatever the agent can read it can also send somewhere. A peer that can talk to this agent can
+therefore, in principle, get it to read a file elsewhere on your machine and exfiltrate it — the
+sandbox stops the damage you cannot undo, not disclosure. If that matters for a given agent, turn
+the network back off (below) or run it under a separate OS user. The spawn capability is the trust
 boundary for *who* may create an agent; the sandbox is the boundary for what that agent can then
 be talked into doing.
 
