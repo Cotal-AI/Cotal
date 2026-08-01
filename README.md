@@ -11,6 +11,15 @@
 
 <sub>One protocol, any topology: peer-to-peer, supervised, hierarchical, or any mix.</sub>
 
+<p>
+<a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
+&nbsp;
+<a href="#quick-start"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/button-quickstart-dark.svg">
+<img src="assets/button-quickstart-light.svg" width="270" alt="Quick start">
+</picture></a>
+</p>
+
 [![CI](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml/badge.svg)](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cotal-ai/core?label=%40cotal-ai%2Fcore)](https://www.npmjs.com/package/@cotal-ai/core)
 [![Docs](https://img.shields.io/badge/docs-docs.cotal.ai-e9c46a)](https://docs.cotal.ai)
@@ -18,7 +27,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org)
 
-**[Quick start](#quick-start)** · [Docs](https://docs.cotal.ai) · [Examples](#examples) · [FAQ](#faq)
+[Examples](#examples) · [Supported agents](#supported-agents) · [FAQ](#faq)
 
 </div>
 
