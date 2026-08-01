@@ -446,12 +446,22 @@ try {
   // shutdown() is still inside interrupt()/stop(), strictly BEFORE it publishes offline. A
   // closed-handler exit would therefore always win, and the endpoint would never depart.
   const shutLog = join(dir, "shut.log.jsonl");
-  let sawOffline = false;
+  let shutOnline = false;
+  let offlineWhileAlive = false;
+  let shutHost: ReturnType<typeof spawn> | undefined;
   const onBye = (e: { type: string; presence: { card: { name: string } } }): void => {
-    if (e.presence.card.name === "shutpeer" && e.type === "offline") sawOffline = true;
+    if (e.presence.card.name !== "shutpeer") return;
+    if (e.type !== "offline") {
+      shutOnline = true;
+      return;
+    }
+    // The real assertion: the departure was published while the process was STILL ALIVE. A
+    // closed-handler exit that beat the offline publish cannot produce this, and neither can a
+    // presence TTL expiring after the process is long gone.
+    offlineWhileAlive = shutHost?.exitCode === null && shutHost?.signalCode === null;
   };
   operator.on("presence", onBye);
-  const shutHost = spawn(TSX, [HOST_ENTRY], {
+  shutHost = spawn(TSX, [HOST_ENTRY], {
     env: {
       ...cleanEnv,
       COTAL_SPACE: space,
@@ -470,12 +480,16 @@ try {
     existsSync(shutLog)
       ? readFileSync(shutLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
       : [];
+  // JOIN BARRIER, not optional: if the operator never saw this peer online, core treats its
+  // departure as a first-seen-offline stale snapshot and records it QUIETLY, emitting no offline
+  // presence event — so the assertion below would fail on a healthy leave. Wait for the join.
+  await waitFor("shutdown: peer seen online by the operator", () => (shutOnline ? true : undefined));
   await waitFor("shutdown: a turn is live", () =>
     shutEntries().find((e) => e.ev === "recv" && e.method === "turn/start"),
   );
   shutHost.kill("SIGTERM");
   const shutdownExit = await Promise.race([
-    new Promise<number | null>((r) => shutHost.on("exit", (code) => r(code))),
+    new Promise<number | null>((r) => shutHost!.on("exit", (code) => r(code))),
     sleep(15_000).then(() => "timeout" as const),
   ]);
   await sleep(700); // let the departure propagate to the operator
@@ -483,8 +497,8 @@ try {
   check("shutdown: the child really did die first (ordering pinned)", !!shutEntries().find((e) => e.ev === "died"));
   check("cooperative shutdown exits cleanly (0)", shutdownExit === 0, shutdownExit);
   check(
-    "cooperative shutdown leaves the mesh BEFORE exiting (child death never short-circuits it)",
-    sawOffline,
+    "cooperative shutdown leaves the mesh while STILL ALIVE (child death never short-circuits it)",
+    offlineWhileAlive,
   );
 
   // (11b) ...but the clean leave is BOUNDED. Interrupting the live turn ends it, and that

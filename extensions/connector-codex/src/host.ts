@@ -295,8 +295,8 @@ export async function runCodexHost(): Promise<void> {
   async function drive(override?: string): Promise<void> {
     // `shuttingDown` first: interrupting the live turn ends it, and that boundary would otherwise
     // re-drive the un-acked batch into a child we are in the middle of stopping — an endless
-    // "app-server not running" retry that outlives the shutdown. The batch stays un-acked and
-    // redelivers to the successor, which is the point.
+    // "app-server not running" retry that outlives the shutdown. The batch stays un-acked in the
+    // stream instead (see the shutdown note below on what that does and does not promise).
     if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
     driving = true;
     try {
@@ -535,8 +535,11 @@ export async function runCodexHost(): Promise<void> {
   });
 
   // Cooperative shutdown: the manager's authed {op:"shutdown"} on a signal-less runtime, plus
-  // SIGINT/SIGTERM. Interrupt the live turn (its surfaced batch stays un-acked → redelivers to
-  // the successor), leave the mesh cleanly, then exit.
+  // SIGINT/SIGTERM. Interrupt the live turn, leave the mesh cleanly, then exit. The interrupted
+  // batch stays un-acked in the stream — but this is a RETIREMENT, not a restart: the manager
+  // frees the slot and deprovisions, and a later same-name spawn is a successor with its own
+  // delivery frontier, so redelivery to it is NOT promised. (Unlike the in-place app-server
+  // restart above, which keeps the lifecycle and really does re-drive the batch.)
   let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
