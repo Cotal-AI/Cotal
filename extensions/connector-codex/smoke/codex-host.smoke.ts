@@ -356,6 +356,46 @@ try {
   check("a terminal preceding BOTH its start notification and its response still closes the ledger", tTerm !== undefined);
   check("the TERMONLY batch was acked, not redelivered", !tTerm.includes("TERMONLY please"), tTerm);
 
+  // (7g) the FOURTH ordering, and the only one that breaks the loop rather than one turn: a
+  // `turn/started` arriving AFTER its own terminal. All three events are independently ordered,
+  // so this is ordinary, not a misbehaving server. Recording liveness from that late start
+  // re-adds a turn that no future terminal can close — the driver reads `busy` forever, `drive()`
+  // refuses, and `steerPending` refuses too because no turn of ours is open, so every later
+  // message buffers silently with no error and no recovery short of a restart. Both routes to it
+  // are pinned: straight through (response → terminal → started) and through the buffered hold
+  // (terminal → started → response).
+  await sleep(300);
+  await dm("LATESTART please");
+  await waitFor("latestart turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("LATESTART")),
+    ),
+  );
+  await sleep(900);
+  await dm("after-latestart");
+  const tLateStart = await waitFor("post-latestart turn", () => turnStarts().find((t) => t.includes("after-latestart")), 25_000);
+  check("a turn/started arriving after its own terminal does not wedge the loop", tLateStart !== undefined);
+  check("the LATESTART batch was acked on its real boundary", !tLateStart.includes("LATESTART please"), tLateStart);
+
+  await sleep(300);
+  await dm("TERMSTART please");
+  await waitFor("termstart turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("TERMSTART")),
+    ),
+  );
+  await sleep(900);
+  await dm("after-termstart");
+  const tTermStart = await waitFor("post-termstart turn", () => turnStarts().find((t) => t.includes("after-termstart")), 25_000);
+  check("a late start landing during the buffered hold does not wedge the loop", tTermStart !== undefined);
+  check("the TERMSTART batch was acked, not redelivered", !tTermStart.includes("TERMSTART please"), tTermStart);
+
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
   await sleep(300);

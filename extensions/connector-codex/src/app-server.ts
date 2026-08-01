@@ -88,6 +88,9 @@ const STOP_KILL_GRACE_MS = 2_000;
  *  (`--listen` / `--ws-auth`). Named in the startup failure, because a bare "it exited" tells an
  *  operator running an older binary nothing about why. */
 const MIN_CODEX_VERSION = "0.145.0";
+/** How many recently-terminated turn ids to remember, so a `turn/started` that arrives after its
+ *  own terminal can be recognized as stale. Generous: the reorder window is milliseconds. */
+const MAX_FINISHED_TURNS = 256;
 /** Sentinel key in the MCP status map meaning "this incarnation is gone". Not a server name. */
 const MCP_DEAD = "\u0000dead";
 
@@ -199,6 +202,13 @@ export class AppServerDriver extends EventEmitter {
    *  ever seen live. Drained the moment no `turn/start` is outstanding, so each one is finally
    *  classified against a settled ownership set by the same rule the live path uses. */
   private buffered: { turnId: string; status: TurnStatus; wasLive: boolean }[] = [];
+  /** Turns whose terminal this incarnation has already seen. `turn/started`, `turn/completed`,
+   *  and the `turn/start` response are independently ordered, so a start can arrive AFTER its own
+   *  terminal — and a turn re-added to {@link liveTurns} then has no terminal left to remove it,
+   *  which reads as permanently `busy` and stops delivery for good. Bounded: a late start follows
+   *  its terminal by milliseconds, so only a short tail is worth remembering, and the whole set
+   *  dies with the thread on finalize. */
+  private readonly finishedTurns = new Set<string>();
   /** Per-incarnation record of what codex says about each configured MCP server, from its
    *  `mcpServer/startupStatus/updated` notifications. Kept as state rather than consumed as an
    *  event because the `ready` can land before anyone waits for it. */
@@ -357,6 +367,7 @@ export class AppServerDriver extends EventEmitter {
       // a boundary for a turn on a dead thread could only close accounting the restart owns.
       this.pendingStarts.clear();
       this.buffered = [];
+      this.finishedTurns.clear(); // a new thread cannot reuse this one's turn ids
       // Whoever is awaiting MCP readiness is awaiting THIS child's. Releasing them here (rather
       // than leaving them armed) is what stops the NEXT incarnation's `ready` from resolving a
       // dead generation's continuation, which would run two recovery tails over one host.
@@ -735,12 +746,29 @@ export class AppServerDriver extends EventEmitter {
   /** Emit the terminals held while ownership was undecidable. Once no `turn/start` is outstanding
    *  the ownership set is settled, so each held turn gets its true `owned` — including one that
    *  completed before the response that claimed it ever arrived. */
+  /** Tombstone a turn whose terminal has been seen, keeping only a short recent tail — a late
+   *  `turn/started` follows its terminal by milliseconds, so unbounded history buys nothing while
+   *  a long-lived agent would accumulate one entry per turn forever. */
+  private markFinished(turnId: string): void {
+    this.finishedTurns.add(turnId);
+    while (this.finishedTurns.size > MAX_FINISHED_TURNS) {
+      const oldest = this.finishedTurns.keys().next().value;
+      if (oldest === undefined) break;
+      this.finishedTurns.delete(oldest);
+    }
+  }
+
   private releaseBuffered(): void {
     if (this.pendingStarts.size > 0 || this.buffered.length === 0) return;
     const held = this.buffered;
     this.buffered = [];
     for (const t of held) {
       const owned = this.ownedTurns.delete(t.turnId);
+      // Liveness is reconciled here, not just at capture time: the terminal was held, and the
+      // turn's `turn/started` may have landed during the hold. The tombstone stops that start
+      // from being recorded at all, and this keeps the invariant local — a turn whose terminal
+      // has been consumed is never left in `liveTurns`.
+      this.liveTurns.delete(t.turnId);
       // The same closability rule the live path applies — deferred, not waived. A turn nobody
       // claimed and nobody ever saw start is still not ours to close.
       if (!owned && !t.wasLive) {
@@ -756,6 +784,16 @@ export class AppServerDriver extends EventEmitter {
       case "turn/started": {
         const turn = params.turn as { id?: string } | undefined;
         if (!turn?.id) return;
+        // A start that arrives AFTER its own terminal is stale, and acting on it is fatal to
+        // delivery: `liveTurns` would gain an id that no future terminal can ever remove, so
+        // `busy` stays true forever — the loop refuses to drive, and `steerPending` refuses too
+        // because no turn of ours is open. Every later message then buffers, silently, with no
+        // error and no recovery short of a restart. The three events are independently ordered,
+        // so this is not a hypothetical about a misbehaving server.
+        if (this.finishedTurns.has(turn.id)) {
+          this.log(`ignoring turn/started for ${turn.id} (its terminal already arrived)`);
+          return;
+        }
         this.liveTurns.add(turn.id);
         this.emit("turnStarted", turn.id, this.ownedTurns.has(turn.id));
         return;
@@ -791,6 +829,10 @@ export class AppServerDriver extends EventEmitter {
           this.log("ignoring turn/completed with no turn id");
           return;
         }
+        // Record the terminal BEFORE anything can return early. Every path out of here — closed,
+        // held, or ignored — must still tombstone the id, because a `turn/started` arriving after
+        // this point is stale in all three cases.
+        this.markFinished(turn.id);
         const wasLive = this.liveTurns.delete(turn.id);
         const wasOwned = this.ownedTurns.has(turn.id);
         const status: TurnStatus =

@@ -387,6 +387,29 @@ function onChunk(d) {
           );
           break;
         }
+        if (text.includes("LATESTART")) {
+          // response → terminal → started. The turn is claimed, then closed and acked normally,
+          // and only THEN does its `turn/started` arrive. A client that records liveness from
+          // that late notification re-adds a turn no terminal can ever close again: it reads as
+          // permanently busy, and every later message buffers with no error and no recovery.
+          const tid = `turn_latestart_${++turnSeq}`;
+          reply(id, { turn: { id: tid, status: "inProgress" } });
+          setTimeout(() => {
+            notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } });
+            setTimeout(() => notify("turn/started", { threadId: THREAD, turn: { id: tid, status: "inProgress" } }), 60);
+          }, 60);
+          break;
+        }
+        if (text.includes("TERMSTART")) {
+          // terminal → started → response: the same resurrection, but reached through the
+          // buffered path, where the terminal is held while our start is outstanding and the late
+          // start lands DURING the hold.
+          const tid = `turn_termstart_${++turnSeq}`;
+          notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } });
+          setTimeout(() => notify("turn/started", { threadId: THREAD, turn: { id: tid, status: "inProgress" } }), 40);
+          setTimeout(() => reply(id, { turn: { id: tid, status: "inProgress" } }), 120);
+          break;
+        }
         if (text.includes("TERMONLY")) {
           // The third valid ordering, and the one that survives BOTH earlier fixes: the terminal
           // arrives before `turn/started` (which never comes at all) AND before the response. The
