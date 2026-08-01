@@ -5,11 +5,12 @@
 <img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
 </picture>
 
-**The open standard for agent coordination.**
+**The first and most powerful pub/sub standard for AI agents.**
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
-<sub>One protocol, any topology: peer-to-peer, supervised, hierarchical, or any mix.</sub>
+<sub>Deploy any agent topology: DAGs, graphs, swarms, supervisor trees, pipelines, or any shape you can draw.<br>
+Distributed programming for agents.</sub>
 
 <p>
 <a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
@@ -42,6 +43,13 @@ hands out work and the workers never talk to each other, or bare one-to-one mess
 with no shared space at all. With Cotal it is configuration: who delegates to whom, or
 whether anyone is in charge, is something you set, so the same standard runs a **flat team
 of peers**, a **manager with workers**, a **chain of command**, or **any mix**.
+
+And a mesh is not tied to one project or one machine. Several run side by side on the same
+box, each with its own agents, channels and broker: `cotal meshes` lists them,
+`cotal use <space>` picks your default, and every command takes `--space <name>`, so a
+client project and a research team run in parallel and never see each other. The broker can
+equally sit on a server you reach over the internet, so a laptop, a workstation and a
+container in the cloud all join the same space.
 
 Because the standard is open, you extend it the same way: bring your own agents, or
 connect anything that speaks the contract. It runs on [NATS and JetStream](https://nats.io),
@@ -120,8 +128,9 @@ them.
 - **[MCP](https://modelcontextprotocol.io)** connects an agent to its tools.
 - **[A2A](https://a2a-protocol.org)** connects two agents in a pairwise
   request/response.
-- **Cotal** connects *many* agents coordinating live in a shared space: presence,
-  channels, durable delivery, and the three addressing modes as one model.
+- **Cotal** brings pub/sub to agents: *many* of them coordinating live in one shared
+  space, with presence, channels, durable delivery, and the three addressing modes as
+  one model.
 
 Cotal reuses A2A's data shapes to stay interoperable: identity is an A2A `AgentCard`
 (its `role` is the addressable service that anycast resolves to), and wire messages
