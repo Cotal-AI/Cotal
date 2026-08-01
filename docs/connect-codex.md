@@ -4,8 +4,8 @@
 
 [OpenAI Codex](https://developers.openai.com/codex/) joins a Cotal mesh as a lateral peer: the
 same `cotal_*` tool surface, the same message delivery and attention model as the other
-connectors — plus one thing none of them have: a directed peer message arriving mid-turn is
-**steered into the running turn** instead of waiting for it to end.
+connectors — plus mid-turn steering (previously pi-only): a directed peer message arriving
+mid-turn is **steered into the running turn** instead of waiting for it to end.
 
 **Beta** means the everyday path (spawn, coordinate, watch the activity feed) works; the spawn
 options that are not wired **fail loud** rather than degrade: resuming a session (`--resume`)
@@ -58,15 +58,18 @@ Codex TUI runs on).
   turn completes. A failed turn retries with backoff; an interrupted turn or a crash leaves the
   batch to redeliver. (The shared bounded-inbox overflow rule applies: under extreme bursts an
   evicted in-flight id cannot redeliver.)
-- **Isolated, never written.** Each agent gets a private `CODEX_HOME`
-  (`.cotal/codex/<space>/<name>`, rooted at the manager's workspace): your `~/.codex`
+- **Isolated, never written.** Each agent gets a private `CODEX_HOME` (one hashed directory
+  per space+name under `.cotal/codex/`, rooted at the manager's workspace): your `~/.codex`
   config.toml, hooks, and MCP servers never load into a managed agent, and Codex's per-project
   trust records never touch your real config. Your `auth.json` is symlinked in (re-linked each
-  launch), so ChatGPT-plan token refreshes never fork; keyring-stored auth resolves as usual.
-  If Codex is unauthenticated it fails loud at thread start.
+  launch), so ChatGPT-plan token refreshes never fork. Without an `auth.json` (or an
+  `OPENAI_API_KEY`) the launch fails loud at thread start — keyring-stored credentials are not
+  wired through the isolated home; use the file store or the env key for managed agents.
 - **Autonomy defaults.** Spawned agents run `approval_policy=never` +
-  `sandbox_mode=workspace-write` so a supervised agent never stalls on an approval. Override
-  per spawn with `--opt` (below).
+  `sandbox_mode=workspace-write` so a supervised agent never stalls on an approval. Tune the
+  sandbox per spawn with `--opt` (below); an interactive `approval_policy` is refused loud —
+  a headless host has nobody to answer approval prompts, and would otherwise have to
+  auto-answer them, silently nullifying the policy you asked for.
 - **Watch the feed.** The host renders agent messages, commands, and tool calls to its terminal,
   so `cotal attach` shows live activity. `--transcript` mirrors the same to `tr-<name>`.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;

@@ -10,10 +10,11 @@
  *  • the cotal_* tools are served over the same app-server pipe (dynamicTools →
  *    item/tool/call → tools.ts), so the model replies itself via cotal_send / cotal_dm;
  *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxIds-acked
- *    only when the turn reaches `completed` (or `failed` — drop, don't retry-loop, matching
- *    the OpenCode connector); an `interrupted` turn or a crash leaves them un-acked so the
- *    stream redelivers. Attention modes hold: ambient drives only in `open`; dnd/focus hold
- *    it; a focus @mention wakes a pull turn; quiet stays pull-only.
+ *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
+ *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn or a crash
+ *    leaves them for redelivery — matching the OpenCode connector's semantics. Attention modes
+ *    hold: ambient drives only in `open`; dnd/focus hold it; a focus @mention wakes a pull
+ *    turn (latched until a turn accepts it); quiet stays pull-only.
  *  • presence falls out of the app-server event stream (turn → working, approval → waiting,
  *    item detail → activity), never self-guessed;
  *  • the per-agent CODEX_HOME (under `<workspaceRoot>/.cotal/codex/<name>`) isolates the
@@ -24,9 +25,10 @@
  * Identity comes from COTAL_* env (the launcher decides once); a missing identity is a
  * broken launch and fails loud — this binary is never run standalone by an operator.
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import {
   MeshAgent,
@@ -75,13 +77,22 @@ function developerInstructions(config: ReturnType<typeof configFromEnv>, persona
   return persona ? `${persona}\n\n${mesh}` : mesh;
 }
 
-/** Build the per-agent CODEX_HOME and (re-)link the operator's auth.json into it. Keyed by
- *  space AND name (a name alone can recur across spaces on one workspace root), hardened
- *  private — it holds an auth link plus session rollouts. */
+/** Build the per-agent CODEX_HOME and (re-)link the operator's auth.json into it. The directory
+ *  is ONE filesystem component derived from space+name: a readable slug plus a hash of the raw
+ *  `space\0name` pair. Valid Cotal names include `.` and `..`, so raw path components would let
+ *  an agent named `..` collapse out of its directory and clobber/replace SHARED state (the
+ *  sibling homes, the auth link) — the hash keeps hostile or colliding names contained and
+ *  distinct, and a containment assert backstops the construction. Hardened private — it holds
+ *  an auth link plus session rollouts. */
 function prepareCodexHome(space: string, name: string): string {
   const dataRoot = process.env.COTAL_CODEX_HOME?.trim();
   if (!dataRoot) throw new Error("COTAL_CODEX_HOME is not set — the connector must pin the agent's data root");
-  const agentHome = join(dataRoot, ".cotal", "codex", space, name);
+  const slug = `${space}-${name}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  const key = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
+  const root = join(dataRoot, ".cotal", "codex");
+  const agentHome = join(root, `${slug || "agent"}-${key}`);
+  if (!resolve(agentHome).startsWith(resolve(root) + sep))
+    throw new Error(`codex home ${agentHome} escapes ${root} — refusing`);
   mkdirSync(agentHome, { recursive: true });
   hardenPrivate(agentHome, "dir");
   // The operator's real codex home: their CODEX_HOME if set (forwarded by the connector), else
@@ -120,8 +131,17 @@ function configOverrides(model: string | undefined, variant: string | undefined)
   const has = (key: string): boolean => overrides.some(([k]) => k === key);
   if (model && !has("model")) overrides.push(["model", `"${model}"`]);
   if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
-  // Autonomy defaults: a supervised agent must never block on an approval nobody is watching.
-  if (!has("approval_policy")) overrides.push(["approval_policy", '"never"']);
+  // Autonomy: a headless host has no one to answer an approval prompt, so an interactive
+  // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
+  // nullifying the operator's stated policy. Refuse anything but `never` rather than pretend.
+  const approval = overrides.find(([k]) => k === "approval_policy");
+  if (approval && approval[1].replace(/"/g, "") !== "never")
+    throw new Error(
+      `codex connector: approval_policy=${approval[1]} is not supported — the headless host cannot ` +
+        `answer interactive approvals; only "never" (the default) is honest here. Tighten the sandbox ` +
+        `(sandbox_mode) instead to restrict what the agent may do.`,
+    );
+  if (!approval) overrides.push(["approval_policy", '"never"']);
   if (!has("sandbox_mode")) overrides.push(["sandbox_mode", '"workspace-write"']);
   return overrides;
 }
@@ -184,12 +204,16 @@ export async function runCodexHost(): Promise<void> {
   }
 
   function scheduleErrorRetry(): void {
-    if (errorRetryTimer || agent.pendingWake() === 0) return;
+    if (errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint)) return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
-      if (!driver.busy && agent.pendingWake() > 0) void drive();
+      if (driver.busy) return;
+      // The latched pull hint has NO buffered inbox copy (its body was ack-dropped at ingest),
+      // so pendingWake() can't see it — retry it explicitly, ahead of ordinary batches.
+      if (pendingPullHint) void drive(pendingPullHint);
+      else if (agent.pendingWake() > 0) void drive();
     }, delay);
     errorRetryTimer.unref?.();
   }
@@ -222,6 +246,9 @@ export async function runCodexHost(): Promise<void> {
       // bails unless armed — arming after would drop the ack and wedge the loop.
       awaitingTurnEnd = true;
       await driver.startTurn(parts.join("\n\n"));
+      // The turn ACCEPTED the pull hint — only now is the latch consumed. (A failed start keeps
+      // it latched; the retry rail re-drives it, since no inbox copy can.)
+      if (override && override === pendingPullHint) pendingPullHint = undefined;
     } catch (e) {
       surfaced = [];
       awaitingTurnEnd = false;
@@ -283,9 +310,7 @@ export async function runCodexHost(): Promise<void> {
         if (transcript) await transcript.flush().catch((e) => log(`transcript publish failed: ${(e as Error).message}`));
         await safeStatus("idle");
         if (pendingPullHint) {
-          const hint = pendingPullHint;
-          pendingPullHint = undefined;
-          void drive(hint); // the latched focus @mention pull — its body has no buffered copy
+          void drive(pendingPullHint); // the latched focus pull — drive() consumes the latch only on ACCEPT
         } else if (status !== "failed" && agent.pendingWake() > 0) {
           void drive(); // failed batches wait for the backoff timer instead of hot-looping
         }
@@ -348,8 +373,8 @@ export async function runCodexHost(): Promise<void> {
     // LATCHED: steer it into the live turn if possible, and keep the latch until some turn
     // actually carried it (completeTurn consumes the latch at the boundary).
     const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`;
+    pendingPullHint = hint; // latched until a turn ACCEPTS it (steer accept / startTurn success)
     if (driver.busy || awaitingTurnEnd) {
-      pendingPullHint = hint;
       void driver.steer(hint).then((accepted) => {
         if (accepted && pendingPullHint === hint) pendingPullHint = undefined;
       });

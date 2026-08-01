@@ -140,7 +140,7 @@ try {
   const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
   const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
   const allSeeded = seededEntries.every((e) => e.source === "seeded");
-  check("all five first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 5);
+  check("all six first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 6);
   const webEntry = manifest.extensions.find((e) => e.pkg === "@cotal-ai/web");
   check("web installed from the durable store under the isolated config (bundled, not npm-fetched)", Boolean(webEntry && webEntry.spec.startsWith(cfg)), webEntry?.spec);
 
@@ -151,6 +151,7 @@ try {
   const extRoot = join(cfg, "cotal", "extensions", "node_modules");
   const launchShims: Record<string, string> = {
     "@cotal-ai/connector-opencode": "dist/serve.js",
+    "@cotal-ai/connector-codex": "dist/host.js",
     "@cotal-ai/connector-hermes": "dist/launch.js",
   };
   for (const [pkg, shim] of Object.entries(launchShims)) {

@@ -304,14 +304,18 @@ export class AppServerDriver extends EventEmitter {
         );
       return;
     }
-    // Approvals. approval_policy=never means these shouldn't fire; answer defensively so an
-    // unattended session can never deadlock on a question nobody is there to see.
+    // Approvals. The host enforces approval_policy=never at launch (host.ts refuses an override
+    // to any interactive mode a headless session cannot honestly answer), so these shouldn't
+    // fire. If one arrives anyway, DECLINE with the method's own response shape — an unattended
+    // host must never grant authority the policy didn't, and an unanswered request would hang
+    // the turn forever. Method-specific: a generic suffix match must not answer shapes it
+    // doesn't know (item/permissions/requestApproval wants {permissions, scope}, not a decision).
     this.emit("waiting", method);
     if (method === "execCommandApproval" || method === "applyPatchApproval")
-      return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "approved" } }); // legacy v1 shape
-    if (method.endsWith("/requestApproval"))
-      return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "accept" } }); // v2 decision enum
-    // Anything else (elicitations, attestation, user-input requests): decline cleanly.
+      return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
+    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
+      return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
+    // Anything else (permissions requests, elicitations, attestation, user-input): decline cleanly.
     this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
   }
 

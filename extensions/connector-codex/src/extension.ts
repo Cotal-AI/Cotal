@@ -182,8 +182,12 @@ export const codexConnector: Connector = {
       // a persona's launchOptions mapping would render "[object Object]" — a silently garbled
       // override — so non-scalars are refused (write the TOML inline-table text yourself if you
       // need one, e.g. --opt 'sandbox_workspace_write={network_access=true}').
-      if (v !== null && (typeof v === "object" || typeof v === "function"))
-        throw new Error(`codex connector: launch option "${k}" must be a scalar TOML value (got ${Array.isArray(v) ? "array" : typeof v})`);
+      if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean")
+        throw new Error(
+          `codex connector: launch option "${k}" must be a string, number, or boolean TOML value (got ${
+            v === null ? "null" : Array.isArray(v) ? "array" : typeof v
+          })`,
+        );
       overrides[k] = v;
       hasOverrides = true;
     }

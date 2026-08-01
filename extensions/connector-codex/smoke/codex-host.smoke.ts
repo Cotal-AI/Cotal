@@ -10,9 +10,13 @@
  *   2. wake: a DM drives a real turn carrying the rendered batch;
  *   3. ack-on-completion: a completed turn's batch never redelivers;
  *   4. steer: a directed message arriving mid-turn is steered INTO the live turn;
- *   5. interrupt: an interrupted turn's batch is NOT acked and redelivers on the next turn;
- *   6. failed: a failed turn acks-and-drops (no retry loop) and the loop is not wedged;
- *   7. tools: a model-initiated item/tool/call round-trips into the shared cotal_* surface.
+ *   5. interrupt: an interrupted turn's batch is NOT acked and redelivers immediately;
+ *   6. failed: a failed turn's batch is NOT acked — it retries with backoff, and the loop
+ *      is released afterwards;
+ *   7. tools: a model-initiated item/tool/call round-trips into the shared cotal_* surface;
+ *   8. crash: an unexpected app-server death kills the host nonzero (no wedged endpoint);
+ *   9. races: a transiently rejected turn/start retries; a steer whose accept collides with
+ *      the turn's completion in ONE chunk never loses the message (it redelivers).
  *
  * Run: pnpm smoke:codex-host
  */
@@ -236,6 +240,48 @@ try {
   );
   const replyText = JSON.stringify(toolReply.result ?? "");
   check("item/tool/call round-trips (roster shows the operator)", replyText.includes("operator"), replyText);
+
+  // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
+  // re-drives it (the fake rejects the first matching RPC only).
+  await sleep(300);
+  await dm("REJECTSTART go");
+  const restarted = await waitFor("turn/start retry", () =>
+    logEntries().filter(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("REJECTSTART")),
+    ).length >= 2
+      ? true
+      : undefined,
+  );
+  check("rejected turn/start retries with backoff", restarted === true);
+
+  // (9b) steer accept colliding with the turn's completion in ONE chunk. The settle barrier
+  // makes the outcome DETERMINISTIC: the server wrote the accept before the terminal event
+  // (had completion won, expectedTurnId would have REJECTED the steer), so the turn saw the
+  // message — the accepted id is promoted and acked exactly once. Assert: steered, acked (no
+  // redelivery), and the loop stays healthy afterwards.
+  await sleep(300);
+  await dm("RACE hold");
+  await waitFor("RACE turn", () => turnStarts().find((t) => t.includes("RACE hold")));
+  await dm("race-steer");
+  await waitFor("race steer accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("race-steer")),
+    ),
+  );
+  await sleep(1200); // settle: any (wrong) redelivery would surface here
+  check(
+    "raced steer is acked exactly once (accept happened-before completion; no redelivery)",
+    !turnStarts().some((t) => t.includes("race-steer")),
+  );
+  await dm("post-race");
+  await waitFor("post-race turn", () => turnStarts().find((t) => t.includes("post-race")));
+  check("loop healthy after the raced steer", true);
 
   // (8) unexpected app-server death mid-turn: the host must EXIT nonzero (a lingering
   // offline-but-connected endpoint would soak redeliveries no turn can run).

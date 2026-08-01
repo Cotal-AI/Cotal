@@ -30,11 +30,27 @@ let activeTurn;
 let interruptWaiter;
 let hangUsed = false; // HANG is one-shot: its REDELIVERED batch must complete normally
 let failUsed = false; // FAIL is one-shot: its RETRIED batch must complete normally
+let rejectStartUsed = false; // REJECTSTART rejects the first matching turn/start RPC, once
+let activeTurnIsRace = false; // RACE: answer a steer and complete the turn in ONE write
 
 async function runTurn(text) {
   const turnId = `turn_${++turnSeq}`;
   activeTurn = turnId;
+  activeTurnIsRace = text.includes("RACE");
   notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
+
+  if (activeTurnIsRace) {
+    // Hold the turn open for a steer window; the steer handler completes it (same-write race).
+    // Fallback completion if no steer arrives, so the smoke can't hang.
+    setTimeout(() => {
+      if (activeTurn === turnId) {
+        activeTurn = undefined;
+        activeTurnIsRace = false;
+        notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
+      }
+    }, 3000);
+    return;
+  }
 
   if (text.includes("TOOL:roster")) {
     const res = await serverRequest("item/tool/call", {
@@ -111,6 +127,11 @@ process.stdin.on("data", (d) => {
         break;
       case "turn/start": {
         const text = (params?.input ?? []).map((i) => i.text ?? "").join("\n");
+        if (text.includes("REJECTSTART") && !rejectStartUsed) {
+          rejectStartUsed = true;
+          write({ jsonrpc: "2.0", id, error: { code: -32000, message: "transient: try again" } });
+          break;
+        }
         reply(id, { turn: { id: `turn_${turnSeq + 1}`, status: "inProgress" } });
         void runTurn(text);
         break;
@@ -118,6 +139,25 @@ process.stdin.on("data", (d) => {
       case "turn/steer": {
         if (params?.expectedTurnId !== activeTurn) {
           write({ jsonrpc: "2.0", id, error: { code: -32600, message: "turn already completed" } });
+          break;
+        }
+        if (activeTurnIsRace) {
+          // The adversarial interleaving: the steer ACCEPT and the turn's completion land in
+          // ONE stdout chunk, so the client processes the terminal event in the same tick as
+          // the accept resolution. The steered content is NOT processed by this turn.
+          const turnId = activeTurn;
+          activeTurn = undefined;
+          activeTurnIsRace = false;
+          process.stdout.write(
+            JSON.stringify({ jsonrpc: "2.0", id, result: {} }) +
+              "\n" +
+              JSON.stringify({
+                jsonrpc: "2.0",
+                method: "turn/completed",
+                params: { threadId: THREAD, turn: { id: turnId, status: "completed" } },
+              }) +
+              "\n",
+          );
           break;
         }
         reply(id, {});
