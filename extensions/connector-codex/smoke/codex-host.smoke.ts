@@ -439,6 +439,54 @@ try {
   );
   check("unauthenticated codex NEVER advertised online (auth validated before presence)", !noauthEverOnline);
 
+  // (11) cooperative shutdown must complete the CLEAN MESH LEAVE before the process exits.
+  // shutdown() kills the child ITSELF, so the child's `closed` event fires while that promise is
+  // still running — and the closed handler must not race it to process.exit. Pinned rather than
+  // raced: this peer's fake dies the instant it is interrupted, so `closed` lands while
+  // shutdown() is still inside interrupt()/stop(), strictly BEFORE it publishes offline. A
+  // closed-handler exit would therefore always win, and the endpoint would never depart.
+  const shutLog = join(dir, "shut.log.jsonl");
+  let sawOffline = false;
+  const onBye = (e: { type: string; presence: { card: { name: string } } }): void => {
+    if (e.presence.card.name === "shutpeer" && e.type === "offline") sawOffline = true;
+  };
+  operator.on("presence", onBye);
+  const shutHost = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "shutpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      COTAL_CODEX_PROMPT: "SLOW shutdown-window", // a turn is live the moment it is ready
+      FAKE_CODEX_LOG: shutLog,
+      FAKE_CODEX_DIE_ON_INTERRUPT: "1",
+    },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  const shutEntries = (): LogEntry[] =>
+    existsSync(shutLog)
+      ? readFileSync(shutLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
+      : [];
+  await waitFor("shutdown: a turn is live", () =>
+    shutEntries().find((e) => e.ev === "recv" && e.method === "turn/start"),
+  );
+  shutHost.kill("SIGTERM");
+  const shutdownExit = await Promise.race([
+    new Promise<number | null>((r) => shutHost.on("exit", (code) => r(code))),
+    sleep(15_000).then(() => "timeout" as const),
+  ]);
+  await sleep(700); // let the departure propagate to the operator
+  operator.off("presence", onBye);
+  check("shutdown: the child really did die first (ordering pinned)", !!shutEntries().find((e) => e.ev === "died"));
+  check("cooperative shutdown exits cleanly (0)", shutdownExit === 0, shutdownExit);
+  check(
+    "cooperative shutdown leaves the mesh BEFORE exiting (child death never short-circuits it)",
+    sawOffline,
+  );
+
   console.log(`\nCODEX HOST SMOKE PASSED ✅  (${pass} checks)`);
 } finally {
   host?.kill("SIGTERM");

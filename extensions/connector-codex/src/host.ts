@@ -444,10 +444,12 @@ export async function runCodexHost(): Promise<void> {
   // new thread. Bounded — a crash LOOP is fatal, never an endless silent respawn.
   let restartAt: number[] = [];
   driver.on("closed", (code: number) => {
-    if (shuttingDown) {
-      process.exit(0);
-      return;
-    }
+    // During a cooperative shutdown the child's death is EXPECTED — `shutdown()` killed it — and
+    // that single promise owns the rest: offline presence, the clean mesh leave, then exit.
+    // Exiting here instead would win the race against its own `driver.stop()` and terminate
+    // before the endpoint ever departed, which is exactly what the control-socket path exists
+    // to prevent.
+    if (shuttingDown) return;
     ready = false;
     driving = false;
     awaitingTurnEnd = false;
@@ -474,6 +476,10 @@ export async function runCodexHost(): Promise<void> {
         return;
       }
       agent.setContextId(tid);
+      // A restarted thread is a NEW Codex context: it never saw the channel briefing, and the
+      // dead thread's partial transcript must not merge into its first flush.
+      briefed = false;
+      await transcript?.flush().catch(() => {});
       ready = true;
       log(`app-server restarted — thread ${tid}`);
       await safeStatus("idle");

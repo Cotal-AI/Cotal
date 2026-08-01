@@ -205,6 +205,15 @@ process.stdin.on("data", (d) => {
         break;
       }
       case "turn/interrupt":
+        // FAKE_CODEX_DIE_ON_INTERRUPT=1 makes the child die on interrupt WITHOUT replying. That
+        // pins the shutdown ordering: the host is suspended inside `await driver.interrupt()`
+        // when the child dies, so the driver's finalizer rejects that request and emits `closed`
+        // strictly BEFORE shutdown() can publish offline. A closed-handler process.exit() would
+        // therefore always win the race and cut the mesh leave.
+        if (process.env.FAKE_CODEX_DIE_ON_INTERRUPT === "1") {
+          journal({ ev: "died", turnId: activeTurn });
+          process.exit(7);
+        }
         reply(id, {});
         if (interruptWaiter) interruptWaiter();
         break;
