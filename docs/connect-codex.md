@@ -18,11 +18,13 @@ separate install step and no Codex-side plugin. You only need an authenticated `
 on your PATH (a ChatGPT-plan login or an `OPENAI_API_KEY`). If an older install is missing it,
 `cotal ext seed --repair` (or `cotal ext add @cotal-ai/connector-codex`) brings it in.
 
-**Codex version.** The connector drives `codex app-server` over its experimental v2 surface, and
-is tested against **codex-cli 0.145.0 and later**. An older binary authenticates fine but has no
-`--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:
+**Codex version.** The connector drives `codex app-server` over its experimental v2 surface.
+Minimum **codex-cli 0.145.0**; tested against 0.145.0. An older binary authenticates fine but has
+no `--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:
 check with `codex --version` and upgrade (`npm i -g @openai/codex`) if a launch reports that the
-app-server exited before it started listening.
+app-server exited before it started listening. The surface is explicitly experimental upstream, so
+a later Codex release may change it and need a connector update — that is a break to report, not a
+support range we can promise ahead of it.
 
 ## Spawn it
 
@@ -94,12 +96,22 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   which is exactly what `cotal attach` streams and drives. With no terminal at all (piped output,
   CI, a smoke) the host stays headless and prints an activity feed instead — the same peer either
   way, only the UI differs. `--transcript` mirrors the feed to `tr-<name>`.
-  **Which mode you get** is decided by whether *stdout* is a terminal. Export `COTAL_CODEX_TUI=1`
-  or `=0` before `cotal spawn` to choose explicitly, for when that check would guess wrong (a
-  wrapper that redirects output, or a CI run that wants deterministic text).
+  **Which mode you get** is decided by whether *stdout* is a terminal, and `COTAL_CODEX_TUI=1|0`
+  overrides that check when it would guess wrong (a wrapper that redirects output, a CI run that
+  wants deterministic text). It is read from the environment of **whichever process builds the
+  launch**, so set it in the right place:
+  - foreground `cotal spawn` — your own shell, per spawn;
+  - detached (`-d`) — the **manager's** environment, because the manager builds the launch. Set it
+    where you start the manager (`COTAL_CODEX_TUI=0 cotal up`) and it applies to every codex agent
+    that manager supervises. Exporting it in the shell that runs `cotal spawn -d` does nothing.
+
+  A detached agent gets the manager's pty, which *is* a terminal, so the default there is the TUI —
+  that is what `cotal attach` streams.
   Once the TUI paints, the terminal belongs to Codex, so the host's own diagnostics move to
-  `host.log` inside the agent's `CODEX_HOME` — the handoff line names that path, and so does any
-  later failure it can still reach you with.
+  `host.log` inside the agent's private home
+  (`<workspace>/.cotal/codex/<space>-<name>-<hash>/host.log`; the handoff line prints the exact
+  path, and `ls -t .cotal/codex/*/host.log` finds it after the fact). Attached, a failure is also
+  reported on the terminal; detached, that report goes to the pty, so the file is the durable copy.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
   the model id is reported from the started thread.
 

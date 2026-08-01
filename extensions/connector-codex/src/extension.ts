@@ -159,7 +159,14 @@ export const codexConnector: Connector = {
     if (opts.prompt) env.COTAL_CODEX_PROMPT = opts.prompt; // auto-submitted first turn
     // The host picks TUI vs headless from its own stdout, and COTAL_CODEX_TUI overrides that. The
     // child's env is an ALLOW-LIST, so without forwarding it by name the override would silently
-    // do nothing through `cotal spawn` — advertised, and unreachable by the only path that matters.
+    // do nothing.
+    //
+    // It is read from whichever process builds the launch, and that is NOT always the operator's
+    // shell: a detached spawn is built inside the MANAGER, so the manager's environment is what
+    // decides there (one setting for every codex agent it supervises), while a foreground spawn
+    // reads the shell that ran it. Passing it through the spawn request instead would make it a
+    // per-agent launch option, which is a bigger surface than a display toggle earns; the split is
+    // documented in docs/connect-codex.md rather than half-wired.
     const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
     if (tuiPref) env.COTAL_CODEX_TUI = tuiPref;
 
