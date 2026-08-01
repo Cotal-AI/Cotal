@@ -44,11 +44,12 @@ with no shared space at all. With Cotal it is configuration: who delegates to wh
 whether anyone is in charge, is something you set, so the same standard runs a **flat team
 of peers**, a **manager with workers**, a **chain of command**, or **any mix**.
 
-And you are not limited to one. Every `cotal up` registers its own mesh, so several run
-side by side on one machine, each with its own agents, channels and broker. `cotal meshes`
-lists them, `cotal use <space>` picks your default, and every command takes
-`--space <name>`, so a client project and a research team run in parallel and never see
-each other.
+And a mesh is not tied to one project or one machine. Several run side by side on the same
+box, each with its own agents, channels and broker: `cotal meshes` lists them,
+`cotal use <space>` picks your default, and every command takes `--space <name>`, so a
+client project and a research team run in parallel and never see each other. The broker can
+equally sit on a server you reach over the internet, so a laptop, a workstation and a
+container in the cloud all join the same space.
 
 Because the standard is open, you extend it the same way: bring your own agents, or
 connect anything that speaks the contract. It runs on [NATS and JetStream](https://nats.io),
