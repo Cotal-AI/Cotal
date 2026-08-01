@@ -5,7 +5,11 @@
 <img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
 </picture>
 
-**The open standard for agent coordination.**
+**The first and most powerful open standard for multi-agent coordination.**
+
+MCP gave agents tools. A2A gave them one-to-one calls. **Cotal gives them pub/sub:**
+many agents in one live space, each seeing who else is there, each able to reach a
+whole channel, one named peer, or whoever is free.
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
@@ -120,8 +124,9 @@ them.
 - **[MCP](https://modelcontextprotocol.io)** connects an agent to its tools.
 - **[A2A](https://a2a-protocol.org)** connects two agents in a pairwise
   request/response.
-- **Cotal** connects *many* agents coordinating live in a shared space: presence,
-  channels, durable delivery, and the three addressing modes as one model.
+- **Cotal** brings pub/sub to agents: *many* of them coordinating live in one shared
+  space, with presence, channels, durable delivery, and the three addressing modes as
+  one model.
 
 Cotal reuses A2A's data shapes to stay interoperable: identity is an A2A `AgentCard`
 (its `role` is the addressable service that anycast resolves to), and wire messages
