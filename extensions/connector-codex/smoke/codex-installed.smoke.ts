@@ -156,11 +156,40 @@ const portOpen = (port: number): Promise<boolean> =>
 let cli: ChildProcess | undefined;
 let meshUp = false;
 
+/** Does the spawn's process GROUP still have members? `kill(-pgid, 0)` is the only way to ask,
+ *  since the agent's real work happens in grandchildren this smoke never gets handles to. */
+const groupAlive = (pgid: number): boolean => {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Stop the foreground spawn and everything it started. Signalling the CLI alone is not enough: it
+ *  launches the connector's host as a child, which launches `codex` in turn, and neither dies with
+ *  it — the host just logs "mesh unreachable, retrying" forever once this smoke's broker is gone,
+ *  leaving two node processes per run on the machine. `cotal down` cannot reap them either, because
+ *  a foreground spawn is not the manager's. So the spawn gets its own process group and the whole
+ *  group is signalled. */
 const stopCli = async (): Promise<void> => {
-  if (!cli?.pid || cli.exitCode !== null) return;
-  cli.kill("SIGTERM");
-  await sleep(400);
-  if (cli.exitCode === null) cli.kill("SIGKILL");
+  const pgid = cli?.pid;
+  if (!pgid) return;
+  try {
+    process.kill(-pgid, "SIGTERM");
+  } catch {
+    return; // already gone
+  }
+  for (let i = 0; i < 20 && groupAlive(pgid); i++) await sleep(200);
+  if (groupAlive(pgid)) {
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch {
+      /* raced with its own exit */
+    }
+    await sleep(300);
+  }
 };
 
 /** Bare `cotal down` from the project root — the whole-stack form, which is what `up` created here.
@@ -233,6 +262,9 @@ try {
     cwd: ROOT,
     env: cliEnv,
     stdio: ["ignore", "pipe", "pipe"],
+    // Its own process group, so teardown can reap the host and the codex child it starts (see
+    // stopCli). Without this the agent outlives the smoke.
+    detached: true,
   });
   cli.stderr?.on("data", (b: Buffer) => (cliStderr += b.toString()));
   cli.stdout?.on("data", (b: Buffer) => (cliStderr += b.toString()));
@@ -277,7 +309,9 @@ try {
   // what the first version of this smoke did, by calling `down --space <name>`: that form is only
   // for target-addressed components and throws for a whole-stack stop, and the error was discarded.
   await operator.stop().catch(() => {});
+  const agentPgid = cli.pid;
   await stopCli();
+  check("the spawned agent and the codex child it started are both reaped", agentPgid !== undefined && !groupAlive(agentPgid));
   const torn = await teardown();
   check("`cotal down` reports success", torn.status === 0, `${torn.stdout}\n${torn.stderr}`);
   check("the broker this smoke started is really gone (nothing leaked into the gate)", !(await portOpen(PORT)));
