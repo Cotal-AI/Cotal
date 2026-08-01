@@ -28,12 +28,15 @@ reason. Useful flags: `--dry-run` to see the plan, `--no-modify-path` to leave y
 alone, `--no-setup` to install only. Pass them through the pipe as
 `| sh -s -- --dry-run`.
 
-If you already run Node 22+ and would rather use npm directly:
+On Windows, or if you already run Node 22+ and would rather use npm directly:
 
 ```bash
 npm install -g cotal-ai   # puts `cotal` on your PATH
 cotal setup               # one-time, configure-only; launches nothing
 ```
+
+Cotal runs natively on Windows, but the installer above is a POSIX shell script, so npm is the
+route there (or run the installer under WSL).
 
 Bare `cotal` prints help; `cotal setup` runs the guided setup. `npx cotal-ai setup` works
 too and offers to install the global `cotal` at the end. Declining is fine: the hints stay
@@ -51,6 +54,10 @@ Requirements:
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
   one that ships with the package is new enough; if you already have `nats-server` on your
   PATH, Cotal uses that instead, so make sure it is 2.12+.
+
+To uninstall: `rm -rf ~/.local/share/cotal ~/.local/bin/cotal` removes what the installer wrote,
+`rm -rf ~/.cotal` removes your meshes, agents and credentials, and the `# cotal` block it added
+to your shell rc can be deleted.
 
 ## First run
 

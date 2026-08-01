@@ -1,5 +1,19 @@
 # @cotal-ai/connector-hermes
 
+## 0.14.11
+
+### Patch Changes
+
+- c1fc62a: Fix the Hermes connector when it runs as an installed extension: `dist/launch.js` now
+  carries a `createRequire` banner (the esbuild ESM bundle crashed at import with `Dynamic
+require of "crypto"` on every installed-ext launch; dev runs via tsx masked it), and the
+  launch-env filter now forwards Hermes' own model-provider API keys (`OPENCODE_GO_API_KEY`,
+  `OPENCODE_ZEN_API_KEY`, `NOVITA_API_KEY`, and the other dedicated key names in the hermes
+  0.16 provider registry, bundled model-provider plugins included) so a managed or
+  containerized Hermes can authenticate any of its providers from the operator's
+  environment. Generic cross-tool and cloud-wide credentials (`GH_TOKEN`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `GOOGLE_API_KEY`, …) stay excluded from the forward list.
+
 ## 0.14.10
 
 ## 0.14.9
