@@ -4,18 +4,64 @@
 // the injected text: TOOL:roster → issue an item/tool/call first; SLOW → hold the turn
 // open ~1.2s (a steer window); HANG → hold until an interrupt arrives, else self-
 // interrupt after ~1s; FAIL → complete with status "failed"; default → complete.
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { WebSocketServer } from "ws";
 
 const logPath = process.env.FAKE_CODEX_LOG;
 const DIED_MARK = `${logPath ?? "/tmp/fake-codex"}.died`;
 const journal = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
-journal({ ev: "argv", argv: process.argv.slice(2) });
+const argv = process.argv.slice(2);
+journal({ ev: "argv", argv, pid: process.pid });
+
+// `codex resume --remote …` is the TUI, not the app-server. Journal how the host invoked it (the
+// smoke asserts the url / token-env / thread-id wiring, and that the token really is passed by
+// env name rather than on argv), then sit here like a running UI until killed. The top-level
+// await also stops the app-server body below from running in this process.
+// FAKE_CODEX_TUI_EXIT=1 quits instead, driving the "operator closed the UI" path.
+if (argv[0] === "resume") {
+  const tokenEnv = argv[argv.indexOf("--remote-auth-token-env") + 1];
+  journal({ ev: "tui", argv, tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null });
+  if (process.env.FAKE_CODEX_TUI_EXIT === "1") setTimeout(() => process.exit(0), 300);
+  await new Promise(() => {});
+}
 
 let nextServerId = 1000;
 const pendingServerReqs = new Map();
-const write = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
+// The transport is a websocket LISTENER, not stdio — that is what lets a second client (the real
+// TUI) attach to the same thread the host drives. Auth is enforced the way the real app-server
+// does it under `--ws-auth capability-token`, so the smoke also proves the host presents its
+// token rather than relying on the listener being open.
+const tokenFile = argv.includes("--ws-token-file") ? argv[argv.indexOf("--ws-token-file") + 1] : undefined;
+const expectedToken = tokenFile ? readFileSync(tokenFile, "utf8").trim() : undefined;
+let sock;
+const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+wss.on("listening", () => {
+  // The banner the host parses for the OS-assigned port. On STDERR and byte-shaped like the real
+  // one: codex-cli 0.145 prints it there, and a fake that used stdout would let a stdout-only
+  // parser pass here and hang against the real binary (which is exactly what happened once).
+  process.stderr.write(
+    `codex app-server (WebSockets)\n  listening on: ws://127.0.0.1:${wss.address().port}\n` +
+      `  note: binds localhost only (use SSH port-forwarding for remote access)\n`,
+  );
+});
+wss.on("connection", (ws, req) => {
+  const auth = req.headers.authorization ?? "";
+  if (expectedToken && auth !== `Bearer ${expectedToken}`) {
+    journal({ ev: "unauthorized", auth: auth ? "wrong" : "absent" });
+    ws.close(1008, "unauthorized");
+    return;
+  }
+  journal({ ev: "connected" });
+  sock = ws;
+  ws.on("message", (data) => onChunk(String(data)));
+});
+/** Send raw text. ONE frame may carry several newline-delimited messages, which is how the race
+ *  cases below still reproduce "everything arrived in a single chunk" against a client that
+ *  splits on newlines. */
+const raw = (s) => sock?.send(s);
+const write = (obj) => raw(JSON.stringify(obj) + "\n");
 const reply = (id, result) => write({ jsonrpc: "2.0", id, result });
 const notify = (method, params) => write({ jsonrpc: "2.0", method, params });
 const serverRequest = (method, params) =>
@@ -97,14 +143,11 @@ async function runTurn(text) {
   notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status } });
 }
 
-let buf = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (d) => {
-  buf += d;
-  let nl;
-  while ((nl = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, nl).trim();
-    buf = buf.slice(nl + 1);
+// One websocket frame is a complete unit (no partial message carries across frames), but it may
+// pack several newline-delimited messages — the same rule the client applies.
+function onChunk(d) {
+  for (const rawLine of d.split("\n")) {
+    const line = rawLine.trim();
     if (!line) continue;
     let msg;
     try {
@@ -145,6 +188,10 @@ process.stdin.on("data", (d) => {
         // instead of respawning forever.
         if (process.env.FAKE_CODEX_DIE_ALWAYS === "1") setTimeout(() => process.exit(4), 150);
         break;
+      case "thread/inject_items":
+        // The host primes the thread at start so a rollout exists for the TUI to resume.
+        reply(id, {});
+        break;
       case "account/read":
         // FAKE_CODEX_NOAUTH=1 simulates a logged-out codex (auth-honesty smoke case).
         reply(id, {
@@ -165,7 +212,7 @@ process.stdin.on("data", (d) => {
           // before the awaited turn/start continuation runs. A response-side id adoption would
           // resurrect the just-completed turn (falsely busy forever); correct handling ignores it.
           const tid = `turn_${++turnSeq}`;
-          process.stdout.write(
+          raw(
             JSON.stringify({ jsonrpc: "2.0", id, result: { turn: { id: tid, status: "inProgress" } } }) + "\n" +
               JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId: THREAD, turn: { id: tid, status: "inProgress" } } }) + "\n" +
               JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { threadId: THREAD, turnId: tid, item: { type: "agentMessage", id: `m_${tid}`, text: "ok", phase: "final_answer" } } }) + "\n" +
@@ -189,7 +236,7 @@ process.stdin.on("data", (d) => {
           const turnId = activeTurn;
           activeTurn = undefined;
           activeTurnIsRace = false;
-          process.stdout.write(
+          raw(
             JSON.stringify({ jsonrpc: "2.0", id, result: {} }) +
               "\n" +
               JSON.stringify({
@@ -221,5 +268,4 @@ process.stdin.on("data", (d) => {
         if (id !== undefined) write({ jsonrpc: "2.0", id, error: { code: -32601, message: `unhandled: ${method}` } });
     }
   }
-});
-process.stdin.on("end", () => process.exit(0));
+}

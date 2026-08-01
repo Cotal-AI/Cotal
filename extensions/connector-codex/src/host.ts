@@ -28,9 +28,10 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import type { ChildProcess } from "node:child_process";
+import { createWriteStream, type WriteStream } from "node:fs";
 import { delimiter, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import { createInterface } from "node:readline";
 
 /** Is `bin` resolvable on PATH? A cheap cross-platform scan (adds PATHEXT on Windows) for a
  *  friendly missing-binary error, not a full exec-permission check. */
@@ -58,6 +59,7 @@ import {
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { buildCotalTools } from "./tools.js";
 import { createTranscriptMirror } from "./transcript.js";
+import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
@@ -70,14 +72,24 @@ const STATUS_FLUSH_MS = 500;
 /** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
 const SHUTDOWN_GRACE_MS = 5_000;
 
+/** Once the Codex TUI owns the terminal, NOTHING else may write to it — a stray log line lands
+ *  in the middle of its rendering. From that point the host's own diagnostics go to a file inside
+ *  the agent's CODEX_HOME instead. Until then (and in headless mode) they go to stderr, so a
+ *  launch that fails before the UI is up still says why, on the terminal. */
+let logSink: WriteStream | undefined;
+
 function log(msg: string): void {
-  process.stderr.write(`[cotal-codex] ${msg}\n`);
+  const line = `[cotal-codex] ${msg}\n`;
+  if (logSink) logSink.write(line);
+  else process.stderr.write(line);
 }
 
-/** The live activity feed rendered to stdout, so the manager pty (`cotal attach`) shows what
- *  the agent is doing. One line per event; full agent messages, one-liner commands/tools. */
+/** The headless activity feed: one line per event, for a host with no TUI (a piped stdout — a
+ *  container, `deploy/`, or a smoke). With the TUI attached the feed is redundant, because Codex
+ *  renders the same events itself, so it is suppressed rather than interleaved into its output. */
+let feedEnabled = true;
 function feed(line: string): void {
-  process.stdout.write(`${line}\n`);
+  if (feedEnabled) process.stdout.write(`${line}\n`);
 }
 
 /** The persona/mesh briefing injected as `thread/start.developerInstructions` — ADDITIVE to
@@ -197,14 +209,16 @@ export async function runCodexHost(): Promise<void> {
   const agent = new MeshAgent(config);
 
   const surface = buildCotalTools(agent, config);
+  const codexHome = prepareCodexHome(config.space, config.name);
+  const codexBin = process.env.COTAL_CODEX_BIN?.trim() || undefined;
   const driver = new AppServerDriver({
     cwd: process.cwd(),
-    codexHome: prepareCodexHome(config.space, config.name),
+    codexHome,
     configOverrides: configOverrides(model, variant),
     developerInstructions: developerInstructions(config, persona),
     dynamicTools: surface.tools,
     onToolCall: (call) => surface.dispatch(call),
-    bin: process.env.COTAL_CODEX_BIN?.trim() || undefined,
+    bin: codexBin,
     log,
   });
 
@@ -267,8 +281,6 @@ export async function runCodexHost(): Promise<void> {
   // ingest, so a wake that can't run NOW must be remembered until a turn can carry it
   let steerSettled: Promise<unknown> = Promise.resolve(); // the last in-flight steer RPC — the
   // terminal handler waits on it so an accepted-but-unrecorded steer can never mis-ack
-  let typed: string[] = []; // lines typed at the host's terminal, queued until a turn carries them
-  let flushingTyped = false; // serialize the typed flush (one steer/start batch at a time)
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
 
@@ -279,33 +291,28 @@ export async function runCodexHost(): Promise<void> {
   }
 
   function scheduleErrorRetry(): void {
-    if (shuttingDown || errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint && typed.length === 0))
-      return;
+    if (shuttingDown || errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint)) return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
       if (driver.busy) return;
-      // Typed lines and the latched pull hint have NO buffered inbox copy (the hint's body was
-      // ack-dropped at ingest; a typed line never was one), so pendingWake() can't see either —
-      // retry them explicitly, ahead of ordinary batches.
-      if (typed.length > 0) void flushTyped();
-      else if (pendingPullHint) void drive(pendingPullHint);
+      // The latched pull hint has NO buffered inbox copy (its body was ack-dropped at ingest), so
+      // pendingWake() can't see it — retry it explicitly, ahead of ordinary batches.
+      if (pendingPullHint) void drive(pendingPullHint);
       else if (agent.pendingWake() > 0) void drive();
     }, delay);
     errorRetryTimer.unref?.();
   }
 
   /** Start a turn carrying the current automatic inbox batch (or `override` — a bare nudge that
-   *  surfaces nothing to ack). Ack happens at the turn boundary, never here. Resolves true only
-   *  when a turn actually started: callers holding text with no buffered copy to redeliver (a
-   *  typed line) must keep it queued otherwise. */
-  async function drive(override?: string): Promise<boolean> {
+   *  surfaces nothing to ack). Ack happens at the turn boundary, never here. */
+  async function drive(override?: string): Promise<void> {
     // `shuttingDown` first: interrupting the live turn ends it, and that boundary would otherwise
     // re-drive the un-acked batch into a child we are in the middle of stopping — an endless
     // "app-server not running" retry that outlives the shutdown. The batch stays un-acked in the
     // stream instead (see the shutdown note below on what that does and does not promise).
-    if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return false;
+    if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
     driving = true;
     try {
       const parts: string[] = [];
@@ -314,12 +321,12 @@ export async function runCodexHost(): Promise<void> {
         parts.push(override);
       } else {
         const items = agent.peekInbox("automatic");
-        if (items.length === 0) return false;
+        if (items.length === 0) return;
         ids = items.map((i) => i.id);
         const inj = formatInjection(items);
         if (inj) parts.push(inj);
       }
-      if (parts.length === 0) return false;
+      if (parts.length === 0) return;
       if (!briefed) {
         briefed = true;
         const brief = agent.channelBriefing();
@@ -333,13 +340,11 @@ export async function runCodexHost(): Promise<void> {
       // The turn ACCEPTED the pull hint — only now is the latch consumed. (A failed start keeps
       // it latched; the retry rail re-drives it, since no inbox copy can.)
       if (override && override === pendingPullHint) pendingPullHint = undefined;
-      return true;
     } catch (e) {
       surfaced = [];
       awaitingTurnEnd = false;
       log(`drive failed: ${(e as Error).message}`);
       scheduleErrorRetry();
-      return false;
     } finally {
       driving = false;
     }
@@ -377,33 +382,6 @@ export async function runCodexHost(): Promise<void> {
     }
   }
 
-  /** Carry the lines typed at the host's own terminal into Codex: steered into the live turn when
-   *  one is open, otherwise starting one. A typed line is the operator talking directly to this
-   *  agent, so it is DIRECTED by nature and never waits for a turn boundary the way ambient
-   *  channel chatter does. Unlike a mesh item it has no buffered copy anywhere, so nothing may
-   *  drop it: a declined steer, an app-server still coming up, or a failed start all leave it
-   *  queued for the next rail (boundary, restart, or the error-retry timer). */
-  async function flushTyped(): Promise<void> {
-    if (flushingTyped || shuttingDown || typed.length === 0) return;
-    flushingTyped = true;
-    try {
-      const n = typed.length;
-      const text = typed.slice(0, n).join("\n");
-      if (driver.busy && awaitingTurnEnd) {
-        // Same settlement rail as batch steers: a turn boundary racing this steer waits for its
-        // outcome, so an accepted line is never mistaken for one the turn never saw.
-        const rpc = driver.steer(text);
-        steerSettled = rpc.catch(() => false);
-        if (!(await rpc)) return; // the turn just ended — the boundary flush carries it
-      } else if (!(await drive(text))) {
-        return; // not startable yet (thread coming up, or the start failed) — stays queued
-      }
-      typed = typed.slice(n); // consumed only once a turn actually accepted it
-    } finally {
-      flushingTyped = false;
-    }
-  }
-
   /** The single turn-boundary site. Ack ONLY a `completed` turn's surfaced ids (exact-id drain:
    *  an overflow-evicted id is reported missing, never mis-acked positionally). `failed` (a
    *  transient model/upstream error) and `interrupted` (an operator/shutdown cancel) both leave
@@ -428,9 +406,7 @@ export async function runCodexHost(): Promise<void> {
         if (gen !== boundaryGen) return; // a newer turn boundary owns presence + the next drive
         await safeStatus("idle");
         if (gen !== boundaryGen) return;
-        if (typed.length > 0) {
-          void flushTyped(); // the operator is sitting at this terminal — their line goes first
-        } else if (pendingPullHint) {
+        if (pendingPullHint) {
           void drive(pendingPullHint); // the latched focus pull — drive() consumes the latch only on ACCEPT
         } else if (status !== "failed" && agent.pendingWake() > 0) {
           void drive(); // failed batches wait for the backoff timer instead of hot-looping
@@ -448,7 +424,6 @@ export async function runCodexHost(): Promise<void> {
     boundaryGen++;
     void safeStatus("working");
     void steerPending(); // anything directed that landed while the turn spun up
-    void flushTyped(); // ditto for a line typed into the gap before the turn was steerable
   });
   driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
   driver.on("turnCompleted", ({ status }: { status: string }) => {
@@ -473,6 +448,16 @@ export async function runCodexHost(): Promise<void> {
   async function die(reason: string): Promise<never> {
     log(`fatal: ${reason}`);
     await safeStatus("offline");
+    // Take the app-server (and the UI) down with us. A listening app-server is NOT tied to this
+    // process's lifetime the way a stdio child was — nothing closes when our pipes do — so an
+    // exit that skipped this would strand an orphaned codex holding a port and this agent's
+    // isolated home, once per fatal launch.
+    stopTui();
+    try {
+      await driver.stop();
+    } catch {
+      /* leaving anyway */
+    }
     try {
       await agent.stop();
     } catch {
@@ -528,12 +513,14 @@ export async function runCodexHost(): Promise<void> {
       await transcript?.flush().catch(() => {});
       ready = true;
       log(`app-server restarted — thread ${tid}`);
+      // The old UI was attached to a listener that no longer exists (new port, new token, new
+      // thread), so replace it rather than leave a dead window on the operator's terminal.
+      stopTui();
+      startTui();
       await safeStatus("idle");
       // Unconditional re-drive: the crashed turn's ids were never acked, so they are still in the
-      // inbox — `drive()` picks them up (and no-ops when the inbox is genuinely empty). A line
-      // typed into the dead thread never reached it, so it goes first on the new one.
-      if (typed.length > 0) void flushTyped();
-      else if (pendingPullHint) void drive(pendingPullHint);
+      // inbox — `drive()` picks them up (and no-ops when the inbox is genuinely empty).
+      if (pendingPullHint) void drive(pendingPullHint);
       else void drive();
     })();
   });
@@ -576,6 +563,61 @@ export async function runCodexHost(): Promise<void> {
     if (!driver.busy) void drive();
   });
 
+  // ---- the Codex TUI -------------------------------------------------------
+  // `cotal spawn --agent codex` puts you in Codex proper rather than a log tail: the real TUI
+  // attaches to the very thread this host drives (see tui.ts), so mesh turns render as they
+  // happen and anything typed is a real user turn on the same thread. Detached, the manager's pty
+  // is that terminal, which is exactly what `cotal attach` streams.
+  //
+  // It needs a terminal to own. With a piped stdout (a container, `deploy/`, a smoke) there is
+  // none, so the host stays headless and keeps its line feed instead — the same peer either way,
+  // only the UI differs. COTAL_CODEX_TUI decides explicitly when set (1/0), for callers that know
+  // better than the tty check.
+  const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
+  const wantTui = tuiPref ? /^(1|true|yes|on)$/i.test(tuiPref) : process.stdout.isTTY === true;
+  let tuiChild: ChildProcess | undefined;
+  let tuiGen = 0; // bumped whenever an exit becomes EXPECTED (restart or shutdown)
+
+  function stopTui(): void {
+    const child = tuiChild;
+    tuiChild = undefined;
+    if (!child) return;
+    tuiGen++;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /** Attach the TUI to the current app-server + thread. Re-callable: an app-server restart is a
+   *  new listener, a new token, and a new thread, so the old UI is replaced rather than left
+   *  pointing at a dead endpoint. */
+  function startTui(): void {
+    if (!wantTui || shuttingDown) return;
+    const remote = driver.remote;
+    const threadId = driver.thread;
+    if (!remote || !threadId) return;
+    // From here the terminal belongs to Codex: move our own output off it before it paints.
+    if (!logSink) {
+      logSink = createWriteStream(join(codexHome, "host.log"), { flags: "a" });
+      feedEnabled = false;
+      log(`codex TUI attached to ${remote.url} thread ${threadId} — host log continues here`);
+    }
+    const gen = ++tuiGen;
+    const child = launchTui({ url: remote.url, token: remote.token, threadId, codexHome, cwd: process.cwd(), bin: codexBin });
+    tuiChild = child;
+    child.on("error", (e: Error) => log(`codex TUI failed to launch: ${e.message}`));
+    child.on("exit", (code) => {
+      if (gen !== tuiGen) return; // superseded: a restart or shutdown already owns this exit
+      tuiChild = undefined;
+      // Quitting the UI ends the session, matching every other connector: the pty's process
+      // exiting is what retires the agent. Leave the mesh cleanly rather than lingering headless.
+      log(`codex TUI exited (${code}) — leaving the mesh`);
+      void shutdown();
+    });
+  }
+
   // Cooperative shutdown: the manager's authed {op:"shutdown"} on a signal-less runtime, plus
   // SIGINT/SIGTERM. Interrupt the live turn, leave the mesh cleanly, then exit. The interrupted
   // batch stays un-acked in the stream — but this is a RETIREMENT, not a restart: the manager
@@ -598,7 +640,7 @@ export async function runCodexHost(): Promise<void> {
     clearErrorRetry();
     try {
       controlServer?.close();
-      input.close(); // stop reading the terminal — nothing typed now could still reach a turn
+      stopTui(); // the UI goes with the session it was attached to
     } catch {
       /* ignore */
     }
@@ -627,20 +669,6 @@ export async function runCodexHost(): Promise<void> {
       { fatalBind: true, onShutdown: () => void shutdown() },
     );
   }
-  // Operator input on the host's own stdin. Codex has no TUI we can host: its interactive app
-  // drives an app-server thread of its own, and a thread we did not start cannot carry the
-  // cotal_* dynamic tools — so the terminal this host already prints its feed to is also where
-  // you talk to it. A foreground `cotal spawn` reads the keyboard; a detached agent reads the
-  // manager's pty, which is exactly what `cotal attach` streams and drives. EOF (a launcher
-  // handing us /dev/null) simply ends input; the mesh loop is untouched.
-  const input = createInterface({ input: process.stdin });
-  input.on("line", (line: string) => {
-    const text = line.trim();
-    if (!text) return;
-    typed.push(text);
-    void flushTyped();
-  });
-
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
@@ -652,34 +680,48 @@ export async function runCodexHost(): Promise<void> {
     throw new Error(`the codex connector needs \`${bin}\` on PATH — install the Codex CLI and authenticate it`);
 
   const threadId = await driver.start();
-  // Auth honesty: `thread/start` succeeds even UNAUTHENTICATED (Codex builds the session
-  // locally), so without this probe the peer would advertise online, soak deliveries, and only
-  // fail on its first model turn. A definitive "no credentials" is fatal NOW, before presence.
-  // A probe the running codex can't answer is logged, not fatal — codex stays the auth
-  // authority and its first turn surfaces the error instead.
+  // From here on the app-server is a LISTENING server, not a stdio child that dies with our
+  // pipes: nothing reaps it if this function throws. Any startup failure past this point must
+  // take it down explicitly, or a refused launch (the auth check just below is the common one)
+  // leaves an orphaned codex holding a port and this agent's isolated home.
   try {
-    const acct = await driver.readAccount();
-    if (acct.requiresOpenaiAuth !== false && !acct.account && !process.env.OPENAI_API_KEY)
-      throw new Error(
-        "codex reports no credentials (account/read: none) and OPENAI_API_KEY is not set — " +
-          "run `codex login` (file-backed store) or provide OPENAI_API_KEY; refusing to join the mesh unauthenticated",
-      );
-  } catch (e) {
-    if ((e as Error).message.includes("no credentials")) throw e;
-    log(`auth probe unavailable (${(e as Error).message}) — auth errors will surface on the first turn`);
-  }
-  // NOW connect the endpoint — thread is up and auth is validated, so the FIRST presence this
-  // peer ever publishes is a truthful "ready". A fatal auth failure above exits before this line,
-  // so the roster never sees a false-ready peer.
-  agent.setContextId(threadId);
-  agent.start(); // background connect with retry
-  if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
-  ready = true;
-  await safeStatus("idle");
-  log(`ready — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}`);
+    // Auth honesty: `thread/start` succeeds even UNAUTHENTICATED (Codex builds the session
+    // locally), so without this probe the peer would advertise online, soak deliveries, and only
+    // fail on its first model turn. A definitive "no credentials" is fatal NOW, before presence.
+    // A probe the running codex can't answer is logged, not fatal — codex stays the auth
+    // authority and its first turn surfaces the error instead.
+    try {
+      const acct = await driver.readAccount();
+      if (acct.requiresOpenaiAuth !== false && !acct.account && !process.env.OPENAI_API_KEY)
+        throw new Error(
+          "codex reports no credentials (account/read: none) and OPENAI_API_KEY is not set — " +
+            "run `codex login` (file-backed store) or provide OPENAI_API_KEY; refusing to join the mesh unauthenticated",
+        );
+    } catch (e) {
+      if ((e as Error).message.includes("no credentials")) throw e;
+      log(`auth probe unavailable (${(e as Error).message}) — auth errors will surface on the first turn`);
+    }
+    // NOW connect the endpoint — thread is up and auth is validated, so the FIRST presence this
+    // peer ever publishes is a truthful "ready". A fatal auth failure above exits before this
+    // line, so the roster never sees a false-ready peer.
+    agent.setContextId(threadId);
+    agent.start(); // background connect with retry
+    if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
+    ready = true;
+    await safeStatus("idle");
+    log(`ready — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}`);
+    // Hand the terminal to Codex. Everything above this line still reports to stderr, so a launch
+    // that fails (missing binary, no credentials, a broker refusal) says why on the terminal
+    // instead of into a log file nobody knows to read.
+    startTui();
 
-  // An auto-submitted first prompt (`cotal spawn --prompt`), then anything buffered during boot.
-  const prompt = process.env.COTAL_CODEX_PROMPT?.trim();
-  if (prompt) await drive(prompt);
-  else if (agent.pendingWake() > 0) void drive();
+    // An auto-submitted first prompt (`cotal spawn --prompt`), then anything buffered during boot.
+    const prompt = process.env.COTAL_CODEX_PROMPT?.trim();
+    if (prompt) await drive(prompt);
+    else if (agent.pendingWake() > 0) void drive();
+  } catch (e) {
+    stopTui();
+    await driver.stop().catch(() => {});
+    throw e;
+  }
 }

@@ -22,7 +22,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -122,6 +122,7 @@ async function dm(text: string): Promise<void> {
 }
 
 let host: ReturnType<typeof spawn> | undefined;
+let tuiHostRef: ReturnType<typeof spawn> | undefined;
 try {
   for (let i = 0; i < 50; i++) {
     if (await isReachable(servers)) break;
@@ -150,9 +151,9 @@ try {
       COTAL_VARIANT: "high",
       COTAL_CODEX_CONFIG: JSON.stringify({ sandbox_mode: '"read-only"' }),
     },
-    // stdin is a PIPE here: it stands in for the terminal a foreground spawn reads, and for the
-    // manager's pty that `cotal attach` drives. Checks (10a-c) type into it.
-    stdio: ["pipe", "ignore", "inherit"],
+    // No tty: this host runs HEADLESS (no TUI), which is the container / `deploy/` shape. The
+    // TUI-attached shape is covered by its own spawn below (COTAL_CODEX_TUI=1).
+    stdio: ["ignore", "ignore", "inherit"],
   });
 
   // (1) launch surface — argv overrides + thread/start payload.
@@ -300,38 +301,32 @@ try {
   const t9c = await waitFor("post-samechunk turn", () => turnStarts().find((t) => t.includes("after-samechunk")));
   check("same-chunk terminal does not wedge the loop (next DM drives)", t9c !== undefined);
 
-  // (10) operator input typed at the host's own terminal: a foreground spawn's keyboard, or the
-  // manager's pty that `cotal attach` streams and drives. It is the operator talking straight to
-  // this agent, so it rides the DIRECTED rail — a turn of its own when idle, a steer into the
-  // live turn when one is open, never a wait for the next boundary.
-  await sleep(300);
-  host.stdin!.write("typed-idle please\n");
-  const t10a = await waitFor("typed idle turn", () => turnStarts().find((t) => t.includes("typed-idle please")));
-  check("a line typed at the terminal starts a turn", t10a !== undefined);
-
-  await sleep(500);
-  const beforeBlank = turnStarts().length;
-  host.stdin!.write("   \n");
-  await sleep(600);
-  check("a blank typed line is not a turn", turnStarts().length === beforeBlank);
-
-  await dm("SLOW block again");
-  await waitFor("SLOW turn (typed)", () => turnStarts().find((t) => t.includes("SLOW block again")));
-  host.stdin!.write("typed-midturn\n");
-  const typedSteer = await waitFor("typed steer", () =>
-    logEntries().find(
-      (e) =>
-        e.ev === "recv" &&
-        e.method === "turn/steer" &&
-        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("typed-midturn")),
-    ),
-  );
-  check("a line typed mid-turn steers into the live turn", typedSteer !== undefined);
-  await sleep(1500); // let the SLOW turn complete — a mis-queued line would re-drive here
+  // (10) transport: the app-server runs as an AUTHENTICATED loopback websocket LISTENER, not a
+  // private stdio pipe. The listener is what makes the real Codex TUI attachable to this very
+  // thread; the capability token is what stops any OTHER local process from driving the agent
+  // through it (the listener has no auth of its own).
+  const argvText = argv.join(" ");
+  check("child argv: the app-server listens on a loopback websocket", argvText.includes("--listen ws://127.0.0.1:0"), argv);
   check(
-    "an accepted typed line is consumed, never re-driven as its own turn",
-    turnStarts().filter((t) => t.includes("typed-midturn")).length === 0,
-    turnStarts().filter((t) => t.includes("typed-midturn")),
+    "child argv: the listener demands a capability token",
+    argvText.includes("--ws-auth capability-token") && argvText.includes("--ws-token-file"),
+    argv,
+  );
+  check("the host connected with a valid token", logEntries().some((e) => e.ev === "connected"));
+  check(
+    "no unauthenticated connection was ever accepted",
+    !logEntries().some((e) => e.ev === "unauthorized"),
+    logEntries().filter((e) => e.ev === "unauthorized"),
+  );
+  const tokenPath = argv[argv.indexOf("--ws-token-file") + 1];
+  check(
+    "the token file is owner-only (0600)",
+    (statSync(tokenPath).mode & 0o777) === 0o600,
+    (statSync(tokenPath).mode & 0o777).toString(8),
+  );
+  check(
+    "the thread is primed, so the TUI can attach before the first mesh turn",
+    logEntries().some((e) => e.ev === "recv" && e.method === "thread/inject_items"),
   );
 
   // (8) unexpected app-server death mid-turn. The manager RETIRES a lifecycle on process exit
@@ -439,6 +434,7 @@ try {
 
   // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
   // join the mesh at startup — never advertise online and fail only at the first model turn.
+  const noauthLog = join(dir, "noauth.log.jsonl");
   const noauthEnv: NodeJS.ProcessEnv = { ...cleanEnv };
   delete noauthEnv.OPENAI_API_KEY;
   const noauth = spawn(TSX, [HOST_ENTRY], {
@@ -450,6 +446,7 @@ try {
       COTAL_SUBSCRIBE: "team",
       COTAL_CODEX_BIN: BIN,
       COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: noauthLog,
       FAKE_CODEX_NOAUTH: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -474,6 +471,99 @@ try {
     { noauthExit, err: noauthErr.slice(-200) },
   );
   check("unauthenticated codex NEVER advertised online (auth validated before presence)", !noauthEverOnline);
+  // A refused launch must not strand its app-server. Unlike the old stdio child, a LISTENING
+  // app-server is not tied to the host's lifetime — nothing closes when the host's pipes do — so
+  // a fatal that skipped the explicit teardown would orphan a codex holding a port and the
+  // agent's isolated home, once per failed launch.
+  const orphanPid = (
+    !existsSync(noauthLog)
+      ? []
+      : readFileSync(noauthLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as { ev: string; pid?: number })
+  ).find((e) => e.ev === "argv")?.pid;
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 50 && orphanPid && alive(orphanPid); i++) await sleep(100);
+  check(
+    "a refused launch takes its app-server down with it (no orphaned codex)",
+    orphanPid !== undefined && !alive(orphanPid),
+    { orphanPid },
+  );
+
+  // (12) the Codex TUI. `cotal spawn --agent codex` must land the operator in Codex proper,
+  // attached to the SAME thread the mesh drives — not a private session of its own, which would
+  // be mute on the mesh. Proven on the wire: the host launches `codex resume --remote <url>` with
+  // the thread id it started, and hands the capability token by ENV NAME rather than on argv
+  // (argv is world-readable in the process table). Then the operator closes the UI, and the agent
+  // must leave the mesh cleanly rather than linger headless with nobody watching.
+  const tuiLog = join(dir, "tui.log.jsonl");
+  let tuiOnline = false;
+  let tuiDeparted = false;
+  const onTuiPresence = (e: { type: string; presence: { card: { name: string } } }): void => {
+    if (e.presence.card.name !== "tuipeer") return;
+    if (e.type === "offline") tuiDeparted = true;
+    else tuiOnline = true;
+  };
+  operator.on("presence", onTuiPresence);
+  const tuiHost = (tuiHostRef = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "tuipeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: tuiLog,
+      COTAL_CODEX_TUI: "1", // force the TUI path: this smoke has no tty to detect
+      FAKE_CODEX_TUI_EXIT: "1", // ...and the "operator quit the UI" path
+    },
+    stdio: ["ignore", "ignore", "inherit"],
+  }));
+  const tuiEntries = (): LogEntry[] =>
+    !existsSync(tuiLog)
+      ? []
+      : readFileSync(tuiLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as LogEntry);
+  const tuiLaunch = await waitFor("codex TUI launch", () => tuiEntries().find((e) => e.ev === "tui"), 30_000);
+  const tuiArgv = (tuiLaunch.argv ?? []) as string[];
+  const startedThread = tuiEntries().find((e) => e.ev === "recv" && e.method === "thread/start");
+  check("the host launches the real Codex TUI (codex resume --remote)", tuiArgv[0] === "resume" && tuiArgv.includes("--remote"), tuiArgv);
+  check(
+    "the TUI is pointed at the app-server the host drives",
+    /^ws:\/\/127\.0\.0\.1:\d+$/.test(tuiArgv[tuiArgv.indexOf("--remote") + 1] ?? ""),
+    tuiArgv,
+  );
+  check(
+    "the TUI resumes the host's OWN thread (not a private one)",
+    startedThread !== undefined && tuiArgv[tuiArgv.length - 1] === "t_fake",
+    tuiArgv,
+  );
+  check(
+    "the capability token reaches the TUI by env name, never on argv",
+    typeof (tuiLaunch as { tokenFromEnv?: string | null }).tokenFromEnv === "string" &&
+      !tuiArgv.some((a) => a === (tuiLaunch as { tokenFromEnv?: string }).tokenFromEnv),
+    tuiArgv,
+  );
+  check("the TUI never sits on the interactive update gate", tuiArgv.includes("check_for_update_on_startup=false"), tuiArgv);
+  const tuiExit = await Promise.race([
+    new Promise<number | null>((r) => tuiHost.on("exit", (code) => r(code))),
+    sleep(20_000).then(() => "timeout" as const),
+  ]);
+  await sleep(500);
+  operator.off("presence", onTuiPresence);
+  check("closing the Codex TUI exits the host cleanly", tuiExit === 0, { tuiExit });
+  check("closing the Codex TUI leaves the mesh (departure published)", tuiOnline && tuiDeparted, { tuiOnline, tuiDeparted });
 
   // (11) cooperative shutdown must complete the CLEAN MESH LEAVE before the process exits.
   // shutdown() kills the child ITSELF, so the child's `closed` event fires while that promise is
@@ -577,6 +667,7 @@ try {
   console.log(`\nCODEX HOST SMOKE PASSED ✅  (${pass} checks)`);
 } finally {
   host?.kill("SIGTERM");
+  tuiHostRef?.kill("SIGTERM");
   // Case (11b) kills the broker on purpose, so bound the operator's own drain — teardown must
   // never be the thing that hangs the smoke.
   await Promise.race([operator.stop().catch(() => {}), sleep(3_000)]);

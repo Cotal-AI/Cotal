@@ -1,10 +1,20 @@
 /**
- * Codex app-server driver — a JSON-RPC 2.0 (JSONL over stdio) client that owns a
- * `codex app-server` child and drives one live thread: start a turn (wake), steer a
- * turn already in flight (true mid-turn injection), or interrupt one. The cotal_*
- * tools ride the SAME pipe as app-server **dynamicTools**: the server calls back
- * with `item/tool/call` and this driver dispatches into the host's handler — no MCP
- * sidecar process, no second mesh endpoint.
+ * Codex app-server driver — a JSON-RPC 2.0 client that owns a `codex app-server` child and
+ * drives one live thread: start a turn (wake), steer a turn already in flight (true mid-turn
+ * injection), or interrupt one. The cotal_* tools ride the SAME connection as app-server
+ * **dynamicTools**: the server calls back with `item/tool/call` and this driver dispatches into
+ * the host's handler — no MCP sidecar process, no second mesh endpoint.
+ *
+ * The child is run as a **shared server** (`--listen ws://…`), not a private stdio pipe, because
+ * that is what lets the operator attach the REAL Codex TUI to the very same thread the mesh
+ * drives (`codex resume --remote …`, see tui.ts). A stdio app-server has exactly one client and
+ * no way in. Multi-client is a designed app-server capability: `thread/resume` on a *running*
+ * thread rejoins it, and the server fans events out to every attached client while routing a
+ * dynamic-tool call back to the client that registered the tool — this host.
+ *
+ * The listener is loopback-only AND authenticated: `--ws-auth capability-token` with a 0600
+ * token file inside the agent's private CODEX_HOME. Without it any local process could connect
+ * and drive the agent (the listener has no auth by default), so the token is the boundary.
  *
  * Protocol: app-server **v2** (the API the Codex TUI itself runs on — feature
  * `tui_app_server` is permanently on), verified live against codex-cli 0.145.0.
@@ -15,6 +25,10 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import WebSocket from "ws";
 
 /** A dynamic (client-provided) tool, as `thread/start` accepts it. */
 export interface DynamicTool {
@@ -71,6 +85,22 @@ interface Pending {
  *  child is dead-but-breathing, so the driver kills it and the host exits for a clean respawn. */
 const REQUEST_TIMEOUT_MS = 60_000;
 const FATAL_CONSECUTIVE_TIMEOUTS = 3;
+/** How long to wait for the child to print its `listening on: ws://…` banner before giving up. */
+const LISTEN_TIMEOUT_MS = 30_000;
+
+/** Written into the thread at start so a rollout exists on disk for the TUI to resume. It lands
+ *  in model-visible history, so it reads as a plain statement of fact rather than an instruction. */
+const PRIMER = "[cotal] This session is a Cotal mesh peer.";
+
+/** Where (and with what credential) the real Codex TUI can attach to this agent's thread. */
+export interface RemoteEndpoint {
+  /** `ws://127.0.0.1:<port>` — loopback only; the child refuses to bind anything else. */
+  url: string;
+  /** The capability token the listener requires (also on disk, 0600, inside CODEX_HOME). */
+  token: string;
+  /** Absolute path of that token file. */
+  tokenFile: string;
+}
 
 /** One decoded line off the app-server: a response, a notification, or a server→client request. */
 interface RpcMessage {
@@ -109,13 +139,23 @@ export interface DriverOpts {
  */
 export class AppServerDriver extends EventEmitter {
   private child?: ChildProcess;
+  private ws?: WebSocket;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
-  private buf = "";
   private threadId?: string;
   private activeTurnId?: string;
+  private endpoint?: RemoteEndpoint;
   private readonly opts: DriverOpts;
   private readonly log: (m: string) => void;
+
+  /** Where the TUI attaches. Defined once {@link start} has resolved. */
+  get remote(): RemoteEndpoint | undefined {
+    return this.endpoint;
+  }
+
+  get thread(): string | undefined {
+    return this.threadId;
+  }
 
   constructor(opts: DriverOpts) {
     super();
@@ -138,12 +178,25 @@ export class AppServerDriver extends EventEmitter {
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
-    // Drop any partial line the previous child left mid-write, or it would prefix-corrupt the
-    // new child's first protocol line. The generation bump fences anything still in flight for
-    // the dead incarnation (see onServerRequest) from being written into the new one.
-    this.buf = "";
+    // The generation bump fences anything still in flight for the dead incarnation (see
+    // onServerRequest) from being written into the new one.
     this.gen++;
-    const args = ["app-server"];
+    // A fresh capability token per incarnation: a restarted app-server invalidates the old one,
+    // so a stale TUI (or anything that scraped the previous token) cannot drive the new child.
+    const token = randomBytes(32).toString("hex");
+    const tokenFile = join(this.opts.codexHome, "remote-token");
+    writeFileSync(tokenFile, token, { mode: 0o600 });
+    // Port 0 = let the OS pick; the child prints the one it got. Fixed ports would collide
+    // between concurrent agents on one workstation.
+    const args = [
+      "app-server",
+      "--listen",
+      "ws://127.0.0.1:0",
+      "--ws-auth",
+      "capability-token",
+      "--ws-token-file",
+      tokenFile,
+    ];
     for (const [k, v] of this.opts.configOverrides) args.push("-c", `${k}=${v}`);
     // The child inherits the host's (already allow-listed) env, minus COTAL_* — the codex
     // process and anything it spawns have no business reading the mesh identity — plus the
@@ -157,10 +210,29 @@ export class AppServerDriver extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
+    // In listen mode neither pipe is the protocol channel (the websocket is): they carry the
+    // startup banner naming the port the OS assigned, then ordinary diagnostics. codex-cli 0.145
+    // prints that banner on STDERR, so both streams are scanned rather than assuming one — the
+    // port is the one thing we cannot proceed without.
+    let banner = "";
+    let sawBanner = false;
+    const onBanner: ((url: string) => void)[] = [];
+    const scan = (d: string): void => {
+      if (!sawBanner) {
+        banner += d;
+        const m = /listening on:\s*(ws:\/\/\S+)/.exec(banner);
+        if (m) {
+          sawBanner = true;
+          for (const f of onBanner) f(m[1]);
+          return;
+        }
+      }
+      this.log(`app-server: ${d.trimEnd()}`);
+    };
     child.stdout!.setEncoding("utf8");
-    child.stdout!.on("data", (d: string) => this.onData(d));
+    child.stdout!.on("data", scan);
     child.stderr!.setEncoding("utf8");
-    child.stderr!.on("data", (d: string) => this.log(`app-server: ${d.trimEnd()}`));
+    child.stderr!.on("data", scan);
     // ONE-SHOT finalizer for every way the child can die. A spawn failure (ENOENT/EACCES)
     // emits `error` + `close` but never `exit` — an exit-only handler would leave `initialize`
     // pending forever while the mesh endpoint sits connected with no Codex behind it.
@@ -174,6 +246,12 @@ export class AppServerDriver extends EventEmitter {
       }
       this.pending.clear();
       this.activeTurnId = undefined;
+      try {
+        this.ws?.close();
+      } catch {
+        /* the child is already gone */
+      }
+      this.ws = undefined;
       this.emit("closed", code);
     };
     child.on("exit", (code, signal) => finalize(code ?? (signal ? 1 : 0)));
@@ -182,6 +260,28 @@ export class AppServerDriver extends EventEmitter {
       this.log(`app-server spawn/pipe error: ${e.message}`);
       finalize(1);
     });
+
+    // Wait for the port, then dial it. A child that dies during startup rejects here rather than
+    // hanging: `closed` has already fired by then, so the host's restart rail owns the outcome.
+    const url = await new Promise<string>((res, rej) => {
+      if (sawBanner) return; // impossible before the listener is wired, but keep the branch honest
+      const timer = setTimeout(
+        () => rej(new Error(`codex app-server did not report a listen address within ${LISTEN_TIMEOUT_MS}ms`)),
+        LISTEN_TIMEOUT_MS,
+      );
+      timer.unref?.();
+      onBanner.push((u) => {
+        clearTimeout(timer);
+        res(u);
+      });
+      child.once("close", () => {
+        clearTimeout(timer);
+        rej(new Error("codex app-server exited before it started listening"));
+      });
+    });
+    this.endpoint = { url, token, tokenFile };
+    await this.connect(url, token);
+    this.log(`app-server listening on ${url}`);
 
     const init = (await this.request("initialize", {
       clientInfo: { name: "cotal", title: "Cotal", version: "0.0.0" },
@@ -200,8 +300,46 @@ export class AppServerDriver extends EventEmitter {
     if (!id) throw new Error("thread/start returned no thread id");
     this.threadId = id;
     this.startedModel = started.model;
+    // Materialize the thread's rollout file. `thread/start` alone writes NOTHING to disk, and
+    // `thread/resume` (how the TUI attaches) fails with "no rollout found" until something does
+    // — so without this the TUI could not attach until after the agent's first mesh turn.
+    // `thread/inject_items` appends to model-visible history without spending a model call.
+    try {
+      await this.request("thread/inject_items", {
+        threadId: id,
+        items: [{ type: "message", role: "user", content: [{ type: "input_text", text: PRIMER }] }],
+      });
+    } catch (e) {
+      // Non-fatal: the mesh loop works regardless; only TUI attach before the first turn suffers.
+      this.log(`thread priming failed (TUI attach may need one turn first): ${(e as Error).message}`);
+    }
     this.log(`thread ${id} (model ${started.model ?? "?"})`);
     return id;
+  }
+
+  /** Dial the child's websocket, presenting the capability token. Rejects (rather than hanging)
+   *  on a refused or unauthorized handshake. */
+  private connect(url: string, token: string): Promise<void> {
+    return new Promise<void>((res, rej) => {
+      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+      this.ws = ws;
+      const fail = (e: Error): void => {
+        if (this.ws === ws) this.ws = undefined;
+        rej(e);
+      };
+      ws.once("open", () => res());
+      ws.once("error", (e: Error) => fail(new Error(`app-server websocket: ${e.message}`)));
+      ws.on("message", (data: Buffer | string) => this.onData(String(data)));
+      ws.on("close", () => {
+        // The child's own exit is the authority for `closed` (it fires the finalizer). A socket
+        // that drops while the child lives is still fatal to this driver: every request would
+        // hang. Kill the child so the host's restart rail runs exactly one recovery path.
+        if (this.ws === ws && this.child && !this.child.killed) {
+          this.log("app-server websocket closed unexpectedly — killing the child to force a clean restart");
+          this.child.kill("SIGKILL");
+        }
+      });
+    });
   }
 
   /** The model the thread actually started with (config default or `-c model` override). */
@@ -264,10 +402,11 @@ export class AppServerDriver extends EventEmitter {
 
   async stop(): Promise<void> {
     try {
-      this.child?.stdin?.end();
+      this.ws?.close();
     } catch {
       /* ignore */
     }
+    this.ws = undefined;
     this.child?.kill("SIGTERM");
   }
 
@@ -300,22 +439,23 @@ export class AppServerDriver extends EventEmitter {
   }
 
   private writeLine(obj: unknown): boolean {
-    const stdin = this.child?.stdin;
-    if (!stdin || !stdin.writable) return false;
-    stdin.write(JSON.stringify(obj) + "\n");
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(obj));
     return true;
   }
 
+  /** One websocket frame. Unlike a byte stream a frame is already a COMPLETE unit — there is no
+   *  partial message to carry across reads, and waiting for a trailing newline that framing does
+   *  not require would stall the protocol forever. A frame may still pack several newline-
+   *  delimited messages, so split, and process them in wire order. */
   private onData(chunk: string): void {
-    this.buf += chunk;
-    let nl: number;
-    while ((nl = this.buf.indexOf("\n")) >= 0) {
-      const line = this.buf.slice(0, nl).trim();
-      this.buf = this.buf.slice(nl + 1);
-      if (!line) continue;
+    for (const line of chunk.split("\n")) {
+      const text = line.trim();
+      if (!text) continue;
       let msg: RpcMessage;
       try {
-        msg = JSON.parse(line) as RpcMessage;
+        msg = JSON.parse(text) as RpcMessage;
       } catch {
         continue; // not a protocol line — ignore
       }
