@@ -145,9 +145,10 @@ function prepareCodexHome(space: string, name: string): string {
   // ~/.codex. auth.json is SYMLINKED (not copied): ChatGPT-plan auth rotates its refresh token,
   // so a copy would fork the token chain and break whichever side refreshes second. Re-linked
   // fresh on every launch — if a codex write replaced the link with a regular file mid-session,
-  // the next launch heals it. Absent auth.json is NOT a launch error: keyring-stored auth still
-  // resolves, and a truly unauthenticated codex fails loud itself at thread/start (the auth
-  // authority stays codex — we don't pre-judge it).
+  // the next launch heals it. Absent auth.json is not fatal HERE: OPENAI_API_KEY is still a valid
+  // way in, and codex stays the auth authority — the account probe after thread/start is what
+  // refuses an unauthenticated launch. (A keyring-stored credential does NOT survive into the
+  // isolated home; managed agents need the file store or the env key. See docs/connect-codex.md.)
   const operatorHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
   const operatorAuth = join(operatorHome, "auth.json");
   // ALWAYS clear the managed auth entry first: a codex rename-over can have turned the link
@@ -196,11 +197,17 @@ function configOverrides(model: string | undefined, variant: string | undefined)
   // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
   // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
   // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.
-  const stolen = overrides.find(([k]) => k === `mcp_servers.${MCP_SERVER_NAME}` || k.startsWith(`mcp_servers.${MCP_SERVER_NAME}.`));
+  // The whole `mcp_servers` namespace, not just our dotted keys. A launch option cannot even
+  // express a dotted key (the key grammar refuses `.`), so the reachable shape is a TOP-LEVEL
+  // `mcp_servers` inline table — which would merge against ours and leave last-`-c`-wins to sort
+  // out a half-applied result. Refuse the whole namespace instead, matching the loud refusal
+  // tool-sharing already gets.
+  const stolen = overrides.find(([k]) => k === "mcp_servers" || k.startsWith("mcp_servers."));
   if (stolen)
     throw new Error(
-      `codex connector: ${stolen[0]} is reserved — mcp_servers.${MCP_SERVER_NAME}.* is how this agent reaches the mesh ` +
-        `and cannot be overridden. Use a different MCP server name for your own tools.`,
+      `codex connector: ${stolen[0]} is reserved — mcp_servers is how this agent reaches the mesh and ` +
+        `cannot be set through launch options. Tool-sharing (connectors.codex.mcpServers) is the ` +
+        `supported way to add servers, and is not implemented yet.`,
     );
   return overrides;
 }

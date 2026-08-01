@@ -22,8 +22,9 @@
  * Run: pnpm smoke:codex-host
  */
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -333,8 +334,9 @@ try {
 
   // (10) transport: the app-server runs as an AUTHENTICATED loopback websocket LISTENER, not a
   // private stdio pipe. The listener is what makes the real Codex TUI attachable to this very
-  // thread; the capability token is what stops any OTHER local process from driving the agent
-  // through it (the listener has no auth of its own).
+  // thread; the capability token is what keeps other OS users and off-box callers from driving
+  // the agent through it (the listener has no auth of its own). It is NOT a boundary against a
+  // same-uid sibling — see docs/connect-codex.md#limits.
   const argvText = argv.join(" ");
   check("child argv: the app-server listens on a loopback websocket", argvText.includes("--listen ws://127.0.0.1:0"), argv);
   check(
@@ -471,6 +473,55 @@ try {
   });
   check("the refusal names the missing tool server", /MCP server/i.test(mcpFailErr), mcpFailErr.slice(-300));
   check("a tool-less codex NEVER advertised online", !sawMcpFailPeer);
+
+  // (10c) the app-server capability token is written FAIL-CLOSED. The agent's home sits under
+  // agent-writable workspace, so a sibling (or this agent's own command) can pre-plant
+  // `remote-token` as a symlink; a plain write follows it, clobbering the target AND depositing
+  // the live bearer wherever the planter chose. prepareCodexHome already refuses a symlink at
+  // every managed DIRECTORY component — the credential file needs the same treatment.
+  const symName = "symlinkpeer";
+  const symSlug = `${space}-${symName}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  const symKey = createHash("sha256").update(`${space}\u0000${symName}`).digest("hex").slice(0, 12);
+  const symHome = join(dir, ".cotal", "codex", `${symSlug}-${symKey}`);
+  const symVictim = join(dir, "operator-secret.txt");
+  writeFileSync(symVictim, "OPERATOR SECRET");
+  mkdirSync(symHome, { recursive: true });
+  symlinkSync(symVictim, join(symHome, "remote-token"));
+  const symPeer = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: symName,
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: join(dir, "sym.log.jsonl"),
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let symErr = "";
+  symPeer.stderr!.setEncoding("utf8");
+  symPeer.stderr!.on("data", (d: string) => (symErr += d));
+  // The launch HEALS rather than dying: the plant is unlinked (unlink does not follow) and the
+  // token recreated with O_EXCL|O_NOFOLLOW, so a hostile plant cannot deny service either.
+  await waitFor("symlink peer launched", () => (/ready — space/.test(symErr) ? true : undefined), 60_000);
+  check(
+    "the planted symlink target is never written through",
+    readFileSync(symVictim, "utf8") === "OPERATOR SECRET",
+    readFileSync(symVictim, "utf8").slice(0, 80),
+  );
+  check(
+    "the token is a regular file, not the attacker's symlink",
+    !lstatSync(join(symHome, "remote-token")).isSymbolicLink(),
+  );
+  check(
+    "the healed token file is still owner-only (0600)",
+    (statSync(join(symHome, "remote-token")).mode & 0o777) === 0o600,
+    (statSync(join(symHome, "remote-token")).mode & 0o777).toString(8),
+  );
+  symPeer.kill("SIGTERM");
+  await Promise.race([once(symPeer, "exit"), sleep(8_000)]);
 
   // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
   // join the mesh at startup — never advertise online and fail only at the first model turn.

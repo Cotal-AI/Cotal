@@ -159,6 +159,11 @@ try {
     /resum/i,
   );
   throws(
+    "the whole mcp_servers namespace is reserved (top-level table, the reachable shape)",
+    () => codexConnector.buildLaunch({ space: "s", name: "n", launchOptions: { mcp_servers: '{ evil = { url = "http://x" } }' } }),
+    /reserved/i,
+  );
+  throws(
     "tool-sharing is refused",
     () => codexConnector.buildLaunch({ space: "s", name: "n", mcpServers: { srv: { command: "x" } } }),
     /tool-sharing/,

@@ -15,7 +15,8 @@
  * IN THIS PROCESS: one mesh endpoint, one credential, one presence. A stdio MCP server would
  * be a second process that then needs its own channel back here to reach the MeshAgent.
  *
- * The endpoint is loopback-bound and bearer-authenticated with a per-incarnation token, handed
+ * The endpoint is loopback-bound and bearer-authenticated with a token minted once per HOST
+ * (the endpoint deliberately outlives app-server restarts, so this token does too), handed
  * to the codex child by env var name (`bearer_token_env_var`) so it is never an argv string.
  * Loopback alone is not a boundary on a shared workstation — any local user could otherwise
  * speak as this agent on the mesh — so the token is what guards it, not the bind address.
@@ -41,6 +42,9 @@ const MCP_PATH = "/mcp";
 /** Concurrent MCP sessions to keep. One live app-server needs exactly one; the cap only bounds
  *  the leak from app-server restarts, which drop their session without a DELETE. */
 const MAX_SESSIONS = 8;
+/** Cap on one JSON-RPC request body. Tool arguments are small; anything near this is a bug or an
+ *  attempt to grow the host's memory with a stolen bearer. */
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 export interface CotalMcpEndpoint {
   /** `http://127.0.0.1:<port>/mcp` — what `mcp_servers.cotal.url` points at. */
@@ -72,7 +76,8 @@ function fromLoopback(req: IncomingMessage, port: number): boolean {
 
 /**
  * Build and serve the cotal_* tools. The returned URL/token go into the codex child's config
- * and env; nothing else on the machine can use them.
+ * and env. That token is what keeps other OS users and off-box callers out; it is not a barrier
+ * to a same-uid sibling that can read the child's environment (see the header).
  */
 export async function startCotalMcp(
   agent: MeshAgent,
@@ -154,7 +159,19 @@ export async function startCotalMcp(
       let body: unknown;
       if (req.method === "POST") {
         const chunks: Buffer[] = [];
-        for await (const c of req) chunks.push(c as Buffer);
+        let size = 0;
+        for await (const c of req) {
+          const chunk = c as Buffer;
+          // Bounded even though the caller is already authenticated: a wedged or hostile client
+          // holding the bearer should not be able to grow this process without limit.
+          size += chunk.length;
+          if (size > MAX_BODY_BYTES) {
+            res.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ error: "payload too large" }));
+            req.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        }
         const raw = Buffer.concat(chunks).toString("utf8");
         try {
           body = raw ? JSON.parse(raw) : undefined;

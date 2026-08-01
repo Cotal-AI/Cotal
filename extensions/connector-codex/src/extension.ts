@@ -1,11 +1,12 @@
 /**
  * The Codex connector: launches a host-mode peer that embeds the Cotal endpoint and drives a
- * headless `codex app-server` thread over JSON-RPC (see host.ts). A mesh message becomes a real
+ * `codex app-server` thread over JSON-RPC (see host.ts). A mesh message becomes a real
  * Codex turn — wake an idle thread (`turn/start`) or steer a directed message into one already
- * running (`turn/steer`) — and the cotal_* tools ride the same pipe as app-server dynamic tools,
- * so the session is a full lateral peer at parity with the other connectors. Presence is read
- * off the app-server event stream; the host renders a live activity feed to its pty for
- * `cotal attach`. Self-registers on import; the manager resolves it by agent type "codex".
+ * running (`turn/steer`) — and the cotal_* tools are served by the host over a loopback MCP
+ * endpoint, so the session is a full lateral peer at parity with the other connectors. Presence
+ * is read off the app-server event stream; with a terminal the host attaches the real Codex TUI,
+ * and without one it prints an activity feed. Self-registers on import; the manager resolves it
+ * by agent type "codex".
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -188,6 +189,16 @@ export const codexConnector: Connector = {
           `codex connector: launch option "${k}" must be a string, number, or boolean TOML value (got ${
             v === null ? "null" : Array.isArray(v) ? "array" : typeof v
           })`,
+        );
+      // `mcp_servers` is where this agent's own mesh voice is wired up. The host refuses it too,
+      // but refusing HERE is what the operator actually sees: at spawn, instead of an agent that
+      // launches and dies. (Dotted keys can't reach this loop — the key grammar rejects `.` — so
+      // a top-level inline table is the shape that would otherwise merge against ours.)
+      if (k === "mcp_servers" || k.startsWith("mcp_servers."))
+        throw new Error(
+          `codex connector: launch option "${k}" is reserved — mcp_servers is how this agent reaches ` +
+            `the mesh and cannot be set through launch options. Tool-sharing ` +
+            `(connectors.codex.mcpServers) is the supported way to add servers, and is not implemented yet.`,
         );
       overrides[k] = v;
       hasOverrides = true;

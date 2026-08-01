@@ -36,7 +36,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
@@ -94,6 +94,36 @@ export interface RemoteEndpoint {
   tokenFile: string;
 }
 
+/**
+ * Write the capability token fail-closed.
+ *
+ * A plain write FOLLOWS a symlink. The agent's home sits under agent-writable workspace, so a
+ * sibling (or this agent's own workspace-write command) can pre-plant `remote-token` as a link to
+ * any path the operator can write: the next launch would then clobber that file AND deposit the
+ * live bearer exactly where the planter chose. `prepareCodexHome` already refuses a symlink at
+ * every managed DIRECTORY component for this same reason; the credential file needs the same
+ * treatment.
+ *
+ * Unlink first (unlink does not follow), then create with O_EXCL|O_NOFOLLOW so a re-plant racing
+ * that window fails the open instead of being followed. Any failure throws — a launch that cannot
+ * privately hold its own credential must not start.
+ */
+function writeTokenFile(path: string, token: string): void {
+  rmSync(path, { force: true });
+  const flags = fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW;
+  let fd: number;
+  try {
+    fd = openSync(path, flags, 0o600);
+  } catch (e) {
+    throw new Error(`refusing to write the app-server token at ${path}: ${(e as Error).message}`);
+  }
+  try {
+    writeSync(fd, token);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** One decoded line off the app-server: a response, a notification, or a server→client request. */
 interface RpcMessage {
   id?: number | string;
@@ -113,7 +143,9 @@ export interface DriverOpts {
   /** Persona → `thread/start.developerInstructions`. */
   developerInstructions?: string;
   /** Extra env for the child, applied AFTER the COTAL_* scrub. The MCP bearer token rides here:
-   *  the child genuinely needs that one capability, while everything else COTAL_* stays hidden. */
+   *  the child genuinely needs that one capability, while everything else COTAL_* stays hidden.
+   *  (That token is host-lifetime — the endpoint outlives app-server restarts — unlike the
+   *  websocket capability token, which is minted fresh per incarnation.) */
   extraEnv?: Record<string, string>;
   /** Binary override (tests point this at a fake server). */
   bin?: string;
@@ -198,7 +230,7 @@ export class AppServerDriver extends EventEmitter {
     // so a stale TUI (or anything that scraped the previous token) cannot drive the new child.
     const token = randomBytes(32).toString("hex");
     const tokenFile = join(this.opts.codexHome, "remote-token");
-    writeFileSync(tokenFile, token, { mode: 0o600 });
+    writeTokenFile(tokenFile, token);
     // Port 0 = let the OS pick; the child prints the one it got. Fixed ports would collide
     // between concurrent agents on one workstation.
     const args = [
@@ -465,6 +497,8 @@ export class AppServerDriver extends EventEmitter {
     }
     this.ws = undefined;
     this.child?.kill("SIGTERM");
+    // The listener is going away, so the token on disk is only a scrape target now.
+    if (this.endpoint) rmSync(this.endpoint.tokenFile, { force: true });
   }
 
   // ---- JSON-RPC plumbing ---------------------------------------------------

@@ -54,8 +54,8 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   (DM, anycast, @mention) arriving mid-turn is injected into the live turn (`turn/steer`);
   ambient channel chatter waits for the turn boundary so it can't derail work in flight.
 - **Native tools, one endpoint.** The host serves the shared `cotal_*` tools itself, on a
-  loopback MCP endpoint that only the agent's own `codex` can reach (bearer token, passed by env
-  name so it never appears in the process table). The model calls them like any tool and they
+  bearer-authenticated loopback MCP endpoint (the token is passed by env name, so it never appears
+  in the process table — see [Limits](#limits) for what that token does and does not protect). The model calls them like any tool and they
   execute against the host's single mesh endpoint — no sidecar process, no second identity. The
   app-server is the MCP client, so the tools work the same on a turn a peer message started and
   on one **you** typed into the TUI.
