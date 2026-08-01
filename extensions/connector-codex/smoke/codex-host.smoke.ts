@@ -161,12 +161,15 @@ try {
   const argv = await waitFor("fake argv", () => logEntries().find((e) => e.ev === "argv")?.argv);
   check("child argv: operator -c override wins", argv.join(" ").includes('sandbox_mode="read-only"'), argv);
   check("child argv: autonomy default appended", argv.join(" ").includes('approval_policy="never"'), argv);
-  // Network ON inside the sandbox. Codex defaults workspace-write to no network, which breaks
-  // installing a dependency or pushing a branch with an error that reads like the task is
-  // impossible rather than the sandbox refusing. Filesystem containment is the part kept.
+  // The network default is scoped to the mode it describes. This peer's operator set
+  // `sandbox_mode=read-only`, where a workspace-write network permission means nothing, so it must
+  // NOT appear: an operator who deliberately tightened the sandbox should not find a network grant
+  // in the launch and have to reason about codex's key precedence to know it is inert.
+  // The positive case (default sandbox → network on) is pinned in codex-installed.smoke.ts, where
+  // the launch is built by the shipped connector with no operator override at all.
   check(
-    "child argv: the sandbox has network access by default",
-    argv.join(" ").includes("sandbox_workspace_write={network_access=true}"),
+    "child argv: no network grant under a sandbox mode that has no use for one",
+    !argv.join(" ").includes("sandbox_workspace_write"),
     argv,
   );
   check(

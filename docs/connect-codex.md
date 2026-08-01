@@ -140,7 +140,7 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 | --- | --- |
 | `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An interactive policy is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
 | `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is what actually bounds the agent. |
-| `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. |
+| `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. Applied only when the sandbox is actually `workspace-write`: tighten the mode and no network grant is emitted at all. |
 
 Why keep filesystem containment when the network is open anyway: a peer's message is a **remote
 input** that can cause this agent to run commands, and containing writes means a confused or
@@ -149,10 +149,11 @@ hostile peer cannot *change* anything outside the workspace.
 Be clear about what that does **not** cover. Reads are not contained, and with the network on,
 whatever the agent can read it can also send somewhere. A peer that can talk to this agent can
 therefore, in principle, get it to read a file elsewhere on your machine and exfiltrate it — the
-sandbox stops the damage you cannot undo, not disclosure. If that matters for a given agent, turn
-the network back off (below) or run it under a separate OS user. The spawn capability is the trust
-boundary for *who* may create an agent; the sandbox is the boundary for what that agent can then
-be talked into doing.
+sandbox stops the damage you cannot undo, not disclosure. It also does not stop the agent reaching
+loopback or link-local services on the machine it runs on. If that matters for a given agent, turn
+the network back off (below) or run it under a separate OS user; the same point is repeated under
+[Limits](#limits) so it survives a skim. The spawn capability is the trust boundary for *who* may
+create an agent; the sandbox is the boundary for what that agent can then be talked into doing.
 
 Tune it per spawn:
 
@@ -169,6 +170,13 @@ tightening the workspace over removing the sandbox.
 
 ## Limits
 
+- **The sandbox contains writes, not reads.** With the default `workspace-write` + network on, a
+  peer-driven turn can read anything your user account can (`~/.ssh`, `~/.aws`, `.env` files, the
+  agent's own `auth.json`) and send it over the network, and can reach loopback and link-local
+  services. What it cannot do is modify anything outside the workspace. If disclosure is the risk
+  you care about for a given agent, spawn it with `--opt 'sandbox_workspace_write={network_access=false}'`
+  or `--opt sandbox_mode=read-only`, or run it as a separate OS user. See
+  [Autonomy and the sandbox](#autonomy-and-the-sandbox).
 - **Not a boundary between agents on one machine.** The app-server listener and the tool
   endpoint are both loopback-bound and token-authenticated, which keeps out other OS users and
   anything off-box. It is not isolation between *managed agents*, which run as the same user and

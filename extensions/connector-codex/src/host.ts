@@ -209,14 +209,22 @@ function configOverrides(model: string | undefined, variant: string | undefined)
   if (!approval) overrides.push(["approval_policy", '"never"']);
   // `never` means never ASK, not never allow: the agent runs its commands, and what bounds it is
   // the sandbox below, not a prompt nobody would be there to answer.
-  if (!has("sandbox_mode")) overrides.push(["sandbox_mode", '"workspace-write"']);
+  const sandbox = overrides.find(([k]) => k === "sandbox_mode");
+  const sandboxMode = sandbox ? sandbox[1].replace(/"/g, "") : "workspace-write";
+  if (!sandbox) overrides.push(["sandbox_mode", '"workspace-write"']);
   // ...and inside that sandbox, network ON. Codex defaults workspace-write to no network, which
   // silently breaks most real work an agent is asked to do (installing a dependency, pushing a
   // branch, calling an API) with a failure that reads as the task being impossible rather than
   // the sandbox saying no. Filesystem containment is the part worth keeping — a peer's message is
   // a REMOTE input that can make this agent run commands, so it should not be able to write
-  // outside its workspace. Inert unless sandbox_mode is workspace-write.
-  if (!has("sandbox_workspace_write")) overrides.push(["sandbox_workspace_write", "{network_access=true}"]);
+  // outside its workspace.
+  //
+  // Scoped to the mode it actually describes rather than emitted always and assumed inert: under
+  // `read-only` or `danger-full-access` this key has nothing to say, and shipping it anyway would
+  // put a network permission in the argv of a launch the operator deliberately tightened — a claim
+  // about codex's precedence we would be making without proving it.
+  if (sandboxMode === "workspace-write" && !has("sandbox_workspace_write"))
+    overrides.push(["sandbox_workspace_write", "{network_access=true}"]);
   // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
   // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
   // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.

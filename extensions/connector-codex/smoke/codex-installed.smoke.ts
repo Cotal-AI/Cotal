@@ -27,7 +27,7 @@ import { strict as assert } from "node:assert";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -138,8 +138,43 @@ const cliEnv: NodeJS.ProcessEnv = {
   COTAL_CODEX_TUI: "0", // headless: deterministic text, and no TUI to own this process's stdout
 };
 
+/** Is anything listening on `port`? The check that the broker really died, rather than trusting an
+ *  exit code from a command that may have refused the request. */
+const portOpen = (port: number): Promise<boolean> =>
+  new Promise((res) => {
+    const s = createConnection({ host: "127.0.0.1", port }, () => {
+      s.destroy();
+      res(true);
+    });
+    s.on("error", () => res(false));
+    s.setTimeout(400, () => {
+      s.destroy();
+      res(false);
+    });
+  });
+
 let cli: ChildProcess | undefined;
 let meshUp = false;
+
+const stopCli = async (): Promise<void> => {
+  if (!cli?.pid || cli.exitCode !== null) return;
+  cli.kill("SIGTERM");
+  await sleep(400);
+  if (cli.exitCode === null) cli.kill("SIGKILL");
+};
+
+/** Bare `cotal down` from the project root — the whole-stack form, which is what `up` created here.
+ *  Runs at most once; later calls report the first result so the finally-block net is a no-op after
+ *  a successful teardown. */
+let tornDown: { status: number; stdout: string; stderr: string } | undefined;
+async function teardown(): Promise<{ status: number; stdout: string; stderr: string }> {
+  if (tornDown) return tornDown;
+  if (!meshUp) return (tornDown = { status: 0, stdout: "", stderr: "" });
+  const r = spawnSync("node", [CLI, "down"], { cwd: ROOT, env: cliEnv, encoding: "utf8" });
+  tornDown = { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  for (let i = 0; i < 40 && (await portOpen(PORT)); i++) await sleep(250);
+  return tornDown;
+}
 const operator = new CotalEndpoint({
   space,
   servers,
@@ -237,6 +272,16 @@ try {
   const t2 = await waitFor("a second turn", () => turnStarts().find((t) => t.includes("installed-path-two")));
   check("the first batch was acked on completion, not redelivered", !t2.includes("installed-path-one"), t2);
 
+  // (4) It cleans up after itself. This runs in the gate, so a teardown that quietly fails leaks a
+  // broker and a manager per run, on every developer machine and every CI job — which is exactly
+  // what the first version of this smoke did, by calling `down --space <name>`: that form is only
+  // for target-addressed components and throws for a whole-stack stop, and the error was discarded.
+  await operator.stop().catch(() => {});
+  await stopCli();
+  const torn = await teardown();
+  check("`cotal down` reports success", torn.status === 0, `${torn.stdout}\n${torn.stderr}`);
+  check("the broker this smoke started is really gone (nothing leaked into the gate)", !(await portOpen(PORT)));
+
   console.log(`\nCODEX INSTALLED-PATH SMOKE PASSED ✅  (${pass} checks)`);
 } catch (e) {
   console.error(`\n✗ codex installed-path smoke failed: ${(e as Error).message}`);
@@ -244,14 +289,9 @@ try {
   process.exitCode = 1;
 } finally {
   await operator.stop().catch(() => {});
-  if (cli?.pid && cli.exitCode === null) {
-    cli.kill("SIGTERM");
-    await sleep(400);
-    if (cli.exitCode === null) cli.kill("SIGKILL");
-  }
-  // `cotal down` owns the broker + manager this smoke started. Never pkill: a co-running broker
-  // on the operator's own :4222 must survive this.
-  if (meshUp) spawnSync("node", [CLI, "down", "--space", space], { cwd: ROOT, env: cliEnv, encoding: "utf8" });
-  await sleep(300);
+  await stopCli();
+  // Idempotent: a no-op when the success path already tore down, and the safety net when the run
+  // threw before reaching it. Never pkill — the operator's own broker on :4222 must survive.
+  await teardown();
   rmSync(dir, { recursive: true, force: true });
 }
