@@ -1,0 +1,414 @@
+/**
+ * Codex host-mode peer: embeds a Cotal {@link MeshAgent} in the same process as an
+ * {@link AppServerDriver}, so a Codex session is a full lateral mesh peer. One process,
+ * one endpoint, one thread:
+ *
+ *  • inbound mesh messages become real Codex turns — a batch wakes an idle thread
+ *    (`turn/start`); a DIRECTED message (DM / anycast / @mention) arriving mid-turn is
+ *    steered INTO the live turn (`turn/steer`, race-safe via expectedTurnId) — ambient
+ *    chatter waits for the turn boundary so it can't derail the work in flight;
+ *  • the cotal_* tools are served over the same app-server pipe (dynamicTools →
+ *    item/tool/call → tools.ts), so the model replies itself via cotal_send / cotal_dm;
+ *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxIds-acked
+ *    only when the turn reaches `completed` (or `failed` — drop, don't retry-loop, matching
+ *    the OpenCode connector); an `interrupted` turn or a crash leaves them un-acked so the
+ *    stream redelivers. Attention modes hold: ambient drives only in `open`; dnd/focus hold
+ *    it; a focus @mention wakes a pull turn; quiet stays pull-only.
+ *  • presence falls out of the app-server event stream (turn → working, approval → waiting,
+ *    item detail → activity), never self-guessed;
+ *  • the per-agent CODEX_HOME (under `<workspaceRoot>/.cotal/codex/<name>`) isolates the
+ *    child from the operator's config.toml / hooks.json / MCP servers, with the operator's
+ *    auth.json symlinked in (re-linked every launch, so a rename-over by a token refresh
+ *    can't permanently fork auth state).
+ *
+ * Identity comes from COTAL_* env (the launcher decides once); a missing identity is a
+ * broken launch and fails loud — this binary is never run standalone by an operator.
+ */
+import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
+import {
+  MeshAgent,
+  configFromEnv,
+  feedbackLine,
+  formatInjection,
+  fmtFrom,
+  startControlServer,
+  transcriptChannel,
+  ORIENTATION_BOOTSTRAP,
+  MESH_FIRST_STEER,
+  type InboxItem,
+} from "@cotal-ai/connector-core";
+import { AppServerDriver, type ThreadItem } from "./app-server.js";
+import { buildCotalTools } from "./tools.js";
+import { createTranscriptMirror } from "./transcript.js";
+
+const ERROR_RETRY_INITIAL_MS = 1_000;
+const ERROR_RETRY_MAX_MS = 30_000;
+
+function log(msg: string): void {
+  process.stderr.write(`[cotal-codex] ${msg}\n`);
+}
+
+/** The live activity feed rendered to stdout, so the manager pty (`cotal attach`) shows what
+ *  the agent is doing. One line per event; full agent messages, one-liner commands/tools. */
+function feed(line: string): void {
+  process.stdout.write(`${line}\n`);
+}
+
+/** The persona/mesh briefing injected as `thread/start.developerInstructions` — ADDITIVE to
+ *  Codex's base instructions (never a replacement), mirroring the Claude connector's MCP
+ *  server instructions + `--append-system-prompt` persona. */
+function developerInstructions(config: ReturnType<typeof configFromEnv>, persona: string | undefined): string {
+  const mesh =
+    `You are connected to the Cotal mesh as "${config.name}"` +
+    `${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}". ` +
+    `${ORIENTATION_BOOTSTRAP} ` +
+    feedbackLine(config) +
+    `${MESH_FIRST_STEER} ` +
+    `Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm ` +
+    `(privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); ` +
+    `use cotal_roster to see who is present and cotal_status to report what you are doing. ` +
+    `Reply only when a reply is actually needed — silent acknowledgement is correct, and ` +
+    `@-mention a peer only when you need THAT peer to act now.`;
+  return persona ? `${persona}\n\n${mesh}` : mesh;
+}
+
+/** Build the per-agent CODEX_HOME and (re-)link the operator's auth.json into it. Keyed by
+ *  space AND name (a name alone can recur across spaces on one workspace root), hardened
+ *  private — it holds an auth link plus session rollouts. */
+function prepareCodexHome(space: string, name: string): string {
+  const dataRoot = process.env.COTAL_CODEX_HOME?.trim();
+  if (!dataRoot) throw new Error("COTAL_CODEX_HOME is not set — the connector must pin the agent's data root");
+  const agentHome = join(dataRoot, ".cotal", "codex", space, name);
+  mkdirSync(agentHome, { recursive: true });
+  hardenPrivate(agentHome, "dir");
+  // The operator's real codex home: their CODEX_HOME if set (forwarded by the connector), else
+  // ~/.codex. auth.json is SYMLINKED (not copied): ChatGPT-plan auth rotates its refresh token,
+  // so a copy would fork the token chain and break whichever side refreshes second. Re-linked
+  // fresh on every launch — if a codex write replaced the link with a regular file mid-session,
+  // the next launch heals it. Absent auth.json is NOT a launch error: keyring-stored auth still
+  // resolves, and a truly unauthenticated codex fails loud itself at thread/start (the auth
+  // authority stays codex — we don't pre-judge it).
+  const operatorHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
+  const operatorAuth = join(operatorHome, "auth.json");
+  if (resolve(agentHome) !== operatorHome && existsSync(operatorAuth)) {
+    rmSync(join(agentHome, "auth.json"), { force: true });
+    symlinkSync(operatorAuth, join(agentHome, "auth.json"));
+  }
+  return agentHome;
+}
+
+/** The `-c key=value` override list for the codex child: the operator's launch options first
+ *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
+ *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. */
+function configOverrides(model: string | undefined, variant: string | undefined): [string, string][] {
+  const overrides: [string, string][] = [];
+  const raw = process.env.COTAL_CODEX_CONFIG?.trim();
+  if (raw) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("COTAL_CODEX_CONFIG must be a JSON object of config-key → value");
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("COTAL_CODEX_CONFIG must be a JSON object of config-key → value");
+    for (const [k, v] of Object.entries(parsed)) overrides.push([k, String(v)]);
+  }
+  const has = (key: string): boolean => overrides.some(([k]) => k === key);
+  if (model && !has("model")) overrides.push(["model", `"${model}"`]);
+  if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
+  // Autonomy defaults: a supervised agent must never block on an approval nobody is watching.
+  if (!has("approval_policy")) overrides.push(["approval_policy", '"never"']);
+  if (!has("sandbox_mode")) overrides.push(["sandbox_mode", '"workspace-write"']);
+  return overrides;
+}
+
+export async function runCodexHost(): Promise<void> {
+  const config = configFromEnv(); // throws without an identity — a host launch is always managed
+  config.connector = "codex";
+  const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
+  const persona = def?.persona || undefined;
+  const model = config.model;
+  const variant = config.variant;
+
+  const agent = new MeshAgent(config);
+  agent.start(); // background connect with retry — never blocks the thread boot
+
+  const surface = buildCotalTools(agent, config);
+  const driver = new AppServerDriver({
+    cwd: process.cwd(),
+    codexHome: prepareCodexHome(config.space, config.name),
+    configOverrides: configOverrides(model, variant),
+    developerInstructions: developerInstructions(config, persona),
+    dynamicTools: surface.tools,
+    onToolCall: (call) => surface.dispatch(call),
+    bin: process.env.COTAL_CODEX_BIN?.trim() || undefined,
+    log,
+  });
+
+  const safeStatus = async (status: "idle" | "working" | "waiting" | "offline", activity?: string): Promise<void> => {
+    try {
+      if (agent.connected) await agent.setStatus(status, activity);
+    } catch {
+      /* presence is best-effort — never throw into the turn loop */
+    }
+  };
+
+  // Transcript mirror → `tr-<name>`, opt-in via COTAL_TRANSCRIPT (the connector sets it for
+  // `--transcript` spawns; the manager grants pub rights on the same channel).
+  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? "")
+    ? createTranscriptMirror(agent, transcriptChannel(config.name))
+    : undefined;
+
+  // ---- the turn loop -------------------------------------------------------
+  let ready = false; // thread up — never drive before then
+  let driving = false; // re-entrancy guard around an in-flight turn/start
+  let steering = false; // serialize steer batches
+  let awaitingTurnEnd = false; // a driven turn is open — its surfaced ids ack at the boundary
+  let surfaced: string[] = []; // EXACT ids fed into the open turn (start + steered)
+  let briefed = false; // the boot channel briefing is prepended once
+  let pendingPullHint: string | undefined; // focus @mention latch: its body was ack-dropped at
+  // ingest, so a wake that can't run NOW must be remembered until a turn can carry it
+  let steerSettled: Promise<unknown> = Promise.resolve(); // the last in-flight steer RPC — the
+  // terminal handler waits on it so an accepted-but-unrecorded steer can never mis-ack
+  let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  let errorRetryMs = ERROR_RETRY_INITIAL_MS;
+
+  function clearErrorRetry(resetDelay = false): void {
+    if (errorRetryTimer) clearTimeout(errorRetryTimer);
+    errorRetryTimer = undefined;
+    if (resetDelay) errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  }
+
+  function scheduleErrorRetry(): void {
+    if (errorRetryTimer || agent.pendingWake() === 0) return;
+    const delay = errorRetryMs;
+    errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
+    errorRetryTimer = setTimeout(() => {
+      errorRetryTimer = undefined;
+      if (!driver.busy && agent.pendingWake() > 0) void drive();
+    }, delay);
+    errorRetryTimer.unref?.();
+  }
+
+  /** Start a turn carrying the current automatic inbox batch (or `override` — a bare nudge that
+   *  surfaces nothing to ack). Ack happens at the turn boundary, never here. */
+  async function drive(override?: string): Promise<void> {
+    if (!ready || driving || driver.busy || awaitingTurnEnd) return;
+    driving = true;
+    try {
+      const parts: string[] = [];
+      let ids: string[] = [];
+      if (override) {
+        parts.push(override);
+      } else {
+        const items = agent.peekInbox("automatic");
+        if (items.length === 0) return;
+        ids = items.map((i) => i.id);
+        const inj = formatInjection(items);
+        if (inj) parts.push(inj);
+      }
+      if (parts.length === 0) return;
+      if (!briefed) {
+        briefed = true;
+        const brief = agent.channelBriefing();
+        if (brief) parts.unshift(brief);
+      }
+      surfaced = ids;
+      // Arm BEFORE the await: the turn's end can race the turn/start response, and completeTurn
+      // bails unless armed — arming after would drop the ack and wedge the loop.
+      awaitingTurnEnd = true;
+      await driver.startTurn(parts.join("\n\n"));
+    } catch (e) {
+      surfaced = [];
+      awaitingTurnEnd = false;
+      log(`drive failed: ${(e as Error).message}`);
+      scheduleErrorRetry();
+    } finally {
+      driving = false;
+    }
+  }
+
+  /** Steer DIRECTED (DM / anycast / @mention) automatic items into the live turn. Ambient waits
+   *  for the boundary so channel chatter can't derail the work in flight. Exact-id acks mean the
+   *  steered set need not be front-contiguous. A declined steer (the turn just ended) leaves the
+   *  items buffered — completeTurn's drive picks them up. */
+  async function steerPending(): Promise<void> {
+    if (steering || !driver.busy || !awaitingTurnEnd) return;
+    steering = true;
+    try {
+      for (;;) {
+        const surfacedSet = new Set(surfaced);
+        const items = agent
+          .peekInbox("automatic")
+          .filter((i) => !surfacedSet.has(i.id) && (i.kind !== "channel" || i.mentionsMe));
+        if (items.length === 0 || !driver.busy) return;
+        const inj = formatInjection(items);
+        if (!inj) return;
+        // The steer RPC and the turn's terminal notification can race in one stdout chunk. The
+        // terminal handler awaits `steerSettled`, so the accept/decline outcome is always
+        // recorded before the ack set is decided; and ids are promoted into `surfaced` only
+        // while the turn is STILL open — an accept that lands after the boundary leaves them
+        // in the inbox (redelivered next turn: the at-least-once side of the race).
+        const rpc = driver.steer(inj);
+        steerSettled = rpc.catch(() => false);
+        if (!(await rpc)) return; // declined — the boundary drive handles them
+        if (!awaitingTurnEnd) return; // turn closed while the accept was in flight — redeliver
+        surfaced.push(...items.map((i) => i.id));
+      }
+    } finally {
+      steering = false;
+    }
+  }
+
+  /** The single turn-boundary site. Ack ONLY a `completed` turn's surfaced ids (exact-id drain:
+   *  an overflow-evicted id is reported missing, never mis-acked positionally). `failed` (a
+   *  transient model/upstream error) and `interrupted` (an operator/shutdown cancel) both leave
+   *  the ids un-acked so the batch redelivers — failed with backoff, so a permanently failing
+   *  batch can't hot-loop. Waits for any in-flight steer RPC first, so the ack set is settled. */
+  function completeTurn(status: string): void {
+    const settle = steerSettled;
+    void settle.finally(() => {
+      const wasOpen = awaitingTurnEnd;
+      awaitingTurnEnd = false;
+      const ids = surfaced;
+      surfaced = [];
+      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxIds(ids); // the sole ack site
+      if (status === "failed") scheduleErrorRetry();
+      else clearErrorRetry(true);
+      void (async () => {
+        if (transcript) await transcript.flush().catch((e) => log(`transcript publish failed: ${(e as Error).message}`));
+        await safeStatus("idle");
+        if (pendingPullHint) {
+          const hint = pendingPullHint;
+          pendingPullHint = undefined;
+          void drive(hint); // the latched focus @mention pull — its body has no buffered copy
+        } else if (status !== "failed" && agent.pendingWake() > 0) {
+          void drive(); // failed batches wait for the backoff timer instead of hot-looping
+        }
+      })();
+    });
+  }
+
+  // ---- events --------------------------------------------------------------
+
+  driver.on("turnStarted", () => {
+    void safeStatus("working");
+    void steerPending(); // anything directed that landed while the turn spun up
+  });
+  driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
+  driver.on("turnCompleted", ({ status }: { status: string }) => {
+    feed(`— turn ${status}`);
+    completeTurn(status);
+  });
+  driver.on("itemStarted", (item: ThreadItem) => {
+    if (item.type === "commandExecution" && typeof item.command === "string") {
+      feed(`$ ${item.command}`);
+      void safeStatus("working", item.command.slice(0, 120));
+    } else if (item.type === "dynamicToolCall" || item.type === "mcpToolCall") {
+      feed(`⚒ ${item.tool ?? "?"}`);
+      void safeStatus("working", String(item.tool ?? ""));
+    }
+  });
+  driver.on("itemCompleted", (item: ThreadItem) => {
+    if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
+    transcript?.observe(item);
+  });
+  driver.on("closed", (code: number) => {
+    // An UNEXPECTED app-server exit (not our own shutdown) is a dead session, whatever the
+    // child's exit code: stop the endpoint and exit nonzero so the manager sees a failure —
+    // a lingering "offline but connected" host would keep soaking redeliveries no turn can
+    // ever run (the wedge R1 flagged). Un-acked in-flight batches redeliver to a successor.
+    log(`app-server exited (${code}) — leaving the mesh`);
+    void safeStatus("offline")
+      .then(() => agent.stop())
+      .finally(() => process.exit(shuttingDown ? 0 : 1));
+  });
+  driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
+
+  // Inbound mesh traffic. Busy: steer directed items into the live turn, buffer ambient. Idle: a
+  // directed message always drives; ambient drives only in `open` (dnd/focus hold it for the next
+  // boundary). Receive-time pull-only never reaches "incoming" as automatic; `muted` never at all.
+  agent.on("incoming", (item: InboxItem) => {
+    const automatic = agent.inboxScope(item.id) === "automatic";
+    if (!automatic) return;
+    const directed = item.kind !== "channel" || item.mentionsMe;
+    if (driver.busy || awaitingTurnEnd) {
+      if (directed) void steerPending();
+      return;
+    }
+    if (directed || agent.attention === "open") void drive();
+  });
+  agent.on("mention-wake", (item: InboxItem) => {
+    // Focus: the @mention body was acked-and-dropped at ingest — wake a turn to PULL it. The
+    // event is one-shot and contributes nothing to pendingWake(), so mid-turn it must be
+    // LATCHED: steer it into the live turn if possible, and keep the latch until some turn
+    // actually carried it (completeTurn consumes the latch at the boundary).
+    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`;
+    if (driver.busy || awaitingTurnEnd) {
+      pendingPullHint = hint;
+      void driver.steer(hint).then((accepted) => {
+        if (accepted && pendingPullHint === hint) pendingPullHint = undefined;
+      });
+    } else {
+      void drive(hint);
+    }
+  });
+  agent.on("wake", () => {
+    if (!driver.busy) void drive();
+  });
+
+  // Cooperative shutdown: the manager's authed {op:"shutdown"} on a signal-less runtime, plus
+  // SIGINT/SIGTERM. Interrupt the live turn (its surfaced batch stays un-acked → redelivers to
+  // the successor), leave the mesh cleanly, then exit.
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      controlServer?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await driver.interrupt();
+      await driver.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await safeStatus("offline");
+      await agent.stop();
+    } finally {
+      process.exit(0);
+    }
+  };
+  let controlServer: ReturnType<typeof startControlServer> | undefined;
+  const controlPath = process.env.COTAL_CONTROL_SOCKET?.trim();
+  const controlToken = process.env.COTAL_CONTROL_TOKEN?.trim();
+  if (controlPath && controlToken) {
+    controlServer = startControlServer(
+      agent,
+      { path: controlPath, token: controlToken },
+      async () => ({ ok: false, error: "codex runs cotal in-process; only the shutdown control op is supported" }),
+      { fatalBind: true, onShutdown: () => void shutdown() },
+    );
+  }
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+
+  const threadId = await driver.start();
+  agent.setContextId(threadId);
+  if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
+  ready = true;
+  await safeStatus("idle");
+  log(`ready — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}`);
+
+  // An auto-submitted first prompt (`cotal spawn --prompt`), then anything buffered during boot.
+  const prompt = process.env.COTAL_CODEX_PROMPT?.trim();
+  if (prompt) await drive(prompt);
+  else if (agent.pendingWake() > 0) void drive();
+}

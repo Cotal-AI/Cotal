@@ -82,6 +82,9 @@ importers:
       '@cotal-ai/connector-claude-code':
         specifier: workspace:*
         version: link:../extensions/connector-claude-code
+      '@cotal-ai/connector-codex':
+        specifier: workspace:*
+        version: link:../extensions/connector-codex
       '@cotal-ai/connector-hermes':
         specifier: workspace:*
         version: link:../extensions/connector-hermes
@@ -177,6 +180,24 @@ importers:
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
+
+  extensions/connector-codex:
+    devDependencies:
+      '@cotal-ai/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   extensions/connector-core:
     dependencies:

@@ -137,7 +137,7 @@ try {
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
   check("connector installed from the durable store under the isolated config (pubDir branch)", Boolean(hermes && hermes.spec.startsWith(cfg)), hermes?.spec);
-  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
+  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
   const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
   const allSeeded = seededEntries.every((e) => e.source === "seeded");
   check("all five first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 5);

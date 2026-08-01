@@ -103,7 +103,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
 // ── direct `supervise` (the agent supervisor) SEEDS on a fresh config — it is NOT a skipped daemon ─
 {
   const cfg = track(freshCfg());
-  const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-hermes", "@cotal-ai/pi"];
+  const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/pi"];
   const seededOnDisk = (): number => {
     try {
       return (readJson(manifestPath(cfg)).extensions as { pkg: string }[]).filter((e) => officials.includes(e.pkg)).length;

@@ -1,0 +1,202 @@
+/**
+ * The Codex connector: launches a host-mode peer that embeds the Cotal endpoint and drives a
+ * headless `codex app-server` thread over JSON-RPC (see host.ts). A mesh message becomes a real
+ * Codex turn — wake an idle thread (`turn/start`) or steer a directed message into one already
+ * running (`turn/steer`) — and the cotal_* tools ride the same pipe as app-server dynamic tools,
+ * so the session is a full lateral peer at parity with the other connectors. Presence is read
+ * off the app-server event stream; the host renders a live activity feed to its pty for
+ * `cotal attach`. Self-registers on import; the manager resolves it by agent type "codex".
+ */
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+
+/** Env the codex child genuinely needs beyond the OS allow-list: the API key (API-key auth) and
+ *  the operator's CODEX_HOME override (the host resolves auth.json from it). Forwarded BY NAME,
+ *  never `...process.env` (P3). ChatGPT-plan auth rides auth.json under HOME/CODEX_HOME. */
+const CODEX_ENV_KEYS = ["OPENAI_API_KEY", "CODEX_HOME"] as const;
+
+/** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
+ *  bundle script) run with this same node; from SOURCE (dev), the `.ts` entry through tsx. */
+const FROM_BUILD = import.meta.url.includes("/dist/");
+const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-main.ts"}`, import.meta.url));
+const HOST_COMMAND = FROM_BUILD
+  ? process.execPath
+  : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+
+/** Discovery env for `listModels`: the operator's own codex (their CODEX_HOME/auth), with the
+ *  mesh identity scrubbed so a catalog probe can never look like a managed session. */
+function discoveryEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+  return env;
+}
+
+interface CodexModelEntry {
+  id?: string;
+  model?: string;
+  displayName?: string;
+  hidden?: boolean;
+  supportedReasoningEfforts?: { reasoningEffort?: string; description?: string }[];
+}
+
+/** Query the model catalog over a short-lived `codex app-server` (`model/list` — there is no
+ *  `codex models` subcommand). Times out rather than hanging the manager's selector UI. */
+async function listCodexModels(): Promise<ModelCatalog> {
+  const child = spawn("codex", ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
+  const kill = (): void => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  };
+  try {
+    const result = await new Promise<{ data?: CodexModelEntry[] }>((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error("codex app-server model/list timed out (10s)")), 10_000);
+      let buf = "";
+      child.stdout!.setEncoding("utf8");
+      child.stdout!.on("data", (d: string) => {
+        buf += d;
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let msg: { id?: number; result?: unknown; error?: { message?: string } };
+          try {
+            msg = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (msg.id === 1) {
+            child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "model/list", params: {} }) + "\n");
+          } else if (msg.id === 2) {
+            clearTimeout(timer);
+            if (msg.error) reject(new Error(msg.error.message ?? "model/list failed"));
+            else resolvePromise((msg.result ?? {}) as { data?: CodexModelEntry[] });
+          }
+        }
+      });
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`codex app-server exited (${code}) before model/list answered`));
+      });
+      child.stdin!.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "cotal", title: "Cotal", version: "0.0.0" } } }) + "\n",
+      );
+      child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }) + "\n");
+    });
+    const models: ModelInfo[] = (result.data ?? [])
+      .filter((m) => !m.hidden && (m.model || m.id))
+      .map((m) => ({
+        id: m.model ?? m.id!,
+        provider: "openai",
+        ...(m.displayName ? { name: m.displayName } : {}),
+        ...(m.supportedReasoningEfforts?.length
+          ? {
+              variants: m.supportedReasoningEfforts
+                .filter((e) => typeof e.reasoningEffort === "string")
+                .map((e) => ({ name: e.reasoningEffort!, ...(e.description ? { options: { description: e.description } } : {}) })),
+            }
+          : {}),
+      }));
+    return { source: "codex app-server model/list", models };
+  } finally {
+    kill();
+  }
+}
+
+export const codexConnector: Connector = {
+  kind: "connector",
+  name: "codex",
+  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  requires: ["codex"],
+  supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
+  listModels: listCodexModels,
+
+  buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // Resuming isn't wired: app-server 0.145 accepts `dynamicTools` ONLY on thread/start —
+    // thread/fork and thread/resume can't carry the cotal_* tool surface, so a forked thread
+    // would come up mute on the mesh (silent degradation). Throw until codex adds dynamicTools
+    // to fork. (`codex exec resume` is a same-thread HIJACK and is never an option.)
+    if (opts.resume)
+      throw new Error(
+        "codex connector: resuming an existing session (resume) is not supported — codex app-server " +
+          "only accepts dynamic tools on thread/start, so a forked thread would lose the cotal_* tools",
+      );
+    // Tool-sharing isn't wired: rendering operator MCP servers into the per-agent codex config
+    // means resolving `${VAR}` secret refs into a child config surface; that expansion story is a
+    // separate feature. Throw rather than silently ignore (no fallbacks).
+    if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
+      throw new Error("codex connector: tool-sharing (connectors.codex.mcpServers) is not implemented");
+
+    const env: Record<string, string> = {
+      ...launchEnv({ providerKeys: CODEX_ENV_KEYS }),
+      ...aclEnv(opts),
+      ...userAuthEnv(opts),
+      COTAL_SPACE: opts.space,
+      COTAL_NAME: opts.name,
+    };
+    if (opts.role) env.COTAL_ROLE = opts.role;
+    if (opts.id) env.COTAL_ID = opts.id;
+    if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.creds) env.COTAL_CREDS = opts.creds;
+    if (opts.servers) env.COTAL_SERVERS = opts.servers;
+    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the host's transcript mirror
+    if (opts.prompt) env.COTAL_CODEX_PROMPT = opts.prompt; // auto-submitted first turn
+
+    // Where the host roots the per-agent CODEX_HOME (`.cotal/codex/<name>`): the manager's
+    // workspace, or the launch dir for a standalone spawn — never the per-agent cwd, which can
+    // point at any repo (parity with the OpenCode connector's data root).
+    env.COTAL_CODEX_HOME = opts.workspaceRoot ?? process.cwd();
+
+    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona (the
+    // host injects it as thread developerInstructions) and model/variant defaults.
+    let model = opts.model;
+    let variant = opts.variant;
+    if (opts.configPath) {
+      const path = resolve(opts.configPath);
+      env.COTAL_AGENT_FILE = path;
+      const def = loadAgentFile(path);
+      model ??= def.model;
+      variant ??= def.variant;
+    }
+    if (model) env.COTAL_MODEL = model;
+    if (variant) env.COTAL_VARIANT = variant; // reasoning effort; unvalidated here, like the CLI itself
+    // Opaque connector options → codex `-c key=value` config overrides on the app-server child,
+    // RAW passthrough (the spawn capability is the trust boundary, not the key set — see
+    // connectorLaunchOptions). The key-shape guard admits top-level config keys only (no dotted
+    // paths). The host appends its autonomy defaults (approval_policy, sandbox_mode) and the
+    // model/effort selectors ONLY for keys the operator didn't set, so an explicit --opt wins.
+    const overrides: Record<string, unknown> = {};
+    let hasOverrides = false;
+    for (const [k, v] of connectorLaunchOptions("codex", opts.launchOptions)) {
+      // A `-c` value is TOML text. Scalars render faithfully (`String(v)`); an object/array from
+      // a persona's launchOptions mapping would render "[object Object]" — a silently garbled
+      // override — so non-scalars are refused (write the TOML inline-table text yourself if you
+      // need one, e.g. --opt 'sandbox_workspace_write={network_access=true}').
+      if (v !== null && (typeof v === "object" || typeof v === "function"))
+        throw new Error(`codex connector: launch option "${k}" must be a scalar TOML value (got ${Array.isArray(v) ? "array" : typeof v})`);
+      overrides[k] = v;
+      hasOverrides = true;
+    }
+    if (hasOverrides) env.COTAL_CODEX_CONFIG = JSON.stringify(overrides);
+
+    // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a
+    // signal-less runtime. Minted here, held in memory by the manager, served by the host.
+    const control = controlEndpoint(opts.space, opts.name);
+    env.COTAL_CONTROL_SOCKET = control.path;
+    env.COTAL_CONTROL_TOKEN = control.token;
+
+    return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control };
+  },
+};
+
+registry.register(codexConnector);
