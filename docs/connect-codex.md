@@ -99,6 +99,12 @@ silently overridden.
 
 ## Limits
 
+- **Not a boundary between agents on one machine.** The app-server listener and the tool
+  endpoint are both loopback-bound and token-authenticated, which keeps out other OS users and
+  anything off-box. It is not isolation between *managed agents*, which run as the same user and
+  can therefore reach each other's tokens; a hostile agent on your workstation could drive
+  another's Codex or speak as it on the mesh. Run mutually distrusted agents under separate OS
+  users or separate machines.
 - **The TUI is local-only.** The app-server listener binds loopback and nothing else, so
   attaching Codex's UI to an agent on another machine needs your own SSH port-forward; there is
   no built-in remote attach. `cotal attach` (which streams the manager's pty) is the supported

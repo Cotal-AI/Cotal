@@ -17,8 +17,13 @@
  *
  * The endpoint is loopback-bound and bearer-authenticated with a per-incarnation token, handed
  * to the codex child by env var name (`bearer_token_env_var`) so it is never an argv string.
- * On a shared workstation loopback alone is not a boundary — any local user could otherwise
- * drive this agent's mesh identity — so the token is the boundary, not the bind address.
+ * Loopback alone is not a boundary on a shared workstation — any local user could otherwise
+ * speak as this agent on the mesh — so the token is what guards it, not the bind address.
+ *
+ * The honest limit: the token lives in the codex child's environment, and managed agents on one
+ * machine share a uid. A hostile SIBLING agent that can read that environment could impersonate
+ * this one on the mesh. That is the same same-uid boundary the app-server listener has (see
+ * app-server.ts), and it is documented rather than claimed away.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";

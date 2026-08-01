@@ -15,8 +15,16 @@
  * app-server itself is the client and every turn can reach them (see mcp.ts).
  *
  * The listener is loopback-only AND authenticated: `--ws-auth capability-token` with a 0600
- * token file inside the agent's private CODEX_HOME. Without it any local process could connect
- * and drive the agent (the listener has no auth by default), so the token is the boundary.
+ * token file inside the agent's private CODEX_HOME, minted fresh per incarnation. The listener
+ * has no auth of its own, so without this any process on the machine could connect and drive the
+ * agent through the app-server's full RPC surface.
+ *
+ * What that token is, precisely: a boundary against OTHER OS USERS and against anything reaching
+ * the port from off-box. It is NOT a boundary between managed agents running as the SAME user —
+ * they share a uid, so a sibling that can read this agent's home (or the environment of the
+ * attached TUI, which holds the token for the listener's lifetime) can present it. Cotal does not
+ * claim mutually-hostile same-uid agent isolation here; that needs OS-level isolation, not a
+ * file mode. See docs/connect-codex.md#limits.
  *
  * Protocol: app-server **v2** (the API the Codex TUI itself runs on — feature
  * `tui_app_server` is permanently on), verified live against codex-cli 0.145.0.
@@ -68,6 +76,9 @@ const REQUEST_TIMEOUT_MS = 60_000;
 const FATAL_CONSECUTIVE_TIMEOUTS = 3;
 /** How long to wait for the child to print its `listening on: ws://…` banner before giving up. */
 const LISTEN_TIMEOUT_MS = 30_000;
+/** How long to wait for codex to finish connecting to the cotal MCP server. Generous: it is a
+ *  loopback handshake, but it happens while the thread is still coming up. */
+const MCP_READY_TIMEOUT_MS = 30_000;
 
 /** Written into the thread at start so a rollout exists on disk for the TUI to resume. It lands
  *  in model-visible history, so it reads as a plain statement of fact rather than an instruction. */
@@ -111,8 +122,10 @@ export interface DriverOpts {
 
 /**
  * Emits:
- *  - `"turnStarted"` (turnId)                          — a turn began (→ working)
- *  - `"turnCompleted"` ({turnId, status})              — a turn reached a terminal status
+ *  - `"turnStarted"` (turnId, owned)                   — a turn began (→ working)
+ *  - `"turnCompleted"` ({turnId, status, owned})       — a turn reached a terminal status.
+ *    `owned` is false for a turn the attached TUI started: this host may observe it, but only
+ *    a turn it started itself may finalize its own delivery accounting.
  *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/transcript/presence)
  *  - `"waiting"` (detail)                              — an approval was requested (auto-answered)
  *  - `"closed"` (code)                                 — the child exited
@@ -123,7 +136,22 @@ export class AppServerDriver extends EventEmitter {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private threadId?: string;
-  private activeTurnId?: string;
+  /** Every turn currently running on the thread — OURS and the attached TUI's alike. The
+   *  app-server broadcasts turn lifecycle to every client, so with a UI attached this host sees
+   *  turns it did not start. A single "the active turn" slot cannot model that: a foreign turn
+   *  would overwrite ours, and whichever terminal arrived second would be discarded as stale,
+   *  wedging the delivery loop on a boundary that never comes. */
+  private readonly liveTurns = new Set<string>();
+  /** The subset of {@link liveTurns} this host started, recorded from the `turn/start` RESPONSE
+   *  as it is decoded — synchronously, in wire order. It cannot be recorded in the awaited
+   *  continuation instead: that runs as a later microtask, so a frame packing
+   *  response+started+completed would finalize the turn before we ever claimed it. */
+  private readonly ownedTurns = new Set<string>();
+  /** Per-incarnation record of what codex says about each configured MCP server, from its
+   *  `mcpServer/startupStatus/updated` notifications. Kept as state rather than consumed as an
+   *  event because the `ready` can land before anyone waits for it. */
+  private readonly mcpStatus = new Map<string, { status: string; error?: string }>();
+  private readonly mcpWaiters = new Set<() => void>();
   private endpoint?: RemoteEndpoint;
   private readonly opts: DriverOpts;
   private readonly log: (m: string) => void;
@@ -144,16 +172,28 @@ export class AppServerDriver extends EventEmitter {
   }
 
   get busy(): boolean {
-    return this.activeTurnId !== undefined;
+    return this.liveTurns.size > 0;
   }
 
+  /** The turn to steer into or interrupt: OURS if one is running, else the human's. (Steering a
+   *  peer message into a TUI-owned turn is deliberate — the person sees it — and safe, because
+   *  only a turn we own can ack, so anything steered elsewhere simply redelivers.) */
   get currentTurnId(): string | undefined {
-    return this.activeTurnId;
+    for (const id of this.liveTurns) if (this.ownedTurns.has(id)) return id;
+    for (const id of this.liveTurns) return id;
+    return undefined;
+  }
+
+  /** Our own live turn, if any — the only one this host may interrupt or finalize. */
+  private get ownTurnId(): string | undefined {
+    for (const id of this.liveTurns) if (this.ownedTurns.has(id)) return id;
+    return undefined;
   }
 
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
+    this.mcpStatus.clear();
     // A fresh capability token per incarnation: a restarted app-server invalidates the old one,
     // so a stale TUI (or anything that scraped the previous token) cannot drive the new child.
     const token = randomBytes(32).toString("hex");
@@ -219,7 +259,8 @@ export class AppServerDriver extends EventEmitter {
         p.reject(new Error(`app-server gone (${p.method})`));
       }
       this.pending.clear();
-      this.activeTurnId = undefined;
+      this.liveTurns.clear();
+      this.ownedTurns.clear();
       try {
         this.ws?.close();
       } catch {
@@ -341,7 +382,7 @@ export class AppServerDriver extends EventEmitter {
    *  next turn boundary. `expectedTurnId` makes the injection race-safe: if the turn we aimed at
    *  already completed, the server rejects instead of silently binding to a newer turn. */
   async steer(text: string): Promise<boolean> {
-    const turnId = this.activeTurnId;
+    const turnId = this.currentTurnId;
     if (!this.threadId || !turnId) return false;
     try {
       await this.request("turn/steer", {
@@ -356,6 +397,49 @@ export class AppServerDriver extends EventEmitter {
     }
   }
 
+  /**
+   * Block until codex reports the named MCP server READY, or fail.
+   *
+   * Without this the peer can come online MUTE: the thread starts fine, presence publishes, the
+   * agent soaks deliveries — and every turn discovers it has no cotal_* tools, because the one
+   * server carrying them never finished connecting. A tool-less mesh peer is exactly the silent
+   * degradation this codebase refuses, so an unready server is fatal, not a warning.
+   */
+  async awaitMcpReady(name: string, timeoutMs = MCP_READY_TIMEOUT_MS): Promise<void> {
+    const settled = (): { done: boolean; err?: string } => {
+      const s = this.mcpStatus.get(name);
+      if (!s) return { done: false };
+      if (s.status === "ready") return { done: true };
+      // Anything terminal that is not `ready` (failed / invalid config / auth refused) is final.
+      if (s.status !== "starting") return { done: true, err: s.error ? `${s.status}: ${s.error}` : s.status };
+      return { done: false };
+    };
+    const first = settled();
+    if (first.done) {
+      if (first.err) throw new Error(`codex could not start the ${name} MCP server (${first.err})`);
+      return;
+    }
+    await new Promise<void>((res, rej) => {
+      const timer = setTimeout(() => {
+        finish();
+        rej(new Error(`codex did not connect to the ${name} MCP server within ${timeoutMs}ms — refusing to join the mesh without the cotal_* tools`));
+      }, timeoutMs);
+      timer.unref?.();
+      const waiter = (): void => {
+        const s = settled();
+        if (!s.done) return;
+        finish();
+        if (s.err) rej(new Error(`codex could not start the ${name} MCP server (${s.err})`));
+        else res();
+      };
+      const finish = (): void => {
+        clearTimeout(timer);
+        this.mcpWaiters.delete(waiter);
+      };
+      this.mcpWaiters.add(waiter);
+    });
+  }
+
   /** The account state Codex reports (`account/read`): `account` is null when no credentials
    *  resolve; `requiresOpenaiAuth` is false for fully custom model providers. */
   async readAccount(): Promise<{ account?: unknown; requiresOpenaiAuth?: boolean }> {
@@ -364,7 +448,7 @@ export class AppServerDriver extends EventEmitter {
 
   /** Cancel the in-flight turn, if any (its surfaced messages then redeliver — see host.ts). */
   async interrupt(): Promise<void> {
-    const turnId = this.activeTurnId;
+    const turnId = this.ownTurnId;
     if (!this.threadId || !turnId) return;
     try {
       await this.request("turn/interrupt", { threadId: this.threadId, turnId });
@@ -444,6 +528,12 @@ export class AppServerDriver extends EventEmitter {
       this.pending.delete(msg.id as number);
       clearTimeout(p.timer);
       this.consecutiveTimeouts = 0; // the child is alive and answering
+      // Claim the turn HERE, not in the awaited continuation: this runs in wire order, so a frame
+      // packing response+started+completed still claims the turn before its terminal is handled.
+      if (p.method === "turn/start" && !msg.error) {
+        const t = (msg.result as { turn?: { id?: string } } | undefined)?.turn;
+        if (t?.id) this.ownedTurns.add(t.id);
+      }
       if (msg.error) p.reject(new Error(msg.error.message ?? "app-server error"));
       else p.resolve(msg.result);
       return;
@@ -475,8 +565,9 @@ export class AppServerDriver extends EventEmitter {
     switch (method) {
       case "turn/started": {
         const turn = params.turn as { id?: string } | undefined;
-        this.activeTurnId = turn?.id;
-        if (this.activeTurnId) this.emit("turnStarted", this.activeTurnId);
+        if (!turn?.id) return;
+        this.liveTurns.add(turn.id);
+        this.emit("turnStarted", turn.id, this.ownedTurns.has(turn.id));
         return;
       }
       case "item/started":
@@ -485,25 +576,37 @@ export class AppServerDriver extends EventEmitter {
         if (item) this.emit(method === "item/started" ? "itemStarted" : "itemCompleted", item, params.turnId as string | undefined);
         return;
       }
+      case "mcpServer/startupStatus/updated": {
+        const name = typeof params.name === "string" ? params.name : undefined;
+        if (!name) return;
+        const status = String(params.status ?? "");
+        const error = params.error == null ? undefined : String(params.error);
+        this.mcpStatus.set(name, { status, error });
+        for (const w of [...this.mcpWaiters]) w();
+        return;
+      }
       case "turn/failed": // terminal, but turn/completed (status:"failed") follows on the same turn
         return;
       case "turn/completed": {
-        // Terminal events are correlated by EXACT turn id: a stale or duplicated terminal for
-        // an old turn must never close the live one (and so ack the live turn's surfaced ids).
-        // Fail closed on ambiguity: an id mismatch is ignored; a MISSING/unknown status is
-        // reported as "interrupted" (no ack → redeliver) rather than assumed successful.
+        // Terminal events are correlated by EXACT turn id: a stale or duplicated terminal for a
+        // turn that is not running must never close one that is. Fail closed on ambiguity: an
+        // unknown id is ignored, and a MISSING/unknown status is reported as "interrupted" (no
+        // ack -> redeliver) rather than assumed successful.
+        //
+        // `owned` is the load-bearing part once a UI is attached. A turn a human started in the
+        // TUI reaches this host too, and its completion says nothing about the batch WE surfaced
+        // into OUR turn — acking on it would drop peer messages nobody ever saw.
         const turn = params.turn as { id?: string; status?: TurnStatus } | undefined;
-        if (!this.activeTurnId || !turn?.id || turn.id !== this.activeTurnId) {
-          if (turn?.id !== undefined || this.activeTurnId !== undefined)
-            this.log(`ignoring turn/completed for ${turn?.id ?? "?"} (active: ${this.activeTurnId ?? "none"})`);
+        if (!turn?.id || !this.liveTurns.delete(turn.id)) {
+          this.log(`ignoring turn/completed for ${turn?.id ?? "?"} (not a live turn)`);
           return;
         }
         const status: TurnStatus =
           turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted"
             ? turn.status
             : "interrupted";
-        this.activeTurnId = undefined;
-        this.emit("turnCompleted", { turnId: turn.id, status });
+        const owned = this.ownedTurns.delete(turn.id);
+        this.emit("turnCompleted", { turnId: turn.id, status, owned });
         return;
       }
       default:

@@ -266,6 +266,18 @@ try {
   const noAuth = await waitFor("unauthenticated tool call", () => logEntries().find((e) => e.ev === "toolReplyNoAuth"));
   check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
 
+  // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
+  // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
+  // foreign turn's `completed` must never finalize the host's own batch: the batch was never
+  // carried by it, so acking there loses the message outright.
+  await sleep(300);
+  await dm("FOREIGN turn steals the terminal");
+  await waitFor("FOREIGN turn", () => turnStarts().find((t) => t.includes("FOREIGN turn steals")));
+  const redeliveredForeign = await waitFor("FOREIGN batch redelivery", () =>
+    turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length >= 2 ? true : undefined,
+  );
+  check("a foreign (TUI-owned) turn never acks the host's batch", redeliveredForeign === true);
+
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
   await sleep(300);
@@ -421,6 +433,44 @@ try {
     /crashes in \d+s/.test(loopErr) && (loopErr.match(/restarting it \(/g) ?? []).length === 3,
     { restarts: (loopErr.match(/restarting it \(/g) ?? []).length, err: loopErr.slice(-300) },
   );
+
+  // (10b) tool honesty: codex treats an unreachable MCP server as a warning and runs on without
+  // it. Here that would be a peer that joins, soaks deliveries, and can answer none of them — so
+  // an unready cotal server must be fatal BEFORE presence, exactly like missing credentials.
+  const mcpFailLog = join(dir, "mcpfail.log.jsonl");
+  const mcpFail = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "mcpfailpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: mcpFailLog,
+      FAKE_CODEX_MCP_FAIL: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let mcpFailErr = "";
+  mcpFail.stderr!.setEncoding("utf8");
+  mcpFail.stderr!.on("data", (d: string) => (mcpFailErr += d));
+  let sawMcpFailPeer = false;
+  const mcpFailWatch = (e: { type: string; presence: { card: { id: string; name: string } } }) => {
+    if (e.presence.card.name === "mcpfailpeer" && e.type !== "offline") sawMcpFailPeer = true;
+  };
+  operator.on("presence", mcpFailWatch);
+  const mcpFailExit = await Promise.race([
+    new Promise<number | null>((r) => mcpFail.on("exit", (code) => r(code))),
+    sleep(60_000).then(() => "timeout" as const),
+  ]);
+  operator.off("presence", mcpFailWatch);
+  check("a codex without the cotal tools refuses to join the mesh", typeof mcpFailExit === "number" && mcpFailExit !== 0, {
+    mcpFailExit,
+    err: mcpFailErr.slice(-200),
+  });
+  check("the refusal names the missing tool server", /MCP server/i.test(mcpFailErr), mcpFailErr.slice(-300));
+  check("a tool-less codex NEVER advertised online", !sawMcpFailPeer);
 
   // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
   // join the mesh at startup — never advertise online and fail only at the first model turn.

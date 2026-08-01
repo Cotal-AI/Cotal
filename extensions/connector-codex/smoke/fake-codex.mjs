@@ -149,6 +149,7 @@ let hangUsed = false; // HANG is one-shot: its REDELIVERED batch must complete n
 let failUsed = false; // FAIL is one-shot: its RETRIED batch must complete normally
 let rejectStartUsed = false; // REJECTSTART rejects the first matching turn/start RPC, once
 let activeTurnIsRace = false; // RACE: answer a steer and complete the turn in ONE write
+let foreignUsed = false; // FOREIGN is one-shot: the REDELIVERED batch must complete normally
 
 async function runTurn(text) {
   const turnId = `turn_${++turnSeq}`;
@@ -186,6 +187,25 @@ async function runTurn(text) {
     } catch (e) {
       journal({ ev: "toolReplyNoAuth", turnId, error: String(e) });
     }
+  }
+  if (text.includes("FOREIGN") && !foreignUsed) {
+    // A turn this host did NOT start — what the attached TUI produces when a human types. The
+    // app-server broadcasts turn lifecycle to every client, so the host SEES it.
+    //
+    // The discriminator: the FOREIGN turn completes successfully while OUR turn is still open,
+    // and our turn then ends INTERRUPTED. A host that treats any terminal as its own boundary
+    // acks the batch on the foreign `completed` and the message is lost forever; a host that
+    // only finalizes turns it started leaves it un-acked, so it redelivers. One-shot, so the
+    // redelivery completes normally.
+    foreignUsed = true;
+    const foreign = `turn_tui_${turnSeq}`;
+    notify("turn/started", { threadId: THREAD, turn: { id: foreign, status: "inProgress" } });
+    await new Promise((r) => setTimeout(r, 150));
+    notify("turn/completed", { threadId: THREAD, turn: { id: foreign, status: "completed" } });
+    await new Promise((r) => setTimeout(r, 250));
+    activeTurn = undefined;
+    notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
+    return;
   }
   if (text.includes("SLOW")) await new Promise((r) => setTimeout(r, 1200));
   if (text.includes("HANG") && !hangUsed) {
@@ -259,6 +279,20 @@ function onChunk(d) {
       case "thread/start":
         reply(id, { thread: { id: THREAD }, model: "fake-model" });
         notify("thread/started", { thread: { id: THREAD } });
+        // Real codex reports each configured MCP server's startup here. The host gates presence
+        // on the cotal server reaching `ready`, so a peer never advertises online without its
+        // tools. FAKE_CODEX_MCP_FAIL=1 reports the failure instead, which must be fatal.
+        notify("mcpServer/startupStatus/updated", { threadId: THREAD, name: "cotal", status: "starting", error: null });
+        setTimeout(
+          () =>
+            notify("mcpServer/startupStatus/updated", {
+              threadId: THREAD,
+              name: "cotal",
+              status: process.env.FAKE_CODEX_MCP_FAIL === "1" ? "failed" : "ready",
+              error: process.env.FAKE_CODEX_MCP_FAIL === "1" ? "connection refused" : null,
+            }),
+          50,
+        );
         // FAKE_CODEX_DIE_ALWAYS=1 makes EVERY incarnation die shortly after the thread is up —
         // a genuine crash loop, so the host's bounded-restart rail must give up and exit fatal
         // instead of respawning forever.

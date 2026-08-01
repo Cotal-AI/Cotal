@@ -421,7 +421,17 @@ export async function runCodexHost(): Promise<void> {
   let boundaryGen = 0; // bumped per turn boundary: a boundary's ASYNC tail (flush/status/pump)
   // must no-op once a newer boundary exists, or T1's stale tail would overwrite T2's presence
   // and pump T2's failed batch past its backoff.
-  function completeTurn(status: string): void {
+  function completeTurn(status: string, owned: boolean): void {
+    // A turn this host did not start (the operator typed into the attached TUI) is NOT our
+    // boundary. It carried none of our surfaced ids, so acking on it would drop peer messages
+    // outright, and closing our accounting on it would strand the turn we really are waiting on.
+    // Observe it for presence only.
+    if (!owned) {
+      void (async () => {
+        if (!driver.busy) await safeStatus("idle");
+      })();
+      return;
+    }
     const settle = steerSettled;
     void settle.finally(() => {
       const gen = ++boundaryGen;
@@ -457,9 +467,9 @@ export async function runCodexHost(): Promise<void> {
     void steerPending(); // anything directed that landed while the turn spun up
   });
   driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
-  driver.on("turnCompleted", ({ status }: { status: string }) => {
+  driver.on("turnCompleted", ({ status, owned }: { status: string; owned: boolean }) => {
     feed(`— turn ${status}`);
-    completeTurn(status);
+    completeTurn(status, owned);
   });
   driver.on("itemStarted", (item: ThreadItem) => {
     if (item.type === "commandExecution" && typeof item.command === "string") {
@@ -540,6 +550,14 @@ export async function runCodexHost(): Promise<void> {
         // A respawn that never comes up is terminal (a crashed child re-emits `closed` and is
         // handled above; this path is a spawn/handshake failure with no retry left in it).
         await die(`app-server restart failed: ${(e as Error).message}`);
+        return;
+      }
+      try {
+        await driver.awaitMcpReady(MCP_SERVER_NAME);
+      } catch (e) {
+        // A restarted app-server that cannot reach the tools is no better than one that never
+        // started: it would run tool-less turns on a peer the roster believes is healthy.
+        await die(`app-server restarted without the cotal tools: ${(e as Error).message}`);
         return;
       }
       agent.setContextId(tid);
@@ -744,9 +762,13 @@ export async function runCodexHost(): Promise<void> {
       if ((e as Error).message.includes("no credentials")) throw e;
       log(`auth probe unavailable (${(e as Error).message}) — auth errors will surface on the first turn`);
     }
-    // NOW connect the endpoint — thread is up and auth is validated, so the FIRST presence this
-    // peer ever publishes is a truthful "ready". A fatal auth failure above exits before this
-    // line, so the roster never sees a false-ready peer.
+    // The cotal_* tools must actually be REACHABLE before this peer claims to be online. codex
+    // treats an MCP server it cannot reach as a warning and runs on without it, which here would
+    // mean a peer that soaks deliveries and answers none of them. Fatal instead.
+    await driver.awaitMcpReady(MCP_SERVER_NAME);
+    // NOW connect the endpoint — thread is up, tools are live, and auth is validated, so the
+    // FIRST presence this peer ever publishes is a truthful "ready". A fatal failure above exits
+    // before this line, so the roster never sees a false-ready peer.
     agent.setContextId(threadId);
     agent.start(); // background connect with retry
     if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
