@@ -150,7 +150,9 @@ try {
       COTAL_VARIANT: "high",
       COTAL_CODEX_CONFIG: JSON.stringify({ sandbox_mode: '"read-only"' }),
     },
-    stdio: ["ignore", "ignore", "inherit"],
+    // stdin is a PIPE here: it stands in for the terminal a foreground spawn reads, and for the
+    // manager's pty that `cotal attach` drives. Checks (10a-c) type into it.
+    stdio: ["pipe", "ignore", "inherit"],
   });
 
   // (1) launch surface — argv overrides + thread/start payload.
@@ -297,6 +299,40 @@ try {
   await dm("after-samechunk");
   const t9c = await waitFor("post-samechunk turn", () => turnStarts().find((t) => t.includes("after-samechunk")));
   check("same-chunk terminal does not wedge the loop (next DM drives)", t9c !== undefined);
+
+  // (10) operator input typed at the host's own terminal: a foreground spawn's keyboard, or the
+  // manager's pty that `cotal attach` streams and drives. It is the operator talking straight to
+  // this agent, so it rides the DIRECTED rail — a turn of its own when idle, a steer into the
+  // live turn when one is open, never a wait for the next boundary.
+  await sleep(300);
+  host.stdin!.write("typed-idle please\n");
+  const t10a = await waitFor("typed idle turn", () => turnStarts().find((t) => t.includes("typed-idle please")));
+  check("a line typed at the terminal starts a turn", t10a !== undefined);
+
+  await sleep(500);
+  const beforeBlank = turnStarts().length;
+  host.stdin!.write("   \n");
+  await sleep(600);
+  check("a blank typed line is not a turn", turnStarts().length === beforeBlank);
+
+  await dm("SLOW block again");
+  await waitFor("SLOW turn (typed)", () => turnStarts().find((t) => t.includes("SLOW block again")));
+  host.stdin!.write("typed-midturn\n");
+  const typedSteer = await waitFor("typed steer", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("typed-midturn")),
+    ),
+  );
+  check("a line typed mid-turn steers into the live turn", typedSteer !== undefined);
+  await sleep(1500); // let the SLOW turn complete — a mis-queued line would re-drive here
+  check(
+    "an accepted typed line is consumed, never re-driven as its own turn",
+    turnStarts().filter((t) => t.includes("typed-midturn")).length === 0,
+    turnStarts().filter((t) => t.includes("typed-midturn")),
+  );
 
   // (8) unexpected app-server death mid-turn. The manager RETIRES a lifecycle on process exit
   // (freeSlot → deprovision) rather than restarting it, and a same-name successor gets a fresh

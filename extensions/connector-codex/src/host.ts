@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { delimiter, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { createInterface } from "node:readline";
 
 /** Is `bin` resolvable on PATH? A cheap cross-platform scan (adds PATHEXT on Windows) for a
  *  friendly missing-binary error, not a full exec-permission check. */
@@ -266,6 +267,8 @@ export async function runCodexHost(): Promise<void> {
   // ingest, so a wake that can't run NOW must be remembered until a turn can carry it
   let steerSettled: Promise<unknown> = Promise.resolve(); // the last in-flight steer RPC — the
   // terminal handler waits on it so an accepted-but-unrecorded steer can never mis-ack
+  let typed: string[] = []; // lines typed at the host's terminal, queued until a turn carries them
+  let flushingTyped = false; // serialize the typed flush (one steer/start batch at a time)
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
 
@@ -276,28 +279,33 @@ export async function runCodexHost(): Promise<void> {
   }
 
   function scheduleErrorRetry(): void {
-    if (shuttingDown || errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint)) return;
+    if (shuttingDown || errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint && typed.length === 0))
+      return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
       if (driver.busy) return;
-      // The latched pull hint has NO buffered inbox copy (its body was ack-dropped at ingest),
-      // so pendingWake() can't see it — retry it explicitly, ahead of ordinary batches.
-      if (pendingPullHint) void drive(pendingPullHint);
+      // Typed lines and the latched pull hint have NO buffered inbox copy (the hint's body was
+      // ack-dropped at ingest; a typed line never was one), so pendingWake() can't see either —
+      // retry them explicitly, ahead of ordinary batches.
+      if (typed.length > 0) void flushTyped();
+      else if (pendingPullHint) void drive(pendingPullHint);
       else if (agent.pendingWake() > 0) void drive();
     }, delay);
     errorRetryTimer.unref?.();
   }
 
   /** Start a turn carrying the current automatic inbox batch (or `override` — a bare nudge that
-   *  surfaces nothing to ack). Ack happens at the turn boundary, never here. */
-  async function drive(override?: string): Promise<void> {
+   *  surfaces nothing to ack). Ack happens at the turn boundary, never here. Resolves true only
+   *  when a turn actually started: callers holding text with no buffered copy to redeliver (a
+   *  typed line) must keep it queued otherwise. */
+  async function drive(override?: string): Promise<boolean> {
     // `shuttingDown` first: interrupting the live turn ends it, and that boundary would otherwise
     // re-drive the un-acked batch into a child we are in the middle of stopping — an endless
     // "app-server not running" retry that outlives the shutdown. The batch stays un-acked in the
     // stream instead (see the shutdown note below on what that does and does not promise).
-    if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
+    if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return false;
     driving = true;
     try {
       const parts: string[] = [];
@@ -306,12 +314,12 @@ export async function runCodexHost(): Promise<void> {
         parts.push(override);
       } else {
         const items = agent.peekInbox("automatic");
-        if (items.length === 0) return;
+        if (items.length === 0) return false;
         ids = items.map((i) => i.id);
         const inj = formatInjection(items);
         if (inj) parts.push(inj);
       }
-      if (parts.length === 0) return;
+      if (parts.length === 0) return false;
       if (!briefed) {
         briefed = true;
         const brief = agent.channelBriefing();
@@ -325,11 +333,13 @@ export async function runCodexHost(): Promise<void> {
       // The turn ACCEPTED the pull hint — only now is the latch consumed. (A failed start keeps
       // it latched; the retry rail re-drives it, since no inbox copy can.)
       if (override && override === pendingPullHint) pendingPullHint = undefined;
+      return true;
     } catch (e) {
       surfaced = [];
       awaitingTurnEnd = false;
       log(`drive failed: ${(e as Error).message}`);
       scheduleErrorRetry();
+      return false;
     } finally {
       driving = false;
     }
@@ -367,6 +377,33 @@ export async function runCodexHost(): Promise<void> {
     }
   }
 
+  /** Carry the lines typed at the host's own terminal into Codex: steered into the live turn when
+   *  one is open, otherwise starting one. A typed line is the operator talking directly to this
+   *  agent, so it is DIRECTED by nature and never waits for a turn boundary the way ambient
+   *  channel chatter does. Unlike a mesh item it has no buffered copy anywhere, so nothing may
+   *  drop it: a declined steer, an app-server still coming up, or a failed start all leave it
+   *  queued for the next rail (boundary, restart, or the error-retry timer). */
+  async function flushTyped(): Promise<void> {
+    if (flushingTyped || shuttingDown || typed.length === 0) return;
+    flushingTyped = true;
+    try {
+      const n = typed.length;
+      const text = typed.slice(0, n).join("\n");
+      if (driver.busy && awaitingTurnEnd) {
+        // Same settlement rail as batch steers: a turn boundary racing this steer waits for its
+        // outcome, so an accepted line is never mistaken for one the turn never saw.
+        const rpc = driver.steer(text);
+        steerSettled = rpc.catch(() => false);
+        if (!(await rpc)) return; // the turn just ended — the boundary flush carries it
+      } else if (!(await drive(text))) {
+        return; // not startable yet (thread coming up, or the start failed) — stays queued
+      }
+      typed = typed.slice(n); // consumed only once a turn actually accepted it
+    } finally {
+      flushingTyped = false;
+    }
+  }
+
   /** The single turn-boundary site. Ack ONLY a `completed` turn's surfaced ids (exact-id drain:
    *  an overflow-evicted id is reported missing, never mis-acked positionally). `failed` (a
    *  transient model/upstream error) and `interrupted` (an operator/shutdown cancel) both leave
@@ -391,7 +428,9 @@ export async function runCodexHost(): Promise<void> {
         if (gen !== boundaryGen) return; // a newer turn boundary owns presence + the next drive
         await safeStatus("idle");
         if (gen !== boundaryGen) return;
-        if (pendingPullHint) {
+        if (typed.length > 0) {
+          void flushTyped(); // the operator is sitting at this terminal — their line goes first
+        } else if (pendingPullHint) {
           void drive(pendingPullHint); // the latched focus pull — drive() consumes the latch only on ACCEPT
         } else if (status !== "failed" && agent.pendingWake() > 0) {
           void drive(); // failed batches wait for the backoff timer instead of hot-looping
@@ -409,6 +448,7 @@ export async function runCodexHost(): Promise<void> {
     boundaryGen++;
     void safeStatus("working");
     void steerPending(); // anything directed that landed while the turn spun up
+    void flushTyped(); // ditto for a line typed into the gap before the turn was steerable
   });
   driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
   driver.on("turnCompleted", ({ status }: { status: string }) => {
@@ -490,8 +530,10 @@ export async function runCodexHost(): Promise<void> {
       log(`app-server restarted — thread ${tid}`);
       await safeStatus("idle");
       // Unconditional re-drive: the crashed turn's ids were never acked, so they are still in the
-      // inbox — `drive()` picks them up (and no-ops when the inbox is genuinely empty).
-      if (pendingPullHint) void drive(pendingPullHint);
+      // inbox — `drive()` picks them up (and no-ops when the inbox is genuinely empty). A line
+      // typed into the dead thread never reached it, so it goes first on the new one.
+      if (typed.length > 0) void flushTyped();
+      else if (pendingPullHint) void drive(pendingPullHint);
       else void drive();
     })();
   });
@@ -556,6 +598,7 @@ export async function runCodexHost(): Promise<void> {
     clearErrorRetry();
     try {
       controlServer?.close();
+      input.close(); // stop reading the terminal — nothing typed now could still reach a turn
     } catch {
       /* ignore */
     }
@@ -584,6 +627,20 @@ export async function runCodexHost(): Promise<void> {
       { fatalBind: true, onShutdown: () => void shutdown() },
     );
   }
+  // Operator input on the host's own stdin. Codex has no TUI we can host: its interactive app
+  // drives an app-server thread of its own, and a thread we did not start cannot carry the
+  // cotal_* dynamic tools — so the terminal this host already prints its feed to is also where
+  // you talk to it. A foreground `cotal spawn` reads the keyboard; a detached agent reads the
+  // manager's pty, which is exactly what `cotal attach` streams and drives. EOF (a launcher
+  // handing us /dev/null) simply ends input; the mesh loop is untouched.
+  const input = createInterface({ input: process.stdin });
+  input.on("line", (line: string) => {
+    const text = line.trim();
+    if (!text) return;
+    typed.push(text);
+    void flushTyped();
+  });
+
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 

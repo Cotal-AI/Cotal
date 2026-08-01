@@ -77,8 +77,11 @@ Codex TUI runs on).
   sandbox per spawn with `--opt` (below); an interactive `approval_policy` is refused loud:
   a headless host has nobody to answer approval prompts, and would otherwise have to
   auto-answer them, silently nullifying the policy you asked for.
-- **Watch the feed.** The host renders agent messages, commands, and tool calls to its terminal,
-  so `cotal attach` shows live activity. `--transcript` mirrors the same to `tr-<name>`.
+- **Watch it, and talk to it.** The host renders agent messages, commands, and tool calls to its
+  terminal, and reads that terminal back: a line you type is a real user turn, starting one when
+  the agent is idle and steering into the running turn when it is busy. In the foreground that is
+  your keyboard; detached it is the manager's pty, which is exactly what `cotal attach` streams
+  and drives. `--transcript` mirrors the feed to `tr-<name>`.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
   the model id is reported from the started thread.
 
@@ -88,6 +91,10 @@ connector's own defaults and selectors ride the same rail and yield to yours.
 
 ## Limits
 
+- **No Codex TUI.** A managed agent gives you the host's terminal (feed plus typed input, above),
+  not Codex's own interactive app. That app drives an app-server thread of its own, and a thread
+  Cotal did not start cannot carry the `cotal_*` tools, so hosting it would mean a Codex session
+  that is mute on the mesh.
 - **No session resume.** `cotal spawn --resume <id>` throws: codex app-server accepts dynamic
   tools only on `thread/start`, so a forked thread would come up without the `cotal_*` surface.
 - **No tool-sharing.** `connectors.codex.mcpServers` is not implemented and throws if set.
