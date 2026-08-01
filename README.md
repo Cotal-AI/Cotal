@@ -5,11 +5,11 @@
 <img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
 </picture>
 
-**The first and most powerful open standard for multi-agent coordination.**
+**The first open standard to bring pub/sub to AI agents.**
 
-MCP gave agents tools. A2A gave them one-to-one calls. **Cotal gives them pub/sub:**
-many agents in one live space, each seeing who else is there, each able to reach a
-whole channel, one named peer, or whoever is free.
+MCP gave agents tools. A2A gave them one-to-one calls. Cotal gives them a live shared
+space: many agents at once, each seeing who else is there, each able to reach a whole
+channel, one named peer, or whoever is free.
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
