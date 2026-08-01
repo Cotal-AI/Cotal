@@ -27,8 +27,19 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { delimiter, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+
+/** Is `bin` resolvable on PATH? A cheap cross-platform scan (adds PATHEXT on Windows) for a
+ *  friendly missing-binary error, not a full exec-permission check. */
+function onPath(bin: string): boolean {
+  const exts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) if (existsSync(join(dir, bin + ext))) return true;
+  }
+  return false;
+}
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import {
   MeshAgent,
@@ -169,8 +180,11 @@ export async function runCodexHost(): Promise<void> {
   const model = config.model;
   const variant = config.variant;
 
+  // The endpoint is CONSTRUCTED here (handlers below bind to it) but NOT started until the
+  // app-server thread is up AND auth is validated — starting it connects and publishes idle
+  // presence, and a peer must never advertise online before we know it can actually run a turn
+  // (a later auth failure can't retract a presence interval already seen by the roster).
   const agent = new MeshAgent(config);
-  agent.start(); // background connect with retry — never blocks the thread boot
 
   const surface = buildCotalTools(agent, config);
   const driver = new AppServerDriver({
@@ -342,6 +356,10 @@ export async function runCodexHost(): Promise<void> {
   // ---- events --------------------------------------------------------------
 
   driver.on("turnStarted", () => {
+    // Invalidate any prior turn's still-pending async boundary tail: a new turn owning presence
+    // now means T(n-1)'s flush/status/pump must no longer publish a stale `idle` over this
+    // `working`, nor pump this turn's batch past its backoff.
+    boundaryGen++;
     void safeStatus("working");
     void steerPending(); // anything directed that landed while the turn spun up
   });
@@ -451,6 +469,13 @@ export async function runCodexHost(): Promise<void> {
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
+  // PATH preflight (parity with the manager's `requires` check, for a foreground `--live-only`
+  // launch that bypasses it): fail with a clear message naming the binary rather than a raw
+  // ENOENT from the spawn. An absolute COTAL_CODEX_BIN override (tests) skips the PATH scan.
+  const bin = process.env.COTAL_CODEX_BIN?.trim() || "codex";
+  if (!bin.includes(sep) && !onPath(bin))
+    throw new Error(`the codex connector needs \`${bin}\` on PATH — install the Codex CLI and authenticate it`);
+
   const threadId = await driver.start();
   // Auth honesty: `thread/start` succeeds even UNAUTHENTICATED (Codex builds the session
   // locally), so without this probe the peer would advertise online, soak deliveries, and only
@@ -468,7 +493,11 @@ export async function runCodexHost(): Promise<void> {
     if ((e as Error).message.includes("no credentials")) throw e;
     log(`auth probe unavailable (${(e as Error).message}) — auth errors will surface on the first turn`);
   }
+  // NOW connect the endpoint — thread is up and auth is validated, so the FIRST presence this
+  // peer ever publishes is a truthful "ready". A fatal auth failure above exits before this line,
+  // so the roster never sees a false-ready peer.
   agent.setContextId(threadId);
+  agent.start(); // background connect with retry
   if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
   ready = true;
   await safeStatus("idle");

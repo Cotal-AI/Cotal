@@ -201,16 +201,18 @@ export class AppServerDriver extends EventEmitter {
     return this.startedModel;
   }
 
-  /** Begin a new user turn — wakes the session. */
+  /** Begin a new user turn — wakes the session. The active turn id is adopted from the
+   *  `turn/started` NOTIFICATION, never from this response: notifications are processed in wire
+   *  order inside the read loop, so `turn/started` always precedes `turn/completed`, and by the
+   *  time a terminal event is handled the id is set. Adopting from the awaited response instead
+   *  would run as a later microtask — after a same-chunk `turn/started`+`turn/completed` already
+   *  cleared the id — and would resurrect the dead turn (falsely busy forever). */
   async startTurn(text: string): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
-    const res = (await this.request("turn/start", {
+    await this.request("turn/start", {
       threadId: this.threadId,
       input: [{ type: "text", text, text_elements: [] }],
-    })) as { turn?: { id?: string } };
-    // The response precedes the turn/started notification on the wire — adopt the id here too,
-    // so the terminal-event correlation can never miss a very fast turn.
-    if (!this.activeTurnId && res?.turn?.id) this.activeTurnId = res.turn.id;
+    });
   }
 
   /** Inject input into the turn currently in flight (true mid-turn steer). Returns false when

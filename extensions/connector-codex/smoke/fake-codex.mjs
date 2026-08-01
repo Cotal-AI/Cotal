@@ -139,6 +139,20 @@ process.stdin.on("data", (d) => {
           write({ jsonrpc: "2.0", id, error: { code: -32000, message: "transient: try again" } });
           break;
         }
+        if (text.includes("SAMECHUNK")) {
+          // The adversarial timing: the turn/start RESPONSE, turn/started, and turn/completed all
+          // arrive in ONE stdout write, so the client processes both notifications synchronously
+          // before the awaited turn/start continuation runs. A response-side id adoption would
+          // resurrect the just-completed turn (falsely busy forever); correct handling ignores it.
+          const tid = `turn_${++turnSeq}`;
+          process.stdout.write(
+            JSON.stringify({ jsonrpc: "2.0", id, result: { turn: { id: tid, status: "inProgress" } } }) + "\n" +
+              JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId: THREAD, turn: { id: tid, status: "inProgress" } } }) + "\n" +
+              JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { threadId: THREAD, turnId: tid, item: { type: "agentMessage", id: `m_${tid}`, text: "ok", phase: "final_answer" } } }) + "\n" +
+              JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: THREAD, turn: { id: tid, status: "completed" } } }) + "\n",
+          );
+          break;
+        }
         reply(id, { turn: { id: `turn_${turnSeq + 1}`, status: "inProgress" } });
         void runTurn(text);
         break;

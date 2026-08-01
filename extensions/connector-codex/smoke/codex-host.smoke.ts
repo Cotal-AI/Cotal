@@ -283,6 +283,17 @@ try {
   await waitFor("post-race turn", () => turnStarts().find((t) => t.includes("post-race")));
   check("loop healthy after the raced steer", true);
 
+  // (9c) turn/start response + turn/started + turn/completed in ONE chunk: the response-side
+  // continuation must NOT resurrect the just-completed turn (which would wedge the loop busy
+  // forever). Proof: the NEXT DM must still drive a turn.
+  await sleep(300);
+  await dm("SAMECHUNK once");
+  await waitFor("same-chunk turn", () => turnStarts().find((t) => t.includes("SAMECHUNK")));
+  await sleep(500);
+  await dm("after-samechunk");
+  const t9c = await waitFor("post-samechunk turn", () => turnStarts().find((t) => t.includes("after-samechunk")));
+  check("same-chunk terminal does not wedge the loop (next DM drives)", t9c !== undefined);
+
   // (8) unexpected app-server death mid-turn: the host must EXIT nonzero (a lingering
   // offline-but-connected endpoint would soak redeliveries no turn can run).
   await sleep(300);
@@ -311,15 +322,23 @@ try {
   let noauthErr = "";
   noauth.stderr!.setEncoding("utf8");
   noauth.stderr!.on("data", (d: string) => (noauthErr += d));
+  let noauthEverOnline = false;
+  const onNoauthPresence = (e: { type: string; presence: { card: { name: string } } }): void => {
+    if (e.presence.card.name === "noauthpeer" && e.type !== "offline") noauthEverOnline = true;
+  };
+  operator.on("presence", onNoauthPresence);
   const noauthExit = await Promise.race([
     new Promise<number | null>((r) => noauth.on("exit", (code) => r(code))),
     sleep(20_000).then(() => "timeout" as const),
   ]);
+  await sleep(500); // let any (erroneous) presence propagate
+  operator.off("presence", onNoauthPresence);
   check(
     "unauthenticated codex refuses to join the mesh (fatal at startup)",
     typeof noauthExit === "number" && noauthExit !== 0 && /no credentials/.test(noauthErr),
     { noauthExit, err: noauthErr.slice(-200) },
   );
+  check("unauthenticated codex NEVER advertised online (auth validated before presence)", !noauthEverOnline);
 
   console.log(`\nCODEX HOST SMOKE PASSED ✅  (${pass} checks)`);
 } finally {
