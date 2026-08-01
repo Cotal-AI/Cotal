@@ -6,11 +6,18 @@
   "keywords": [
     "cotal",
     "agents",
+    "ai-agents",
     "multi-agent",
+    "agent-communication",
+    "agent-coordination",
+    "agent-orchestration",
+    "swarm",
+    "pubsub",
+    "protocol",
     "nats",
     "jetstream",
-    "pubsub",
-    "mcp"
+    "mcp",
+    "a2a"
   ],
   "homepage": "https://github.com/Cotal-AI/Cotal#readme",
   "repository": {
