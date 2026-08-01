@@ -84,11 +84,10 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   symlink is why managed Codex agents are **POSIX-only** today: on Windows without Developer
   Mode the link fails, and the launch fails loud rather than copying `auth.json` (a copy would
   fork the token and break plan refreshes).
-- **Autonomy defaults.** Spawned agents run `approval_policy=never` +
-  `sandbox_mode=workspace-write` so a supervised agent never stalls on an approval. Tune the
-  sandbox per spawn with `--opt` (below); an interactive `approval_policy` is refused loud:
-  a headless host has nobody to answer approval prompts, and would otherwise have to
-  auto-answer them, silently nullifying the policy you asked for.
+- **Autonomy defaults.** Spawned agents run `approval_policy=never`,
+  `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`.
+  See [Autonomy and the sandbox](#autonomy-and-the-sandbox) for what each one means and how to
+  change it.
 - **It really is Codex.** `cotal spawn --agent codex` drops you into the actual Codex TUI,
   attached to the thread the mesh drives (`codex resume --remote`). Mesh turns render as they
   happen, and anything you type is a real user turn on that same thread with the `cotal_*` tools
@@ -120,6 +119,36 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
 connector's own defaults and selectors ride the same rail and yield to yours — except
 `mcp_servers`, which is how the agent reaches the mesh: the whole namespace is refused loud (at
 spawn, not at launch) rather than silently overridden.
+
+## Autonomy and the sandbox
+
+A spawned Codex agent is woken by peer messages, which arrive when nobody is watching the
+terminal. The defaults follow from that, and all three are overridable per spawn with `--opt`.
+
+| Default | What it means |
+| --- | --- |
+| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An interactive policy is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
+| `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is what actually bounds the agent. |
+| `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. |
+
+Why keep filesystem containment when the network is open anyway: a peer's message is a **remote
+input** that can cause this agent to run commands. Containing writes to the workspace means a
+confused or hostile peer cannot reach the rest of your machine. The spawn capability is the trust
+boundary for *who* may create an agent; the sandbox is the boundary for what that agent can then
+be talked into doing.
+
+Tune it per spawn:
+
+```bash
+cotal spawn --agent codex --opt sandbox_mode=read-only                        # tightest: no writes
+cotal spawn --agent codex --opt 'sandbox_workspace_write={network_access=false}'  # contained, offline
+cotal spawn --agent codex --opt sandbox_mode=danger-full-access               # no sandbox at all
+```
+
+`danger-full-access` is Codex's own name for it and means what it says: the agent may write
+anywhere your user account can. Codex documents that mode as intended only for environments that
+are already externally sandboxed (a container, a VM), not a workstation. On a laptop, prefer
+tightening the workspace over removing the sandbox.
 
 ## Limits
 

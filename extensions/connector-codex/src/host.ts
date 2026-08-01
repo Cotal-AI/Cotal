@@ -207,7 +207,16 @@ function configOverrides(model: string | undefined, variant: string | undefined)
         `(sandbox_mode) instead to restrict what the agent may do.`,
     );
   if (!approval) overrides.push(["approval_policy", '"never"']);
+  // `never` means never ASK, not never allow: the agent runs its commands, and what bounds it is
+  // the sandbox below, not a prompt nobody would be there to answer.
   if (!has("sandbox_mode")) overrides.push(["sandbox_mode", '"workspace-write"']);
+  // ...and inside that sandbox, network ON. Codex defaults workspace-write to no network, which
+  // silently breaks most real work an agent is asked to do (installing a dependency, pushing a
+  // branch, calling an API) with a failure that reads as the task being impossible rather than
+  // the sandbox saying no. Filesystem containment is the part worth keeping — a peer's message is
+  // a REMOTE input that can make this agent run commands, so it should not be able to write
+  // outside its workspace. Inert unless sandbox_mode is workspace-write.
+  if (!has("sandbox_workspace_write")) overrides.push(["sandbox_workspace_write", "{network_access=true}"]);
   // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
   // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
   // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.

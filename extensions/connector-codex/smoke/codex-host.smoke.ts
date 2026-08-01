@@ -161,6 +161,14 @@ try {
   const argv = await waitFor("fake argv", () => logEntries().find((e) => e.ev === "argv")?.argv);
   check("child argv: operator -c override wins", argv.join(" ").includes('sandbox_mode="read-only"'), argv);
   check("child argv: autonomy default appended", argv.join(" ").includes('approval_policy="never"'), argv);
+  // Network ON inside the sandbox. Codex defaults workspace-write to no network, which breaks
+  // installing a dependency or pushing a branch with an error that reads like the task is
+  // impossible rather than the sandbox refusing. Filesystem containment is the part kept.
+  check(
+    "child argv: the sandbox has network access by default",
+    argv.join(" ").includes("sandbox_workspace_write={network_access=true}"),
+    argv,
+  );
   check(
     "child argv: model + effort selectors ride -c",
     argv.join(" ").includes('model="fake-model"') && argv.join(" ").includes('model_reasoning_effort="high"'),
