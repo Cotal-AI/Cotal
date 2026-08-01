@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { AppServerDriver } from "../src/app-server.js";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -357,6 +358,48 @@ try {
     /crashes in \d+s/.test(loopErr) && (loopErr.match(/restarting it \(/g) ?? []).length === 3,
     { restarts: (loopErr.match(/restarting it \(/g) ?? []).length, err: loopErr.slice(-300) },
   );
+
+  // (8c) a tool call still running when the child dies must NEVER be answered into the NEXT
+  // incarnation. Server request ids restart per process, so a stale reply could satisfy a
+  // DIFFERENT new-child request with the wrong tool output. Driven at the driver seam with a
+  // gated onToolCall so the ordering is deterministic rather than raced.
+  const pinLog = join(dir, "pin.log.jsonl");
+  const pinEntries = (): LogEntry[] =>
+    existsSync(pinLog)
+      ? readFileSync(pinLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
+      : [];
+  let releaseTool!: (r: { text: string; isError?: boolean }) => void;
+  const toolGate = new Promise<{ text: string; isError?: boolean }>((r) => (releaseTool = r));
+  const prevLogEnv = process.env.FAKE_CODEX_LOG;
+  process.env.FAKE_CODEX_LOG = pinLog; // the driver forwards our env to the child
+  const pin = new AppServerDriver({
+    cwd: dir,
+    codexHome: dir,
+    configOverrides: new Map(),
+    developerInstructions: "pin",
+    dynamicTools: [],
+    onToolCall: () => toolGate, // never resolves until we say so
+    bin: BIN,
+    log: () => {},
+  });
+  await pin.start();
+  await pin.startTurn("TOOL:roster held");
+  await waitFor("pin: incarnation 1 issued the tool call", () => pinEntries().find((e) => e.ev === "serverRequest"));
+  await pin.stop(); // the asking incarnation dies with the tool still running
+  await waitFor("pin: incarnation 1 gone", () => (pinEntries().filter((e) => e.ev === "argv").length === 1 ? true : undefined));
+  await sleep(200);
+  await pin.start(); // incarnation 2
+  await waitFor("pin: incarnation 2 up", () => (pinEntries().filter((e) => e.ev === "argv").length === 2 ? true : undefined));
+  releaseTool({ text: "reply owed to the DEAD incarnation" });
+  await sleep(800); // ample time for a leaked write to land
+  check(
+    "a tool reply owed to a dead app-server is dropped, never written into the new one",
+    pinEntries().filter((e) => e.ev === "stray").length === 0,
+    pinEntries().filter((e) => e.ev === "stray"),
+  );
+  await pin.stop();
+  if (prevLogEnv === undefined) delete process.env.FAKE_CODEX_LOG;
+  else process.env.FAKE_CODEX_LOG = prevLogEnv;
 
   // (10) auth honesty: a codex reporting NO credentials (and no OPENAI_API_KEY) must refuse to
   // join the mesh at startup — never advertise online and fail only at the first model turn.

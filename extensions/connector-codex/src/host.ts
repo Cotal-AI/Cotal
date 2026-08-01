@@ -11,8 +11,9 @@
  *    item/tool/call → tools.ts), so the model replies itself via cotal_send / cotal_dm;
  *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxIds-acked
  *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
- *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn or a crash
- *    leaves them for redelivery — matching the OpenCode connector's semantics. Attention modes
+ *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn leaves them
+ *    for redelivery — matching the OpenCode connector's semantics — and an app-server CRASH
+ *    restarts the child in place (same mesh lifecycle) and re-drives them. Attention modes
  *    hold: ambient drives only in `open`; dnd/focus hold it; a focus @mention wakes a pull
  *    turn (latched until a turn accepts it); quiet stays pull-only.
  *  • presence falls out of the app-server event stream (turn → working, approval → waiting,
@@ -482,7 +483,6 @@ export async function runCodexHost(): Promise<void> {
       else void drive();
     })();
   });
-  driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
   driver.on("error", (e: Error) => log(`app-server error: ${e.message}`));
 
   // Inbound mesh traffic. Busy: steer directed items into the live turn, buffer ambient. Idle: a

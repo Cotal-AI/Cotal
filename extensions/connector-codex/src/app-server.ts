@@ -123,6 +123,10 @@ export class AppServerDriver extends EventEmitter {
     this.log = opts.log ?? ((m) => process.stderr.write(`[cotal-codex] ${m}\n`));
   }
 
+  /** Which app-server incarnation is live. Bumped by every `start()`; work in flight for an
+   *  older generation must never be written into the current child. */
+  private gen = 0;
+
   get busy(): boolean {
     return this.activeTurnId !== undefined;
   }
@@ -135,8 +139,10 @@ export class AppServerDriver extends EventEmitter {
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
     // Drop any partial line the previous child left mid-write, or it would prefix-corrupt the
-    // new child's first protocol line.
+    // new child's first protocol line. The generation bump fences anything still in flight for
+    // the dead incarnation (see onServerRequest) from being written into the new one.
     this.buf = "";
+    this.gen++;
     const args = ["app-server"];
     for (const [k, v] of this.opts.configOverrides) args.push("-c", `${k}=${v}`);
     // The child inherits the host's (already allow-listed) env, minus COTAL_* — the codex
@@ -345,16 +351,27 @@ export class AppServerDriver extends EventEmitter {
       // Dispatch async; the turn blocks on this reply, exactly like any tool. success:false
       // surfaces a tool error to the model (it sees the text and can react) — a dispatch THROW
       // still must answer, or the turn hangs forever.
+      //
+      // PINNED to the incarnation that asked. If the child dies while a tool is running and the
+      // host restarts it, `writeLine` would otherwise deliver this reply into the NEW child —
+      // and since server request ids restart per process, it could satisfy a DIFFERENT new-child
+      // request with the wrong tool output. A reply whose asker is gone is dropped: the dead
+      // child's turn died with it, and the batch re-drives on the new thread.
+      const gen = this.gen;
       void this.opts
         .onToolCall(call)
         .catch((e) => ({ text: `tool ${call.tool} failed: ${(e as Error).message}`, isError: true }))
-        .then((r) =>
+        .then((r) => {
+          if (gen !== this.gen) {
+            this.log(`dropping ${call.tool} reply for a dead app-server incarnation (${gen} != ${this.gen})`);
+            return;
+          }
           this.writeLine({
             jsonrpc: "2.0",
             id,
             result: { contentItems: [{ type: "inputText", text: r.text }], success: !r.isError },
-          }),
-        );
+          });
+        });
       return;
     }
     // Approvals. The host enforces approval_policy=never at launch (host.ts refuses an override

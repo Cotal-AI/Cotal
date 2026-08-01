@@ -22,6 +22,7 @@ const serverRequest = (method, params) =>
   new Promise((resolve) => {
     const id = nextServerId++;
     pendingServerReqs.set(id, resolve);
+    journal({ ev: "serverRequest", method, id });
     write({ jsonrpc: "2.0", id, method, params });
   });
 
@@ -118,6 +119,13 @@ process.stdin.on("data", (d) => {
       continue;
     }
     const { id, method, params } = msg;
+    // A reply with no matching outstanding request of OURS. Under a correct client this cannot
+    // happen; a reply pinned to a DEAD incarnation leaking into this one shows up here, which is
+    // exactly what the cross-incarnation smoke asserts never appears.
+    if (method === undefined) {
+      journal({ ev: "stray", id, msg });
+      continue;
+    }
     journal({ ev: "recv", method, params });
     switch (method) {
       case "initialize":
