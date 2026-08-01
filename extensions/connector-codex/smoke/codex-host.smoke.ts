@@ -487,10 +487,49 @@ try {
     sawOffline,
   );
 
+  // (11b) ...but the clean leave is BOUNDED. Interrupting the live turn ends it, and that
+  // boundary would re-drive the un-acked batch into a child being stopped; with an unreachable
+  // broker the departure never completes either. A peer that never exits just waits for the
+  // manager to SIGKILL it. So: shut down a peer whose broker is already gone and require a
+  // prompt exit anyway.
+  const hangLog = join(dir, "hang.log.jsonl");
+  const hangHost = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "hangpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      COTAL_CODEX_PROMPT: "SLOW hang-window",
+      FAKE_CODEX_LOG: hangLog,
+    },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  await waitFor("bounded shutdown: a turn is live", () =>
+    existsSync(hangLog) && readFileSync(hangLog, "utf8").includes('"turn/start"') ? true : undefined,
+  );
+  nats.kill("SIGKILL"); // the broker is gone before the shutdown starts
+  await sleep(300);
+  const hangStart = Date.now();
+  hangHost.kill("SIGTERM");
+  const hangExit = await Promise.race([
+    new Promise<number | null>((r) => hangHost.on("exit", (code) => r(code))),
+    sleep(20_000).then(() => "timeout" as const),
+  ]);
+  check(
+    "shutdown with the broker gone still exits promptly (bounded, no wait-for-SIGKILL)",
+    hangExit === 0 && Date.now() - hangStart < 15_000,
+    { hangExit, ms: Date.now() - hangStart },
+  );
+
   console.log(`\nCODEX HOST SMOKE PASSED ✅  (${pass} checks)`);
 } finally {
   host?.kill("SIGTERM");
-  await operator.stop().catch(() => {});
+  // Case (11b) kills the broker on purpose, so bound the operator's own drain — teardown must
+  // never be the thing that hangs the smoke.
+  await Promise.race([operator.stop().catch(() => {}), sleep(3_000)]);
   nats.kill("SIGKILL");
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });

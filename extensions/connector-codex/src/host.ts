@@ -66,6 +66,8 @@ const RESTART_WINDOW_MS = 120_000;
 const MAX_RESTARTS = 3;
 /** How often a presence update latched while the endpoint was still connecting is retried. */
 const STATUS_FLUSH_MS = 500;
+/** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
+const SHUTDOWN_GRACE_MS = 5_000;
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-codex] ${msg}\n`);
@@ -274,7 +276,7 @@ export async function runCodexHost(): Promise<void> {
   }
 
   function scheduleErrorRetry(): void {
-    if (errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint)) return;
+    if (shuttingDown || errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint)) return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
@@ -291,7 +293,11 @@ export async function runCodexHost(): Promise<void> {
   /** Start a turn carrying the current automatic inbox batch (or `override` — a bare nudge that
    *  surfaces nothing to ack). Ack happens at the turn boundary, never here. */
   async function drive(override?: string): Promise<void> {
-    if (!ready || driving || driver.busy || awaitingTurnEnd) return;
+    // `shuttingDown` first: interrupting the live turn ends it, and that boundary would otherwise
+    // re-drive the un-acked batch into a child we are in the middle of stopping — an endless
+    // "app-server not running" retry that outlives the shutdown. The batch stays un-acked and
+    // redelivers to the successor, which is the point.
+    if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
     driving = true;
     try {
       const parts: string[] = [];
@@ -535,6 +541,16 @@ export async function runCodexHost(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // A clean leave is best-effort, not unbounded. Once the child is stopped this process has no
+    // reason to exist, and the departure can hang forever on an unreachable broker (the endpoint
+    // retries) — a peer that never exits just waits for the manager to SIGKILL it, and the mesh
+    // sees the same missing departure with extra delay. Try, then leave regardless.
+    const forced = setTimeout(() => {
+      log(`clean mesh leave did not finish in ${SHUTDOWN_GRACE_MS}ms — exiting anyway`);
+      process.exit(0);
+    }, SHUTDOWN_GRACE_MS);
+    forced.unref?.();
+    clearErrorRetry();
     try {
       controlServer?.close();
     } catch {
@@ -550,6 +566,7 @@ export async function runCodexHost(): Promise<void> {
       await safeStatus("offline");
       await agent.stop();
     } finally {
+      clearTimeout(forced);
       process.exit(0);
     }
   };

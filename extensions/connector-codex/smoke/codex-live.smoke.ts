@@ -121,8 +121,14 @@ try {
 
   console.log(`\nCODEX LIVE E2E PASSED ✅  (${pass} checks)  reply=${JSON.stringify(reply.trim())}`);
 } finally {
-  host?.kill("SIGTERM");
-  await operator.stop().catch(() => {});
+  // Give the cooperative shutdown its clean mesh leave against a LIVE broker before tearing the
+  // broker down — otherwise this teardown races the very path it should exercise, and the host
+  // only ever exits via its bounded grace.
+  if (host) {
+    host.kill("SIGTERM");
+    await Promise.race([once(host, "exit"), sleep(10_000)]);
+  }
+  await Promise.race([operator.stop().catch(() => {}), sleep(3_000)]);
   nats.kill("SIGKILL");
   await sleep(300);
   rmSync(dir, { recursive: true, force: true });
