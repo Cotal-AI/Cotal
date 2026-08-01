@@ -5,8 +5,9 @@ The package does not bundle Pi.
 
 ## Requirements
 
-- Cotal and this package: Node 20 or newer.
-- The Pi host: exactly `@earendil-works/pi-coding-agent@0.79.10` for this release.
+- Cotal (`cotal-ai`): Node 22 or newer.
+- The Pi host: exactly `@earendil-works/pi-coding-agent@0.79.10` for this release, which needs
+  Node 22.19 or newer.
 - `pi` on `PATH` for managed spawning.
 
 ## Use

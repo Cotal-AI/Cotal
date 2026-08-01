@@ -17,18 +17,36 @@ local mesh with an agent on it, in a few minutes.
 ## Install and run
 
 ```bash
-npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 20+)
-cotal setup                # one-time, configure-only; launches nothing
+curl -fsSL https://get.cotal.ai | sh
 ```
 
-Bare `cotal` prints help; `cotal setup` runs the guided setup. If you prefer `npx`,
-`npx cotal-ai setup` works too and offers to install the global `cotal` at the end.
-Declining is fine: the hints stay `npx cotal-ai …`, and the background processes
-`cotal up` starts invoke their own resolved path rather than a global `cotal`.
+That is the whole install on a machine with nothing on it. The script finds a Node 22+ or
+installs a verified one of its own, puts `cotal` in `~/.local/bin`, adds that to your PATH,
+and runs guided setup. It never uses sudo and writes nothing outside your home directory.
+Read it first at [get.cotal.ai](https://get.cotal.ai); it is served as plain text for that
+reason. Useful flags: `--dry-run` to see the plan, `--no-modify-path` to leave your shell rc
+alone, `--no-setup` to install only. Pass them through the pipe as
+`| sh -s -- --dry-run`.
+
+If you already run Node 22+ and would rather use npm directly:
+
+```bash
+npm install -g cotal-ai   # puts `cotal` on your PATH
+cotal setup               # one-time, configure-only; launches nothing
+```
+
+Bare `cotal` prints help; `cotal setup` runs the guided setup. `npx cotal-ai setup` works
+too and offers to install the global `cotal` at the end. Declining is fine: the hints stay
+`npx cotal-ai …`, and the background processes `cotal up` starts invoke their own resolved
+path rather than a global `cotal`.
 
 Requirements:
 
-- Node 20 or newer.
+- Node 22 or newer. The installer handles this for you; it downloads an official Node build
+  and checks it against the SHA-256 sums published beside it on nodejs.org.
+- A glibc system. Cotal's terminal layer ships prebuilt native binaries for glibc only, so
+  musl distributions (Alpine) are not supported yet and the installer refuses them rather
+  than leaving you with an install that cannot start.
 - A `nats-server` binary, version 2.12 or newer (the control surface uses its message
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
   one that ships with the package is new enough; if you already have `nats-server` on your
@@ -39,7 +57,7 @@ Requirements:
 `cotal setup` is configure-only: it prepares your machine and starts nothing. The first
 time, it walks you through:
 
-1. **Checks.** Verifies Node 20+ and locates a `nats-server` (the bundled one, or your
+1. **Checks.** Verifies Node 22+ and locates a `nats-server` (the bundled one, or your
    own on PATH). Located only; nothing starts.
 2. **Picks connectors.** Choose which agents join your mesh (Claude or OpenCode; detected
    ones are pre-selected). Claude installs a plugin, because its wake channel needs one.

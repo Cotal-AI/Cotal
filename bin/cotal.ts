@@ -16,15 +16,28 @@ const MIN_NODE_MAJOR = 22;
 const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
 
 if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
+  // How cotal was installed decides the fix, so say the one that applies. COTAL_LAUNCHER is set
+  // by the launcher install.sh writes: that install pinned a Node, and reaching here means the
+  // pinned Node was replaced with an older one, which re-running the installer repairs.
+  const viaInstaller = process.env.COTAL_LAUNCHER === "1";
+  const remedy = viaInstaller
+    ? `The Node this install was pinned to has been replaced with an older one.\n` +
+      `Re-run the installer to repin it:\n` +
+      `  curl -fsSL https://get.cotal.ai | sh\n\n` +
+      `Or stop depending on the system Node altogether:\n` +
+      `  curl -fsSL https://get.cotal.ai | sh -s -- --vendor-node\n\n`
+    : `Install a newer Node (https://nodejs.org). With nvm:\n` +
+      `  nvm install ${MIN_NODE_MAJOR} && nvm use ${MIN_NODE_MAJOR}\n\n` +
+      `If you already ran cotal once under the old Node, also clear the npx cache so the bundled\n` +
+      `nats-server is fetched cleanly, then retry:\n` +
+      `  rm -rf ~/.npm/_npx        # or: npx clear-npx-cache\n\n` +
+      `Or let the installer manage the runtime for you:\n` +
+      `  curl -fsSL https://get.cotal.ai | sh\n\n`;
   process.stderr.write(
     `\ncotal-ai requires Node.js >= ${MIN_NODE_MAJOR}, but this is ${process.version}.\n` +
       `The bundled nats-server broker (and the CLI's UI stack) need Node >= ${MIN_NODE_MAJOR}; on an\n` +
       `older Node, npm silently skips the broker binary and the CLI cannot start.\n\n` +
-      `Install a newer Node (https://nodejs.org). With nvm:\n` +
-      `  nvm install ${MIN_NODE_MAJOR} && nvm use ${MIN_NODE_MAJOR}\n\n` +
-      `If you already ran cotal once under the old Node, also clear the npx cache so the bundled\n` +
-      `nats-server is fetched cleanly, then retry:\n` +
-      `  rm -rf ~/.npm/_npx        # or: npx clear-npx-cache\n\n`,
+      remedy,
   );
   process.exit(1);
 }

@@ -21,7 +21,7 @@ One standalone artifact supports three Pi-hosted surfaces:
 3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
    must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.
 
-This release pins Pi `0.79.10`. The Cotal package remains installable on Node 20; the separately
+This release pins Pi `0.79.10`. The Cotal package requires Node 22; the separately
 installed Pi host requires Node 22.19 or newer.
 
 ## Lifecycle
