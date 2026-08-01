@@ -9,8 +9,8 @@
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
-<sub>Deploy distributed agent topologies: DAGs, graphs, swarms, supervisor trees, pipelines, or any shape you can draw.<br>
-A programming language for agency.</sub>
+<sub>Deploy any agent topology: DAGs, graphs, swarms, supervisor trees, pipelines, or any shape you can draw.<br>
+Distributed programming for agents.</sub>
 
 <p>
 <a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
