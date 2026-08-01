@@ -208,6 +208,20 @@ try {
   for (let i = 0; i < 300 && !online; i++) await sleep(100);
   check("codex host peer comes online", online);
 
+  // (1b) what the ROSTER (and so the dashboard) can actually say about this agent. The web UI
+  // renders `connector` as the harness badge and `model · variant` beside it, all from presence
+  // meta — so a connector that never publishes them is invisible there no matter what it was
+  // launched with. `variant` is codex's reasoning effort, and it only appears when one was
+  // requested: there is no way to read the effort back off a running thread, so an unset variant
+  // is honestly absent rather than guessed.
+  const cardMeta = await waitFor("the peer's presence card", () => {
+    const m = operator.getRoster().find((p) => p.card.name === PEER)?.card.meta;
+    return m?.model ? m : undefined;
+  });
+  check("presence names the harness, so the dashboard can badge it", cardMeta.connector === "codex", cardMeta);
+  check("presence carries the model", cardMeta.model === "fake-model", cardMeta);
+  check("presence carries the reasoning effort as `variant`", cardMeta.variant === "high", cardMeta);
+
   // (2) wake: a DM drives a turn with the rendered batch.
   await dm("hello-one");
   const t1 = await waitFor("turn 1", () => turnStarts().find((t) => t.includes("hello-one")));
@@ -403,6 +417,52 @@ try {
   const tTermStart = await waitFor("post-termstart turn", () => turnStarts().find((t) => t.includes("after-termstart")), 25_000);
   check("a late start landing during the buffered hold does not wedge the loop", tTermStart !== undefined);
   check("the TERMSTART batch was acked, not redelivered", !tTermStart.includes("TERMSTART please"), tTermStart);
+
+  // (7h) the last two orderings, which close the class. A turn produces exactly three events —
+  // the `turn/start` RESPONSE (R), `turn/started` (S), and `turn/completed` (C) — and JSON-RPC
+  // orders none of them against each other: a notification may precede the response to a request
+  // still in flight. That is 3! = 6 arrangements, plus the 2 where S never comes at all, so the
+  // class is exactly 8 and every one of them is a real thing codex may do. Five were pinned above
+  // and by the ordinary turns (R S C) that every other section drives; SAMECHUNK pins R S C
+  // delivered in a single stdout write, where both notifications are handled synchronously before
+  // the awaited response continuation runs. These are the remaining two. They are here to prove
+  // the enumeration is complete and to keep it that way: each of the four fixes above was found
+  // only after an ordering wedged delivery in a way no error ever reported.
+  //
+  //   R S C  ordinary turns + SAMECHUNK   S R C  here            C R S  here
+  //   R C S  (7g) LATESTART               S C R  (7e) LATERESP   C S R  (7g) TERMSTART
+  //   R C    (7d) NOSTART                 C R    (7f) TERMONLY
+  await sleep(300);
+  await dm("STARTFIRST please");
+  await waitFor("startfirst turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("STARTFIRST")),
+    ),
+  );
+  await sleep(900);
+  await dm("after-startfirst");
+  const tStartFirst = await waitFor("post-startfirst turn", () => turnStarts().find((t) => t.includes("after-startfirst")), 25_000);
+  check("a turn that goes live before its own response is still recognized as ours", tStartFirst !== undefined);
+  check("the STARTFIRST batch was acked, not redelivered", !tStartFirst.includes("STARTFIRST please"), tStartFirst);
+
+  await sleep(300);
+  await dm("TERMRESP please");
+  await waitFor("termresp turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("TERMRESP")),
+    ),
+  );
+  await sleep(900);
+  await dm("after-termresp");
+  const tTermResp = await waitFor("post-termresp turn", () => turnStarts().find((t) => t.includes("after-termresp")), 25_000);
+  check("a held terminal still tombstones its turn against a later stale start", tTermResp !== undefined);
+  check("the TERMRESP batch was acked, not redelivered", !tTermResp.includes("TERMRESP please"), tTermResp);
 
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).

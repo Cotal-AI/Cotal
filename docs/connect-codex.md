@@ -18,6 +18,12 @@ separate install step and no Codex-side plugin. You only need an authenticated `
 on your PATH (a ChatGPT-plan login or an `OPENAI_API_KEY`). If an older install is missing it,
 `cotal ext seed --repair` (or `cotal ext add @cotal-ai/connector-codex`) brings it in.
 
+**Don't install the `cotal` plugin Codex offers you.** Searching Codex's plugin list for "cotal"
+turns up a plugin named `cotal`, from the `cotal-mesh` marketplace. That is the **Claude Code**
+adapter, which appears there only because Codex reads the same plugin-marketplace format; it is
+not this connector and installing it does not connect Codex to a mesh. Codex needs nothing
+installed on its side: the connector drives it from the outside, over `codex app-server`.
+
 **Codex version.** The connector drives `codex app-server` over its experimental v2 surface.
 Minimum **codex-cli 0.145.0**; tested against 0.145.0. An older binary authenticates fine but has
 no `--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:
@@ -49,6 +55,11 @@ cotal spawn --agent codex --model gpt-5.6-sol --variant high
 The **variant** is Codex's reasoning effort (`minimal` | `low` | `medium` | `high` | `xhigh`).
 Like the `codex` CLI itself, the connector does not validate model ids or efforts locally. An
 unknown value fails at request time, server-side.
+
+Model and variant are published on presence, which is where `cotal roster` and the web dashboard's
+`model · variant` badge read them from. The variant appears only when you asked for one (via
+`--variant` or `variant:` in the agent file): there is no way to read the effort back off a running
+thread, so an unset variant is shown as absent rather than guessed at.
 
 ## How it binds
 

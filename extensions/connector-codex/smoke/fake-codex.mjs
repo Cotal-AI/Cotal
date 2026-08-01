@@ -410,6 +410,40 @@ function onChunk(d) {
           setTimeout(() => reply(id, { turn: { id: tid, status: "inProgress" } }), 120);
           break;
         }
+        if (text.includes("STARTFIRST")) {
+          // started → response → terminal. The turn announces itself BEFORE the response that
+          // names it, so for the length of that gap it is live but unclaimed: the host cannot yet
+          // tell its own turn from one a human typed into the TUI. A client that decides ownership
+          // once, at `turn/started`, and lets that first impression stick never acks its own batch,
+          // and the messages redeliver on every turn forever.
+          const tid = `turn_startfirst_${++turnSeq}`;
+          notify("turn/started", { threadId: THREAD, turn: { id: tid, status: "inProgress" } });
+          setTimeout(() => {
+            reply(id, { turn: { id: tid, status: "inProgress" } });
+            setTimeout(
+              () => notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } }),
+              60,
+            );
+          }, 60);
+          break;
+        }
+        if (text.includes("TERMRESP")) {
+          // terminal → response → started: TERMONLY's opening with LATESTART's stale tail, so it
+          // needs BOTH repairs at once and in the right order. The terminal must be held until the
+          // response claims the turn, AND the start that arrives after that must be recognized as
+          // already dead. Tombstoning only on the path that emits would pass every other ordering
+          // and still fail this one, because here the terminal is buffered rather than emitted.
+          const tid = `turn_termresp_${++turnSeq}`;
+          notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } });
+          setTimeout(() => {
+            reply(id, { turn: { id: tid, status: "inProgress" } });
+            setTimeout(
+              () => notify("turn/started", { threadId: THREAD, turn: { id: tid, status: "inProgress" } }),
+              60,
+            );
+          }, 60);
+          break;
+        }
         if (text.includes("TERMONLY")) {
           // The third valid ordering, and the one that survives BOTH earlier fixes: the terminal
           // arrives before `turn/started` (which never comes at all) AND before the response. The

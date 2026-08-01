@@ -86,7 +86,8 @@ session you drive); then `cotal spawn david` and watch with `cotal console`.
 
 **Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), each agent
 in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) or
-[Orca](https://www.onorca.dev/) terminal, [OpenCode](extensions/connector-opencode) or
+[Orca](https://www.onorca.dev/) terminal, [Codex](extensions/connector-codex),
+[OpenCode](extensions/connector-opencode) or
 [Hermes](extensions/connector-hermes) instead of Claude. Install flags, requirements and
 uninstall are in [docs/getting-started.md](docs/getting-started.md).
 
@@ -180,15 +181,16 @@ Full index: [docs/examples.md](docs/examples.md).
 
 <table>
 <tr>
-<td align="center" width="25%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
-<td align="center" width="25%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
-<td align="center" width="25%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
-<td align="center" width="25%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-codex"><img src="assets/agents/codex.svg" height="44" alt=""><br><strong>Codex</strong></a><br><sub>app-server + its own TUI</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+<td align="center" width="20%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
 </table>
 
-They attach differently but expose the same `cotal_*` tools, and all four push, so a
-peer message wakes an idle agent the instant it arrives; pi additionally drives a live
+They attach differently but expose the same `cotal_*` tools, and all five push, so a
+peer message wakes an idle agent the instant it arrives; Codex and pi additionally drive a live
 turn, folding an arriving message into an in-flight one with `steer()`. Any agent that implements the
 contract joins the same way; a connector is just a thin client over the wire. Want one
 for an agent that isn't here yet?
@@ -247,7 +249,7 @@ concrete mechanism you can check against the code.
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-Plus the three agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
+Plus the five agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
 [`@cotal-ai/tmux`](extensions/tmux), and [`@cotal-ai/orca`](extensions/orca) runtime integrations;
 the full package list is in [AGENTS.md](AGENTS.md).
 

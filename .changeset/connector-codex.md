@@ -5,6 +5,7 @@
 "@cotal-ai/core": minor
 "@cotal-ai/workspace": minor
 "@cotal-ai/cli": minor
+"@cotal-ai/web": minor
 "cotal-ai": minor
 ---
 
@@ -21,3 +22,5 @@ At-least-once delivery with exact-id acks on turn completion: a failed turn retr
 Also fixes the seed reconciler, which treated a generation match alone as up-to-date: a built-in connector added at an unchanged generation would never seed on an already-installed workstation (`--agent codex` reporting no connector installed). Both fast paths now also require every `SEED_BUILTINS` entry to be present in the ever-seeded set.
 
 A connector can now declare `launchHint`, the one line a foreground `cotal spawn` prints about what to expect next. That text used to be hard-coded to Claude Code's first-run gate for every agent type, telling operators of other harnesses to press Enter at a prompt that never appears.
+
+The web dashboard gains Codex branding (the OpenAI mark, from Simple Icons), so a codex agent renders with an icon and a label instead of a blank badge. That map was hand-maintained with nothing tying it to the connector set, so it is now covered by a test: every official connector must have a complete entry, and a new connector cannot ship icon-less with a green suite again.
