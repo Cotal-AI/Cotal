@@ -175,6 +175,11 @@ mkdirSync(genDir, { recursive: true });
 mkdirSync(pubDir, { recursive: true });
 copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.schema.json'));
 
+// Publish the installer at /install.sh, which is what get.cotal.ai serves. The repo root
+// copy is canonical and the only one to edit; this copy exists so the deployed script can
+// never drift from the one people audit on GitHub.
+copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
+
 const sidebar = [];
 for (const group of groups) {
   const items = [];

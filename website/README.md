@@ -31,6 +31,7 @@ by `scripts/check-dist.mjs`.
 | `Accept: text/markdown` on a canonical URL → Markdown + `x-markdown-tokens` (on `/` it returns the `/llms.txt` index) | `functions/_middleware.ts` (Cloudflare Pages) |
 | `Link` headers on the homepage (`service-doc`, `describedby`; RFC 8288) | `functions/_middleware.ts` |
 | `/robots.txt` (wildcard crawl rules, Content Signals, sitemap pointer) | `public/robots.txt` |
+| `/install.sh`, and the root of `get.cotal.ai` / `install.cotal.ai`, served as `text/plain` so it reads in a browser | `/install.sh` at the repo root, copied by `scripts/sync-docs.mjs`; host routing in `functions/_middleware.ts` |
 | `/.well-known/agent-skills/` (Agent Skills + discovery index with sha256 digests) | `public/.well-known/agent-skills/` + `scripts/sync-docs.mjs` |
 | `/docs-for-agents` (human/agent-readable guide to the above) | `src/content/docs/docs-for-agents.mdx` |
 

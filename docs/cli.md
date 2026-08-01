@@ -11,7 +11,7 @@ lookup material for the commands, not a walkthrough; if you are new, start with
 ## Running it
 
 ```bash
-npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 20+)
+npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22+)
 cotal --help              # every command, grouped
 cotal --version           # cotal-ai version + each installed extension's (also `cotal -v`)
 cotal <command> --help    # one command's flags and usage
