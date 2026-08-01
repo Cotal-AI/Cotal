@@ -23,17 +23,20 @@ const LAUNCH_COMMAND = FROM_BUILD
  *
  * Deliberately excluded: generic cross-tool credentials Hermes also accepts
  * (`GH_TOKEN`/`GITHUB_TOKEN`/`COPILOT_GITHUB_TOKEN`, `HF_TOKEN`, `ANTHROPIC_TOKEN`,
- * `CLAUDE_CODE_OAUTH_TOKEN`) — auto-forwarding an operator's VCS or Claude session
- * credential into every gateway would silently widen its blast radius — and `LM_API_KEY`
- * (LM Studio is a localhost server a managed gateway cannot reach anyway).
+ * `CLAUDE_CODE_OAUTH_TOKEN`, and `GOOGLE_API_KEY` — a generic Google Cloud API key, not a
+ * Gemini-only credential) — auto-forwarding an operator's VCS, Claude-session, or
+ * cloud-wide credential into every gateway would silently widen its blast radius —
+ * `LM_API_KEY` (LM Studio is a localhost server a managed gateway cannot reach anyway),
+ * and `QWEN_API_KEY` (Hermes 0.16 Qwen auth is OAuth-only; that profile metadata is never
+ * read as a key). Exported for the launch-env smoke, which pins both sets.
  */
-const HERMES_PROVIDER_KEYS: readonly string[] = [
+export const HERMES_PROVIDER_KEYS: readonly string[] = [
   ...MODEL_PROVIDER_KEYS,
   "OPENCODE_GO_API_KEY",
   "OPENCODE_ZEN_API_KEY",
   "XAI_API_KEY",
   "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
+  "NOVITA_API_KEY",
   "DEEPSEEK_API_KEY",
   "GLM_API_KEY",
   "ZAI_API_KEY",
