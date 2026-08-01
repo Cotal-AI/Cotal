@@ -72,11 +72,11 @@ No arguments.
 
 Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. Clears them unless peek is true. In focus mode it also pulls back the channel chatter held since you entered focus.
 
-**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.
+**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Codex, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.
 
 - **Side-effect:** Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic.
 - **Available:** always.
-- OpenCode, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).
+- OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|

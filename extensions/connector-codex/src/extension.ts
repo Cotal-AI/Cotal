@@ -120,6 +120,10 @@ export const codexConnector: Connector = {
   transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
+  // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
+  // credentials, tools) and only then hands the terminal to Codex, so the honest thing to tell
+  // someone staring at a blank terminal is that the pause is the mesh, and the UI is coming.
+  launchHint: "joining the mesh, then Codex opens",
   listModels: listCodexModels,
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
@@ -153,6 +157,11 @@ export const codexConnector: Connector = {
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the host's transcript mirror
     if (opts.prompt) env.COTAL_CODEX_PROMPT = opts.prompt; // auto-submitted first turn
+    // The host picks TUI vs headless from its own stdout, and COTAL_CODEX_TUI overrides that. The
+    // child's env is an ALLOW-LIST, so without forwarding it by name the override would silently
+    // do nothing through `cotal spawn` — advertised, and unreachable by the only path that matters.
+    const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
+    if (tuiPref) env.COTAL_CODEX_TUI = tuiPref;
 
     // Where the host roots the per-agent CODEX_HOME (`.cotal/codex/<name>`): the manager's
     // workspace, or the launch dir for a standalone spawn — never the per-agent cwd, which can
@@ -197,8 +206,9 @@ export const codexConnector: Connector = {
       if (k === "mcp_servers" || k.startsWith("mcp_servers."))
         throw new Error(
           `codex connector: launch option "${k}" is reserved — mcp_servers is how this agent reaches ` +
-            `the mesh and cannot be set through launch options. Tool-sharing ` +
-            `(connectors.codex.mcpServers) is the supported way to add servers, and is not implemented yet.`,
+            `the mesh, so it cannot be set through launch options. Drop it from this spawn; there is ` +
+            `no supported way to give a codex agent extra MCP servers yet (tool-sharing, ` +
+            `connectors.codex.mcpServers, is not implemented).`,
         );
       overrides[k] = v;
       hasOverrides = true;

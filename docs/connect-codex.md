@@ -18,6 +18,12 @@ separate install step and no Codex-side plugin. You only need an authenticated `
 on your PATH (a ChatGPT-plan login or an `OPENAI_API_KEY`). If an older install is missing it,
 `cotal ext seed --repair` (or `cotal ext add @cotal-ai/connector-codex`) brings it in.
 
+**Codex version.** The connector drives `codex app-server` over its experimental v2 surface, and
+is tested against **codex-cli 0.145.0 and later**. An older binary authenticates fine but has no
+`--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:
+check with `codex --version` and upgrade (`npm i -g @openai/codex`) if a launch reports that the
+app-server exited before it started listening.
+
 ## Spawn it
 
 Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
@@ -85,9 +91,15 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   attached to the thread the mesh drives (`codex resume --remote`). Mesh turns render as they
   happen, and anything you type is a real user turn on that same thread with the `cotal_*` tools
   still available. In the foreground that is your terminal; detached it is the manager's pty,
-  which is exactly what `cotal attach` streams and drives. With no terminal at all (a container,
-  `deploy/`, a smoke) the host stays headless and prints a one-line activity feed instead — the
-  same peer either way, only the UI differs. `--transcript` mirrors the feed to `tr-<name>`.
+  which is exactly what `cotal attach` streams and drives. With no terminal at all (piped output,
+  CI, a smoke) the host stays headless and prints an activity feed instead — the same peer either
+  way, only the UI differs. `--transcript` mirrors the feed to `tr-<name>`.
+  **Which mode you get** is decided by whether *stdout* is a terminal. Export `COTAL_CODEX_TUI=1`
+  or `=0` before `cotal spawn` to choose explicitly, for when that check would guess wrong (a
+  wrapper that redirects output, or a CI run that wants deterministic text).
+  Once the TUI paints, the terminal belongs to Codex, so the host's own diagnostics move to
+  `host.log` inside the agent's `CODEX_HOME` — the handoff line names that path, and so does any
+  later failure it can still reach you with.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
   the model id is reported from the started thread.
 

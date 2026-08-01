@@ -168,6 +168,27 @@ try {
     () => codexConnector.buildLaunch({ space: "s", name: "n", mcpServers: { srv: { command: "x" } } }),
     /tool-sharing/,
   );
+  // The TUI/headless choice is derived from the host's own stdout, and COTAL_CODEX_TUI overrides
+  // it. The child's env is an ALLOW-LIST, so an override that is not forwarded BY NAME is
+  // advertised and unreachable through the one path operators actually use.
+  const noTui = codexConnector.buildLaunch({ space: "s", name: "n" });
+  check("COTAL_CODEX_TUI is absent when the operator did not set it", noTui.env?.COTAL_CODEX_TUI === undefined);
+  process.env.COTAL_CODEX_TUI = "0";
+  try {
+    const forced = codexConnector.buildLaunch({ space: "s", name: "n" });
+    check("COTAL_CODEX_TUI reaches the host through the env allow-list", forced.env?.COTAL_CODEX_TUI === "0");
+  } finally {
+    delete process.env.COTAL_CODEX_TUI;
+  }
+  // What the operator is told to expect on a foreground spawn is the CONNECTOR's to say: another
+  // harness's first-run gate named here sends them looking for a prompt that never appears.
+  check(
+    "a launch hint is declared, and does not promise another harness's prompt",
+    typeof codexConnector.launchHint === "string" &&
+      codexConnector.launchHint.length > 0 &&
+      !/dev-channels/.test(codexConnector.launchHint),
+    codexConnector.launchHint,
+  );
   check("variant support is declared", codexConnector.supportsModelVariant === true);
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));

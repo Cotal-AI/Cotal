@@ -542,8 +542,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       mcpServers,
     });
 
+    // What happens next belongs to the CONNECTOR: naming one harness's first-run gate for all of
+    // them sends the operator looking for a prompt that never appears, and reads as a hang.
     console.error(
-      `spawning ${name}${role ? ` (${role})` : ""} on the mesh - press Enter at the dev-channels prompt`,
+      `spawning ${name}${role ? ` (${role})` : ""} on the mesh${connector.launchHint ? ` - ${connector.launchHint}` : ""}`,
     );
     if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
     child = spawnProcess(spec.command, spec.args, {

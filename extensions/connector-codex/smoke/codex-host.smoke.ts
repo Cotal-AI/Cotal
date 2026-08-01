@@ -314,6 +314,27 @@ try {
   const tNoStart = await waitFor("post-nostart turn", () => turnStarts().find((t) => t.includes("after-nostart")), 25_000);
   check("a terminal for a claimed-but-never-started turn still closes the ledger", tNoStart !== undefined);
 
+  // (7e) the SYMMETRIC ordering: `turn/started` and `turn/completed` both land BEFORE the
+  // `turn/start` response that names the turn. At the terminal the id is live but not yet
+  // claimed, so classifying it there would call OUR turn foreign, leave the host's accounting
+  // armed forever, and then claim a dead turn. Holding an unclaimed terminal while one of our
+  // starts is outstanding is what makes both orderings resolve to the same answer.
+  await sleep(300);
+  await dm("LATERESP please");
+  await waitFor("lateresp turn accepted", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/start" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("LATERESP")),
+    ),
+  );
+  await sleep(800);
+  await dm("after-lateresp");
+  const tLate = await waitFor("post-lateresp turn", () => turnStarts().find((t) => t.includes("after-lateresp")), 25_000);
+  check("a terminal arriving before its own turn/start response still closes the ledger", tLate !== undefined);
+  check("the LATERESP batch was acked, not redelivered", !tLate.includes("LATERESP please"), tLate);
+
   // (9a) transiently rejected turn/start: the batch stays un-acked and the backoff retry
   // re-drives it (the fake rejects the first matching RPC only).
   await sleep(300);
@@ -559,6 +580,79 @@ try {
   check("the refusal names the missing tool server", /MCP server/i.test(mcpFailErr), mcpFailErr.slice(-300));
   check("a tool-less codex NEVER advertised online", !sawMcpFailPeer);
 
+  // (10b-2) CROSS-GENERATION LAUNCH. The app-server dies with the thread up but its tools never
+  // reported ready, so the host's launch tail is waiting on a child that is already gone while the
+  // crash rail brings up a replacement. Readiness is a fact about ONE child: a launch tail that
+  // took the SUCCESSOR's `ready` for its own would finish the launch twice (two context ids, two
+  // TUIs, two drives), and the same tail's failure branch would `die()` — killing the very child
+  // that replaced it. Only the live incarnation may finish the job, and it must finish it FULLY:
+  // when the crash happened before the mesh side was ever connected, the restart owns that too.
+  const genLog = join(dir, "gen.log.jsonl");
+  const genPeer = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "genpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      COTAL_CODEX_TUI: "1", // force the TUI on: a duplicated launch tail shows up as a second one
+      FAKE_CODEX_TUI_ATTACH: "1", // ...and make that TUI hold its socket, like the real one
+      FAKE_CODEX_LOG: genLog,
+      FAKE_CODEX_DIE_BEFORE_MCP: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let genErr = "";
+  genPeer.stderr!.setEncoding("utf8");
+  genPeer.stderr!.on("data", (d: string) => (genErr += d));
+  const genEntries = (): LogEntry[] =>
+    existsSync(genLog)
+      ? readFileSync(genLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as LogEntry)
+      : [];
+  let genOnline = false;
+  const genWatch = (e: { type: string; presence: { card: { id: string; name: string } } }) => {
+    if (e.presence.card.name === "genpeer" && e.type !== "offline") genOnline = true;
+  };
+  operator.on("presence", genWatch);
+  // The peer reaches the mesh at all only if the RESTART completed the launch the dead
+  // incarnation began — including the endpoint connect its crashed tail never reached.
+  await waitFor("genpeer online after a crash during its own launch", () => (genOnline ? true : undefined), 45_000).catch(
+    (e) => {
+      throw new Error(`${(e as Error).message}\n--- genpeer stderr ---\n${genErr}\n--- exit=${genPeer.exitCode}`);
+    },
+  );
+  const genId = await waitFor("genpeer in the roster", () =>
+    operator.getRoster().find((p) => p.card.name === "genpeer")?.card.id,
+  );
+  await operator.unicast(genId, "gen-check");
+  const genDriven = await waitFor(
+    "the recovered peer drives a turn",
+    () =>
+      genEntries().find(
+        (e) =>
+          e.ev === "recv" &&
+          e.method === "turn/start" &&
+          ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("gen-check")),
+      ),
+    25_000,
+  );
+  operator.off("presence", genWatch);
+  check("a crash mid-launch is recovered by the restart, and the peer is fully online", genDriven !== undefined);
+  check(
+    "exactly one launch tail finished: one TUI, not one per generation",
+    genEntries().filter((e) => e.ev === "tui").length === 1,
+    genEntries().filter((e) => e.ev === "tui").length,
+  );
+  check(
+    "the superseded tail stood down instead of tearing down its successor",
+    /superseded/.test(genErr) && genPeer.exitCode === null,
+    { exitCode: genPeer.exitCode, err: genErr.slice(-300) },
+  );
+  genPeer.kill("SIGTERM");
+  await Promise.race([once(genPeer, "exit"), sleep(8_000)]);
+
   // (10c) the app-server capability token is written FAIL-CLOSED. The agent's home sits under
   // agent-writable workspace, so a sibling (or this agent's own command) can pre-plant
   // `remote-token` as a symlink; a plain write follows it, clobbering the target AND depositing
@@ -647,6 +741,12 @@ try {
     { noauthExit, err: noauthErr.slice(-200) },
   );
   check("unauthenticated codex NEVER advertised online (auth validated before presence)", !noauthEverOnline);
+  // Detached, the LAST line is the whole diagnosis: the manager reports a failed launch as
+  // "<name> exited on launch - last output: <last line>" and then reaps the agent, so `cotal
+  // attach` is already gone. Ending on a stack frame hands the operator `at …/host.js:1234` for
+  // what is really "run codex login".
+  const noauthLast = noauthErr.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  check("the fatal's LAST line is the actionable cause, not a stack frame", /no credentials/.test(noauthLast), noauthLast);
   // A refused launch must not strand its app-server. Unlike the old stdio child, a LISTENING
   // app-server is not tied to the host's lifetime — nothing closes when the host's pipes do — so
   // a fatal that skipped the explicit teardown would orphan a codex holding a port and the
@@ -762,6 +862,46 @@ try {
   operator.off("presence", onTuiPresence);
   check("closing the Codex TUI exits the host cleanly", tuiExit === 0, { tuiExit });
   check("closing the Codex TUI leaves the mesh (departure published)", tuiOnline && tuiDeparted, { tuiOnline, tuiDeparted });
+
+  // (12b) ...but a UI that CRASHED is not someone quitting. By then the terminal is Codex's and
+  // the host's log has moved into the agent's home, so reporting a crash as a clean retirement
+  // returns the operator to a shell prompt with exit 0 and nowhere to look — they conclude they
+  // must have hit the wrong key. The session still ends (the terminal is gone either way), but it
+  // says so on the terminal, names the log, and carries the failure out in the exit code.
+  const crashLog = join(dir, "tuicrash.log.jsonl");
+  const crashHost = spawn(TSX, [HOST_ENTRY], {
+    env: {
+      ...cleanEnv,
+      COTAL_SPACE: space,
+      COTAL_NAME: "tuicrashpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_CODEX_BIN: BIN,
+      COTAL_CODEX_HOME: dir,
+      FAKE_CODEX_LOG: crashLog,
+      COTAL_CODEX_TUI: "1",
+      FAKE_CODEX_TUI_CRASH: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let crashErr = "";
+  crashHost.stderr!.setEncoding("utf8");
+  crashHost.stderr!.on("data", (d: string) => (crashErr += d));
+  const crashExit = await Promise.race([
+    new Promise<number | null>((r) => crashHost.on("exit", (code) => r(code))),
+    sleep(30_000).then(() => "timeout" as const),
+  ]);
+  check("a CRASHED TUI exits nonzero, not as a clean retirement", crashExit === 1, { crashExit, err: crashErr.slice(-300) });
+  check(
+    "the operator is told on the TERMINAL that the UI died, and where the log went",
+    /TUI exited unexpectedly/.test(crashErr) && /host\.log/.test(crashErr),
+    crashErr.slice(-400),
+  );
+  check(
+    "the log path is announced BEFORE the handoff, while stderr is still the terminal",
+    /host log continues in .*host\.log/.test(crashErr),
+    crashErr.slice(0, 400),
+  );
 
   // (11) cooperative shutdown must complete the CLEAN MESH LEAVE before the process exits.
   // shutdown() kills the child ITSELF, so the child's `closed` event fires while that promise is

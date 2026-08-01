@@ -86,12 +86,26 @@ function log(msg: string): void {
   else process.stderr.write(line);
 }
 
-/** The headless activity feed: one line per event, for a host with no TUI (a piped stdout — a
- *  container, `deploy/`, or a smoke). With the TUI attached the feed is redundant, because Codex
- *  renders the same events itself, so it is suppressed rather than interleaved into its output. */
+/** Say something on the TERMINAL even after the log has moved into the agent's home — for the
+ *  moments the operator would otherwise be left staring at a returned shell prompt with no
+ *  explanation. Only safe when no TUI is painting (it failed to launch, or it has just died); at
+ *  any other moment a stray line lands in the middle of Codex's rendering, which is why the
+ *  ordinary {@link log} exists. */
+function tellOperator(msg: string): void {
+  log(msg);
+  if (logSink) process.stderr.write(`[cotal-codex] ${msg}\n`);
+}
+
+/** The headless activity feed, for a host with no TUI (a piped stdout — a container or a smoke).
+ *  With the TUI attached the feed is redundant, because Codex renders the same events itself, so
+ *  it is suppressed rather than interleaved into its output.
+ *
+ *  Event text (a model message, a command) is arbitrary and often multi-line, so continuations are
+ *  indented: every line then reads as either an event (starts in column 0) or part of the one
+ *  above it, which is what makes the stream safe to follow — or grep — line by line. */
 let feedEnabled = true;
 function feed(line: string): void {
-  if (feedEnabled) process.stdout.write(`${line}\n`);
+  if (feedEnabled) process.stdout.write(`${line.replace(/\r?\n/g, "\n    ")}\n`);
 }
 
 /** The persona/mesh briefing injected as `thread/start.developerInstructions` — ADDITIVE to
@@ -310,6 +324,7 @@ export async function runCodexHost(): Promise<void> {
 
   // ---- the turn loop -------------------------------------------------------
   let ready = false; // thread up — never drive before then
+  let agentStarted = false; // the mesh endpoint has been connected (once per process, ever)
   let driving = false; // re-entrancy guard around an in-flight turn/start
   let steering = false; // serialize steer batches
   let awaitingTurnEnd = false; // a driven turn is open — its surfaced ids ack at the boundary
@@ -500,6 +515,31 @@ export async function runCodexHost(): Promise<void> {
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
     transcript?.observe(item);
   });
+  /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
+   *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
+   *  replacement. From that moment the tail owns NOTHING: continuing would set the context id,
+   *  mark ready, replace the TUI and drive on a generation it no longer speaks for, and its
+   *  failure branch would `die()` — killing the very child that is replacing it. Stale tails
+   *  return silently and let the live one finish the job. */
+  const superseded = (gen: number): boolean => {
+    if (driver.isCurrent(gen)) return false;
+    log(`app-server incarnation ${gen} was superseded — leaving the rest to the current one`);
+    return true;
+  };
+
+  /** Bring the mesh side online: adopt the thread as the context id and, the first time only,
+   *  connect the endpoint. Whichever incarnation gets here first completes the launch — normally
+   *  the initial one, but a crash DURING the initial launch hands that job to the restart rail,
+   *  whose tail would otherwise mark a never-connected agent "ready" and drive into a mesh it
+   *  never joined. */
+  async function comeOnline(threadId: string): Promise<void> {
+    agent.setContextId(threadId);
+    if (agentStarted) return;
+    agentStarted = true;
+    agent.start(); // background connect with retry
+    if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
+  }
+
   /** Fatal: no Codex behind this endpoint and no way back. Go offline and exit nonzero rather
    *  than linger "connected but dead", soaking redeliveries no turn can ever run. */
   async function die(reason: string): Promise<never> {
@@ -568,33 +608,45 @@ export async function runCodexHost(): Promise<void> {
     log(`app-server exited (${code}) — restarting it (${restartAt.length}/${MAX_RESTARTS})`);
     void safeStatus("waiting", "restarting codex");
     void (async () => {
+      // This replacement's own incarnation id. Every await below is a point where IT can die and
+      // a further restart can overtake this tail; from there on nothing here may touch host state
+      // or tear anything down, or it would act on — and `die()` over — its own successor.
+      const launch = driver.start();
+      const gen = driver.gen;
       let tid: string;
       try {
-        tid = await driver.start();
+        tid = await launch;
       } catch (e) {
+        if (superseded(gen)) return;
         // A respawn that never comes up is terminal (a crashed child re-emits `closed` and is
         // handled above; this path is a spawn/handshake failure with no retry left in it).
         await die(`app-server restart failed: ${(e as Error).message}`);
         return;
       }
       try {
-        await driver.awaitMcpReady(MCP_SERVER_NAME);
+        await driver.awaitMcpReady(MCP_SERVER_NAME, gen);
       } catch (e) {
+        if (superseded(gen)) return;
         // A restarted app-server that cannot reach the tools is no better than one that never
         // started: it would run tool-less turns on a peer the roster believes is healthy.
         await die(`app-server restarted without the cotal tools: ${(e as Error).message}`);
         return;
       }
-      agent.setContextId(tid);
+      // A crash DURING the initial launch lands here with the mesh side never brought up at all
+      // (the launch tail died before `agent.start()`), so this is also the completion path for it.
+      await comeOnline(tid);
+      if (superseded(gen)) return;
       // A restarted thread is a NEW Codex context: it never saw the channel briefing, and the
       // dead thread's partial transcript must not merge into its first flush.
       briefed = false;
       await transcript?.flush().catch(() => {});
+      if (superseded(gen)) return;
       ready = true;
       log(`app-server restarted — thread ${tid}`);
       // The old UI was retired synchronously above; bring one up on the new listener.
       startTui();
       await safeStatus("idle");
+      if (superseded(gen)) return;
       // Unconditional re-drive: the crashed turn's ids were never acked, so they are still in the
       // inbox — `drive()` picks them up (and no-ops when the inbox is genuinely empty).
       if (pendingPullHint) void drive(pendingPullHint);
@@ -675,23 +727,39 @@ export async function runCodexHost(): Promise<void> {
     const remote = driver.remote;
     const threadId = driver.thread;
     if (!remote || !threadId) return;
-    // From here the terminal belongs to Codex: move our own output off it before it paints.
+    // From here the terminal belongs to Codex: move our own output off it before it paints. Say
+    // WHERE it went while stderr is still the terminal — everything after this point (an
+    // app-server restart, a fatal, a UI that never launched) lands in that file, and a path nobody
+    // was told about is a path nobody finds. Codex paints on the alternate screen, so this line is
+    // on screen until it starts and back again the moment it exits.
+    const logPath = join(codexHome, "host.log");
     if (!logSink) {
-      logSink = createWriteStream(join(codexHome, "host.log"), { flags: "a" });
+      process.stderr.write(`[cotal-codex] handing the terminal to Codex — host log continues in ${logPath}\n`);
+      logSink = createWriteStream(logPath, { flags: "a" });
       feedEnabled = false;
-      log(`codex TUI attached to ${remote.url} thread ${threadId} — host log continues here`);
+      log(`codex TUI attached to ${remote.url} thread ${threadId}`);
     }
     const gen = ++tuiGen;
     const child = launchTui({ url: remote.url, token: remote.token, threadId, codexHome, cwd: process.cwd(), bin: codexBin });
     tuiChild = child;
-    child.on("error", (e: Error) => log(`codex TUI failed to launch: ${e.message}`));
+    child.on("error", (e: Error) => tellOperator(`codex TUI failed to launch: ${e.message} (host log: ${logPath})`));
     child.on("exit", (code) => {
       if (gen !== tuiGen) return; // superseded: a restart or shutdown already owns this exit
       tuiChild = undefined;
       // Quitting the UI ends the session, matching every other connector: the pty's process
       // exiting is what retires the agent. Leave the mesh cleanly rather than lingering headless.
-      log(`codex TUI exited (${code}) — leaving the mesh`);
-      void shutdown();
+      //
+      // But a UI that CRASHED is not someone quitting, and reporting it as a clean retirement is
+      // how an operator ends up back at a shell prompt concluding they must have hit the wrong
+      // key. Say so on the terminal (the TUI is gone, so it is ours again), and carry the failure
+      // out in the exit code rather than exiting 0 over a crash.
+      if (code === 0) {
+        log(`codex TUI exited (0) — leaving the mesh`);
+        void shutdown();
+        return;
+      }
+      tellOperator(`codex TUI exited unexpectedly (${code}) — leaving the mesh; details in ${logPath}`);
+      void shutdown(1);
     });
   }
 
@@ -702,7 +770,10 @@ export async function runCodexHost(): Promise<void> {
   // delivery frontier, so redelivery to it is NOT promised. (Unlike the in-place app-server
   // restart above, which keeps the lifecycle and really does re-drive the batch.)
   let shuttingDown = false;
-  const shutdown = async (): Promise<void> => {
+  /** `code` carries out what actually happened: 0 for a retirement someone asked for, nonzero when
+   *  the session is ending because something broke (a crashed UI), so the manager and the operator
+   *  see a failure rather than a clean goodbye. */
+  const shutdown = async (code = 0): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     // A clean leave is best-effort, not unbounded. Once the child is stopped this process has no
@@ -711,7 +782,7 @@ export async function runCodexHost(): Promise<void> {
     // sees the same missing departure with extra delay. Try, then leave regardless.
     const forced = setTimeout(() => {
       log(`clean mesh leave did not finish in ${SHUTDOWN_GRACE_MS}ms — exiting anyway`);
-      process.exit(0);
+      process.exit(code);
     }, SHUTDOWN_GRACE_MS);
     forced.unref?.();
     clearErrorRetry();
@@ -737,7 +808,7 @@ export async function runCodexHost(): Promise<void> {
       await agent.stop();
     } finally {
       clearTimeout(forced);
-      process.exit(0);
+      process.exit(code);
     }
   };
   let controlServer: ReturnType<typeof startControlServer> | undefined;
@@ -767,8 +838,14 @@ export async function runCodexHost(): Promise<void> {
   // this process is serving, and (once started) the app-server — a LISTENING server, not a stdio
   // child that dies with our pipes. A refused launch (the auth check below is the common one)
   // would otherwise leave an orphaned codex holding a port and this agent's isolated home.
+  // This launch's incarnation id, captured before the first await so the failure path below has
+  // it too: a child that dies mid-launch hands recovery to the crash rail, and from that moment
+  // the teardown in the catch would be tearing down the REPLACEMENT.
+  let gen = -1;
   try {
-    const threadId = await driver.start();
+    const launch = driver.start();
+    gen = driver.gen;
+    const threadId = await launch;
     // Auth honesty: `thread/start` succeeds even UNAUTHENTICATED (Codex builds the session
     // locally), so without this probe the peer would advertise online, soak deliveries, and only
     // fail on its first model turn. A definitive "no credentials" is fatal NOW, before presence.
@@ -788,15 +865,15 @@ export async function runCodexHost(): Promise<void> {
     // The cotal_* tools must actually be REACHABLE before this peer claims to be online. codex
     // treats an MCP server it cannot reach as a warning and runs on without it, which here would
     // mean a peer that soaks deliveries and answers none of them. Fatal instead.
-    await driver.awaitMcpReady(MCP_SERVER_NAME);
+    await driver.awaitMcpReady(MCP_SERVER_NAME, gen);
     // NOW connect the endpoint — thread is up, tools are live, and auth is validated, so the
     // FIRST presence this peer ever publishes is a truthful "ready". A fatal failure above exits
     // before this line, so the roster never sees a false-ready peer.
-    agent.setContextId(threadId);
-    agent.start(); // background connect with retry
-    if (driver.model) await agent.setModel(driver.model, variant).catch(() => {});
+    await comeOnline(threadId);
+    if (superseded(gen)) return;
     ready = true;
     await safeStatus("idle");
+    if (superseded(gen)) return;
     log(`ready — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}`);
     // Hand the terminal to Codex. Everything above this line still reports to stderr, so a launch
     // that fails (missing binary, no credentials, a broker refusal) says why on the terminal
@@ -808,6 +885,12 @@ export async function runCodexHost(): Promise<void> {
     if (prompt) await drive(prompt);
     else if (agent.pendingWake() > 0) void drive();
   } catch (e) {
+    // A crash mid-launch is the crash rail's to recover, and it has already started a
+    // replacement. Tearing down here would kill it and close the MCP endpoint out from under it.
+    if (gen >= 0 && superseded(gen)) {
+      log(`initial launch did not finish (${(e as Error).message}) — the restart is completing it`);
+      return;
+    }
     stopTui();
     await driver.stop().catch(() => {});
     await mcp.close().catch(() => {});

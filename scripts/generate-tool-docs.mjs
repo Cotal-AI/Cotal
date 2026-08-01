@@ -45,7 +45,7 @@ const ANNOTATIONS = {
     effect: "Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic",
     availability: "always",
     notes:
-      "OpenCode, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).",
+      "OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).",
   },
   cotal_send: {
     effect: "publishes to a channel",
@@ -186,7 +186,7 @@ for (const s of specs) {
   lines.push("");
   if (s.name === "cotal_inbox") {
     lines.push(
-      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.",
+      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Codex, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.",
     );
     lines.push("");
   }

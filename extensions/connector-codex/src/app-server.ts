@@ -81,6 +81,13 @@ const LISTEN_TIMEOUT_MS = 30_000;
 const MCP_READY_TIMEOUT_MS = 30_000;
 /** How long {@link AppServerDriver.stop} waits for a SIGTERM'd child before SIGKILL. */
 const STOP_GRACE_MS = 3_000;
+/** ...and how long it then waits for the SIGKILL'd child to actually be reaped before giving up
+ *  and letting our own shutdown proceed. */
+const STOP_KILL_GRACE_MS = 2_000;
+/** The oldest codex-cli this connector is tested against — the first with the app-server listener
+ *  (`--listen` / `--ws-auth`). Named in the startup failure, because a bare "it exited" tells an
+ *  operator running an older binary nothing about why. */
+const MIN_CODEX_VERSION = "0.145.0";
 /** Sentinel key in the MCP status map meaning "this incarnation is gone". Not a server name. */
 const MCP_DEAD = "\u0000dead";
 
@@ -183,6 +190,14 @@ export class AppServerDriver extends EventEmitter {
    *  continuation instead: that runs as a later microtask, so a frame packing
    *  response+started+completed would finalize the turn before we ever claimed it. */
   private readonly ownedTurns = new Set<string>();
+  /** Request ids of `turn/start` calls sent and not yet answered. While one is outstanding, a
+   *  terminal for a turn we have not claimed is AMBIGUOUS — it may be the turn that request is
+   *  about to name, whose notifications overtook its response. JSON-RPC does not order a
+   *  notification after the response to a request in flight, so this cannot be assumed away. */
+  private readonly pendingStarts = new Set<number>();
+  /** Terminals held back by that ambiguity, in arrival order. Drained the moment no `turn/start`
+   *  is outstanding, so each one is finally classified against a settled ownership set. */
+  private buffered: { turnId: string; status: TurnStatus }[] = [];
   /** Per-incarnation record of what codex says about each configured MCP server, from its
    *  `mcpServer/startupStatus/updated` notifications. Kept as state rather than consumed as an
    *  event because the `ready` can land before anyone waits for it. */
@@ -191,10 +206,30 @@ export class AppServerDriver extends EventEmitter {
   /** Set by {@link stop}: this driver has been torn down ON PURPOSE, so the child's death is
    *  expected and must not be recovered from. */
   private terminal = false;
+  /** Which app-server incarnation is current. Stamped by {@link start} before its first await,
+   *  so a caller reading {@link gen} on the next line holds ITS OWN incarnation's id — including
+   *  on the failure path, where there is no return value to carry one. */
+  private generation = 0;
 
   /** Has this driver been deliberately stopped? The host's crash rail asks before restarting. */
   get stopped(): boolean {
     return this.terminal;
+  }
+
+  /** The current incarnation's id (see {@link generation}). */
+  get gen(): number {
+    return this.generation;
+  }
+
+  /**
+   * Does `gen` still name the LIVE app-server? Every await in the host's launch/restart tails is
+   * a point where the child can die and the crash rail can bring up a replacement. A tail that
+   * kept going would set the context id, mark the peer ready, replace the TUI and drive over an
+   * incarnation it no longer owns — and its failure branch would `die()`/`stop()` the SUCCESSOR's
+   * child, turning one crash into a dead agent. Stale tails must return, silently.
+   */
+  isCurrent(gen: number): boolean {
+    return this.generation === gen;
   }
   private endpoint?: RemoteEndpoint;
   private readonly opts: DriverOpts;
@@ -237,6 +272,10 @@ export class AppServerDriver extends EventEmitter {
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
+    // Stamp the new incarnation FIRST, synchronously — before any await, and before anything can
+    // fail. That is what lets the caller capture its own generation on the very next line and
+    // fence every later step against a restart that overtook it.
+    this.generation++;
     this.terminal = false;
     this.mcpStatus.clear();
     // A fresh capability token per incarnation: a restarted app-server invalidates the old one,
@@ -306,6 +345,11 @@ export class AppServerDriver extends EventEmitter {
       this.pending.clear();
       this.liveTurns.clear();
       this.ownedTurns.clear();
+      // Held terminals die with the thread that produced them: the host resets its own delivery
+      // accounting on `closed` and re-drives the un-acked batch into the new thread, so emitting
+      // a boundary for a turn on a dead thread could only close accounting the restart owns.
+      this.pendingStarts.clear();
+      this.buffered = [];
       // Whoever is awaiting MCP readiness is awaiting THIS child's. Releasing them here (rather
       // than leaving them armed) is what stops the NEXT incarnation's `ready` from resolving a
       // dead generation's continuation, which would run two recovery tails over one host.
@@ -341,7 +385,15 @@ export class AppServerDriver extends EventEmitter {
       });
       child.once("close", () => {
         clearTimeout(timer);
-        rej(new Error("codex app-server exited before it started listening"));
+        // Overwhelmingly this is a codex too old to have the listener at all (`--listen` /
+        // `--ws-auth` are part of the experimental v2 surface), which an operator cannot guess
+        // from a bare exit — so the error names the check and the cure.
+        rej(
+          new Error(
+            "codex app-server exited before it started listening — check `codex --version` " +
+              `(${MIN_CODEX_VERSION} or later is required for the app-server listener) and upgrade if it is older`,
+          ),
+        );
       });
     });
     this.endpoint = { url, token, tokenFile };
@@ -454,9 +506,15 @@ export class AppServerDriver extends EventEmitter {
    * agent soaks deliveries — and every turn discovers it has no cotal_* tools, because the one
    * server carrying them never finished connecting. A tool-less mesh peer is exactly the silent
    * degradation this codebase refuses, so an unready server is fatal, not a warning.
+   *
+   * `gen` is the caller's incarnation ({@link gen}, captured right after {@link start}). Readiness
+   * is a fact about ONE app-server child: without this fence a caller whose child died before it
+   * even registered here would wait, see the REPLACEMENT's `ready`, and continue as though its
+   * own generation had come up.
    */
-  async awaitMcpReady(name: string, timeoutMs = MCP_READY_TIMEOUT_MS): Promise<void> {
+  async awaitMcpReady(name: string, gen: number, timeoutMs = MCP_READY_TIMEOUT_MS): Promise<void> {
     const settled = (): { done: boolean; err?: string } => {
+      if (!this.isCurrent(gen)) return { done: true, err: "this app-server incarnation was superseded by a restart" };
       if (this.mcpStatus.has(MCP_DEAD)) return { done: true, err: "the app-server died before its tools were ready" };
       const s = this.mcpStatus.get(name);
       if (!s) return { done: false };
@@ -473,7 +531,13 @@ export class AppServerDriver extends EventEmitter {
     await new Promise<void>((res, rej) => {
       const timer = setTimeout(() => {
         finish();
-        rej(new Error(`codex did not connect to the ${name} MCP server within ${timeoutMs}ms — refusing to join the mesh without the cotal_* tools`));
+        rej(
+          new Error(
+            `codex did not connect to the ${name} MCP server within ${timeoutMs}ms — refusing to join the ` +
+              `mesh without the cotal_* tools. Retry the spawn; if it repeats, check \`codex --version\` ` +
+              `(${MIN_CODEX_VERSION}+) and the app-server output above for what it said about the server`,
+          ),
+        );
       }, timeoutMs);
       timer.unref?.();
       const waiter = (): void => {
@@ -526,22 +590,33 @@ export class AppServerDriver extends EventEmitter {
     }
     this.ws = undefined;
     const child = this.child;
-    if (child && child.exitCode === null && !child.killed) {
-      child.kill("SIGTERM");
+    // `killed` only means a signal was DELIVERED, not that the process is gone — a child already
+    // signalled elsewhere (the websocket-drop SIGKILL, an unresponsive-child kill) still has to be
+    // waited for here, or `stop()` returns while a listening app-server is still winding down.
+    if (child && child.exitCode === null) {
+      if (!child.killed) child.kill("SIGTERM");
       await new Promise<void>((res) => {
-        const timer = setTimeout(() => {
+        let done = false;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          clearTimeout(escalate);
+          clearTimeout(deadline);
+          res();
+        };
+        const escalate = setTimeout(() => {
           try {
             child.kill("SIGKILL"); // a child that ignores SIGTERM must not outlive us
           } catch {
             /* already gone */
           }
-          res();
         }, STOP_GRACE_MS);
-        timer.unref?.();
-        child.once("exit", () => {
-          clearTimeout(timer);
-          res();
-        });
+        // SIGKILL is not instantaneous either, so keep waiting for the actual `exit` after it —
+        // with an outer deadline, because an unreapable child must not hang our own shutdown.
+        const deadline = setTimeout(finish, STOP_GRACE_MS + STOP_KILL_GRACE_MS);
+        escalate.unref?.();
+        deadline.unref?.();
+        child.once("exit", finish);
       });
     }
     // The listener is going away, so the token on disk is only a scrape target now.
@@ -557,8 +632,10 @@ export class AppServerDriver extends EventEmitter {
     return new Promise<unknown>((resolve, reject) => {
       if (!this.writeLine({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) }))
         return reject(new Error("app-server not running"));
+      if (method === "turn/start") this.pendingStarts.add(id);
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        if (this.pendingStarts.delete(id)) this.releaseBuffered(); // a start that never answers can hold nothing
         this.consecutiveTimeouts++;
         this.log(`request ${method} timed out (${REQUEST_TIMEOUT_MS}ms, ${this.consecutiveTimeouts} consecutive)`);
         if (this.consecutiveTimeouts >= FATAL_CONSECUTIVE_TIMEOUTS) {
@@ -611,9 +688,15 @@ export class AppServerDriver extends EventEmitter {
       this.consecutiveTimeouts = 0; // the child is alive and answering
       // Claim the turn HERE, not in the awaited continuation: this runs in wire order, so a frame
       // packing response+started+completed still claims the turn before its terminal is handled.
-      if (p.method === "turn/start" && !msg.error) {
-        const t = (msg.result as { turn?: { id?: string } } | undefined)?.turn;
-        if (t?.id) this.ownedTurns.add(t.id);
+      // The claim must also land BEFORE the held terminals are released, so a terminal that
+      // overtook this very response is finally recognized as ours rather than the human's.
+      if (p.method === "turn/start") {
+        if (!msg.error) {
+          const t = (msg.result as { turn?: { id?: string } } | undefined)?.turn;
+          if (t?.id) this.ownedTurns.add(t.id);
+        }
+        this.pendingStarts.delete(msg.id as number);
+        this.releaseBuffered();
       }
       if (msg.error) p.reject(new Error(msg.error.message ?? "app-server error"));
       else p.resolve(msg.result);
@@ -640,6 +723,19 @@ export class AppServerDriver extends EventEmitter {
       return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
     // Anything else (permissions requests, elicitations, attestation, user-input): decline cleanly.
     this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
+  }
+
+  /** Emit the terminals held while ownership was undecidable. Once no `turn/start` is outstanding
+   *  the ownership set is settled, so each held turn gets its true `owned` — including one that
+   *  completed before the response that claimed it ever arrived. */
+  private releaseBuffered(): void {
+    if (this.pendingStarts.size > 0 || this.buffered.length === 0) return;
+    const held = this.buffered;
+    this.buffered = [];
+    for (const t of held) {
+      const owned = this.ownedTurns.delete(t.turnId);
+      this.emit("turnCompleted", { turnId: t.turnId, status: t.status, owned });
+    }
   }
 
   private onNotification(method: string, params: Record<string, unknown>): void {
@@ -692,6 +788,14 @@ export class AppServerDriver extends EventEmitter {
           turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted"
             ? turn.status
             : "interrupted";
+        // Ownership is only decidable once no `turn/start` of ours is outstanding. Until then this
+        // terminal may belong to the turn that request is about to name (`turn/started` and
+        // `turn/completed` are free to overtake the response), and calling it foreign would strand
+        // the host's armed accounting on a boundary that has already gone by. Hold it instead.
+        if (!wasOwned && this.pendingStarts.size > 0) {
+          this.buffered.push({ turnId: turn.id, status });
+          return;
+        }
         const owned = this.ownedTurns.delete(turn.id);
         this.emit("turnCompleted", { turnId: turn.id, status, owned });
         return;

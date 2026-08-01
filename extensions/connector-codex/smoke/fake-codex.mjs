@@ -15,6 +15,9 @@ import { WebSocketServer } from "ws";
 
 const logPath = process.env.FAKE_CODEX_LOG;
 const DIED_MARK = `${logPath ?? "/tmp/fake-codex"}.died`;
+/** One-shot marker for FAKE_CODEX_DIE_BEFORE_MCP: only the FIRST incarnation dies, so the host's
+ *  restart really does have a healthy successor to bring up. */
+const MCP_DIED_MARK = `${logPath ?? "/tmp/fake-codex"}.mcpdied`;
 const journal = (entry) => {
   if (logPath) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 };
@@ -30,6 +33,10 @@ if (argv[0] === "resume") {
   const tokenEnv = argv[argv.indexOf("--remote-auth-token-env") + 1];
   journal({ ev: "tui", argv, tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null });
   if (process.env.FAKE_CODEX_TUI_EXIT === "1") setTimeout(() => process.exit(0), 300);
+  // FAKE_CODEX_TUI_CRASH=1: the UI dies of its own accord. Indistinguishable from a quit at the
+  // process level except for the CODE, which is the whole point — read as a quit, an operator is
+  // returned to a shell prompt with a clean exit and nothing to go on.
+  if (process.env.FAKE_CODEX_TUI_CRASH === "1") setTimeout(() => process.exit(3), 300);
   // FAKE_CODEX_TUI_ATTACH=1 behaves like the real TUI: it holds a websocket to the listener and
   // DIES when that listener goes away. That is what makes an app-server crash with a UI attached
   // testable — the host must read that exit as "the transport died", not "the operator quit".
@@ -337,6 +344,15 @@ function onChunk(d) {
         // a genuine crash loop, so the host's bounded-restart rail must give up and exit fatal
         // instead of respawning forever.
         if (process.env.FAKE_CODEX_DIE_ALWAYS === "1") setTimeout(() => process.exit(4), 150);
+        // FAKE_CODEX_DIE_BEFORE_MCP=1: the FIRST incarnation dies with the thread up but the cotal
+        // server never reported ready (the `ready` above is still 50ms out). That strands the
+        // host's LAUNCH tail mid-`awaitMcpReady` on a child that no longer exists, while the crash
+        // rail is already bringing up a replacement — the interleaving where a stale tail can
+        // adopt the successor's readiness, drive on it, and (on its failure branch) tear it down.
+        if (process.env.FAKE_CODEX_DIE_BEFORE_MCP === "1" && !existsSync(MCP_DIED_MARK)) {
+          writeFileSync(MCP_DIED_MARK, "1");
+          setTimeout(() => process.exit(7), 20);
+        }
         break;
       case "thread/inject_items":
         // The host primes the thread at start so a rollout exists for the TUI to resume.
@@ -366,6 +382,23 @@ function onChunk(d) {
             () => notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } }),
             300,
           );
+          break;
+        }
+        if (text.includes("LATERESP")) {
+          // The opposite permitted ordering to NOSTART: `turn/started` AND `turn/completed` both
+          // arrive BEFORE the response that names the turn. JSON-RPC does not order a notification
+          // after the response to a request still in flight, so a client that can only claim a turn
+          // from that response sees a live-but-unclaimed id, calls the terminal somebody else's,
+          // and then claims an already-dead turn — its own accounting never closes.
+          const tid = `turn_lateresp_${++turnSeq}`;
+          notify("turn/started", { threadId: THREAD, turn: { id: tid, status: "inProgress" } });
+          notify("item/completed", {
+            threadId: THREAD,
+            turnId: tid,
+            item: { type: "agentMessage", id: `m_${tid}`, text: "late response", phase: "final_answer" },
+          });
+          notify("turn/completed", { threadId: THREAD, turn: { id: tid, status: "completed" } });
+          setTimeout(() => reply(id, { turn: { id: tid, status: "inProgress" } }), 120);
           break;
         }
         if (text.includes("SAMECHUNK")) {
