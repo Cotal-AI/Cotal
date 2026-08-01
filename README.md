@@ -9,8 +9,8 @@
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
-<sub>One agent is easy. A team of them is a distributed systems problem.<br>
-Any topology you can draw, you can deploy: peer-to-peer, supervised, hierarchical, or any mix.</sub>
+<sub>Deploy distributed agent topologies: peer-to-peer, supervised, hierarchical, or any mix.<br>
+A programming language for agency.</sub>
 
 <p>
 <a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
