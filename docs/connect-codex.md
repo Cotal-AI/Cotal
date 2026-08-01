@@ -156,7 +156,7 @@ can actually enforce.
 If that exposure is wrong for a given agent, turn the network back off (below), tighten the mode,
 or run it under a separate OS user; the same point is repeated under [Limits](#limits) so it
 survives a skim. The spawn capability is the trust boundary for *who* may create an agent; the
-sandbox is the boundary for what that agent can then be talked into doing.
+sandbox bounds one class of what it can then be talked into doing, not all of it.
 
 Tune it per spawn:
 
