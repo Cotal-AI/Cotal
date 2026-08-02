@@ -29,7 +29,7 @@ Minimum **codex-cli 0.145.0**; tested against 0.145.0 and 0.146.0. An older bina
 no `--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:
 check with `codex --version` and upgrade (`npm i -g @openai/codex`) if a launch reports that the
 app-server exited before it started listening. The surface is explicitly experimental upstream, so
-a later Codex release may change it and need a connector update — that is a break to report, not a
+a later Codex release may change it and need a connector update. That is a break to report, not a
 support range we can promise ahead of it.
 
 ## Spawn it
@@ -74,8 +74,8 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   ambient channel chatter waits for the turn boundary so it can't derail work in flight.
 - **Native tools, one endpoint.** The host serves the shared `cotal_*` tools itself, on a
   bearer-authenticated loopback MCP endpoint (the token is passed by env name, so it never appears
-  in the process table — see [Limits](#limits) for what that token does and does not protect). The model calls them like any tool and they
-  execute against the host's single mesh endpoint — no sidecar process, no second identity. The
+  in the process table; see [Limits](#limits) for what that token does and does not protect). The model calls them like any tool and they
+  execute against the host's single mesh endpoint: no sidecar process, no second identity. The
   app-server is the MCP client, so the tools work the same on a turn a peer message started and
   on one **you** typed into the TUI.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
@@ -104,19 +104,19 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   happen, and anything you type is a real user turn on that same thread with the `cotal_*` tools
   still available. In the foreground that is your terminal; detached it is the manager's pty,
   which is exactly what `cotal attach` streams and drives. With no terminal at all (piped output,
-  CI, a smoke) the host stays headless and prints an activity feed instead — the same peer either
+  CI, a smoke) the host stays headless and prints an activity feed instead: the same peer either
   way, only the UI differs. `--transcript` mirrors the feed to `tr-<name>`.
   **Which mode you get** is decided by whether *stdout* is a terminal, and `COTAL_CODEX_TUI=1|0`
   overrides that check when it would guess wrong (a wrapper that redirects output, a CI run that
   wants deterministic text). It is read from the environment of **whichever process builds the
   launch**, so set it in the right place:
-  - foreground `cotal spawn` — your own shell, per spawn;
-  - detached (`-d`) — the **manager's** environment, because the manager builds the launch. Set it
+  - foreground `cotal spawn`: your own shell, per spawn;
+  - detached (`-d`): the **manager's** environment, because the manager builds the launch. Set it
     where you start the manager (`COTAL_CODEX_TUI=0 cotal up`) and it applies to every codex agent
     that manager supervises. Exporting it in the shell that runs `cotal spawn -d` does nothing.
 
-  A detached agent gets the manager's pty, which *is* a terminal, so the default there is the TUI —
-  that is what `cotal attach` streams.
+  A detached agent gets the manager's pty, which *is* a terminal, so the default there is the TUI,
+  which is what `cotal attach` streams.
   Once the TUI paints, the terminal belongs to Codex, so the host's own diagnostics move to
   `host.log` inside the agent's private home
   (`<workspace>/.cotal/codex/<space>-<name>-<hash>/host.log`; the handoff line prints the exact
@@ -127,7 +127,7 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
 
 `--opt k=v` launch options render as codex `-c k=v` config overrides on the app-server child
 (top-level keys, scalar values; write TOML inline-table text yourself for nested values). The
-connector's own defaults and selectors ride the same rail and yield to yours — except
+connector's own defaults and selectors ride the same rail and yield to yours, except
 `mcp_servers`, which is how the agent reaches the mesh: the whole namespace is refused loud (at
 spawn, not at launch) rather than silently overridden.
 
@@ -139,7 +139,7 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 | Default | What it means |
 | --- | --- |
 | `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An interactive policy is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
-| `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is the part that is actually enforced — see below for the (real) exposure it leaves. |
+| `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is the part that is actually enforced; see below for the (real) exposure it leaves. |
 | `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. Applied only when the sandbox is actually `workspace-write`: tighten the mode and no network grant is emitted at all. |
 
 What the sandbox guarantees, stated literally: it **blocks out-of-workspace local filesystem
