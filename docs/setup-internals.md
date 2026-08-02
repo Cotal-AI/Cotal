@@ -123,7 +123,7 @@ status-card hints so they match how you ran it.
 
 ## Built-in connectors are seeded extensions
 
-The four first-party connectors (`claude`, `opencode`, `hermes`, `pi`) are **not** static-imported by
+The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `pi`) are **not** static-imported by
 the binary. The composition root (`bin/cotal.ts`) registers no connector; they self-register only when
 imported, and they are imported only once installed. On the first real command of each boot the CLI
 **seeds** them through the same `cotal ext add` path a third party uses, so they are ordinary
