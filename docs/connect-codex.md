@@ -25,7 +25,7 @@ not this connector and installing it does not connect Codex to a mesh. Codex nee
 installed on its side: the connector drives it from the outside, over `codex app-server`.
 
 **Codex version.** The connector drives `codex app-server` over its experimental v2 surface.
-Minimum **codex-cli 0.145.0**; tested against 0.145.0. An older binary authenticates fine but has
+Minimum **codex-cli 0.145.0**; tested against 0.145.0 and 0.146.0. An older binary authenticates fine but has
 no `--listen`/`--ws-auth` listener, so the launch fails at startup rather than misbehaving quietly:
 check with `codex --version` and upgrade (`npm i -g @openai/codex`) if a launch reports that the
 app-server exited before it started listening. The surface is explicitly experimental upstream, so
