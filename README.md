@@ -5,7 +5,7 @@
 <img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
 </picture>
 
-**The first and most powerful pub/sub standard for AI agents.**
+**The open pub/sub standard for AI agents.**
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
