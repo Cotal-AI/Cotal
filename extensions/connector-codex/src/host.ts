@@ -721,10 +721,10 @@ export async function runCodexHost(): Promise<void> {
   });
 
   // ---- the Codex TUI -------------------------------------------------------
-  // `cotal spawn --agent codex` puts you in Codex proper rather than a log tail: the real TUI
-  // attaches to the very thread this host drives (see tui.ts), so mesh turns render as they
-  // happen and anything typed is a real user turn on the same thread. Detached, the manager's pty
-  // is that terminal, which is exactly what `cotal attach` streams.
+  // `cotal spawn --agent codex` opens Codex's own TUI, attached to the very thread this host
+  // drives (see tui.ts), so mesh turns render as they happen and anything typed is a real user
+  // turn on the same thread. Detached, the manager's pty is that terminal, which is exactly what
+  // `cotal attach` streams.
   //
   // It needs a terminal to own. With a piped stdout (a container, `deploy/`, a smoke) there is
   // none, so the host stays headless and keeps its line feed instead — the same peer either way,
