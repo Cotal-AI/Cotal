@@ -46,9 +46,12 @@ if (!existsSync(CLI)) {
   console.error(`✗ ${CLI} missing — build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
 }
-// The seeded payload is what an install copies in. If the build did not stage it, the smoke would
-// silently prove nothing (the auto-seed would simply find no codex), so assert it up front.
-const SEEDED = join(REPO, "bin", "seeded-connectors", "codex", "dist", "index.js");
+// The payload the auto-seed copies in. Without it the smoke would silently prove nothing (the seed
+// would simply find no codex), so assert it up front. In a source checkout that payload is the live
+// extension dir: `shippedSourceDir` (implementations/cli/src/seed/paths.ts) prefers it and only
+// falls back to `bin/seeded-connectors/` for a published binary, which is staged by bin's prepack
+// and so is absent from a plain `pnpm build`.
+const SEEDED = join(REPO, "extensions", "connector-codex", "dist", "index.js");
 if (!existsSync(SEEDED)) {
   console.error(`✗ ${SEEDED} missing — build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
