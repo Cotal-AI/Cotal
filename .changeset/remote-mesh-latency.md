@@ -1,6 +1,5 @@
 ---
 "@cotal-ai/core": minor
-"@cotal-ai/workspace": minor
 "@cotal-ai/cli": minor
 "@cotal-ai/web": minor
 "cotal-ai": minor
@@ -25,9 +24,13 @@ now takes under a second for 93.
 - `channelHistory` and `dmHistory` returned the OLDEST messages on any channel holding more than the
   requested limit, while being documented as recent and rendered everywhere as the latest. They now
   return the newest, read through a bounded window rather than by draining the backlog.
-- The dashboard's activity feed asked every channel for a full page and discarded all but one page of
-  the union; control commands opened a probe connection and then immediately opened a real one to the
-  same broker; and `cotal status` started the Claude CLI twice for data one listing contains.
+- `cotal status` started the Claude CLI twice for data one listing contains.
+
+Two optimisations were attempted and REVERTED during review, and are not part of this change: the
+dashboard's activity feed still fetches a full page per channel (the cheaper version dropped
+genuinely-newer messages, because saturation counts messages rather than recency), and control
+commands still open a probe connection before the real one (skipping it flattened typed auth
+failures and lost the probe's deadline).
 
 This is the read-path half of the work. The registry-safety half — a failed network probe must not
 delete a mesh record — is a separate change on top of the `origin`/`pruneMesh` model from

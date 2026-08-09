@@ -1703,35 +1703,38 @@ export class CotalEndpoint extends EventEmitter {
     if (limit <= 0) return [];
     const js = jetstream(this.nc);
     try {
-      const jsm = await jetstreamManager(this.nc);
-      // An upper bound on the sequence to page back from. Deliberately the STREAM's last sequence,
-      // not the last sequence MATCHING `subject`: the precise answer would come from
-      // `getMessage({ last_by_subj })`, but that needs `$JS.API.STREAM.MSG.GET`, which read
-      // credentials do NOT hold (verified against a live mesh: observer creds get a Permissions
-      // Violation, and the catch below would silently turn that into an empty history). STREAM.INFO
-      // is already required by `consumers.get`, so this adds no authority. A loose upper bound only
-      // costs an extra widening step on a quiet channel in a busy stream.
-      const ceiling = before !== undefined ? before - 1 : (await jsm.streams.info(stream)).state.last_seq;
+      // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
+      // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
+      // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
+      // instead (which is all `STREAM.INFO` offers) was a loose upper bound, and on a quiet channel
+      // in a busy stream the gap between the two is the whole problem: every window near the stream
+      // head is empty, so the search widened over and over before finding anything.
+      //
+      // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
+      // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
+      // shipped once from this function and turned every non-admin history read into an empty list.
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subject);
       if (ceiling < 1) return [];
 
-      // WIDEN BY MEASURING, DRAIN ONCE. An earlier version drained at every widening step and, after
-      // a fixed eight attempts, fell back to draining from sequence 1. On a quiet channel buried in a
-      // busy stream that is the worst case in the file: the widest attempted window is about a
-      // million sequence positions, so a channel whose newest message is older than that fell through
-      // to a FULL BACKLOG read, having already paid for eight partial reads on the way. That restores
-      // exactly the multi-round-trip, whole-backlog transfer this function exists to remove.
+      // Widen from the exact ceiling until a window holds a full page, or until the window IS the
+      // whole subject. Draining each attempt is bounded, and that is the point: a window only fails
+      // when it holds FEWER than `limit` matches, so every wasted drain moves less than one page.
+      // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
+      // small multiple of a page.
       //
-      // `num_pending` on a filtered consumer answers "how many matches at or after this sequence"
-      // WITHOUT transferring any of them, so the search is cheap: widen while measuring, then drain
-      // the one window that holds a full page. Geometric growth bounds the number of measurements,
-      // and there is exactly one bulk transfer however far back the channel's traffic sits.
+      // NAMED POLICY for the remaining case: when a channel's matches are all old and sparse, the
+      // search walks back to sequence 1 and the final drain transfers that subject's whole retained
+      // set. That is chosen deliberately — a FULL page of genuinely recent messages, at the cost of
+      // an unbounded read on a channel that has not been used in a long time — over returning a
+      // short page while older messages exist. The exact ceiling above means this is now reached
+      // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
       let span = Math.max(limit * 4, 64);
-      let start = Math.max(1, ceiling - span + 1);
-      while (start > 1 && (await this.pendingFrom(js, stream, subject, start)) < limit) {
+      for (;;) {
+        const start = Math.max(1, ceiling - span + 1);
+        const page = await this.drainWindow(js, stream, subject, start, ceiling);
+        if (page.length >= limit || start === 1) return page.slice(-limit);
         span *= 4;
-        start = Math.max(1, ceiling - span + 1);
       }
-      return (await this.drainWindow(js, stream, subject, start, ceiling)).slice(-limit);
     } catch (e) {
       // NARROW. This catch is how the MSG.GET grant bug shipped: it turned a Permissions Violation
       // into an empty history, so every non-admin read looked exactly like a quiet channel, and the
@@ -1754,23 +1757,26 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** How many messages matching `subject` sit at or after `start`, WITHOUT transferring any of them.
-   *  The measurement that lets the window search widen cheaply: a consumer's `num_pending` is
-   *  returned by its create, so this costs the create plus its delete and moves no message bodies.
+  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
    *
-   *  NOTE it counts to the END of the stream, not to a `ceiling`. That is exact for the default read
-   *  (where `ceiling` IS the stream head) and an OVER-count when paging with `before`, which would
-   *  make the search stop widening too early. `before` is not wired to any caller yet; wiring it
-   *  needs this to bound at the ceiling too. */
-  private async pendingFrom(
+   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
+   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
+   *  already uses, so no broker authority is added. */
+  private async lastMatchingSeq(
     js: ReturnType<typeof jetstream>,
     stream: string,
     subject: string,
-    start: number,
   ): Promise<number> {
-    const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
+    const consumer = await js.consumers.get(stream, {
+      filter_subjects: [subject],
+      deliver_policy: DeliverPolicy.Last,
+    });
     try {
-      return (await consumer.info(true)).num_pending;
+      if ((await consumer.info(true)).num_pending === 0) return 0;
+      const iter = await consumer.fetch({ max_messages: 1 });
+      for await (const m of iter) return m.seq;
+      return 0;
     } finally {
       await consumer.delete().catch(() => { /* already gone, or denied */ });
     }

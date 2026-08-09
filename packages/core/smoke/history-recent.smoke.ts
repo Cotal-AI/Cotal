@@ -92,11 +92,24 @@ try {
   // An empty channel is empty, not an error.
   check("an unused channel returns []", (await ep.channelHistory("never-used", { limit: 10 })).length === 0);
 
-  // NOTE on transfer: the windowed drain also stops a single page costing the whole backlog, which
-  // is the other half of why history was slow remotely. That is not asserted here because measuring
-  // it would mean exposing the endpoint's connection stats as public API purely for a test. The
-  // correctness property above is the one that can silently regress; the transfer property follows
-  // from the mechanism (a bounded window) and is visible in the live measurements on the plan.
+  // ── THE FAR-GAP CASE: a QUIET channel buried under a busy one. Its newest message sits far below
+  //    the stream's last sequence, which is the shape that used to make every window near the stream
+  //    head empty and walk the search back to the beginning. With an exact per-subject ceiling the
+  //    page must come straight back. ────────────────────────────────────────────────────────────────
+  await ep.multicast("quiet-1", { channel: "quiet" });
+  await ep.multicast("quiet-2", { channel: "quiet" });
+  for (let i = 0; i < 400; i++) await ep.multicast(`filler-${i}`, { channel: "noisy" });
+  await wait(300);
+  const quiet = await ep.channelHistory("quiet", { limit: 10 });
+  check("far gap: a quiet channel buried under 400 filler messages still returns its own newest",
+    quiet.length === 2 && text(quiet[0]!) === "quiet-1" && text(quiet[1]!) === "quiet-2", quiet.map(text));
+  const noisyPage = await ep.channelHistory("noisy", { limit: 5 });
+  check("far gap: the busy channel still pages to its newest 5",
+    noisyPage.length === 5 && text(noisyPage[4]!) === "filler-399", noisyPage.map(text));
+  // A channel that was configured but never used must cost one probe and stop, not a search.
+  check("far gap: an unused channel in a busy stream returns [] without a search",
+    (await ep.channelHistory("never-used", { limit: 10 })).length === 0);
+
 
   await ep.stop();
   console.log(`\nhistory-recent smoke: ${pass} checks passed`);
