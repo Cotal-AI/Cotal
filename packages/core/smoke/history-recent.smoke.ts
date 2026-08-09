@@ -17,6 +17,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect } from "@nats-io/transport-node";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
 
 const PORT = 14772;
@@ -110,6 +112,34 @@ try {
   check("far gap: an unused channel in a busy stream returns [] without a search",
     (await ep.channelHistory("never-used", { limit: 10 })).length === 0);
 
+
+  // ── REQUEST-SHAPE GATES. Everything above checks VALUES, and the discarded stream-head algorithm
+  //    returned the same values for these fixtures — so those assertions could not tell the two
+  //    apart. These two can: they fail against the old implementation, which widened from the
+  //    stream head and left every consumer it created behind.
+
+  const jsmc = await jetstreamManager((await connect({ servers: SERVER })));
+  const chatStreamName = `CHAT_${SPACE}`;
+  const consumers = async () => (await jsmc.streams.info(chatStreamName)).state.consumer_count;
+
+  // 1. CONSUMER HYGIENE. Every probe and every window must be reclaimed. The old code created a
+  //    consumer per widening attempt and deleted none, so a single far-gap read left nine behind.
+  const before = await consumers();
+  await ep.channelHistory("quiet", { limit: 10 });   // buried channel: exercises the probe + a window
+  await ep.channelHistory("noisy", { limit: 5 });
+  await ep.channelHistory("never-used", { limit: 10 }); // empty: probe only
+  await wait(300);
+  const after = await consumers();
+  check(`history reclaims every consumer it creates (before ${before}, after ${after})`, after <= before, { before, after });
+
+  // 2. THE EXACT CEILING IS USED. An unused channel must cost ONE probe and stop. Under the old
+  //    stream-head walk it cost a widening search over the whole stream before concluding nothing
+  //    was there, so this bounds request count rather than just checking the empty result.
+  const t0 = Date.now();
+  const none = await ep.channelHistory("never-used", { limit: 10 });
+  const elapsed = Date.now() - t0;
+  check(`an unused channel is answered by the ceiling probe alone (${elapsed}ms, no search)`,
+    none.length === 0 && elapsed < 1000, { elapsed });
 
   await ep.stop();
   console.log(`\nhistory-recent smoke: ${pass} checks passed`);
