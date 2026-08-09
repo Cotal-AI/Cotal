@@ -22,13 +22,15 @@
 import { spawn } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { newArtifactSigner, SESSION_GRANT_MAX_TTL_MS, type SignerAnchor, type AnchorResolver } from "@cotal-ai/core";
+import {
+  newArtifactSigner, SESSION_GRANT_MAX_TTL_MS, openSessionRail,
+  type SignerAnchor, type AnchorResolver,
+} from "@cotal-ai/core";
 import { launchEnv } from "@cotal-ai/connector-core";
 import { createRuntime } from "../src/index.js";
 import {
   mintAttachOffer,
   serveSessionBridge,
-  openSessionRail,
   encodeTerminalData,
   decodeTerminalFrame,
   type TerminalFrame,
