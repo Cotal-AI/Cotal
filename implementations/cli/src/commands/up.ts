@@ -177,6 +177,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean;
+    "tls-cert"?: string; "tls-key"?: string;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };

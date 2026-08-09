@@ -151,7 +151,9 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
   // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
   // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
-  const tls = v.tls === true || v.tls === "true";
+  // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
+  // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
+  const tls = v.tls !== undefined;
   if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
     process.exit(1);
