@@ -133,6 +133,26 @@ export const AJV_PROFILE_OPTIONS = Object.freeze({
   // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one
   // grammar and executed under another (an admitting under-approximation).
   unicodeRegExp: true,
+  // PINNED for the same reason as `unicodeRegExp`, and discovered the same way — by checking what
+  // an inherited default actually does rather than assuming it does nothing.
+  //
+  // Ajv defaults this to TRUE (`ajv@8.20.0/dist/core.js:83`), and with it on, a referenced schema
+  // with no refs of its own is INLINED INTO ITS REFERRER'S GENERATED CODE. A closure is compiled by
+  // ONE `ajv.compile` on the root, with members merely `addSchema`'d — so under inlining the
+  // codegen units are NOT one-per-document: leaf members merge upward into the root's function.
+  //
+  // That matters because `maxClosureNodes`'s stated basis is that each member is independently held
+  // under `maxSchemaNodes` and therefore no single codegen unit can reach the size that
+  // stack-overflows the compiler. UNDER INLINING THAT IS NOT TRUE, and the per-document ceiling
+  // stops describing the thing that actually gets compiled. The invariant was resting on an option
+  // nobody had chosen.
+  //
+  // `false` costs a function call per referenced schema at validation time and buys a structural
+  // guarantee: each referenced schema is its own compiled unit, so the per-document bound bounds
+  // what is actually generated. On a DoS boundary a deterministic structure is worth more than
+  // inlining's marginal speed, and it makes the closure bound's comment true by construction rather
+  // than by accident.
+  inlineRefs: false,
 } as const);
 
 /** The canonical void schema (§13.7): the one artifact a side with no payload declares, so both
