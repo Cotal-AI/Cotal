@@ -1021,7 +1021,7 @@ async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<
   const auth = await resumeControlAuth(prepared.root, prepared.mode);
   const nc = await connect({
     servers: prepared.server,
-    ...standaloneConnectOpts(auth),
+    ...standaloneConnectOpts({ ...auth, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -1100,7 +1100,7 @@ async function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Prom
   const auth = await resumeControlAuth(pending.root, pending.mode);
   const nc = await connect({
     servers: pending.server,
-    ...standaloneConnectOpts(auth),
+    ...standaloneConnectOpts({ ...auth, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {

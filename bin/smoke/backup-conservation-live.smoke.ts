@@ -154,7 +154,7 @@ async function openSampler(mesh: Mesh, auth: SpaceAuth): Promise<Sampler> {
   const creds = await mintCreds(auth, newIdentity(), "backup", {
     backup: { operation: "inspect", selection: "full" },
   });
-  const nc = await connect({ servers: mesh.server, ...standaloneConnectOpts({ creds }) });
+  const nc = await connect({ servers: mesh.server, ...standaloneConnectOpts({ creds, tls: false }) });
   return {
     close: async () => { await nc.drain().catch(() => {}); },
     read: async () => {

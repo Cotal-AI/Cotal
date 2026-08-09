@@ -60,7 +60,7 @@ async function requestPermission(
 ): Promise<"allowed" | "denied"> {
   const nc = await connect({
     servers,
-    ...standaloneConnectOpts({ creds }),
+    ...standaloneConnectOpts({ creds, tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -88,7 +88,7 @@ try {
 
   const operator = newIdentity();
   const operatorCreds = await mintCreds(auth, operator, "operator");
-  const operatorNc = await connect({ servers, ...standaloneConnectOpts({ creds: operatorCreds }) });
+  const operatorNc = await connect({ servers, ...standaloneConnectOpts({ creds: operatorCreds, tls: false }) });
   const snapshotPayload = randomBytes(768 * 1024);
   await jetstream(operatorNc).publish(
     chatSubject(space, "local", operator.id, "general"),
@@ -105,10 +105,10 @@ try {
   // `DeliverPolicy.New` must retain its creation frontier even before the first pull/delivery.
   const delivery = newIdentity();
   const deliveryCreds = await mintCreds(auth, delivery, "delivery");
-  const deliveryNc = await connect({ servers, ...standaloneConnectOpts({ creds: deliveryCreds }) });
+  const deliveryNc = await connect({ servers, ...standaloneConnectOpts({ creds: deliveryCreds, tls: false }) });
   const deliveryManager = await jetstreamManager(deliveryNc);
   const fanout = await deliveryManager.consumers.add(chatStream(space), fanoutDurableConfig(space));
-  const taskProvisionerNc = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds }) });
+  const taskProvisionerNc = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds, tls: false }) });
   const taskProvisionerManager = await jetstreamManager(taskProvisionerNc);
   const task = await taskProvisionerManager.consumers.add(taskStream(space), taskDurableConfig(space, "worker"));
   const consumersByStream = Object.fromEntries(spaceBackupInventory(space).full.map((stream) => [stream, []]));
@@ -163,7 +163,7 @@ try {
     backup: { operation: "snapshot", stream: chatStream(space), deliverSubject: snapshotSubject },
   });
   assert.equal(inspectCredHealth(backupCreds).state, "healthy");
-  const backupNc = await connect({ servers, ...standaloneConnectOpts({ creds: backupCreds }) });
+  const backupNc = await connect({ servers, ...standaloneConnectOpts({ creds: backupCreds, tls: false }) });
   const chunks: Uint8Array[] = [];
   const snapshot = await downloadStreamSnapshot(backupNc, chatStream(space), {
     deliverSubject: snapshotSubject,
@@ -208,13 +208,13 @@ try {
 
   const teardown = newIdentity();
   const teardownCreds = await mintCreds(auth, teardown, "teardown");
-  const teardownNc = await connect({ servers, ...standaloneConnectOpts({ creds: teardownCreds }) });
+  const teardownNc = await connect({ servers, ...standaloneConnectOpts({ creds: teardownCreds, tls: false }) });
   const teardownManager = await jetstreamManager(teardownNc);
   await teardownManager.streams.delete(taskStream(space));
   await teardownManager.streams.delete(chatStream(space));
   await teardownNc.drain();
 
-  const taskStreamCreatorNc = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds }) });
+  const taskStreamCreatorNc = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds, tls: false }) });
   await (await jetstreamManager(taskStreamCreatorNc)).streams.add(canonicalBackupStreamConfig(space, taskStream(space)));
   await taskStreamCreatorNc.drain();
 
@@ -223,7 +223,7 @@ try {
     restore: { operation: "initiate", stream: chatStream(space) },
   });
   assert.equal(inspectCredHealth(restoreInitCreds).state, "healthy");
-  const restoreInitNc = await connect({ servers, ...standaloneConnectOpts({ creds: restoreInitCreds }) });
+  const restoreInitNc = await connect({ servers, ...standaloneConnectOpts({ creds: restoreInitCreds, tls: false }) });
   const session = await initiateStreamRestore(
     restoreInitNc,
     space,
@@ -254,7 +254,7 @@ try {
     "restore upload is cross-stream denied",
   );
 
-  const restoreUploadNc = await connect({ servers, ...standaloneConnectOpts({ creds: restoreUploadCreds }) });
+  const restoreUploadNc = await connect({ servers, ...standaloneConnectOpts({ creds: restoreUploadCreds, tls: false }) });
   for (const chunk of chunks) await uploadStreamRestoreChunk(restoreUploadNc, session, chunk);
   const restored = await finalizeStreamRestore(restoreUploadNc, session);
   await restoreUploadNc.drain();
@@ -265,7 +265,7 @@ try {
   const restoreValidatorCreds = await mintCreds(auth, restoreValidator, "restore", {
     restore: { operation: "validate", stream: chatStream(space) },
   });
-  const validateNc = await connect({ servers, ...standaloneConnectOpts({ creds: restoreValidatorCreds }) });
+  const validateNc = await connect({ servers, ...standaloneConnectOpts({ creds: restoreValidatorCreds, tls: false }) });
   const infoResponse = JSON.parse((await validateNc.request(`$JS.API.STREAM.INFO.${chatStream(space)}`, "{}", { timeout: 1000 })).string());
   assert.equal(infoResponse.state.messages, 1, "restore validator sees restored message state");
   assert.equal(infoResponse.state.consumer_count, 0, "no native consumer survives no_consumers snapshot/restore");
@@ -285,7 +285,7 @@ try {
   const checkpointCreds = await mintCreds(auth, checkpointWriter, "restore", {
     restore: { operation: "checkpoint", checkpoint: fanoutCheckpoint },
   });
-  const checkpointNc = await connect({ servers, ...standaloneConnectOpts({ creds: checkpointCreds }) });
+  const checkpointNc = await connect({ servers, ...standaloneConnectOpts({ creds: checkpointCreds, tls: false }) });
   const recreated = await recreateConsumerCheckpoint(checkpointNc, space, fanoutCheckpoint);
   assert.equal(recreated.name, fanoutCheckpoint.name);
   assert.equal(recreated.config.opt_start_seq, 2, "checkpoint recreates at the conservative start sequence");
@@ -295,7 +295,7 @@ try {
   const taskCheckpointCreds = await mintCreds(auth, taskCheckpointWriter, "restore", {
     restore: { operation: "checkpoint", checkpoint: taskCheckpoint },
   });
-  const taskCheckpointNc = await connect({ servers, ...standaloneConnectOpts({ creds: taskCheckpointCreds }) });
+  const taskCheckpointNc = await connect({ servers, ...standaloneConnectOpts({ creds: taskCheckpointCreds, tls: false }) });
   const recreatedTask = await recreateConsumerCheckpoint(taskCheckpointNc, space, taskCheckpoint);
   assert.equal(recreatedTask.name, taskCheckpoint.name);
   assert.equal(recreatedTask.config.deliver_policy, "all", "TASK checkpoint recreates with WorkQueue DeliverAll");

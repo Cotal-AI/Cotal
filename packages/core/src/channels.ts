@@ -163,7 +163,7 @@ export async function seedChannelRegistry(opts: {
   sentinelCreds?: string;
   file: ChannelRegistryFile;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // The seed path is privileged (manager creds or open) so it may CREATE the bucket — this
     // makes `cotal channels` work on a space whose bucket wasn't pre-created (e.g. one set up
@@ -189,7 +189,7 @@ export async function ensureDefaultDeliveryClass(opts: {
   creds?: string;
   deliveryClass: DeliveryClass;
 }): Promise<boolean> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
     if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
@@ -214,7 +214,7 @@ export async function deleteChannels(opts: {
   sentinelCreds?: string;
   channels: string[];
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
     for (const channel of opts.channels) await kv.delete(channel);
@@ -235,7 +235,7 @@ export async function readChannelRegistry(opts: {
   bearer?: string;
   sentinelCreds?: string;
 }): Promise<ChannelRegistryFile> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // Read-only: never CREATE the bucket — a scoped read cred (operator) has no STREAM.CREATE, and a
     // read must not have the side effect of provisioning. `Kvm.open` binds lazily, so a never-seeded

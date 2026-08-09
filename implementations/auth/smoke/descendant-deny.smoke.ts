@@ -65,7 +65,7 @@ const evictor: EvictPrincipal = async (principal) => ({ principal, kicked: 0, re
 
 async function tryConnect(bearer: string): Promise<"connected" | "denied"> {
   try {
-    const nc = await connect({ servers: SERVERS, reconnect: false, ...(standaloneConnectOpts({ bearer, sentinelCreds: callout.sentinelCreds }) as Partial<ConnectionOptions>) });
+    const nc = await connect({ servers: SERVERS, reconnect: false, ...(standaloneConnectOpts({ bearer, sentinelCreds: callout.sentinelCreds, tls: false }) as Partial<ConnectionOptions>) });
     await nc.close();
     return "connected";
   } catch (e) {
