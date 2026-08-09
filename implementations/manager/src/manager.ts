@@ -4037,14 +4037,25 @@ export class Manager {
     // registration instanceId to this incarnation's serve-grant epoch; a foreign/retired instance
     // is `null` (no current terminal to surface). A successor incarnation carries an ADVANCED epoch
     // here, so its reads pick the current-epoch subject and the predecessor's terminal is fenced out.
-    gw.ctx = await actionContext(nc, this.space, { resolveExecutorEpoch: (iid) => this.currentInstanceEpoch(iid) });
-    // must-5 (a): the own-issuance-gate READER for the currency belt (auth mode only — an open mesh
-    // has no gate/credential system). Reads `epgate.<e>.<iid>` over this connection's STREAM.MSG.GET
-    // grant; observe-only (stage/commit/revoke are never called through it — the goal-writer holds
-    // no gate/epcred WRITE grant, so a mis-call would broker-deny anyway).
-    gw.gate = this.auth
-      ? serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId })
-      : undefined;
+    gw.ctx = await actionContext(nc, this.space);
+    // The own-issuance-gate READER for the currency belt, on BOTH mesh modes. Reads
+    // `epgate.<e>.<iid>` over this connection; observe-only (stage/commit/revoke are never called
+    // through it — the goal-writer holds no gate/epcred WRITE grant, so a mis-call would
+    // broker-deny anyway).
+    //
+    // OPEN MESH IS NOT EXEMPT, and this is load-bearing. An open-mesh registration mints no
+    // credentials, so the §13.1 takeover barrier's revoke-and-evict loop enumerates an EMPTY family
+    // and is VACUOUS — yet it still advances processEpoch. The gate row itself DOES exist there
+    // (`provisionEndpointGateOpen`, over the authority stores the open serve path ensures), and a
+    // bare connection CAN read it (executed probe). So this belt is the ONLY thing standing between
+    // a deposed open-mesh incarnation and a wrong terminal on the one create-only result subject.
+    //
+    // NAME IT HONESTLY: on an open mesh this is a COOPERATIVE fence. The broker enforces nothing, so
+    // a hostile or non-conformant process can simply not run the check — the same guarantee class as
+    // every other open-mesh property. It is also a read-then-CAS, so it NARROWS the commit window
+    // rather than closing it. An AUTH mesh gets durable closure from the §13.1 barrier (revoke +
+    // cluster-verified eviction BEFORE the epoch advance); an open mesh gets none.
+    gw.gate = serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId });
     this.goalWriter = gw;
     console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${this.auth ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
   }
@@ -4180,9 +4191,9 @@ export class Manager {
       // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
       // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep
       // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
-      for (const { ref } of entries) {
+      for (const { ref, iid } of entries) {
         if (this.goalAcceptances.has(ref.goalId)) continue; // never settle a goal THIS incarnation drives
-        try { await this.reconcileOneGoal(ref); }
+        try { await this.reconcileOneGoal(ref, iid); }
         catch (e) { console.error(`! goal reconcile for ${ref.goalId}: ${(e as Error).message}`); }
       }
       if (entries.length) console.error(`goal-index boot reconcile: swept ${entries.length} inherited goal(s)`);
@@ -4201,7 +4212,7 @@ export class Manager {
    *  bounded readiness outcome the plan maps the window to). Within the readiness window it arms a
    *  bounded, unref'd timer to settle at the deadline (an early uncertain would steal a still-possible
    *  success the substrate guards against). */
-  private async reconcileOneGoal(ref: GoalRef): Promise<void> {
+  private async reconcileOneGoal(ref: GoalRef, acceptedByIid: string): Promise<void> {
     const gw = this.goalWriter;
     if (!gw) return;
     const status = await readGoalStatus(gw.ctx, ref);
@@ -4209,17 +4220,17 @@ export class Manager {
     if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, ref); return; }
     const spec = await readGoalSpec(gw.ctx, ref);
     if (spec === undefined) return; // a status without its spec is garbled — leave for the next boot
-    // The (i) fence (item 3): an executor-pinned goal's terminal commits under the executor's CURRENT
-    // epoch. This incarnation reconciles only goals whose executor is ITS OWN registration instanceId
-    // (a same-instanceId restart advances the epoch), so it resolves that current epoch and settles the
-    // orphan there; a foreign/retired executor (no current epoch) is left for its own instance/operator.
-    const execEpoch = spec.value.executor !== undefined ? this.currentInstanceEpoch(spec.value.executor.instanceId) : null;
-    if (spec.value.executor !== undefined && execEpoch === null) {
-      console.error(`goal reconcile ${ref.goalId}: executor "${spec.value.executor.instanceId}" is not this incarnation's own instance; left for its owner (never a cross-instance settle)`);
+    // NEVER A CROSS-INSTANCE SETTLE. The accepting incarnation is recorded on the INDEX ENTRY
+    // itself (`iid`, written at accept), which is the honest coordinate: a same-instanceId restart
+    // inherits its predecessor's orphans, and a goal accepted by a DIFFERENT (possibly still-live)
+    // sibling is left for its owner. This replaces the goal spec's `executor` pin, which existed
+    // only to epoch-scope the terminal subject and is gone with it (SPEC:1394).
+    if (acceptedByIid !== this.managerInstanceId) {
+      console.error(`goal reconcile ${ref.goalId}: accepted by instance "${acceptedByIid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
       return;
     }
     const settle = async () => {
-      await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), ...(execEpoch !== null ? { executorEpoch: execEpoch } : {}) }); // first-terminal-wins: a racing terminal returns the winner, no throw
+      await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }); // first-terminal-wins: a racing terminal returns the winner, no throw
       await clearGoalIndex(gw.ctx, ref);
     };
     const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
@@ -4260,7 +4271,7 @@ export class Manager {
    *  callers trusting the terminal fact, never orphaned processes. */
   private async assertGoalWriterEpochCurrent(epoch: number): Promise<void> {
     const gate = this.goalWriter?.gate;
-    if (!gate) return; // open mesh: no gate/credential system to fence against
+    if (!gate) return; // no goal-writer standing yet
     const observed = await gate.observe();
     if (observed === null)
       throw new EpEnvelopeError("expired", `the manager's issuance gate for ${MANAGER_ENDPOINT}/${this.managerInstanceId} is gone; a retired incarnation never commits a goal terminal (SPEC 13.1/13.6)`);
@@ -4331,10 +4342,6 @@ export class Manager {
           fingerprint,
           command: ctx.subject.command,
           caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
-          // The EXECUTING instance (the (i) fence, SPEC 13.6 P2 item 3): this manager's registration
-          // instanceId. Its presence EPOCH-SCOPES the terminal-fact subject, so a superseded
-          // incarnation's terminal is invisible to a current-epoch reader (the successor settle wins).
-          executor: { instanceId: this.managerInstanceId },
           requestId: goalId,
           sourceSeq: 0,
           acceptedAt,
@@ -4351,21 +4358,19 @@ export class Manager {
         // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
         // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
         // incarnation's OWN gate epoch and REFUSES a superseded commit (the currency belt), and (b)
-        // barrier-revoke evicts this connection on takeover; the (i) INSTANT EPOCH FENCE (SPEC 13.6
-        // P2 item 3) executor-pins the terminal to this incarnation's gate epoch (`executorEpoch:
-        // epoch`) so it lands on the epoch-scoped `...result.<epoch>` subject and resolveExecutorEpoch
-        // fences a superseded committer — a corpse's terminal is invisible to a current-epoch reader;
-        // the successor's settle is what callers see. On success the reconcile-index entry is cleared.
+        // barrier-revoke evicts this connection on takeover. The terminal lands on the ONE subject
+        // SPEC:1394 reserves; first-terminal-fact-wins is global, so a committed outcome is visible
+        // to every reader in every incarnation. On success the reconcile-index entry is cleared.
         try {
           await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits
           let fact;
           if (o.kind === "succeeded") {
             this.emitGoalProgress(ref, epoch, { phase: "presence" });
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data, executorEpoch: epoch }));
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data }));
           } else if (o.kind === "failed") {
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, executorEpoch: epoch }));
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data }));
           } else {
-            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), executorEpoch: epoch }));
+            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }));
           }
           this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
           await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
@@ -4410,9 +4415,7 @@ export class Manager {
     try {
       await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
-      // The (i) fence (item 3): the goal is executor-pinned, so its cancel terminal commits under THIS
-      // incarnation's gate epoch (like onOutcome) - land it on the epoch-scoped result subject.
-      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" }, executorEpoch: epoch });
+      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" } });
       this.emitGoalProgress(ref, epoch, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
       await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
     } catch {
