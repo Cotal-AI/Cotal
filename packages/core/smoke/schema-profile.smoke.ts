@@ -119,6 +119,47 @@ refuses("patternProperties key bomb refused", () =>
   // principal that already holds the authority to register a contract, in exchange for not refusing
   // real contracts on a constant nobody could defend.
 }
+// 6c) THE ADMITTED VOCABULARY. The profile refuses an unrecognised keyword rather than ignoring it
+// as JSON Schema would, because counting only what you recognise is what let `contentSchema` and
+// `dependencies` through uncounted. This is the ONLY change in this area that REFUSES MORE, so it
+// is the only one that can break a document that registered before — which makes an untested
+// version of it the worst thing in the file.
+//
+// The refusal has to reach EVERY schema position, or a keyword hides one level down from the walk.
+{
+  refuses("an unadmitted keyword at the root refuses", () =>
+    compileContractSchema({ root: { type: "object", "x-vendor": true } }), "admitted vocabulary");
+  refuses("an unadmitted keyword nested under properties refuses", () =>
+    compileContractSchema({ root: { type: "object", properties: { a: { type: "string", fooBar: 1 } } } }), "admitted vocabulary");
+  refuses("an unadmitted keyword inside $defs refuses", () =>
+    compileContractSchema({ root: { $defs: { d: { type: "string", weird: 1 } }, $ref: "#/$defs/d" } }), "admitted vocabulary");
+}
+// AND THE THREE WAYS THIS COULD BE RIGHT IN SHAPE AND WRONG IN WIDTH. Each of these is a schema a
+// reasonable person writes, and each would be refused by a naive version of the walk. Asserting only
+// the refusals above would pass just as happily with a guard that rejects everything.
+{
+  // 1. INERT ANNOTATIONS ARE ADMITTED. Refusing a contract for carrying documentation would be an
+  //    absurd outcome, and the whole 2020-12 annotation vocabulary is listed for that reason.
+  ok("every inert annotation keyword is admitted", (() => {
+    compileContractSchema({ root: { type: "string", title: "t", description: "d", $comment: "c",
+      deprecated: true, readOnly: true, writeOnly: false, examples: [1], default: 2 } });
+    return true;
+  })());
+  // 2. USER-CHOSEN NAMES ARE NOT KEYWORDS. The keys of `properties` are field names; a walk that
+  //    checked every object key against the vocabulary would refuse a schema with a field called
+  //    `name`. These fields are named after keywords precisely because that is the hostile case.
+  ok("property names that collide with keywords are not treated as vocabulary", (() => {
+    compileContractSchema({ root: { type: "object", properties: { type: { type: "string" }, items: { type: "string" }, not: { type: "string" } } } });
+    return true;
+  })());
+  // 3. INSTANCE DATA IS NOT A SCHEMA. `default`, `examples` and `const`/`enum` values are arbitrary
+  //    JSON, so descending into them would refuse a legitimate default whose object happens to
+  //    carry a key nobody enumerated.
+  ok("arbitrary keys inside default/examples/enum data are not vocabulary", (() => {
+    compileContractSchema({ root: { type: "object", default: { anythingGoes: 1 }, examples: [{ alsoFine: 2 }], enum: [{ q: 1 }] } });
+    return true;
+  })());
+}
 {
   // WHAT ACTUALLY CATCHES A SCHEMA THE COMPILER CANNOT BUILD: the try/catch around `ajv.compile`,
   // which normalises any codegen failure to `contract-invalid`. It has been doing this the whole
