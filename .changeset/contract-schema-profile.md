@@ -4,7 +4,9 @@
 Contract schema registration is bounded structurally, and an unrecognised keyword is now refused.
 
 **This refuses more than before, and it can reject a contract that registered successfully in an
-earlier version.** The 2020-12 execution profile (SPEC §13.7/§13.8) now validates a schema document
+earlier version.** `compileContract` is exported from `@cotal-ai/core` in the released package, so
+this is a break against schemas already in use, not an internal tightening. The 2020-12 execution
+profile (SPEC §13.7/§13.8) now validates a schema document
 against an explicit admitted vocabulary and raises `contract-invalid` for any keyword outside it.
 JSON Schema says an unknown keyword is ignored as an annotation; this profile refuses it, because a
 profile that enforces bounds cannot soundly bound what it does not recognise — counting only known
