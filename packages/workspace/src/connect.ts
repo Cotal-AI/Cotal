@@ -17,7 +17,7 @@ import {
 import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { findMesh, getCurrent, removeMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
@@ -367,7 +367,10 @@ export async function preflightOrExit(target: MeshTarget, probeCreds?: string): 
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
-  if (r.prune) removeMesh(target.space);
-  console.error(c.red(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned: r.prune })));
+  // The classifier says whether this failure is a stale-entry signal; `pruneMesh` says whether the
+  // record is one an automatic sweep may delete (an operator-registered mesh is not). The message
+  // reports what ACTUALLY happened, so it never claims a removal that the registry refused.
+  const pruned = r.prune ? pruneMesh(target.space) : false;
+  console.error(c.red(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned })));
   process.exit(1);
 }

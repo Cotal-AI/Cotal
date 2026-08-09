@@ -1,5 +1,5 @@
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
-import { loadMeshes, removeMesh } from "./mesh-registry.js";
+import { loadMeshes, pruneMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
 
 /**
@@ -76,8 +76,8 @@ export async function preflightTarget(
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
   // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
   // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely, and
-  // the verdict here is destructive: a registry-sourced failure DELETES the entry, and for a mesh
-  // this machine did not start that is unrecoverable, since only `cotal up` writes registry records.
+  // the verdict here is destructive: a registry-sourced failure DELETES the entry, and re-writing
+  // one costs the operator either a `cotal up` or the exact `cotal meshes add` line again.
   // The observed failure mode was exactly this — a live, reachable mesh reported as "no mesh
   // running (stale registry entry - removed)" because the handshake needed more than a second.
   // So a first failure only makes it a candidate; re-probe with a budget that fits a real network.
@@ -97,9 +97,12 @@ export async function preflightTarget(
  * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
  * manager control commands) invoke it; `<TAB>` completion must not.
  *
- * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive and, for a mesh this
- * machine did not start, unrecoverable: only `cotal up` writes registry records, so a wrongly
- * pruned remote mesh cannot be re-registered. `isReachable`'s default budget is 1s, which a
+ * Only `up`-written records are candidates at all: {@link pruneMesh} keeps an operator-registered
+ * (`cotal meshes add`) one whatever the probe says, and this reports it as `offline` instead.
+ *
+ * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive: a wrongly pruned mesh
+ * costs the operator a re-`up` (or, for a remote one, the exact registration line again) and every
+ * command in between fails on a mesh that was live all along. `isReachable`'s default budget is 1s, which a
  * perfectly healthy broker across a slow or jittery link (a relayed overlay VPN, a loaded host)
  * misses routinely — one such blip silently unregistered a live remote mesh. So a first failure
  * only makes it a CANDIDATE: confirm with a second, longer probe and prune only if that also
@@ -112,12 +115,25 @@ const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
  *  because this probe completes an AUTH HANDSHAKE, not just a TCP+INFO liveness check. */
 const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
 
-export async function pruneStaleMeshes(): Promise<void> {
+/** What one sweep did. `offline` is the entries whose broker is gone but whose record STAYS —
+ *  operator-registered (`cotal meshes add`) meshes, which {@link pruneMesh} never deletes. A surface
+ *  that lists meshes renders that as a state instead of probing every broker a second time. */
+export interface MeshSweep {
+  /** Spaces whose dead record was dropped. */
+  pruned: string[];
+  /** Spaces kept despite a dead broker (operator-registered). */
+  offline: string[];
+}
+
+export async function pruneStaleMeshes(): Promise<MeshSweep> {
+  const sweep: MeshSweep = { pruned: [], offline: [] };
   await Promise.all(
     loadMeshes().map(async (m) => {
       if (await isReachable(m.server)) return;
       if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
-      removeMesh(m.space);
+      // pruneMesh, not removeMesh: an operator-registered record outlives its broker being down.
+      (pruneMesh(m.space) ? sweep.pruned : sweep.offline).push(m.space);
     }),
   );
+  return sweep;
 }
