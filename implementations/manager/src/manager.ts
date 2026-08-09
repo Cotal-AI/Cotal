@@ -4206,12 +4206,16 @@ export class Manager {
         return { id: rawDigest(creds).replace("sha256:", "sha256-"), creds, exp: grant.exp };
       },
       observeGate: async (_endpoint, instanceId) => {
+        // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
+        // ServingGatePin.gate — the stage refuses loudly if this is ever missing on an auth mesh).
         if (!this.auth) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
         return gate(async (authKv) => {
           const observed = await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
           if (observed === null)
             throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${instanceId} vanished; a session credential never stages against a missing gate (SPEC 13.1)`);
-          return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: observed.revision };
+          // The WHOLE observation rides the pin: the stage's fence compares every field of it, which
+          // is what lets a lost CAS be classified rather than blanket-refused.
+          return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: observed.revision, gate: observed };
         });
       },
       stage: async (grant, cred, pin) => {
@@ -4219,16 +4223,18 @@ export class Manager {
         const key = this.sessionServingKeys.get(cred.id);
         if (key === undefined)
           throw new Error(`no minted identity for session credential ${cred.id}; the stage cannot record a holder it did not mint (SPEC 13.1)`);
+        // THE REDEMPTION'S OWN PIN IS THE FENCE, and it is never re-read into something newer here:
+        // `commitSiblingIssuance` CASes on this observation's revision and, on a loss, refuses unless
+        // the gate is still identical to it in every field but the revision. A barrier
+        // (freeze, or reopen at a successor coordinate) is therefore always a refusal, while another
+        // session's identical-bytes commit touch is not — per-session credentials all serialize on
+        // this one gate key, so refusing on that would fail live sessions for contention rather than
+        // for a barrier. A read is never a fence (SPEC 13.1); the pinned CAS is.
+        const observed = pin.gate;
+        if (observed === undefined)
+          throw new Error(`the redemption of session ${grant.sessionId} carries no gate observation for ${MANAGER_ENDPOINT}/${iid}; a session credential never stages unfenced (SPEC 13.1)`);
         await gate(async (authKv) => {
           const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-          const observed = await fence.observe();
-          if (observed === null)
-            throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished during redemption of session ${grant.sessionId}`);
-          // The redemption's pin is what this stage is fenced against: if the gate moved between the
-          // observation redeemSession made and this write, a barrier won and the session must not
-          // establish. `commitSiblingIssuance` re-proves `open` and CASes the same revision.
-          if (observed.revision !== pin.revision)
-            throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} moved from revision ${pin.revision} to ${observed.revision} during redemption of session ${grant.sessionId}; a barrier won the serialization (SPEC 13.1)`);
           await commitSiblingIssuance(fence, observed, {
             credentialId: cred.id,
             credentialKey: key,

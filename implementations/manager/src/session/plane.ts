@@ -19,8 +19,9 @@
  * types. The full §13.1 lifecycle-gate fence (revision-pinned credential-row staging) belongs to
  * the auth registry and is user-mode's; the static collapsed path fences on the one thing the
  * manager authoritatively knows — its own serving epoch (a successor incarnation's differing epoch
- * loses the finalize re-check) — and needs no gate stage because it mints no per-session
- * credential row.
+ * loses the finalize re-check) — plus the SERVING credential's own §13.1 gate-checked stage, which
+ * is real: the per-session serving credential is minted, staged revision-pinned, released only on
+ * the finalize CAS, and revoked by name at the terminal.
  */
 import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
