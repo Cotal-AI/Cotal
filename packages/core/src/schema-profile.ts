@@ -28,8 +28,9 @@ export const SCHEMA_PROFILE = Object.freeze({
   compileBudgetMs: 100,
   /** Bounded pattern complexity: max characters of any `pattern` / `patternProperties` regex. */
   maxPatternChars: 256,
-  /** Per-value validation budget at the serving boundary, ms (§13.8 reference; post-hoc,
-   *  fail-loud as `bad-request`). */
+  /** Per-value validation budget at the serving boundary, ms (§13.8 reference). REPORTED on the
+   *  request path, not enforced — no available instrument can justify refusing a caller on it; see
+   *  `reportValidateBudget` in endpoint-envelope.ts. */
   validateBudgetMs: 10,
   /** Compiled-schema cache entries (the SPEC's reference 256-entry LRU). */
   compiledCacheEntries: 256,
@@ -236,18 +237,32 @@ function assertClosureProfile(bundle: SchemaBundle): string {
 }
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
-  // CPU time, not wall clock. The budget exists to refuse a PATHOLOGICAL SCHEMA — one whose
-  // compilation is the DoS — so it must measure work this compile did, not time the OS spent
-  // running something else. Wall clock conflated the two: a trivial two-property closure compiles
-  // in ~4ms warm, but on a loaded host (CI runner, a busy operator box, cold V8 in a fresh
-  // process) the same compile measured 101-158ms of elapsed time and was refused as
-  // `contract-invalid`. That is an availability bug pointed at ourselves: the manager could not
-  // import its own contracts, and a runtime `describe`/`invoke` would have told a caller its
-  // perfectly good schema was invalid because the machine was busy. `process.cpuUsage()` is
-  // monotonic per process and excludes descheduled time, so a pathological schema still burns the
-  // budget while a busy host does not. (`ajv.compile` is synchronous, so nothing else on this
-  // thread is attributed to it.) SPEC 2458 gives 100 ms as a REFERENCE budget, not a normative
-  // constant, and `contract-invalid` remains the over-budget outcome.
+  // CPU time, not wall clock — and INTERIM, with a known-approximate instrument. The budget exists
+  // to refuse a PATHOLOGICAL SCHEMA, one whose compilation is the DoS, so it must measure work this
+  // compile did rather than time the OS spent elsewhere. Wall clock conflated the two: a trivial
+  // two-property closure compiles in ~4ms warm, yet on a loaded host the same compile measured
+  // 101-158ms elapsed and was refused, so a manager could not import its own contracts.
+  //
+  // BE HONEST ABOUT WHAT THIS MEASURES. `process.cpuUsage()` sums EVERY THREAD in the process, not
+  // this one: V8's background optimizing-compiler threads land in it (observed on a Windows runner
+  // as `125ms of CPU` against `80ms elapsed` — CPU above wall clock is only possible with
+  // concurrent threads), and so does any sibling Worker (16.4ms process CPU against 0.18ms on the
+  // measuring thread). `ajv.compile` being synchronous excludes other JS on THIS event-loop thread
+  // and nothing else. Node exposes no per-thread CPU below 22.19 and the package floor is `>=22`,
+  // so there is no third instrument available today.
+  //
+  // The throw stays HERE, on the registration path, for reasons that do not hold on the request
+  // path (where the same budget is now reported rather than enforced — see `endpoint-envelope.ts`):
+  // this is where the DoS actually lives, a false refusal fails a boot LOUDLY instead of telling a
+  // caller its valid input is malformed, and reaching it requires an endpoint author who can
+  // register a contract. Nothing is left unguarded by the demotion: the combinatorial gap that the
+  // deterministic bounds miss — 1000 patterned properties is ~90KB, inside maxDocumentBytes,
+  // maxClosureBytes, depth 2, ref-chain 0, every pattern legal, and costs 536ms — lives at compile.
+  //
+  // This is scheduled to be REPLACED by a deterministic pre-compile node/keyword-count bound, which
+  // is computable exactly on any host and stops this instrument being a refusal at all. SPEC 2458
+  // gives 100 ms as a REFERENCE budget, not a normative constant, and a node-count refusal is still
+  // `contract-invalid` at registration, so that replacement needs no spec amendment.
   const startedCpu = process.cpuUsage();
   const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI

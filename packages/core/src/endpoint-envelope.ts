@@ -387,36 +387,58 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
 
 // ---- invocation-time contract validation (§13.7, distinct from registration time) -----------
 
+/**
+ * Report — never refuse on — an over-budget validation on the REQUEST path.
+ *
+ * §13.8's validate budget used to throw: `bad-request` for args, `internal` for output. It cannot
+ * be measured soundly enough to justify that. Elapsed time counts the whole machine (it refused an
+ * 82ms cold-JIT validation of a small, schema-VALID object during a gate run). `process.cpuUsage()`
+ * counts every thread in the process, so V8's background optimizing-compiler threads and any
+ * sibling Worker land in the number too — measured at 16.4ms of process CPU against 0.18ms on the
+ * measuring thread, already over this 10ms ceiling with almost no work done here. Node exposes no
+ * per-thread CPU below 22.19 and the package floor is `>=22`, so there is no third instrument.
+ *
+ * A false refusal HERE answers the CALLER: a manager on a loaded or Worker-using host would tell
+ * clients their valid arguments are malformed and silently degrade a live control plane. That is
+ * strictly worse than the DoS this was guarding, which needs an attacker able to register a
+ * contract. So enforcement stays where the attack actually lives — the REGISTRATION path, where
+ * {@link import("./schema-profile.js").compileContract} still refuses `contract-invalid`, a false
+ * positive fails a boot loudly rather than lying to a caller, and the deterministic profile bounds
+ * (document/closure bytes, depth, ref-chain, bounded patterns) do the pre-emptive work.
+ *
+ * The number stays, as an approximate observation, because it is still the only signal that a
+ * registered contract is costing more than the profile intended. Treat it as a hint to go look at
+ * the contract, never as a verdict about this request.
+ */
+function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsage, startedMs: number): void {
+  const cpu = process.cpuUsage(startedCpu);
+  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
+  if (cpuMs <= SCHEMA_PROFILE.validateBudgetMs) return;
+  console.error(
+    `! schema: ${what} validation took ~${cpuMs}ms of process CPU (§13.8 reference budget ${SCHEMA_PROFILE.validateBudgetMs}ms; ` +
+    `${Date.now() - startedMs}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
+    `Not a refusal: registration-time bounds are the enforced ceiling.`,
+  );
+}
+
 /** Validate `args` against the command's compiled input schema BEFORE any effect: failure is the
  *  invocation-time `bad-request` (registration-time violations are `contract-invalid`,
  *  {@link import("./schema-profile.js").ContractInvalidError}). Against the void schema the
  *  payload is absent or `null` (§13.7), so `undefined` args validate as `null` here and only
  *  here; an explicit `null` passes through unchanged, and it is the SCHEMA (an object-typed
- *  input contract) that rejects null for non-void commands. The §13.8 validation budget is the
- *  PROFILE's fixed 10ms, read internally so no caller
- *  can tune it away, and is enforced post-hoc, fail-loud as `bad-request` (the spec's
- *  over-budget code for validate time, distinct from compile's `contract-invalid`). Post-hoc
- *  measurement classifies, it cannot preempt — the pre-emptive defense is the registration-time
- *  bounded-pattern gate (schema-profile), which keeps the exponential backtracking class out of
- *  registered contracts in the first place.
+ *  input contract) that rejects null for non-void commands.
  *
- *  It classifies on CPU TIME, not elapsed time, for the same reason the compile budget does: the
- *  thing being refused is args whose VALIDATION is the DoS, and wall clock cannot tell that from a
- *  busy host. This one is worse than the compile budget if it gets it wrong, because it is on the
- *  per-request path and answers the CALLER: a loaded manager would start telling callers their
- *  perfectly valid arguments are `bad-request`. Observed live on the gate at 82ms of elapsed time
- *  for a small object against a 10ms ceiling, on the first validation in a process (cold JIT of
- *  the compiled validator). `validate()` is synchronous, so the process-wide CPU delta is this
- *  validation's own work. */
+ *  The §13.8 validation budget is REPORTED here, not enforced — see {@link reportValidateBudget}
+ *  for why no available instrument can justify refusing a request on it. The only `bad-request`
+ *  this raises is the schema's own verdict. Enforcement lives at registration
+ *  ({@link import("./schema-profile.js").compileContract}), which is where the DoS lives and where
+ *  a false positive fails loudly instead of lying to a caller. */
 export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
   const startedCpu = process.cpuUsage();
   const started = Date.now();
   const okValid = validate(value);
-  const cpu = process.cpuUsage(startedCpu);
-  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
-  if (cpuMs > SCHEMA_PROFILE.validateBudgetMs)
-    fail("bad-request", `args validation took ${cpuMs}ms of CPU (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; over budget is bad-request, SPEC 13.8; ${Date.now() - started}ms elapsed)`);
+  reportValidateBudget("args", startedCpu, started);
   if (!okValid) {
     const first = validate.errors?.[0];
     fail("bad-request", `args do not validate against the input schema${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
@@ -426,21 +448,17 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
 
 /** Validate an output payload against the command's compiled output schema at EITHER §13.7
  *  boundary — the responder's, before the success publish, or the caller's, on the consumed
- *  reply — the symmetric budgeted half of {@link assertArgsValid}, under the SAME fixed
- *  §13.8 `validateBudgetMs` (read internally, never caller-tunable). Both failure classes are
- *  structured `internal`: an invalid output is a responder bug (§13.3/§13.7) whichever side
- *  detects it, and an over-budget output validation is the same bug class, never the caller's
- *  `bad-request`. A void output is `undefined`, validated as `null` against the void schema,
- *  mirroring the args side. */
+ *  reply — the symmetric half of {@link assertArgsValid}. An invalid output is a responder bug
+ *  (§13.3/§13.7) whichever side detects it, so it is structured `internal`, never the caller's
+ *  `bad-request`. The §13.8 budget is REPORTED, not enforced, for the same reason as the args side
+ *  ({@link reportValidateBudget}). A void output is `undefined`, validated as `null` against the
+ *  void schema, mirroring the args side. */
 export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
   const value = data === undefined ? null : data;
   const startedCpu = process.cpuUsage();
   const started = Date.now();
   const okValid = validate(value);
-  const cpu = process.cpuUsage(startedCpu);
-  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
-  if (cpuMs > SCHEMA_PROFILE.validateBudgetMs)
-    fail("internal", `output validation took ${cpuMs}ms of CPU (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; an over-budget output validation is a responder bug, SPEC 13.7/13.8; ${Date.now() - started}ms elapsed)`);
+  reportValidateBudget("output", startedCpu, started);
   if (!okValid) {
     const first = validate.errors?.[0];
     fail("internal", `output does not validate against the pinned output schema; an invalid reply is a responder bug, never success (SPEC 13.7)${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
