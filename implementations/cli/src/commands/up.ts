@@ -85,6 +85,8 @@ import {
   type ManagerFinalizeEvidence,
   type ProcessOwner,
   type RestoreListenerProof,
+  readBrokerPolicy,
+  writeBrokerPolicy,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -675,7 +677,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
-  const transport = resolveTransport(values, new URL(server).hostname);
+  const transport = resolveTransport(values, new URL(server).hostname, cotalRoot());
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
@@ -1586,7 +1588,17 @@ async function startDeliveryWithBroker(
   mgr?: { runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string },
 ): Promise<boolean> {
   try {
-    await ensureControlPlane({ space, server, ...mgr });
+    // The daemon's transport comes from the RECORDED policy, not from a parameter threaded through
+    // this function's five call sites. Three of those five - resume, restore, detach - have no
+    // natural source for the value, and a signature they can only satisfy by passing `false` makes
+    // "decided plaintext" indistinguishable from "had nothing to pass". Reading the one recorded
+    // decision removes the chance to be accidentally right.
+    //
+    // A policy that cannot be honoured throws rather than degrading, and that is correct here too:
+    // bringing up a control plane that connects in the clear, against a broker recorded as
+    // TLS-required, is the failure this whole change exists to prevent.
+    const tls = readBrokerPolicy(cotalRoot())?.transport.kind === "tls-required";
+    await ensureControlPlane({ space, server, tls, ...mgr });
     return true;
   } catch (e) {
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
@@ -1649,7 +1661,7 @@ export async function startMeshDetached(
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
-  const transport = resolveTransport(opts as { "tls-cert"?: string; "tls-key"?: string }, new URL(server).hostname);
+  const transport = resolveTransport(opts as { "tls-cert"?: string; "tls-key"?: string }, new URL(server).hostname, cotalRoot());
   const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
@@ -1992,9 +2004,29 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
  * @param dialHost the hostname clients will verify against, which is NOT the bind host — a broker
  *                 may bind `0.0.0.0` while clients dial `broker.example`.
  */
-function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, dialHost: string | undefined): BrokerTransport {
+function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, dialHost: string | undefined, root: string): BrokerTransport {
   const certFile = values["tls-cert"], keyFile = values["tls-key"];
-  if (!certFile && !keyFile) return { kind: "plaintext" };
+
+  // NO FLAGS: inherit the RECORDED decision rather than defaulting to plaintext. This is the half
+  // that makes a bare `cotal up` after a `cotal down` keep serving TLS. Without it the decision
+  // lives only in the argv of whichever invocation first made it, and the most ordinary operator
+  // gesture there is - stop the mesh, start it again - silently downgrades a broker that was
+  // deliberately put on TLS. `readBrokerPolicy` refuses rather than degrading if the recorded
+  // material has gone missing, so a moved cert fails loud here instead of coming up in cleartext.
+  if (!certFile && !keyFile) {
+    let recorded;
+    try {
+      recorded = readBrokerPolicy(root);
+    } catch (e) {
+      console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+    if (recorded?.transport.kind === "tls-required") {
+      console.log(c.dim("TLS: inheriting the recorded broker policy (no --tls-cert/--tls-key given)"));
+      return validateRecorded(recorded.transport, dialHost);
+    }
+    return { kind: "plaintext" };
+  }
 
   // Half a pair is a mistake, never a configuration. Refusing names the missing half rather than
   // failing later inside nats-server with a message about a file the operator did not mention.
@@ -2004,8 +2036,19 @@ function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, d
   }
 
   const transport: BrokerTransport = { kind: "tls-required", certFile: resolve(certFile), keyFile: resolve(keyFile) };
+  const validated = validateRecorded(transport, dialHost);
+  // RECORD it, so every later path - a bare `up`, a resume, a restore, a detach - reads the same
+  // decision instead of each re-deriving one from whatever is in scope. One writer, many readers.
+  writeBrokerPolicy(root, { version: 1, transport: validated });
+  return validated;
+}
+
+/** Validate a TLS pair and exit loudly on anything wrong. Shared by the flag path and the
+ *  recorded-policy path so a cert that rots on disk is caught on the NEXT `up`, not only on the
+ *  one that first configured it. */
+function validateRecorded(transport: BrokerTransport, dialHost: string | undefined): BrokerTransport {
   try {
-    const material = validateTlsMaterial(transport, dialHost !== undefined ? { dialHost } : {});
+    const material = validateTlsMaterial(transport as Extract<BrokerTransport, { kind: "tls-required" }>, dialHost !== undefined ? { dialHost } : {});
     console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
   } catch (e) {
     // Surface the CERTIFICATE cause. A TLS failure reported as a generic startup error invites the
