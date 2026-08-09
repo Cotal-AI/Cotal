@@ -151,6 +151,8 @@ export class ManagerSessionPlane {
   readonly #live = new Map<string, LiveSession>();
   readonly #ledger: SessionLedger;
   readonly #maxSessions: number;
+  /** In-flight establishments that have claimed a slot but are not yet live (see {@link claimSlot}). */
+  #reserved = 0;
 
   constructor(deps: ManagerSessionPlaneDeps) {
     this.#deps = deps;
@@ -168,12 +170,34 @@ export class ManagerSessionPlane {
     caller: { owner: string; actor: string; uid: string },
     target: SessionTarget,
     session: AttachSession,
+    /** A slot already claimed by an establisher in front of this one ({@link claimSlot}), so the
+     *  reservation covers ITS side effects too (the PTY attach above all). Omitted = claim here. */
+    claimed?: { release(): void },
   ): Promise<{ grant: SessionGrant }> {
-    // The ceiling is checked BEFORE the mint and therefore before any credential exists or any
-    // connection is opened: a refused establishment costs a signature verification, never a
-    // credential or a socket. Loud, and it names the ceiling and its value so an operator who hits
-    // it knows what to raise (see ManagerSessionPlaneDeps.maxSessions for the per-caller residual).
-    this.assertCapacity();
+    // The ceiling slot is CLAIMED here — or by the establisher in front of us, which passes its
+    // claim in — and therefore before the offer mint and before any credential, connection or PTY
+    // attach exists: a refused establishment costs a signature verification, never a credential, a
+    // socket or an attach. The refusal names the ceiling and its value so an operator who hits it
+    // knows what to raise (see ManagerSessionPlaneDeps.maxSessions for the per-caller residual).
+    const slot = claimed ?? this.claimSlot();
+    try {
+      return await this.#establishClaimed(caller, target, session, slot);
+    } finally {
+      // The leak-proof backstop: EVERY exit releases, so a throw from anywhere in the body — the
+      // mint included, which runs before the try below — can never strand capacity. Idempotent, so
+      // it never double-counts against the release at the live-occupancy hand-off.
+      slot.release();
+    }
+  }
+
+  /** {@link establishAttach}'s body, under an already-claimed slot. Split out ONLY so the claim has
+   *  a `finally` that covers the whole establishment, mint included. */
+  async #establishClaimed(
+    caller: { owner: string; actor: string; uid: string },
+    target: SessionTarget,
+    session: AttachSession,
+    slot: { release(): void },
+  ): Promise<{ grant: SessionGrant }> {
     const holderId = principalKey(caller.owner, caller.actor).key;
     // Collapsed static path: the offer is redeemed at mint, so there is no un-redeemed window for a
     // caller restart to invalidate — the holder process-epoch fence is a no-op here (user-mode #29
@@ -232,7 +256,10 @@ export class ManagerSessionPlane {
       onEnd: () => { void this.#teardown(sessionId); },
       ...(this.#deps.now ? { now: this.#deps.now } : {}),
     });
+    // Occupancy transfers from the reservation to the live map with no `await` between, so the slot
+    // is counted exactly once throughout and a concurrent claim can never see it free twice.
     this.#live.set(sessionId, { bridge, nc, credentialId: cred.id });
+    slot.release();
     return { grant: offer.grant };
   }
 
@@ -298,20 +325,35 @@ export class ManagerSessionPlane {
   }
 
   /**
-   * Refuse loudly if the ceiling is already reached. ONE implementation, called by
-   * {@link establishAttach} and by every establisher in front of it, so the two cannot drift into
-   * disagreeing about capacity. It must run before ANY of: minting the offer, redeeming it, minting
-   * a per-session credential on either side, opening a connection, or attaching the target's PTY.
+   * CLAIM a session slot, or refuse loudly. ONE implementation, called by {@link establishAttach}
+   * and by every establisher in front of it, so the two cannot drift into disagreeing about
+   * capacity. It must run before ANY of: minting the offer, redeeming it, minting a per-session
+   * credential on either side, opening a connection, or attaching the target's PTY.
+   *
+   * THIS RESERVES, IT DOES NOT MERELY CHECK. A bare read of the live count would be check-then-act:
+   * establishment awaits a mint, a redemption and a connection before the session becomes live, so
+   * two concurrent establishes at `max - 1` would both observe room, both mint credentials, and
+   * both land — overshooting the ceiling by exactly the concurrency the HTTP face already has, and
+   * over-minting the seed-signed credentials the ceiling exists to bound. Occupancy is therefore
+   * live sessions PLUS in-flight reservations, and the increment happens with no `await` between
+   * the read and the write, so on a single-threaded runtime no second establishment can interleave.
+   *
+   * The returned release is idempotent: the caller releases on every failure path, and
+   * {@link establishAttach} releases at the same instant it records the live session, so a slot is
+   * counted once and never twice.
    *
    * The message names the ceiling and its current value: an operator who hits it should not have to
    * read source to learn which knob to raise.
    */
-  assertCapacity(): void {
-    if (this.#live.size >= this.#maxSessions)
+  claimSlot(): { release(): void } {
+    if (this.#live.size + this.#reserved >= this.#maxSessions)
       throw new EpEnvelopeError(
         "resource-exhausted",
         `the manager is already serving its maximum of ${this.#maxSessions} concurrent sessions (raise ManagerOptions.maxSessions); no session was established and no credential was minted (SPEC 13.6)`,
       );
+    this.#reserved++;
+    let released = false;
+    return { release: () => { if (!released) { released = true; this.#reserved--; } } };
   }
 }
 

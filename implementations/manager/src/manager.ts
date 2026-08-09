@@ -4812,13 +4812,26 @@ export class Manager {
     // Never establish a session over a dead agent — a doomed session (the caller would get an
     // immediate process-exit at best, a confusing empty terminal at worst). Refuse honestly.
     if (a.handle.status() !== "running") return { ok: false, error: `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach` };
+    // CLAIM the session slot BEFORE attaching the target's PTY, matching the console door: this door
+    // used to attach first and check capacity inside establishAttach, so a `resource-exhausted`
+    // refusal landed AFTER the attach. The claim is carried INTO establishAttach, so one reservation
+    // spans the attach and the establishment, and it is released on every refusal below.
+    //
+    // RESIDUAL, NAMED: no shipped runtime acquires anything at attach time — pty's `attach()` returns
+    // a pure view (it registers a data subscriber only when `onData` is called) and tmux/cmux/orca
+    // throw — so an attach nobody bridges is a garbage-collectible object, not a held resource, and
+    // ordering alone suffices. A future runtime that DOES acquire something in `attach()` reopens
+    // this: it would need a release on the failure paths, and `AttachSession` has no close today.
+    const slot = this.sessionPlane.claimSlot();
     let session;
     try {
       session = a.handle.attach();
     } catch (e) {
+      slot.release();
       return { ok: false, error: (e as Error).message };
     }
-    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
+    // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
+    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
     return { ok: true, data: { grant } };
   }
 
@@ -4832,25 +4845,36 @@ export class Manager {
   private async establishConsoleSession(name: string): Promise<SessionEstablishment> {
     if (!this.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
     if (this.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
-    // The live-session ceiling, checked HERE as well as inside establishAttach, and before the PTY
-    // attach below: this establisher goes on to mint a seed-signed `session-caller` credential, so a
-    // capacity refusal has to land before anything with a side effect. Same plane, same one check —
-    // the console cannot end up with a different notion of capacity than the plane it feeds.
-    this.sessionPlane.assertCapacity();
-    const a = this.agents.get(name);
-    if (!a) throw new Error(`no managed agent "${name}"`);
-    if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
-    const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
-    // The loopback operator is the console's holder (same-host trust boundary).
-    const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
-    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
-    const creds = this.auth
-      ? await mintCreds(this.auth, newIdentity(), "session-caller", {
-          sessionCaller: { endpoint: MANAGER_ENDPOINT, sessionId: grant.sessionId, epoch: grant.serving.epoch },
-          expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
-        })
-      : "";
-    return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
+    // CLAIM the session slot here, before the PTY attach and before this establisher goes on to
+    // mint a seed-signed `session-caller` credential: a capacity refusal must land before anything
+    // with a side effect or a cost. The claim is carried INTO establishAttach, so the reservation
+    // spans the whole establishment rather than being a check that a concurrent caller can race.
+    // (See attachAuthorized for why the attach itself needs no unwind on any shipped runtime.)
+    const slot = this.sessionPlane.claimSlot();
+    try {
+      const a = this.agents.get(name);
+      if (!a) throw new Error(`no managed agent "${name}"`);
+      if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
+      const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
+      // The loopback operator is the console's holder (same-host trust boundary).
+      const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
+      const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
+      // The caller credential is minted ONLY after a session is really live, so a refused or failed
+      // establishment never yields a seed-signed JWT. (A failure HERE would leave a live session the
+      // browser never reaches, holding its slot until the grant expires — unreachable in practice,
+      // because the SERVING mint above signs from this same `this.auth` first and would have failed
+      // before any session existed.)
+      const creds = this.auth
+        ? await mintCreds(this.auth, newIdentity(), "session-caller", {
+            sessionCaller: { endpoint: MANAGER_ENDPOINT, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+            expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+          })
+        : "";
+      return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
+    } catch (e) {
+      slot.release(); // idempotent with establishAttach's own release
+      throw e;
+    }
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */
