@@ -22,6 +22,8 @@ import {
   createSpaceAuth,
   serverConfig,
   openServerConfig,
+  validateTlsMaterial,
+  type BrokerTransport,
   mintCreds,
   mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
@@ -141,6 +143,8 @@ export const upFlags: FlagSpec[] = [
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
+  { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
+  { name: "tls-key", type: "string", value: "<file>", description: "the private key for --tls-cert" },
   { name: "restore", type: "string", value: "<dir>", description: "restore an offline backup before exposing the normal listener" },
   { name: "restore-only", type: "string", value: "<registry>", description: "restore only the registry component" },
   { name: "accept-missing-source", type: "boolean", description: "explicit disaster consent when the inode-bound preserved source is absent" },
@@ -670,14 +674,15 @@ export async function up(args: ParsedArgs): Promise<void> {
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined) : undefined;
+  const transport = resolveTransport(values, new URL(server).hostname);
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport });
   const natsArgs = [
     "-c", confPath,
     ...(restored ? ["--name", restored.serverName]
@@ -1643,11 +1648,12 @@ export async function startMeshDetached(
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth) : undefined;
+  const transport = resolveTransport(opts as { "tls-cert"?: string; "tls-key"?: string }, new URL(server).hostname);
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport });
   const args = [
     "-c", confPath,
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
@@ -1968,6 +1974,48 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
  *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
  *  config without the callout account would silently break every sentinel connect. */
 /**
+ * Turn the `--tls-cert`/`--tls-key` pair into a validated {@link BrokerTransport}, or `plaintext`
+ * when neither was given.
+ *
+ * REFUSES BEFORE LAUNCH, never after. Everything it rejects would otherwise become a running broker
+ * in some wrong state, and the two failure modes are not symmetrical: a broker that will not start
+ * is an operator reading an error, while a broker that starts wrong is an operator believing they
+ * have TLS. So the validation is deliberately ours and deliberately early.
+ *
+ * `validateTlsMaterial` does the substantive checks — readability, private-key mode, PEM pair
+ * match, validity window, dial-host SAN — because nats-server's are not sufficient. Missing,
+ * unreadable and mismatched pairs do stop it before it opens a listener, but an EXPIRED certificate
+ * does not: it reports the config valid, starts, logs "Server is ready" and "TLS required", and
+ * only the client then fails. An expired cert must never yield "mesh up".
+ *
+ * @param dialHost the hostname clients will verify against, which is NOT the bind host — a broker
+ *                 may bind `0.0.0.0` while clients dial `broker.example`.
+ */
+function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, dialHost: string | undefined): BrokerTransport {
+  const certFile = values["tls-cert"], keyFile = values["tls-key"];
+  if (!certFile && !keyFile) return { kind: "plaintext" };
+
+  // Half a pair is a mistake, never a configuration. Refusing names the missing half rather than
+  // failing later inside nats-server with a message about a file the operator did not mention.
+  if (!certFile || !keyFile) {
+    console.error(c.red(`✗ --tls-cert and --tls-key must be given together (missing ${certFile ? "--tls-key" : "--tls-cert"})`));
+    process.exit(1);
+  }
+
+  const transport: BrokerTransport = { kind: "tls-required", certFile: resolve(certFile), keyFile: resolve(keyFile) };
+  try {
+    const material = validateTlsMaterial(transport, dialHost !== undefined ? { dialHost } : {});
+    console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
+  } catch (e) {
+    // Surface the CERTIFICATE cause. A TLS failure reported as a generic startup error invites the
+    // wrong remedy - operators go looking at ports and firewalls when the answer is the cert.
+    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+  return transport;
+}
+
+/**
  * Render and write the config for an OPEN (no-auth) broker, returning its path.
  *
  * The `authSetup` sibling for the no-auth mode. Open mode previously launched nats-server from
@@ -1977,11 +2025,11 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: string }): string {
+function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: string; transport: BrokerTransport }): string {
   const confPath = resolve(storeDir, "..", "server-open.conf");
   writeFileSync(
     confPath,
-    openServerConfig({ port: opts.port, host: opts.host, storeDir, transport: { kind: "plaintext" } }),
+    openServerConfig({ port: opts.port, host: opts.host, storeDir, transport: opts.transport }),
   );
   return confPath;
 }
@@ -1992,6 +2040,7 @@ async function authSetup(
   space: string,
   host: string = "127.0.0.1",
   user?: { idpUrl?: string },
+  transport: BrokerTransport = { kind: "plaintext" },
 ): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
@@ -2026,7 +2075,7 @@ async function authSetup(
   }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  writeFileSync(confPath, serverConfig(auth, [auth], { transport, port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
