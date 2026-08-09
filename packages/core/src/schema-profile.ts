@@ -97,6 +97,44 @@ export const SCHEMA_PROFILE = Object.freeze({
   compiledCacheEntries: 256,
 } as const);
 
+/**
+ * The EXACT Ajv configuration the profile compiles with. Exported so a calibration can measure the
+ * real compiler rather than an approximation of it.
+ *
+ * WHY THIS IS EXPORTED, and it is the structural fix for how `maxSchemaNodes` came to be wrong: the
+ * first version of that ceiling was derived from a corpus THE CEILING ITSELF BOUNDED. Every
+ * synthetic above the line was refused, so it measured as "unmeasurable", and the calibration then
+ * reported that nothing measured had exceeded the budget. Circular by construction — no evidence
+ * above the line could exist, so the number was unfalsifiable the moment it shipped.
+ *
+ * A bound whose calibration must go through the bound cannot be re-derived. So the re-derivation
+ * path compiles with THESE OPTIONS DIRECTLY, past every profile bound, and asks where the compiler
+ * actually fails:
+ *
+ *     import { Ajv2020 } from "ajv/dist/2020.js";
+ *     const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
+ *     ajv.compile(schemaWayAboveTheCeiling);   // no profile bounds involved
+ *
+ * That is NOT a bypass of enforcement: nothing here weakens `compileContract`, and any caller could
+ * already construct its own Ajv. What it removes is the need to reverse-engineer the compiler's
+ * configuration in order to check whether the constants still hold — the two must be identical or
+ * the measurement describes a different compiler than the one that ships.
+ *
+ * Re-derive whenever Ajv or Node moves: find where the object-patterned family stack-overflows and
+ * set `maxSchemaNodes` a doubling below it.
+ */
+export const AJV_PROFILE_OPTIONS = Object.freeze({
+  strict: false, // the wire accepts full 2020-12, not ajv's strict-mode dialect subset
+  allErrors: false,
+  validateFormats: false,
+  loadSchema: undefined,
+  // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
+  // semantics exactly (astral atoms, surrogate refusals), so the engine MUST compile
+  // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one
+  // grammar and executed under another (an admitting under-approximation).
+  unicodeRegExp: true,
+} as const);
+
 /** The canonical void schema (§13.7): the one artifact a side with no payload declares, so both
  *  `op` digests exist for every command. Validation against it means the payload is absent or
  *  `null`. */
@@ -374,17 +412,7 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
-  const ajv = new Ajv2020({
-    strict: false, // the wire accepts full 2020-12, not ajv's strict-mode dialect subset
-    allErrors: false,
-    validateFormats: false,
-    loadSchema: undefined,
-    // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
-    // semantics exactly (astral atoms, surrogate refusals), so the engine MUST compile
-    // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one
-    // grammar and executed under another (an admitting under-approximation).
-    unicodeRegExp: true,
-  });
+  const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
   let validate: ValidateFunction;
   try {
     // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so
