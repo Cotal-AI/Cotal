@@ -415,17 +415,35 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  * SHAPE of a schema and the BACKTRACKING class via `maxPatternChars`; it has nothing for keywords
  * whose cost is non-linear in the VALUE being validated.
  *
- * So this demotion left a real gap on the request path, and the honest statement is that the
- * enforced ceiling is currently registration-time only and that is NOT SUFFICIENT. A deterministic
- * invocation-path defence is owed — the candidates are refusing non-linearly-validating keywords at
- * registration (the same shape as the bounded-pattern gate) and a deterministic bound on argument
- * bytes/items before validation — and until one lands, this path is bounded by nothing.
+ * BE PRECISE ABOUT WHAT THE DEMOTION DID AND DID NOT COST, because the obvious reading is wrong.
+ * The gap is real and it PRE-DATES the demotion. The old code was
  *
- * THE GENERAL LESSON, because this is the SECOND thing this timer turned out to be holding up: the
- * same throw was also standing in for a reply-payload preflight, whose absence left callers in
- * silence on an over-`max_payload` reply. One unsound guard was doing three jobs and was removed
- * having enumerated one. REMOVING A GUARD REQUIRES ENUMERATING WHAT IT WAS HOLDING UP, and the
- * enumeration is the work, not the removal.
+ *     const okValid = validate(value);          // the whole cost is ALREADY PAID here
+ *     const cpu = process.cpuUsage(startedCpu); // measured afterwards
+ *     if (cpuMs > budget) fail("bad-request", …)
+ *
+ * so the refusal fired AFTER validation ran to completion. On a quadratic payload the enforcing
+ * build burns exactly the same CPU as this one; it merely answers with an error instead of a
+ * result. AGAINST RESOURCE EXHAUSTION, POST-HOC ENFORCEMENT BOUGHT NOTHING — an authorized caller
+ * repeating the call cost the host the same before this change as after. What was removed was a
+ * post-hoc classification, never a fence.
+ *
+ * AN INSTRUMENT ONLY GUARDS WHAT HAPPENS AFTER IT. That is the whole rule, and it is why the
+ * reply-payload case is genuinely different: THAT throw preceded a downstream publish, so removing
+ * it really did let an oversized reply through. Position, not intent, decides whether a check is a
+ * fence or a verdict.
+ *
+ * So the honest statement is that this path has ALWAYS been unbounded for validation cost, and a
+ * deterministic PRE-EMPTIVE defence is owed: a bound on argument bytes and items checked BEFORE
+ * `validate` runs, refused as `resource-exhausted` (the caller's arguments are not malformed, they
+ * are too expensive to admit — see `assertFactFits` in endpoint-journal.ts for the same shape), plus
+ * a registration-time refusal of keywords whose cost is non-linear in the value. `max_payload` is
+ * NOT that bound: at ~1 MiB it admits thousands of small objects, which is deep into the quadratic.
+ *
+ * The transferable lesson stands and is worth more than the incident: one unsound timer was standing
+ * in for three jobs and was removed having enumerated one. REMOVING A GUARD REQUIRES ENUMERATING
+ * WHAT IT WAS HOLDING UP — and then checking, for each, whether the guard actually PRECEDED the
+ * thing it appeared to hold up. Two of the three here did not.
  *
  * The number stays, as an approximate observation, because it is still the only signal that a
  * registered contract is costing more than the profile intended. Treat it as a hint to go look at
@@ -438,7 +456,7 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
   console.error(
     `! schema: ${what} validation took ~${cpuMs}ms of process CPU (§13.8 reference budget ${SCHEMA_PROFILE.validateBudgetMs}ms; ` +
     `${Date.now() - startedMs}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
-    `Not a refusal. NOTE: registration-time bounds do NOT cover this path - a keyword whose cost is non-linear in the VALUE (e.g. uniqueItems over objects) is unbounded here. A deterministic invocation-path defence is owed.`,
+    `Not a refusal - and note that refusing HERE would not have helped: this fires after validate() completed, so the cost is already paid. Validation cost on this path is bounded by nothing pre-emptively; a byte/item bound before validate is owed.`,
   );
 }
 
