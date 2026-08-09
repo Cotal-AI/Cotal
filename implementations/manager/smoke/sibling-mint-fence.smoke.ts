@@ -1,6 +1,6 @@
 /**
  * SIBLING-MINT FENCE smoke (control-surface v0.4, Lane B finding 3) — the manager's SIBLING
- * credential mints (`goal-writer`, `session-writer`) must run the SAME §13.1 open-and-commit fence
+ * credential mints (`goal-writer`, `session-ledger`) must run the SAME §13.1 open-and-commit fence
  * `finalizeServeIssuance` runs for the serve credential itself:
  *
  *     observe -> require the gate state `open` -> stage the row -> commit(observedRevision)
@@ -10,7 +10,7 @@
  * already FROZEN the gate (and, worse, already ENUMERATED the family it is about to revoke) still
  * lets a deposed manager stage AND release a live credential into that family. The row lands after
  * the enumeration, so nothing ever revokes it: the deposed manager keeps a working goal-writer and
- * session-writer against the endpoint the successor now owns.
+ * session-ledger credential against the endpoint the successor now owns.
  *
  * Both legs drive the REAL manager mint path against a REAL broker + auth store:
  *   FROZEN   a barrier froze the gate before the mint -> the mint must refuse; the family must gain
@@ -82,9 +82,9 @@ try {
   const M = mgr as unknown as {
     managerInstanceId: string;
     goalWriterIdentity?: { id: string };
-    sessionWriterIdentity?: { id: string };
+    sessionLedgerIdentity?: { id: string };
     mintAndStageGoalWriter(authKv: KV): Promise<string>;
-    mintAndStageSessionWriter(authKv: KV): Promise<string>;
+    mintAndStageSessionLedger(authKv: KV): Promise<string>;
   };
   const iid = M.managerInstanceId;
   const gateKey = epgateKey(MANAGER_ENDPOINT, iid);
@@ -125,7 +125,7 @@ try {
   };
 
   const gwPrincipal = principalKey(DEV_OWNER, M.goalWriterIdentity!.id).key;
-  const swPrincipal = principalKey(DEV_OWNER, M.sessionWriterIdentity!.id).key;
+  const swPrincipal = principalKey(DEV_OWNER, M.sessionLedgerIdentity!.id).key;
 
   // ── LEG 1 (FROZEN): a barrier froze the gate; a sibling mint must release NOTHING ──────────────
   console.log("A. FROZEN gate: the takeover barrier is mid-operation");
@@ -135,7 +135,7 @@ try {
 
     for (const [label, principal, mint] of [
       ["goal-writer", gwPrincipal, () => M.mintAndStageGoalWriter(authKv)],
-      ["session-writer", swPrincipal, () => M.mintAndStageSessionWriter(authKv)],
+      ["session-ledger", swPrincipal, () => M.mintAndStageSessionLedger(authKv)],
     ] as const) {
       const before = (await activeFor(principal)).map((r) => r.credentialId);
       let released: string | undefined;
@@ -177,7 +177,7 @@ try {
 
     for (const [label, principal, mint] of [
       ["goal-writer", gwPrincipal, (kv: KV) => M.mintAndStageGoalWriter(kv)],
-      ["session-writer", swPrincipal, (kv: KV) => M.mintAndStageSessionWriter(kv)],
+      ["session-ledger", swPrincipal, (kv: KV) => M.mintAndStageSessionLedger(kv)],
     ] as const) {
       await openGate();
       const before = (await activeFor(principal)).map((r) => r.credentialId);

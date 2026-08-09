@@ -6,7 +6,7 @@
  * proves the {@link ManagerSessionPlane} that COMPOSES them exactly as the manager will: one
  * `establishAttach` call mints the offer, enforces the one-use redemption through a manager-local
  * KV ledger (real broker KV, the SAME core row/key types the auth adapter uses), and stands up the
- * PTY bridge on a session-writer connection — then a caller rail drives the terminal end to end.
+ * PTY bridge on that session's OWN connection — then a caller rail drives the terminal end to end.
  *
  * OPEN mesh (bare connection): item 6's STATIC-auth live gate (instrument rows scoping the eps
  * subtree) rides the SAME machinery over a scoped cred and is exercised by the 6b static e2e; the
@@ -39,6 +39,7 @@ import {
   ManagerSessionPlane,
   decodeTerminalFrame,
   encodeTerminalData,
+  type SessionServing,
   type TerminalFrame,
 } from "../src/session/index.js";
 // dev-only smoke import: the CLI's mesh transport is the real caller consumer; implementations do
@@ -95,10 +96,25 @@ await ensureAuthorityStores(jsmPlane, kvm, SPACE);
 const ledgerKv = await kvm.open(sessionsBucket(SPACE));
 const authKv = await kvm.open(epAuthBucket(SPACE));
 
+// OPEN-MESH serving seam: no credential system exists to mint from, so the seam mints no bytes and
+// opens a bare connection PER SESSION — the same one-connection-per-session shape an auth mesh gets,
+// so teardown behaves identically in both modes. `opened` lets the teardown assertions below prove
+// the connections actually close rather than leak.
+const opened: NatsConnection[] = [];
+const sessionIds: string[] = [];
+const openMeshServing: SessionServing = {
+  mint: (grant) => { sessionIds.push(grant.sessionId); return Promise.resolve({ id: `${grant.sessionId}.s`, creds: "", exp: grant.exp }); },
+  observeGate: (_e, inst) => Promise.resolve({ key: `epgate.manager.${inst}`, revision: 0 }),
+  stage: () => Promise.resolve(),
+  open: async () => { const c = await connect({ servers: `nats://127.0.0.1:${PORT}` }); opened.push(c); return c; },
+  revoke: () => Promise.resolve(),
+};
+
 const plane = new ManagerSessionPlane({
-  nc: ncPlane, space: SPACE, serving: SERVING,
+  space: SPACE, serving: SERVING,
   signer: { keyId: "sk1", keyPair: signer }, resolveAnchor,
   ledgerKv, ttlMs: 60_000, window: 16,
+  servingCredential: openMeshServing,
 });
 
 const CALLER = { owner: "dev", actor: "cli" };
@@ -257,7 +273,23 @@ rail5.send({ k: "ready" } satisfies TerminalFrame);
 c("a session over an already-dead pty surfaces `process-exit` (never a zombie)", await until(() => end5 === "process-exit"), { end5, status: h5.status() });
 await ncCaller5.close();
 
-plane.endAll("closed");
+// ---------------------------------------------------------------------------------------------
+// A per-session connection that LEAKS is a worse bug than the standing wildcard it replaces, so
+// prove the connections actually close rather than trusting that teardown was called. `drain`
+// awaits every in-flight teardown; after it, every connection this run opened must be closed and
+// every ledger row terminal.
+console.log("I. teardown really closes every per-session connection and terminalizes every row");
+const openedCount = opened.length;
+c("the run opened one connection PER SESSION (not one shared connection)", openedCount >= 5, openedCount);
+await plane.drain("closed");
+c("the plane reports no live sessions after drain", plane.liveSessions === 0, plane.liveSessions);
+c("EVERY per-session connection is closed (no leak)", opened.every((x) => x.isClosed()), opened.map((x) => x.isClosed()));
+const rowStates = await Promise.all(sessionIds.map(async (id) => {
+  const e = await ledgerKv.get(sessionLedgerKey(id));
+  return e && e.operation === "PUT" ? (JSON.parse(new TextDecoder().decode(e.value)) as { state: string }).state : "missing";
+}));
+c("EVERY session ledger row reached a terminal state", rowStates.every((st) => ["closed", "expired", "superseded", "retired"].includes(st)), rowStates);
+
 h2.stop({ graceful: false });
 await ncPlane.close();
 

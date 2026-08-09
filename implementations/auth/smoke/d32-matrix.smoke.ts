@@ -324,19 +324,29 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     `cotal.d32m.eps.manager.${SC_SID}.3.out`,
     "_INBOX_ibxconn0123456789.>",
   ] },
-  // P2 item 6: the manager's SERVING session-writer — a STANDING own-endpoint writer over ALL of one
-  // endpoint's §13.6 session rails at ONE serving epoch (wildcard sessionId, endpoint+epoch pinned) +
-  // the DEDICATED sessions-bucket ledger, and NOTHING else. The dedicated bucket makes the writer's
-  // bucket-blind STREAM.MSG.GET expose ONLY `session.>` rows (never the auth bucket's creds/gates) —
-  // the §13.9 subject-blindness structural fix.
-  "session-writer": { publish: [
-    `cotal.d32m.eps.manager.*.3.out`,
+  // P2 item 6: the manager's per-session SERVING credential — the EXACT mirror of `session-caller`
+  // with the rail directions swapped, for ONE session. It replaces a STANDING writer that held
+  // `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch, against
+  // SPEC 13.9:2526 ("no standing EPS grant exists on either side"). No KV and no JS-API at all: the
+  // serving side drives bytes, and the ledger belongs to the standing credential below.
+  "session-serving": { publish: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.out`,
+  ], subscribe: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.in`,
+    "_INBOX_ibxconn0123456789.>",
+  ] },
+  // P2 item 6: the manager's SESSION LEDGER — the DEDICATED sessions-bucket rows and NOTHING else,
+  // with NO session rail of any shape. Standing, because SPEC 13.6 makes it the durable revocation
+  // authority that must survive the serving endpoint; splitting it from the rails on that lifetime
+  // boundary is what removes the wildcard. The dedicated bucket makes its bucket-blind
+  // STREAM.MSG.GET expose ONLY `session.>` rows (never the auth bucket's creds/gates) — the §13.9
+  // subject-blindness structural fix.
+  "session-ledger": { publish: [
     `$KV.cotal_sessions_d32m.session.*`,
     `$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m`,
     `$JS.API.STREAM.INFO.KV_cotal_sessions_d32m`,
     `$JS.API.INFO`,
   ], subscribe: [
-    `cotal.d32m.eps.manager.*.3.in`,
     "_INBOX_ibxconn0123456789.>",
   ] },
 };
@@ -386,8 +396,10 @@ put("drain-canceller", drainCancellerGrants(S, `cotal.${S}.epf.${EPJ}.eff.local.
 {
   const scPerms = permissionsFor("session-caller", S, { owner: "u_abc", actor: "cli", connId: CONN }, { sessionCaller: { endpoint: EP, sessionId: SC_SID, epoch: 3 } }) as { pub: { allow: string[] }; sub: { allow: string[] } };
   put("session-caller", { publish: scPerms.pub.allow, subscribe: scPerms.sub.allow });
-  const swPerms = permissionsFor("session-writer", S, { owner: "u_abc", actor: "cli", connId: CONN }, { sessionWriter: { endpoint: EP, epoch: 3 } }) as { pub: { allow: string[] }; sub: { allow: string[] } };
-  put("session-writer", { publish: swPerms.pub.allow, subscribe: swPerms.sub.allow });
+  const ssPerms = permissionsFor("session-serving", S, { owner: "u_abc", actor: "cli", connId: CONN }, { sessionServing: { endpoint: EP, sessionId: SC_SID, epoch: 3 } }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  put("session-serving", { publish: ssPerms.pub.allow, subscribe: ssPerms.sub.allow });
+  const slPerms = permissionsFor("session-ledger", S, { owner: "u_abc", actor: "cli", connId: CONN }, {}) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  put("session-ledger", { publish: slPerms.pub.allow, subscribe: slPerms.sub.allow });
 }
 
 for (const name of Object.keys(FIXTURE)) {
@@ -489,10 +501,11 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     // The full production executor client (#29 piece 2): the settlement EPF read plus the
     // leader-served records-lease read its own code path performs. NO EPW (dead grant removed, b8803b2).
     "retirement-executor:EPF_d32m", "retirement-executor:KV_cotal_records_d32m",
-    // P2 item 6: the serving session-writer reads its ledger over a bucket-blind STREAM.MSG.GET —
-    // but ONLY on the DEDICATED sessions bucket. It holds NO MSG.GET on KV_cotal_auth (creds/gates)
-    // or KV_cotal_records: the dedicated bucket is the §13.9 subject-blindness structural fix.
-    "session-writer:KV_cotal_sessions_d32m",
+    // P2 item 6: the session LEDGER reads its rows over a bucket-blind STREAM.MSG.GET — but ONLY on
+    // the DEDICATED sessions bucket. It holds NO MSG.GET on KV_cotal_auth (creds/gates) or
+    // KV_cotal_records: the dedicated bucket is the §13.9 subject-blindness structural fix. The
+    // per-session SERVING credential holds no store read at all, so it is absent from this list.
+    "session-ledger:KV_cotal_sessions_d32m",
   ]);
   c("the STREAM.MSG.GET holder set equals the enumerated trusted list exactly",
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());

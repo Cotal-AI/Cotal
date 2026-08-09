@@ -137,9 +137,15 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
  *  takeover/retirement barrier's revocation unit, so a sibling that joins it without the fence is a
  *  credential the barrier can never revoke.
  *
- *  The caller has already OBSERVED the gate (a sibling's grant is built FROM the observed
- *  coordinates — the serving epoch above all), so the observation is passed in rather than re-read:
- *  re-reading here would fence a DIFFERENT revision than the one the credential was minted against.
+ *  THE OBSERVATION IS PASSED IN, NEVER RE-READ HERE. This looks like a missing freshness check and
+ *  is the opposite; do not "improve" it into a re-read. A sibling's grant is built FROM the observed
+ *  coordinates (the serving epoch above all), so the revision this commit must fence is the one the
+ *  credential was MINTED against. Re-reading would fence whatever the gate says now — and the
+ *  dangerous case is not a frozen gate but a COMPLETED takeover: freeze → revoke/evict → reopen
+ *  leaves the gate `open` again at a NEW generation and processEpoch, so a re-read would find it
+ *  open, WIN its CAS against the SUCCESSOR's revision, and release a JWT minted against the
+ *  PREDECESSOR's coordinates into the family the barrier has just finished reconciling. Pinning the
+ *  mint's own observation makes exactly that mint LOSE, which is the point of the fence.
  *
  *  Order, identical to the serve mint: require `open` -> stage the row -> revision-pinned commit ->
  *  release ONLY on the win. A frozen gate refuses before anything is written; a gate that MOVED

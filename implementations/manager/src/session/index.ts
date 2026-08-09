@@ -14,6 +14,7 @@ export {
   type MintAttachOfferArgs,
   type SessionTarget,
   type RedemptionSeam,
+  type SessionServing,
   type StaticRedemptionDeps,
 } from "./establish.js";
 export { serveSessionBridge, type ServeSessionBridgeOpts, type SessionBridge, type AttachEndReason } from "./bridge.js";
@@ -21,6 +22,7 @@ export {
   ManagerSessionPlane,
   kvManagerSessionLedger,
   openSessionLedgerKv,
+  MAX_LIVE_SESSIONS_DEFAULT,
   type ManagerSessionPlaneDeps,
 } from "./plane.js";
 // The terminal-session frame codec is NORMATIVE WIRE and lives in core (the §13.6 terminal-session

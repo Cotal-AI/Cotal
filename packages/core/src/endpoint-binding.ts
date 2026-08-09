@@ -29,7 +29,6 @@ import {
   assertPoolToken,
   assertLifecycleToken,
   callerTokens,
-  epsWildcardSubject,
   type EpCaller,
 } from "./endpoint-subjects.js";
 import type { RecordKindDef } from "./endpoint-records.js";
@@ -72,7 +71,7 @@ export function epAuthBucket(space: string): string {
 /** The per-space SESSION ledger store (P2 item 6, §13.6): the `session.<id>` rows the manager's
  *  session plane CASes over. DEDICATED — split out of the auth bucket deliberately. KV reads are
  *  subject-BLIND (a `STREAM.MSG.GET` on a bucket serves any key, the campaign's known vector class),
- *  so co-locating session rows with credentials + gates would let the standing session-writer read
+ *  so co-locating session rows with credentials + gates would let the standing session-ledger cred read
  *  the whole control plane. A dedicated bucket makes that blind read STRUCTURALLY confined to session
  *  rows and nothing else. `allow_direct=false` for the SAME reason the auth bucket carries it: every
  *  ledger fence is a leader-served revision-pinned CAS (the one-use `createIssuing`, the finalize +
@@ -218,7 +217,7 @@ export async function createEndpointStreams(
   await ensureAuthorityStores(jsm, kvm, space);
   // P2 item 6: the DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
   // uncaptured (above), but the `session.<id>` ledger rows are a captured authority KV — kept in
-  // their own bucket so the manager's standing session-writer's bucket-blind STREAM.MSG.GET reads
+  // their own bucket so the manager's standing session-ledger cred's bucket-blind STREAM.MSG.GET reads
   // ONLY session rows (the §13.9 subject-blindness structural fix). Provisioned here so every mesh
   // that ensures the endpoint streams (auth + open both run this at the manager's boot) has it.
   await createSessionsStore(jsm, kvm, space);
@@ -370,7 +369,7 @@ export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, spa
  *  the auth bucket: `allow_direct=false` (every ledger fence is a leader-served revision-pinned CAS,
  *  and Direct Get's follower reads would defeat read-your-writes, §13.1) plus the per-key TTL
  *  machinery (a terminal/expired session row can carry a delete-marker TTL). The dedication is the
- *  security substance: the standing session-writer's `kv.get` is a bucket-blind body-selected read,
+ *  security substance: the standing session-ledger cred's `kv.get` is a bucket-blind body-selected read,
  *  and a bucket holding ONLY `session.>` rows makes that read expose nothing but session state — the
  *  structural fix for the §13.9 subject-blindness a shared auth bucket would carry (creds + gates).
  *  Create-or-verify, safe at every manager boot; a drifted store FAILS LOUD (§13.12). */
@@ -1033,36 +1032,44 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
 }
 
-/** The manager's SERVING SESSION-WRITER rows (P2 item 6, 6b): a STANDING own-endpoint writer that
- *  serves EVERY live §13.6 session of ONE endpoint at ONE serving epoch (the goal-writer precedent —
- *  a standing self-mediated connection disjoint from the serve credential, re-minted for the SAME
- *  nkey on the half-TTL renewal loop). It PUBS the session `out` rail (writer→caller) and SUBS the
- *  `in` rail (caller→writer) with the sessionId a WILDCARD (`*`, one token) but the endpoint AND the
- *  serving epoch PINNED: a successor incarnation (new epoch) gets a differently-scoped writer, the
- *  deposed one is revoked via its `epcred.<endpoint>.<iid>` family, and the writer can NEVER touch
- *  another endpoint's or another epoch's rails.
+/** The manager's SESSION-LEDGER rows (P2 item 6): the standing connection that owns the §13.6
+ *  session ledger and NOTHING else. It holds NO session rail — not the wildcard it used to hold,
+ *  not an exact one. That is the whole point of the split.
  *
- *  Its ledger store is the DEDICATED {@link sessionsBucket}, NOT the auth bucket. The write is
+ *  §13.6 gives the ledger a job the byte rails do not have: it is "a DURABLE named authority that
+ *  survives the serving endpoint", the thing that still knows what to revoke after the endpoint
+ *  serving a session is gone. So it is standing and renewable, while the rails it records are
+ *  per-session, exact-subject, and die with their session ({@link import("./provision.js").Profile}
+ *  `session-serving` / `session-caller`). An earlier revision fused the two into one standing
+ *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2526 ("no
+ *  standing EPS grant exists on either side") and let one credential read and write every live
+ *  session's bytes at that epoch. Splitting on the lifetime boundary is what removes the wildcard:
+ *  the standing half no longer has rails to widen.
+ *
+ *  Its store is the DEDICATED {@link sessionsBucket}, NOT the auth bucket. The write is
  *  `$KV.<sessions>.session.*` (create-only CAS + revision-pinned update; `sessionLedgerKey` is the
  *  single-token `session.<id>`). The read is a bucket-blind leader `STREAM.MSG.GET` (allow_direct=
  *  false, so `kv.get` is a body-selected read that cannot be key-pinned) — but the dedicated bucket
  *  holds ONLY `session.>` rows, so that blind read exposes nothing but session ledger state,
  *  structurally closing the §13.9 subject-blindness the auth bucket carries (creds + gates). The
- *  reply inbox is connection-scoped. NO auth-bucket, records-bucket, or messaging-plane grant. */
-export function sessionWriterGrants(space: string, endpoint: string, epoch: number, connId: string): { publish: string[]; subscribe: string[] } {
+ *  reply inbox is connection-scoped. NO auth-bucket, records-bucket, or messaging-plane grant.
+ *
+ *  NAMED RESIDUAL: `session.*` is one token wide and carries no endpoint component, because a
+ *  `sessionId` is an opaque unguessable token with no endpoint inside it. So this credential can
+ *  read and CAS any session row in its space, including another endpoint's. That was equally true
+ *  of the credential it replaces; it is not a regression, and it is confined to ledger STATE — row
+ *  state and credential ids — never to session bytes, which now require a per-session credential
+ *  this profile cannot mint. */
+export function sessionLedgerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const SESS = sessionsBucket(space);
   return {
     publish: [
-      epsWildcardSubject(space, endpoint, epoch, "out"), // OUT rail: writer→caller (wildcard session, pinned endpoint+epoch)
-      `$KV.${SESS}.session.*`,                            // ledger create/update — single-token key (`session.<id>`)
-      `${JSAPI}.STREAM.MSG.GET.KV_${SESS}`,              // kv.get: leader-served body-selected read, confined to the sessions bucket
-      `${JSAPI}.STREAM.INFO.KV_${SESS}`,                 // Kvm bind probe (§13.12)
-      `${JSAPI}.INFO`,                                    // JS-API context info (KV client)
+      `$KV.${SESS}.session.*`,              // ledger create/update — single-token key (`session.<id>`)
+      `${JSAPI}.STREAM.MSG.GET.KV_${SESS}`, // kv.get: leader-served body-selected read, confined to the sessions bucket
+      `${JSAPI}.STREAM.INFO.KV_${SESS}`,    // Kvm bind probe (§13.12)
+      `${JSAPI}.INFO`,                       // JS-API context info (KV client)
     ],
-    subscribe: [
-      epsWildcardSubject(space, endpoint, epoch, "in"),  // IN rail: caller→writer
-      `_INBOX_${assertInboxConnId(connId)}.>`,           // connection-scoped reply inbox
-    ],
+    subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`], // connection-scoped reply inbox
   };
 }
 
