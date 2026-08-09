@@ -7,7 +7,7 @@ import {
   getCurrent,
   homeCotalDir,
   loadMeshes,
-  removeMesh,
+  pruneMesh,
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
@@ -35,6 +35,11 @@ export interface MeshTarget {
   auth?: SpaceAuth;
   /** User-auth client metadata (from the registry entry), present iff `mode === "user"`. */
   userAuth?: UserAuthInfo;
+  /** Who registered the mesh this target came from — see {@link MeshEntry.origin}. Absent for a
+   *  target resolved off disk rather than a record. Surfaces read it to say the right thing when
+   *  the broker is down: an `up` mesh is restarted with `cotal up`, a `manual` one runs somewhere
+   *  this machine does not control (so the local remedy is `cotal meshes rm`, not `cotal up`). */
+  origin?: MeshEntry["origin"];
   /** `<root>/.cotal/agents` — the persona catalog for this mesh. */
   personaRoot: string;
   /** Where the target came from — this also carries OWNERSHIP for pruning. `registry`/`current`/
@@ -88,6 +93,9 @@ export interface MeshTargetErrorDetails {
   requested?: string;
   /** For `stale-auth-root`: the space the on-disk auth now claims, diverging from the record. */
   found?: string;
+  /** For `stale-auth-root`: whether the diverging record was actually removed. An operator-registered
+   *  record is kept (see `pruneMesh`), and the copy must not claim a removal that did not happen. */
+  removed?: boolean;
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -125,7 +133,9 @@ export function isWorkspaceTargetError(e: unknown): e is MeshTargetError {
   );
 }
 
-function personaRoot(root: string): string {
+/** `<root>/.cotal/agents` — a mesh's persona catalog. Exported because registration
+ *  (`cotal meshes add`) builds a target by hand and must resolve it to the same path this does. */
+export function personaDir(root: string): string {
   return join(root, ".cotal", "agents");
 }
 
@@ -196,11 +206,11 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
     if (!auth) {
       const found = listSpaceAccounts(authDir(m.root));
       if (found.length) {
-        removeMesh(m.space);
+        const removed = pruneMesh(m.space);
         throw new MeshTargetError(
           "stale-auth-root",
           `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${found.join('", "')}"`,
-          { space: m.space, root: m.root, found: found.join(", ") },
+          { space: m.space, root: m.root, found: found.join(", "), removed },
         );
       }
     }
@@ -222,7 +232,8 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
     mode: m.mode,
     auth,
     ...(userAuth ? { userAuth } : {}),
-    personaRoot: personaRoot(m.root),
+    ...(m.origin ? { origin: m.origin } : {}),
+    personaRoot: personaDir(m.root),
     source,
   };
 }
@@ -257,7 +268,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
       `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
       { space: userSpace, root },
     );
-  return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaRoot(root), source };
+  return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaDir(root), source };
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on

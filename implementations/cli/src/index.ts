@@ -4,7 +4,7 @@ import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
 import { use, useComplete } from "./commands/use.js";
-import { meshes } from "./commands/meshes.js";
+import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
 import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
@@ -154,8 +154,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "meshes",
     group: "Mesh",
-    summary: "list the running meshes (a `*` marks the `current` default a bare spawn joins)",
+    summary: "list the meshes this machine knows (a `*` marks the `current` default a bare spawn joins); add/rm register one running elsewhere",
+    usage: "meshes [list] | meshes add [<space>] [--server <url>] [--root <dir>] [--mode auth|open] | meshes rm <space> …  (bare `meshes add` on a terminal is guided)",
+    positionals: "[list | add <space> | rm <space> …]",
+    flags: meshesFlags,
     run: meshes,
+    complete: meshesComplete,
   },
   {
     kind: "command",

@@ -40,7 +40,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--space` (2026-07): selects the mesh for target-addressed components (`cotal down web --space <name>`).
   down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "space:string", "store-dir:string"], positionals: true },
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
-  meshes: { flags: [], positionals: false },
+  // `meshes` gained the registry-maintenance verbs (2026-08): `add <space> --server … [--root]
+  // [--mode]` registers a mesh this machine did NOT start, `rm <space> …` drops records. `--force`
+  // is add's unverified/replace escape and rm's running-mesh override. Bare `meshes` still lists.
+  meshes: { flags: ["force:boolean", "mode:string", "root:string", "server:string"], positionals: true },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },

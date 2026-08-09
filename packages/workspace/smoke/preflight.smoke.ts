@@ -25,7 +25,10 @@ process.env.COTAL_HOME = home;
 
 const {
   classifyPreflightFailure,
+  findMesh,
+  MeshTargetError,
   preflightTarget,
+  pruneMesh,
   pruneStaleMeshes,
   resolveMeshTarget,
   recordMesh,
@@ -166,6 +169,31 @@ check("team-ov registry entry survives the override preflight", loadMeshes().som
 recordMesh({ space: "ghost-2", server: "nats://127.0.0.1:14992", root: "/tmp/p2", mode: "open", ts: new Date(0).toISOString() });
 await pruneStaleMeshes();
 check("pruneStaleMeshes drops every dead entry", loadMeshes().length === 0, loadMeshes());
+
+// ── ORIGIN: an automatic prune never deletes what an operator registered by hand ──────────────────
+// `cotal up` can always rewrite its own record; a `cotal meshes add` one usually describes a mesh on
+// another machine, so deleting it on a probe failure is unrecoverable here. Every auto-prune path
+// goes through pruneMesh for exactly this reason.
+const DEAD_2 = "nats://127.0.0.1:14989";
+recordMesh({ space: "ours", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "up", ts: new Date(0).toISOString() });
+recordMesh({ space: "theirs", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+const sweep = await pruneStaleMeshes();
+check("sweep prunes the `up` record", findMesh("ours") === undefined, loadMeshes());
+check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
+check("sweep reports the split (pruned vs offline)", sweep.pruned.includes("ours") && sweep.offline.includes("theirs"), sweep);
+check("pruneMesh reports refusing to delete it", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
+check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);
+// …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
+const manualT = { ...T, space: "theirs", origin: "manual" as const };
+check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {
+  const m = preflightMessage("unreachable", manualT, false);
+  return m.includes("cotal meshes rm theirs") && !m.includes("cotal up");
+})(), preflightMessage("unreachable", manualT, false));
+check("stale-auth-root copy claims a removal only when one happened", (() => {
+  const kept = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "theirs", root: "/tmp/p3", found: "other", removed: false }) });
+  const gone = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "ours", root: "/tmp/p3", found: "other", removed: true }) });
+  return !kept.includes("removed") && kept.includes("cotal meshes add") && gone.includes("stale entry removed");
+})());
 
 rmSync(home, { recursive: true, force: true });
 console.log(`\npreflight (workspace) smoke: ${pass} checks passed`);
