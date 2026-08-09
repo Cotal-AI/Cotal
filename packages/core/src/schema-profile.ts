@@ -256,9 +256,76 @@ export interface SchemaBundle {
 /** Applicator keywords whose VALUE is a subschema, a map of them, or an array of them. Compile
  *  cost is driven by how many subschemas the compiler generates code for, so the walk follows
  *  exactly these and nothing else. */
-const SUBSCHEMA_KEYS = ["not", "if", "then", "else", "items", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties"];
-const SUBSCHEMA_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"];
-const SUBSCHEMA_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
+/**
+ * THE ADMITTED VOCABULARY. Any keyword outside these three sets is REFUSED at registration.
+ *
+ * WHY AN ALLOWLIST RATHER THAN A LONGER WALK LIST, which is the whole lesson of this guard: the node
+ * count was bypassed three separate times — booleans, closure splitting, legacy `dependencies` — and
+ * each repair added entries to a hand-maintained list of things to walk. Then asking Ajv what it
+ * actually registers (63 keywords, against 19 walked) produced a FOURTH within the hour:
+ * `contentSchema` is native 2020-12, holds a subschema, and hid 400 nodes while counting as 2.
+ *
+ * "Count the keywords I know" cannot be made sound by knowing more keywords, because its failure
+ * mode is silent: an unrecognised schema-valued position contributes ZERO and the count still looks
+ * like a count. Whether a fifth exists is unknowable from inside the list, which is the point.
+ *
+ * So the default inverts. A keyword this profile does not recognise is refused rather than skipped,
+ * and the counting below then runs over a set that cannot contain a surprise — because a surprise
+ * was already refused. That is the difference between "I counted what I know" and "nothing I do not
+ * know can pass".
+ *
+ * THIS IS STRICTER THAN JSON SCHEMA, DELIBERATELY. The specification says an unknown keyword is
+ * ignored as an annotation; this profile refuses it. That is consistent with what the profile
+ * already does — closed bundles, no ambient resolution, a bounded pattern subset — and it is the
+ * only form that stays sound when the compiler's vocabulary changes underneath it. A contract that
+ * needs a keyword absent here is a request to extend this list, reviewed, rather than a silent
+ * admission of something nobody has counted.
+ */
+const SCHEMA_VALUED_KEYS = ["not", "if", "then", "else", "items", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "contentSchema", "additionalItems"];
+const SCHEMA_VALUED_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"];
+const SCHEMA_VALUED_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
+/** Admitted, never containing a subschema: validation assertions, annotations, and core identifiers.
+ *  Listed exhaustively so an addition is a decision rather than an oversight. */
+const SCALAR_KEYS = [
+  "type", "enum", "const", "multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum",
+  "maxLength", "minLength", "pattern", "maxItems", "minItems", "uniqueItems", "maxContains",
+  "minContains", "maxProperties", "minProperties", "required", "dependentRequired",
+  "format", "contentEncoding", "contentMediaType",
+  "title", "description", "default", "deprecated", "readOnly", "writeOnly", "examples", "$comment",
+  "$id", "$schema", "$ref", "$anchor", "$dynamicRef", "$dynamicAnchor", "$vocabulary",
+];
+const ADMITTED = new Set([...SCHEMA_VALUED_KEYS, ...SCHEMA_VALUED_MAP_KEYS, ...SCHEMA_VALUED_LIST_KEYS, ...SCALAR_KEYS]);
+
+/** Refuse any keyword the profile does not admit. Runs BEFORE counting, so the count never has to
+ *  reason about a keyword nobody enumerated.
+ *
+ *  SCHEMA-POSITION AWARE, and it has to be: the keys of `properties`, `patternProperties`, `$defs`,
+ *  `definitions`, `dependentSchemas` and `dependencies` are USER-CHOSEN NAMES, not keywords. A naive
+ *  walk that checked every object key against the vocabulary would refuse every schema with a field
+ *  called `name`. And the values of `enum`, `const`, `default` and `examples` are arbitrary JSON
+ *  INSTANCE data, not schemas, so descending into them would refuse a legitimate default whose
+ *  object happened to carry an unrecognised key. Keyword positions and data positions are different
+ *  places and only the first is vocabulary. */
+function assertAdmittedVocabulary(doc: unknown, label: string): void {
+  const atSchema = (d: unknown, path: string): void => {
+    if (typeof d === "boolean") return;                       // `true`/`false` are valid subschemas
+    if (d === null || typeof d !== "object" || Array.isArray(d)) return;
+    for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+      if (!ADMITTED.has(k))
+        throw new ContractInvalidError(`${label}: keyword ${JSON.stringify(k)} at ${path || "/"} is not in the profile's admitted vocabulary; an unrecognised keyword is REFUSED rather than ignored, because this profile cannot count what it does not recognise`);
+      const here = `${path}/${k}`;
+      if (SCHEMA_VALUED_KEYS.includes(k)) atSchema(v, here);
+      else if (SCHEMA_VALUED_MAP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v))
+        for (const [name, sub] of Object.entries(v as Record<string, unknown>)) atSchema(sub, `${here}/${name}`);
+      else if (SCHEMA_VALUED_LIST_KEYS.includes(k) && Array.isArray(v))
+        v.forEach((sub, i) => atSchema(sub, `${here}/${i}`));
+      // everything else is a scalar assertion, an annotation, or instance data — not walked
+    }
+  };
+  atSchema(doc, "");
+}
+
+
 
 /** Count the subschema nodes in a schema document. Deterministic, cheap, computable BEFORE
  *  compiling, and identical on every host — which is the entire point, since the instrument it
@@ -280,9 +347,9 @@ export function countSchemaNodes(doc: unknown): number {
     if (Array.isArray(d)) { for (const v of d) walk(v); return; }
     nodes++;
     for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
-      if (SUBSCHEMA_KEYS.includes(k)) walk(v);
-      else if (SUBSCHEMA_MAP_KEYS.includes(k) && v && typeof v === "object") for (const s of Object.values(v as object)) walk(s);
-      else if (SUBSCHEMA_LIST_KEYS.includes(k) && Array.isArray(v)) for (const s of v) walk(s);
+      if (SCHEMA_VALUED_KEYS.includes(k)) walk(v);
+      else if (SCHEMA_VALUED_MAP_KEYS.includes(k) && v && typeof v === "object") for (const s of Object.values(v as object)) walk(s);
+      else if (SCHEMA_VALUED_LIST_KEYS.includes(k) && Array.isArray(v)) for (const s of v) walk(s);
     }
   };
   walk(doc);
@@ -298,6 +365,7 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
     throw new ContractInvalidError(`${label}: document is ${bytes} bytes (profile max ${SCHEMA_PROFILE.maxDocumentBytes})`);
   if (structuralDepth(doc) > SCHEMA_PROFILE.maxDepth)
     throw new ContractInvalidError(`${label}: nesting exceeds profile depth ${SCHEMA_PROFILE.maxDepth}`);
+  assertAdmittedVocabulary(doc, label);
   const nodes = countSchemaNodes(doc);
   if (nodes > SCHEMA_PROFILE.maxSchemaNodes)
     throw new ContractInvalidError(`${label}: ${nodes} subschema nodes (profile max ${SCHEMA_PROFILE.maxSchemaNodes}); the compile cost of a contract is bounded BEFORE compiling it, deterministically and identically on every host`);
