@@ -22,7 +22,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -187,27 +187,37 @@ try {
   // up-tree, so the "outside a project" guard has to check the directory really is one — without
   // that, running this from `/` recorded `root: "/"`.
   //
-  // The walk goes UP, so this case depends on ANCESTORS of the temp dir, which we do not own: a
-  // stray `/tmp/.cotal` on the machine silently turns the assertion green for the wrong reason
-  // (`findCotalRoot` returns `/tmp`, which IS a project, so the guard correctly accepts and the
-  // check fails) — or, worse, hides a real regression on a differently-dirty box. Assert the
-  // precondition instead of assuming it, so a polluted workstation gets a precise, actionable
-  // failure rather than a misleading verdict.
+  // The walk goes UP, through ancestors this test does not own: CI runners really do carry a
+  // `/tmp/.cotal` (an earlier smoke in the same shard leaves one), and a machine-dependent
+  // assertion here is worse than no assertion — it fails the gate for an ambient reason on one box
+  // and passes vacuously on another. So assert the RULE, which holds either way: use the nearest
+  // genuine project, and demand `--root` only when there isn't one.
   const bare = mkdtempSync(join(tmpdir(), "cotal-noproject-"));
   roots.push(bare);
-  for (let dir = bare; ; dir = dirname(dir)) {
-    assert.ok(
-      dir === bare || !existsSync(join(dir, ".cotal")),
-      `this case needs a temp dir with no .cotal above it, but ${join(dir, ".cotal")} exists - move it aside and re-run`,
-    );
+  let ancestorProject: string | undefined;
+  for (let dir = dirname(bare); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".cotal"))) { ancestorProject = dir; break; }
     if (dirname(dir) === dir) break;
   }
   const prevCwd2 = process.cwd();
   process.chdir(bare);
   const rootless = await run(["add", "rootless"], { server: LIVE });
   process.chdir(prevCwd2);
-  check("add outside a project requires --root", rootless.code === 1 && findMesh("rootless") === undefined, rootless.out);
-  check("…and names --root as the fix", rootless.out.includes("--root"), rootless.out);
+  if (ancestorProject === undefined) {
+    check("add outside any project requires --root", rootless.code === 1 && findMesh("rootless") === undefined, rootless.out);
+    check("…and names --root as the fix", rootless.out.includes("--root"), rootless.out);
+  } else {
+    // The same rule seen from the other side: a real `.cotal` up-tree IS a project, so the walk-up
+    // is used rather than refused — and the recorded root is that project, never the cwd.
+    // Compared canonically: the walk resolves through symlinks (macOS /var → /private/var), so a
+    // raw string compare would fail on the spelling rather than the behaviour.
+    const canon = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
+    check(`add uses the nearest genuine project up-tree (${ancestorProject})`,
+      rootless.code === 0 && canon(findMesh("rootless")?.root ?? "") === canon(ancestorProject),
+      { out: rootless.out, entry: findMesh("rootless") });
+    removeMesh("rootless");
+  }
+
   // An EXPLICIT --root is not exempt from being a real directory.
   const notADir = join(bare, "a-file");
   writeFileSync(notADir, "x");
