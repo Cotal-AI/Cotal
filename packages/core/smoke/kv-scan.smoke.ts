@@ -139,24 +139,47 @@ try {
   // THE S1 CASE. A pass that dies before delivering anything, with entries pending at bind, must
   // THROW — not return []. This is the one that made `readAclForAlias` able to report a provisioned
   // principal as unprovisioned, so it is asserted for a FILTERED scan too.
-  for (const [name, filter] of [["unfiltered", undefined], ["filtered", "a.>"]] as const) {
-    const victimNc = await connect({ servers: SERVER });
-    const victim = await new Kvm(victimNc).create(`die_first_${name}`, { history: 1 });
-    for (let i = 0; i < 60; i++) await victim.put(`a.k${i}`, enc("x".repeat(2048)));
+  // TRUNCATION. The failure being reproduced is specific and documented: on a dropped connection the
+  // pinned client's iterator calls `stop()` WITHOUT propagating an error, so a cut-short pass ends
+  // exactly like a complete one. Racing a real `nc.close()` against the drain cannot force that
+  // reliably (60 records on loopback finish before the close lands, and winning the race the other
+  // way produces a pre-bind error, which is a different failure). So the bind is REAL, `expected`
+  // is real, and only the iterator's ending is simulated - faithfully, as a clean stop with no
+  // error, which is what the client does.
+  for (const [name, filter, cut] of [
+    ["unfiltered, cut mid-drain", undefined, 5],
+    ["filtered, cut mid-drain", "a.>", 5],
+    ["filtered, cut before ANY delivery", "a.>", 0],
+  ] as const) {
+    const src = await kvm.create(`truncated_${cut}_${filter ? "f" : "u"}`, { history: 1 });
+    for (let i = 0; i < 40; i++) await src.put(`a.k${i}`, enc("v"));
+    const victim = Object.create(src) as typeof src;
+    const rjs = (src as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
+    Object.defineProperty(victim, "js", {
+      value: { ...rjs, consumers: { ...rjs.consumers, getPushConsumer: async (...a: unknown[]) => {
+        const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+        const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
+        // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
+        // stops early and cleanly, exactly as the client does when the connection drops.
+        return Object.assign(Object.create(oc as object), {
+          consume: async () => {
+            const inner = await realConsume();
+            const gen = (async function* () {
+              let n = 0;
+              for await (const m of inner) { if (n++ >= cut) return; yield m; }
+            })();
+            // The helper stops the iterator in its finally, so the stand-in must carry `stop` too.
+            return Object.assign(gen, { stop: () => (inner as { stop?: () => void }).stop?.() });
+          },
+        });
+      } } },
+    });
     let threw: unknown;
-    const scan = liveKvEntries(victim, filter).then(
+    await liveKvEntries(victim, filter).then(
       (r) => { threw = `RETURNED ${r.length} entries`; },
       (e) => { threw = e; },
     );
-    await victimNc.close(); // kill it before the pass can complete
-    await scan;
-    // The property that matters is "the caller never receives a list it could mistake for the
-    // answer". IncompleteKvScan is the helper's own verdict; a transport error from the dying
-    // connection is equally acceptable and reaches the caller the same way. What must NEVER happen
-    // is a return — that is the shape that made `readAclForAlias` report a provisioned principal as
-    // unprovisioned.
-    check(`${name}: a pass killed before completing THROWS, never returns a list`,
-      threw instanceof Error, String(threw));
+    check(`${name}: raises IncompleteKvScan, never returns a list`, threw instanceof IncompleteKvScan, String(threw));
   }
 
   // CONSUMER HYGIENE. Every exit path must reclaim its consumer, including the EMPTY one — that is
