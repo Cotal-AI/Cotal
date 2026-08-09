@@ -129,6 +129,50 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
   };
 }
 
+/** Stage a SIBLING credential into an instance's §13.1 family under the SAME open-and-commit fence
+ *  {@link import("./endpoint-service.js").finalizeServeIssuance} runs for the serve credential
+ *  itself. A "sibling" is any credential minted beside the serve cred against the same
+ *  `epgate.<endpoint>.<instanceId>` and staged into the same `epcred.<endpoint>.<instanceId>`
+ *  family (the manager's goal-writer and its §13.6 session credentials): the family IS the
+ *  takeover/retirement barrier's revocation unit, so a sibling that joins it without the fence is a
+ *  credential the barrier can never revoke.
+ *
+ *  The caller has already OBSERVED the gate (a sibling's grant is built FROM the observed
+ *  coordinates — the serving epoch above all), so the observation is passed in rather than re-read:
+ *  re-reading here would fence a DIFFERENT revision than the one the credential was minted against.
+ *
+ *  Order, identical to the serve mint: require `open` -> stage the row -> revision-pinned commit ->
+ *  release ONLY on the win. A frozen gate refuses before anything is written; a gate that MOVED
+ *  between the caller's observe and this commit loses the CAS, and the staged row is revoked so no
+ *  active row is left in a family the barrier already enumerated. A revoke failure is surfaced, not
+ *  swallowed — the reconciliation debt must be visible. The caller releases the credential only if
+ *  this resolves. */
+export async function commitSiblingIssuance(
+  gate: import("./endpoint-service.js").EpIssuanceGate,
+  observed: { state: string; revision: number; endpoint: string; lifecycleUid: string },
+  row: EpServeLedgerRow,
+): Promise<void> {
+  const at = `${observed.endpoint}/${observed.lifecycleUid}`;
+  if (observed.state !== "open")
+    throw new EpEnvelopeError("expired", `the issuance gate for "${at}" is ${observed.state}; a sibling credential never mints against a closed gate (SPEC 13.1)`);
+  await gate.stage(row);
+  const revokeStaged = async (): Promise<string | undefined> => {
+    try { await gate.revoke(row); return undefined; }
+    catch (err) { return (err as Error)?.message ?? String(err); }
+  };
+  let won: boolean;
+  try {
+    won = await gate.commit(observed.revision);
+  } catch (err) {
+    const revokeFailed = await revokeStaged();
+    throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a sibling credential for "${at}" (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  }
+  if (!won) {
+    const revokeFailed = await revokeStaged();
+    throw new EpEnvelopeError("expired", `the issuance gate advanced during a sibling mint (a takeover, re-registration, or name transfer won the serialization on "${at}"); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  }
+}
+
 /** Provision the endpoint's issuance gate OPEN (create-only), the §13.1 pre-registration a
  *  `registerServiceInstance` writes behind — "a registration writes only behind the
  *  provisioner-created gate". Born `open` at generation 0 / epoch 0 / registrationRevision 0 /

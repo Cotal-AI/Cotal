@@ -84,6 +84,7 @@ import {
   provisionEndpointGateOpen,
   endpointRegistrationBarrier,
   serveIssuanceGateKv,
+  commitSiblingIssuance,
   registerServiceInstance,
   authorizeServeGrant,
   writeServiceStatus,
@@ -3980,7 +3981,11 @@ export class Manager {
     const observed = await fence.observe();
     if (observed === null)
       throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the goal-writer cannot join its §13.1 revocation family`);
-    await fence.stage({
+    // The §13.1 open-and-commit fence, the SAME one the serve credential's own mint runs: a frozen
+    // gate refuses, and a gate that moved under us loses the CAS and revokes the staged row. Without
+    // it a barrier mid-takeover (already past its enumeration) would let this credential land
+    // ACTIVE in a family nothing revokes again.
+    await commitSiblingIssuance(fence, observed, {
       credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
@@ -4073,7 +4078,9 @@ export class Manager {
     const exp = inspectCredHealth(creds).exp;
     if (exp === undefined)
       throw new Error(`the session-writer credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
-    await fence.stage({
+    // The §13.1 open-and-commit fence (see {@link mintAndStageGoalWriter}): stage + revision-pinned
+    // commit against the gate this mint's grant was scoped from, releasing only on the win.
+    await commitSiblingIssuance(fence, observed, {
       credentialId: rawDigest(creds).replace("sha256:", "sha256-"),
       credentialKey: identity.id,
       holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
