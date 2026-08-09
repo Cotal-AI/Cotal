@@ -44,6 +44,21 @@ export interface MeshEntry {
    *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
    *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
   attachHost?: string;
+  /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
+   *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
+   *  decision was recorded (and is what any record written before this field means).
+   *
+   *  It is deliberately a bare flag and NOT the cert or key paths. Those live in the broker launch
+   *  policy under the workspace root, because this record is machine-home state that feeds status
+   *  output, join links and mesh messages — none of which should carry a path to a private key.
+   *
+   *  Why the flag has to exist at all, rather than clients inferring TLS from the broker: a NATS
+   *  client that omits the requirement still CONNECTS to a TLS broker, by upgrading the same socket
+   *  once it reads `tls_required` in the server's INFO. But that INFO is unauthenticated plaintext,
+   *  so an on-path attacker can forge one without it — and a client with no requirement of its own
+   *  will then send its credentials in the clear. The flag is what turns "encrypted if the server
+   *  says so" into "encrypted or refuse". */
+  tlsRequired?: boolean;
   /** Who put this record here — and therefore what may take it out. `up` (the default, and what any
    *  record written without the field is) means THIS machine started the mesh: it is safe to drop
    *  on a liveness verdict or a local teardown, because `cotal up` writes it straight back.
