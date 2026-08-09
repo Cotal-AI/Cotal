@@ -44,6 +44,12 @@ const UNGATED: Record<string, string> = {
   // Known-red or documented flakes, tracked separately; gating them would make the gate lie.
   "smoke:auth": "pre-existing red on main (mgr-cred presence-KV CONSUMER.CREATE)",
   "smoke:channels": "documented timing flake + fixed-port cleanup leak",
+  // EXPECTED RED BY DESIGN, and the one entry here that is a decision rather than debt. It
+  // reproduces an OPEN defect (renewManagedStaticCred reads the terminal latch at entry, then does
+  // four awaits before two writes that retirement cleanup has already deleted, leaving a valid
+  // credential and an `active` durable row for a retired lifecycle). Gating a known red is how a
+  // chain teaches its readers to skim reds, which is the most expensive habit a gate can pick up.
+  "smoke:renewal-terminal-race": "reproduction of an open defect; gate when the fix lands",
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
