@@ -305,6 +305,18 @@ try {
   check("rm refuses a mesh this machine is running", refused.code === 1 && findMesh("live-local") !== undefined, refused.out);
   check("rm points at `cotal down` instead", refused.out.includes("cotal down"), refused.out);
   check("…and names the live process it means", /pid \d+/.test(refused.out), refused.out);
+  // THE CO-ROOTED CASE this feature exists for: a registration for a remote mesh shares the root
+  // with the local one (that is `add`'s default). Pidfiles are root-scoped, so the local mesh's live
+  // pid is visible under that same root — and must not make `rm <remote>` claim the remote mesh is
+  // running here. Safe because a mesh this machine really started is stamped `up` and does get
+  // checked; only the hand-registered record skips.
+  recordMesh({ space: "remote-corooted", server: DEAD, root: ownedRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const corooted = await run(["rm", "remote-corooted"]);
+  check("rm drops a co-rooted registration despite the local mesh's live pid",
+    corooted.code === 0 && findMesh("remote-corooted") === undefined, corooted.out);
+  check("…and the local mesh sharing that root is still protected",
+    (await run(["rm", "live-local"])).code === 1 && findMesh("live-local") !== undefined, loadMeshes());
+
   // The same record with a reachable broker but NO local process is not this machine's to keep.
   recordMesh({ space: "not-ours", server: LIVE, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const foreign = await run(["rm", "not-ours"]);

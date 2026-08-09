@@ -182,7 +182,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     const r = await preflightTarget(target);
     if (!r.ok) {
       console.error(c.red(addFailure(r.kind, space, server, root)));
-      console.error(c.dim("nothing was registered - fix the above, or `--force` to register it unverified (e.g. the mesh is down right now)"));
+      console.error(c.dim("nothing was registered - fix the above, or `--force` to record it without verifying (e.g. the mesh is down right now)"));
       process.exit(1);
     }
   }
@@ -193,9 +193,10 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   recordMesh(entry);
   console.log(
     c.green(`✓ registered "${space}"`),
-    // "(unverified)" describes THIS registration, not a durable property of the record: verification
-    // is a point-in-time fact that a verified record also loses the moment a port is reused, so it
-    // is reported as what just happened rather than persisted as a claim that would decay on disk.
+    // "recorded without verifying" describes THIS registration, not a durable property of the
+    // record: verification is point-in-time — a verified record loses it the moment a port is
+    // reused — so it is reported as what just happened rather than persisted as a stored claim
+    // that would quietly decay into a false one.
     c.dim(`${server}  ${mode}  ${root}${v.force ? "  (recorded without verifying)" : ""}`),
   );
   // Same policy as `cotal up`: adopt the default only when there isn't a usable one, and never
@@ -331,12 +332,18 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     // reused port or a foreign NATS, which produced a refusal plus a `cotal down` instruction that
     // would stop nothing. Local process ownership is the fact the refusal actually claims.
     //
-    // Deliberately NOT gated on origin: a live local broker is a fact about this machine whatever
-    // the record says about who wrote it, and tying the safety check to provenance would let a
-    // mis-stamped record unregister a running mesh. Probed only when `--force` was not passed —
-    // the probe itself can throw on a multi-tenant or unreadable root, which must not defeat the
-    // documented override — and keyed on the entry's OWN space, never one re-resolved from the root.
-    const running = v.force ? undefined : liveMeshProcess(m.root, m.space);
+    // It is asked only of records this machine started. Pidfiles are ROOT-scoped, and a root is
+    // shared on purpose here: `add` defaults `--root` to the project you run it in, so a local mesh
+    // and a registration for a remote one routinely live under one root. A pid there belongs to
+    // whichever mesh owns the root — never to the remote broker — so asking this of a hand-registered
+    // record can only produce a false "it is running here". That is safe to skip precisely because
+    // provenance is now decided at the call site that started the broker: anything this machine
+    // actually runs is stamped `up` and does reach the check.
+    //
+    // Skipped entirely under `--force`: the probe itself throws on a multi-tenant or unreadable
+    // root, which must not defeat the documented override. Keyed on the entry's OWN space rather
+    // than one re-resolved from the root, which on a multi-tenant root can name another tenant.
+    const running = m.origin === "manual" || v.force ? undefined : liveMeshProcess(m.root, m.space);
     if (running) {
       console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
       failed = true;

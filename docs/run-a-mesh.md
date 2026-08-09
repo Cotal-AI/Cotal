@@ -123,10 +123,12 @@ can be dropped on a hunch — a failed liveness probe, a `cotal down` in its pro
 `cotal up` writes the record straight back. One you registered by hand cannot be reconstructed, so
 nothing removes it by inference: an unreachable broker is shown as `offline` in `cotal meshes`, and
 `cotal down` / `cotal clean all` leave it alone even when `--root` pointed at the project they are
-tearing down, and a `cotal up` for that space either refuses (naming `cotal meshes rm`) or, when it
-is that same mesh being refreshed, leaves the record's provenance alone. `cotal meshes rm` drops it
-and re-registering with `--force` replaces it. `rm` only forgets a mesh — to stop one running here,
-use `cotal down`.
+tearing down. A `cotal up` for that space refuses outright (naming `cotal meshes rm`) unless it is
+that same endpoint: finding a broker already answering there is a refresh that starts nothing and
+leaves the record's provenance alone, while actually starting the broker for that space, server and
+root makes this machine the one running it, so the record becomes an ordinary local one that
+`cotal down` clears. `cotal meshes rm` drops it and re-registering with `--force` replaces it. `rm`
+only forgets a mesh — to stop one running here, use `cotal down`.
 
 ## Watching
 
