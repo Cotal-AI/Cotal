@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:gate-inventory
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,6 +56,10 @@ const UNGATED: Record<string, string> = {
   // subject. It is ungated because it needs a real user-auth broker plus a real callout, not because
   // it is obsolete. Deleting it would drop a security proof for shipped code.
   "smoke:ctl-trust:live": "needs a real user-auth broker + callout; pins the LIVE ctl.delivery rail",
+  // The bare `smoke` script — `tsx packages/core/smoke.ts`, documented in AGENTS.md as the core
+  // smoke entry point, and reached by nothing. Invisible to this file until the audited set stopped
+  // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
+  "smoke": "UNTRIAGED",
   // Untriaged debt. These are the ones that should shrink.
   "smoke:attach-repaint": "UNTRIAGED", "smoke:attention": "UNTRIAGED",
   "smoke:attention:auth": "UNTRIAGED", "smoke:channel-attention": "UNTRIAGED",
@@ -92,20 +96,50 @@ const CITED_IN_PLAN = new Set([
 ]);
 
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> };
-const all = new Set(Object.keys(pkg.scripts).filter((k) => k.startsWith("smoke:") && k !== "smoke:ci"));
+// THE AUDITED SET INCLUDES THE BARE `smoke` SCRIPT. An earlier version filtered on `smoke:` and so
+// could not see `"smoke": "tsx packages/core/smoke.ts"` — a real suite that nothing runs, invisible
+// to the audit BY CONSTRUCTION. Found by a second, independent derivation, not by this file.
+const all = new Set(Object.keys(pkg.scripts).filter((k) => (k === "smoke" || k.startsWith("smoke:")) && k !== "smoke:ci"));
 
-// A suite counts as REACHED if any composite script or any workflow invokes it. `smoke:ci` is the
-// gate, but `check` and the workflows run suites of their own, and counting only `smoke:ci` would
-// over-report the gap.
-const reached = new Set<string>();
-for (const [name, body] of Object.entries(pkg.scripts))
-  for (const m of body.matchAll(SCRIPT_RE)) if (m[1] !== name) reached.add(m[1]);
+/** Suites INVOKED by a script body. Anchored on `pnpm [run] <name>`, because a script is reached by
+ *  being invoked, not by being mentioned.
+ *
+ *  A delimiter-anchored match on the bare word is NOT sufficient and briefly shipped here: every
+ *  suite path contains `/smoke/`, so `tsx packages/core/smoke/members.smoke.ts` matched the bare
+ *  `smoke` script and marked it reached. The audited set then looked one larger AND one more
+ *  reached, and the unreached count did not move — a wrong answer that changed nothing visible.
+ *  The pattern written to be careful about boundaries was less careful than the one it replaced. */
+function suitesIn(body: string): string[] {
+  return [...body.matchAll(/\bpnpm\s+(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g)].map((m) => m[1]);
+}
+
+// REACHED MEANS REACHABLE FROM A ROOT THAT ACTUALLY RUNS, transitively — not "mentioned somewhere".
+// The two relations agree on today's graph, which is why the weaker one survived: an allowlisted
+// UNREACHABLE parent naming a child marks the child reached under "mentioned by", though nothing
+// runs either. Roots are what CI and a developer actually invoke.
+const ROOTS = ["smoke:ci", "check", "test"];
 const wfDir = join(ROOT, ".github", "workflows");
+const roots = new Set<string>(ROOTS.filter((r) => r in pkg.scripts));
 for (const f of readdirSync(wfDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml")))
-  for (const m of readFileSync(join(wfDir, f), "utf8").matchAll(SCRIPT_RE)) reached.add(m[1]);
+  for (const s of suitesIn(readFileSync(join(wfDir, f), "utf8"))) if (s in pkg.scripts) roots.add(s);
+
+const reached = new Set<string>();
+const frontier = [...roots];
+while (frontier.length) {
+  const cur = frontier.pop() as string;
+  if (reached.has(cur)) continue;
+  reached.add(cur);
+  for (const s of suitesIn(pkg.scripts[cur] ?? "")) if (s !== cur && s in pkg.scripts) frontier.push(s);
+}
 
 const ungated = [...all].filter((s) => !reached.has(s)).sort();
-const unexplained = ungated.filter((s) => !(s in UNGATED));
+// A REASON IS TESTED FOR CONTENT, NOT PRESENCE. `s in UNGATED` passed on `""`, so this file could
+// print "every ungated suite is listed with a reason" while an entry carried nothing at all. An
+// exclusion with a stated reason is a decision; one without is the bug, and a key test cannot tell
+// them apart. `UNTRIAGED` is a legitimate value — it is honest debt — but it is counted separately
+// below rather than being allowed to read as a justification.
+const MIN_REASON = 8;
+const unexplained = ungated.filter((s) => !(s in UNGATED) || (UNGATED[s] ?? "").trim().length < MIN_REASON);
 const staleAllowlist = Object.keys(UNGATED).filter((s) => !all.has(s) || reached.has(s)).sort();
 
 let fail = 0;
@@ -127,14 +161,43 @@ if (unexplained.length) {
 // chain and not the definition, breaks the gate at the point of the rename rather than later. It
 // came out of a real three-way merge where one side's chain named two scripts the other side had
 // renamed away.
-// Only ROOT invocations can dangle. A segment carrying `-F`/`--filter <pkg>` resolves its script in
-// THAT PACKAGE's package.json, so `smoke:backup-perms:live` delegating to `smoke:backup:live` is
-// correct even though no root script has that name — the first version of this check flagged it and
-// it was a phantom. Split on `&&` so one delegating segment does not excuse the others.
+// A segment carrying `-F`/`--filter <pkg>` resolves its script in THAT PACKAGE's manifest, so
+// `smoke:backup-perms:live` delegating to `smoke:backup:live` is correct even though no root script
+// has that name. An earlier version flagged it (a phantom), and the repair SKIPPED every delegating
+// segment — which silenced the branch instead of teaching it where to look, so
+// `pnpm -F @cotal-ai/core smoke:not-real` produced no finding and passed. A check that cannot
+// resolve a target must say so, not say nothing: SKIPPING IS "I COULD NOT CHECK THIS AND KEPT QUIET".
+// It now reads the named package's manifest and resolves there; an unreadable or unknown package is
+// itself reported rather than exempted.
+const workspaceManifest = (pkgName: string): Record<string, string> | null => {
+  for (const dir of ["packages", "implementations", "extensions", "bin"]) {
+    const base = join(ROOT, dir);
+    if (!existsSync(base)) continue;
+    for (const entry of readdirSync(base)) {
+      const pj = join(base, entry, "package.json");
+      if (!existsSync(pj)) continue;
+      try {
+        const d = JSON.parse(readFileSync(pj, "utf8")) as { name?: string; scripts?: Record<string, string> };
+        if (d.name === pkgName) return d.scripts ?? {};
+      } catch { /* unparseable manifest is reported by the caller, not swallowed here */ }
+    }
+  }
+  return null;
+};
 const dangling: Array<[string, string]> = [];
 for (const [name, body] of Object.entries(pkg.scripts))
   for (const segment of body.split("&&")) {
-    if (/(^|\s)(-F|--filter)\s/.test(segment)) continue; // resolves in another package
+    const filtered = /(?:^|\s)(?:-F|--filter)\s+(\S+)/.exec(segment);
+    if (filtered) {
+      // `pnpm -F <pkg>... build` selects a dependency closure; only a smoke target needs resolving.
+      const target = suitesIn(segment).find((t) => t !== name);
+      if (!target) continue;                       // a build step, nothing to resolve
+      const pkgName = filtered[1].replace(/\.\.\.$/, "");
+      const scripts = workspaceManifest(pkgName);
+      if (scripts === null) dangling.push([name, `${target} (in unresolvable package ${pkgName})`]);
+      else if (!(target in scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
+      continue;
+    }
     for (const m of segment.matchAll(SCRIPT_RE))
       if (m[1] !== name && !(m[1] in pkg.scripts)) dangling.push([name, m[1]]);
   }

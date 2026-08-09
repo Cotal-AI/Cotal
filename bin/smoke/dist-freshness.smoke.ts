@@ -14,6 +14,13 @@
  * because the full gate rebuilds first, but the intermediate evidence was worthless and looked
  * fine.
  *
+ * WHAT IT CANNOT SEE, stated before what it can. It compares the NEWEST mtime on each side, so it
+ * proves an ORDERING and nothing else: a `dist` built from the wrong source passes as long as it is
+ * newer, and one freshly-written output masks another that is stale. A deliberate
+ * mutate-build-restore leaves `dist` NEWER than `src` and WRONG for the whole window, which is
+ * exactly when it lies. Freshness is not correctness, and only a source/build identity manifest
+ * would close that.
+ *
  * BE HONEST ABOUT WHERE THIS BITES. In `smoke:ci` it is nearly inert, because the gate builds
  * before it runs — it can only catch a build that silently produced nothing for a package. Its real
  * use is the ad-hoc case: run it after editing core and before trusting a manager-side suite. That
@@ -82,7 +89,9 @@ for (const pkg of PACKAGES) {
     console.log(`      newest dist: ${dist.path.replace(ROOT + "/", "")}`);
     console.log(`      A suite importing this package would test the previous build. Run: pnpm -r build`);
   } else {
-    console.log(`  ✓ ${pkg}: dist/ is ${Math.abs(skewSec)}s newer than src/`);
+    // The limitation belongs HERE, where a reader meets the verdict, not only in the prologue: a ✓
+    // that says "newer" reads as "correct" unless it says otherwise in the same breath.
+    console.log(`  ✓ ${pkg}: dist/ is ${Math.abs(skewSec)}s newer than src/ (ORDERING ONLY - a newer-but-WRONG dist passes, and one freshly-written output masks another stale one)`);
   }
 }
 
