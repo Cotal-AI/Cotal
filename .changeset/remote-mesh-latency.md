@@ -14,10 +14,14 @@ healthy uplinks at both ends, reading the membership feed took 30 to 34 seconds 
 now takes under a second for 93.
 
 - `liveKvEntries` is the one sanctioned full-bucket KV read: a single pass whose request count is
-  independent of record count, which refuses to return a truncated view rather than reporting a
-  partial set as the whole one, and which collapses by greatest revision with tombstones so a deleted
-  key cannot resurrect. The membership feed, the members and channel registries, and the ACL alias
-  enumeration all read through it. No change to broker authority.
+  independent of record count, which collapses by greatest revision with tombstones so a deleted key
+  cannot resurrect, and which binds its own consumer so that an empty result is PROVEN by the
+  bind-time pending count rather than inferred from silence. A pass that is cut short raises rather
+  than returning what arrived. That distinction is load-bearing on the ACL path: read this way, a
+  dropped link mid-scan would otherwise report a provisioned principal as having no ACL row, and a
+  durable join would be refused as "not provisioned" instead of as "could not read". The membership
+  feed, the members and channel registries, and the ACL alias enumeration all read through it. No
+  change to broker authority: the same ordered push consumer over the same subject.
 - `channelHistory` and `dmHistory` returned the OLDEST messages on any channel holding more than the
   requested limit, while being documented as recent and rendered everywhere as the latest. They now
   return the newest, read through a bounded window rather than by draining the backlog.

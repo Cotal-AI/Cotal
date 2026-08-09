@@ -117,52 +117,51 @@ try {
   check("a filter matching nothing returns [] in a NON-empty bucket",
     (await liveKvEntries(filtered, "zzz.>")).length === 0);
 
-  // ── Truncation. The guard under test is LOCAL: recognising that a pass ended without reaching its
-  // terminal message, and refusing to return what arrived. Driving that by racing a real connection
-  // close is inherently timing-dependent (a small bucket drains faster than any sleep can interleave,
-  // and a big one would just move the race), and a test that silently passes when the race is lost
-  // proves nothing. So the iterator is driven directly — the real broker above already proves the
-  // wire shape; this proves the guard.
-  const entry = (key: string, revision: number, delta: number, op: "PUT" | "DEL" = "PUT") =>
-    ({ bucket: "stub", key, revision, delta, operation: op, value: enc("v"), created: new Date(0), length: 1,
-       json: () => ({}), string: () => "v" }) as never;
-  const stubKv = (entries: unknown[], values = entries.length) =>
-    ({
-      history: async () => (async function* () { for (const e of entries) yield e; })(),
-      status: async () => ({ bucket: "stub", values }),
-    }) as never;
+  // ── COMPLETENESS, against a real broker (the stub era is over: the helper now binds its own
+  //    consumer through the pinned client's Bucket seam, so these properties are only meaningful
+  //    against a real one). ──────────────────────────────────────────────────────────────────────
 
-  let cut: unknown;
-  await liveKvEntries(stubKv([entry("a", 1, 5), entry("b", 2, 4)])).catch((e) => { cut = e; });
-  check("a pass that never reaches the terminal message THROWS", cut instanceof IncompleteKvScan, String(cut));
-  check("the throw names what was missed", cut instanceof IncompleteKvScan && /Refusing to return a partial view/.test(cut.message), String(cut));
+  // SEAM CANARY. The bind-time proof depends on `@nats-io/kv/internal` exposing Bucket with the
+  // members below. If a client bump removes them, that must fail HERE, loudly, not in production as
+  // a refusal to read.
+  const { Bucket: BucketCls, KvWatchInclude: Inc } = await import("@nats-io/kv/internal");
+  check("internal seam still present: Bucket + KvWatchInclude", typeof BucketCls === "function" && Inc !== undefined);
+  const probe = await kvm.create("seam_probe", { history: 1 });
+  check("a real KV handle IS a Bucket (the helper refuses anything else)", probe instanceof BucketCls);
+  for (const m of ["js", "stream", "_buildCC", "jmToWatchEntry"] as const)
+    check(`Bucket still exposes ${m}`, (probe as unknown as Record<string, unknown>)[m] !== undefined);
 
-  // The guard must not be always-on: a pass that DOES reach its terminal message returns normally.
-  const complete = await liveKvEntries(stubKv([entry("a", 1, 1), entry("b", 2, 0)]));
-  check("a pass that reaches the terminal message returns normally", complete.length === 2, complete.map((e) => e.key));
+  // Bind-time emptiness is PROVEN, not inferred from silence.
+  const empty2 = await kvm.create("empty_proof", { history: 1 });
+  check("an empty bucket returns [] via the bind-time pending count", (await liveKvEntries(empty2)).length === 0);
 
-  // THE KNOWN GAP, asserted so it stays known. A pass that dies before its first message cannot be
-  // told apart from an empty bucket through this client's API, so it reads as empty.
-  //
-  // An earlier version tried to close that by asking `kv.status()` and throwing when the bucket
-  // reported entries. That was unsound in the other direction: `history()` ends on a CACHED
-  // `num_pending === 0` and `status()` is a later round trip, so a first PUT landing in the gap
-  // turned a legitimately-empty snapshot into a throw — a false failure on a healthy read, on
-  // exactly the slow links that widen the window, and one round trip wasted on every empty scan.
-  // Closing this properly needs the helper to bind its own consumer and read `num_pending` at bind
-  // time. Until it does, this is the honest behaviour and it is pinned here.
-  check("zero entries reads as empty, whatever the bucket reports (documented gap)",
-    (await liveKvEntries(stubKv([], 7))).length === 0);
-  check("zero entries from a genuinely empty bucket returns []", (await liveKvEntries(stubKv([], 0))).length === 0);
-  check("no round trip is spent proving emptiness (status() is never consulted)", await (async () => {
-    let statusCalls = 0;
-    const counting = {
-      history: async () => (async function* () { /* empty */ })(),
-      status: async () => { statusCalls++; return { bucket: "stub", values: 7 }; },
-    } as never;
-    await liveKvEntries(counting);
-    return statusCalls === 0;
-  })());
+  // THE S1 CASE. A pass that dies before delivering anything, with entries pending at bind, must
+  // THROW — not return []. This is the one that made `readAclForAlias` able to report a provisioned
+  // principal as unprovisioned, so it is asserted for a FILTERED scan too.
+  for (const [name, filter] of [["unfiltered", undefined], ["filtered", "a.>"]] as const) {
+    const victimNc = await connect({ servers: SERVER });
+    const victim = await new Kvm(victimNc).create(`die_first_${name}`, { history: 1 });
+    for (let i = 0; i < 60; i++) await victim.put(`a.k${i}`, enc("x".repeat(2048)));
+    let threw: unknown;
+    const scan = liveKvEntries(victim, filter).then(
+      (r) => { threw = `RETURNED ${r.length} entries`; },
+      (e) => { threw = e; },
+    );
+    await victimNc.close(); // kill it before the pass can complete
+    await scan;
+    // The property that matters is "the caller never receives a list it could mistake for the
+    // answer". IncompleteKvScan is the helper's own verdict; a transport error from the dying
+    // connection is equally acceptable and reaches the caller the same way. What must NEVER happen
+    // is a return — that is the shape that made `readAclForAlias` report a provisioned principal as
+    // unprovisioned.
+    check(`${name}: a pass killed before completing THROWS, never returns a list`,
+      threw instanceof Error, String(threw));
+  }
+
+  // A non-Bucket handle is refused loudly rather than silently falling back to history().
+  let refused: unknown;
+  await liveKvEntries({ history: async () => [] } as never).catch((e) => { refused = e; });
+  check("a non-Bucket KV handle is refused loudly", refused instanceof Error && /Bucket/.test(String((refused as Error).message)), String(refused));
 
   await nc.close();
   console.log(`\nkv-scan smoke: ${pass} checks passed`);

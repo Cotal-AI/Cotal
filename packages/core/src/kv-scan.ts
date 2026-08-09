@@ -1,3 +1,4 @@
+import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
 
 /**
@@ -91,38 +92,59 @@ export class IncompleteKvScan extends Error {
  * genuinely empty (proven at bind time, not inferred from silence).
  */
 export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
-  // `history()` gives us one pass WITH values over the same consumer shape `keys()` uses. We read
-  // `delta` (the client's surface for the message's `pending`) to recognise the terminal message.
-  const iter = await kv.history(filter === undefined ? {} : { key: filter });
+  // OWN THE PASS. This deliberately does NOT call `kv.history()`. That helper hides the consumer's
+  // bind-time `num_pending`, and without it an empty result is ambiguous: a genuinely empty bucket
+  // and a pass that died before its first message look identical. For a FILTERED scan that ambiguity
+  // is not academic — `enumerateLiveAclRows` reads this way, so a dropped link mid-scan would report
+  // a provisioned principal as having no ACL row at all, and `deliveryJoin` would refuse the join as
+  // "not provisioned" rather than as "could not read". A wrong reason on an authorization path.
+  //
+  // The pinned client exposes what is needed through its `@nats-io/kv/internal` entry point: the
+  // `Bucket` implementation carries the JetStream client, the stream name, the consumer-config
+  // builder the public watchers use, and the entry decoder. Binding through those keeps this on
+  // EXACTLY the ordered push consumer over `$KV.<bucket>.>` that `keys()` and `history()` already
+  // use — same subject, same verbs, no new broker authority.
+  if (!(kv instanceof Bucket))
+    throw new Error(
+      `liveKvEntries needs the @nats-io/kv Bucket implementation to bind its own consumer (got ${kv?.constructor?.name ?? typeof kv}). Refusing to fall back to history(), whose hidden bind-time pending count is exactly the ambiguity this exists to remove.`,
+    );
+  const bucket: Bucket = kv;
+  const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  const oc = await bucket.js.consumers.getPushConsumer(bucket.stream, cc);
+
+  // THE BIND-TIME PROOF. `num_pending` here is how many messages this consumer is going to deliver,
+  // read before a single one arrives. Zero means the bucket (or the filtered subset) really is
+  // empty; it is not inferred from silence.
+  const expected = (await oc.info(true)).num_pending;
+  if (expected === 0) return [];
 
   // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is what
   // makes concurrent rewrites and drifted `history` settings both correct.
   const latest = new Map<string, KvWatchEntry>();
   let received = 0;
   let sawTerminal = false;
-  let bucket = "kv"; // the KV handle does not carry its own name; entries do
-  for await (const e of iter) {
-    received++;
-    bucket = e.bucket;
-    if (e.delta === 0) sawTerminal = true;
-    const prior = latest.get(e.key);
-    if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+  let bucketName = bucket.bucket;
+  const iter = await oc.consume();
+  try {
+    for await (const m of iter) {
+      const e = bucket.jmToWatchEntry(m, false);
+      received++;
+      bucketName = e.bucket;
+      const prior = latest.get(e.key);
+      if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+      // The ONLY completion signal accepted: a delivered message that says nothing is left behind
+      // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
+      // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
+      if (m.info.pending === 0) { sawTerminal = true; break; }
+    }
+  } finally {
+    iter.stop();
+    await oc.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
   }
-
-  // An empty bucket is a legitimate answer and terminates without ever yielding a message, so it
-  // cannot be told apart from a death-before-first-message by the entry count alone. Distinguish
-  // them by asking the bucket how many entries it holds — a bucket that reports content but
-  // delivered none was truncated. This costs a round trip ONLY on the empty path.
-  // NO EMPTY-BUCKET PROBE. An earlier version asked `kv.status()` here and threw when the bucket
-  // reported entries, to tell "genuinely empty" apart from "died before the first message". That
-  // check was unsound and is gone:
-  //   - It is a TOCTOU. `history()` ends immediately on a cached `num_pending === 0`, and `status()`
-  //     is a LATER round trip; a first PUT landing in that gap turns a correct empty snapshot into a
-  //     throw, and the extra round trip widens the window on exactly the slow links this serves.
-  //   - It spent that round trip on EVERY empty scan, including filtered ones, whose result cannot
-  //     use a bucket-wide count at all (two per `readAclForAlias` miss).
-  if (received === 0) return [];
-  if (!sawTerminal) throw new IncompleteKvScan(bucket, received, received);
+  // Fell out without the terminal message: the connection dropped, the consumer was removed, or the
+  // stream stalled past the heartbeat. Whatever the cause, this is a PARTIAL view and saying so is
+  // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
+  if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
   const out: KvEntry[] = [];
   for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
