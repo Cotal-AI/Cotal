@@ -74,7 +74,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionWriterGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
 import { epsSubject } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
@@ -126,11 +126,16 @@ export type Profile =
   // The console/CLI per-session CALLER credential (P2 item 6): rails-only for ONE §13.6 session,
   // TTL-bound to it, never standing. Static = face-minted from the seed; user mode = the callout.
   | "session-caller"
-  // The manager's SERVING session-writer (P2 item 6): a STANDING own-endpoint writer over ALL of
-  // one endpoint's §13.6 sessions at ONE serving epoch — the session `out`/`in` rails
-  // (wildcard session, pinned endpoint+epoch) + the DEDICATED sessions-bucket ledger, NOTHING else.
-  // Standing + re-minted for the SAME nkey on renewal, the goal-writer precedent ({@link goalWriterGrants}).
-  | "session-writer"
+  // The manager's SERVING per-session credential (P2 item 6): the mirror of `session-caller` with
+  // the directions swapped — sub the ONE session's `in` rail, pub its `out` rail, nothing else.
+  // Minted at redemption, TTL-bound to the session, never renewed (SPEC 13.6: both sides hold only
+  // redemption-minted per-session credentials; no standing EPS grant exists on either side).
+  | "session-serving"
+  // The manager's SESSION LEDGER (P2 item 6): the standing connection owning the DEDICATED
+  // sessions-bucket `session.<id>` rows — §13.6's "durable named authority that survives the
+  // serving endpoint". Holds NO session rail of any shape; the rails are `session-serving`'s and
+  // `session-caller`'s. Standing + re-minted for the SAME nkey on renewal (the goal-writer precedent).
+  | "session-ledger"
   // v0.4 endpoint-registration eviction (P2 item 3, slice 3a): the SCOPED delivery-admin caller a
   // registration barrier mints PER re-registration to verify-evict the SUPERSEDED serve family
   // before the epoch advances (SPEC 13.1 "old authority dies before new authority is visible").
@@ -204,7 +209,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action (P2 item 2); the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential (Q2)" },
   "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred (P2 item 6): rails-only for ONE §13.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
-  "session-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's serving session-writer (P2 item 6): STANDING own-endpoint writer over one endpoint's §13.6 session rails + the dedicated sessions bucket; the manager re-mints for the SAME nkey on the half-TTL loop, disjoint from the serve credential (the goal-writer precedent)" },
+  "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred (P2 item 6): rails-only for ONE §13.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
+  "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER (P2 item 6): the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" },
@@ -569,11 +575,11 @@ export interface MintOpts {
    *  for that profile; ignored by every other. The rows pin all three, so the cred authorizes
    *  exactly that session's `in`+`out` and nothing else. */
   sessionCaller?: { endpoint: string; sessionId: string; epoch: number };
-  /** `session-writer` profile only (P2 item 6): the endpoint whose §13.6 session rails this standing
-   *  writer serves and the serving epoch it is pinned to. REQUIRED for that profile; ignored by every
-   *  other. The rows wildcard only the sessionId — the endpoint + epoch pin own-endpoint/own-epoch
-   *  confinement, so a successor incarnation (new epoch) is a differently-scoped writer. */
-  sessionWriter?: { endpoint: string; epoch: number };
+  /** `session-serving` profile only (P2 item 6): the ONE §13.6 session this SERVING credential may
+   *  serve — same three coordinates as {@link sessionCaller}, with the rail directions swapped.
+   *  REQUIRED for that profile; ignored by every other. The `session-ledger` profile takes no pin
+   *  at all: it holds no rail, so it has nothing to pin. */
+  sessionServing?: { endpoint: string; sessionId: string; epoch: number };
   /** `deployer` profile only: which v0.4 ep instrument set its `launch`/`ps` rows carry. Defaults
    *  to `"admin"` (the static operator's ephemeral deploy cred). The user-mode `deployer` VIEW
    *  mints `"privileged"` instead, so a spawn-scoped deploy reaches the manager where its
@@ -905,7 +911,8 @@ export function permissionsFor(
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin"); // any-mode stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin"); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
   if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails (P2 item 6)
-  if (profile === "session-writer") return sessionWriterPermissions(space, pr, opts.sessionWriter); // the serving session-writer's rails + dedicated ledger (P2 item 6)
+  if (profile === "session-serving") return sessionServingPermissions(space, pr, opts.sessionServing); // one §13.6 session's SERVING rails (P2 item 6)
+  if (profile === "session-ledger") return sessionLedgerPermissions(space, pr); // the dedicated session ledger, no rails (P2 item 6)
   if (profile === "endpoint-serve")
     // Serve rows are emitted ONLY by mintCreds behind the §13.1 issuance fence — never via this
     // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
@@ -1599,7 +1606,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // STATIC manager's start-time `createEndpointStreams` (a superset of ensureAuthorityStores +
   // createSessionsStore): create-or-verify only — the provisioner holds NO value-write on any of them
   // (lifecycle state moves through the key-pinned `lifecycle-executor` cred; session rows through the
-  // scoped `session-writer` cred).
+  // scoped `session-ledger` cred).
   const buckets = [
     presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
     recordsBucket, epAuthBucket, sessionsBucket,
@@ -1757,14 +1764,37 @@ function sessionCallerPermissions(space: string, pr: MintPrincipal, pin: { endpo
   };
 }
 
-/** The manager's SERVING session-writer rows (P2 item 6): a STANDING own-endpoint writer over ALL
- *  of one endpoint's §13.6 sessions at ONE serving epoch — the wildcard-session `out`/`in` rails
- *  (endpoint + epoch PINNED) plus the DEDICATED sessions-bucket ledger, and NOTHING else (no auth
- *  bucket, no records bucket, no messaging plane). {@link sessionWriterGrants} carries the row
- *  rationale + the §13.9 subject-blindness confinement. */
-function sessionWriterPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string; epoch: number } | undefined): Record<string, unknown> {
-  if (!pin) throw new Error('permissionsFor: "session-writer" requires opts.sessionWriter ({endpoint, epoch}) - the endpoint whose session rails this standing writer serves + the serving epoch');
-  const g = sessionWriterGrants(space, pin.endpoint, pin.epoch, pr.connId);
+/** The manager's per-session SERVING rows (P2 item 6): the EXACT mirror of
+ *  {@link sessionCallerPermissions} with the directions swapped — sub the ONE session's epoch-pinned
+ *  `in` rail (caller→serving), pub its `out` rail (serving→caller), plus the connection-scoped reply
+ *  inbox, and NOTHING else. Same asymmetry §13.6 states: "the caller publishes `in` and subscribes
+ *  `out`; the serving instance the reverse".
+ *
+ *  Deliberately NO KV and NO JetStream API — not even the session ledger. The serving side drives
+ *  bytes; the ledger is the standing `session-ledger` credential's, on a different connection. That
+ *  separation is what lets this credential be one-shot and die with its session while the durable
+ *  revocation authority outlives it (§13.6).
+ *
+ *  This REPLACES a standing writer that held `eps.<endpoint>.*.<epoch>.{in,out}` and so could read
+ *  and write every live session's bytes at its epoch. The pin makes a credential for session A
+ *  authorize nothing of session B, and `epsSubject` validates every token, so a malformed
+ *  coordinate refuses at the mint rather than emitting a broadened subject. */
+function sessionServingPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string; sessionId: string; epoch: number } | undefined): Record<string, unknown> {
+  if (!pin) throw new Error('permissionsFor: "session-serving" requires opts.sessionServing ({endpoint, sessionId, epoch}) - the ONE session\'s rails this cred may serve');
+  return {
+    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, "out")] },
+    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, "in"), `_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The manager's SESSION-LEDGER rows (P2 item 6): the DEDICATED sessions-bucket rows and nothing
+ *  else — no session rail of any shape. Needs no pin: the grant carries no endpoint, epoch, or
+ *  session component, because §13.6's durable revocation authority is per-space, not per-session
+ *  (it must still be able to resolve and revoke a row after the endpoint that served it is gone).
+ *  {@link sessionLedgerGrants} carries the row rationale, the §13.9 subject-blindness confinement,
+ *  and the named `session.*` breadth residual. */
+function sessionLedgerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  const g = sessionLedgerGrants(space, pr.connId);
   return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
 }
 

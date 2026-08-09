@@ -49,6 +49,7 @@ import {
   encodeTerminalData,
   terminalFrameBytes,
   decodeTerminalFrame,
+  type SessionServing,
   type TerminalFrame,
 } from "../src/session/index.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
@@ -112,14 +113,32 @@ function inMemoryLedger(): SessionLedger {
   };
 }
 
+
+/** A faithful in-memory {@link SessionServing}: the seam mints a distinct id per session, records
+ *  what was staged/revoked, and hands back a fake connection the seam-level tests never dial.
+ *  Real broker coverage of the per-session credential lives in the plane + grant smokes. */
+function fakeServing(): SessionServing & { staged: string[]; revoked: string[] } {
+  const staged: string[] = [], revoked: string[] = [];
+  let n = 0;
+  return {
+    staged, revoked,
+    mint: (grant) => Promise.resolve({ id: `${grant.sessionId}.s${++n}`, creds: `CREDS:${grant.sessionId}`, exp: grant.exp }),
+    observeGate: (_e, inst) => Promise.resolve({ key: `epgate.manager.${inst}`, revision: 1 }),
+    stage: (_g, cred) => { staged.push(cred.id); return Promise.resolve(); },
+    open: () => Promise.reject(new Error("fakeServing.open is never dialled in the seam-level tests")),
+    revoke: (id) => { revoked.push(id); return Promise.resolve(); },
+  };
+}
 {
   const ledger = inMemoryLedger();
   const gates = new Map<string, number>();
   const gate = (key: string) => { if (!gates.has(key)) gates.set(key, 1); return { key, revision: gates.get(key)! }; };
+  const serving = fakeServing();
   const seam = staticRedemptionSeam({
     space: SPACE,
     resolveAnchor,
     ledger,
+    serving,
     holderProcessEpoch: () => HOLDER.processEpoch,
     servingEpoch: () => SERVING.epoch,
     observeHolderGate: (h) => gate(`gate.${h.lifecycleUid}`),
@@ -145,7 +164,7 @@ function inMemoryLedger(): SessionLedger {
     () => seam.redeem(g, presenter), "permission-denied");
 
   const expiredSeam = staticRedemptionSeam({
-    space: SPACE, resolveAnchor, ledger: inMemoryLedger(), holderProcessEpoch: () => HOLDER.processEpoch, servingEpoch: () => SERVING.epoch,
+    space: SPACE, resolveAnchor, ledger: inMemoryLedger(), serving: fakeServing(), holderProcessEpoch: () => HOLDER.processEpoch, servingEpoch: () => SERVING.epoch,
     observeHolderGate: (h) => gate(`gate.${h.lifecycleUid}`), observeServingGate: (_e, inst) => gate(`epgate.manager.${inst}`),
     now: () => NOW + 60_001,
   });

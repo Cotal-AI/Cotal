@@ -75,8 +75,9 @@ import {
   type SignerAnchor,
 } from "@cotal-ai/core";
 // P2 item 6: the manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
-// standup for `attach`, over a dedicated standing session-writer connection.
-import { ManagerSessionPlane, openSessionLedgerKv } from "./session/index.js";
+// standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
+// per-session credentials on their own short-lived connections).
+import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
 // P2 item 1 (1a-serve): the manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
@@ -85,6 +86,9 @@ import {
   endpointRegistrationBarrier,
   serveIssuanceGateKv,
   commitSiblingIssuance,
+  markLedgerRowRevoked,
+  epcredRowKey,
+  epgateKey,
   registerServiceInstance,
   authorizeServeGrant,
   writeServiceStatus,
@@ -236,6 +240,13 @@ export interface ManagerOptions {
    *  unchanged. It must be the SAME store the delivery daemon reads (`runDelivery(args, store)`), or a
    *  hosted remint writes one store while the daemon reads another and rides to expiry. */
   secretStore?: SecretStore;
+  /** P2 item 6: the global ceiling on concurrently live §13.6 sessions this manager will serve.
+   *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
+   *  own connection, and establishment is caller-triggered, so this is the process-level resource
+   *  bound; exceeding it refuses `resource-exhausted` before either happens. Operator-set because
+   *  the right number is deployment-shaped — the browser console holds one session per open pane.
+   *  {@link ManagerSessionPlaneDeps.maxSessions} carries the per-caller-scoping residual. */
+  maxSessions?: number;
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
@@ -510,6 +521,8 @@ export class Manager {
   private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  /** P2 item 6: the operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
+  private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
    *  See {@link ManagerOptions.secretStore}. */
   private readonly secrets: SecretStore;
@@ -585,16 +598,21 @@ export class Manager {
    *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
    *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
   private sessionPlane?: ManagerSessionPlane;
-  /** P2 item 6: the standing session-writer connection + its mutable creds holder (the authenticator
+  /** P2 item 6: the standing session-LEDGER connection + its mutable creds holder (the authenticator
    *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
    *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
-  private sessionWriter?: { nc: NatsConnection; creds?: string };
-  /** P2 item 6: the STABLE session-writer identity (auth mode) — minted once at registration
+  private sessionLedgerConn?: { nc: NatsConnection; creds?: string };
+  /** P2 item 6: credentialId → the nkey that credential was minted for, for the live per-session
+   *  SERVING credentials. The §13.1 ledger row records the holder principal, and the row is written
+   *  at stage time (after the mint), so the two steps need this one hop. Entries are dropped at
+   *  revoke; a session that never staged drops its entry when the manager exits. */
+  private readonly sessionServingKeys = new Map<string, string>();
+  /** P2 item 6: the STABLE session-LEDGER identity (auth mode) — minted once at registration
    *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
    *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
-  private sessionWriterIdentity?: Identity;
-  private sessionWriterCreds?: string;
+  private sessionLedgerIdentity?: Identity;
+  private sessionLedgerCreds?: string;
   /** P2 item 2: the acceptance replied for each in-flight goalId this incarnation accepted, so an
    *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple) without
    *  a second spawn. Durable cross-incarnation reconstruction rides the must-5 goal-index; here the
@@ -664,6 +682,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.maxSessions = opts.maxSessions;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
@@ -847,7 +866,7 @@ export class Manager {
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
     // P2 item 6: stand up the ONE §13.6 session plane for `attach` — AFTER registration too (it
-    // rides the serve grant's epoch + the family-staged session-writer cred), on its own standing
+    // rides the serve grant's epoch + the family-staged session-ledger cred), on its own standing
     // connection disjoint from both the serve and goal-writer creds.
     await this.startSessionPlane();
     // P2 item 2 must-5 Q-B: reconcile any accepted-but-unterminal goals inherited from a predecessor
@@ -969,21 +988,21 @@ export class Manager {
           console.error(`! goal-writer renewal: ${(e as Error).message} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
         }
       }
-      // P2 item 6: the manager is also the session-writer's renewal owner — re-mint the SAME nkey
+      // P2 item 6: the manager is also the session-ledger's renewal owner — re-mint the SAME nkey
       // with a fresh bounded exp AND re-stage its new credId into the §13.1 family, through the
-      // scoped executor. Without this the standing session-writer connection dies at its TTL and
+      // scoped executor. Without this the standing session-ledger connection dies at its TTL and
       // `attach` stops establishing sessions until a restart. The connection's authenticator presents
       // the refreshed credential on its next (re)connect.
-      if (this.sessionWriter && this.sessionWriterCreds && this.auth) {
-        const sw = this.sessionWriter;
+      if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
+        const sw = this.sessionLedgerConn;
         try {
-          if (inspectCredHealth(this.sessionWriterCreds).state !== "healthy") {
-            const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionWriter(authKv));
-            this.sessionWriterCreds = fresh;
+          if (inspectCredHealth(this.sessionLedgerCreds).state !== "healthy") {
+            const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
+            this.sessionLedgerCreds = fresh;
             sw.creds = fresh;
           }
         } catch (e) {
-          console.error(`! session-writer renewal: ${(e as Error).message} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
+          console.error(`! session-ledger renewal: ${(e as Error).message} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
         }
       }
     } catch (e) {
@@ -3831,9 +3850,10 @@ export class Manager {
     // must-5 (b): the STABLE goal-writer identity — a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), minted here so the run block can family-stage it.
     this.goalWriterIdentity = newIdentity();
-    // P2 item 6: the STABLE session-writer identity — another SIBLING in the SAME §13.1 family, so
-    // the takeover barrier revokes a deposed manager's session-writer alongside its goal-writer.
-    this.sessionWriterIdentity = newIdentity();
+    // P2 item 6: the STABLE session-LEDGER identity — another SIBLING in the SAME §13.1 family, so
+    // the takeover barrier revokes a deposed manager's ledger cred alongside its goal-writer. The
+    // per-session serving creds join the same family, each with its own fresh identity.
+    this.sessionLedgerIdentity = newIdentity();
     const run = async ({ recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => {
       // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
       // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
@@ -3904,15 +3924,16 @@ export class Manager {
       // authKv (the fence is live), so its credId lands in `epcred.<e>.<iid>` and the takeover
       // barrier revokes it. Open mesh: no mint (no credential system; the goal-writer conn is bare).
       const goalWriterCreds = auth ? await this.mintAndStageGoalWriter(authKv) : undefined;
-      // P2 item 6: mint + family-stage the session-writer credential HERE too (same executor, same
-      // fence, same §13.1 family), so takeover revokes a deposed manager's session-writer. Open
-      // mesh: no mint (no credential system; the session plane connection stays bare).
-      const sessionWriterCreds = auth ? await this.mintAndStageSessionWriter(authKv) : undefined;
-      return { grant, creds, goalWriterCreds, sessionWriterCreds };
+      // P2 item 6: mint + family-stage the session-LEDGER credential HERE too (same executor, same
+      // fence, same §13.1 family), so takeover revokes a deposed manager's ledger connection. The
+      // per-session SERVING credentials are minted later, one per redemption, into the SAME family.
+      // Open mesh: no mint (no credential system; the ledger connection stays bare).
+      const sessionLedgerCreds = auth ? await this.mintAndStageSessionLedger(authKv) : undefined;
+      return { grant, creds, goalWriterCreds, sessionLedgerCreds };
     };
-    const { grant, creds, goalWriterCreds, sessionWriterCreds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
+    const { grant, creds, goalWriterCreds, sessionLedgerCreds } = await (auth ? this.withEndpointServeExecutor(run) : this.withOpenServeConnection(run));
     this.goalWriterCreds = goalWriterCreds;
-    this.sessionWriterCreds = sessionWriterCreds;
+    this.sessionLedgerCreds = sessionLedgerCreds;
     // The serve connection presents the CURRENT credential on every (re)connect (the state object
     // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
     // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
@@ -4057,27 +4078,30 @@ export class Manager {
     try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
   }
 
-  /** P2 item 6: mint the standing `session-writer` credential and STAGE it into this instance's
+  /** P2 item 6: mint the standing `session-ledger` credential and STAGE it into this instance's
    *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv` — EXACTLY the
-   *  {@link mintAndStageGoalWriter} pattern. The gate is observed FIRST because the session-writer's
-   *  grant is EPOCH-scoped (it serves only this incarnation's serving epoch), so the mint pins the
-   *  gate's processEpoch; a successor incarnation (new epoch) gets a differently-scoped writer and
-   *  the family revoke retires this one. Re-minting the SAME nkey on renewal writes a DISTINCT ledger
+   *  {@link mintAndStageGoalWriter} pattern, under the same open-and-commit fence.
+   *
+   *  This credential carries the DEDICATED sessions-bucket ledger rows and no session rail at all.
+   *  It therefore takes no epoch pin: §13.6 makes it the durable revocation authority that must
+   *  outlive the serving endpoint, so scoping it to one serving epoch would defeat its purpose. The
+   *  epoch lives where it belongs, on the per-session serving credentials, which are minted per
+   *  redemption into this same family. Re-minting the SAME nkey on renewal writes a DISTINCT ledger
    *  row (per-JWT credentialId digest). */
-  private async mintAndStageSessionWriter(authKv: KV): Promise<string> {
+  private async mintAndStageSessionLedger(authKv: KV): Promise<string> {
     const auth = this.auth!;
-    const identity = this.sessionWriterIdentity!;
+    const identity = this.sessionLedgerIdentity!;
     // Registration instanceId (item 3's persisted logical id), not the per-process lifecycleUid:
-    // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the session-writer joins that family.
+    // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the ledger cred joins that family.
     const iid = this.managerInstanceId;
     const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
     const observed = await fence.observe();
     if (observed === null)
-      throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the session-writer cannot join its §13.1 revocation family`);
-    const creds = await mintCreds(auth, identity, "session-writer", { sessionWriter: { endpoint: MANAGER_ENDPOINT, epoch: observed.processEpoch } });
+      throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the session-ledger cred cannot join its §13.1 revocation family`);
+    const creds = await mintCreds(auth, identity, "session-ledger");
     const exp = inspectCredHealth(creds).exp;
     if (exp === undefined)
-      throw new Error(`the session-writer credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
+      throw new Error(`the session-ledger credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
     // The §13.1 open-and-commit fence (see {@link mintAndStageGoalWriter}): stage + revision-pinned
     // commit against the gate this mint's grant was scoped from, releasing only on the win.
     await commitSiblingIssuance(fence, observed, {
@@ -4092,8 +4116,8 @@ export class Manager {
   }
 
   /** P2 item 6: stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
-   *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-writer` cred
-   *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionWriter});
+   *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-ledger` cred
+   *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionLedger});
    *  an OPEN mesh uses a bare connection (no credential system to mint from). The connection presents
    *  the CURRENT credential on every (re)connect, so a half-TTL renewal is adopted without reconnecting.
    *
@@ -4104,19 +4128,19 @@ export class Manager {
    *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
    *  sessions bucket (createEndpointStreams provisioned it at registration). */
   private async startSessionPlane(): Promise<void> {
-    const identity = this.auth ? this.sessionWriterIdentity! : newIdentity();
+    const identity = this.auth ? this.sessionLedgerIdentity! : newIdentity();
     const enc = new TextEncoder();
     // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
     // updates `sw.creds` and the next (re)connect presents the refreshed credential.
     const sw: { nc: NatsConnection; creds?: string } =
-      { nc: undefined as unknown as NatsConnection, creds: this.auth ? this.sessionWriterCreds : undefined };
+      { nc: undefined as unknown as NatsConnection, creds: this.auth ? this.sessionLedgerCreds : undefined };
     const nc = await connect({
       servers: this.servers ?? DEFAULT_SERVER,
       ...(this.auth ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
     });
-    nc.closed().then((err) => { if (err) console.error(`! manager session-writer connection closed: ${err.message}`); });
+    nc.closed().then((err) => { if (err) console.error(`! manager session-ledger connection closed: ${err.message}`); });
     sw.nc = nc;
     const serveEpoch = this.serviceServe?.grant.epoch;
     if (serveEpoch === undefined)
@@ -4129,7 +4153,7 @@ export class Manager {
       scope: { sessions: [MANAGER_ENDPOINT] }, validFrom: Date.now() - 60_000, validTo: Date.now() + SESSION_GRANT_MAX_TTL_MS,
     };
     this.sessionPlane = new ManagerSessionPlane({
-      nc, space: this.space,
+      space: this.space,
       // The session's serving identity is the persisted REGISTRATION instanceId (item 3), not the
       // per-process lifecycleUid: a restarted manager re-registers the SAME logical instanceId with
       // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
@@ -4137,20 +4161,121 @@ export class Manager {
       serving: { instanceId: this.managerInstanceId, epoch: serveEpoch },
       signer: { keyId, keyPair: signer }, resolveAnchor: (id) => (id === keyId ? anchor : undefined),
       ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
+      servingCredential: this.sessionServingCredentials(),
+      ...(this.maxSessions !== undefined ? { maxSessions: this.maxSessions } : {}),
     });
-    this.sessionWriter = sw;
-    console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${this.auth ? "scoped session-writer cred, §13.1 family-staged" : "open/bare"})`);
+    this.sessionLedgerConn = sw;
+    console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${this.auth ? "scoped session-ledger cred, §13.1 family-staged" : "open/bare"})`);
+  }
+
+  /**
+   * The per-session SERVING credential seam (P2 item 6, SPEC 13.6): the manager mints, gate-stages,
+   * connects and revokes ONE credential per live session, replacing a standing credential that held
+   * `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch.
+   *
+   * Each session gets its OWN nkey identity, so the §13.1 barrier's evict-by-holderPrincipal reaches
+   * it individually, and each is staged into `epcred.manager.<instanceId>` — the SAME family the
+   * ledger and goal-writer creds join. That is how manager takeover still kills a deposed manager's
+   * sessions: the barrier enumerates the family, revokes every row, and evicts every holder, so the
+   * per-session creds die with the incarnation exactly as the standing one did, with the blast
+   * radius of a leaked credential cut from "every session at this epoch" to "one dead session".
+   *
+   * OPEN MESH: no credential system exists to mint from, so the seam mints nothing and opens a bare
+   * connection. That is not a degraded auth path — an open mesh has no broker enforcement at all —
+   * and it is still per-session: the connection and the ledger row are still one-per-session, so
+   * teardown behaves identically in both modes.
+   */
+  private sessionServingCredentials(): SessionServing {
+    const iid = this.managerInstanceId;
+    const gate = async <T>(fn: (authKv: KV) => Promise<T>): Promise<T> =>
+      this.withEndpointServeExecutor(({ authKv }) => fn(authKv));
+    return {
+      mint: async (grant) => {
+        // Open mesh: no auth to mint from. The id still names the session so the ledger row and the
+        // teardown path are identical in both modes.
+        if (!this.auth) return { id: `${grant.sessionId}.s`, creds: "", exp: grant.exp };
+        const identity = newIdentity();
+        const creds = await mintCreds(this.auth, identity, "session-serving", {
+          sessionServing: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+          expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms; the JWT exp is seconds
+        });
+        const health = inspectCredHealth(creds);
+        if (health.exp === undefined)
+          throw new Error(`the session-serving credential for ${grant.sessionId} is unbounded; a per-session credential never outlives its session (SPEC 13.6)`);
+        this.sessionServingKeys.set(rawDigest(creds).replace("sha256:", "sha256-"), identity.id);
+        return { id: rawDigest(creds).replace("sha256:", "sha256-"), creds, exp: grant.exp };
+      },
+      observeGate: async (_endpoint, instanceId) => {
+        // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
+        // ServingGatePin.gate — the stage refuses loudly if this is ever missing on an auth mesh).
+        if (!this.auth) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
+        return gate(async (authKv) => {
+          const observed = await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
+          if (observed === null)
+            throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${instanceId} vanished; a session credential never stages against a missing gate (SPEC 13.1)`);
+          // The WHOLE observation rides the pin: the stage's fence compares every field of it, which
+          // is what lets a lost CAS be classified rather than blanket-refused.
+          return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: observed.revision, gate: observed };
+        });
+      },
+      stage: async (grant, cred, pin) => {
+        if (!this.auth) return; // open mesh: nothing minted, so nothing to make revocable
+        const key = this.sessionServingKeys.get(cred.id);
+        if (key === undefined)
+          throw new Error(`no minted identity for session credential ${cred.id}; the stage cannot record a holder it did not mint (SPEC 13.1)`);
+        // THE REDEMPTION'S OWN PIN IS THE FENCE, and it is never re-read into something newer here:
+        // `commitSiblingIssuance` CASes on this observation's revision and, on a loss, refuses unless
+        // the gate is still identical to it in every field but the revision. A barrier
+        // (freeze, or reopen at a successor coordinate) is therefore always a refusal, while another
+        // session's identical-bytes commit touch is not — per-session credentials all serialize on
+        // this one gate key, so refusing on that would fail live sessions for contention rather than
+        // for a barrier. A read is never a fence (SPEC 13.1); the pinned CAS is.
+        const observed = pin.gate;
+        if (observed === undefined)
+          throw new Error(`the redemption of session ${grant.sessionId} carries no gate observation for ${MANAGER_ENDPOINT}/${iid}; a session credential never stages unfenced (SPEC 13.1)`);
+        await gate(async (authKv) => {
+          const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+          await commitSiblingIssuance(fence, observed, {
+            credentialId: cred.id,
+            credentialKey: key,
+            holderPrincipal: principalKey(DEV_OWNER, key).key,
+            endpoint: MANAGER_ENDPOINT, lifecycleUid: iid,
+            // The lineage records that this credential exists because a session was redeemed, so a
+            // ledger reader can tell a per-session row from a standing one (SPEC 13.6 sourceChain).
+            sourceChain: [`session.${grant.sessionId}`], state: "active",
+            exp: Math.floor(cred.exp / 1000),
+            generation: observed.generation, processEpoch: observed.processEpoch,
+            registrationRevision: observed.registrationRevision, nameAuthorityRevision: observed.nameAuthorityRevision,
+          });
+        });
+      },
+      open: async (cred) => {
+        // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
+        // without its own credential is exactly the standing-writer shape this design removes.
+        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds }) : {};
+        return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
+      },
+      revoke: async (credentialId) => {
+        if (!this.auth) return; // open mesh: nothing was minted
+        await gate(async (authKv) => {
+          await markLedgerRowRevoked(authKv, epcredRowKey(MANAGER_ENDPOINT, iid, credentialId));
+        });
+        this.sessionServingKeys.delete(credentialId);
+      },
+    };
   }
 
   /** Tear the session plane down (best-effort, both exit paths): end every live bridge with the
    *  honest `manager-restart` reason (this incarnation is going away; any successor takes a new epoch
-   *  and refuses these grants), then drain the session-writer connection. */
+   *  and refuses these grants), then drain each session's own connection and the ledger connection. */
   private async stopSessionPlane(): Promise<void> {
     const plane = this.sessionPlane;
-    const sw = this.sessionWriter;
+    const sw = this.sessionLedgerConn;
     this.sessionPlane = undefined;
-    this.sessionWriter = undefined;
-    try { plane?.endAll("manager-restart"); } catch { /* best effort */ }
+    this.sessionLedgerConn = undefined;
+    // `drain` awaits each session's teardown (connection close, terminal row, credential revoke);
+    // `endAll` alone would let the process exit with per-session connections still open.
+    try { await plane?.drain("manager-restart"); } catch { /* best effort */ }
     if (sw) { try { await sw.nc.drain(); } catch { try { sw.nc.close(); } catch { /* best effort */ } } }
   }
 
@@ -4687,13 +4812,26 @@ export class Manager {
     // Never establish a session over a dead agent — a doomed session (the caller would get an
     // immediate process-exit at best, a confusing empty terminal at worst). Refuse honestly.
     if (a.handle.status() !== "running") return { ok: false, error: `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach` };
+    // CLAIM the session slot BEFORE attaching the target's PTY, matching the console door: this door
+    // used to attach first and check capacity inside establishAttach, so a `resource-exhausted`
+    // refusal landed AFTER the attach. The claim is carried INTO establishAttach, so one reservation
+    // spans the attach and the establishment, and it is released on every refusal below.
+    //
+    // RESIDUAL, NAMED: no shipped runtime acquires anything at attach time — pty's `attach()` returns
+    // a pure view (it registers a data subscriber only when `onData` is called) and tmux/cmux/orca
+    // throw — so an attach nobody bridges is a garbage-collectible object, not a held resource, and
+    // ordering alone suffices. A future runtime that DOES acquire something in `attach()` reopens
+    // this: it would need a release on the failure paths, and `AttachSession` has no close today.
+    const slot = this.sessionPlane.claimSlot();
     let session;
     try {
       session = a.handle.attach();
     } catch (e) {
+      slot.release();
       return { ok: false, error: (e as Error).message };
     }
-    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
+    // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
+    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
     return { ok: true, data: { grant } };
   }
 
@@ -4707,20 +4845,36 @@ export class Manager {
   private async establishConsoleSession(name: string): Promise<SessionEstablishment> {
     if (!this.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
     if (this.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
-    const a = this.agents.get(name);
-    if (!a) throw new Error(`no managed agent "${name}"`);
-    if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
-    const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
-    // The loopback operator is the console's holder (same-host trust boundary).
-    const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
-    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session);
-    const creds = this.auth
-      ? await mintCreds(this.auth, newIdentity(), "session-caller", {
-          sessionCaller: { endpoint: MANAGER_ENDPOINT, sessionId: grant.sessionId, epoch: grant.serving.epoch },
-          expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
-        })
-      : "";
-    return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
+    // CLAIM the session slot here, before the PTY attach and before this establisher goes on to
+    // mint a seed-signed `session-caller` credential: a capacity refusal must land before anything
+    // with a side effect or a cost. The claim is carried INTO establishAttach, so the reservation
+    // spans the whole establishment rather than being a check that a concurrent caller can race.
+    // (See attachAuthorized for why the attach itself needs no unwind on any shipped runtime.)
+    const slot = this.sessionPlane.claimSlot();
+    try {
+      const a = this.agents.get(name);
+      if (!a) throw new Error(`no managed agent "${name}"`);
+      if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
+      const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
+      // The loopback operator is the console's holder (same-host trust boundary).
+      const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
+      const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
+      // The caller credential is minted ONLY after a session is really live, so a refused or failed
+      // establishment never yields a seed-signed JWT. (A failure HERE would leave a live session the
+      // browser never reaches, holding its slot until the grant expires — unreachable in practice,
+      // because the SERVING mint above signs from this same `this.auth` first and would have failed
+      // before any session existed.)
+      const creds = this.auth
+        ? await mintCreds(this.auth, newIdentity(), "session-caller", {
+            sessionCaller: { endpoint: MANAGER_ENDPOINT, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+            expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+          })
+        : "";
+      return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
+    } catch (e) {
+      slot.release(); // idempotent with establishAttach's own release
+      throw e;
+    }
   }
 
   /** Managed agents cross-referenced with live presence (the manager sees the roster). */

@@ -137,9 +137,15 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
  *  takeover/retirement barrier's revocation unit, so a sibling that joins it without the fence is a
  *  credential the barrier can never revoke.
  *
- *  The caller has already OBSERVED the gate (a sibling's grant is built FROM the observed
- *  coordinates — the serving epoch above all), so the observation is passed in rather than re-read:
- *  re-reading here would fence a DIFFERENT revision than the one the credential was minted against.
+ *  THE PASSED-IN OBSERVATION IS THE AUTHORITY AND IS NEVER REPLACED BY A RE-READ. A sibling's grant
+ *  is built FROM the observed coordinates (the serving epoch above all), so what this commit must
+ *  fence is the gate the credential was MINTED against. Fencing whatever the gate says NOW would be
+ *  the hole: the dangerous case is not a frozen gate but a COMPLETED takeover — freeze →
+ *  revoke/evict → reopen leaves the gate `open` again at a NEW generation, so a mint that re-pinned
+ *  to the successor would win its CAS and release a JWT minted against the PREDECESSOR's coordinates
+ *  into the family the barrier has just finished reconciling. This function re-reads the gate ONLY
+ *  to CLASSIFY a lost CAS, and every field of that re-read is compared against the ORIGINAL
+ *  observation: a successor coordinate can therefore never be adopted, it can only be refused.
  *
  *  Order, identical to the serve mint: require `open` -> stage the row -> revision-pinned commit ->
  *  release ONLY on the win. A frozen gate refuses before anything is written; a gate that MOVED
@@ -149,7 +155,7 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
  *  this resolves. */
 export async function commitSiblingIssuance(
   gate: import("./endpoint-service.js").EpIssuanceGate,
-  observed: { state: string; revision: number; endpoint: string; lifecycleUid: string },
+  observed: import("./endpoint-service.js").EpGateState,
   row: EpServeLedgerRow,
 ): Promise<void> {
   const at = `${observed.endpoint}/${observed.lifecycleUid}`;
@@ -160,17 +166,57 @@ export async function commitSiblingIssuance(
     try { await gate.revoke(row); return undefined; }
     catch (err) { return (err as Error)?.message ?? String(err); }
   };
-  let won: boolean;
-  try {
-    won = await gate.commit(observed.revision);
-  } catch (err) {
+  // A LOST CAS HAS EXACTLY TWO CAUSES, and conflating them breaks one thing or the other. Four
+  // PRODUCTION writers touch `epgate.<endpoint>.<instanceId>`: the create-only provision, a
+  // barrier's FREEZE (state leaves `open`), a barrier's REOPEN (token-pinned, and it writes the
+  // successor coordinate — every caller of it advances `generation`, the abort path included), and
+  // this very commit, which writes the gate's own bytes back UNCHANGED. So a revision that moved
+  // while the gate is still `open` and every other field is identical can ONLY be another sibling
+  // mint's touch.
+  //
+  // The enumeration is REPO-WIDE, not this file: there is a fifth writer, `writeEndpointGate`
+  // (implementations/auth/src/session-ledger.ts), an UNPINNED `put` that is the D14 registration
+  // stand-in for provisioning and smokes and is deliberately not re-exported from that package's
+  // index. It is outside the production set today, and this classification depends on it staying
+  // there — promoting it to a production path without joining this enumeration would let an
+  // arbitrary gate rewrite look like benign contention.
+  //
+  // That case is benign contention and must NOT refuse: every per-session credential serializes on
+  // this one key, so a concurrent establish burst would otherwise fail live sessions for no security
+  // reason. A barrier, by contrast, always shows up as a DIFFERENCE — a non-`open` state, or an
+  // advanced coordinate — and must always refuse.
+  //
+  // The re-read classifies the loss; it never becomes the new authority. `withoutRevision` renders
+  // EVERY field of a gate but its revision, so the comparison is against the whole ORIGINAL
+  // observation rather than a hand-picked subset — a field added to the gate row later is covered by
+  // construction. Retries are BOUNDED: contention is bounded by the number of mints racing on one
+  // instance, and the attempt count dominates the manager's default live-session ceiling (64), which
+  // is what bounds a real establish burst. Exhausting them is `unavailable` — loud, never a silent
+  // release, and never an unbounded spin.
+  const withoutRevision = (g: import("./endpoint-service.js").EpGateState): string =>
+    JSON.stringify(Object.entries(g).filter(([k]) => k !== "revision").sort(([a], [b]) => (a < b ? -1 : 1)));
+  const pinnedTo = withoutRevision(observed);
+  const refuse = async (message: string, code: "expired" | "unavailable"): Promise<never> => {
     const revokeFailed = await revokeStaged();
-    throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a sibling credential for "${at}" (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    throw new EpEnvelopeError(code, `${message}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  };
+  let pin = observed.revision;
+  for (let attempt = 0; attempt < 64; attempt++) {
+    let won: boolean;
+    try {
+      won = await gate.commit(pin);
+    } catch (err) {
+      return refuse(`the issuance-gate CAS failed; refusing to release a sibling credential for "${at}" (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`, "unavailable");
+    }
+    if (won) return;
+    const now = await gate.observe();
+    if (now === null)
+      return refuse(`the issuance gate for "${at}" vanished during a sibling mint; this mint released nothing (SPEC 13.1)`, "expired");
+    if (withoutRevision(now) !== pinnedTo)
+      return refuse(`the issuance gate advanced during a sibling mint (a takeover, re-registration, or name transfer won the serialization on "${at}"); this mint released nothing (SPEC 13.1)`, "expired");
+    pin = now.revision; // a concurrent sibling mint's identical-bytes touch; re-pin and retry
   }
-  if (!won) {
-    const revokeFailed = await revokeStaged();
-    throw new EpEnvelopeError("expired", `the issuance gate advanced during a sibling mint (a takeover, re-registration, or name transfer won the serialization on "${at}"); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
-  }
+  return refuse(`the issuance gate for "${at}" stayed contended across every retry; this mint released nothing (SPEC 13.1)`, "unavailable");
 }
 
 /** Provision the endpoint's issuance gate OPEN (create-only), the §13.1 pre-registration a

@@ -17,12 +17,15 @@
  * binding already stops a foreign party from redeeming or serving; the registry adds the target
  * lifecycle the pin requires without widening the core artifact.
  */
+import type { NatsConnection } from "@nats-io/transport-node";
 import {
   EpEnvelopeError,
   mintSessionGrant,
   redeemSession,
+  retrieveServingCredential,
   verifySessionGrant,
   type AnchorResolver,
+  type EpGateState,
   type LifecycleGatePin,
   type SessionCredential,
   type SessionGrant,
@@ -87,11 +90,67 @@ export function mintAttachOffer(args: MintAttachOfferArgs): AttachOffer {
 
 // ---- the redemption seam -----------------------------------------------------------------------
 
+/** The redemption's serving-gate observation, carried WHOLE rather than as a bare revision.
+ *
+ *  The §13.1 fence has to tell two revision moves apart: a BARRIER (which must refuse) and another
+ *  sibling mint's identical-bytes commit touch (which must not — every per-session credential
+ *  serializes on this one gate key, so refusing on contention would fail live sessions for no
+ *  security reason). A revision alone cannot make that distinction, so the pin carries the gate
+ *  state its revision came from and the fence compares EVERY field of it. */
+export interface ServingGatePin extends LifecycleGatePin {
+  /** The observation the revision came from. Absent ONLY on an open mesh, where nothing is minted,
+   *  nothing is staged, and there is no gate to fence against; the stage refuses loudly if it is
+   *  ever missing on an auth mesh rather than staging unfenced. */
+  gate?: EpGateState;
+}
+
+/**
+ * The manager's per-session SERVING credential, injected because minting one needs the space auth
+ * and the §13.1 endpoint gate, which live on the Manager, not in this module.
+ *
+ * The four calls are the credential's whole life, in the order §13.6 requires: `mint` produces
+ * bytes that are NOT yet authority, `stage` writes the gate-checked §13.1 ledger row that makes
+ * them revocable, the redemption's finalize CAS is what promotes them, and `revoke` kills the row
+ * by name at the session's terminal. `open` is separate from `mint` on purpose: nothing connects
+ * until the session row is `active`.
+ */
+export interface SessionServing {
+  /** Mint the per-session serving credential: exact-subject for THIS session only, expiring no
+   *  later than the grant. Bytes only — no ledger row yet, so this confers nothing durable. */
+  mint(grant: SessionGrant): Promise<SessionCredential>;
+  /** Stage its §13.1 credential-ledger row into the serving instance's revocation family, fenced on
+   *  `pin` — the gate observed during THIS redemption, which stays the authority: the commit CASes
+   *  on its revision, and a lost CAS is refused unless the gate is still identical in every field
+   *  but the revision. MUST throw if the gate moved — that loss is the lifecycle fence, and a throw
+   *  here refuses the whole redemption. */
+  stage(grant: SessionGrant, cred: SessionCredential, pin: ServingGatePin): Promise<void>;
+  /** Open the serving connection for ONE session with that credential. MUST fail loud: there is no
+   *  shared connection to fall back to, and serving a session without its own credential is exactly
+   *  the standing-writer shape this design removes. */
+  open(cred: SessionCredential): Promise<NatsConnection>;
+  /** Revoke the credential by id, idempotently (§13.6 makes the sweep retry until the mark sticks).
+   *
+   *  RESIDUAL, NAMED: this marks the §13.1 ledger row revoked; it does NOT evict a live connection.
+   *  The session's own teardown closes its connection first, so in the ordinary path the credential
+   *  has no connection left to use — but if that close fails, the JWT stays broker-valid until its
+   *  TTL (bounded by the session exp). Cluster-verified eviction of these holders belongs to the
+   *  §13.1 takeover barrier, which enumerates the family. So: do not read this as immediate broker
+   *  death on session close. */
+  revoke(credentialId: string): Promise<void>;
+  /** LEADER-SERVED observation of the serving instance's §13.1 issuance gate, returned as the pin
+   *  {@link stage} is CASed against. Real, not a placeholder: it is what makes the stage a fence. */
+  observeGate(endpoint: string, instanceId: string): Promise<ServingGatePin>;
+}
+
 /** The one interface both modes present. `redeem` VERIFIES the presented grant (signature/anchor/
  *  currency) then enforces the one-use CAS + presenter-equality; it THROWS on any refusal (a second
- *  redeem, a foreign presenter, an expired/forged grant) and returns the sessionId on success. */
+ *  redeem, a foreign presenter, an expired/forged grant) and returns the sessionId on success.
+ *  `serving` then hands the SERVING party its own credential — a separate, authenticated retrieval
+ *  (§13.6 per-party release: no private material crosses between the two parties, so it is never
+ *  folded into the redemption answer). */
 export interface RedemptionSeam {
   redeem(grant: SessionGrant, presenter: SessionPresenter): Promise<{ sessionId: string }>;
+  serving(sessionId: string, presenter: { endpoint: string; instanceId: string; epoch: number }): Promise<SessionCredential>;
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -103,56 +162,124 @@ export interface StaticRedemptionDeps {
   space: string;
   resolveAnchor: AnchorResolver;
   ledger: SessionLedger;
+  /** The per-session serving credential's mint/stage/open/revoke seam (see {@link SessionServing}). */
+  serving: SessionServing;
   holderProcessEpoch(holder: { id: string; lifecycleUid: string }): MaybePromise<number | undefined>;
   servingEpoch(endpoint: string, instanceId: string): MaybePromise<number | undefined>;
   observeHolderGate(holder: { id: string; lifecycleUid: string }): MaybePromise<LifecycleGatePin>;
-  observeServingGate(endpoint: string, instanceId: string): MaybePromise<LifecycleGatePin>;
+  observeServingGate(endpoint: string, instanceId: string): MaybePromise<ServingGatePin>;
   now?(): number;
 }
 
 /**
  * The STATIC redeem seam (item 6's wired path): the manager runs the §13.6 redemption — verify the
  * signed grant, then `redeemSession` (the one-use `issuing` create-CAS + presenter-equality + the
- * finalize's fresh epoch re-checks). In static auth the caller's instrument rows ALREADY cover its
- * eps session subtree, so redemption mints no fresh per-session credential — it establishes the
- * one-use + the durable session row (the authority for close/expiry/restart), nothing more. Hence:
+ * gate-pinned stage + the finalize's fresh epoch re-checks) — and, for the SERVING half, mints,
+ * stages, releases and revokes a real per-session credential through {@link SessionServing}.
  *
- *  - `releaseCredential` returns a MARKER (no usable bytes): the caller connects with its instrument
- *    creds, not a released credential; the marker only confirms the row is `active`.
- *  - `stagePair` is a no-op: there is no per-session credential row to revision-pin. The §13.1
- *    restart/takeover fence is redeemSession's FINALIZE step — the fresh `servingEpoch` re-check —
- *    which a successor incarnation (advanced epoch) loses. User mode (#29) stages real rows.
- *  - `revokeCredential` is a no-op: nothing was minted to revoke; the row's terminal transition IS
- *    the authority. User mode (#29) revokes the callout-minted creds.
+ * WHAT EACH HALF ACTUALLY GETS, stated exactly, because the two halves are NOT symmetric here and a
+ * comment claiming they are would be worse than the asymmetry:
+ *
+ *  - SERVING half (this manager's own): a real `session-serving` credential, exact-subject
+ *    (`eps.<endpoint>.<sessionId>.<epoch>.{in,out}`), TTL-bound to the session, staged into this
+ *    instance's §13.1 `epcred.<endpoint>.<instanceId>` family under the open-and-commit fence, and
+ *    revoked BY NAME at the session's terminal. It replaces a STANDING wildcard credential that
+ *    reached every live session's bytes at its epoch (SPEC 13.9:2526).
+ *  - CALLER half: NOT minted, staged, or revoked here, and `releaseCredential` returns a MARKER with
+ *    no usable bytes for it. The caller's `session-caller` JWT is minted OUT OF BAND from the local
+ *    space seed — by the console establisher and by CLI attach — after redemption.
+ *
+ *    SPEC 13.6 PAIR-REVOKE IS NOT IMPLEMENTED FOR THE CALLER HALF. Stated exactly, because the
+ *    difference between this and pair-revoke is the whole residual: that JWT is not written into the
+ *    session lineage, is not named by the session row's credential material, and is untouched by
+ *    session close and by takeover reconcile. It dies by TTL alone, at a 24h ceiling
+ *    (`SESSION_GRANT_MAX_TTL_MS`).
+ *
+ *    Why the window is tolerable for THIS static slice, as reviewed: the caller grant is
+ *    exact-pinned to one `(endpoint, sessionId, epoch)`, so it can reach neither a sibling session
+ *    nor a successor epoch; and once the serving half is revoked and its connection closed there is
+ *    no counterparty on those two subjects. What survives is a broker-valid connection, not reach
+ *    into another session. Closing it properly means minting the caller half inside redemption,
+ *    which needs the user-mode (#29) callout exchange. Until that lands, do not describe any part of
+ *    this as pair teardown.
+ *  - `revokeCredential` is therefore ONE-SIDED by construction: it revokes an id this seam minted
+ *    and is an explicit no-op for the caller id, rather than silently appearing to revoke both.
  */
 export function staticRedemptionSeam(deps: StaticRedemptionDeps): RedemptionSeam {
-  const credIds = (grant: SessionGrant) => ({ credCaller: `${grant.sessionId}.c`, credServing: `${grant.sessionId}.s` });
+  // The minted-but-unreleased serving credential, held between `allocateCredentialIds` and
+  // `releaseCredential`. NAMED RESIDUAL: the JWT exists before the one-use create-CAS is won,
+  // because the credential id the `issuing` row must name IS its digest. If the create loses, the
+  // bytes are dropped here having never been staged, released, or connected with — they reach no
+  // other party and no ledger row was written for them.
+  const minted = new Map<string, SessionCredential>();
+  const callerId = (grant: SessionGrant) => `${grant.sessionId}.c`;
   const marker = async (sessionId: string, credentialId: string): Promise<SessionCredential> => {
     const row = await deps.ledger.read(sessionId);
     if (!row) throw new EpEnvelopeError("failed-precondition", `no session row for ${sessionId}; nothing releases without its authority row (SPEC 13.6)`);
-    // No usable bytes: static-mode authority is the caller's standing instrument grant, not a
-    // per-session credential. The marker's exp equals the row's, satisfying the seam's exp bound.
     return { id: credentialId, creds: "", exp: row.exp };
   };
+  // The serving pin core observed for THIS redemption, kept so the stage fences on the WHOLE
+  // observation rather than the bare {key, revision} core's hook type carries. One seam is built per
+  // establishment, so this holds exactly one redemption's pin and cannot be crossed with another's.
+  let servingPin: ServingGatePin | undefined;
   const hooks: SessionRedemptionHooks = {
     ledger: deps.ledger,
     holderProcessEpoch: (h) => deps.holderProcessEpoch(h),
     servingEpoch: (e, i) => deps.servingEpoch(e, i),
     observeHolderGate: (h) => deps.observeHolderGate(h),
-    observeServingGate: (e, i) => deps.observeServingGate(e, i),
-    allocateCredentialIds: (grant) => credIds(grant),
-    stagePair: () => { /* static: no per-session credential rows to pin (see doc) */ },
-    releaseCredential: (sessionId, credentialId) => marker(sessionId, credentialId),
-    revokeCredential: () => { /* static: nothing minted to revoke; the row transition is authority */ },
+    observeServingGate: async (e, i) => {
+      servingPin = await deps.observeServingGate(e, i);
+      return servingPin;
+    },
+    allocateCredentialIds: async (grant) => {
+      const cred = await deps.serving.mint(grant);
+      minted.set(grant.sessionId, cred);
+      return { credCaller: callerId(grant), credServing: cred.id };
+    },
+    // The §13.1 fence for the half this manager owns: stage the serving credential's ledger row
+    // REVISION-PINNED to the serving gate observed moments ago. A barrier that moved the gate makes
+    // this LOSE and throw, and redeemSession turns that into a refusal that releases nothing.
+    stagePair: async (grant, ids, pins) => {
+      const cred = minted.get(grant.sessionId);
+      if (!cred || cred.id !== ids.credServing)
+        throw new EpEnvelopeError("internal", `no minted serving credential for session ${grant.sessionId}; the stage cannot pin a credential that was never minted (SPEC 13.6)`);
+      // The pin handed to the stage MUST be the one this seam observed. Core passes the observation
+      // through, so this is an identity re-check, not a conversion: if it ever failed we would be
+      // fencing against a gate nobody in this redemption read, which is worse than not staging.
+      if (!servingPin || servingPin.revision !== pins.serving.revision || servingPin.key !== pins.serving.key)
+        throw new EpEnvelopeError("internal", `the serving gate pin staged against is not the one this redemption observed for session ${grant.sessionId} (SPEC 13.1)`);
+      await deps.serving.stage(grant, cred, servingPin);
+    },
+    releaseCredential: async (sessionId, credentialId) => {
+      const cred = minted.get(sessionId);
+      // Idempotent for the row's life (§13.6 lost-response retry): the SAME bytes, never a re-mint.
+      if (cred && cred.id === credentialId) return cred;
+      return marker(sessionId, credentialId); // the caller half: no bytes to hand back (see doc)
+    },
+    revokeCredential: async (id) => {
+      for (const [sessionId, cred] of minted) {
+        if (cred.id !== id) continue;
+        await deps.serving.revoke(id);
+        minted.delete(sessionId);
+        return;
+      }
+      // Not ours: the caller id, which this seam never minted and therefore cannot revoke.
+    },
     ...(deps.now ? { now: deps.now } : {}),
   };
   return {
     async redeem(grant, presenter) {
       const now = deps.now?.() ?? Date.now();
       const verified = await verifySessionGrant(grant, { space: deps.space, resolveAnchor: deps.resolveAnchor, now });
-      await redeemSession(verified, presenter, hooks); // one-use CAS + presenter-equality (throws on refuse)
+      try {
+        await redeemSession(verified, presenter, hooks); // one-use CAS + presenter-equality (throws on refuse)
+      } catch (e) {
+        minted.delete(verified.sessionId); // a refused redemption keeps no minted bytes
+        throw e;
+      }
       return { sessionId: verified.sessionId };
     },
+    serving: (sessionId, presenter) => retrieveServingCredential(sessionId, presenter, hooks),
   };
 }
 
@@ -160,15 +287,12 @@ export function staticRedemptionSeam(deps: StaticRedemptionDeps): RedemptionSeam
  *  per-session credential path). It REFUSES LOUD, naming the path — a user-mode attach fails rather
  *  than degrading to the static seam (item-6 binding no-fallback rule). */
 export function userModeRedemptionSeam(): RedemptionSeam {
-  return {
-    redeem() {
-      return Promise.reject(new EpEnvelopeError(
-        "unimplemented",
-        "user-mode session redemption (callout-minted per-session credentials) is not wired in this build; " +
-          "it is the #29 auth-trigger slice. A user-mode attach fails loud rather than degrading (SPEC 13.6, item-6 no-fallback).",
-      ));
-    },
-  };
+  const refuse = (): Promise<never> => Promise.reject(new EpEnvelopeError(
+    "unimplemented",
+    "user-mode session redemption (callout-minted per-session credentials) is not wired in this build; " +
+      "it is the #29 auth-trigger slice. A user-mode attach fails loud rather than degrading (SPEC 13.6, item-6 no-fallback).",
+  ));
+  return { redeem: refuse, serving: refuse };
 }
 
 // ---- the manager's session registry ------------------------------------------------------------

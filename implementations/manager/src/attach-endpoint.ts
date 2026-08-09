@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { EpEnvelopeError } from "@cotal-ai/core";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -308,8 +309,14 @@ export class AttachEndpoint {
         res.end(JSON.stringify(est));
       })
       .catch((e) => {
-        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: (e as Error).message }));
+        // A CAPACITY refusal is not an internal fault, and the browser has to be able to tell them
+        // apart: the live-session ceiling is a bounded, retryable condition (429), while a 500 says
+        // the manager broke. Both carry the envelope `code`, so the page branches on a stable token
+        // rather than on message text.
+        const code = e instanceof EpEnvelopeError ? e.code : undefined;
+        const status = code === "resource-exhausted" ? 429 : 500;
+        if (!res.headersSent) res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: (e as Error).message, ...(code ? { code } : {}) }));
       });
   }
 
