@@ -1998,7 +1998,7 @@ async function authSetup(
   }
   const port = Number(new URL(server).port) || 4222;
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, [auth], { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  writeFileSync(confPath, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

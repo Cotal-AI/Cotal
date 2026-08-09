@@ -43,7 +43,7 @@ const space = `backup_${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), "cotal-backup-live-"));
 const auth = await createSpaceAuth(space);
 const configPath = join(dir, "server.conf");
-writeFileSync(configPath, serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(configPath, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const server = spawn("nats-server", ["-c", configPath], { stdio: "ignore" });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (timeoutMs = 3000): Promise<void> => new Promise((resolve) => {

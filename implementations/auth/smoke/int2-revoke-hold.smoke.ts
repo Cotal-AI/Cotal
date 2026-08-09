@@ -270,7 +270,7 @@ try {
     idpUrl: base,
   });
   jsDir = mkdtempSync(join(tmpdir(), "cotal-fsb-js-"));
-  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
+  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }

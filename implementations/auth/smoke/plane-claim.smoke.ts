@@ -46,7 +46,7 @@ const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { a
 const space = `plcl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-plcl-"));
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const quiet = () => {};
