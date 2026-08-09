@@ -2155,7 +2155,13 @@ refs) or referencing other contract-store artifacts **by digest** only. `$id`/`$
 MUST NOT occur. Contract identity is the **closure digest** (above): the digest of the
 manifest naming the complete resolved closure, not of the root document alone. Registration-time bounds (loud `contract-invalid`, distinct from
 invocation-time `bad-request`): document ≤ 256 KiB, closure ≤ 1 MiB, nesting ≤ 32, ref chain
-≤ 32, bounded pattern complexity, compile/validation time budgets, and a bounded compiled-schema cache (reference: 256-entry LRU) (§13.8). Runtime
+≤ 32, bounded pattern complexity, and a bounded compiled-schema cache (reference: 256-entry LRU) (§13.8). Every registration bound MUST be decidable
+from the document alone, before compilation. A keyword outside the profile's **admitted
+vocabulary** (the 2020-12 assertion, applicator, annotation and core-identifier keywords) is
+`contract-invalid`. This diverges from JSON Schema, where an unrecognized keyword is an
+ignorable annotation: a profile that bounds a document MUST NOT admit a keyword whose
+position it cannot interpret, because an uninterpreted keyword may hold subschemas that the
+bounds and the closure walk never reach. Runtime
 validation at the serving boundary is mandatory: args before any effect, replies against the
 output schema. Authoring tooling is free (the reference implementation authors in Zod); the
 wire artifact and validation semantics are the JSON Schema documents themselves.
@@ -2455,8 +2461,12 @@ client code). The discovery protocol itself is versioned additively under `proto
   An endpoint MUST refuse to start against a store below its declared floors.
 - **Backpressure and budgets.** Bounded consumer pending (default 1024), bounded
   virtual-endpoint pools and session windows, flow control on watches; overload is
-  `resource-exhausted`. Schema compile/validate budgets (reference: 100 ms / 10 ms) and
-  bounded regex; over budget is `contract-invalid`/`bad-request`.
+  `resource-exhausted`. Bounded regex; a schema that does not compile is `contract-invalid`.
+  Schema compile/validate budgets (reference: 100 ms / 10 ms) are **advisory observations,
+  not refusal thresholds**: an implementation MUST NOT refuse a caller's arguments, or a
+  registration, on a timing measurement alone. Elapsed time and process-wide CPU both
+  attribute unrelated work to the operation being measured, so a busy host would otherwise
+  reject valid traffic. Registration is refused on the structural bounds of §13.7.
 - **Timers.** Broker message schedules at the 2.12 floor; same-subject replacement only (at
   the mediated `.armed` subject, §13.12); generation- and scheduler-origin-validated firing
   (stale or foreign-origin ⇒ no-op); durable reconciliation repairs
