@@ -103,6 +103,28 @@ function readInfo(host: string, port: number): Promise<Record<string, unknown>> 
   });
 }
 
+/** Wait until the broker is actually answering, by polling for its INFO line.
+ *
+ *  This replaces a fixed `sleep()` after each spawn, and the difference matters beyond tidiness.
+ *  A fixed wait encodes an assumption about how fast the machine is, and this box runs several
+ *  campaigns' gates at once — under load a broker can take longer than any constant you pick, and
+ *  the suite then fails for scheduling reasons rather than code reasons. A red manufactured by CPU
+ *  contention is worse than a slow suite: someone spends an hour proving it was noise, and the
+ *  lesson everyone actually learns is to discount reds. Poll for the condition instead. */
+async function waitForBroker(host: string, port: number, log: string, timeoutMs = 20_000): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    try {
+      return await readInfo(host, port);
+    } catch (e) {
+      last = (e as Error).message;
+      await sleep(100);
+    }
+  }
+  throw new Error(`broker at ${host}:${port} never served INFO within ${timeoutMs}ms (last: ${last})\n${readFileSync(log, "utf8").split("\n").slice(-8).join("\n")}`);
+}
+
 /** Grab a port the OS says is free right now. Fixed ports are a standing hazard in this suite:
  *  a run that dies on an assertion can leave its broker holding the port, and the NEXT run then
  *  fails with "address already in use" — a cascading red that looks like a product bug and is not.
@@ -192,9 +214,7 @@ writeFileSync(tlsConf, serverConfig(auth, [auth], {
   transport: { kind: "tls-required", certFile: valid.certFile, keyFile: valid.keyFile },
 }));
 const tls = await startBroker("tls", tlsConf);
-await sleep(1500);
-
-const tlsInfo = await readInfo("127.0.0.1", tlsPort);
+const tlsInfo = await waitForBroker("127.0.0.1", tlsPort, tls.log);
 assert.equal(tlsInfo.tls_required, true, `TLS broker must advertise tls_required; INFO was ${JSON.stringify(tlsInfo)}`);
 // `allow_non_tls` would surface as tls_available WITHOUT tls_required, i.e. mixed mode, which
 // permits exactly the cleartext credential path this feature exists to close.
@@ -263,7 +283,7 @@ await sleep(300);
   }));
 
   const openPlain = await startBroker("open-plain", openPlainConf);
-  await sleep(1500);
+  await waitForBroker("127.0.0.1", openPlainPort, openPlain.log);
   const acceptedPlain = await plaintextConnectAccepted("127.0.0.1", openPlainPort);
   assert.equal(
     acceptedPlain.accepted, true,
@@ -277,8 +297,7 @@ await sleep(300);
   await sleep(300);
 
   const openTls = await startBroker("open-tls", openTlsConf);
-  await sleep(1500);
-  const openInfo = await readInfo("127.0.0.1", openTlsPort);
+  const openInfo = await waitForBroker("127.0.0.1", openTlsPort, openTls.log);
   assert.equal(openInfo.tls_required, true, `OPEN-mode TLS broker must advertise tls_required; INFO was ${JSON.stringify(openInfo)}`);
   assert.notEqual(openInfo.tls_available, true, "OPEN-mode TLS broker must not advertise tls_available (mixed mode)");
 
