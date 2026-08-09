@@ -67,11 +67,11 @@ const UNGATED: Record<string, string> = {
   // filtering on `smoke:`, and found by a second independent derivation rather than by this check.
   "smoke": "UNTRIAGED",
   // Untriaged debt. These are the ones that should shrink.
-  "smoke:attach-repaint": "UNTRIAGED", "smoke:attention": "UNTRIAGED",
+  "smoke:attention": "UNTRIAGED",
   "smoke:attention:auth": "UNTRIAGED", "smoke:channel-attention": "UNTRIAGED",
   "smoke:channel-attention:auth": "UNTRIAGED", "smoke:delivery-boot-retry:auth": "UNTRIAGED",
   "smoke:delivery-broker-coupling": "UNTRIAGED", "smoke:delivery-old-manager": "UNTRIAGED",
-  "smoke:delivery-shards-reject": "UNTRIAGED", "smoke:doctor-auth": "UNTRIAGED",
+  "smoke:doctor-auth": "UNTRIAGED",
   "smoke:feedback": "UNTRIAGED", "smoke:install": "UNTRIAGED", "smoke:ledger": "UNTRIAGED",
   "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
   "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
