@@ -1,14 +1,27 @@
 /**
- * MANAGER RESTART + (i) EPOCH FENCE smoke (control-surface P2 item 3, slice 3a) — the P2 acceptance
- * line: "manager endpoint restart preserves the logical instance + durable goal handle while fencing
- * the OLD process epoch."
+ * MANAGER RESTART + GOAL-TERMINAL SURVIVAL smoke (control-surface P2 item 3, slice 3a) — the P2
+ * acceptance line: "manager endpoint restart preserves the logical instance + durable goal handle."
+ *
+ * RETARGETED. This suite used to assert the opposite of what it asserts now, so the inversion is
+ * spelled out rather than left for a reader to infer. It encoded the epoch-scoped terminal subject
+ * `…result.<execEpoch>`: the predecessor's terminal was expected to be INVISIBLE to the restarted
+ * current-epoch reader, and the successor was expected to write a second terminal that callers
+ * would see instead. That mechanism is gone (SPEC:1394 reserves a flat `…result` leaf with no epoch
+ * token), and it was not merely non-conformant — it was wrong. The window is "commit the terminal,
+ * then die before projecting it", in which the pre-restart fact is the LEGITIMATE outcome of work
+ * that really happened, not a corpse's guess. Hiding it lost a real `succeeded` and let a successor
+ * contradict it.
+ *
+ * WHAT IT ASSERTS NOW: a restart neither hides nor overwrites the terminal that was already
+ * committed. The pre-restart fact SURVIVES and is exactly what the restarted incarnation reads, and
+ * the successor's contradictory second terminal LOSES the create-only CAS and reads back the
+ * winner. Attribution is what distinguishes the two commits (SPEC 13.6), not subject scoping.
  *
  * OPEN mesh (evictor-free — pin 2: a bare registration mints no serve family, so a restart needs no
  * delivery daemon). The manager persists its logical instanceId + serve identity under .cotal, so a
  * restart in the SAME workspace root re-registers the SAME instanceId with an ADVANCED processEpoch
- * through the §13.1 gate. A goal terminal committed under the OLD epoch is then INVISIBLE to a
- * current-epoch reader (the 3.0 (i) fence, now driven by a REAL restart), and the successor's settle
- * under the current epoch is what callers see.
+ * through the §13.1 gate — which this suite still asserts, because id persistence and epoch advance
+ * are 3a's own subject matter.
  *
  * Run: pnpm smoke:manager-restart-fence   (needs nats-server + node on PATH; boots its own broker)
  */
@@ -76,17 +89,21 @@ try {
   check("the logical instanceId is persisted on disk (.cotal manager-instance file)",
     loadManagerInstanceIdentity(workspaceRoot, SPACE)?.instanceId === iid1);
 
-  // A goal accepted + terminated by incarnation 1 UNDER epoch 0 (executor-pinned to the instance).
+  // A goal ACCEPTED under epoch 0 and terminated by incarnation 1 before it dies. This is the
+  // legitimate pre-restart winner: the work really ran and its outcome is already durable.
   const gw1 = M1.goalWriter!.ctx;
-  const ref1 = goalRefOf(reqFor("g-corpse"), "g-corpse");
-  await bindGoal(gw1, ref1, "fp-corpse");
+  const ref1 = goalRefOf(reqFor("g-pre-restart"), "g-pre-restart");
+  await bindGoal(gw1, ref1, "fp-pre-restart");
   await createGoal(gw1, ref1, {
-    fingerprint: "fp-corpse", command: "spawn", caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid },
-    requestId: "g-corpse", sourceSeq: 0, acceptedAt: 1_000_000, readinessDeadlineMs: 30_000,
-    executor: { instanceId: iid1 },
+    fingerprint: "fp-pre-restart", command: "spawn", caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid },
+    requestId: "g-pre-restart", sourceSeq: 0, acceptedAt: 1_000_000, readinessDeadlineMs: 30_000,
+    acceptedEpoch: epoch1,
   });
-  await commitGoalResult(gw1, { ref: ref1, now: 1_000_001, cause: "complete", state: "failed", data: { by: "corpse-e0" }, executorEpoch: epoch1 });
-  check("incarnation 1 (current at epoch 0) sees its own terminal",
+  await commitGoalResult(gw1, {
+    ref: ref1, now: 1_000_001, cause: "complete", state: "failed",
+    data: { by: "pre-restart" }, committer: { instanceId: iid1, epoch: epoch1 },
+  });
+  check("incarnation 1 sees the terminal it committed under its own accepted epoch",
     (await readGoalResult(gw1, ref1))?.state === "failed");
 
   // ── restart: incarnation 2 (same root) ──
@@ -100,19 +117,30 @@ try {
   check("the restart ADVANCED the process epoch through the §13.1 gate (superseding the predecessor)",
     epoch2 > epoch1 && M2.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
 
-  // THE FENCE, driven by a real restart: incarnation 2 resolves its CURRENT epoch, so incarnation 1's
-  // OLD-epoch terminal is invisible; the successor's settle under the current epoch is what callers see.
+  // THE INVERSION, driven by a real restart. The advanced epoch does not hide the pre-restart fact
+  // and does not license overwriting it: one goal has ONE terminal subject, and the first fact won.
   const gw2 = M2.goalWriter!.ctx;
-  check("the predecessor's OLD-epoch terminal is INVISIBLE to the restarted current-epoch reader (the (i) fence)",
-    (await readGoalResult(gw2, ref1)) === undefined);
-  await commitGoalResult(gw2, { ref: ref1, now: 1_000_002, cause: "complete", state: "succeeded", data: { by: "successor-e1" }, executorEpoch: epoch2 });
-  const seen = await readGoalResult(gw2, ref1);
-  check("the successor's settle under the CURRENT epoch is what callers see",
-    seen?.state === "succeeded" && (seen?.data as { by?: string })?.by === "successor-e1", seen);
+  const survived = await readGoalResult(gw2, ref1);
+  check("the pre-restart terminal SURVIVES the restart and is exactly what the restarted incarnation reads",
+    survived?.state === "failed" && (survived?.data as { by?: string })?.by === "pre-restart", survived);
+
+  // The successor is a legitimate committer by attribution (committed epoch > accepted epoch = a
+  // successor settling inherited work), so nothing REFUSES it on attribution grounds. What stops it
+  // is the create-only CAS: the terminal already exists, so it loses and reads back the winner.
+  const second = await commitGoalResult(gw2, {
+    ref: ref1, now: 1_000_002, cause: "complete", state: "succeeded",
+    data: { by: "successor" }, committer: { instanceId: iid1, epoch: epoch2 },
+  });
+  check("the successor's CONTRADICTORY second terminal loses the create-only CAS and reads back the winner",
+    second.won === false && second.fact.state === "failed" && (second.fact.data as { by?: string })?.by === "pre-restart",
+    { won: second.won, fact: second.fact });
+  const after = await readGoalResult(gw2, ref1);
+  check("...and the durable terminal is still the pre-restart one, not the successor's",
+    after?.state === "failed" && (after?.data as { by?: string })?.by === "pre-restart", after);
 } finally {
   await mgr?.stop().catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }
 
-console.log(`\n${fail === 0 ? "MANAGER RESTART + FENCE SMOKE OK ✅" : "MANAGER RESTART + FENCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
+console.log(`\n${fail === 0 ? "MANAGER RESTART + TERMINAL SURVIVAL SMOKE OK ✅" : "MANAGER RESTART + TERMINAL SURVIVAL SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

@@ -217,9 +217,21 @@ const PERSONA_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, path: { type: "string" } },
 } as const;
 
+/** `launch` input. `spec` is the OPTIONAL inline resolved launch spec a REMOTE manifest deploy
+ *  pushes when the serving manager lives in another checkout or host (`spawn -f` / `up -f`; the
+ *  local form still sends only the runId and the manager derives `.cotal/run/<runId>.json`
+ *  itself). It is carried as an open object here for exactly the reason `inventory` is on
+ *  RESUME_INPUT_SCHEMA: the deep, security-relevant validation is the shared handler parser
+ *  (`parseLaunchSpec` — strict schema, safe names, policy re-validation, runId cross-check) and a
+ *  second shallow copy of it here would drift. `additionalProperties: false` still holds, so no
+ *  field reaches the handler that this contract did not name. */
 const LAUNCH_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "name"],
-  properties: { runId: { type: "string", minLength: 1 }, name: { type: "string", minLength: 1 } },
+  properties: {
+    runId: { type: "string", minLength: 1 },
+    name: { type: "string", minLength: 1 },
+    spec: { type: "object" },
+  },
 } as const;
 /** `launch` success output (P2 item 2, ruling 3): the SAME ACTION ACCEPTANCE floor as `spawn` - the
  *  allocated identity + goal coordinates. The manifest details (requested/runId/hash) that the
@@ -326,8 +338,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
  *  surface. Revisions: 3 = the 1c any-mode despawn/attach admission; 4 = item-2's spawn-as-action;
- *  5 = item-6's `attach` output flip (ws:// URL → the holder-bound §13.6 session grant). All
- *  commands are ephemeral (request/reply ops; the spawn-as-action journal model is item 2). */
+ *  5 = item-6's `attach` output flip (ws:// URL → the holder-bound §13.6 session grant).
+ *
+ *  6 = `launch` accepts the inline `spec` of a remote manifest deploy. The handler branch for it
+ *  merged in ahead of the schema, so the compiled contract refused every request that carried the
+ *  field and the feature was unreachable through this door (executed: the compiled input validator
+ *  returned false for `{runId, name, spec}` while the CLI sends exactly that). ONE revision 6
+ *  covers the whole branch: when the journal-action work lands, its `action` marker and
+ *  `readinessDeadlineMs` declaration join THIS revision rather than minting a seventh. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -345,7 +363,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 5,
+    revision: 6,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

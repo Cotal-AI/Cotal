@@ -92,7 +92,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-mgrops-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["w1", "w2", "w3", "wp1", "wp2"])
+for (const n of ["w1", "w2", "w3", "wp1", "wp2", "m6pin"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -156,6 +156,7 @@ try {
   console.log("1. describe: the rev-2 document serves the full fan-out");
   let clusterDigest: string | undefined;
   let spawnInputDigest: string | undefined;
+  let launchInputDigest: string | undefined;
   {
     const replies: unknown[] = [];
     const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))) });
@@ -169,10 +170,11 @@ try {
     clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
+    launchInputDigest = (doc?.commands?.find((c) => c.name === "launch") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
-    check("the document is revision 5 (item-6 attach flip); despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 5 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    check("the document is revision 6 (launch admits a remote manifest deploy's inline spec); despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 6 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
     sub.unsubscribe();
@@ -282,6 +284,50 @@ try {
     check("targeted attach returns the holder-bound session grant (no ws url)", rAttach.reply.ok === true && typeof attachData.grant?.sessionId === "string" && attachData.ws === undefined, rAttach.reply);
     const rLaunch = await A.call("launch", { runId: "zzzz", name: "x" });
     check("launch with an unknown runId refuses through the shared core", rLaunch.reply.ok === false && rLaunch.reply.error?.code === "failed-precondition", rLaunch.reply);
+
+    // ── M6, BOTH ARMS OF THE DISJUNCTION, ADJACENT ────────────────────────────────────────────
+    // The accept path's `hardPinned` is ONE boolean over TWO arms: `opts.identity` (a --name /
+    // identity override) and `opts.resolved` (a MANIFEST-DECLARED name). They are reachable through
+    // DIFFERENT doors — identity through `spawn`, resolved ONLY through `launch`, since
+    // `launchAgentToStartOpts` is the single place that sets it. spawn-action's M6 exercises the
+    // identity arm, which makes the whole feature LOOK covered: a gated, correctly-layered,
+    // honestly-passing test that says nothing whatever about the other half. And the manifest arm is
+    // the one that BREAKS shipped behaviour — those names used to number — so the half that most
+    // needed a test was the half that had none. Both are asserted here side by side so the
+    // disjunction cannot half-rot again.
+    {
+      // THE SHARED NAME SERIES IS LOAD-BEARING. DO NOT SPLIT THESE TWO CHECKS INTO INDEPENDENT
+      // FIXTURES. Both arms run against the SAME live occupant and the SAME base name, so they are
+      // coupled through the real allocator rather than each asserting a constant, and neither can
+      // pass by accident while the other is broken. Proven, not assumed: mutating the
+      // implementation so the manifest arm stops refusing makes it CONSUME `m6pin-2`, which pushes
+      // the persona-derived control to `m6pin-3` and fails that check too. Two interfering tests
+      // look like a smell and isolating them reads as tidying — but isolation would convert a
+      // coupled proof into two independent constants that can both drift green.
+      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      check("M6 setup: a live incarnation holds the name", held.name === "m6pin", held);
+
+      // THE BREAKING ARM: a manifest-declared name colliding with that live incarnation.
+      const m6Run = "m6run00001";
+      mkdirSync(join(workspaceRoot, ".cotal", "run"), { recursive: true });
+      writeFileSync(join(workspaceRoot, ".cotal", "run", `${m6Run}.json`), JSON.stringify({
+        apiVersion: "cotal-launch/v1", space, runId: m6Run,
+        agents: [{
+          name: "m6pin", agent: "e2e-stub", subscribe: ["general"],
+          allowSubscribe: ["general"], allowPublish: [], hash: "m6hash",
+        }],
+      }));
+      const rPinned = await A.call("launch", { runId: m6Run, name: "m6pin" });
+      check("M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent -2 (breaking vs shipped main, and the arm nothing covered)",
+        rPinned.reply.ok === false && /hard-pinned \(manifest-declared\)/.test(rPinned.reply.error?.message ?? ""), rPinned.reply);
+
+      // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
+      // the same base name still numbers. Same live occupant, same base name, opposite outcome —
+      // that contrast is the whole content of M6.
+      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      check("M6 persona-derived: the SAME base name against the SAME live occupant still NUMBERS",
+        numbered.name === "m6pin-2", numbered);
+    }
     const rRes = await A.call("resume-preserved", { attemptId: "nope", inventory: { version: "cotal-manager-resume/v1", space, createdAt: "x", agents: [] } });
     check("resumePreserved refuses with the EXACT ctl core message (no --resume-attempt manager)",
       rRes.reply.ok === false && String(rRes.reply.error?.message ?? "").includes("requires a manager started with --resume-attempt"), rRes.reply);
@@ -335,7 +381,24 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 5 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === 6 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+    // THE DOOR-LEVEL PROOF REVISION 6 EXISTS FOR. The handler branch for a remote manifest deploy's
+    // inline `spec` merged in ahead of the schema, so the compiled input validator refused every
+    // request carrying the field and the feature was unreachable THROUGH THIS DOOR while the
+    // handler behind it worked. Asserting the revision number alone would restate the bump rather
+    // than prove it, so this drives the shape the CLI actually sends through the REGISTERED
+    // closure, recompiled from what the store serves - not through a local copy of the schema.
+    {
+      const { manifest: lm, artifacts: la } = await fetchContractClosure(storeCtx, launchInputDigest!, () => []);
+      const launchSchema = JSON.parse(dec.decode(la.get(contractRefToHex(lm.root))!)) as Record<string, unknown>;
+      const lc = compileContract({ root: launchSchema });
+      check("the REGISTERED launch contract admits a remote manifest deploy's inline spec (the revision-6 door, recompiled from the store)",
+        lc.closureDigest === launchInputDigest
+        && lc.validate({ runId: "r1", name: "a1", spec: { agent: "join" } }) === true,
+        { got: lc.closureDigest, want: launchInputDigest });
+      check("...and it is still CLOSED - an undeclared field is refused, so revision 6 widened one field, not the door",
+        lc.validate({ runId: "r1", name: "a1", spec: { agent: "join" }, bogus: 1 }) === false);
+    }
     const { manifest: inManifest, artifacts: inArts } = await fetchContractClosure(storeCtx, spawnInputDigest!, () => []);
     const schema = JSON.parse(dec.decode(inArts.get(contractRefToHex(inManifest.root))!)) as Record<string, unknown>;
     const recompiled = compileContract({ root: schema });
