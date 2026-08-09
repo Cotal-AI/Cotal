@@ -22,23 +22,25 @@ import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
  * ACL reads that ambiguity produces a confident empty set, which is worse than a short one because
  * nothing about it looks wrong.
  *
- * ## What the completeness check does and does NOT guarantee
+ * ## What the completeness check guarantees
  *
- * In `@nats-io/kv`, `iter.closed().then(...)` ends the iterator CLEANLY on any mid-stream
+ * In `@nats-io/kv`, `iter.closed().then(...)` ends an iterator CLEANLY on any mid-stream
  * termination: a dropped connection, a deleted consumer, a server error. Nothing throws. On exactly
- * the high-latency, jittery links this helper exists to serve, a silently truncated read is the
- * default failure mode. So a pass that delivered entries and then stopped WITHOUT its terminal
- * `pending === 0` sentinel throws rather than returning a partial answer dressed as a complete one.
+ * the high-latency, jittery links this helper exists to serve, a silently truncated read would
+ * otherwise be the default failure mode.
  *
- * The limits matter, because a guarantee that is believed but not held is worse than none:
- *   - A pass that dies BEFORE its first message cannot be told apart from an empty bucket through
- *     this client's API, and is returned as empty. Closing that needs the helper to bind its own
- *     consumer and read `num_pending` at bind time; today it wraps `history()`, which does not
- *     expose it. That is the honest gap.
- *   - `history()` also ends on an idle heartbeat, which the client reads as "caught up". If the last
- *     initially-pending message is purged before delivery, a HEALTHY pass can end without the
- *     sentinel. The check is conservative in that direction: it can call a healthy read incomplete.
- *     So `IncompleteKvScan` means "retry this", never "data was lost".
+ * Because the pass is bound here, both halves are decidable:
+ *   - EMPTY is proven, not inferred. `num_pending` is read at bind, before any delivery, so an empty
+ *     result means the bucket (or the filtered subset) really had nothing — never that the pass died
+ *     before its first message. That distinction is why this does not wrap `history()`, which hides
+ *     the count: read through that, a dropped link during a filtered ACL scan reported a provisioned
+ *     principal as having no row, and a durable join was refused as "not provisioned".
+ *   - COMPLETE means a delivered message reported nothing behind it. An idle heartbeat is NOT
+ *     accepted as completion, unlike `history()`, whose "a heartbeat means we got all the keys"
+ *     shortcut is how a stalled pass returns a short list wearing a clean end.
+ *
+ * Anything else raises {@link IncompleteKvScan}. Treat it as retryable: it says this read did not
+ * finish, never that data was lost.
  *
  * ## Why tombstones are carried through the collapse
  *
@@ -112,33 +114,43 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
   const oc = await bucket.js.consumers.getPushConsumer(bucket.stream, cc);
 
-  // THE BIND-TIME PROOF. `num_pending` here is how many messages this consumer is going to deliver,
-  // read before a single one arrives. Zero means the bucket (or the filtered subset) really is
-  // empty; it is not inferred from silence.
-  const expected = (await oc.info(true)).num_pending;
-  if (expected === 0) return [];
-
-  // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is what
-  // makes concurrent rewrites and drifted `history` settings both correct.
+  // THE BIND-TIME PROOF: `num_pending` is how many messages this consumer will deliver, read before
+  // a single one arrives. Zero means the bucket (or the filtered subset) really is empty; it is
+  // never inferred from silence.
+  // ONE try/finally around EVERY exit. The consumer must be reclaimed on the empty path too: an
+  // empty read is not rare, it is the normal answer for a filtered ACL miss, and `readAclForAlias`
+  // performs TWO of those per unknown principal. `_buildCC` sets a 5s idle heartbeat, so an
+  // undeleted consumer lingers until its inactivity threshold; at alias-check churn that piles up on
+  // the broker for no reason.
   const latest = new Map<string, KvWatchEntry>();
   let received = 0;
   let sawTerminal = false;
   let bucketName = bucket.bucket;
-  const iter = await oc.consume();
+  let expected = 0;
   try {
-    for await (const m of iter) {
-      const e = bucket.jmToWatchEntry(m, false);
-      received++;
-      bucketName = e.bucket;
-      const prior = latest.get(e.key);
-      if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
-      // The ONLY completion signal accepted: a delivered message that says nothing is left behind
-      // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
-      // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
-      if (m.info.pending === 0) { sawTerminal = true; break; }
+    // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
+    expected = (await oc.info(true)).num_pending;
+    if (expected === 0) return [];
+
+    // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
+    // what makes concurrent rewrites and drifted `history` settings both correct.
+    const iter = await oc.consume();
+    try {
+      for await (const m of iter) {
+        const e = bucket.jmToWatchEntry(m, false);
+        received++;
+        bucketName = e.bucket;
+        const prior = latest.get(e.key);
+        if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+        // The ONLY completion signal accepted: a delivered message that says nothing is left behind
+        // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
+        // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
+        if (m.info.pending === 0) { sawTerminal = true; break; }
+      }
+    } finally {
+      iter.stop();
     }
   } finally {
-    iter.stop();
     await oc.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
   }
   // Fell out without the terminal message: the connection dropped, the consumer was removed, or the

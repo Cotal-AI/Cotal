@@ -24,6 +24,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries } from "../src/index.js";
 
@@ -156,6 +157,25 @@ try {
     // unprovisioned.
     check(`${name}: a pass killed before completing THROWS, never returns a list`,
       threw instanceof Error, String(threw));
+  }
+
+  // CONSUMER HYGIENE. Every exit path must reclaim its consumer, including the EMPTY one — that is
+  // the normal answer for a filtered ACL miss, and readAclForAlias performs two per unknown
+  // principal, so a leak there piles up fastest exactly where reads are most frequent. Asserted by
+  // consumer count returning to baseline, because this has now leaked twice from two different
+  // code paths.
+  {
+    const jsmc = await jetstreamManager(nc);
+    const streamName = `KV_${"leak_check"}`;
+    const lk = await kvm.create("leak_check", { history: 1 });
+    await lk.put("a.one", enc("1"));
+    const baseline = (await jsmc.streams.info(streamName)).state.consumer_count;
+    await liveKvEntries(lk);                 // non-empty read
+    await liveKvEntries(lk, "zzz.>");        // FILTERED MISS — the empty path
+    await liveKvEntries(await kvm.create("leak_check_empty", { history: 1 })); // empty bucket
+    await wait(200);
+    const after = (await jsmc.streams.info(streamName)).state.consumer_count;
+    check(`every read path reclaims its consumer (baseline ${baseline}, after ${after})`, after <= baseline, { baseline, after });
   }
 
   // A non-Bucket handle is refused loudly rather than silently falling back to history().

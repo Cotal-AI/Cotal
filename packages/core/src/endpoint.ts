@@ -1687,9 +1687,10 @@ export class CotalEndpoint extends EventEmitter {
    * transfers the entire backlog to show one screen. Instead, find the newest matching sequence and
    * consume a WINDOW ending there, widening geometrically until the window holds `limit` matches.
    * A filtered subject's sequences are non-contiguous (other channels interleave in the same
-   * stream), so the window cannot be computed arithmetically — but each attempt only transfers the
-   * matches inside it, and the geometric growth bounds total transfer to a small multiple of one
-   * page rather than the whole channel.
+   * stream), so the window cannot be computed arithmetically. A FAILED attempt holds fewer than a
+   * page by definition, so wasted transfer stays page-sized and geometric growth keeps the number of
+   * attempts logarithmic. The one unbounded case is named in the body: a channel whose matches are
+   * all old and sparse walks back to the start of the stream and reads its whole retained set.
    *
    * `before` pages toward the past: pass the `seq` of the oldest message you already have.
    */
