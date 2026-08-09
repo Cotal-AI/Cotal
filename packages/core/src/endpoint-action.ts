@@ -769,9 +769,18 @@ export function goalTombstone(fact: GoalResultFact): GoalResultFact {
  *  WHAT THIS IS NOT: it is not a write fence against a LIVE superseded committer. A corpse
  *  committing the terminal of a goal IT accepted stamps `committed == accepted` and is accepted
  *  here, exactly as the real executor would be. Create-only CAS conditions on subject ABSENCE and
- *  cannot express "only if my epoch is still current", so the write fence is the §13.1 barrier
- *  (revoke + cluster-verified eviction, fail-closed to a frozen gate, BEFORE the epoch advances),
- *  which is why a live corpse and a live successor cannot coexist on an auth mesh. */
+ *  cannot express "only if my epoch is still current", so the write fence is the §13.1 barrier.
+ *
+ *  AND THE BARRIER'S WINDOW IS WIDER THAN "BYTES IN FLIGHT", which an earlier revision of this
+ *  comment claimed. A gate FREEZE neither kills the predecessor's connection nor advances the
+ *  epoch, and the currency belt compares `processEpoch` alone, so a deposed manager's belt STILL
+ *  PASSES from barrier start through PHASE 1-2 until the reopen. Revoking an `epcred` row marks a
+ *  ledger row; it does not re-check a live JWT mid-publish on an already-open connection. What
+ *  durably kills that publisher is the CLUSTER-VERIFIED EVICTION in PHASE 2, not the revoke. So
+ *  the window in which a deposed manager can still INITIATE a new terminal publish runs from
+ *  barrier start until eviction is verified — not merely the bytes already on the wire. On an OPEN
+ *  mesh no credential family exists, so that eviction is vacuous and there is no durable fence at
+ *  all; the belt there is cooperative only. */
 function assertTerminalAttribution(fact: GoalResultFact, spec: GoalSpecValue, goalId: string): void {
   const accepted = spec.acceptedEpoch;
   const committed = fact.committer?.epoch;

@@ -29,15 +29,19 @@
  * accepted stamps `committed == accepted` and is accepted here, exactly as the true executor would
  * be — see the CORPSE case below, which asserts that indistinguishability rather than papering
  * over it. Create-only CAS conditions on subject ABSENCE and cannot express "only if my epoch is
- * still current", so the write fence is the §13.1 takeover barrier: it revokes and
- * cluster-verify-evicts, failing CLOSED to a frozen gate, BEFORE it advances the process epoch, so
- * a corpse that can still publish implies the barrier failed, and a failed barrier leaves no
- * successor epoch to contend with. Live corpse and live successor therefore cannot coexist on an
- * AUTH mesh. RESIDUAL: bytes already in flight at the eviction instant, and OPEN MESH, which mints
- * no credential family at all, so the barrier's revoke/evict loop is vacuous there and the
- * currency belt is COOPERATIVE only — an open mesh has no durable fence. The named follow-up that
- * would close the residual is the gate-linearized commit (routing the terminal through the
- * issuance gate's own CAS); it is deliberately deferred as substrate/item-3 territory.
+ * still current", so the write fence is the §13.1 takeover barrier.
+ *
+ * THE RESIDUAL IS WIDER THAN "BYTES IN FLIGHT", and this suite says so because an earlier draft of
+ * it got this wrong. A gate FREEZE neither kills the predecessor's connection nor advances the
+ * epoch, and the currency belt compares `processEpoch` alone, so a deposed manager's belt STILL
+ * PASSES from barrier start through PHASE 1-2 until the reopen. Revoking an `epcred` row marks a
+ * ledger row; it does not re-check a live JWT mid-publish on an already-open connection. The
+ * durable death of that publisher is the CLUSTER-VERIFIED EVICTION in PHASE 2, not the revoke. So
+ * a deposed manager can still INITIATE new terminal publishes from barrier start until eviction is
+ * verified. On an OPEN mesh no credential family exists, so that eviction is vacuous and there is
+ * no durable fence at all — the belt there is cooperative only. The named follow-up that would
+ * close this is the gate-linearized commit (routing the terminal through the issuance gate's own
+ * CAS); it is deliberately deferred as substrate/item-3 territory.
  *
  * Run: pnpm smoke:goal-epoch-fence   (needs nats-server on PATH; part of smoke:ci)
  */
