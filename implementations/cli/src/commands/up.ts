@@ -738,8 +738,12 @@ export async function up(args: ParsedArgs): Promise<void> {
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
     // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
     // record — removing by name would clobber the live winner and hide it from the registry.
+    // …and only if it is still OUR kind of record. A concurrent `cotal meshes add --force` can
+    // replace it with a hand-registered one carrying the same server + root; that record outlives
+    // this broker by design (it is the operator's, and only they remove it), so unrecording it on
+    // our exit would delete a registration this process never owned.
     const mine = findMesh(space);
-    if (mine && mine.server === server && mine.root === cotalRoot()) {
+    if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
       removeMesh(space);
       if (getCurrent() === space) clearCurrent();
     }
@@ -1782,14 +1786,26 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
  *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
  *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
  *  mesh; just say another is the default and how to switch. */
+/** {@link recordOurMesh} under a name that says it is a test seam: the origin rule it enforces (a
+ *  hand-registered record is never restamped by a refresh) is asserted directly by the registry
+ *  smoke, since reaching it through a full `up` would need a live broker per case. */
+export const recordOurMeshForTest = (m: MeshEntry): void => recordOurMesh(m);
+
 function recordOurMesh(m: MeshEntry): void {
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
-  // `origin` is stamped HERE, not at the five call sites: every record this function writes is by
-  // definition a mesh this machine started, which is exactly what makes it safe to auto-prune (an
-  // `up` writes it straight back). Starting a space here also takes ownership of a record an
-  // operator had registered by hand for the same name — from now on `cotal down` owns its removal.
-  recordMesh({ ...m, origin: "up" });
+  // `origin` is stamped HERE, not at the five call sites: a record this function writes is normally
+  // a mesh this machine started, which is what makes it safe to auto-prune (an `up` writes it
+  // straight back).
+  //
+  // A HAND-REGISTERED record keeps its origin. Several paths reach here without this machine having
+  // started anything — most plainly the "a broker is already on this port" refresh, which concludes
+  // the mesh is up from reachability alone. Stamping `up` there would silently convert a record only
+  // the operator can rebuild into one the next liveness sweep may delete: a provenance downgrade
+  // nobody asked for, from a path that started no broker. Ownership moves when the operator says so
+  // (`cotal meshes rm`, `add --force`), never as a side effect of a refresh.
+  const prior = findMesh(m.space);
+  recordMesh({ ...m, origin: prior?.origin === "manual" ? "manual" : "up" });
   if (!usableCurrent) {
     setCurrent(m.space);
     return;

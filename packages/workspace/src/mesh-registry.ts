@@ -50,12 +50,11 @@ export interface MeshEntry {
    *  `manual` means an operator registered it by hand (`cotal meshes add`) — typically a mesh
    *  running on another machine, whose record nothing here can reconstruct.
    *
-   *  A `manual` record is removed only by an act that NAMES it: `cotal meshes rm`, an
-   *  `add --force`, or a `cotal up` that starts THAT EXACT mesh here (same broker and root — the
-   *  refresh path), which takes ownership of the record. A `cotal up` for the same space anywhere
-   *  else refuses rather than reclaim. Everything that merely infers a record is dead or obsolete —
-   *  the liveness sweep, the classified preflight prune, `cotal down` / `cotal clean all` sweeping a
-   *  shared root — leaves it alone. */
+   *  A `manual` record is removed or downgraded only by an act that NAMES it: `cotal meshes rm`,
+   *  or an `add --force` replacement. Nothing infers its way past that — not the liveness sweep,
+   *  not the classified preflight prune, not `cotal down` / `cotal clean all` sweeping a shared
+   *  root, and not a `cotal up` refresh (which keeps the origin rather than restamping a record it
+   *  did not create as auto-prunable). */
   origin?: "up" | "manual";
   /** ISO timestamp of when the record was written. */
   ts: string;

@@ -1,5 +1,6 @@
-import { resolve } from "node:path";
-import { isReachable, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { probeConnect, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   authDir,
   clearCurrent,
@@ -22,6 +23,7 @@ import {
 import { c } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 import { completingFlagValue } from "../lib/completion.js";
+import { liveMeshProcess } from "./clean.js";
 
 /**
  * `cotal meshes` — the registry of meshes this machine can reach, and the two verbs that maintain
@@ -38,6 +40,11 @@ import { completingFlagValue } from "../lib/completion.js";
  */
 
 const SUBCOMMANDS = ["list", "add", "rm", "remove"] as const;
+
+/** Budget for the credless mode probe. Generous on purpose: a slow answer must not be read as
+ *  "the broker is open" (it is only ever read as `ok` vs a reason), and this runs once, at
+ *  registration, where a second of patience is cheaper than a wrong record. */
+const MODE_PROBE_TIMEOUT_MS = 5_000;
 
 export const meshesFlags = [
   { name: "server", type: "string", value: "<url>", description: "add: the mesh's broker URL (required)" },
@@ -114,9 +121,19 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://10.0.0.5:4222)"));
     process.exit(1);
   }
+  const server = addServer(v.server);
   const root = addRoot(v.root);
   const accounts = listSpaceAccounts(authDir(root));
   const mode = addMode(space, root, accounts, v.mode);
+  // For an AUTH registration the root must yield trust that actually COMPOSES. An account record on
+  // disk only proves the space was known here: `loadSpaceAuth` still returns undefined when the
+  // broker record or the signing material is missing, and recording that as `auth` produces a
+  // record whose probe ran credlessly and whose every later use fails at resolution.
+  const auth = mode === "auth" ? loadSpaceAuth(authDir(root), space) : undefined;
+  if (mode === "auth" && !auth) {
+    console.error(c.red(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open`));
+    process.exit(1);
+  }
 
   const existing = findMesh(space);
   if (existing && !v.force) {
@@ -130,12 +147,26 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   // fine. `--force` is the explicit escape (registering a mesh that is currently down), and it says
   // so on the success line rather than pretending the mesh was checked.
   if (!v.force) {
+    // The MODE must be proved, not just the connection. A NATS broker with no auth configured
+    // accepts a CONNECT that carries credentials and ignores them — so "my creds were accepted"
+    // says nothing about whether the broker enforces anything, and recording `auth` off that
+    // promises the operator JWT/ACL protection that is not there. Ask the broker directly, with no
+    // credential at all: an auth broker refuses, an open one lets us straight in.
+    const bare = await probeConnect(server, { timeoutMs: MODE_PROBE_TIMEOUT_MS });
+    if (mode === "auth" && bare.ok) {
+      console.error(c.red(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`));
+      process.exit(1);
+    }
+    if (mode === "open" && !bare.ok && bare.reason === "auth-required") {
+      console.error(c.red(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth`));
+      process.exit(1);
+    }
     const target: MeshTarget = {
       root,
-      server: v.server,
+      server,
       space,
       mode,
-      ...(mode === "auth" ? { auth: loadSpaceAuth(authDir(root), space) } : {}),
+      ...(auth ? { auth } : {}),
       personaRoot: personaDir(root),
       // Nothing is recorded yet, so this probe owns no registry entry: `flag-server` is the source
       // that can never classify as a prune.
@@ -143,19 +174,19 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     };
     const r = await preflightTarget(target);
     if (!r.ok) {
-      console.error(c.red(addFailure(r.kind, space, v.server, root)));
+      console.error(c.red(addFailure(r.kind, space, server, root)));
       console.error(c.dim("nothing was registered - fix the above, or `--force` to register it unverified (e.g. the mesh is down right now)"));
       process.exit(1);
     }
   }
 
-  const entry: MeshEntry = { space, server: v.server, root, mode, origin: "manual", ts: new Date().toISOString() };
+  const entry: MeshEntry = { space, server, root, mode, origin: "manual", ts: new Date().toISOString() };
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording
   recordMesh(entry);
   console.log(
     c.green(`✓ registered "${space}"`),
-    c.dim(`${v.server}  ${mode}  ${root}${v.force ? "  (unverified)" : ""}`),
+    c.dim(`${server}  ${mode}  ${root}${v.force ? "  (unverified)" : ""}`),
   );
   // Same policy as `cotal up`: adopt the default only when there isn't a usable one, and never
   // silently redirect a default that still resolves.
@@ -167,17 +198,52 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   if (usableCurrent !== space) console.log(c.dim(`current is still "${usableCurrent}" - \`cotal use ${space}\` to switch`));
 }
 
-/** Where this mesh's local trust + personas live. Defaults to the project the command was run in
- *  (the walk-up that every other command uses); outside a project there is nothing to infer, so
- *  `--root` is required rather than silently recording the machine-home dir as a mesh root. */
+/** Where this mesh's local trust + personas live. Defaults to the project the command was run in;
+ *  outside a project there is nothing to infer, so `--root` is required rather than recording an
+ *  arbitrary directory as a mesh root.
+ *
+ *  The inferred case must prove a REAL project: `findCotalRoot` walks up for a `.cotal/` and, when
+ *  it finds none, returns the starting directory unchanged — so a bare existence check on the
+ *  walk-up result is no check at all (running this from `/` recorded `root: "/"`). Require the
+ *  `.cotal/` to actually be there, and never accept the machine-home dir, which holds the daemon's
+ *  own state rather than a space's. */
 function addRoot(flag: string | undefined): string {
   if (flag) return resolve(flag);
   const root = findCotalRoot(process.cwd());
-  if (resolve(root, ".cotal") === resolve(homeCotalDir())) {
+  if (!existsSync(join(root, ".cotal")) || resolve(root, ".cotal") === resolve(homeCotalDir())) {
     console.error(c.red("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas"));
     process.exit(1);
   }
   return root;
+}
+
+/** The broker URL, validated before it is probed, printed or persisted.
+ *
+ *  Credentials embedded in the URL are refused for the same reason a manifest refuses them
+ *  (`validateBroker`): this record is written to disk and echoed by `add` and `meshes`, so an
+ *  inline password would be copied into the registry and onto the operator's screen. The refusal
+ *  never echoes the secret back. */
+function addServer(raw: string): string {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    console.error(c.red(`✗ --server "${raw}" is not a valid URL (e.g. nats://127.0.0.1:4222)`));
+    process.exit(1);
+  }
+  if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol)) {
+    console.error(c.red(`✗ --server scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`));
+    process.exit(1);
+  }
+  if (u.username || u.password) {
+    console.error(c.red(`✗ --server must not embed credentials ("${u.username}:***@…") - the registry records this URL and prints it back; pass trust material under --root instead`));
+    process.exit(1);
+  }
+  if (u.search || u.hash) {
+    console.error(c.red(`✗ --server must be a bare broker URL - drop the "${u.search || u.hash}" part`));
+    process.exit(1);
+  }
+  return raw;
 }
 
 /** The recorded auth mode: what the operator said, or what `--root` proves. A root holding this
@@ -242,8 +308,13 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
       failed = true;
       continue;
     }
-    if (m.origin !== "manual" && !v.force && (await isReachable(m.server))) {
-      console.error(c.red(`✗ "${space}" is running from ${m.root} - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
+    // Refuse only when THIS MACHINE demonstrably runs the mesh — a live recorded pid under its
+    // root. Reachability was the wrong test: any broker on that address answers, including a
+    // reused port or a foreign NATS, which produced a refusal plus a `cotal down` instruction that
+    // would stop nothing. Local process ownership is the fact the refusal actually claims.
+    const running = m.origin !== "manual" ? liveMeshProcess(m.root) : undefined;
+    if (running && !v.force) {
+      console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
       failed = true;
       continue;
     }

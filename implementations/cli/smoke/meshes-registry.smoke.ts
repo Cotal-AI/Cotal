@@ -17,7 +17,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,10 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-meshes-home-"));
 process.env.COTAL_HOME = home;
 
+// The local-process lifecycle descriptors (nats/manager/delivery pidfiles) are registered by the
+// CLI composition root, and `rm`'s "is this mesh running here" check reads them — import it first,
+// exactly as the real binary does, or the check silently has nothing to look at.
+await import("../src/index.js");
 const { isReachable } = await import("@cotal-ai/core");
 const { findMesh, getCurrent, loadMeshes, pruneStaleMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
@@ -137,6 +141,39 @@ try {
   const badUsage = await run(["add"], { server: LIVE, root });
   check("add without a space name prints usage", badUsage.code === 1 && badUsage.out.includes("usage:"), badUsage.out);
 
+  // MODE HONESTY. A NATS broker with no auth configured accepts a credential-bearing CONNECT and
+  // ignores it, so "the creds were accepted" is not evidence of enforcement. Registering `auth`
+  // against an open broker would promise JWT/ACL protection that does not exist.
+  const trustRoot = projectRoot("trust");
+  writeFileSync(join(trustRoot, ".cotal", "auth-marker"), "x"); // keeps the dir; trust itself is faked below
+  const fakeAuth = await run(["add", "openbroker"], { server: LIVE, root: trustRoot, mode: "auth" });
+  check("add --mode auth is refused against a broker that enforces nothing",
+    fakeAuth.code === 1 && findMesh("openbroker") === undefined, fakeAuth.out);
+  check("…and says the broker accepts unauthenticated connections",
+    fakeAuth.out.includes("accepts unauthenticated connections") || fakeAuth.out.includes("trust material"), fakeAuth.out);
+
+  // CREDENTIALS IN THE URL. The record is written to disk and echoed back by add + list, so an
+  // inline password would be copied into both. Refuse it without repeating the secret.
+  const creddy = await run(["add", "leaky"], { server: "nats://alice:swordfish@127.0.0.1:1", root });
+  check("add refuses a --server with embedded credentials", creddy.code === 1 && findMesh("leaky") === undefined, creddy.out);
+  check("…and does not echo the password back", !creddy.out.includes("swordfish"), creddy.out);
+  for (const [label, url] of [["a non-broker scheme", "http://127.0.0.1:4222"], ["junk", "not-a-url"]] as const) {
+    const bad = await run(["add", "badurl"], { server: url, root });
+    check(`add refuses ${label} in --server`, bad.code === 1 && findMesh("badurl") === undefined, bad.out);
+  }
+
+  // ROOT INFERENCE. `findCotalRoot` returns its starting directory when it finds no `.cotal`
+  // up-tree, so the "outside a project" guard has to check the directory really is one — without
+  // that, running this from `/` recorded `root: "/"`.
+  const bare = mkdtempSync(join(tmpdir(), "cotal-noproject-")); // no .cotal anywhere in it
+  roots.push(bare);
+  const prevCwd2 = process.cwd();
+  process.chdir(bare);
+  const rootless = await run(["add", "rootless"], { server: LIVE });
+  process.chdir(prevCwd2);
+  check("add outside a project requires --root", rootless.code === 1 && findMesh("rootless") === undefined, rootless.out);
+  check("…and names --root as the fix", rootless.out.includes("--root"), rootless.out);
+
   // ── THE INVARIANT: a sweep prunes an `up` record and keeps an operator-registered one ──────────
   rmSync(join(home, "meshes"), { recursive: true, force: true });
   const localRoot = projectRoot("local");
@@ -183,6 +220,19 @@ try {
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
 
+  // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
+  // start (the "a broker is already on this port" branch concludes it is up from reachability
+  // alone). Restamping `origin: "up"` there would quietly make a record only the operator can
+  // rebuild deletable by the next sweep.
+  const { recordOurMeshForTest } = await import("../src/commands/up.js");
+  recordMesh({ space: "refreshed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "refreshed", server: LIVE, root, mode: "open", ts: new Date().toISOString() });
+  check("an `up` refresh keeps a hand-registered record's origin", findMesh("refreshed")?.origin === "manual", findMesh("refreshed"));
+  recordOurMeshForTest({ space: "ours-now", server: LIVE, root, mode: "open", ts: new Date().toISOString() });
+  check("…and still stamps `up` on a record it created", findMesh("ours-now")?.origin === "up", findMesh("ours-now"));
+  removeMesh("refreshed");
+  removeMesh("ours-now");
+
   const listed = await run([]);
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);
   check("list tags it as registered", listed.out.includes("registered"), listed.out);
@@ -204,12 +254,25 @@ try {
   check("rm takes several names at once", multi.code === 0 && loadMeshes().length === 0, loadMeshes());
 
   // A mesh RUNNING here: `rm` is the wrong verb — it would leave a live broker with no record.
-  recordMesh({ space: "live-local", server: LIVE, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  // "Running here" must be LOCAL PROCESS OWNERSHIP, not a reachable address: any broker answers on
+  // that port, including a reused one, and refusing on that basis prints a `cotal down` instruction
+  // that would stop nothing. So the smoke gives it a real live pid, the way the mesh does.
+  const ownedRoot = projectRoot("owned");
+  const brokerStandIn = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)"], { stdio: "ignore" });
+  writeFileSync(join(ownedRoot, ".cotal", "nats.pid"), String(brokerStandIn.pid), { mode: 0o600 });
+  recordMesh({ space: "live-local", server: LIVE, root: ownedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const refused = await run(["rm", "live-local"]);
   check("rm refuses a mesh this machine is running", refused.code === 1 && findMesh("live-local") !== undefined, refused.out);
   check("rm points at `cotal down` instead", refused.out.includes("cotal down"), refused.out);
+  check("…and names the live process it means", /pid \d+/.test(refused.out), refused.out);
+  // The same record with a reachable broker but NO local process is not this machine's to keep.
+  recordMesh({ space: "not-ours", server: LIVE, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const foreign = await run(["rm", "not-ours"]);
+  check("rm does not refuse merely because something answers on the address",
+    foreign.code === 0 && findMesh("not-ours") === undefined, foreign.out);
   const dropped = await run(["rm", "live-local"], { force: true });
   check("rm --force drops a running mesh's record", dropped.code === 0 && findMesh("live-local") === undefined, loadMeshes());
+  brokerStandIn.kill("SIGKILL");
 
   // A live mesh registered BY HAND is not this machine's to stop, so `rm` just drops it.
   recordMesh({ space: "live-remote", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
