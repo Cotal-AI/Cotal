@@ -154,10 +154,6 @@ export function liveMeshProcess(root: string, space?: string): string | undefine
   return liveMeshProcesses(root, space)[0];
 }
 
-/** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
- *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
- *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
- *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
 /**
  * The live process that makes this root the mesh's HOME, or undefined.
  *
@@ -179,6 +175,10 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
   return undefined;
 }
 
+/** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
+ *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
+ *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
+ *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
 export function liveMeshProcesses(root: string, space?: string): string[] {
   const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
   const running: string[] = [];
