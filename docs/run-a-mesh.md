@@ -108,9 +108,15 @@ sentence, never a raw NATS trace.
 A mesh running on another machine has no `cotal up` on this one, so register it by hand:
 
 ```bash
+cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
 cotal meshes add optiplex --server nats://10.0.0.5:4222 --root ~/meshes/optiplex
 cotal meshes rm optiplex
 ```
+
+On a terminal, a bare `cotal meshes add` walks you through it: it probes the broker you name and
+reports whether it is open or requires credentials, offers the spaces the folder already holds
+credentials for, and shows the record before writing it. Scripts and agents keep the flag form -
+without a terminal nothing prompts.
 
 `--root` is the local folder holding that mesh's `.cotal/auth` (credentials you minted where it
 runs) and `.cotal/agents` (its personas); the mode is inferred from what that folder holds. The

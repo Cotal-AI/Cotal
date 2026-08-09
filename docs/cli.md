@@ -341,6 +341,7 @@ restore only when its details prove manager commit and its exact recorded listen
 
 ```bash
 cotal meshes
+cotal meshes add                      # guided, on a terminal
 cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open] [--force]
 cotal meshes rm <space> [<space> …] [--force]
 cotal use <space>
@@ -349,6 +350,15 @@ cotal status [--space <s>] [--server <url>]
 
 `meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
 `cotal spawn` joins.
+
+Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
+one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
+requiring credentials. It then offers the spaces your `--root` already holds credentials for, states
+the mode as a fact about that broker rather than asking, and shows the exact record before writing
+anything. A broker that does not answer, or a space name already registered, becomes a choice rather
+than an error. Anything you pass on the command line is taken as given and not asked again. Without
+a terminal - a script, an agent, CI - nothing prompts and the flag form's errors stand
+(`COTAL_NO_PROMPT=1` forces that too).
 
 `cotal up` and `cotal down` maintain their own records. `meshes add` registers a mesh they cannot
 speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder

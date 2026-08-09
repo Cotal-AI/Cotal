@@ -155,7 +155,7 @@ const baseCommands: Command[] = [
     name: "meshes",
     group: "Mesh",
     summary: "list the meshes this machine knows (a `*` marks the `current` default a bare spawn joins); add/rm register one running elsewhere",
-    usage: "meshes [list] | meshes add <space> --server <url> [--root <dir>] [--mode auth|open] | meshes rm <space> …",
+    usage: "meshes [list] | meshes add [<space>] [--server <url>] [--root <dir>] [--mode auth|open] | meshes rm <space> …  (bare `meshes add` on a terminal is guided)",
     positionals: "[list | add <space> | rm <space> …]",
     flags: meshesFlags,
     run: meshes,

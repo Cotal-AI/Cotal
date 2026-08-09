@@ -379,6 +379,28 @@ try {
   const noNames = await run(["rm"]);
   check("rm without a name prints usage", noNames.code === 1 && noNames.out.includes("usage:"), noNames.out);
 
+  // ── the guided form ───────────────────────────────────────────────────────────────────────────
+  // The wizard's PROMPTS need a terminal, but its decisions do not: those live in `meshes-add.ts`
+  // so the two front ends cannot drift, and they are what a wrong answer would corrupt. Assert the
+  // rules directly, plus the one guarantee scripts depend on — no TTY means no prompt, ever.
+  const { checkServer, checkRoot, checkMode, checkEnforcement, probeEnforcement, spacesAtRoot } =
+    await import("../src/commands/meshes-add.js");
+  const { canPrompt } = await import("../src/commands/meshes-wizard.js");
+
+  check("a pipe is never prompted at (scripts and agents keep the fail-loud form)", canPrompt() === false);
+  check("the broker's ENFORCEMENT is read from the broker, not assumed", (await probeEnforcement(LIVE)) === "open");
+  check("…and a dead address is 'unreachable', never 'open'", (await probeEnforcement(DEAD)) === "unreachable");
+  check("an unreachable broker does NOT let an auth mesh be recorded open (the wizard's fallback)",
+    checkMode("openbroker", trustRoot, spacesAtRoot(trustRoot), undefined).ok &&
+      (checkMode("openbroker", trustRoot, spacesAtRoot(trustRoot), undefined) as { value: string }).value === "auth");
+  check("the space candidates a guided run offers come from trust on disk",
+    spacesAtRoot(trustRoot).includes("openbroker") && spacesAtRoot(root).length === 0, spacesAtRoot(trustRoot));
+  check("checkEnforcement refuses auth-on-open", !checkEnforcement("auth", "open", LIVE, "x", root).ok);
+  check("checkEnforcement refuses open-on-auth", !checkEnforcement("open", "auth", LIVE, "x", root).ok);
+  check("checkEnforcement passes a matching pair", checkEnforcement("auth", "auth", LIVE, "x", root).ok && checkEnforcement("open", "open", LIVE, "x", root).ok);
+  check("the shared URL rule is the one the wizard validates with", !checkServer("nats://alice:pw@h:1").ok && checkServer(LIVE).ok);
+  check("the shared root rule is the one the wizard validates with", !checkRoot(join(bare, "a-file"), bare).ok && checkRoot(root, bare).ok);
+
   // ── surface ───────────────────────────────────────────────────────────────────────────────────
   const bogus = await run(["frobnicate"]);
   check("an unknown subcommand fails loud with the usage line", bogus.code === 1 && bogus.out.includes("unknown subcommand"), bogus.out);
