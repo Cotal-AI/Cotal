@@ -85,21 +85,35 @@ refuses("pattern bomb refused", () =>
 refuses("patternProperties key bomb refused", () =>
   compileContractSchema({ root: { type: "object", patternProperties: { ["x".repeat(SCHEMA_PROFILE.maxPatternChars + 1)]: { type: "string" } } } }), "complexity bound");
 
-// 6b) The compile budget measures CPU, not elapsed time. It exists to refuse a schema whose
-// COMPILATION is the DoS, so it must still bite on one that genuinely burns the compiler — and it
-// must not fire because the host was busy. The refusal below is the biting half; the not-firing
-// half was established by execution (the same trivial closure that threw "compile took 101-471ms"
-// under wall-clock measurement now passes under CPU saturation), which no deterministic in-process
-// assertion can restage, since the smoke cannot make the OS deschedule it on demand.
+// 6b) The pathological-schema ceiling is NODE COUNT, checked before compiling — deterministic and
+// identical on every host. It replaced a CPU-time budget that refused the manager's own service
+// contract on Windows CI at "125ms of CPU ... 80ms elapsed" (CPU above wall clock is only possible
+// with concurrent threads, so that number was mostly V8's JIT threads, not the schema). The timing
+// still prints as an observation and refuses nothing.
 {
   const heavy: Record<string, unknown> = {};
   for (let i = 0; i < 1000; i++) heavy[`p${i}`] = { type: "string", pattern: `^a{0,4}b${i}c[0-9]{1,3}$`, minLength: 1, maxLength: 40 };
-  refuses("a schema that genuinely burns the compiler is still refused", () =>
-    compileContractSchema({ root: { type: "object", properties: heavy, additionalProperties: false } }), "of CPU");
+  // The exact shape the deterministic bounds used to miss: ~90KB, inside maxDocumentBytes and
+  // maxClosureBytes, depth 2, ref-chain 0, every pattern legal — and 1001 nodes.
+  refuses("the schema that genuinely burns the compiler is refused, now by NODE COUNT", () =>
+    compileContractSchema({ root: { type: "object", properties: heavy, additionalProperties: false } }), "subschema nodes");
 }
-// A trivial closure compiles well inside the budget — the guard is a ceiling on pathology, not a
-// tax on ordinary contracts.
-ok("a trivial closure compiles within the budget", (() => {
+// The refusal must be the NODE bound and nothing else, so pin the boundary rather than only a
+// wildly-over case: maxSchemaNodes properties compile, one more refuses. A ceiling asserted only
+// far from its edge would still pass if the constant silently moved.
+{
+  const atLimit: Record<string, unknown> = {};
+  for (let i = 0; i < SCHEMA_PROFILE.maxSchemaNodes - 1; i++) atLimit[`p${i}`] = { type: "string" };
+  ok("a schema exactly AT the node ceiling compiles", (() => {
+    compileContractSchema({ root: { type: "object", properties: atLimit, additionalProperties: false } });
+    return true;
+  })());
+  const overLimit = { ...atLimit, extra: { type: "string" } };
+  refuses("one node OVER the ceiling refuses", () =>
+    compileContractSchema({ root: { type: "object", properties: overLimit, additionalProperties: false } }), "subschema nodes");
+}
+// The bound must not tax ordinary contracts: every schema this repo registers is far below it.
+ok("a trivial closure compiles well inside the node ceiling", (() => {
   compileContractSchema({ root: { type: "object", properties: { a: { type: "string" } }, additionalProperties: false } });
   return true;
 })());

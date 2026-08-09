@@ -22,6 +22,33 @@ export const SCHEMA_PROFILE = Object.freeze({
   maxClosureBytes: 1024 * 1024,
   /** Structural nesting depth of any document. */
   maxDepth: 32,
+  /** Max SUBSCHEMA NODES in a document — the deterministic replacement for the compile-time
+   *  budget, computable exactly before compiling and identical on every host.
+   *
+   *  256 is a decision, taken from measurement, and here is the measurement so a later reader can
+   *  re-derive it instead of treating the number as folklore. On a quiet box, warm (each schema
+   *  compiled once and discarded first, so this is the schema's intrinsic cost and not V8 cold
+   *  start):
+   *
+   *    largest contract this repo actually registers   20 nodes    6.4ms CPU
+   *    cheapest schema that genuinely burns the budget  801 nodes  112.0ms CPU
+   *    margin                                          781 nodes / 40.0x
+   *
+   *  256 sits 12.8x above everything we register and 3.1x below the pathological edge. 100 would
+   *  leave only 5x of headroom against contracts that will grow; 400 spends margin we have no use
+   *  for.
+   *
+   *  READ THIS BEFORE TRUSTING THE NUMBER FOR ANYTHING ELSE: node count is a sound BOUND, not a
+   *  good PREDICTOR. Cost varies ~5x at IDENTICAL node count across schema shapes (at 801 nodes,
+   *  a wide `anyOf` costs 23ms where patterned properties cost 112ms), and on our own contract the
+   *  costliest schema is not the largest. The 40x margin absorbs that spread with room left, which
+   *  is what makes the bound usable — but a large, cheap `anyOf` schema an order of magnitude
+   *  bigger than anything we register today could be refused while being fast. That is the known
+   *  and accepted false-refusal shape.
+   *
+   *  Counts SUBSCHEMA nodes, matching {@link countSchemaNodes} — the same function the calibration
+   *  runs, so the ceiling is enforced against the quantity it was calibrated on. */
+  maxSchemaNodes: 256,
   /** Digest-reference chain depth (root → member → member …). */
   maxRefChain: 32,
   /** Compile budget per closure, ms. */
@@ -134,8 +161,38 @@ export interface SchemaBundle {
   members?: Record<string, unknown>;
 }
 
-/** Enforce the D27 profile on one document: size, depth, and reference closure. Returns the
- *  digest-refs the document makes (for closure walking). */
+/** Applicator keywords whose VALUE is a subschema, a map of them, or an array of them. Compile
+ *  cost is driven by how many subschemas the compiler generates code for, so the walk follows
+ *  exactly these and nothing else. */
+const SUBSCHEMA_KEYS = ["not", "if", "then", "else", "items", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties"];
+const SUBSCHEMA_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"];
+const SUBSCHEMA_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
+
+/** Count the subschema nodes in a schema document. Deterministic, cheap, computable BEFORE
+ *  compiling, and identical on every host — which is the entire point, since the instrument it
+ *  replaces (`process.cpuUsage()` around the compile) measures the machine as much as the schema.
+ *  Independent of spelling: 1000 patterned properties is ~1000 nodes however tersely written.
+ *
+ *  Exported so the calibration probe measures the SAME quantity this bound enforces. A ceiling
+ *  calibrated against one definition of "node" and enforced against another is not calibrated. */
+export function countSchemaNodes(doc: unknown): number {
+  let nodes = 0;
+  const walk = (d: unknown): void => {
+    if (d === null || typeof d !== "object") return;
+    if (Array.isArray(d)) { for (const v of d) walk(v); return; }
+    nodes++;
+    for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+      if (SUBSCHEMA_KEYS.includes(k)) walk(v);
+      else if (SUBSCHEMA_MAP_KEYS.includes(k) && v && typeof v === "object") for (const s of Object.values(v as object)) walk(s);
+      else if (SUBSCHEMA_LIST_KEYS.includes(k) && Array.isArray(v)) for (const s of v) walk(s);
+    }
+  };
+  walk(doc);
+  return nodes;
+}
+
+/** Enforce the D27 profile on one document: size, depth, node count, and reference closure.
+ *  Returns the digest-refs the document makes (for closure walking). */
 function assertDocumentProfile(doc: unknown, label: string): string[] {
   const canonical = canonicalOrInvalid(doc, label); // also enforces I-JSON, as contract-invalid
   const bytes = Buffer.byteLength(canonical, "utf8");
@@ -143,6 +200,9 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
     throw new ContractInvalidError(`${label}: document is ${bytes} bytes (profile max ${SCHEMA_PROFILE.maxDocumentBytes})`);
   if (structuralDepth(doc) > SCHEMA_PROFILE.maxDepth)
     throw new ContractInvalidError(`${label}: nesting exceeds profile depth ${SCHEMA_PROFILE.maxDepth}`);
+  const nodes = countSchemaNodes(doc);
+  if (nodes > SCHEMA_PROFILE.maxSchemaNodes)
+    throw new ContractInvalidError(`${label}: ${nodes} subschema nodes (profile max ${SCHEMA_PROFILE.maxSchemaNodes}); the compile cost of a contract is bounded BEFORE compiling it, deterministically and identically on every host`);
   const storeRefs: string[] = [];
   for (const ref of collectRefs(doc, label)) {
     if (ref.startsWith("#")) continue; // local pointer/anchor — resolved within the document
@@ -237,32 +297,32 @@ function assertClosureProfile(bundle: SchemaBundle): string {
 }
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
-  // CPU time, not wall clock — and INTERIM, with a known-approximate instrument. The budget exists
-  // to refuse a PATHOLOGICAL SCHEMA, one whose compilation is the DoS, so it must measure work this
-  // compile did rather than time the OS spent elsewhere. Wall clock conflated the two: a trivial
-  // two-property closure compiles in ~4ms warm, yet on a loaded host the same compile measured
-  // 101-158ms elapsed and was refused, so a manager could not import its own contracts.
+  // THE REFUSAL HAS MOVED. The pathological-schema ceiling is now `maxSchemaNodes`, enforced in
+  // `assertDocumentProfile` BEFORE this function runs. The timing below is kept as an OBSERVATION
+  // and refuses nothing.
   //
-  // BE HONEST ABOUT WHAT THIS MEASURES. `process.cpuUsage()` sums EVERY THREAD in the process, not
-  // this one: V8's background optimizing-compiler threads land in it (observed on a Windows runner
-  // as `125ms of CPU` against `80ms elapsed` — CPU above wall clock is only possible with
-  // concurrent threads), and so does any sibling Worker (16.4ms process CPU against 0.18ms on the
-  // measuring thread). `ajv.compile` being synchronous excludes other JS on THIS event-loop thread
-  // and nothing else. Node exposes no per-thread CPU below 22.19 and the package floor is `>=22`,
-  // so there is no third instrument available today.
+  // Why the timing could not stay a refusal: no instrument available on this package's Node floor
+  // measures the right quantity. Wall clock counts the machine — a trivial two-property closure
+  // compiles in ~4ms warm, yet on a loaded host measured 101-158ms elapsed and was refused, so a
+  // manager could not import its own contracts. `process.cpuUsage()` sums EVERY THREAD in the
+  // process, so V8's background optimizing-compiler threads land in it, as does any sibling Worker
+  // (16.4ms of process CPU against 0.18ms on the measuring thread). Node exposes no per-thread CPU
+  // below 22.19 and the floor is `>=22`, so there was no third instrument.
   //
-  // The throw stays HERE, on the registration path, for reasons that do not hold on the request
-  // path (where the same budget is now reported rather than enforced — see `endpoint-envelope.ts`):
-  // this is where the DoS actually lives, a false refusal fails a boot LOUDLY instead of telling a
-  // caller its valid input is malformed, and reaching it requires an endpoint author who can
-  // register a contract. Nothing is left unguarded by the demotion: the combinatorial gap that the
-  // deterministic bounds miss — 1000 patterned properties is ~90KB, inside maxDocumentBytes,
-  // maxClosureBytes, depth 2, ref-chain 0, every pattern legal, and costs 536ms — lives at compile.
+  // That was not theoretical. `Windows / required` refused the manager's OWN service contract with
+  // `compile took 125ms of CPU (profile budget 100ms; 80ms elapsed)` — CPU above wall clock, which
+  // is only possible with concurrent threads. The costliest schema in that contract measures 6.4ms
+  // warm and ALL 23 of its schemas together total 71.5ms. A 3-node schema cannot cost 125ms of
+  // compile work, and the same contract compiled fine in four sibling jobs on the same runner
+  // image. The number was very nearly all instrument, and it made the required gate unmergeable.
   //
-  // This is scheduled to be REPLACED by a deterministic pre-compile node/keyword-count bound, which
-  // is computable exactly on any host and stops this instrument being a refusal at all. SPEC 2458
-  // gives 100 ms as a REFERENCE budget, not a normative constant, and a node-count refusal is still
-  // `contract-invalid` at registration, so that replacement needs no spec amendment.
+  // Nothing is left unguarded by the move. The gap the other deterministic bounds miss — 1000
+  // patterned properties is ~90KB, inside maxDocumentBytes and maxClosureBytes, depth 2, ref-chain
+  // 0, every pattern legal — is 1001 NODES, so the node bound refuses it four times over while
+  // every contract this repo registers sits at or below 20.
+  //
+  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant, and a node-count refusal
+  // is still `contract-invalid` at registration, so this needs no spec amendment.
   const startedCpu = process.cpuUsage();
   const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI
@@ -291,8 +351,10 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   const cpu = process.cpuUsage(startedCpu);
   const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
   if (cpuMs > SCHEMA_PROFILE.compileBudgetMs)
-    throw new ContractInvalidError(
-      `compile took ${cpuMs}ms of CPU (profile budget ${SCHEMA_PROFILE.compileBudgetMs}ms; ${Date.now() - started}ms elapsed)`,
+    console.error(
+      `! schema: compile took ~${cpuMs}ms of process CPU (SPEC 2458 reference budget ${SCHEMA_PROFILE.compileBudgetMs}ms; ` +
+      `${Date.now() - started}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
+      `Not a refusal: the enforced ceiling is ${SCHEMA_PROFILE.maxSchemaNodes} subschema nodes, checked before compiling.`,
     );
   return validate;
 }

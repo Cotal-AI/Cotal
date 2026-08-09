@@ -22,7 +22,7 @@
  *
  * Run: npx tsx implementations/manager/smoke/_probe-nodecount-calibration.ts
  */
-import { compileContract } from "@cotal-ai/core";
+import { compileContract, countSchemaNodes } from "@cotal-ai/core";
 import { managerContractArtifactValues, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 
 /** Applicator keywords whose VALUE is a subschema (or a map/array of them). Compile cost is driven
@@ -31,16 +31,17 @@ const SUBSCHEMA = ["not", "if", "then", "else", "items", "contains", "additional
 const SUBSCHEMA_MAP = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"];
 const SUBSCHEMA_LIST = ["allOf", "anyOf", "oneOf", "prefixItems"];
 
-/** Count (subschema nodes, applied keywords) in a schema document. Deterministic, cheap, and
- *  independent of spelling: 1000 patterned properties is ~1000 nodes however tersely written. */
+/** Node count comes from core's exported {@link countSchemaNodes} — the SAME function the
+ *  `maxSchemaNodes` bound enforces. A ceiling calibrated against one definition of "node" and
+ *  enforced against another is not calibrated, so this must never grow a local copy. The keyword
+ *  count is the probe's own, reported alongside because it is the obvious rival proxy and the
+ *  numbers show it is not a better one. */
 function countNodes(doc: unknown): { nodes: number; keywords: number } {
-  let nodes = 0, keywords = 0;
+  let keywords = 0;
   const walk = (d: unknown): void => {
     if (d === null || typeof d !== "object") return;
     if (Array.isArray(d)) { for (const v of d) walk(v); return; }
-    nodes++;
-    const o = d as Record<string, unknown>;
-    for (const [k, v] of Object.entries(o)) {
+    for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
       keywords++;
       if (SUBSCHEMA.includes(k)) walk(v);
       else if (SUBSCHEMA_MAP.includes(k) && v && typeof v === "object") for (const s of Object.values(v as object)) walk(s);
@@ -48,7 +49,7 @@ function countNodes(doc: unknown): { nodes: number; keywords: number } {
     }
   };
   walk(doc);
-  return { nodes, keywords };
+  return { nodes: countSchemaNodes(doc), keywords };
 }
 
 /** Warm CPU + elapsed for one compile. A discard compile first so we measure the schema, not V8.
@@ -61,6 +62,13 @@ function countNodes(doc: unknown): { nodes: number; keywords: number } {
  *  table never passes one off as a clean compile. */
 function costOf(root: unknown): { cpuMs: number; elapsedMs: number; digest: string; refused: boolean } | { error: string } {
   const BUDGET_REFUSAL = /compile took (\d+)ms of CPU \(profile budget \d+ms; (\d+)ms elapsed\)/;
+  // NOW THAT THE CEILING IS ENFORCED, THIS PROBE CANNOT RE-DERIVE IT UNAIDED. Every synthetic above
+  // `maxSchemaNodes` is refused BEFORE compiling, so its cost is unmeasurable by construction —
+  // the bound removed the very observation that justified the bound. That is correct behaviour and
+  // a real limitation of this tool: to re-run the calibration (a new host, a Node upgrade, a
+  // contract that has grown), raise `SCHEMA_PROFILE.maxSchemaNodes` for the duration of the run.
+  // Those rows are labelled below rather than left to look like a compile error.
+  const NODE_REFUSAL = /(\d+) subschema nodes \(profile max (\d+)\)/;
   try { compileContract({ root: root as Record<string, unknown> }); } catch { /* discard: warms V8; a refusal here is read from the second attempt */ }
   const c0 = process.cpuUsage(); const t0 = Date.now();
   try {
@@ -71,6 +79,8 @@ function costOf(root: unknown): { cpuMs: number; elapsedMs: number; digest: stri
     const msg = (e as Error).message;
     const m = BUDGET_REFUSAL.exec(msg);
     if (m) return { cpuMs: Number(m[1]), elapsedMs: Number(m[2]), digest: "", refused: true };
+    const n = NODE_REFUSAL.exec(msg);
+    if (n) return { error: `over the ${n[2]}-node ceiling (${n[1]}) - cost unmeasurable while enforced; raise maxSchemaNodes to re-calibrate` };
     return { error: msg.slice(0, 60) };
   }
 }
