@@ -1704,9 +1704,14 @@ export class CotalEndpoint extends EventEmitter {
     const js = jetstream(this.nc);
     try {
       const jsm = await jetstreamManager(this.nc);
-      // The newest matching sequence, without draining anything.
-      const newest = before ?? ((await jsm.streams.getMessage(stream, { last_by_subj: subject }).catch(() => null))?.seq ?? 0) + 1;
-      const ceiling = newest - 1; // inclusive upper bound for this page
+      // An upper bound on the sequence to page back from. Deliberately the STREAM's last sequence,
+      // not the last sequence MATCHING `subject`: the precise answer would come from
+      // `getMessage({ last_by_subj })`, but that needs `$JS.API.STREAM.MSG.GET`, which read
+      // credentials do NOT hold (verified against a live mesh: observer creds get a Permissions
+      // Violation, and the catch below would silently turn that into an empty history). STREAM.INFO
+      // is already required by `consumers.get`, so this adds no authority. A loose upper bound only
+      // costs an extra widening step on a quiet channel in a busy stream.
+      const ceiling = before !== undefined ? before - 1 : (await jsm.streams.info(stream)).state.last_seq;
       if (ceiling < 1) return [];
 
       let span = Math.max(limit * 4, 64);
