@@ -3606,9 +3606,37 @@ export class Manager {
       const onExit = (): void => {
         if (done || !s) return;
         clearTimeout(timer);
+        // ┌─ DO NOT MOVE THIS READ. Its POSITION is the fix; its value is not. ──────────────────┐
+        // MOVING IT BELOW `onAgentExit` MAKES READINESS STOP REPORTING GENUINE LAUNCH FAILURES.
+        // That is what breaks — not a style regression, a silent loss of every `failed` terminal
+        // for an agent that really did die on launch. `onAgentExit` reaches `freeSlot`, which sets
+        // this SAME latch on its way through (see its "also covers exit/reap paths" comment), so a
+        // read taken after that call is true for EVERY exit, deliberate or not.
+        //
+        // Read HERE — first statement, before the await and before `onAgentExit` — a set latch can
+        // only have been set by someone else, and the only other setter on this path is
+        // `stopHandle`, which latches SYNCHRONOUSLY and then kills with no suspension between. So a
+        // despawn-caused exit is guaranteed observed with the latch UP and a natural exit with it
+        // DOWN: the distinction holds by program order, never by winning a race.
+        //
+        // The same latch, read one function call apart, answers two different questions.
+        //
+        // TO RE-VERIFY (this is the mutation that proves it, and it is the exact regression a tidy
+        // refactor produces): move this capture below `onAgentExit` and run
+        // `pnpm smoke:manager-spawn-action`. M3 `process exit -> failed` must FAIL. Note that M4 —
+        // the case this fix exists for — still PASSES under that mutation, so the suite this fix
+        // was written against cannot catch its own regression. M3 catches it only because it
+        // happens to share a file.
+        // └──────────────────────────────────────────────────────────────────────────────────────┘
+        const deliberate = a.terminalizing === true;
         void (async () => {
           const tail = this.tail(await s.backlog());
           this.onAgentExit(a);
+          // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
+          // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
+          // caller the agent died on launch when in fact an operator cancelled it. The process
+          // teardown above still runs — only the goal's OUTCOME is left to the path that caused it.
+          if (deliberate) return;
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
         })();
       };
