@@ -936,6 +936,12 @@ export class Manager {
       // agent endpoint's 75% source re-read adopts it.
       if (!this.userMode) {
         for (const a of [...this.agents.values()]) {
+          // The `terminalizing` test here is an OPTIMISATION, NOT THE GUARD. There are awaits below
+          // it, so an agent can latch mid-iteration and this filter will have already let it
+          // through — what actually refuses is the same test at the top of
+          // {@link renewManagedStaticCred}, which every renewal on this path goes through.
+          // COUPLING: deleting or weakening that check silently promotes this line from an
+          // optimisation into the whole guard, and nothing fails at the moment of the change.
           if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
           try {
             const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds));
@@ -4700,6 +4706,22 @@ export class Manager {
    *  never routes through any barrier (renewal is the THIRD transition). */
   private async renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     if (!this.auth || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
+    // THIS CHECK IS THE AUTHORITATIVE ONE. The renewal sweep's own `a.terminalizing` filter is an
+    // optimisation that has already-awaited by the time it matters; removing or weakening this line
+    // promotes that filter into the whole guard, with nothing failing at the moment of the change.
+    //
+    // UNVERIFIED RESIDUAL, recorded because it is real in the code and its reachability is not
+    // established. This check runs at ENTRY and there are FOUR awaits before the two writes below
+    // (`secrets.put` and `materializeSecretToFile`). A despawn landing in that window latches
+    // `terminalizing` and the retirement cleanup deletes exactly those two things — same secret key,
+    // same path — so an in-flight renewal can RE-CREATE a valid bounded credential after teardown
+    // removed it, and `appendStaticCredentialRow` lands in the window too, which is the worse half:
+    // a stale file is recoverable by re-running cleanup, a durable credential row is the journal
+    // asserting the credential is legitimate. Nobody has reproduced the interleaving or traced
+    // whether a despawn reliably reaches that cleanup mid-renewal — do not treat this as confirmed,
+    // and do not fix it without a repro. If it confirms, the fix is to make the WRITES conditional
+    // on the same latch the teardown orders against rather than to retry: the correct outcome is
+    // "no credential", never "a credential minted later".
     if (a.terminalizing) throw new Error("renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins");
     const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
