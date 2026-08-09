@@ -4230,7 +4230,10 @@ export class Manager {
       return;
     }
     const settle = async () => {
-      await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }); // first-terminal-wins: a racing terminal returns the winner, no throw
+      // A SUCCESSOR settling work it inherited: the committer is THIS incarnation at its CURRENT
+      // serve epoch, which is strictly greater than the goal's acceptedEpoch — the `committed >
+      // accepted` arm of the attribution rule, and the reason that arm has to exist.
+      await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 } }); // first-terminal-wins: a racing terminal returns the winner, no throw
       await clearGoalIndex(gw.ctx, ref);
     };
     const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
@@ -4342,6 +4345,8 @@ export class Manager {
           fingerprint,
           command: ctx.subject.command,
           caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
+          // The ACCEPTING incarnation's epoch: half of the terminal's attribution pair (§13.6).
+          acceptedEpoch: epoch,
           requestId: goalId,
           sourceSeq: 0,
           acceptedAt,
@@ -4366,11 +4371,11 @@ export class Manager {
           let fact;
           if (o.kind === "succeeded") {
             this.emitGoalProgress(ref, epoch, { phase: "presence" });
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data }));
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
           } else if (o.kind === "failed") {
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data }));
+            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
           } else {
-            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now() }));
+            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch } }));
           }
           this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
           await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
@@ -4415,7 +4420,7 @@ export class Manager {
     try {
       await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
-      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" } });
+      const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" }, committer: { instanceId: this.managerInstanceId, epoch } });
       this.emitGoalProgress(ref, epoch, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
       await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
     } catch {

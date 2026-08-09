@@ -62,6 +62,7 @@ try {
   await createGoal(ctx, g, {
     fingerprint: FP, command: "spawn",
     caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid },
+    acceptedEpoch: 0,
     requestId: "g-high1", sourceSeq: 1, acceptedAt: 1_000_000, readinessDeadlineMs: 30_000,
   });
 
@@ -71,7 +72,7 @@ try {
   // the projection both exist before the restart.
   const won = await commitGoalResult(ctx, {
     ref: g, now: 1_000_005, cause: "complete", state: "succeeded",
-    data: { name: "reviewer", id: "n".repeat(26) },
+    data: { name: "reviewer", id: "n".repeat(26) }, committer: { instanceId: MGR, epoch: 0 },
   });
   c("the live executor committed the real terminal at epoch 0", won.won === true && won.fact.state === "succeeded");
   c("it is readable BEFORE the restart", (await readGoalResult(ctx, g))?.state === "succeeded");
@@ -96,12 +97,43 @@ try {
   // goal itself — at the NEW epoch, on a DIFFERENT create-only subject. One goal now carries TWO
   // contradictory terminal facts, and the one callers read is the WRONG one: the agent really did
   // spawn, and the goal reports `uncertain`.
-  const second = await commitGoalResult(ctx, { ref: g, now: 1_030_006, cause: "readiness" });
+  const second = await commitGoalResult(ctx, { ref: g, now: 1_030_006, cause: "readiness", committer: { instanceId: MGR, epoch: 1 } });
   c("HIGH-1: the successor cannot commit a SECOND, contradictory terminal for one goal",
     second.won === false, `successor committed ${second.fact.state} while the journal already holds succeeded`);
   const surfaced = await readGoalResult(ctx, g);
   c("HIGH-1: the outcome callers read is the REAL one, not the successor's guess",
     surfaced?.state === "succeeded", surfaced);
+
+  console.log("\n── the attribution rule: judged against the ACCEPTED epoch, never the current one ──");
+  c("the surviving terminal is ATTRIBUTED to the incarnation that accepted the goal",
+    surfaced?.committer?.instanceId === MGR && surfaced?.committer?.epoch === 0, surfaced?.committer);
+  // committed == accepted stayed readable across the epoch advance above: that IS the HIGH-1
+  // invariant, now held by construction rather than by a reader's staleness policy.
+  const g2 = ref("g-succ");
+  await bindGoal(ctx, g2, FP);
+  await createGoal(ctx, g2, {
+    fingerprint: FP, command: "spawn",
+    caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid },
+    acceptedEpoch: 0, requestId: "g-succ", sourceSeq: 2, acceptedAt: 1_000_000, readinessDeadlineMs: 30_000,
+  });
+  const succ = await commitGoalResult(ctx, { ref: g2, now: 1_030_007, cause: "readiness", committer: { instanceId: MGR, epoch: 1 } });
+  c("committed > accepted: a SUCCESSOR settling inherited work commits and is readable",
+    succ.won === true && (await readGoalResult(ctx, g2))?.committer?.epoch === 1);
+  const g3 = ref("g-older");
+  await bindGoal(ctx, g3, FP);
+  await createGoal(ctx, g3, {
+    fingerprint: FP, command: "spawn",
+    caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid },
+    acceptedEpoch: 3, requestId: "g-older", sourceSeq: 3, acceptedAt: 1_000_000, readinessDeadlineMs: 30_000,
+  });
+  let olderRefused = false;
+  try { await commitGoalResult(ctx, { ref: g3, now: 1_030_008, cause: "readiness", committer: { instanceId: MGR, epoch: 2 } }); }
+  catch { olderRefused = true; }
+  c("committed < accepted: refused - no incarnation commits under an epoch older than the accept", olderRefused);
+  let unattributedRefused = false;
+  try { await commitGoalResult(ctx, { ref: g3, now: 1_030_009, cause: "readiness" }); }
+  catch { unattributedRefused = true; }
+  c("an UNATTRIBUTED terminal on an epoch-bearing goal is refused (no anonymous facts)", unattributedRefused);
 
   await nc.drain().catch(() => nc.close());
 } finally {
