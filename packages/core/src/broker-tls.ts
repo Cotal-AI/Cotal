@@ -147,7 +147,10 @@ export async function probeServedCert(opts: {
   timeoutMs?: number;
 }): Promise<ServedCert> {
   const timeoutMs = opts.timeoutMs ?? 5000;
-  const info = await new Promise<Record<string, unknown>>((resolve, reject) => {
+  // The socket is carried out of this promise alongside the INFO because NATS STARTTLS upgrades
+  // the SAME connection: reconnecting for the TLS half would probe a different socket, and on a
+  // load-balanced or multi-listener deployment could read a different server's certificate.
+  const { info, socket } = await new Promise<{ info: Record<string, unknown>; socket: net.Socket }>((resolve, reject) => {
     const sock = net.connect(opts.port, opts.host);
     let buf = "";
     const fail = (m: string) => { sock.destroy(); reject(new TlsMaterialError(m)); };
@@ -158,24 +161,27 @@ export async function probeServedCert(opts: {
       const line = buf.split("\r\n")[0];
       if (!line?.startsWith("INFO ")) return;
       try {
-        const parsed = JSON.parse(line.slice(5)) as Record<string, unknown>;
-        // Hand the still-open socket to the TLS upgrade: NATS STARTTLS negotiates on the SAME
-        // socket after INFO, so reconnecting here would probe a different connection.
-        (sock as net.Socket & { _cotalInfo?: unknown })._cotalInfo = parsed;
-        resolve(Object.assign(parsed, { __socket: sock }));
+        resolve({ info: JSON.parse(line.slice(5)) as Record<string, unknown>, socket: sock });
       } catch (e) {
         fail(`unparseable NATS INFO from ${opts.host}:${opts.port}: ${(e as Error).message}`);
       }
     });
   });
 
-  const socket = (info as { __socket: net.Socket }).__socket;
   if (info.tls_required !== true) {
     socket.destroy();
     throw new TlsMaterialError(
       `${opts.host}:${opts.port} does not advertise tls_required — it is serving PLAINTEXT, so there is no served certificate to verify`,
     );
   }
+
+  // Disarm the INFO phase before handing the socket over. Its inactivity timer is still running
+  // and would destroy the connection mid-handshake on a slow peer, and its `data` handler would
+  // otherwise keep consuming bytes that now belong to TLS.
+  socket.setTimeout(0);
+  socket.removeAllListeners("timeout");
+  socket.removeAllListeners("data");
+  socket.removeAllListeners("error");
 
   return await new Promise<ServedCert>((resolve, reject) => {
     const secure = tls.connect(
