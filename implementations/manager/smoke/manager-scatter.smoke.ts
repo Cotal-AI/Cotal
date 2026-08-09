@@ -56,7 +56,7 @@ const mkRoot = (tag: string): string => {
   saveSpaceAuth(authDir(r), auth); // each manager reloads the SAME space auth from its own root
   return r;
 };
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 
 type MgrPriv = { managerInstanceId: string };
 const kids: ReturnType<typeof spawn>[] = [];

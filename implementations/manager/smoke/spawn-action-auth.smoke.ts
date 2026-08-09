@@ -57,7 +57,7 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 for (const n of ["fence"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 
 // A "stuck" child hangs forever without joining presence — the goal stays inside the readiness
 // window, so its terminal is driven by the manager (exactly where the (a) belt gates the commit).

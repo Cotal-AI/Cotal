@@ -35,7 +35,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-wsduplex-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: brokerPort, storeDir: join(dir, "js"), host: "127.0.0.1", wsPort, wsHost: "127.0.0.1" }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: brokerPort, storeDir: join(dir, "js"), host: "127.0.0.1", wsPort, wsHost: "127.0.0.1" }));
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "echo1.md"), "---\nname: echo1\nagent: echo\nrole: worker\n---\n");
 registry.register({ kind: "connector", name: "echo", requires: [], buildLaunch: () => ({ command: "cat", args: [], env: { PATH: process.env.PATH ?? "" } }) });
 

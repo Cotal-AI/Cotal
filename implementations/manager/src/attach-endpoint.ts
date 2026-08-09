@@ -122,6 +122,12 @@ export class AttachEndpoint {
     /** The endpoint credential. Generated per manager process; required on every data route. */
     private readonly token: string = randomBytes(32).toString("hex"),
   ) {
+    // A blank credential is the fail-OPEN shape of this gate, and it would only ever be consulted on
+    // the dangerous path. Refuse it at CONSTRUCTION, not at request time: an endpoint that cannot be
+    // credentialed must not exist rather than serve the roster, the feed and the session mint to
+    // anyone who can reach the bind host. (The default above means "no token configured" is already
+    // a fresh per-process secret; this closes the one way a caller could ask for none.)
+    if (!token) throw new Error("AttachEndpoint: refusing to serve without a console token - the roster, the feed and the session mint are all credentialed on it");
     this.#port = port;
     this.#host = host;
     this.#http = createServer((req, res) => this.#onRequest(req, res));

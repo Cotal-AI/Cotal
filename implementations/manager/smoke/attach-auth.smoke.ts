@@ -46,6 +46,15 @@ check("attachHost: strips brackets for a full IPv6 literal", attachHost("nats://
   check("...and advertises it re-bracketed", ok && advertised.startsWith("http://[::1]:"), ok ? advertised : why);
 }
 
+// --- a blank credential is refused at CONSTRUCTION, not at request time -----------------------
+// The failure DIRECTION that matters: an endpoint that cannot be credentialed must not exist,
+// rather than serve the roster, the feed and the session mint to anyone who reaches the bind host.
+{
+  let blankErr = "";
+  try { new AttachEndpoint(() => [], () => [], 0, undefined, "0.0.0.0", ""); } catch (e) { blankErr = (e as Error).message; }
+  check("an empty console token is refused at construction", blankErr.includes("refusing to serve without a console token"), blankErr);
+}
+
 // --- the live endpoint ------------------------------------------------------------------------
 const TOKEN = "a".repeat(64);
 const minted: string[] = [];

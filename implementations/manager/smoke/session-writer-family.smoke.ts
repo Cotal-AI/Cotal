@@ -57,7 +57,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-sesswriter-fam-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];

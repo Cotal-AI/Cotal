@@ -34,12 +34,12 @@ process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); 
 console.log("A. serverConfig emits a localhost websocket listener only when wsPort is given");
 const natsPort = await freePort();
 const wsPort = await freePort();
-const cfg = serverConfig(auth, { port: natsPort, storeDir: join(dir, "js"), wsPort });
+const cfg = serverConfig(auth, [auth], { port: natsPort, storeDir: join(dir, "js"), wsPort });
 c("wsPort → a `websocket` block is emitted", /websocket\s*\{/.test(cfg));
 c("the ws listener is bound to 127.0.0.1 (localhost default, not 0.0.0.0)", /websocket\s*\{[^}]*\b(host|listen):\s*(127\.0\.0\.1|"127\.0\.0\.1")/.test(cfg) && !/0\.0\.0\.0/.test(cfg));
 c("the ws listener carries the wsPort", cfg.includes(String(wsPort)));
 c("no_tls is set (dev loopback, ws not wss)", /no_tls\s*:\s*true/.test(cfg));
-const cfgNoWs = serverConfig(auth, { port: natsPort, storeDir: join(dir, "js") });
+const cfgNoWs = serverConfig(auth, [auth], { port: natsPort, storeDir: join(dir, "js") });
 c("WITHOUT wsPort no websocket block is emitted (opt-in, no surprise surface)", !/websocket\s*\{/.test(cfgNoWs));
 
 // ---- B. a live broker actually accepts a browser WebSocket on the ws port --------------------

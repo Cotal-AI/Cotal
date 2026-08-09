@@ -67,7 +67,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsvc-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });

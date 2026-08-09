@@ -55,7 +55,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-mgrrestart-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 
 // The two scoped $SYS creds (mintable ONLY from the fresh auth's in-memory system seed) that the
 // delivery daemon's eviction executor rides — minted NOW, exactly as `cotal up` provisions them.
