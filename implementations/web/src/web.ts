@@ -240,15 +240,27 @@ export async function web(args: ParsedArgs): Promise<void> {
       // Backfill the all-activity feed: merge recent channel history with DM history (the live
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged
       // ({mode, msg}) to match the live feed so DMs render as DMs.
+      //
+      // BYTES ARE THE COST HERE, not round trips (the per-channel fetches already run concurrently).
+      // This asked EVERY channel for a full `limit` and then discarded all but the newest `limit` of
+      // the union, so a mesh with ten channels moved roughly eleven times what it displayed.
+      // Measured at 77s for 251KB against a mesh on a slow link.
+      //
+      // A channel can only contribute more than its even share when the others contribute less, so
+      // fetch an even share (doubled, for skew) and top up only the channels that actually filled
+      // their quota — the busy-channel case costs a second pass instead of taxing every request.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
       const chans = await ep.listChannels();
-      const chat = (
-        await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit })))
-      )
-        .flat()
-        .map((msg) => ({ mode: "chat" as const, msg }));
+      const share = Math.max(20, Math.ceil((limit / Math.max(1, chans.length)) * 2));
+      const first = await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit: share })));
+      const saturated = chans.filter((_, i) => first[i]!.length >= share);
+      const topUp = saturated.length && saturated.length < chans.length
+        ? await Promise.all(saturated.map((ch) => ep.channelHistory(ch.channel, { limit })))
+        : [];
+      const byId = new Map<string, { mode: "chat"; msg: (typeof first)[number][number] }>();
+      for (const msg of [...first.flat(), ...topUp.flat()]) byId.set(msg.id, { mode: "chat", msg });
       const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
-      const all = [...chat, ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
+      const all = [...byId.values(), ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
       return json(res, all.slice(-limit));
     }
     if (path === "/api/dms") {

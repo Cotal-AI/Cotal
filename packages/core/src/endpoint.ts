@@ -1673,34 +1673,85 @@ export class CotalEndpoint extends EventEmitter {
     );
   }
 
-  /** Drain up to `limit` recent messages matching `subject` from a stream's backlog via a
-   *  throwaway consumer. Fetches exactly the pending count (from consumer info) so it returns
-   *  the moment the backlog is delivered — a plain `fetch({max_messages: limit})` would instead
-   *  block for the pull's full expiry (~30s) whenever the backlog is smaller than `limit`. */
+  /**
+   * The `limit` MOST RECENT messages matching `subject`, oldest-first within the page.
+   *
+   * **This used to return the OLDEST N.** `js.consumers.get(stream, {...})` builds an ORDERED
+   * consumer, which defaults to `DeliverPolicy.StartSequence` with `opt_start_seq: 1` — the very
+   * beginning of the stream. Capping the fetch at `limit` therefore took the first N messages ever
+   * sent, while this method is documented as "recent" and every caller (the dashboard feed, the
+   * agent-facing history tools) presents the result as the latest. Confirmed live against a
+   * 123-message channel: `limit=10` returned the ten oldest, not the ten newest.
+   *
+   * Fixing it by draining from the start and keeping the tail would be correct and ruinous: it
+   * transfers the entire backlog to show one screen. Instead, find the newest matching sequence and
+   * consume a WINDOW ending there, widening geometrically until the window holds `limit` matches.
+   * A filtered subject's sequences are non-contiguous (other channels interleave in the same
+   * stream), so the window cannot be computed arithmetically — but each attempt only transfers the
+   * matches inside it, and the geometric growth bounds total transfer to a small multiple of one
+   * page rather than the whole channel.
+   *
+   * `before` pages toward the past: pass the `seq` of the oldest message you already have.
+   */
   private async streamHistory(
     stream: string,
     subject: string,
     limit: number,
+    before?: number,
   ): Promise<CotalMessage[]> {
     if (!this.nc) throw new Error("endpoint not started");
+    if (limit <= 0) return [];
     const js = jetstream(this.nc);
-    const msgs: CotalMessage[] = [];
     try {
-      const consumer = await js.consumers.get(stream, { filter_subjects: [subject] });
-      const pending = Math.min(limit, (await consumer.info()).num_pending);
-      if (pending === 0) return msgs;
-      const iter = await consumer.fetch({ max_messages: pending });
-      for await (const m of iter) {
-        try {
-          msgs.push(m.json<CotalMessage>());
-        } catch {
-          /* skip undecodable */
-        }
+      const jsm = await jetstreamManager(this.nc);
+      // The newest matching sequence, without draining anything.
+      const newest = before ?? ((await jsm.streams.getMessage(stream, { last_by_subj: subject }).catch(() => null))?.seq ?? 0) + 1;
+      const ceiling = newest - 1; // inclusive upper bound for this page
+      if (ceiling < 1) return [];
+
+      let span = Math.max(limit * 4, 64);
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const start = Math.max(1, ceiling - span + 1);
+        const page = await this.drainWindow(js, stream, subject, start, ceiling);
+        // Enough for a full page, or we have reached the head of the stream and this is all there is.
+        if (page.length >= limit || start === 1) return page.slice(-limit);
+        span *= 4;
       }
+      // Widening capped: return the widest window we drained rather than nothing.
+      return (await this.drainWindow(js, stream, subject, 1, ceiling)).slice(-limit);
     } catch {
-      /* stream missing or consumer create denied (non-admin) */
+      /* stream missing or read denied (non-admin) */
+      return [];
     }
-    return msgs;
+  }
+
+  /** Drain every message matching `subject` with sequence in `[start, ceiling]`, oldest-first.
+   *  One ephemeral ordered consumer, one batched pull — `AckPolicy.None`, so no per-message ack
+   *  round trip. Fetches exactly the pending count so it returns as soon as the window is
+   *  delivered rather than blocking for the pull's full expiry. */
+  private async drainWindow(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+    start: number,
+    ceiling: number,
+  ): Promise<CotalMessage[]> {
+    const out: CotalMessage[] = [];
+    const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
+    // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
+    // explicit uncached `info()` this used to call was a round trip for data we already had.
+    const pending = (await consumer.info(true)).num_pending;
+    if (pending === 0) return out;
+    const iter = await consumer.fetch({ max_messages: pending });
+    for await (const m of iter) {
+      if (m.seq > ceiling) break; // past this page's upper bound
+      try {
+        out.push(m.json<CotalMessage>());
+      } catch {
+        /* skip undecodable */
+      }
+    }
+    return out;
   }
 
   // ---- internals -----------------------------------------------------------

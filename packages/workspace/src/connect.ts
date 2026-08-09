@@ -178,7 +178,18 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
-export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise<Connection> {
+export async function connectOrExit(
+  flags: ConnectFlags,
+  role: Profile,
+  opts: {
+    /** Skip the liveness/auth probe because the CALLER immediately opens a real connection and can
+     *  surface the failure itself. The probe is a full connect-and-close, so for a command whose
+     *  next act is another full connect it doubles the handshake for nothing — which on a
+     *  high-latency link is a second or more of pure waste per command. Only pass this when the
+     *  caller genuinely renders a good failure; otherwise the operator gets a raw NATS trace. */
+    skipPreflight?: boolean;
+  } = {},
+): Promise<Connection> {
   if (flags.creds) {
     const space = flags.space ?? DEFAULT_SPACE;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
@@ -223,7 +234,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
   // provider's space-scoped state; every failure is one sentence with the exact operator action.
   if (target.mode === "user") return userConnectOrExit(target);
   const creds = target.auth ? await mintCreds(target.auth, newIdentity(), role) : undefined;
-  await preflightOrExit(target, creds);
+  if (!opts.skipPreflight) await preflightOrExit(target, creds);
   return { server: target.server, space: target.space, creds, auth: target.auth, root: target.root, source: target.source };
 }
 
