@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import tlsMod from "node:tls";
-import { createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert } from "../src/index.js";
+import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert } from "../src/index.js";
 
 // The broker-TLS fence, proved by EXECUTION rather than by inspecting the rendered config.
 //
@@ -148,6 +148,12 @@ requireOpenssl();
 const auth = await createSpaceAuth(space);
 const creds = await mintCreds(auth, newIdentity(), "provisioner");
 const valid = mintCert("valid", "127.0.0.1", "IP:127.0.0.1,DNS:localhost");
+// Validate once up front: this both exercises the accept path of `validateTlsMaterial` and gives
+// every served-leaf comparison below a single source of truth for what SHOULD be on the wire.
+const validMaterial = validateTlsMaterial(
+  { kind: "tls-required", certFile: valid.certFile, keyFile: valid.keyFile },
+  { dialHost: "localhost" },
+);
 
 // ---------------------------------------------------------------------------------------------
 // CONTROL: a PLAINTEXT broker. Establishes that the probe can detect a completed handshake at all.
@@ -222,19 +228,72 @@ assert.notEqual(tlsInfo.tls_available, true, "TLS broker must not advertise tls_
   // rotation path is built on, and it is the check the reference deployment lacked: there, the
   // cert FILES were renewed while the running broker went on serving the previous certificate,
   // so anything comparing mtimes or trusting a reload's exit code would have reported success.
-  const material = validateTlsMaterial(
-    { kind: "tls-required", certFile: valid.certFile, keyFile: valid.keyFile },
-    { dialHost: "localhost" },
-  );
   assert.equal(
-    served.fingerprint256, material.fingerprint256,
-    `the broker is serving a different leaf than the file on disk: served ${served.fingerprint256}, file ${material.fingerprint256}`,
+    served.fingerprint256, validMaterial.fingerprint256,
+    `the broker is serving a different leaf than the file on disk: served ${served.fingerprint256}, file ${validMaterial.fingerprint256}`,
   );
   console.log(`  honest path: STARTTLS completed; served leaf matches the file on disk (${served.fingerprint256.slice(0, 17)}...)`);
 }
 tls.kill();
+await sleep(300);
 
-console.log("tls-serve smoke: OK - plaintext refused by TLS-required listener, strict client accepted, control proved the probe detects a real handshake");
+// ---------------------------------------------------------------------------------------------
+// OPEN (NO-AUTH) MODE. This is the path that used to bypass every renderer: `cotal up` started an
+// open broker from bare CLI flags, so a cert/key pair would have been accepted while the listener
+// came up in cleartext — the silent downgrade, reachable by an operator who did everything right.
+// Now open mode renders a config too, so the required transport union covers BOTH modes.
+//
+// The control is STRONGER here than under auth. An open broker answers a cleartext client with a
+// real PONG rather than `-ERR 'Authorization Violation'`, so "the plaintext peer was accepted" is
+// unambiguous — there is no auth refusal to confuse with a transport refusal.
+//
+// Note what open-mode TLS does and does not buy: CONFIDENTIALITY, NOT AUTHENTICATION. Anyone who
+// can reach the port still gets in; the traffic is merely hidden from a passive observer.
+{
+  const openPlainPort = await freePort(), openTlsPort = await freePort();
+  const openPlainStore = join(dir, "open-plain-js"), openTlsStore = join(dir, "open-tls-js");
+  mkdirSync(openPlainStore, { recursive: true });
+  mkdirSync(openTlsStore, { recursive: true });
+
+  const openPlainConf = join(dir, "open-plain.conf"), openTlsConf = join(dir, "open-tls.conf");
+  writeFileSync(openPlainConf, openServerConfig({ port: openPlainPort, storeDir: openPlainStore, transport: { kind: "plaintext" } }));
+  writeFileSync(openTlsConf, openServerConfig({
+    port: openTlsPort, storeDir: openTlsStore,
+    transport: { kind: "tls-required", certFile: valid.certFile, keyFile: valid.keyFile },
+  }));
+
+  const openPlain = await startBroker("open-plain", openPlainConf);
+  await sleep(1500);
+  const acceptedPlain = await plaintextConnectAccepted("127.0.0.1", openPlainPort);
+  assert.equal(
+    acceptedPlain.accepted, true,
+    `CONTROL FAILED: an OPEN plaintext broker did not answer a cleartext CONNECT (saw ${JSON.stringify(acceptedPlain.reply)})`,
+  );
+  assert.match(
+    acceptedPlain.reply, /PONG/,
+    `an OPEN plaintext broker should answer PING with PONG (no auth in the way); saw ${JSON.stringify(acceptedPlain.reply)}`,
+  );
+  openPlain.kill();
+  await sleep(300);
+
+  const openTls = await startBroker("open-tls", openTlsConf);
+  await sleep(1500);
+  const openInfo = await readInfo("127.0.0.1", openTlsPort);
+  assert.equal(openInfo.tls_required, true, `OPEN-mode TLS broker must advertise tls_required; INFO was ${JSON.stringify(openInfo)}`);
+  assert.notEqual(openInfo.tls_available, true, "OPEN-mode TLS broker must not advertise tls_available (mixed mode)");
+
+  const refused = await plaintextConnectAccepted("127.0.0.1", openTlsPort);
+  assert.equal(
+    refused.accepted, false,
+    `GATE FAILED (open mode): a TLS-required OPEN listener answered a cleartext CONNECT with ${JSON.stringify(refused.reply)}. This is the exact path that previously bypassed the renderer.`,
+  );
+  const openServed = await probeServedCert({ host: "127.0.0.1", port: openTlsPort, servername: "localhost" });
+  assert.equal(openServed.fingerprint256, validMaterial.fingerprint256, "open-mode broker served a different leaf than the file on disk");
+  openTls.kill();
+  console.log(`  open mode: plaintext broker answered ${JSON.stringify(acceptedPlain.reply.replace(/\r\n/g, " "))}; TLS-required open listener refused cleartext and served the expected leaf`);
+}
+
+console.log("tls-serve smoke: OK - cleartext refused by TLS-required listeners in BOTH auth and open mode, served leaf matches disk, controls proved each probe detects a real handshake");
 } finally {
   killAll();
 }

@@ -147,9 +147,12 @@ export async function probeServedCert(opts: {
   timeoutMs?: number;
 }): Promise<ServedCert> {
   const timeoutMs = opts.timeoutMs ?? 5000;
-  // The socket is carried out of this promise alongside the INFO because NATS STARTTLS upgrades
-  // the SAME connection: reconnecting for the TLS half would probe a different socket, and on a
-  // load-balanced or multi-listener deployment could read a different server's certificate.
+  // The socket is carried out of this promise rather than reopened, and that is load-bearing:
+  // NATS STARTTLS upgrades THE SAME connection, so a second dial probes a different socket and,
+  // behind a load balancer or a second listener, could read a DIFFERENT SERVER'S certificate. A
+  // rotation check that might sample the wrong server is worse than no rotation check at all,
+  // because it reports success while the served leaf is stale — the exact failure this helper
+  // exists to detect.
   const { info, socket } = await new Promise<{ info: Record<string, unknown>; socket: net.Socket }>((resolve, reject) => {
     const sock = net.connect(opts.port, opts.host);
     let buf = "";
@@ -177,7 +180,9 @@ export async function probeServedCert(opts: {
 
   // Disarm the INFO phase before handing the socket over. Its inactivity timer is still running
   // and would destroy the connection mid-handshake on a slow peer, and its `data` handler would
-  // otherwise keep consuming bytes that now belong to TLS.
+  // otherwise keep consuming bytes that now belong to TLS. Neither shows up on loopback, where
+  // the handshake completes in microseconds — this is the kind of green that hides a timing bug
+  // from everyone until a real network appears, so do not remove it because the tests pass.
   socket.setTimeout(0);
   socket.removeAllListeners("timeout");
   socket.removeAllListeners("data");

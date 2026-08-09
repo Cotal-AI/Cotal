@@ -21,6 +21,7 @@ import {
   CONTROL_ADMIN,
   createSpaceAuth,
   serverConfig,
+  openServerConfig,
   mintCreds,
   mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
@@ -672,8 +673,13 @@ export async function up(args: ParsedArgs): Promise<void> {
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+  // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
+  // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
+  // protected the auth path and was silent on the open one, and a cert/key pair passed to an
+  // open-mode `up` would have been accepted while the listener came up in cleartext.
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host });
   const natsArgs = [
-    ...(setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host]),
+    "-c", confPath,
     ...(restored ? ["--name", restored.serverName]
       : ordinaryAttempt ? ["--name", ordinaryAttempt.serverName]
       : []),
@@ -1639,8 +1645,11 @@ export async function startMeshDetached(
   const host = opts.host ?? "127.0.0.1";
   const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth) : undefined;
   const port = Number(new URL(server).port) || 4222;
+  // Same rule as the foreground path: every route to a listener names its transport (see
+  // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host });
   const args = [
-    ...(setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host]),
+    "-c", confPath,
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
   const { bin, source } = await resolveNatsServer();
@@ -1958,6 +1967,25 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
  *  lives flat) and preload its extra account(s) into the broker config. The inverse is fail-closed:
  *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
  *  config without the callout account would silently break every sentinel connect. */
+/**
+ * Render and write the config for an OPEN (no-auth) broker, returning its path.
+ *
+ * The `authSetup` sibling for the no-auth mode. Open mode previously launched nats-server from
+ * bare CLI flags and so never passed through any renderer — meaning the REQUIRED transport union
+ * on the config renderers covered the auth path only, and a `--tls-cert`/`--tls-key` pair given to
+ * an open-mode `up` would have been accepted while the broker came up in cleartext. Routing open
+ * mode through a renderer is what makes the union total: there is now no route to a listener that
+ * does not state its transport.
+ */
+function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: string }): string {
+  const confPath = resolve(storeDir, "..", "server-open.conf");
+  writeFileSync(
+    confPath,
+    openServerConfig({ port: opts.port, host: opts.host, storeDir, transport: { kind: "plaintext" } }),
+  );
+  return confPath;
+}
+
 async function authSetup(
   storeDir: string,
   server: string,
