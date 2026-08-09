@@ -66,10 +66,17 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
       if (t.origin === "manual")
         return `✗ no broker answered at ${t.server} - "${t.space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`;
       return `✗ no mesh running at ${t.server}${pruned ? " (stale registry entry - removed)" : ""} - run \`cotal up\``;
+    // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
+    // machine only registered: the repair there is the credentials under `--root`, or re-registering
+    // the entry — `cotal up` would start a DIFFERENT, local mesh under that name.
     case "registry-creds-rejected":
-      return `✗ mesh "${t.space}" at ${t.server} no longer matches its registry entry (credentials rejected - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
+      return t.origin === "manual"
+        ? `✗ mesh "${t.space}" at ${t.server} rejected the credentials under ${t.root} - re-mint them where that mesh runs, or re-register it with \`cotal meshes add ${t.space} --server <url> --root <dir> --force\``
+        : `✗ mesh "${t.space}" at ${t.server} no longer matches its registry entry (credentials rejected - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
     case "registry-open-now-auth":
-      return `✗ open mesh "${t.space}" at ${t.server} no longer matches its registry entry (broker now requires auth - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
+      return t.origin === "manual"
+        ? `✗ "${t.space}" is registered as an open mesh, but the broker at ${t.server} requires auth - copy that mesh's account + creds under ${t.root} and re-register with \`cotal meshes add ${t.space} --server ${t.server} --mode auth --force\``
+        : `✗ open mesh "${t.space}" at ${t.server} no longer matches its registry entry (broker now requires auth - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
     case "creds-rejected":
       return `✗ credentials for "${t.space}" were rejected at ${t.server} - a different mesh may be running there. Run \`cotal meshes\` to check, or \`cotal up\` here to start yours`;
     case "open-wants-auth":

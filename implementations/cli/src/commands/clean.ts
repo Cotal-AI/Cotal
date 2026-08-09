@@ -12,7 +12,7 @@ import {
   cleanupRestoreFallback,
   deleteSpaceAuth,
   localProcessPath,
-  meshesForRoot,
+  localMeshesForRoot,
   readMaintenanceJournal,
   releaseMaintenanceLock,
   removeMeshesByRoot,
@@ -106,7 +106,10 @@ export async function clean(args: ParsedArgs): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    for (const mesh of meshesForRoot(root)) {
+    // Only this root's OWN meshes gate the wipe. A hand-registered record co-rooted here describes a
+    // mesh running on another machine: it is reachable by design and is not the operator's to stop,
+    // so counting it would refuse `clean` forever with an instruction nobody here can carry out.
+    for (const mesh of localMeshesForRoot(root)) {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }

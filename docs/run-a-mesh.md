@@ -118,11 +118,13 @@ broker is probed before the record is written, so a bad address or a credential 
 accept fails at registration rather than at your first `spawn` (`--force` records it unverified —
 useful when the mesh is simply down right now).
 
-Records added this way are never removed automatically. A mesh this machine started can be pruned
-safely, because `cotal up` writes the record straight back; one you registered by hand cannot be
-reconstructed, so an unreachable broker is shown as `offline` in `cotal meshes` and the record stays
-until `cotal meshes rm` drops it. `rm` only forgets a mesh — to stop one running here, use
-`cotal down`.
+Records added this way are removed only by something that names them. A mesh this machine started
+can be dropped on a hunch — a failed liveness probe, a `cotal down` in its project — because
+`cotal up` writes the record straight back. One you registered by hand cannot be reconstructed, so
+nothing removes it by inference: an unreachable broker is shown as `offline` in `cotal meshes`, and
+`cotal down` / `cotal clean all` leave it alone even when `--root` pointed at the project they are
+tearing down. `cotal meshes rm` drops it (as does re-registering it with `--force`). `rm` only
+forgets a mesh — to stop one running here, use `cotal down`.
 
 ## Watching
 

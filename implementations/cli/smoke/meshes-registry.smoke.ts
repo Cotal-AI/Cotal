@@ -28,7 +28,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-meshes-home-"));
 process.env.COTAL_HOME = home;
 
 const { isReachable } = await import("@cotal-ai/core");
-const { findMesh, getCurrent, loadMeshes, pruneStaleMeshes, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { findMesh, getCurrent, loadMeshes, pruneStaleMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -150,6 +150,38 @@ try {
   check("sweep reports the kept one as offline", sweep.offline.includes("remote-dead") && sweep.pruned.includes("local-dead"), sweep);
   const sweep2 = await pruneStaleMeshes();
   check("a second sweep still keeps it (not a one-time reprieve)", findMesh("remote-dead") !== undefined && sweep2.offline.includes("remote-dead"), sweep2);
+
+  // …and the same rule for the paths that delete by ROOT rather than by liveness. `add` defaults
+  // --root to the project you run it in, so a hand-registered remote mesh routinely shares a root
+  // with the local one; `cotal down` / `cotal clean all` there must not take the remote with it.
+  const { removeMeshesByRoot, localMeshesForRoot } = await import("@cotal-ai/workspace");
+  const shared = projectRoot("shared");
+  recordMesh({ space: "here", server: LIVE, root: shared, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  recordMesh({ space: "elsewhere", server: LIVE, root: shared, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const byRoot = removeMeshesByRoot(shared);
+  check("a root teardown drops this project's own record", byRoot.includes("here") && findMesh("here") === undefined, byRoot);
+  check("a root teardown KEEPS a co-rooted registered mesh", findMesh("elsewhere") !== undefined, loadMeshes());
+  check("…and does not claim it removed it", !byRoot.includes("elsewhere"), byRoot);
+  // `clean`'s "is this root's mesh still live" guard asks the same question: a reachable REMOTE
+  // broker is not the operator's to stop, so it must not block a local wipe forever.
+  check("the local-liveness guard ignores a co-rooted registered mesh",
+    localMeshesForRoot(shared).every((m) => m.space !== "elsewhere"), localMeshesForRoot(shared));
+  removeMesh("elsewhere");
+
+  // `cotal up --space <name>` reclaims a dead holder's name. It must not reclaim a REGISTERED one:
+  // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,
+  // so an `up` that then fails would leave the operator with neither mesh and no way back.
+  const { claimSpace } = await import("../src/commands/up.js");
+  recordMesh({ space: "claimed", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  let claimError: Error | undefined;
+  await claimSpace("claimed", LIVE, localRoot).catch((e: Error) => void (claimError = e));
+  check("`up` refuses to reclaim a registered space rather than deleting it", claimError !== undefined, claimError?.message);
+  check("…and the registration survives the refusal", findMesh("claimed") !== undefined, loadMeshes());
+  check("…naming `cotal meshes rm` as the way through", claimError?.message.includes("cotal meshes rm claimed") === true, claimError?.message);
+  recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  await claimSpace("reclaimable", LIVE, root);
+  check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
+  removeMesh("claimed");
 
   const listed = await run([]);
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);

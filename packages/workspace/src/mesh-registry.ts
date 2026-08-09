@@ -5,8 +5,11 @@ import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceSegment } from "./auth-paths.js";
 
 /**
- * The registry of running meshes: one record per broker `cotal up` started on this machine, so a
- * `cotal spawn` from *any* directory can find which mesh to join, with which creds and personas.
+ * The registry of meshes this machine can reach, so a `cotal spawn` from *any* directory can find
+ * which mesh to join, with which creds and personas. One record per broker `cotal up` started here,
+ * plus any an operator registered by hand with `cotal meshes add` — a mesh running on another
+ * machine, which no local command could otherwise describe. {@link MeshEntry.origin} is which, and
+ * decides what may delete the record without being told to.
  *
  * Stored as **one JSON file per mesh** (`~/.cotal/meshes/<space>.json`) rather than a single
  * `meshes.json`: concurrent `up`/`down` never read-modify-write the same file (no lost-update race),
@@ -41,11 +44,16 @@ export interface MeshEntry {
    *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
    *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
   attachHost?: string;
-  /** Who put this record here — and therefore who may take it out. `up` (the default, and what any
-   *  record written without the field is) means THIS machine started the mesh: an auto-prune may
-   *  drop it, because `cotal up` writes it straight back. `manual` means an operator registered it
-   *  by hand (`cotal meshes add`) — typically a mesh running on another machine, whose record
-   *  nothing here can reconstruct — so it is never auto-pruned; only `cotal meshes rm` removes it. */
+  /** Who put this record here — and therefore what may take it out. `up` (the default, and what any
+   *  record written without the field is) means THIS machine started the mesh: it is safe to drop
+   *  on a liveness verdict or a local teardown, because `cotal up` writes it straight back.
+   *  `manual` means an operator registered it by hand (`cotal meshes add`) — typically a mesh
+   *  running on another machine, whose record nothing here can reconstruct.
+   *
+   *  A `manual` record is removed only by an act that NAMES it: `cotal meshes rm`, or an
+   *  `add --force` / a `cotal up` for that same space, which replace it deliberately. Everything
+   *  that infers a record is dead or obsolete — the liveness sweep, the classified preflight prune,
+   *  `cotal down` / `cotal clean all` sweeping a shared root — leaves it alone. */
   origin?: "up" | "manual";
   /** ISO timestamp of when the record was written. */
   ts: string;
@@ -201,16 +209,35 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
-/** Drop every registry entry recorded for THIS project root, releasing the `current` pointer per
- *  removed entry (on `cotal down` / `cotal clean all`). Returns the removed space names. */
+/**
+ * Drop the entries recorded for THIS project root because the mesh they describe was just stopped
+ * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer per removed entry.
+ * Returns the removed space names.
+ *
+ * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
+ * defaults `--root` to the project you run it in, so registering a mesh that runs elsewhere from
+ * inside your own project files both records under one root. Tearing down THIS project's mesh says
+ * nothing about the remote one, and deleting its record here is the unrecoverable case (`down` can
+ * rewrite what `up` wrote; nothing rewrites a hand-registered record). `cotal meshes rm` is how one
+ * of those leaves.
+ */
 export function removeMeshesByRoot(root: string): string[] {
   const removed: string[] = [];
   for (const m of meshesForRoot(root)) {
+    if (m.origin === "manual") continue;
     removeMesh(m.space);
     if (getCurrent() === m.space) clearCurrent();
     removed.push(m.space);
   }
   return removed;
+}
+
+/** The entries this root actually RUNS — what a local teardown or wipe may act on. The complement
+ *  of the skip in {@link removeMeshesByRoot}, exported so a caller that guards on "is this root's
+ *  mesh still live" asks about its OWN mesh: a hand-registered record co-rooted here points at a
+ *  broker on another machine, which the operator cannot stop and must not be blocked by. */
+export function localMeshesForRoot(root: string): MeshEntry[] {
+  return meshesForRoot(root).filter((m) => m.origin !== "manual");
 }
 
 /** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —

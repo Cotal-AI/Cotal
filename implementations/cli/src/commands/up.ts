@@ -1747,12 +1747,18 @@ function ensureRootForSpace(useAuth: boolean, space: string): void {
  *  path). NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
  *  different roots within the same instant can both pass the check before either records; that
  *  concurrent case is out of scope (a single-operator CLI action), not synchronized with a lock. */
-async function claimSpace(space: string, server: string, root: string): Promise<void> {
+export async function claimSpace(space: string, server: string, root: string): Promise<void> {
   const existing = findMesh(space);
   if (!existing || (existing.server === server && existing.root === root)) return;
   if (await isReachable(existing.server)) {
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
+  // An OPERATOR-REGISTERED holder is never auto-reclaimed. Unreachable is not proof it is gone —
+  // that record describes a mesh on another machine, and this reclaim runs BEFORE the broker starts,
+  // so a `up` that then fails for any reason (a bound port, bad trust material) would leave the
+  // operator with neither mesh and no way to rebuild the record. Make them say so instead.
+  if (existing.origin === "manual")
+    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) that is not answering right now - it was registered by hand, so it is not reclaimed automatically: \`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``);
   removeMesh(space); // the prior holder's broker is gone — reclaim the name
 }
 

@@ -361,9 +361,12 @@ address, or credentials that mesh will not accept, fails here instead of at the 
 `--force` records unverified (and replaces an existing record).
 
 `meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
-is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is never
-removed for you: when its broker is unreachable it is listed `offline` and stays until you remove
-it, because nothing on this machine could write it back.
+is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is only
+removed by something that names it — `meshes rm`, or an `add --force` or a `cotal up` for that same
+space, which replace it deliberately. Nothing that merely *infers* a record is dead touches it: an
+unreachable broker is listed `offline` and stays, and `cotal down` / `cotal clean all` leave it
+alone even when it shares a root with the project they are tearing down, because nothing on this
+machine could write it back.
 
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
