@@ -362,8 +362,10 @@ address, or credentials that mesh will not accept, fails here instead of at the 
 
 `meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is only
-removed by something that names it — `meshes rm`, or an `add --force` or a `cotal up` for that same
-space, which replace it deliberately. Nothing that merely *infers* a record is dead touches it: an
+removed by something that names it — `meshes rm`, an `add --force`, or a `cotal up` that starts that
+exact mesh here (same broker and root), which takes the record over. A `cotal up` for that space
+anywhere else refuses rather than reclaim the name. Nothing that merely *infers* a record is dead
+touches it: an
 unreachable broker is listed `offline` and stays, and `cotal down` / `cotal clean all` leave it
 alone even when it shares a root with the project they are tearing down, because nothing on this
 machine could write it back.
