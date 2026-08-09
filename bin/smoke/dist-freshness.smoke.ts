@@ -21,8 +21,17 @@
  * are the form that leaks — the person who most needs one is the person not thinking about it.
  *
  * THE VERSION THAT WOULD ACTUALLY RATCHET is a startup assertion inside every suite that reads
- * `dist`, so the check runs whether or not anyone remembered. That is ~100 suites and is recorded
- * as a residual rather than done here.
+ * `dist`, so the check runs whether or not anyone remembered. 104 suites import `@cotal-ai/core`,
+ * and there is no chokepoint to hang it on: the most-shared test helper reaches 16 of them. The one
+ * universal path is core's own entry module, and that is the SHIPPED artifact (`files: ["dist"]`),
+ * so a development-time check there would ride into every customer install. It would even no-op
+ * safely, since a published install has no `src/` — which is exactly why it is tempting and exactly
+ * why it does not go there. Recorded as a residual: the real fix is a shared smoke harness that
+ * creates the chokepoint, which is a project rather than a patch.
+ *
+ * NOTE FOR THE NEXT PERSON WHO VERIFIES THIS CHECK: demonstrating it requires touching a source
+ * file, which puts your own worktree into the state it detects. That is the check working, not a
+ * defect. Content is unchanged, only the mtime moved, and the next build clears it.
  *
  * Run: pnpm smoke:dist-freshness
  */
