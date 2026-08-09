@@ -166,12 +166,20 @@ export async function commitSiblingIssuance(
     try { await gate.revoke(row); return undefined; }
     catch (err) { return (err as Error)?.message ?? String(err); }
   };
-  // A LOST CAS HAS EXACTLY TWO CAUSES, and conflating them breaks one thing or the other. Only four
-  // writers touch `epgate.<endpoint>.<instanceId>`: the create-only provision, a barrier's FREEZE
-  // (state leaves `open`), a barrier's REOPEN (token-pinned, and it writes the successor coordinate
-  // — every caller of it advances `generation`, the abort path included), and this very commit,
-  // which writes the gate's own bytes back UNCHANGED. So a revision that moved while the gate is
-  // still `open` and every other field is identical can ONLY be another sibling mint's touch.
+  // A LOST CAS HAS EXACTLY TWO CAUSES, and conflating them breaks one thing or the other. Four
+  // PRODUCTION writers touch `epgate.<endpoint>.<instanceId>`: the create-only provision, a
+  // barrier's FREEZE (state leaves `open`), a barrier's REOPEN (token-pinned, and it writes the
+  // successor coordinate — every caller of it advances `generation`, the abort path included), and
+  // this very commit, which writes the gate's own bytes back UNCHANGED. So a revision that moved
+  // while the gate is still `open` and every other field is identical can ONLY be another sibling
+  // mint's touch.
+  //
+  // The enumeration is REPO-WIDE, not this file: there is a fifth writer, `writeEndpointGate`
+  // (implementations/auth/src/session-ledger.ts), an UNPINNED `put` that is the D14 registration
+  // stand-in for provisioning and smokes and is deliberately not re-exported from that package's
+  // index. It is outside the production set today, and this classification depends on it staying
+  // there — promoting it to a production path without joining this enumeration would let an
+  // arbitrary gate rewrite look like benign contention.
   //
   // That case is benign contention and must NOT refuse: every per-session credential serializes on
   // this one key, so a concurrent establish burst would otherwise fail live sessions for no security
