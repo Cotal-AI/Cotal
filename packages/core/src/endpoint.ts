@@ -1774,10 +1774,16 @@ export class CotalEndpoint extends EventEmitter {
       deliver_policy: DeliverPolicy.Last,
     });
     try {
+      // Bind-time zero is the ONLY thing that means "this subject has no messages".
       if ((await consumer.info(true)).num_pending === 0) return 0;
       const iter = await consumer.fetch({ max_messages: 1 });
       for await (const m of iter) return m.seq;
-      return 0;
+      // Bind said a message was pending and none arrived. The pinned client's pull iterator ends
+      // CLEANLY when the connection closes ("we don't propagate the error here"), so this is what a
+      // dropped link looks like from here. Returning 0 would make the caller report an empty
+      // channel, which is the same "could not read means no history" lie the narrowed catch above
+      // exists to stop.
+      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
     } finally {
       await consumer.delete().catch(() => { /* already gone, or denied */ });
     }
@@ -1802,14 +1808,30 @@ export class CotalEndpoint extends EventEmitter {
       const pending = (await consumer.info(true)).num_pending;
       if (pending === 0) return out;
       const iter = await consumer.fetch({ max_messages: pending });
+      // PROVE THE WINDOW COMPLETED. The pull iterator ends cleanly on a dropped connection, so a
+      // close after three of ten deliveries would otherwise return a convincing three-message page.
+      // The window is done when we have reached its upper bound or consumed everything bind said
+      // was pending; anything else is a cut-short read and must say so.
+      let delivered = 0;
+      let complete = false;
       for await (const m of iter) {
-        if (m.seq > ceiling) break; // past this page's upper bound
+        delivered++;
+        if (m.seq >= ceiling) { // reached the page's upper bound
+          if (m.seq === ceiling) {
+            try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+          }
+          complete = true;
+          break;
+        }
         try {
           out.push(m.json<CotalMessage>());
         } catch {
           /* skip undecodable */
         }
+        if (delivered >= pending) { complete = true; break; }
       }
+      if (!complete)
+        throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the window was cut short, not empty`);
       return out;
     } finally {
       // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute

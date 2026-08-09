@@ -268,15 +268,30 @@ try {
     {
       const uidD = mintLifecycleUid();
       let scanCalls = 0;
-      const racedKv = {
-        history: async (opts?: { key?: string | string[] }) => {
-          scanCalls++;
-          if (scanCalls === 2) await commitAclRow(kv, localPrincipal(agent.id), uidD, ["general"]);
-          return kv.history(opts);
+      // Interpose by DELEGATION, not by substitution. `liveKvEntries` binds its own consumer through
+      // the client's Bucket implementation and refuses anything that is not one — deliberately, since
+      // falling back to `history()` is what made an interrupted read indistinguishable from an empty
+      // one. `Object.create(kv)` keeps the real Bucket as the prototype (so `instanceof` and every
+      // unshadowed member still resolve) while letting one method be shadowed. `_buildCC` is called
+      // exactly once per enumeration pass, which is the hook this race needs.
+      const racedKv = Object.create(kv) as typeof kv;
+      const realJs = (kv as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => unknown } } }).js;
+      Object.defineProperty(racedKv, "js", {
+        value: {
+          ...realJs,
+          consumers: {
+            ...realJs.consumers,
+            // The ordering point. Each enumeration pass binds exactly one consumer here, and the
+            // bind is what fixes that pass's view of the stream — so committing the twin BEFORE the
+            // second bind, and only then, is precisely "a successor row that pass 1 could not see".
+            getPushConsumer: async (...args: unknown[]) => {
+              scanCalls++;
+              if (scanCalls === 2) await commitAclRow(kv, localPrincipal(agent.id), uidD, ["general"]);
+              return realJs.consumers.getPushConsumer.apply(realJs.consumers, args);
+            },
+          },
         },
-        status: () => kv.status(),
-        get: (k: string) => kv.get(k),
-      } as unknown as typeof kv;
+      });
       let refusedRace = false, otherRace: unknown, leaked: string | undefined;
       try {
         const r = await readAclForAlias(racedKv, localPrincipal(agent.id));
