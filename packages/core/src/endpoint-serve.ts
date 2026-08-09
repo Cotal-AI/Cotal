@@ -472,7 +472,26 @@ export function serveEndpoint(
       const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}` } };
       bytes = enc.encode(JSON.stringify(fallback));
     }
-    nc.publish(deriveReplySubject(space, parsed, identity), bytes);
+    const replySubject = deriveReplySubject(space, parsed, identity);
+    try {
+      nc.publish(replySubject, bytes);
+    } catch (err) {
+      // The publish itself refused the message — a reply over the broker's `max_payload` is the
+      // reachable case, and a VALID payload can reach here now that the §13.8 validate budget
+      // reports instead of refusing (that throw used to stop an oversized output before it was
+      // ever encoded, which masked this path). `handle()` is invoked from a subscription callback
+      // whose rejection is swallowed by design, so an escaping throw here does not surface
+      // anywhere: it leaves the caller with SILENCE until its own deadline. That is precisely the
+      // outcome the non-serializable branch above already exists to prevent, so it gets the same
+      // treatment. The replacement fits by construction — its message is one integer and a
+      // bounded string — and `resource-exhausted` matches the §13.4 fact preflight, which refuses
+      // an over-`max_payload` acceptance loudly rather than spilling it.
+      const refused: EndpointReply = {
+        v: 1, id: reply.id, ok: false,
+        error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped` },
+      };
+      nc.publish(replySubject, enc.encode(JSON.stringify(refused)));
+    }
   };
 
   for (const def of defs) {

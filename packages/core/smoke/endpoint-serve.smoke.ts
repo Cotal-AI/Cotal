@@ -67,8 +67,12 @@ const argsContract = compileContract({ root: { type: "object", properties: { nam
 const outContract = compileContract({ root: { type: "object", properties: { which: { type: "string" } }, required: ["which"], additionalProperties: false } });
 const voidContract = compileContract({ root: VOID_SCHEMA });
 // A REAL compiled output contract that is legitimately slow on a large payload: 8 pattern
-// properties x 400k items decisively exceeds the fixed 10ms §13.8 budget (measured ~112ms),
+// properties x 400k items decisively exceeds the fixed 10ms §13.8 budget (measured 112-150ms),
 // so the over-budget path is proven WITHOUT forging a compiled contract (forgery refuses).
+// It is also ~125MB serialized, well over any broker's max_payload. That was incidental while the
+// budget still REFUSED an over-budget output before encoding it; now that the budget only reports,
+// this payload reaches the publish, and the pair of properties is what makes it a real test of
+// what a responder does with a valid reply it cannot send.
 const slowProps: Record<string, unknown> = {};
 for (let i = 0; i < 8; i++) slowProps[`f${i}`] = { type: "string", pattern: "^[a-z][a-z0-9-]{1,128}$" };
 const slowContract = compileContract({ root: { type: "array", items: { type: "object", required: Object.keys(slowProps), additionalProperties: false, properties: slowProps } } });
@@ -580,10 +584,28 @@ try {
   const r3d = await send(oneSubj("cyclic"), req({ op: { endpoint: "manager", command: "cyclic", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a non-serializable reply is replaced by a structured internal error, never dropped",
     r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal");
-  const r3e = await send(oneSubj("slow"), req({ op: { endpoint: "manager", command: "slow", inputDigest: D_IN, outputDigest: D_SLOW } }));
-  c("an over-budget OUTPUT validation is structured internal (the §13.8 budget is symmetric, on a REAL compiled contract)",
-    r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "internal" && /budget/.test(r3e.reply.error?.message ?? ""),
-    JSON.stringify(r3e?.reply));
+  // Tee console.error: the demoted budget's ONLY observable is its report, and asserting the reply
+  // alone would pass just as well if the validation had never been over budget. Tee rather than
+  // swallow, so the serve side's diagnostics still reach the log.
+  const budgetReports: string[] = [];
+  const realError = console.error;
+  console.error = (...a: unknown[]) => { const line = a.map(String).join(" "); budgetReports.push(line); realError(line); };
+  let r3e: Awaited<ReturnType<typeof send>>;
+  try { r3e = await send(oneSubj("slow"), req({ op: { endpoint: "manager", command: "slow", inputDigest: D_IN, outputDigest: D_SLOW } })); }
+  finally { console.error = realError; }
+  // This leg used to assert the §13.8 budget refused an over-budget OUTPUT as `internal`. The
+  // budget now REPORTS on the request path, so that throw is gone — and removing it exposed a hole
+  // it had been masking. This payload is schema-VALID and ~125MB serialized, so the serve path now
+  // reaches the publish, the broker refuses it over `max_payload`, and the throw escaped into the
+  // subscription callback's swallowed rejection: the caller got NO REPLY AT ALL and sat until its
+  // own deadline. Executed, not reasoned — `r3e` came back `undefined`. endpoint-serve.ts now
+  // answers `resource-exhausted` instead, so what this leg pins is the invariant the file already
+  // claimed for non-serializable replies: a responder never leaves a caller with silence.
+  c("an over-budget OUTPUT validation is REPORTED, not refused (the §13.8 demotion)",
+    budgetReports.some((l) => /output validation took ~\d+ms/.test(l)), `reports: ${budgetReports.length}`);
+  c("a reply too large to publish is answered `resource-exhausted`, never silently dropped",
+    r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "resource-exhausted",
+    r3e === undefined ? "NO REPLY - the caller was left with silence" : JSON.stringify(r3e.reply).slice(0, 220));
 
   // §13.7 canonical void: absent OR explicit null args both validate on a void-input command
   const pingOp = { endpoint: "manager", command: "ping", inputDigest: D_VOID, outputDigest: D_OUT };
