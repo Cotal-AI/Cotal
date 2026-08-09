@@ -236,6 +236,19 @@ function assertClosureProfile(bundle: SchemaBundle): string {
 }
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
+  // CPU time, not wall clock. The budget exists to refuse a PATHOLOGICAL SCHEMA — one whose
+  // compilation is the DoS — so it must measure work this compile did, not time the OS spent
+  // running something else. Wall clock conflated the two: a trivial two-property closure compiles
+  // in ~4ms warm, but on a loaded host (CI runner, a busy operator box, cold V8 in a fresh
+  // process) the same compile measured 101-158ms of elapsed time and was refused as
+  // `contract-invalid`. That is an availability bug pointed at ourselves: the manager could not
+  // import its own contracts, and a runtime `describe`/`invoke` would have told a caller its
+  // perfectly good schema was invalid because the machine was busy. `process.cpuUsage()` is
+  // monotonic per process and excludes descheduled time, so a pathological schema still burns the
+  // budget while a busy host does not. (`ajv.compile` is synchronous, so nothing else on this
+  // thread is attributed to it.) SPEC 2458 gives 100 ms as a REFERENCE budget, not a normative
+  // constant, and `contract-invalid` remains the over-budget outcome.
+  const startedCpu = process.cpuUsage();
   const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
@@ -260,9 +273,12 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   } catch (e) {
     throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(e as Error).message}`);
   }
-  const elapsed = Date.now() - started;
-  if (elapsed > SCHEMA_PROFILE.compileBudgetMs)
-    throw new ContractInvalidError(`compile took ${elapsed}ms (profile budget ${SCHEMA_PROFILE.compileBudgetMs}ms)`);
+  const cpu = process.cpuUsage(startedCpu);
+  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
+  if (cpuMs > SCHEMA_PROFILE.compileBudgetMs)
+    throw new ContractInvalidError(
+      `compile took ${cpuMs}ms of CPU (profile budget ${SCHEMA_PROFILE.compileBudgetMs}ms; ${Date.now() - started}ms elapsed)`,
+    );
   return validate;
 }
 

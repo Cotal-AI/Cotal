@@ -85,6 +85,25 @@ refuses("pattern bomb refused", () =>
 refuses("patternProperties key bomb refused", () =>
   compileContractSchema({ root: { type: "object", patternProperties: { ["x".repeat(SCHEMA_PROFILE.maxPatternChars + 1)]: { type: "string" } } } }), "complexity bound");
 
+// 6b) The compile budget measures CPU, not elapsed time. It exists to refuse a schema whose
+// COMPILATION is the DoS, so it must still bite on one that genuinely burns the compiler — and it
+// must not fire because the host was busy. The refusal below is the biting half; the not-firing
+// half was established by execution (the same trivial closure that threw "compile took 101-471ms"
+// under wall-clock measurement now passes under CPU saturation), which no deterministic in-process
+// assertion can restage, since the smoke cannot make the OS deschedule it on demand.
+{
+  const heavy: Record<string, unknown> = {};
+  for (let i = 0; i < 1000; i++) heavy[`p${i}`] = { type: "string", pattern: `^a{0,4}b${i}c[0-9]{1,3}$`, minLength: 1, maxLength: 40 };
+  refuses("a schema that genuinely burns the compiler is still refused", () =>
+    compileContractSchema({ root: { type: "object", properties: heavy, additionalProperties: false } }), "of CPU");
+}
+// A trivial closure compiles well inside the budget — the guard is a ceiling on pathology, not a
+// tax on ordinary contracts.
+ok("a trivial closure compiles within the budget", (() => {
+  compileContractSchema({ root: { type: "object", properties: { a: { type: "string" } }, additionalProperties: false } });
+  return true;
+})());
+
 // 7) A member that does not hash to its digest key refuses (also the cache-soundness gate).
 refuses("forged member content refused", () =>
   compileContractSchema({
