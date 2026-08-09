@@ -4,9 +4,11 @@
  *   cotal.<space>.chat.<channel>      multicast to a channel (dotted + hierarchical: team.backend, subscribe team.>)
  *   cotal.<space>.svc.<service>       anycast to any one instance of a service (queue group)
  *   cotal.<space>.inst.<instance>     unicast to one specific instance
- *   cotal.<space>.ctl.<service>       control request/reply to a service (e.g. manager)
+ *   cotal.<space>.ctl.<service>       control request/reply to a SERVER-SIDE service — the delivery
+ *                                     daemon's delivery/delivery-admin + the auth-admin carve-outs.
+ *                                     The manager's ctl tiers were deleted in 1d: it serves its
+ *                                     control surface as a v0.4 `service` endpoint on the ep.* rails.
  *   cotal.<space>.trace.<instance>    ambient lifecycle trace (later)
- *   cotal.<space>.control.<instance>  control-plane commands (later)
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */

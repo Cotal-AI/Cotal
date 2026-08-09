@@ -4,22 +4,22 @@
  *
  *  1. The rev-2 cluster document serves ALL 17 commands (describe lists them; targeted commands
  *     declare their modes).
- *  2. SPAWN PARITY (the 1b fidelity oracle): the ctl `start` door and the ep `spawn` door coerce
- *     an identical 16-field request into the IDENTICAL StartAgentOpts (field-for-field, captured
- *     at the single `startAgent` chokepoint), with the same spawner attribution. Deep semantics
- *     (empty `resume`) refuse through the SHARED handler on both doors.
+ *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 16-field request into
+ *     StartAgentOpts (field-for-field, captured at the single `startAgent` chokepoint), with the
+ *     right spawner attribution. Deep semantics (empty `resume`) refuse through the shared handler.
+ *     (The ctl `start` door this once mirrored was deleted in 1d — the ep door is the only door.)
  *  3. REAL lifecycle over ep.one: spawn a real stub agent (joins presence), `ps`/`inspect` list
  *     it (rows now carry `lifecycleUid` — the targeting coordinate), targeted owner-mode
  *     `despawn` tears it down; a STALE-uid target is `expired` (fresh resolver); a NON-spawner
- *     caller is `permission-denied` (the ctl privileged own-child policy, same source both
- *     doors); an UNTARGETED despawn form has no granted row (broker default-deny).
+ *     caller is `permission-denied` (the privileged own-child policy); an UNTARGETED despawn form
+ *     has no granted row (broker default-deny).
  *  4. BASELINE self-stop: the spawned agent's OWN minted cred (Appendix-B baseline rows) invokes
  *     `stop` with authz-mode `self` and halts itself.
  *  5. definePersona (content-only write, ownership-checked), models (normalized catalogs), purge,
  *     attach (ws url), launch/resume-family negatives (the shared cores answer with the exact
- *     ctl refusals), and the preservation fence: after `preparePreservation` the ep door refuses
- *     ordinary ops (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
- *  6. Dual-serve intact: the legacy ctl rail still answers.
+ *     shared-core refusals), and the preservation fence: after `preparePreservation` the ep door
+ *     refuses ordinary ops (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
+ *  6. The ep door is the ONLY control door (1d): there is no legacy ctl rail to dual-serve.
  *  7. The 1c.2b operator instrument: a `control-caller-admin` one-shot resolves the surface over
  *     the GENERIC describe/store path (describe-BOUND default currency, no epoch stub) and tears
  *     down an agent it did not spawn via ANY-mode despawn (rev 3); the same any-mode subject from
