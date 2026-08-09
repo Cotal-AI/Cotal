@@ -151,6 +151,17 @@ export function candidateTarget(space: string, server: string, root: string, mod
     server,
     space,
     mode,
+    // A probe target for a registration that has not happened yet, so there is no recorded
+    // transport to honour and this stays non-strict.
+    //
+    // Note what is DELIBERATELY not done here. `meshes add` accepts `tls://` and `wss://` server
+    // schemes, and it would be easy to derive strictness from one. That is the separately-tracked
+    // bug: the scheme is a LABEL today — nats.js strips it and `MeshEntry` cannot persist the
+    // intent — so a client resolved from such a record connects plaintext-capable regardless.
+    // Making the scheme enforce is a fix to that bug and is not absorbed into this change; deriving
+    // strictness here without the rest of it would make `meshes add` claim a guarantee the resolved
+    // connection still would not keep.
+    tlsRequired: false,
     ...(auth ? { auth } : {}),
     personaRoot: personaDir(root),
     source: "flag-server",
