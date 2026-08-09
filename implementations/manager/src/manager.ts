@@ -100,8 +100,10 @@ import {
   readGoalStatus,
   readGoalSpec,
   recordGoalIndex,
+  readGoalIndex,
   clearGoalIndex,
   listGoalIndex,
+  type GoalIndexEntry,
   GOAL_TERMINAL_STATES,
   goalRefOf,
   goalProgressTopic,
@@ -4369,9 +4371,23 @@ export class Manager {
         // so a successor incarnation finds + settles this goal if we crash before its terminal. A
         // crash between this write and the bind leaves an index entry whose goal status is absent —
         // the sweep clears it as a no-goal; a crash before it leaves no entry (never durable). A
-        // concurrent same-goalId attempt writes the byte-identical pointer (idempotent, no conflict).
         // Carry THIS incarnation's instanceId (the executor coord) so a multi-instance sweep can skip a live sibling's goal.
-        await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid);
+        //
+        // H2, THE ACCEPTANCE FLOOR: the allocated identity is written HERE, before the bind and so
+        // before the acceptance is acked, because this entry is the only durable record of it that
+        // exists that early — the goal spec does not carry it and the terminal does not exist yet.
+        // A same-goalId attempt that loses the bind while the winner is still in flight can then
+        // serve what the winner actually allocated instead of inventing an empty identity.
+        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, actor: agentTriple.actor, uid: agentTriple.uid });
+        // A create loss is an idempotent retry ONLY for the same incarnation. A FOREIGN iid means a
+        // sibling instance accepted this goalId (the live vector is a client retry over ANYCAST, not
+        // a journal consumer): this attempt provisions nothing and answers with the winner's floor,
+        // or refuses if that instance never persisted one.
+        if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
+          acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
+          resolveAccept(acceptance);
+          throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
+        }
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
         // a create-only CAS per goalId (pin 1 — a refused accept above left zero bind, zero reserve).
         const b = await bindGoal(gw.ctx, ref, fingerprint);
@@ -4424,14 +4440,36 @@ export class Manager {
     return acceptP;
   }
 
+  /** H2: an acceptance served from a WINNER'S durable acceptance floor (the goal-index entry it
+   *  wrote before its own ack). Refuses `unavailable` rather than inventing one — see
+   *  {@link cachedSpawnAcceptance} for why an empty identity is never an acceptable answer. */
+  private acceptanceFromIndex(entry: GoalIndexEntry, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): SpawnAcceptance {
+    if (entry.allocated === undefined)
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" was accepted by instance "${entry.iid}", which persisted no acceptance floor; its allocated identity is not readable from here (SPEC 13.6)`);
+    return { name: entry.allocated.name, owner: DEV_OWNER, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, executor };
+  }
+
   /** Reconstruct a cached acceptance for a same-goalId retry NOT in the live map (a prior incarnation
-   *  accepted it, or a concurrent winner whose map write this reader has not yet observed): the
-   *  committed terminal's data carries the allocated identity. A still-in-flight goal from a dead
-   *  incarnation reconstructs durably via the must-5 goal-index (later block). Static/open owner. */
+   *  accepted it, or a concurrent winner whose map write this reader has not yet observed).
+   *
+   *  H2 — WHY THIS PREFERS THE INDEX OVER THE TERMINAL. It used to read only the committed terminal
+   *  and fall back to `{name:"", actor:"", uid:""}` when there was none. That is the common case,
+   *  not a corner: a client retry over ANYCAST reaches a sibling while the winner is still
+   *  provisioning, so no terminal exists yet, and the caller was handed an ACCEPTED reply naming an
+   *  empty agent it can never address. The acceptance floor in the goal index exists from the moment
+   *  of acceptance, so it answers precisely the window the terminal cannot. Where neither is
+   *  readable the honest answer is a REFUSAL: an accepted goal whose identity nobody can name is
+   *  `unavailable`, never a hollow success. */
   private async cachedSpawnAcceptance(ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
+    const entry = await readGoalIndex(this.goalWriter!.ctx, ref);
+    if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, goalId, fingerprint, executor);
+    // The index is CLEARED at terminal, so a settled goal legitimately has no entry: fall back to
+    // the terminal's data, which carries the same identity for exactly that case.
     const result = await readGoalResult(this.goalWriter!.ctx, ref);
     const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
-    return { name: d.name ?? "", owner: DEV_OWNER, actor: d.id ?? "", uid: d.lifecycleUid ?? "", goalId, fingerprint, executor };
+    if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0)
+      return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, executor };
+    throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
   }
 
   /** M4 (settle race): a despawn MID-GOAL drives the goal's cancel terminal - transition to

@@ -55,6 +55,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, openRecordsBucket,
   actionContext, bindGoal, createGoal, commitGoalResult, readGoalResult, settleGoalUncertain,
+  recordGoalIndex, readGoalIndex,
   projectGoalTerminal, goalResultSubject, goalRefOf, readLastFact, epfStreamName,
   type EpCaller, type GoalRef, type ParsedEpRequest, type ActionContext,
 } from "../src/index.js";
@@ -165,6 +166,44 @@ try {
       () => settleGoalUncertain(ctx, { ref: g, now: NOW + 30_010, committer: { instanceId: MGR, epoch: 0 } }), "failed-precondition");
     const r = await settleGoalUncertain(ctx, { ref: g, now: NOW + 30_011 });
     c("...and the same goal settles fine unattributed (the pair is all-or-nothing)", r.won === true);
+  }
+
+  // ── H2: THE RECONCILE INDEX REPORTS WHO WON, AND CARRIES THE ACCEPTANCE FLOOR ──
+  // The index had NO behavioural coverage at this layer at all, which is how both defects survived.
+  // A create-only loss used to be validated for SHAPE and then discarded, so a loss to a FOREIGN
+  // incarnation was indistinguishable from one's own idempotent retry — the caller went on believing
+  // the index pointed at ITS acceptance when it pointed at a sibling's.
+  {
+    const g = await newGoal(ctx, "g-index", 0);
+    const mine = { name: "agent-a", actor: "act-a", uid: "uid-a" };
+    const first = await recordGoalIndex(ctx, g, MGR, mine);
+    c("the first incarnation to record an accepted goal wins the create-only CAS", first.recorded === true);
+
+    const retry = await recordGoalIndex(ctx, g, MGR, mine);
+    c("the SAME incarnation retrying is an idempotent loss that reports itself as the winner",
+      retry.recorded === false && retry.recorded === false && (retry as { existing: { iid: string } }).existing.iid === MGR);
+
+    const foreign = await recordGoalIndex(ctx, g, "mgr-sibling", { name: "agent-b", actor: "act-b", uid: "uid-b" });
+    c("a FOREIGN incarnation's loss is DISTINGUISHABLE and names the instance that actually accepted",
+      foreign.recorded === false && (foreign as { existing: { iid: string } }).existing.iid === MGR,
+      foreign);
+    c("...and the loser reads the WINNER's allocated identity, never its own",
+      JSON.stringify((foreign as { existing: { allocated?: unknown } }).existing.allocated) === JSON.stringify(mine),
+      (foreign as { existing: { allocated?: unknown } }).existing.allocated);
+
+    // The floor is readable from the moment of acceptance — BEFORE any terminal exists. That is the
+    // whole point: the window a same-goalId retry actually lands in is the one where the winner is
+    // still in flight, which is exactly when the terminal cannot answer.
+    c("the acceptance floor is readable with NO terminal committed (the window the terminal cannot serve)",
+      (await readGoalResult(ctx, g)) === undefined
+      && JSON.stringify((await readGoalIndex(ctx, g))?.allocated) === JSON.stringify(mine));
+  }
+  {
+    // A floor with an empty component is the hollow acceptance this field exists to end: it reads as
+    // an identity and names nothing, so it is refused as garbled rather than served.
+    const g = await newGoal(ctx, "g-hollow", 0);
+    await rejects("a hollow acceptance floor (empty component) is refused as garbled, never served",
+      () => recordGoalIndex(ctx, g, MGR, { name: "", actor: "act", uid: "uid" }), "internal");
   }
 
   // ── THE CORPSE CASE, asserted rather than papered over ──
