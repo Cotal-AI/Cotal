@@ -156,6 +156,7 @@ try {
   console.log("1. describe: the rev-2 document serves the full fan-out");
   let clusterDigest: string | undefined;
   let spawnInputDigest: string | undefined;
+  let launchInputDigest: string | undefined;
   {
     const replies: unknown[] = [];
     const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))) });
@@ -169,10 +170,11 @@ try {
     clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
+    launchInputDigest = (doc?.commands?.find((c) => c.name === "launch") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
-    check("the document is revision 5 (item-6 attach flip); despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 5 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    check("the document is revision 6 (launch admits a remote manifest deploy's inline spec); despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 6 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
     sub.unsubscribe();
@@ -335,7 +337,24 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 5 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === 6 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+    // THE DOOR-LEVEL PROOF REVISION 6 EXISTS FOR. The handler branch for a remote manifest deploy's
+    // inline `spec` merged in ahead of the schema, so the compiled input validator refused every
+    // request carrying the field and the feature was unreachable THROUGH THIS DOOR while the
+    // handler behind it worked. Asserting the revision number alone would restate the bump rather
+    // than prove it, so this drives the shape the CLI actually sends through the REGISTERED
+    // closure, recompiled from what the store serves - not through a local copy of the schema.
+    {
+      const { manifest: lm, artifacts: la } = await fetchContractClosure(storeCtx, launchInputDigest!, () => []);
+      const launchSchema = JSON.parse(dec.decode(la.get(contractRefToHex(lm.root))!)) as Record<string, unknown>;
+      const lc = compileContract({ root: launchSchema });
+      check("the REGISTERED launch contract admits a remote manifest deploy's inline spec (the revision-6 door, recompiled from the store)",
+        lc.closureDigest === launchInputDigest
+        && lc.validate({ runId: "r1", name: "a1", spec: { agent: "join" } }) === true,
+        { got: lc.closureDigest, want: launchInputDigest });
+      check("...and it is still CLOSED - an undeclared field is refused, so revision 6 widened one field, not the door",
+        lc.validate({ runId: "r1", name: "a1", spec: { agent: "join" }, bogus: 1 }) === false);
+    }
     const { manifest: inManifest, artifacts: inArts } = await fetchContractClosure(storeCtx, spawnInputDigest!, () => []);
     const schema = JSON.parse(dec.decode(inArts.get(contractRefToHex(inManifest.root))!)) as Record<string, unknown>;
     const recompiled = compileContract({ root: schema });

@@ -4320,6 +4320,48 @@ export class Manager {
     let rejectAccept!: (e: unknown) => void;
     const acceptP = new Promise<SpawnAcceptance>((res, rej) => { resolveAccept = res; rejectAccept = rej; });
     let acceptance: SpawnAcceptance | undefined;
+    // H1: set the instant the terminal path is ENTERED, not when it succeeds — the post-accept
+    // fallback below must fire only when `onOutcome` never ran at all, never as a second attempt
+    // behind a commit that threw.
+    let terminalEntered = false;
+
+    // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
+    // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
+    // incarnation's OWN gate epoch and REFUSES a superseded commit (the currency belt), and (b)
+    // barrier-revoke evicts this connection on takeover. The terminal lands on the ONE subject
+    // SPEC:1394 reserves; first-terminal-fact-wins is global, so a committed outcome is visible
+    // to every reader in every incarnation. On success the reconcile-index entry is cleared.
+    //
+    // Named rather than inlined into the hooks below so the H1 post-accept fallback drives THIS
+    // path — one commit site, so the progress event, the index clear and the `agentGoals` cleanup
+    // cannot drift between a normal outcome and a recovered one.
+    const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<void> => {
+      terminalEntered = true; // entered, not succeeded — see the catch below
+      try {
+        await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits
+        let fact;
+        if (o.kind === "succeeded") {
+          this.emitGoalProgress(ref, epoch, { phase: "presence" });
+          ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
+        } else if (o.kind === "failed") {
+          ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
+        } else {
+          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch } }));
+        }
+        this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+        await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
+        if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
+      } catch (e) {
+        // THE NARROWER LEG, LEFT OPEN DELIBERATELY. If the COMMIT ITSELF throws (the currency belt
+        // refused a superseded commit, or the broker failed) there is genuinely no terminal, and the
+        // H1 fallback must NOT retry it: a retry either loses the same way or overwrites a real
+        // supersession refusal with a manufactured outcome. That is why `terminalEntered` is set on
+        // ENTRY. This leg is infrastructure-class and converges through the reconcile index at the
+        // next boot, which is why the index is NOT cleared above on this path. Do not "close" it
+        // here with a retry loop.
+        console.error(`! goal terminal commit for ${goalId} failed: ${(e as Error).message}`);
+      }
+    };
 
     const bg = run({
       onAccepted: async ({ name, agentTriple }) => {
@@ -4362,39 +4404,23 @@ export class Manager {
         this.emitGoalProgress(ref, epoch, { phase: "handoff" });
       },
       onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
-      onOutcome: async (o) => {
-        // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
-        // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
-        // incarnation's OWN gate epoch and REFUSES a superseded commit (the currency belt), and (b)
-        // barrier-revoke evicts this connection on takeover. The terminal lands on the ONE subject
-        // SPEC:1394 reserves; first-terminal-fact-wins is global, so a committed outcome is visible
-        // to every reader in every incarnation. On success the reconcile-index entry is cleared.
-        try {
-          await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits
-          let fact;
-          if (o.kind === "succeeded") {
-            this.emitGoalProgress(ref, epoch, { phase: "presence" });
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
-          } else if (o.kind === "failed") {
-            ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
-          } else {
-            ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch } }));
-          }
-          this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
-          await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
-          if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
-        } catch (e) {
-          console.error(`! goal terminal commit for ${goalId} failed: ${(e as Error).message}`);
-        }
-      },
+      onOutcome,
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
-      if (acceptance === undefined) rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept"));
+      if (acceptance === undefined) { rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept")); return; }
+      // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
+      // rather than rejecting, so a post-accept failure arrives here, not in the catch below, and
+      // reaches none of the onOutcome sites. Without this the goal stays accepted-but-unanswered:
+      // the caller follows epe to a terminal that never comes, and the reconcile index that would
+      // settle it is only swept at BOOT, so a manager that stays up never converges it.
+      if (reply.ok === false && !terminalEntered) return onOutcome({ kind: "failed", data: { error: reply.error ?? "spawn failed after accept" } });
     }).catch((e) => {
-      if (acceptance === undefined) rejectAccept(e);
-      else console.error(`! spawn-as-action async body for ${goalId}: ${(e as Error)?.message ?? String(e)}`);
-    });
+      if (acceptance === undefined) { rejectAccept(e); return; }
+      // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
+      if (!terminalEntered) return onOutcome({ kind: "failed", data: { error: (e as Error)?.message ?? String(e) } });
+      console.error(`! spawn-as-action async body for ${goalId}: ${(e as Error)?.message ?? String(e)}`);
+    }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${(e as Error)?.message ?? String(e)}`));
     return acceptP;
   }
 

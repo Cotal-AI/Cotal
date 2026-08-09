@@ -60,7 +60,7 @@ const conns: NatsConnection[] = [];
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon"])
+for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 // A ROLE-LESS persona: its succeeded terminal data carries no `role`, which the strict
 // canonicalJson would reject if the manager left `role: undefined` on the payload (surfaced live
@@ -90,7 +90,11 @@ const joinCon: Connector = { kind: "connector", name: "join", requires: ["node"]
 const PATH_ENV = launchEnv(); // same reason as envJoin above
 const exitCon: Connector = { kind: "connector", name: "exit", requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", "process.exit(3)"], env: PATH_ENV }) };
 const stuckCon: Connector = { kind: "connector", name: "stuck", requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", "setInterval(()=>{},1<<30)"], env: PATH_ENV }) };
-for (const c of [joinCon, exitCon, stuckCon]) registry.register(c);
+// `boom` fails where a real connector fails: buildLaunch, which the manager runs AFTER the goal is
+// bound and the acceptance served. No fault injection into manager internals — this is the shape of
+// "the agent's CLI is not installed on this host".
+const boomCon: Connector = { kind: "connector", name: "boom", requires: ["node"], buildLaunch: (): LaunchSpec => { throw new Error("boom: no launch spec"); } };
+for (const c of [joinCon, exitCon, stuckCon, boomCon]) registry.register(c);
 
 /** A bare open-mesh caller: epCall on the `one` rail with a synthetic caller triple (open broker
  *  admits it; the goal scopes under this triple). */
@@ -240,6 +244,27 @@ try {
     // A second persona-derived "dup" numbers to dup-2 (multi-peer preserved).
     const r3 = await callSpawn({ name: "dup", agent: "stuck" });
     check("M6 a second persona-derived spawn numbers (dup-2)", acc(r3).name === "dup-2", acc(r3));
+  }
+
+  // ── M7: A POST-ACCEPT THROW STILL TERMINALIZES (H1: no accepted goal is left unanswered) ──────
+  {
+    // `boom` throws inside buildLaunch, which runs AFTER onAccepted has bound the goal, written the
+    // spec and served the acceptance — so this is a goal the caller is ALREADY following. That throw
+    // site is not hypothetical: it is the ordinary "the agent's CLI is not installed" case, and the
+    // manager already names buildLaunch/runtime.spawn as a known throw pair and tears down the
+    // orphaned credentials there. The side effects were handled; the ANSWER TO THE CALLER was not.
+    const r = await callSpawn({ name: "boom1", agent: "boom" });
+    check("M7 a spawn that throws after accept is still ACCEPTED (the goal is durable, the caller is following)",
+      r.reply.ok === true && typeof acc(r).goalId === "string", r.reply);
+    const f = await followGoal(acc(r).goalId as string, 12_000);
+    check("M7 the post-accept throw commits a FAILED terminal rather than leaving the goal unanswered",
+      f.terminal?.state === "failed", f.terminal);
+    check("M7 the terminal carries the error that actually killed the spawn, not a generic one",
+      /boom: no launch spec/.test(JSON.stringify(f.terminal?.data ?? {})), f.terminal?.data);
+    // The durable fact, not just the progress event: a caller that missed the event must still be
+    // able to read the outcome. Reading through the goal-writer proves it landed on the one subject.
+    const durable = await readGoalResult(rctx, goalRef(acc(r).goalId as string));
+    check("M7 the failed terminal is DURABLE, not only an epe event", durable?.state === "failed", durable);
   }
 
   // ── M5: MANAGER KILL MID-GOAL → the SUCCESSOR reconciles (must-5 Q-B; never drops an accepted goal) ──
