@@ -72,8 +72,26 @@ import {
 import { bootBroker } from "./_boot-broker.js";
 
 let failures = 0;
+let ran = 0;
+/**
+ * How many assertions this suite intends to run. Declared, and enforced at the bottom.
+ *
+ * A private failure counter is honest about assertions that RAN and BLIND to assertions that never
+ * ran: skip a block, return early, or lose one to a conditional, and the suite prints OK and exits 0
+ * with nothing in its output different except the number of ✓ lines — a number it never emitted, so
+ * nobody was counting. One assertion here IS conditional (the crashed-spawn head/gate check, under
+ * `if (cSlot)`), so a slot that failed to materialize silently removes a proof rather than failing.
+ *
+ * THIS NUMBER IS INTENT, NOT A MEASUREMENT. Do NOT update it to match a run that came in lower —
+ * that reconciles the claim to the symptom and deletes the only evidence a proof went missing. A
+ * shortfall means an assertion stopped executing; find out which one and why. The number moves ONLY
+ * when a `check` is deliberately added or removed, because completeness is something only this
+ * suite knows, so it has to be the thing that says it.
+ */
+const EXPECTED_CHECKS = 37;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
+  ran++;
   if (!cond) failures++;
 }
 const enc = new TextEncoder();
@@ -339,4 +357,11 @@ if (failures > 0) {
   console.log(`STATIC-LIFECYCLE SMOKE FAILED (${failures} failures)`);
   process.exit(1);
 }
-console.log("STATIC-LIFECYCLE SMOKE OK ✅");
+// Completeness is checked AFTER failures, so a suite that failed reports the defect rather than the
+// count it never reached. Reaching here with fewer assertions than declared means proofs went
+// missing without any of them failing, which is not a pass.
+if (ran !== EXPECTED_CHECKS) {
+  console.log(`STATIC-LIFECYCLE SMOKE FAILED (ran ${ran} of ${EXPECTED_CHECKS} declared assertions; a green here would have claimed proofs this run never executed)`);
+  process.exit(1);
+}
+console.log(`STATIC-LIFECYCLE SMOKE OK ✅ (${ran}/${EXPECTED_CHECKS} assertions)`);
