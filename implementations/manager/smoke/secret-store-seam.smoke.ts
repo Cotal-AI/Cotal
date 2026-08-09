@@ -102,6 +102,10 @@ try {
   registry.register(con);
 
   await mgr.start();
+  // Readiness is presence convergence of a REAL connector process; nothing launches here (fake
+  // runtime), so it is stubbed after start. Orthogonal to the seam under test — the credential
+  // mint / materialize / renew / teardown path below is entirely real.
+  (mgr as unknown as { awaitReadiness(): Promise<{ ok: true }> }).awaitReadiness = async () => ({ ok: true });
   const M = mgr as unknown as {
     agents: Map<string, { id: string; name: string; lifecycleUid: string; seed?: string; terminalizing?: boolean; secretPaths?: { creds?: string } }>;
     renewDaemonCreds(): Promise<void>;
@@ -139,8 +143,31 @@ try {
       store.sawSince(before, "get", credKey), store.seen.slice(before).filter((x) => x.op === "get"));
   }
 
+  // ── SITE launchPreparedResume: the adopted-credential seed recovery must READ through the seam ─
+  console.log("C. the static-resume seed recovery reads the adopted credential through the injected store");
+  {
+    const before = store.seen.length;
+    const entry = {
+      space, name: "resumed", role: "worker",
+      identity: { mode: "static" as const, id: a.id, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: credsPath!, sha256: "" } },
+      launch: {
+        connector: "smoke-ss", runtime: "fake", cwd: process.cwd(),
+        source: { kind: "persona" as const, ref: "worker", configPath: join(workspaceRoot, ".cotal", "agents", "worker.md"), configSha256: "" },
+        allowSubscribe: ["general"], transcript: false,
+      },
+      dependencies: [], spawner: "smoke", startedAt: new Date().toISOString(),
+    };
+    const prepared = { spec: { command: "true", args: [], env: {} } };
+    const resumed = await (mgr as unknown as { launchPreparedResume(e: unknown, p: unknown, b: boolean): Promise<{ ok: boolean; error?: string }> })
+      .launchPreparedResume(entry, prepared, true);
+    check("the resume path really ran (it adopted the credential and reported a launch outcome)", typeof resumed.ok === "boolean", resumed);
+    check("the adopted credential was READ through the injected store (else the manager cannot recover the seed it renews from)",
+      store.sawSince(before, "get", credKey), store.seen.slice(before).filter((x) => x.op === "get"));
+    (mgr as unknown as { agents: Map<string, unknown> }).agents.delete("resumed");
+  }
+
   // ── SITE driveStaticRetirement cleanup: the teardown must DELETE through the seam ─────────────
-  console.log("C. the retirement teardown deletes the credential through the injected store");
+  console.log("D. the retirement teardown deletes the credential through the injected store");
   {
     const before = store.seen.length;
     M.freeSlot(a, false);

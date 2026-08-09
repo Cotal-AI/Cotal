@@ -917,7 +917,7 @@ export class Manager {
         for (const a of [...this.agents.values()]) {
           if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
           try {
-            const stored = await workspaceSecretStore(this.workspaceRoot).get(agentSecretKeyForFile(a.secretPaths.creds));
+            const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds));
             if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
             const health = inspectCredHealth(stored);
             if (health.state === "healthy") continue;
@@ -3438,7 +3438,7 @@ export class Manager {
       // preserve/resume — without it the adopted cred would die loud at its TTL with no remint.
       let adoptedSeed: string | undefined;
       if (entry.identity.mode === "static") {
-        const stored = await workspaceSecretStore(this.workspaceRoot).get(agentSecretKeyForFile(resolve(entry.identity.credential.path)));
+        const stored = await this.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path)));
         adoptedSeed = stored === undefined ? undefined : /-----BEGIN USER NKEY SEED-----\s*([A-Z0-9]+)\s*-----END USER NKEY SEED-----/.exec(stored)?.[1];
         if (adoptedSeed === undefined)
           console.error(`! resume ${entry.name}: the adopted credential carries no readable nkey seed - the manager cannot renew it (it dies loud at its exp)`);
@@ -4430,7 +4430,7 @@ export class Manager {
   private async driveStaticRetirement(a: { id: string; name: string; lifecycleUid: string; secretPaths?: ManagedAgent["secretPaths"] }): Promise<void> {
     const opId = retireOpId(a.lifecycleUid);
     const cleanup = async (): Promise<void> => {
-      const secrets = workspaceSecretStore(this.workspaceRoot);
+      const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, a.name, a.lifecycleUid);
       if (files.creds) {
         await secrets.delete(agentSecretKeyForFile(files.creds));
@@ -4490,7 +4490,7 @@ export class Manager {
       await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
       await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
     });
-    const secrets = workspaceSecretStore(this.workspaceRoot);
+    const secrets = this.secrets;
     await secrets.put(agentSecretKeyForFile(a.secretPaths.creds), creds);
     await materializeSecretToFile(secrets, agentSecretKeyForFile(a.secretPaths.creds), a.secretPaths.creds);
     console.error(`managed cred renewal ${a.name}: re-signed for the same identity (exp +${MANAGED_STATIC_TTL_SEC}s); the agent endpoint's source re-read adopts it`);
