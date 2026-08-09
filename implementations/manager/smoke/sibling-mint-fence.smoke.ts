@@ -284,7 +284,7 @@ try {
       const g1 = await readGate();
       // The gate must really have moved under the mint, or this leg proves nothing: the touch bumped
       // it once, and the mint's own winning commit bumps it again.
-      check(`CONTENDED (fixture) the gate revision really moved under the ${label} mint`,
+      check(`CONTENDED (fixture) the peer's touch AND the ${label} mint's own commit both moved the revision`,
         g1.revision > g0.revision + 1, { before: g0.revision, after: g1.revision });
       check(`CONTENDED (fixture) nothing but the revision changed`,
         g1.row.state === "open" && g1.row.generation === g0.row.generation && g1.row.processEpoch === g0.row.processEpoch,
