@@ -191,10 +191,16 @@ laterally; the manager only births and configures them.
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
   core-NATS session subjects scoped to the two parties, with backpressure surfaced as an
-  explicit drop notice rather than silent loss. A late attach still repaints the full
-  screen from a replayed snapshot of a headless terminal mirror (including alternate-screen
-  TUIs). If the manager restarts, its successor refuses the old session and the client
-  surfaces "manager restarted; re-attach".
+  explicit drop notice rather than silent loss. That is also how attach reaches a manager on
+  another machine — through the broker, not by dialing the manager's own socket. A late
+  attach still repaints the full screen from a replayed snapshot of a headless terminal
+  mirror (including alternate-screen TUIs). If the manager restarts, its successor refuses
+  the old session and the client surfaces "manager restarted; re-attach".
+- **The manager's console face is a separate, credentialed surface.** The manager still
+  serves the browser console over local HTTP: the static page plus the roster, the live feed,
+  and the route that mints the browser's own session. It binds loopback unless the operator
+  says otherwise (`cotal supervise --console-host`), and every route that carries mesh data
+  or mints a credential requires the manager's console token.
 
 The result is that an agent can grow and shape its own team: ask for a teammate
 (`cotal_spawn`), mint a persona on the fly (`cotal_persona`), or tear one down

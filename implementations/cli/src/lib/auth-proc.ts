@@ -8,33 +8,87 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
+import { spaceKey } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness } from "./pid.js";
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
-const PID_PATH = (space: string) => cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
-const LOG_PATH = (space: string) => cotalPath(`auth-service.${encodeURIComponent(space)}.log`);
+const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
+const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+/** The pidfile to READ for a space's auth service: the canonical hex name, or the pre-hex
+ *  `auth-service.<encoded>.pid` a build before the re-key wrote. `up`'s restart and its stop read
+ *  this so an upgrade never orphans the live callout SIGNER of a pre-upgrade auth-service. Byte-
+ *  exact (a bare `existsSync` case-folds a sibling space's file on macOS/Windows); both present is
+ *  ambiguous and fails loud. Starts always WRITE the canonical PID_PATH. */
+function readPidPath(space: string): string {
+  const canonical = PID_PATH(space);
+  const legacy = cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
+  if (legacy === canonical) return canonical;
+  const exact = (p: string) => { try { return readdirSync(dirname(p)).includes(basename(p)); } catch { return false; } };
+  const c = exact(canonical), l = exact(legacy);
+  if (c && l) throw new Error(`both ${canonical} and the pre-hex ${legacy} exist for space "${space}" - ambiguous auth-service record; remove the stale one`);
+  return l && !c ? legacy : canonical;
 }
+
+// parsePid + probeLiveness (the pid-attribution contract) live in ./pid.js, shared with `down` so
+// there is exactly ONE parser + ONE tri-state probe across the pidfile subsystem.
 
 // Provider resolution now lives in core (the manager needs the identical resolution); re-exported
 // so existing CLI imports keep working.
 export { resolveAuthProvider } from "@cotal-ai/core";
 
+/** Reclaim a DEAD pre-hex pidfile before a fresh start claims the canonical (hex) slot. A crash on
+ *  a pre-upgrade build leaves `auth-service.<encoded>.pid`; the new start claims
+ *  `auth-service.<hex>.pid` and, without this, BOTH would then exist - which `readPidPath` correctly
+ *  refuses as ambiguous, wedging every later status/down.
+ *
+ *  It reclaims ONLY what the canonical claim ({@link claimAuthPidSlot}) would: an empty slot (a
+ *  pre-protocol crash) or a positive finite PID proven DEAD. It NEVER deletes an unattributable
+ *  record - garbled/non-numeric/non-positive content, or a still-LIVE legacy holder - because that
+ *  is exactly the live pre-hex signer this whole path exists not to orphan (a torn or tampered
+ *  pidfile of a running service reads as garbled). Those cases THROW so the start aborts loud rather
+ *  than delete the record and launch a competing service. Byte-exact match, no case-fold. Exported
+ *  for the boundary smoke, which must exercise the real reclaim, not a stand-in. */
+export function reclaimDeadLegacyPid(space: string): void {
+  const legacy = cotalPath(`auth-service.${encodeURIComponent(space)}.pid`);
+  if (legacy === PID_PATH(space)) return;
+  try {
+    if (!readdirSync(dirname(legacy)).includes(basename(legacy))) return; // byte-exact absent
+  } catch {
+    return; // parent dir gone → nothing to reclaim
+  }
+  const trimmed = readFileSync(legacy, "utf8").trim();
+  if (trimmed === "") {
+    rmSync(legacy, { force: true }); // empty = pre-protocol husk, safe to reclaim (as the canonical claim does)
+    return;
+  }
+  const pid = parsePid(trimmed);
+  if (pid === undefined)
+    throw new Error(
+      `pre-hex auth-service pidfile ${legacy} holds unattributable content ${JSON.stringify(trimmed)} - refusing to reclaim it or start a competing service; inspect or remove it manually`,
+    );
+  const state = probeLiveness(pid);
+  if (state === "alive")
+    throw new Error(
+      `a pre-hex auth-service is already running (pid ${pid}) at ${legacy} - refusing to start a second; run \`cotal down\` to stop it, then retry`,
+    );
+  if (state === "unknown")
+    throw new Error(
+      `cannot determine whether pid ${pid} in ${legacy} is alive - refusing to reclaim an unattributable record or start a competing service; inspect or remove it manually`,
+    );
+  rmSync(legacy, { force: true }); // ESRCH-proven dead - reclaim it
+}
+
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
 export function authServiceUp(space: string): boolean {
-  const p = PID_PATH(space);
+  const p = readPidPath(space);
   if (!existsSync(p)) return false;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  return Number.isFinite(pid) && alive(pid);
+  const pid = parsePid(readFileSync(p, "utf8")); // strict positive safe integer, or undefined
+  return pid !== undefined && probeLiveness(pid) === "alive"; // up only if provably present; dead/unknown → not up
 }
 
 /** EXCLUSIVE pidfile claim (#29 HIGH 3 belt): the slot is published ATOMICALLY and
@@ -74,13 +128,17 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
         continue; // vanished between publish-refusal and read - retry the claim once
       }
       const trimmed = raw.trim();
-      const pid = trimmed === "" ? Number.NaN : Number(trimmed);
-      if (Number.isFinite(pid) && pid > 0 && alive(pid)) return { livePid: pid };
-      if ((trimmed === "" || (Number.isFinite(pid) && pid > 0)) && attempt === 0) {
+      // Reclaim ONLY an empty pre-protocol slot or a pid ESRCH-proven dead. A live/EPERM holder is
+      // adopted; an unattributable record (garbled/fractional/unsignalable, or a probe that is not a
+      // clean ESRCH) is never stolen - yield.
+      const pid = parsePid(trimmed);
+      const state = pid === undefined ? undefined : probeLiveness(pid);
+      if (state === "alive") return { livePid: pid! };
+      if ((trimmed === "" || state === "dead") && attempt === 0) {
         try { rmSync(target); } catch { /* a sibling removed it first */ }
-        continue; // a dead holder, or an empty pre-protocol slot: reclaim ONCE
+        continue; // empty pre-protocol slot, or ESRCH-proven-dead holder: reclaim ONCE
       }
-      return undefined; // garbled content (or still contested after the retry): never steal
+      return undefined; // unattributable/unknown content (or still contested after the retry): never steal
     }
   }
   return undefined;
@@ -90,6 +148,8 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
  *  The pid slot is claimed exclusively FIRST ({@link claimAuthPidSlot}); a held or contested slot
  *  yields to the existing daemon (the caller's ready() poll adjudicates liveness). */
 function startAuthServiceDetached(space: string, server: string, command: string): number {
+  reclaimDeadLegacyPid(space); // a pre-hex crash leaves a dead legacy pidfile; clear it or the
+                               // canonical claim below produces the both-present wedge readPidPath refuses
   const slot = claimAuthPidSlot(space);
   if (slot === undefined) return 0;
   if ("livePid" in slot) return slot.livePid;
@@ -135,17 +195,35 @@ export async function ensureAuthService(opts: {
 }
 
 /** Stop THIS space's auth service if we started one. Scoped by the space-carrying pid file — never
- *  a root-global kill. */
+ *  a root-global kill. Honors the same attribution contract as {@link claimAuthPidSlot}: it only
+ *  removes a record it can ACT on. An empty slot is a husk (nothing to signal, safe to clear); a
+ *  positive PID is signalled then removed; unattributable content (garbled, or a non-positive value
+ *  that would make `process.kill` signal a whole process GROUP) is NEVER removed and fails loud -
+ *  silently dropping it would orphan a live signer behind a torn/tampered pidfile while reporting a
+ *  clean stop. */
 export function stopAuthService(space: string): void {
-  const p = PID_PATH(space);
+  const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
   if (!existsSync(p)) return;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  if (Number.isFinite(pid)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      /* already gone */
-    }
+  const trimmed = readFileSync(p, "utf8").trim();
+  if (trimmed === "") {
+    rmSync(p, { force: true }); // empty husk: no process to signal
+    return;
   }
-  rmSync(p);
+  const pid = parsePid(trimmed);
+  if (pid === undefined)
+    throw new Error(
+      `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
+    );
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (e) {
+    // ESRCH = already gone, so removing its record is safe. EPERM (exists, another user's) or any
+    // other errno means we could NOT stop it - removing the record would orphan a live signer while
+    // reporting a clean stop, so preserve it and fail loud.
+    if ((e as NodeJS.ErrnoException).code !== "ESRCH")
+      throw new Error(
+        `could not stop auth-service (pid ${pid}) at ${p} (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to remove a record for a process it could not signal; stop it manually`,
+      );
+  }
+  rmSync(p, { force: true });
 }

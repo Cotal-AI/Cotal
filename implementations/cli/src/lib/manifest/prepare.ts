@@ -45,6 +45,8 @@ export interface PreparedAgent {
   description?: string;
   /** Effective persona body (manifest `instructions` REPLACES the file body; sole body for inline). */
   body?: string;
+  /** Kickoff prompt auto-submitted at session start (manifest-only; personas carry none). */
+  prompt?: string;
   /** Effective merged capabilities. */
   capabilities: string[];
   capabilitySource: "manifest" | "persona" | "none";
@@ -143,6 +145,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       role,
       description,
       body,
+      prompt: agent.prompt,
       capabilities,
       capabilitySource,
       policy,

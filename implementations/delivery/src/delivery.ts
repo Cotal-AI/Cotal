@@ -12,7 +12,7 @@ import {
   type ParsedArgs,
   type SecretStore,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction, executePlaneLiveness } from "./evict-exec.js";
 
@@ -92,7 +92,10 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
       `delivery: no cred in the injected secret store under key "${DELIVERY_CREDS_KEY}" — the hosted composition must put it before starting the daemon (local sources are never consulted when a store is injected)`,
     );
   if (v["dev-mint"] !== undefined) {
-    const auth = loadSpaceAuth(authDir(findCotalRoot()));
+    // Space-blind dev path: the root must name exactly one space (soleSpaceOf fails loud on several).
+    const devRoot = authDir(findCotalRoot());
+    const devSpace = soleSpaceOf(devRoot);
+    const auth = devSpace ? loadSpaceAuth(devRoot, devSpace) : undefined;
     if (!auth) throw new Error("delivery --dev-mint: no .cotal/auth here to mint from");
     console.error("⚠ delivery: --dev-mint — minting a scoped delivery cred from the LOCAL SIGNER (DEV ONLY; production mounts a pre-minted delivery.creds and the daemon never sees the signer)");
     const identity = newIdentity(); // stable across self-remints — the endpoint pins it
@@ -138,7 +141,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const credsSrc = resolveCredsStore(v, store);
 
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
-  const space = v.space ?? (v["dev-mint"] !== undefined ? loadSpaceAuth(authDir(findCotalRoot()))?.space : undefined);
+  const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path

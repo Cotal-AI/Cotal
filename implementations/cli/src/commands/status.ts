@@ -10,27 +10,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import {
-  authDir,
-  CLI_USER_ACTOR,
-  extensionsDir,
-  findCotalRoot,
-  getCurrent,
-  isWorkspaceTargetError,
-  loadExtensionsManifest,
-  loadMeshes,
-  loadSpaceAuth,
-  localProcessPath,
-  localProcessVisible,
-  preflightTarget,
-  resolveMeshTarget,
-  serverFlag,
-  spaceFlag,
-  userAuthStateDir,
-  workspaceSecretStore,
-  type LocalProcess,
-  type LocalProcessContext,
-} from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -128,11 +108,57 @@ async function printMachine(): Promise<void> {
 }
 
 function printProject(root: string, cmd: string): void {
-  const auth = loadSpaceAuth(authDir(root));
-  const userDisk = auth && existsSync(userAuthStateDir(root, auth.space));
-  const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   section("This Folder");
   row("root", root);
+  // The inventory READ itself can throw (an EACCES/ELOOP on `.cotal/auth`, not just a bad record):
+  // `accountInventory` lets that propagate so the broker-wide guards fail CLOSED, but status is the
+  // recovery command and must exit 0 for any trust material it cannot read. Frame the unreadable
+  // auth dir and stop.
+  let spaces: string[];
+  let corrupt: string[];
+  try {
+    ({ spaces, corrupt } = accountInventory(authDir(root)));
+  } catch (e) {
+    row("auth", c.red(`auth dir unreadable · ${(e as Error).message}`));
+    row("hint", `check permissions on ${authDir(root)} - broker-wide commands refuse while the tenant list cannot be read`);
+    row("personas", personaSummary(root));
+    return;
+  }
+  // Status is the command the broker-wide refusals send the operator to, so it must DESCRIBE every
+  // state those refusals can name - crashing on one is a dead end in the exact recovery flow. An
+  // unreadable record means the tenant list is uncertain: report it (the space-blind sole-load
+  // below would throw on it).
+  if (corrupt.length > 0) {
+    row("auth", c.red(`${corrupt.length} unreadable account record(s) · ${corrupt.join(", ")}`));
+    row("hint", `repair or remove ${corrupt.map((f) => join(authDir(root), f)).join(", ")} - broker-wide commands refuse while the tenant list is uncertain`);
+    row("personas", personaSummary(root));
+    return;
+  }
+  // A root holding several accounts has no single "this folder's space", and the process rows below
+  // are keyed by one. Report the tenant list instead of letting the space-blind read throw.
+  if (spaces.length > 1) {
+    row("auth", c.green(`${spaces.length} spaces · ${spaces.join(", ")}`));
+    row("personas", personaSummary(root));
+    console.log(c.dim("  per-space process state is not reported on a multi-space root yet"));
+    return;
+  }
+  // The inventory shape-check is necessary but not sufficient: a record can carry non-empty
+  // account fields yet fail COMPOSITION (a malformed account JWT, or one signed by a foreign
+  // operator - `composeSpaceAuth` throws on both). Status is the recovery command the broker-wide
+  // refusals point at, so it must exit 0 with guidance for ANY record it cannot load, not crash on
+  // the ones the cheap shape gate lets through. Frame the load failure the same as an unreadable
+  // record and stop.
+  let auth: ReturnType<typeof loadSoleSpaceAuth>;
+  try {
+    auth = loadSoleSpaceAuth(authDir(root));
+  } catch (e) {
+    row("auth", c.red(`unreadable trust material · ${(e as Error).message.split(" - ")[0]}`));
+    row("hint", `${(e as Error).message}`);
+    row("personas", personaSummary(root));
+    return;
+  }
+  const userDisk = auth && hasUserAuthState(root, auth.space);
+  const context: LocalProcessContext = { root, space: auth?.space ?? resolveSpace(root), userAuth: Boolean(userDisk) };
   row("auth", auth ? c.green(`space ${auth.space}${userDisk ? " · user-auth" : ""}`) : c.dim("none (open/local only)"));
   row("personas", personaSummary(root));
   let nats: Proc | undefined;

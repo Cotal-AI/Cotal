@@ -6,7 +6,7 @@
  * owner-equality `launch` row, the manager's ledger-derived admin flag governs). (Channel-registry
  * reads use `readChannelRegistry`, which connects itself.)
  */
-import { CotalEndpoint, EpEnvelopeError, type ControlReply, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, EpEnvelopeError, type ControlReply, type MeshLaunchSpec, type Presence } from "@cotal-ai/core";
 import { START_TIMEOUT_MS } from "../control.js";
 
 export interface MeshConn {
@@ -94,14 +94,17 @@ export async function waitLeaseGone(ep: CotalEndpoint, timeoutMs: number): Promi
  *  command, capability-only: a static deploy credential holds it via the admin instrument set (a
  *  spawn-capable agent holds no row at all), a user-mode deployer view holds the owner-equality
  *  variant (the manager's ledger-derived admin flag keeps spec-owner === caller-owner there). The
- *  manager derives `.cotal/run/<runId>.json` itself; we pass the runId, never a path. */
-export async function launchAgent(ep: CotalEndpoint, runId: string, name: string): Promise<ControlReply> {
+ *  manager derives `.cotal/run/<runId>.json` itself; we pass the runId, never a path. When the
+ *  serving manager lives in ANOTHER checkout/host, pass `spec` and the resolved spec rides the
+ *  control plane inline — the manager validates it as untrusted input and persists it under its own
+ *  run tree before launching. */
+export async function launchAgent(ep: CotalEndpoint, runId: string, name: string, spec?: MeshLaunchSpec): Promise<ControlReply> {
   // #159 B1: `launch` funnels into the same startAgent readiness wait as `start` — the manager
   // replies only on a real outcome (join / exit / ~30s backstop), so the request must outlive it.
   try {
     // P2 item 2 (2b): launch is an ACTION — follow the acceptance to the terminal so `up -f` /
     // `spawn -f` still returns on the real outcome (join / exit / ~30s uncertain), UX unchanged.
-    const r = await ep.invokeService("manager", "launch", { runId, name }, { deadlineMs: START_TIMEOUT_MS, follow: true });
+    const r = await ep.invokeService("manager", "launch", { runId, name, ...(spec ? { spec } : {}) }, { deadlineMs: START_TIMEOUT_MS, follow: true });
     if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "launch failed" };
     return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
   } catch (e) {

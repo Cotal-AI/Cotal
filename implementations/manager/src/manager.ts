@@ -35,7 +35,7 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -45,7 +45,7 @@ import {
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
 import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts } from "./launch.js";
+import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
@@ -205,12 +205,18 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
-  /** Port for the console + attach HTTP/WS endpoint (loopback). 0 → ephemeral. */
+  /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** P2 item 6: the broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
    *  the console page becomes a mesh §13.6 session client — `POST /session/<name>` returns the grant +
    *  a per-session cred + this ws URL. Absent ⇒ no console session client (the route 503s). */
   wsPort?: number;
+  /** Bind address for the console endpoint, and the host it advertises in {@link Manager.consoleUrl}.
+   *  Defaults to loopback, which keeps the console reachable only from this machine. Set it only if
+   *  you intend to expose the console (see the security note on {@link AttachEndpoint}). A wildcard
+   *  here binds every interface and still advertises loopback, since a wildcard is not an address a
+   *  client can dial. The TERMINAL is unaffected either way: it rides the mesh session, not this face. */
+  attachHost?: string;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
   /** Restore attempt this fresh manager will accept for the admin resumePreserved control op. */
@@ -359,7 +365,8 @@ export interface StartAgentOpts {
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
-   *  the connector. Imperative-only: never set from `resolved` (a manifest carries no prompt). */
+   *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
+   *  and rejects this flag alongside it (one source, no merge). */
   prompt?: string;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
@@ -678,6 +685,13 @@ export class Manager {
       // P2 item 6: the console's mesh §13.6 session establisher — injected ONLY when a broker ws
       // listener exists (cotal up allocated a wsPort). Never a second plane; it drives THE plane.
       opts.wsPort !== undefined ? (name) => this.establishConsoleSession(name) : undefined,
+      // Loopback unless the OPERATOR said otherwise. A broker *dial* address is not a manager *bind*
+      // address: deriving one from the other breaks every topology where they differ (a manager
+      // supervising a broker on another host cannot bind that host's address at all, and a failover
+      // list's first entry need not be the server actually selected). Exposure is therefore an
+      // explicit decision; every other caller — an embedded Manager, a bare `cotal supervise` —
+      // keeps the loopback-only console it always had.
+      opts.attachHost ?? "127.0.0.1",
     );
   }
 
@@ -702,7 +716,7 @@ export class Manager {
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the
     // repair, not a guess.
-    this.userMode = existsSync(userAuthStateDir(this.workspaceRoot, this.space));
+    this.userMode = hasUserAuthState(this.workspaceRoot, this.space);
     const recorded = loadMeshes().find((m) => m.space === this.space);
     if (recorded && (recorded.mode === "user") !== this.userMode)
       throw new Error(
@@ -2557,7 +2571,9 @@ export class Manager {
   }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
-   *  manager. The request carries a `{ runId, name }`, NEVER a path: the manager derives + validates
+   *  manager. The request carries `{ runId, name }` — plus, for a deploy from another checkout or
+   *  host, the resolved `spec` itself inline (validated as untrusted input and persisted under THIS
+   *  manager's `.cotal/run/` first) — NEVER a path: the manager derives + validates
    *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
    *  `loadLaunchSpec`'s untrusted-input + `validateLaunchPolicy` contract), materializes the named
    *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
@@ -2570,10 +2586,26 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
     let spec;
-    try {
-      spec = launchSpecForRun(this.workspaceRoot, runId);
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
+    if (args.spec !== undefined) {
+      // REMOTE deploy: the caller pushes the resolved spec inline over the control plane instead of
+      // sharing this checkout's disk. Same untrusted-input contract as the file path (strict schema,
+      // safe names, policy re-validation), then persisted under OUR `.cotal/run/<runId>.json` so
+      // stale-restart and retained resume read the same on-disk source either way. Still never a
+      // path: the payload is the spec itself, and where it lands is derived here.
+      try {
+        spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
+        if (spec.runId !== runId)
+          return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
+        persistLaunchSpec(this.workspaceRoot, spec);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    } else {
+      try {
+        spec = launchSpecForRun(this.workspaceRoot, runId);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
     }
     const la = spec.agents.find((a) => a.name === name);
     if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
@@ -2694,6 +2726,7 @@ export class Manager {
     let model = opts.model;
     let variant = opts.variant;
     let launchOptions = opts.launchOptions;
+    let prompt = opts.prompt;
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
@@ -2709,6 +2742,8 @@ export class Manager {
       model = opts.model ?? r.model;
       variant = opts.variant ?? r.variant;
       launchOptions = mergeLaunchOptions(r.launchOptions, opts.launchOptions);
+      prompt = r.prompt; // the guard above rejected an imperative prompt — one source
+
     } else {
       let def: AgentDef;
       try {
@@ -2950,8 +2985,8 @@ export class Manager {
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
         resume: opts.resume,
-        // Initial prompt (imperative-only; the resolved guard above keeps manifests prompt-free).
-        prompt: opts.prompt,
+        // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
+        prompt,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) falls back to `["general"]`, which its
@@ -4636,6 +4671,12 @@ export class Manager {
    *  backends (pty/host) attach; an external runtime's attach() throws with per-runtime guidance. */
   private async attachAuthorized(a: ManagedAgent, caller: { owner: string; actor: string; uid: string }): Promise<ControlReply> {
     if (!this.sessionPlane) return { ok: false, error: "the manager session plane is not available (the manager is not fully started)" };
+    // A name is a reusable slot and the authorization above can await (user mode reads the ledger).
+    // The ep target is incarnation-pinned, so `a` cannot BE a successor — but the slot it names can
+    // have been stopped and refilled while we waited, and everything below must act on the
+    // incarnation this caller was actually authorized for, never on whoever holds the name now.
+    if (this.agents.get(a.name) !== a)
+      return { ok: false, error: `agent "${a.name}" was replaced during authorization - retry` };
     // Never establish a session over a dead agent — a doomed session (the caller would get an
     // immediate process-exit at best, a confusing empty terminal at worst). Refuse honestly.
     if (a.handle.status() !== "running") return { ok: false, error: `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach` };

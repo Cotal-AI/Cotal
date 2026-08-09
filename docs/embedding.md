@@ -16,8 +16,9 @@ host; it documents the public seams any embedder composes.
 
 The supported reference shape here is **one broker operator serving one space** (one tenant: a
 dedicated data account, under an operator that also holds the system account and a quarantined
-auth-callout account) plus three standalone processes. Running many spaces under one shared broker
-operator is a different, not-yet-composable shape (see
+auth-callout account) plus three standalone processes. The trust layer itself composes many spaces
+under one broker operator today (`createBrokerAuth` + `createSpaceAccountAuth` + N-space
+`serverConfig`); what does not exist yet is the per-space **lifecycle** on a shared broker (see
 [Known gaps](#known-gaps-not-hosted-composable-yet)). The three processes:
 
 | daemon | package | what it is |
@@ -52,10 +53,12 @@ are marked; import them with `import type`.
 
 | symbol | purpose |
 |---|---|
-| `createSpaceAuth(space)` | mint a space's trust bundle (operator + system + data accounts). One space, one operator. |
+| `createBrokerAuth(label)` | mint BROKER trust: the operator and system account one nats-server trusts. One per broker, shared by every space on it. |
+| `createSpaceAccountAuth(broker, space)` | mint one space's own data account, signed by that broker's operator — the add-a-tenant primitive. |
+| `createSpaceAuth(space)` | the one-space convenience: broker trust + one account in a single composed bundle. |
 | `setupSpaceStreams({ servers, space, creds })` | create the space's JetStream streams. |
 | `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). |
-| `serverConfig(auth, { storeDir, extraAccounts?, port?, host? })` | render the broker config for one operator; `storeDir` is required and `extraAccounts` preloads the auth-callout account. |
+| `serverConfig(broker, spaces, { storeDir, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required and `extraAccounts` preloads the auth-callout account. |
 | `mintCreds(auth, identity, profile, opts?)` | mint a scoped cred for any `Profile`. |
 | `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | mint the membership/eviction scoped creds. |
 | `provisionAgent`, `provisionAgentDurables` | create a principal's bind-only durables. |
@@ -132,7 +135,8 @@ await runDelivery({ values: { space, server: brokerUrl }, positionals: [], raw: 
 That renewal is a **signer** operation, not the delivery daemon's:
 `remintDaemonCreds(root, space, store?, { preflight? })` (`@cotal-ai/workspace`) reads the `SpaceAuth`
 signer **through the same resolved `store`** (`getSpaceAuth(store ?? workspaceSecretStore(root), space)`,
-key `auth/auth.json`) and re-signs the daemon creds (`delivery.creds` and the membership feed's
+keys `auth/broker.json` + `auth/account.<key>.json`; the pre-split `auth/auth.json` monolith is
+migration input and the container signer mount only) and re-signs the daemon creds (`delivery.creds` and the membership feed's
 `membership-rw.creds`) back into that store — so the injected `store` is BOTH the signer source AND the
 cred destination, never a split. `space` is **required** and validated against the store's signer, so a
 store swapped to a different space cannot re-sign over the wrong broker's creds. `preflight` — a "does
@@ -150,7 +154,7 @@ stripped; a legitimate local re-sign is continuous and proceeds without a networ
 `secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
 into it, and the daemon adopts each generation on a preflight-proven 75% timer. It never throws: it
-returns per-file results (`skipped: "no-auth"` when the store holds no signer under `auth/auth.json`),
+returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
 KMS/Vault simply injects that store — no bespoke renewal needed — and a `--creds` file path must be
 replaced atomically before the 75% read. The remaining hosted gap is no
@@ -173,15 +177,16 @@ await mgr.start();          // then wire your own SIGINT/SIGTERM -> mgr.stop()
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
 grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()`
-the manager reads the full space trust bundle **through its `secretStore`** (`getSpaceAuth(this.secrets,
-this.space)`, key `auth/auth.json`) and **self-mints** its supervisor cred and renewals from the
+the manager reads its space's full trust chain **through its `secretStore`** (`getSpaceAuth(this.secrets,
+this.space)`, composed from `auth/broker.json` + `auth/account.<key>.json`; a container may instead
+mount a stripped signer bundle at the legacy `auth/auth.json` key) and **self-mints** its supervisor cred and renewals from the
 data-account signing seed. In static mode it also mints every per-agent cred from that seed; in user
 mode agents instead receive callout-minted bearers, but the manager still holds the signing seed for
 its own creds and renewal. So a hosted supervisor is a **trusted per-tenant account-signer process**,
-not a least-privilege connect client. It additionally requires a `~/.cotal/meshes/<space>.json`
+not a least-privilege connect client. It additionally requires a `~/.cotal/meshes/space.<key>.json`
 registry record and the workspace user-auth marker to start in user mode. `ManagerOptions.secretStore`
 injects the one `SecretStore` the manager reads/writes every secret through — **the signer itself
-(`auth/auth.json`)**, its daemon-cred renewal (`remintDaemonCreds`), and its per-agent secret sites —
+(the split trust records)**, its daemon-cred renewal (`remintDaemonCreds`), and its per-agent secret sites —
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
 hosted renewal. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation** (the seed is decrypted
@@ -189,14 +194,14 @@ in-process at the manager's uid — an OS-sandbox / remote-signer problem, below
 knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
 
 > Scope note: the **static-auth** operator paths (`cotal spawn`/`join`/`status`/`web`, via
-> `mesh-target` → `connect`/`preflight`) still read the signer from the local `auth.json` (sync
+> `mesh-target` → `connect`/`preflight`) still read the signer from the local split records (sync
 > `loadSpaceAuth`). That is the single-machine composition, where the signer is on local disk by the
 > static-auth model; multi-tenant hosting runs **user mode**, which never mints from on-disk trust. The
 > store-injectable signer path is the hosted-server set: the manager, `remintDaemonCreds`, and delivery.
 
 **Isolating the signer is an OS-sandbox problem, not a file-permission one.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
-`auth.json` does not stop a hostile same-uid agent from reading its absolute path. The reference
+the trust records does not stop a hostile same-uid agent from reading their absolute paths. The reference
 [deploy](deploy.md) tree does not solve this: it mounts the signer into the agent's own container, so
 its phase-1 boundary isolates agents from each other, not the signer from the agent. A hosted
 composition must run the manager/minter that holds the signer in a different uid, container, or mount
@@ -218,14 +223,18 @@ const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
 // put deliveryCreds into your SecretStore under DELIVERY_CREDS_KEY before booting delivery.
 ```
 
-Rendering the broker config for a user-auth space is `serverConfig(auth, { storeDir, extraAccounts })`,
-where `extraAccounts` must include the callout account from `createCalloutAuth` so the auth-service has
-a broker account to answer on. That account never shares the data account.
+Rendering the broker config for a user-auth space is `serverConfig(broker, spaces, { storeDir,
+extraAccounts })`, where `extraAccounts` must include the callout account from `createCalloutAuth` so
+the auth-service has a broker account to answer on. That account never shares the data account.
 
-`createSpaceAuth` mints one operator + system + data account **per call**, and `serverConfig`
-renders **one** operator. That is the single-space reference shape. Running many spaces (tenants)
-under one shared broker operator is a different provisioning shape that the current exports do not
-yet cover; see [Known gaps](#known-gaps-not-hosted-composable-yet).
+Broker trust and space accounts are separate authorities: `createBrokerAuth` mints the one
+operator + system account a broker trusts, `createSpaceAccountAuth(broker, space)` signs each
+tenant's data account under it, and `serverConfig(broker, spaces, opts)` renders them all into one
+config. A host composition can therefore provision several spaces on one broker today. The `cotal`
+CLI itself still orchestrates one space per root (its `up`/`down` lifecycle refuses broker-wide
+operations on a multi-space root rather than scoping them); the per-space lifecycle is the
+remaining multi-space operator layer — see
+[Known gaps](#known-gaps-not-hosted-composable-yet).
 
 ## Hazardous provisioning primitives
 
@@ -261,12 +270,15 @@ scopes the capability out. None is a wire concern.
    traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
    Plane-3 durable backstop.
 2. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the
-   manager reads/writes every secret through, including the `SpaceAuth` signer bundle
-   (`auth/auth.json`), its daemon-cred renewal, and its per-agent kinds. What remains is process
+   manager reads/writes every secret through, including the composed `SpaceAuth`
+   signer (the split trust records), its daemon-cred renewal, and its per-agent kinds. What remains is process
    isolation: the manager still decrypts the signer in-process at its uid, so untrusted agent children
    must run under a different uid/container/mount namespace or behind a future remote signer.
-3. **Many spaces per broker.** No published "add a tenant account under one shared operator" API;
-   the exports compose the one-space reference shape. This is the multi-space operator layer.
+3. **Per-space lifecycle on a shared broker.** The trust layer is multi-space
+   (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
+   `broker.json` + `account.<key>.json`), but there is no per-space teardown/backup/restore:
+   the CLI's broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   This is the remaining multi-space operator layer.
 4. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but
    the stock provider and login client are Better-Auth-endpoint-shaped, `cotalAuthProvider`
    self-registers on import (colliding with a host-owned provider under `resolveAuthProvider`), and
@@ -285,18 +297,18 @@ place and keep:
 
 | state | class | where today | hosted injection |
 |---|---|---|---|
-| full `SpaceAuth` bundle (`auth/auth.json`, `.cotal/auth/auth.json` under the FS store) | signing authority | `SecretStore` | `SecretStore` (manager + renewal) |
+| full `SpaceAuth` trust chain (`auth/broker.json` + `auth/account.<key>.json`, composed; a stripped signer bundle may instead be mounted at the legacy `auth/auth.json` key) | signing authority | `SecretStore` | `SecretStore` (manager + renewal) |
 | auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
 | `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
 | membership-observer / connection-evictor creds + `membership.json` | scoped $SYS creds / config | workspace filesystem | none (see gap 1) |
 | manager agent creds, actor tokens, sentinel creds | lifecycle authority | `SecretStore` | `SecretStore` (manager `secretStore`) |
-| `~/.cotal/meshes/<space>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
+| `~/.cotal/meshes/space.<key>.json` record (holds IdP trust pins/root pointers) | non-secret, integrity-critical | machine home | process-global `COTAL_HOME` only |
 | auth-health, renewal records | non-secret diagnostics | workspace filesystem | `workspaceRoot` |
 
-The `SpaceAuth` bundle and the auth-service store kinds are **separate** identities/projections, not
-parts of one `auth.json`. `auth-service.json` (the live exchange capability) is ephemeral runtime
+The `SpaceAuth` trust chain and the auth-service store kinds are **separate** identities/projections,
+never parts of one document. `auth-service.json` (the live exchange capability) is ephemeral runtime
 state, not durable, but is sensitive while the daemon runs. `@cotal-ai/workspace` is machine-local
 operator tooling by design; personas, PID files, and the `current-mesh` pointer are truly local and
 must **not** sit on a hosted durable path. Everything classed above as an authority is what a hosted

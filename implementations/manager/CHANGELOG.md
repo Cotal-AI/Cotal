@@ -1,5 +1,214 @@
 # @cotal-ai/manager
 
+## 0.15.0
+
+### Patch Changes
+
+- Updated dependencies [f89560a]
+  - @cotal-ai/core@0.15.0
+  - @cotal-ai/workspace@0.15.0
+
+## 0.14.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.11
+- @cotal-ai/workspace@0.14.11
+
+## 0.14.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.10
+- @cotal-ai/workspace@0.14.10
+
+## 0.14.9
+
+### Patch Changes
+
+- c88ef4c: `cotal spawn -f` now deploys to a remote manager: when the mesh's serving manager lives in another checkout or on another host, the resolved launch spec rides the `launch` control op inline — the manager validates it with the same untrusted-input contract as the file path and persists it under its own `.cotal/run/` (stale-restart and retained resume read one source either way). The ledger stays with the deploying checkout, so `down -f` works from there too. Also fixes a pre-existing re-apply edge: the transient persona file is now written atomic-replace instead of exclusive-create, so re-launching an agent after a partial deploy failure no longer dies on EEXIST.
+- Updated dependencies [a4c082a]
+  - @cotal-ai/workspace@0.14.9
+  - @cotal-ai/core@0.14.9
+
+## 0.14.8
+
+### Patch Changes
+
+- 84f6200: Per-agent `prompt:` in the mesh manifest — a kickoff message auto-submitted once the session is up, the declarative form of `cotal spawn --prompt`. Submitted on first boot and on stale-restart (hash-covered, so changing it marks a running agent stale); a reclaim of a still-live session does not re-submit. Imperative `--prompt` alongside a manifest launch is still rejected (one source). `topology view` marks agents that carry one.
+- Updated dependencies [84f6200]
+  - @cotal-ai/core@0.14.8
+  - @cotal-ai/workspace@0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- 12ad5e3: Close two attach defects: a capability issued for the wrong agent, and remote attach silently dying after a manager repair.
+
+  **An attach capability could be issued for an incarnation nobody authorized.** `opAttach` resolved the
+  agent name, awaited authorization — which on a user mesh performs a ledger read, a real async
+  boundary — and then asked for a ticket by NAME. Ticket issuance re-resolved that name and bound
+  whichever agent held the slot at that moment. A stop and same-name respawn landing inside the await
+  therefore authorized one incarnation and handed out a valid terminal capability for its successor,
+  which on a user-auth mesh can belong to a different owner. `url()` now requires the authorized handle
+  and refuses when the slot has moved under it, and `opAttach` re-asserts the incarnation immediately
+  after the await so the non-pty path shares the invariant. This is the same class as the name-binding
+  fix in 0.14.4, one step earlier in the sequence: that closed the window at redemption, this closes it
+  at issuance.
+
+  **A manager replacement quietly demoted attach to loopback.** The bind host for the manager's
+  attach/console face was passed only on the first `cotal up` and never recorded, so every later launch
+  for the same mesh fell back to loopback: a same-root repair, adopting a preserved or restored
+  listener, and a `spawn -f` manifest deploy. The broker, the agents, and the mesh all stayed up, so the
+  only symptom was `cotal attach` failing to connect from another machine. It is not derivable after
+  the fact — a broker dial address is deliberately not treated as a manager bind address — so the
+  decision is now recorded on the mesh entry and read back by every manager launch. An explicit
+  `--host` still wins, and a mesh that never asked for exposure records nothing and stays loopback-only.
+
+  Also narrows `.cotal/manager.log` to 0600 (new and existing), since the manager's console URL is
+  written there and that URL carries a credential reaching every agent's terminal.
+
+- Updated dependencies [12ad5e3]
+  - @cotal-ai/workspace@0.14.7
+  - @cotal-ai/core@0.14.7
+
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- 1a1c4e1: Bind an attach capability to the agent incarnation, not the reusable name.
+
+  0.14.4 made attach capabilities single-use, short-lived tickets bound to the one agent name the
+  manager had just authorized. A name, however, is a reusable slot rather than an identity: if the
+  authorized agent exits and a same-name successor takes that slot within the ticket's two-minute
+  lifetime, the untouched URL would attach the successor's terminal. On a per-user-auth mesh that
+  successor can belong to a different owner, which turns it into a cross-owner terminal handover, the
+  same class of boundary failure the ticket was introduced to close.
+
+  A ticket is now bound to the agent _handle_ it was issued against. The manager creates a new handle
+  per spawn, so a successor can never compare equal to its predecessor, and redemption re-resolves the
+  name and requires the same incarnation. Issuing a capability for an agent that is not running is now
+  a loud error rather than a ticket that quietly never redeems.
+
+  Covered by two added checks in `smoke:attach-auth` (40 total): a ticket is refused once a same-name
+  successor occupies the slot, and `url()` refuses to issue for an unknown agent.
+
+  - @cotal-ai/core@0.14.5
+  - @cotal-ai/workspace@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- eccf48c: Make `cotal attach` reach a manager on another machine, and credential that endpoint properly.
+
+  The manager's attach face bound a hardcoded `127.0.0.1` and advertised that same literal in the URL
+  it handed back over the control plane, so a remote operator dialed their own loopback and got
+  `ECONNREFUSED`. Attach only ever worked when the manager happened to be on the same box.
+
+  **Where it binds is now an explicit decision.** The endpoint takes a bind address, still loopback by
+  default, so a bare `cotal supervise` and an embedded `Manager` keep exactly the machine-local
+  endpoint they have always had. `cotal up` passes the address it bound the broker to (via a new
+  `supervise --console-host`), which is what makes a remote attach work. The broker's _dial_ address is
+  deliberately not reused as the _bind_ address: a manager may supervise a broker on another host and
+  cannot bind that address at all, and a failover list's first entry need not be the server actually
+  selected. Where the manager can only name loopback — a wildcard bind — the client substitutes the
+  broker address its own control connection reached, so `up --host 0.0.0.0` works too instead of
+  silently handing back an unreachable URL.
+
+  **The endpoint is now credentialed, in two tiers.** It carries terminal read and write for every
+  managed agent, plus the managed roster and the live mesh feed, so once it can leave the machine
+  "unauthenticated but loopback-only" stops being a safe position. A mesh caller receives a **ticket**
+  bound to the one agent the manager just authorized, single-use and short-lived; this is what makes
+  the existing per-agent owner/admin check real, since a manager-wide token would let a caller
+  legitimately authorized for its own agent swap the path and take over another owner's terminal. The
+  **console token** is the operator's own, reaches every agent because the console drives all of them,
+  and is printed solely to the manager's own output. The roster, feed, and PTY stream answer `401`
+  without a credential; the static console shell stays open, since it describes no agent.
+
+  Credentials never ride a cookie: cookies are host-scoped rather than port-scoped, so one set here
+  would be sent to every other HTTP service on the same host and would collide between two managers on
+  one box. The console URL carries its token in the fragment, which a browser never sends to a server,
+  and the console page is served `no-store` with `Referrer-Policy: no-referrer`.
+
+  Also fixes an IPv6 regression in the same area: `URL.hostname` returns an IPv6 literal bracketed
+  (`[::1]`), which `listen()` treats as a DNS name and fails `ENOTFOUND`. Brackets are stripped for the
+  bind and restored for the advertised URL. An address this host does not own now fails with the
+  address named and the resolutions spelled out, rather than a bare errno from deep inside startup.
+
+  Covered by a new `smoke:attach-auth` in the CI gate (38 checks), including the cross-agent path-swap
+  that the first design allowed.
+
+  - @cotal-ai/core@0.14.4
+  - @cotal-ai/workspace@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/core@0.14.3
+
+## 0.14.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.2
+- @cotal-ai/workspace@0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.1
+- @cotal-ai/workspace@0.14.1
+
+## 0.14.0
+
+### Minor Changes
+
+- 7a46ce5: W4 multi-space-per-broker: split broker trust from per-space accounts and harden the broker-vs-space boundary.
+
+  Broker trust (`operator` + system account) is now persisted once per broker in `auth/broker.json`, and each space keeps only its own data account in a flat, injective, case-safe `auth/account.<key>.json` beside it (`<key>` is hex of the space name, so two case-differing spaces can never collide on a case-insensitive filesystem). Core splits the provisioning surface to match: `createBrokerAuth` mints broker trust, `createSpaceAccountAuth(broker, space)` signs one tenant's account under it, and `serverConfig(broker, spaces, opts)` (breaking signature change) renders one operator with N space accounts.
+
+  That same injective hex key now keys EVERY tenant-keyed namespace, not just the account file: the per-space user-auth state dir (`auth/space.<key>/`, with a one-time byte-exact rename of pre-hex layouts on first touch), the auth secret-store keys built over it (callout/issuer/owner-secret/service-keys), the machine mesh registry (`~/.cotal/meshes/space.<key>.json`, with legacy records swept on write/remove), and the auth-service pid/log files. Previously each of those case-folded, so `alpha` and `Alpha` could silently share state, registry records, and owner secrets. The hex key is injective only over well-formed strings, so the one builder now rejects a space name carrying an unpaired surrogate (which UTF-8 folds to U+FFFD, collapsing distinct names) before any key is derived. The auth-service pid/log files also carry a pre-hex-name upgrade path: `down`/`status` admit the old `auth-service.<encoded>.pid` byte-exact so an upgrade across the re-key never orphans the running user-auth callout signer, failing loud if both the old and new name are present.
+
+  Broker-wide lifecycle operations (`down`, `clean store|all`, `backup`, `up --restore`, and the `clean restore-attempt|restore-fallback` recovery verbs) refuse on a root that hosts more than one space, naming the tenants they would have taken out, since none can be scoped to a single space. The tenant list is one validated inventory shared by the guards, `cotal status`, and the target resolver: each record's authoritative `space` must round-trip against its filename, and anything else occupying the account namespace (unparseable, mismatched, or a non-regular entry such as a symlink) counts as corrupt and makes the guards refuse rather than undercount.
+
+  The broker record write is now two-sided fail-closed. `saveBrokerAuth` still refuses a different operator over an existing record; a same-operator system-account change is guarded by a persisted GENERATION with successor semantics: `rotateSystemAccount` bumps `BrokerAuth.gen` in memory and the write is accepted only as the direct successor of the current record, so a stale pre-rotation copy can never resurrect a retired `$SYS` (including one minted within the same second, where the JWT issue time cannot order the two; equal-generation writes with a different system account are refused, and only a byte-identical re-save is the idempotent no-op). The generation is runtime-validated on both sides and at the rotate step: only true absence reads as 0 (migration), while any present malformed value, explicit null included, refuses as a corrupt record. And with `broker.json` absent it refuses any operator that did not verifiably sign every existing account record (so a lost broker file cannot be "repaired" into orphaning the tenants; a same-operator restore still passes).
+
+  The user-auth on-disk marker no longer keys on the bare existence of a path (which a space named `broker.json` or `creds` could alias into user-mode); it requires the provider's pin inside a real state directory, and the pin check is errno-disciplined: only ENOENT reads as absent, while EACCES and friends throw instead of silently flipping a user-auth space to static mode. The pre-hex state-dir migration refuses, rather than guesses, the one genuinely ambiguous case (a space literally named `space.<hex>`, whose legacy directory name is also another space's canonical segment).
+
+  `cotal status` never crashes on trust material it cannot read: it reports the tenant list including corrupt records on a multi-space root, and frames any account record that will not load or compose (a malformed account JWT, or one signed by a foreign operator) as an unloadable record with repair guidance, exiting 0. Target resolution fails loud with a typed error rather than silently picking one tenant or crashing: an ambiguous-target on a multi-account root, on `--server` when the named broker's root holds several tenants on disk (one registered or not), and whenever the tenant list is unreadable; an unreadable-auth when a record cannot be composed into usable trust. The tenant inventory validates each record's account shape (so a semantically empty record is corrupt, not a phantom tenant), while the broker-binding check that a record cannot be validated without a broker stays at the consumer, keeping the broker.json-missing repair path from over-classifying every account as corrupt.
+
+### Patch Changes
+
+- 02b3243: feat(secret-store): move SpaceAuth (the signing authority) behind the SecretStore seam
+
+  The space trust bundle (`.cotal/auth/auth.json`) is the last and highest-blast-radius durable secret kind. It now flows through the pluggable `SecretStore` seam, so a hosted composition injects its own KMS/Vault store and no signing seed lands on the hosted disk.
+
+  - New `@cotal-ai/workspace` API: `getSpaceAuth(store, expectedSpace?)`, `putSpaceAuth(store, auth)`, `deleteSpaceAuth(store)`, and `SPACE_AUTH_KEY` (`auth/auth.json`), byte-for-byte the current local path under `workspaceSecretStore`. `getSpaceAuth` validates via the new `@cotal-ai/core` `validateSpaceAuthForRead`, which accepts both a full trust bundle (fully chain-validated) and a stripped signer projection (the `mint --signer`/container form — account keys validated structurally), and never echoes stored seeds/JWTs/space labels in errors. `putSpaceAuth` is the single `sys.signingSeed` strip site.
+  - `remintDaemonCreds(root, expectedSpace, store?, { preflight? })` reads the signer through the same resolved store as the daemon cred; `expectedSpace` is required and validated against it. It never overwrites the last-good daemon cred with an unproven one: proof is a broker `preflight` (the manager's live probe, which gates every candidate when supplied) OR authority continuity (the candidate is signed by the same account key as the current broker-accepted cred — what the offline `doctor auth --fix` relies on). A same-label alternate account (full or stripped) is neither, so it is refused rather than clobbering the last-good.
+  - The manager reads its signer from the injected `ManagerOptions.secretStore` (`getSpaceAuth(this.secrets, this.space)`); `up`, `mint`, `backup`, `restore`, `doctor`, `spawn`, and the delivery dev-mint helper go through the store. `loadSpaceAuth` remains the sync FS reader for name-only/presence callers and the static-auth single-machine mint composition.
+  - `cotal clean all` deletes `auth/auth.json` through the store as its absolute-last step, so a partial-failure reset re-runs against the correct space.
+
+  Closes "no signing seed at rest on a hosted disk"; the remaining hosted gap is signer isolation (the seed is still decrypted in-process at the manager's uid), not custody.
+
+- Updated dependencies [02b3243]
+- Updated dependencies [7a46ce5]
+  - @cotal-ai/core@0.14.0
+  - @cotal-ai/workspace@0.14.0
+
 ## 0.13.2
 
 ### Patch Changes

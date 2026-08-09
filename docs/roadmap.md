@@ -29,7 +29,7 @@ built yet.
 | **Artifact delivery** | Large payloads move to a per-space JetStream Object Store; the message carries a reference part. Part shape reserved, transfer not built. ([SPEC §5](../SPEC.md#5-envelopes)) |
 | **Instant offline (`$SYS`)** | Manager-observed disconnect events for immediate `offline`, instead of waiting out the presence heartbeat window. The heartbeat sweep stays the floor. |
 | **Host mode (Agent SDK)** | Headless sessions with true mid-turn interrupt, observed via the plain stream instead of a native TUI. Documented upgrade path from attach mode. |
-| **Multi-space brokers** | Today one broker serves one authenticated space. Agents in many spaces, and many spaces per broker, are planned; nothing should hardcode the 1:1. |
+| **Multi-space brokers** | The trust layer already hosts many spaces per broker (one operator signs one account per space, per [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)), and broker-wide lifecycle verbs refuse on a multi-space root rather than scoping to one tenant. Still to build: per-space lifecycle (provisioning a new space through `up`, per-space teardown/backup) and agents present in many spaces at once. |
 | **Strict metadata containment** | Chat *content* reads are ACL-bounded today; stream metadata (channel names, per-subject counts) still leaks to in-space agents. Hiding it needs the channel-major stream model. ([SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)) |
 
 ## Connecting spaces (federation)

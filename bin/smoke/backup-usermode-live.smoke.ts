@@ -48,7 +48,7 @@ const { bearer } = await fromAuth("better-auth/plugins/bearer");
 const { toNodeHandler } = await fromAuth("better-auth/node");
 
 const { CotalEndpoint, isReachable, mintCreds, newIdentity, principalKey } = await import("@cotal-ai/core");
-const { authDir, loadSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, loadSoleSpaceAuth, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, establishIdpSession } = await import("@cotal-ai/auth");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
@@ -149,7 +149,7 @@ const readJournal = () => JSON.parse(readFileSync(journalPath, "utf8")) as {
  *  rides the product's own ephemeral-consumer history path: the admin profile grants
  *  CONSUMER.CREATE on CHAT but NOT STREAM.MSG.GET, so a direct get would be denied. */
 async function chatHistory(): Promise<CotalMessage[]> {
-  const auth = loadSpaceAuth(authDir(root))!;
+  const auth = loadSoleSpaceAuth(authDir(root))!;
   const witness = new CotalEndpoint({
     space: SPACE,
     servers: SERVER,
@@ -173,7 +173,7 @@ try {
   const up = await must("up --user-auth exits 0",
     ["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
   check("up announces the user-auth service", up.out.includes("user-auth service up"), up.out);
-  const mesh = JSON.parse(readFileSync(join(home, "meshes", `${encodeURIComponent(SPACE)}.json`), "utf8")) as { mode: string };
+  const mesh = JSON.parse(readFileSync(join(home, "meshes", `${spaceSegment(SPACE)}.json`), "utf8")) as { mode: string };
   check('mesh is recorded mode "user"', mesh.mode === "user", mesh);
 
   // ---------- B. user-mode state ----------

@@ -91,6 +91,25 @@ function scan(dir) {
 }
 scan(dist);
 
+// The installer is served to `curl … | sh`, so its safety properties have to survive the
+// build, not just exist in the repo. The invocation must be the brace-wrapped form on the
+// last line: a compound command is not executed until its closing brace is parsed, so every
+// partial prefix of that line is a syntax error. A bare `main "$@"` would not do, because a
+// byte-level truncation can cut it down to a bare `main`, which is a complete command and
+// would run the installer with no arguments at all.
+const INVOCATION = '{ main "$@"; exit $?; }';
+const installer = readFileSync(join(dist, 'install.sh'), 'utf8');
+if (!installer.startsWith('#!/bin/sh')) fail('install.sh lost its POSIX sh shebang');
+const lastLine = installer.trimEnd().split('\n').pop();
+if (lastLine !== INVOCATION)
+  fail(`install.sh must end with '${INVOCATION}' for truncation safety, found: ${lastLine}`);
+if (installer.split('\n').filter((l) => l.trimEnd() === INVOCATION).length !== 1)
+  fail('install.sh must invoke main exactly once, on its last line');
+if (/^\s*main\s*("\$@")?\s*$/m.test(installer))
+  fail('install.sh has a bare `main` invocation; a truncated download could execute it');
+if (!/^set -eu$/m.test(installer)) fail('install.sh lost `set -eu`');
+if (!/SHASUMS256\.txt/.test(installer)) fail('install.sh lost its Node checksum verification');
+
 console.log(
-  'check-dist: llms.txt task links present, robots.txt + agent-skills intact, no repo-relative link leaks',
+  'check-dist: llms.txt task links present, robots.txt + agent-skills intact, install.sh truncation-safe, no repo-relative link leaks',
 );

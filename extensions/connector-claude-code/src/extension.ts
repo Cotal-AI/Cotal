@@ -35,6 +35,7 @@ export const claudeConnector: Connector = {
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
+  launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.variant) throw new Error("claude connector: model variants are not supported");

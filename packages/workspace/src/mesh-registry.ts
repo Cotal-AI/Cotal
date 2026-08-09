@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "nod
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { spaceSegment } from "./auth-paths.js";
 
 /**
  * The registry of running meshes: one record per broker `cotal up` started on this machine, so a
@@ -32,6 +33,14 @@ export interface MeshEntry {
    *  broker truth: it lives under the user's protected registry dir and is trusted the way the
    *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
   userAuth?: UserAuthInfo;
+  /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
+   *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
+   *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind
+   *  address (see the note in `Manager`'s constructor), so nothing downstream can reconstruct it.
+   *  Every later manager launch for this mesh — same-root repair, adopting a preserved listener,
+   *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
+   *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
+  attachHost?: string;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -84,8 +93,41 @@ export function meshesDir(): string {
   return join(homeCotalDir(), "meshes");
 }
 
+/** The canonical registry filename for a space: the workspace-wide injective `space.<hex>` segment
+ *  (see {@link spaceSegment}). Raw `encodeURIComponent` stems preserved ASCII case, so on a
+ *  case-insensitive filesystem two case-differing spaces addressed ONE registry file and the
+ *  second `up` silently swallowed the first mesh's record. The space's real name is authoritative
+ *  in the document; the filename only locates it. */
+function meshFileName(space: string): string {
+  return `${spaceSegment(space)}.json`;
+}
+
 function meshFile(space: string): string {
-  return join(meshesDir(), `${encodeURIComponent(space)}.json`);
+  return join(meshesDir(), meshFileName(space));
+}
+
+/** Remove every PRE-HEX registry file that records `space` (`<encodeURIComponent>.json` stems from
+ *  older builds). Matched by each document's own `space` - never by decoding the filename, which
+ *  would case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh
+ *  the canonical file no longer records. A file that will not parse is left for {@link loadMeshes}
+ *  to skip. */
+function removeLegacyMeshFiles(space: string): void {
+  let files: string[];
+  try {
+    files = readdirSync(meshesDir());
+  } catch {
+    return; // no registry yet
+  }
+  const canonical = meshFileName(space);
+  for (const f of files) {
+    if (f === canonical || !f.endsWith(".json")) continue;
+    try {
+      const doc = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
+      if (doc.space === space) rmSync(join(meshesDir(), f), { force: true });
+    } catch {
+      /* unparseable stray - not provably this space's record, leave it */
+    }
+  }
 }
 
 function currentFile(): string {
@@ -104,11 +146,13 @@ export function recordMesh(m: MeshEntry): void {
   const tmp = `${file}.${process.pid}.tmp`;
   writeSecretFile(tmp, JSON.stringify(m, null, 2)); // hardened before rename; rename preserves the ACL/mode
   renameSync(tmp, file); // atomic replace — a reader never sees a half-written record
+  removeLegacyMeshFiles(m.space); // a pre-hex record for this space must not survive as a duplicate
 }
 
 /** Drop a mesh from the registry (on `cotal down` / a stale-entry prune). Absent ⇒ no-op. */
 export function removeMesh(space: string): void {
   rmSync(meshFile(space), { force: true });
+  removeLegacyMeshFiles(space); // else a pre-hex record would resurrect the mesh in every listing
 }
 
 /** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was
@@ -144,7 +188,9 @@ export function removeMeshesByRoot(root: string): string[] {
 }
 
 /** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —
- *  one bad file must not hide the rest. */
+ *  one bad file must not hide the rest. One record per space: if a pre-hex legacy file and the
+ *  canonical `space.<hex>` file both name the same space (a crash between {@link recordMesh}'s
+ *  write and its legacy sweep), the canonical one wins — it is the newer scheme's write. */
 export function loadMeshes(): MeshEntry[] {
   let files: string[];
   try {
@@ -152,15 +198,25 @@ export function loadMeshes(): MeshEntry[] {
   } catch {
     return []; // no registry yet
   }
-  const out: MeshEntry[] = [];
+  const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
   for (const f of files.sort()) {
+    let entry: MeshEntry;
     try {
-      out.push(JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry);
+      entry = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
     } catch {
-      /* skip a corrupt/half-written entry rather than fail the whole listing */
+      continue; /* skip a corrupt/half-written entry rather than fail the whole listing */
     }
+    if (typeof entry.space !== "string" || !entry.space) continue; // every consumer keys on space
+    let canonical = false;
+    try {
+      canonical = f === meshFileName(entry.space);
+    } catch {
+      /* a degenerate space name in the doc has no canonical filename - rank it as legacy */
+    }
+    const prev = bySpace.get(entry.space);
+    if (!prev || (canonical && !prev.canonical)) bySpace.set(entry.space, { entry, canonical });
   }
-  return out;
+  return [...bySpace.values()].map((v) => v.entry);
 }
 
 export function findMesh(space: string): MeshEntry | undefined {

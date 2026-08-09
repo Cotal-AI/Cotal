@@ -1,5 +1,219 @@
 # cotal-ai
 
+## 0.15.0
+
+### Minor Changes
+
+- f89560a: New Codex connector (`--agent codex`): an OpenAI Codex session as a full lateral mesh peer, in Codex's own TUI. A host-mode peer drives a `codex app-server` thread over JSON-RPC: inbound batches wake a real turn, and directed messages steer INTO a live turn mid-flight.
+
+  `cotal spawn --agent codex` opens Codex's own TUI. The app-server runs as a loopback websocket listener guarded by a per-incarnation capability token (0600, inside the agent's private home), and the TUI attaches to the very thread the mesh drives, so mesh turns render as they happen and anything you type is a real user turn on that same thread. With no terminal (piped output, CI, a smoke) the host stays headless with an activity feed instead; `COTAL_CODEX_TUI=1|0` picks the mode explicitly when the tty check would guess wrong. Once Codex owns the terminal the host's own log moves to `host.log` in the agent's private home, and the handoff line names that path so a later failure is findable.
+
+  The shared `cotal_*` tools are served by the host process itself over a bearer-authenticated loopback MCP endpoint, with the token passed to codex by env var name so it never reaches the process table. Because the app-server is the MCP client, the same tools work on a mesh-driven turn and on one typed into the TUI; the connector's own tools are pre-approved so an unattended agent never stalls on an approval prompt nobody is watching, and `mcp_servers.cotal.*` is reserved and refused rather than silently overridden.
+
+  Autonomy defaults suit an agent woken by peer messages when nobody is watching: `approval_policy=never` (never ask before running a command, not refuse), `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`. Network is on because Codex's own workspace-write default has it off, which breaks installing a dependency or pushing a branch with an error that reads like the task is impossible rather than the sandbox refusing; filesystem containment is kept, because a peer's message is a remote input that can make the agent run commands. The network default is applied only where the sandbox is actually `workspace-write`, so tightening the mode does not leave a network grant in the launch. All three are overridable per spawn with `--opt` (including `sandbox_mode=danger-full-access` for no sandbox at all), while an interactive `approval_policy` is refused loud rather than auto-answered on the operator's behalf.
+
+  The guide states the sandbox's guarantee literally: it blocks out-of-workspace local filesystem writes, and does not block reads, exfiltration, or networked side effects. With the network on, a peer-driven turn can read broadly and send what it reads, reach loopback and link-local services, and act through any credential it can read, including irreversibly, via a force-push or an API delete. Containing filesystem writes is not the same as containing damage, and the docs say so rather than implying the residual is disclosure-only. The offline, tighter-mode, and separate-OS-user mitigations are named in both the autonomy section and Limits.
+
+  At-least-once delivery with exact-id acks on turn completion: a failed turn retries with backoff, an interrupt redelivers, and an app-server crash restarts the child in place on the same mesh lifecycle and re-drives the un-acked batch (a crash loop is fatal, never an endless respawn). Presence from the event stream, an opt-in transcript mirror, model catalog + reasoning-effort variants (`cotal models --agent codex`, `--variant`), `--opt` passthrough to codex `-c` config overrides, and a private per-agent `CODEX_HOME` (operator config/hooks/MCP servers never load; auth.json symlinked; trust writes never touch the operator's config). Unwired options fail loud: `--resume` (a resumed codex thread comes up without its configured MCP servers, so the agent would be mute on the mesh) and tool-sharing.
+
+  Also fixes the seed reconciler, which treated a generation match alone as up-to-date: a built-in connector added at an unchanged generation would never seed on an already-installed workstation (`--agent codex` reporting no connector installed). Both fast paths now also require every `SEED_BUILTINS` entry to be present in the ever-seeded set.
+
+  A connector can now declare `launchHint`, the one line a foreground `cotal spawn` prints about what to expect next. That text used to be hard-coded to Claude Code's first-run gate for every agent type, telling operators of other harnesses to press Enter at a prompt that never appears.
+
+  The web dashboard gains Codex branding (the OpenAI mark, from Simple Icons), so a codex agent renders with an icon and a label instead of a blank badge. That map was hand-maintained with nothing tying it to the connector set, so it is now covered by a test: every official connector must have a complete entry, and a new connector cannot ship icon-less with a green suite again.
+
+### Patch Changes
+
+- Updated dependencies [f89560a]
+  - @cotal-ai/connector-core@0.15.0
+  - @cotal-ai/core@0.15.0
+  - @cotal-ai/workspace@0.15.0
+  - @cotal-ai/cli@0.15.0
+  - @cotal-ai/manager@0.15.0
+  - @cotal-ai/auth@0.15.0
+  - @cotal-ai/delivery@0.15.0
+
+## 0.14.11
+
+### Patch Changes
+
+- Updated dependencies [ca962f7]
+  - @cotal-ai/cli@0.14.11
+  - @cotal-ai/core@0.14.11
+  - @cotal-ai/workspace@0.14.11
+  - @cotal-ai/manager@0.14.11
+  - @cotal-ai/delivery@0.14.11
+  - @cotal-ai/connector-core@0.14.11
+  - @cotal-ai/auth@0.14.11
+
+## 0.14.10
+
+### Patch Changes
+
+- dcde8df: Node-version preflight now gives the remedy that matches how cotal was installed. When the
+  launcher written by `curl -fsSL https://get.cotal.ai | sh` is in use (it sets
+  `COTAL_LAUNCHER=1`), a pinned runtime that has been replaced by an older Node points at
+  re-running the installer, or at `--vendor-node` to stop depending on the system Node
+  entirely, rather than at generic nvm advice. Installs that did not come from the installer
+  keep the nvm guidance and now also mention the installer as an option.
+  - @cotal-ai/core@0.14.10
+  - @cotal-ai/workspace@0.14.10
+  - @cotal-ai/cli@0.14.10
+  - @cotal-ai/manager@0.14.10
+  - @cotal-ai/delivery@0.14.10
+  - @cotal-ai/connector-core@0.14.10
+  - @cotal-ai/auth@0.14.10
+
+## 0.14.9
+
+### Patch Changes
+
+- Updated dependencies [a4c082a]
+- Updated dependencies [c88ef4c]
+  - @cotal-ai/workspace@0.14.9
+  - @cotal-ai/cli@0.14.9
+  - @cotal-ai/manager@0.14.9
+  - @cotal-ai/auth@0.14.9
+  - @cotal-ai/delivery@0.14.9
+  - @cotal-ai/core@0.14.9
+  - @cotal-ai/connector-core@0.14.9
+
+## 0.14.8
+
+### Patch Changes
+
+- Updated dependencies [84f6200]
+  - @cotal-ai/core@0.14.8
+  - @cotal-ai/cli@0.14.8
+  - @cotal-ai/manager@0.14.8
+  - @cotal-ai/connector-core@0.14.8
+  - @cotal-ai/auth@0.14.8
+  - @cotal-ai/delivery@0.14.8
+  - @cotal-ai/workspace@0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- Updated dependencies [12ad5e3]
+  - @cotal-ai/manager@0.14.7
+  - @cotal-ai/cli@0.14.7
+  - @cotal-ai/workspace@0.14.7
+  - @cotal-ai/auth@0.14.7
+  - @cotal-ai/delivery@0.14.7
+  - @cotal-ai/core@0.14.7
+  - @cotal-ai/connector-core@0.14.7
+
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/auth@0.14.6
+  - @cotal-ai/cli@0.14.6
+  - @cotal-ai/delivery@0.14.6
+  - @cotal-ai/manager@0.14.6
+  - @cotal-ai/core@0.14.6
+  - @cotal-ai/connector-core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- Updated dependencies [1a1c4e1]
+  - @cotal-ai/manager@0.14.5
+  - @cotal-ai/core@0.14.5
+  - @cotal-ai/workspace@0.14.5
+  - @cotal-ai/cli@0.14.5
+  - @cotal-ai/delivery@0.14.5
+  - @cotal-ai/connector-core@0.14.5
+  - @cotal-ai/auth@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- Updated dependencies [eccf48c]
+  - @cotal-ai/manager@0.14.4
+  - @cotal-ai/cli@0.14.4
+  - @cotal-ai/core@0.14.4
+  - @cotal-ai/workspace@0.14.4
+  - @cotal-ai/delivery@0.14.4
+  - @cotal-ai/connector-core@0.14.4
+  - @cotal-ai/auth@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/connector-core@0.14.3
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/cli@0.14.3
+  - @cotal-ai/manager@0.14.3
+  - @cotal-ai/auth@0.14.3
+  - @cotal-ai/delivery@0.14.3
+  - @cotal-ai/core@0.14.3
+
+## 0.14.2
+
+### Patch Changes
+
+- 5457b55: Require Node >= 22 and fail fast with a clear message on older Node.
+
+  The bundled `nats-server` broker (`@eplightning/nats-server-*`) declares `engines.node >= 22`, and
+  npm silently skips an optional dependency whose engine the running Node doesn't satisfy — so on any
+  Node older than 22 the broker binary was never installed, surfacing later as a misleading
+  "nats-server not found". Older Node also crashed the CLI outright on a Node-20+ regex in a transitive
+  dependency, and only a non-fatal engine warning was emitted rather than a hard stop.
+
+  The executable entry is now a thin Node-version preflight (`bin/cotal.ts`) that checks the running
+  Node before any heavy import is parsed and hands off to the real composition root (`bin/run.ts`) only
+  when it passes; on Node < 22 it prints an actionable message (upgrade Node; clear the npx cache if a
+  stale install is being reused) and exits non-zero. The declared `engines.node` floor is corrected from
+  `>=20` to `>=22` to match the broker's real requirement (Node 20/21 satisfied the old floor but
+  never got the bundled broker), and the `nats-server` resolution error now names the root cause and
+  the fix instead of a generic PATH hint.
+
+- Updated dependencies [5457b55]
+  - @cotal-ai/cli@0.14.2
+  - @cotal-ai/core@0.14.2
+  - @cotal-ai/workspace@0.14.2
+  - @cotal-ai/manager@0.14.2
+  - @cotal-ai/delivery@0.14.2
+  - @cotal-ai/connector-core@0.14.2
+  - @cotal-ai/auth@0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies [cf6b82f]
+  - @cotal-ai/cli@0.14.1
+  - @cotal-ai/core@0.14.1
+  - @cotal-ai/workspace@0.14.1
+  - @cotal-ai/manager@0.14.1
+  - @cotal-ai/delivery@0.14.1
+  - @cotal-ai/connector-core@0.14.1
+  - @cotal-ai/auth@0.14.1
+
+## 0.14.0
+
+### Patch Changes
+
+- Updated dependencies [ffbb43f]
+- Updated dependencies [8aee34e]
+- Updated dependencies [02b3243]
+- Updated dependencies [7a46ce5]
+  - @cotal-ai/cli@0.14.0
+  - @cotal-ai/connector-core@0.14.0
+  - @cotal-ai/core@0.14.0
+  - @cotal-ai/workspace@0.14.0
+  - @cotal-ai/manager@0.14.0
+  - @cotal-ai/auth@0.14.0
+  - @cotal-ai/delivery@0.14.0
+
 ## 0.13.2
 
 ### Patch Changes

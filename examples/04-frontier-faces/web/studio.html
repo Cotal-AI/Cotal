@@ -167,7 +167,14 @@
   ::-webkit-scrollbar { width:9px; }
   ::-webkit-scrollbar-thumb { background:rgba(83,235,228,.16); border-radius:9px; }
 
-  @media (max-width: 900px) { main { grid-template-columns:180px 1fr; } .faces { display:none; } }
+  /* Narrow window: the face grid goes, the signage never does. On a public screen the QR is
+     the whole point, so it collapses to a slim rail instead of disappearing with the faces. */
+  @media (max-width: 900px) {
+    main { grid-template-columns:180px minmax(0,1fr) 128px; }
+    .faces h2, .fgrid { display:none; }
+    .sign { flex-direction:column; justify-content:flex-start; gap:10px; border-top:none; padding:14px 8px; }
+    .sign .lk .tag { display:none; }
+  }
 </style>
 </head>
 <body>

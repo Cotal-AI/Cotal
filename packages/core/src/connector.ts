@@ -186,4 +186,10 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** One short clause telling the operator what to expect on a FOREGROUND spawn, appended to the
+   *  "spawning <name> on the mesh" line. What happens next differs per harness — one opens on an
+   *  interactive gate, another paints a full-screen UI after a pause — and a hint naming the wrong
+   *  one is worse than none: someone waits for a prompt that will never appear and reads the
+   *  startup as hung. Omit when there is nothing specific to say. */
+  readonly launchHint?: string;
 }

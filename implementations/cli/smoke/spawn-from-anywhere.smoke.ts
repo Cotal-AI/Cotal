@@ -19,8 +19,9 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "cotal-home-"));
 process.env.COTAL_HOME = home;
 
-const { probeConnect } = await import("@cotal-ai/core");
+const { probeConnect, createSpaceAuth } = await import("@cotal-ai/core");
 const {
+  authDir,
   clearCurrent,
   isWorkspaceTargetError,
   loadMeshes,
@@ -28,6 +29,7 @@ const {
   recordMesh,
   removeMesh,
   resolveMeshTarget,
+  saveSpaceAuth,
   setCurrent,
 } = await import("@cotal-ai/workspace");
 const { spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js");
@@ -144,12 +146,13 @@ try {
   check("without current, local project uses its recorded mesh", local.source === "local-recorded" && local.root === projA, local);
 
   // Registry `mode` is authoritative for auth: an OPEN mesh resolves credlessly EVEN IF its root
-  // still has auth material on disk; an AUTH mesh loads it. Same root, opposite outcomes.
-  mkdirSync(join(projA, ".cotal", "auth"), { recursive: true });
-  writeFileSync(join(projA, ".cotal", "auth", "auth.json"), JSON.stringify({ space: "alpha" }));
+  // still has auth material on disk; an AUTH mesh loads it. Same root, opposite outcomes. The auth is
+  // a REAL broker+account chain for "alpha" (a bare `{space}` stub no longer composes now that
+  // `loadSpaceAuth` verifies the account was signed by the broker).
+  saveSpaceAuth(authDir(projA), await createSpaceAuth("alpha"));
   recordMesh(entry("openmesh", projA, SERVER)); // entry() is mode:"open"
   check("open mesh resolves with NO auth despite auth files in its root", resolveMeshTarget(neutral, { space: "openmesh" }).auth === undefined);
-  recordMesh({ ...entry("alpha", projA, SERVER), mode: "auth" }); // space matches projA's auth.json
+  recordMesh({ ...entry("alpha", projA, SERVER), mode: "auth" }); // space matches projA's on-disk account
   check("auth mesh resolves WITH auth from its root", Boolean(resolveMeshTarget(neutral, { space: "alpha" }).auth));
   // Defense in depth (mitnick): an AUTH entry whose recorded space ≠ the root's on-disk auth.space is
   // stale — resolving it throws AND prunes the entry, rather than minting space-Y creds for space X.

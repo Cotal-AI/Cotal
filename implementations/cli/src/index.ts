@@ -113,6 +113,7 @@ const baseCommands: Command[] = [
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
       { name: "run", type: "string", value: "<id>", description: "tear down one `spawn -f` run by id" },
+      { name: "space", type: "string", value: "<name>", description: "with components: the mesh whose target-addressed components (e.g. web) to stop" },
       { name: "dry-run", type: "boolean", description: "print what would stop, mutate nothing" },
       { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
       { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },

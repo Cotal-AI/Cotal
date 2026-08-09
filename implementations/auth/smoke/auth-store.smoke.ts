@@ -1,11 +1,12 @@
 /**
  * Auth secret-store smoke: the four secret kinds (callout account, issuer keys, owner secret,
- * service key projection) ride the SecretStore seam with canonical `auth/<space>/<file>` keys.
- * Locks, without a broker:
+ * service key projection) ride the SecretStore seam with canonical `auth/space.<hex>/<file>` keys
+ * (the workspace-wide injective space segment). Locks, without a broker:
  *
- *  1. LAYOUT — the workspace filesystem composition lands byte-for-byte on today's paths
- *     (`.cotal/auth/<encoded-space>/<file>`, 0600 under 0700), i.e. exactly where the pre-seam
- *     explicit-dir code wrote, so an upgraded workstation reads its existing material.
+ *  1. LAYOUT — the workspace filesystem composition lands byte-for-byte on the state-dir layout
+ *     (`.cotal/auth/space.<hex>/<file>`, 0600 under 0700), the same dir `userAuthStateDir` names;
+ *     a pre-hex workstation layout is renamed there by that path builder's one-time shim, so an
+ *     upgraded workstation keeps reading its existing material.
  *  2. STABILITY — ensure* is load-or-create: a second call returns the SAME material.
  *  3. KEY EDGES — a space name that would alias outside its own segment (`.`/`..`/empty) is
  *     refused at the key builder; a slash-bearing name stays ONE encoded segment.
@@ -93,14 +94,22 @@ try {
 
   // ---------- 3. key builders + their edges ----------
   console.log("3) canonical keys + segment containment");
-  check("callout key is auth/<space>/callout.json", authCalloutKey("main") === "auth/main/callout.json");
-  check("issuer key mirrors the layout", authIssuerKey("main") === "auth/main/issuer.json");
-  check("owner-secret key mirrors the layout", authOwnerSecretKey("main") === "auth/main/owner-secret.json");
-  check("service-keys key mirrors the layout", authServiceKeysKey("main") === "auth/main/service-keys.json");
-  check("a slash-bearing space stays ONE encoded segment", authCalloutKey("a/b") === "auth/a%2Fb/callout.json");
+  // The segment is the workspace-wide injective hex key (`space.<hex>`): case-safe on a
+  // case-insensitive FS (a raw/percent segment let `alpha`/`Alpha` share one dir and alias each
+  // other's owner secrets) and collision-free with the auth dir's reserved siblings.
+  check("callout key is auth/space.<hex>/callout.json", authCalloutKey("main") === "auth/space.6d61696e/callout.json");
+  check("issuer key mirrors the layout", authIssuerKey("main") === "auth/space.6d61696e/issuer.json");
+  check("owner-secret key mirrors the layout", authOwnerSecretKey("main") === "auth/space.6d61696e/owner-secret.json");
+  check("service-keys key mirrors the layout", authServiceKeysKey("main") === "auth/space.6d61696e/service-keys.json");
+  check("a slash-bearing space stays ONE flat hex segment", authCalloutKey("a/b") === "auth/space.612f62/callout.json");
   await ensureOwnerSecret(store, "a/b");
   check("…and its file lands inside .cotal/auth/ (no nested dir escape)",
-    existsSync(join(root, ".cotal", "auth", "a%2Fb", "owner-secret.json")));
+    existsSync(join(root, ".cotal", "auth", "space.612f62", "owner-secret.json")));
+  check("case-differing spaces get DISTINCT keys (no case-fold alias)", authOwnerSecretKey("main") !== authOwnerSecretKey("Main"));
+  const caseLower = await ensureOwnerSecret(store, "casecheck");
+  check("…and a case-sibling reads NOTHING through the other's key", (await loadOwnerSecret(store, "Casecheck")) === undefined);
+  const caseUpper = await ensureOwnerSecret(store, "Casecheck");
+  check("…so the two hold independent secrets", !Buffer.from(caseLower).equals(Buffer.from(caseUpper)));
   for (const bad of ["..", ".", ""]) {
     try {
       authOwnerSecretKey(bad);
@@ -145,7 +154,7 @@ try {
     "the hosted composition must provision the secret store before starting this daemon");
   check("the daemon asked the injected store for exactly the four canonical keys",
     ["service-keys.json", "callout.json", "issuer.json", "owner-secret.json"]
-      .every((f) => reads.includes(`auth/hosted/${f}`)), reads.join(", "));
+      .every((f) => reads.includes(`auth/space.686f73746564/${f}`)), reads.join(", "));
   check("no secret file was created on disk by the refused starts", !existsSync(join(root, ".cotal", "auth", "hosted")));
 
   // A fully provisioned injected store: the daemon reads all four kinds through it (only the IdP
@@ -212,7 +221,7 @@ try {
   await cotalAuthProvider.deprovisionSecrets({ store: recordingDeleter, space: "hosted" });
   check("deprovision deletes exactly the four canonical keys",
     deleted.length === 4 && ["callout.json", "issuer.json", "owner-secret.json", "service-keys.json"]
-      .every((f) => deleted.includes(`auth/hosted/${f}`)), deleted.join(", "));
+      .every((f) => deleted.includes(`auth/space.686f73746564/${f}`)), deleted.join(", "));
   const failingDeleter: SecretStore = {
     get: async () => undefined,
     put: async () => { throw new Error("BUG: deprovision must never put"); },

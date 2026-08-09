@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants } from "node:fs";
 import { connect } from "node:net";
 import { delimiter, join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, loadSoleSpaceAuth, loadSpaceAuth } from "@cotal-ai/workspace";
 import { resolveNatsServer } from "./nats-bin.js";
 import { cliVersion } from "./version.js";
 
@@ -42,7 +42,7 @@ export function webUp(port: number = WEB_PORT): Promise<boolean> {
  *  and what space/auth does the local `.cotal/` describe (found by walking up from `cwd`). */
 export async function meshStatus(cwd: string): Promise<MeshStatus> {
   const server = DEFAULT_SERVER;
-  const auth = loadSpaceAuth(authDir(findCotalRoot(cwd)));
+  const auth = loadSoleSpaceAuth(authDir(findCotalRoot(cwd)));
   return {
     reachable: await isReachable(server),
     server,
@@ -126,10 +126,4 @@ function claudePluginInstalled(): boolean {
   if (!onPath("claude")) return false;
   const r = spawnSync("claude", ["plugin", "list"], { encoding: "utf8" });
   return r.status === 0 && /cotal@cotal-mesh/.test(`${r.stdout ?? ""}${r.stderr ?? ""}`);
-}
-
-/** True once the machine-level setup has completed at least once. */
-export function hasLocalMesh(cwd: string): boolean {
-  const root = findCotalRoot(cwd);
-  return existsSync(join(root, ".cotal", "auth", "auth.json")) || existsSync(join(root, ".cotal", "nats"));
 }

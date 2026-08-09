@@ -328,7 +328,7 @@ try {
     idpUrl: base,
   });
   const jsDir = mkdtempSync(join(tmpdir(), "cotal-uspawn-js-"));
-  writeFileSync(join(root, "server.conf"), serverConfig(auth, { port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
+  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }

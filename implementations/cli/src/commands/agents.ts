@@ -163,7 +163,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
   // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
   const { grant } = reply.data as { grant: SessionGrant };
-  const auth = loadSpaceAuth(authDir(findCotalRoot()));
+  const auth = loadSpaceAuth(authDir(findCotalRoot()), t.space);
   if (!auth) {
     console.error(c.red("mesh attach needs the local space seed (static auth mesh); user-mode session redemption is the #29 callout follow-up, not wired yet"));
     process.exit(1);
@@ -182,3 +182,4 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
+

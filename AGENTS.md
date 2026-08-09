@@ -47,7 +47,7 @@ pnpm typecheck     # tsc --noEmit across all packages
 pnpm build         # tsc build across all packages
 ```
 
-ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev. Node &gt;= 20.
+ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev. Node &gt;= 22.
 
 ## Repository map
 

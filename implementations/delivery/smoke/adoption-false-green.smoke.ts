@@ -87,7 +87,7 @@ async function scenario(tag: string, rogueComponent: "delivery" | "membership"):
   const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 
   const dir = mkdtempSync(join(tmpdir(), `cotal-adopt-fg-${tag}-`));
-  writeFileSync(join(dir, "server.conf"), serverConfig(auth, { port, storeDir: join(dir, "js") }));
+  writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port, storeDir: join(dir, "js") }));
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); });
 

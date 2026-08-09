@@ -37,11 +37,12 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: false,
   },
-  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "store-dir:string"], positionals: true },
+  // `--space` (2026-07): selects the mesh for target-addressed components (`cotal down web --space <name>`).
+  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "space:string", "store-dir:string"], positionals: true },
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
   meshes: { flags: [], positionals: false },
   status: { flags: ["server:string", "space:string"], positionals: false },
-  doctor: { flags: ["fix:boolean"], positionals: true },
+  doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
     flags: [
@@ -107,7 +108,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).

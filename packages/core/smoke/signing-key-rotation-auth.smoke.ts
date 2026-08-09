@@ -80,7 +80,7 @@ const auth = await createSpaceAuth(space);
 const oldSigner = stripSpaceAuth(auth);
 const dir = mkdtempSync(join(tmpdir(), "cotal-signrot-"));
 const conf = join(dir, "server.conf");
-writeFileSync(conf, serverConfig(auth, { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(conf, serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 let srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 
 try {
@@ -100,7 +100,7 @@ try {
 
   srv.kill();
   await awaitExit(srv);
-  writeFileSync(conf, serverConfig(rotated, { port: PORT, storeDir: join(dir, "js") }));
+  writeFileSync(conf, serverConfig(rotated, [rotated], { port: PORT, storeDir: join(dir, "js") }));
   srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
   await waitReachable();
 

@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/example-04-frontier-faces",
-  "version": "0.0.16",
+  "version": "0.0.23",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*",
     "yaml": "^2.9.0"
   }
 }

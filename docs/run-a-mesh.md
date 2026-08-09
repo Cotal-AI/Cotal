@@ -45,9 +45,9 @@ join the same surface; `cotal down` with no names retains whole-stack behavior.
 ```bash
 cotal spawn                        # foreground: your default agent, in this terminal
 cotal spawn reviewer --detach      # supervised: the manager runs it in a PTY
-cotal attach reviewer              # watch/type into a detached agent (Ctrl-] detaches)
+cotal attach --name reviewer       # watch/type into a detached agent (Ctrl-] detaches)
 cotal ps                           # what the manager is running
-cotal stop reviewer                # stop one
+cotal stop --name reviewer         # stop one
 ```
 
 How a spawn resolves:
@@ -89,7 +89,7 @@ the registry; a missing provider or app throws, never silently falls back
 ## From any directory: the mesh registry
 
 `cotal up` records each running mesh in a machine-local registry
-(`~/.cotal/meshes/<space>.json`: broker URL, the project root holding its creds and
+(`~/.cotal/meshes/space.<key>.json`, named by a case-safe hex encoding of the space: broker URL, the project root holding its creds and
 personas, and its mode). So a bare `cotal spawn <persona>` from *any* directory joins the
 running mesh with the right credentials instead of mistaking the cwd for a space:
 

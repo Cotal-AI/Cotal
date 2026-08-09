@@ -63,6 +63,7 @@ For connector users putting an agent on the mesh:
 | [Connectors](connectors.md) | Which harness should I use? One feature matrix across all of them. |
 | [Connect Claude](connect-claude.md) | How does a Claude Code session join the mesh? |
 | [Connect OpenCode (beta)](connect-opencode.md) | How does an OpenCode session join? |
+| [Connect Codex (beta)](connect-codex.md) | How does a Codex session join? |
 | [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
 | [Connect pi (alpha)](connect-pi.md) | How does a pi session — or an agent built on pi's SDK — join? |
 | [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |

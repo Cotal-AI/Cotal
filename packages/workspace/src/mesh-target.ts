@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth, userAuthStateDir } from "./auth-paths.js";
+import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
 import {
   findMesh,
   getCurrent,
@@ -70,6 +70,7 @@ export type MeshTargetErrorCode =
   | "ambiguous-target"
   | "default-occupied"
   | "stale-auth-root"
+  | "unreadable-auth"
   | "user-auth-unrecorded";
 
 /** Structured context for a {@link MeshTargetError} — enough for any surface to render its own
@@ -128,6 +129,51 @@ function personaRoot(root: string): string {
   return join(root, ".cotal", "agents");
 }
 
+/** Refuse to resolve a single mesh when ROOT's on-disk account inventory says it hosts more than
+ *  one tenant (or an unreadable one). The disk is the tenant authority ahead of the registry: a
+ *  broker with several account records is several tenants even if only one is registered, so any
+ *  path that would otherwise auto-pick (a bare local root, a `--server` that names this broker)
+ *  must refuse here. `--space` is the way to name one. A root with 0 or 1 accounts (open or
+ *  single-tenant) passes untouched. */
+/** Load a space's composed trust, converting a COMPOSITION failure into a typed target error. The
+ *  record can pass the on-disk shape gate yet fail to compose - a malformed account JWT, or a
+ *  well-formed one signed by a foreign operator - and `loadSpaceAuth` throws a raw error there.
+ *  Every resolver caller is a surface (`status`, `spawn`, the web dashboard) that must present a
+ *  legible failure, not crash on an uncaught throw, so the throw becomes `unreadable-auth`. An
+ *  absent record is not a failure here - it returns undefined, same as `loadSpaceAuth`. */
+function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
+  try {
+    return loadSpaceAuth(authDir(root), space);
+  } catch (e) {
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { space, root });
+  }
+}
+
+function assertRootIsSingleTenant(root: string): void {
+  // `accountInventory`'s readdir can THROW (EACCES/ELOOP on `.cotal/auth`): it lets that propagate
+  // so the broker-wide guards fail CLOSED, but the resolver is a presentation surface and must
+  // convert it to a typed error, or `status`/`spawn` crash on the raw throw. An unreadable auth dir
+  // is unreadable trust.
+  let inv: { spaces: string[]; corrupt: string[] };
+  try {
+    inv = accountInventory(authDir(root));
+  } catch (e) {
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { root });
+  }
+  if (inv.corrupt.length > 0)
+    throw new MeshTargetError(
+      "ambiguous-target",
+      `${root} holds ${inv.corrupt.length} unreadable account record(s) (${inv.corrupt.join(", ")}) - the tenant list is uncertain; repair or remove them`,
+      { root },
+    );
+  if (inv.spaces.length > 1)
+    throw new MeshTargetError(
+      "ambiguous-target",
+      `${root}'s broker holds accounts for ${inv.spaces.length} spaces (${inv.spaces.join(", ")}) - name one with --space`,
+      { root, available: inv.spaces },
+    );
+}
+
 function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"]): MeshTarget {
   // Honor the recorded mode: an OPEN mesh connects credlessly even if its root still has auth
   // material on disk (e.g. a root that once ran auth mode). Loading it would make `spawn` mint
@@ -136,17 +182,27 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
   let auth: SpaceAuth | undefined;
   let userAuth: UserAuthInfo | undefined;
   if (m.mode === "auth") {
-    auth = loadSpaceAuth(authDir(m.root));
-    // Defense in depth: the root's on-disk auth must still be for THIS space. A divergence (the root
+    // Space-KEYED load: ask for this entry's own space rather than "the" auth of the root, so a
+    // root serving several spaces can never hand back a neighbour's account. A record that will not
+    // COMPOSE into usable trust (malformed account JWT, or one signed by a foreign operator) throws
+    // inside `loadSpaceAuth`; convert it to a typed target error so a caller like `status` reports
+    // it and exits 0 instead of crashing on the raw compose throw.
+    auth = loadTrustOrThrow(m.root, m.space);
+    // Defense in depth: the root's on-disk auth must still cover THIS space. A divergence (the root
     // was re-`up`ed as a different space without re-recording) would otherwise mint mesh-A creds
-    // against the entry for space B. Prune the stale entry and fail loud rather than connect wrong.
-    if (auth && auth.space !== m.space) {
-      removeMesh(m.space);
-      throw new MeshTargetError(
-        "stale-auth-root",
-        `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${auth.space}"`,
-        { space: m.space, root: m.root, found: auth.space },
-      );
+    // against the entry for space B. Now that the load is space-keyed the divergence surfaces as an
+    // ABSENT account rather than a mismatched one, so detect it by what the root DOES hold; prune
+    // the stale entry and fail loud rather than connect wrong.
+    if (!auth) {
+      const found = listSpaceAccounts(authDir(m.root));
+      if (found.length) {
+        removeMesh(m.space);
+        throw new MeshTargetError(
+          "stale-auth-root",
+          `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${found.join('", "')}"`,
+          { space: m.space, root: m.root, found: found.join(", ") },
+        );
+      }
     }
   } else if (m.mode === "user") {
     // A user entry without its metadata cannot produce an actionable login line — treat it as the
@@ -172,8 +228,17 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
 }
 
 function localTarget(root: string, server: string, source: MeshTarget["source"]): MeshTarget {
-  const auth = loadSpaceAuth(authDir(root));
-  const space = auth?.space ?? DEFAULT_SPACE;
+  // No registry entry and no explicit space, so the root itself must name exactly one space;
+  // `soleSpaceOf` fails loud rather than picking one when it holds several (or the tenant list is
+  // unreadable). Surface that as a catchable target error so a caller like `status` reports it as an
+  // ambiguous target instead of crashing on an uncaught throw.
+  let space: string;
+  try {
+    space = soleSpaceOf(authDir(root)) ?? DEFAULT_SPACE;
+  } catch (e) {
+    throw new MeshTargetError("ambiguous-target", (e as Error).message, { root });
+  }
+  const auth = loadTrustOrThrow(root, space);
   // U10 guard: a user-auth space resolved WITHOUT its registry entry (pruned/never recorded) must
   // not silently static-mint — static creds DO work on a user-auth broker, which would connect the
   // operator on the wrong identity plane. The on-disk marker is the space-scoped user-auth state
@@ -182,7 +247,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
   // proves user auth was enabled here, and the alternative would classify the root "open" and
   // connect credlessly toward a user-auth broker. Fail closed on the marker, whichever half died.
   const userSpace = auth
-    ? existsSync(userAuthStateDir(root, space))
+    ? hasUserAuthState(root, space)
       ? space
       : undefined
     : userAuthSpacesOnDisk(authDir(root))[0];
@@ -193,24 +258,6 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
       { space: userSpace, root },
     );
   return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaRoot(root), source };
-}
-
-/** Space names with user-auth state under a root's auth dir, detectable WITHOUT `auth.json`: each
- *  enabled space is a subdirectory (encodeURIComponent(space)) holding the provider's pinned
- *  material — `idp.json` is written first at enable, `callout.json` right after, so either one
- *  marks the dir as user-auth state (never confusable with a stray empty folder). */
-function userAuthSpacesOnDisk(dir: string): string[] {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter(
-        (e) =>
-          e.isDirectory() &&
-          (existsSync(join(dir, e.name, "idp.json")) || existsSync(join(dir, e.name, "callout.json"))),
-      )
-      .map((e) => decodeURIComponent(e.name));
-  } catch {
-    return []; // no auth dir at all — nothing user-auth here
-  }
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on
@@ -246,8 +293,26 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   }
 
   if (flags.server) {
-    const m = loadMeshes().find((e) => e.server === flags.server);
-    if (m) return targetFromEntry(m, flags.server, "flag-server");
+    // One broker can host several spaces, and each records its own registry entry under the SAME
+    // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
+    // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
+    // name them instead (`--space` picks one explicitly, handled above).
+    const onServer = loadMeshes().filter((e) => e.server === flags.server);
+    if (onServer.length > 1)
+      throw new MeshTargetError(
+        "ambiguous-target",
+        `${onServer.length} spaces are recorded at ${flags.server} (${onServer.map((e) => e.space).join(", ")}) - name one with --space`,
+        { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`) },
+      );
+    if (onServer[0]) {
+      // `--server` names a BROKER, not a tenant. One registry row at that server does not prove the
+      // broker hosts one tenant: the row's own root may hold several account records on disk with
+      // only this one registered (a pruned/partial registration). The disk is the authority - if it
+      // shows several tenants (or an unreadable one), `--server` alone cannot pick, same as the bare
+      // local branch below.
+      assertRootIsSingleTenant(onServer[0].root);
+      return targetFromEntry(onServer[0], flags.server, "flag-server");
+    }
     return localTarget(findCotalRoot(cwd), flags.server, "flag-server");
   }
 
@@ -258,11 +323,28 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const root = findCotalRoot(cwd);
   if (isGenuineSpace(root)) {
+    // The DISK is the tenant authority for this root, before any registry record: a broker whose
+    // auth dir holds several accounts stays several tenants even when only one of them happens to
+    // be registered (a pruned entry, a partial registration). Trusting the single surviving record
+    // here would silently resolve a multi-tenant root to whichever tenant kept its record - the
+    // same auto-pick `soleSpaceOf` refuses on the unrecorded path. And an UNREADABLE record means
+    // the tenant count itself is uncertain, which cannot resolve to a single mesh either.
+    assertRootIsSingleTenant(root);
     // For a local project, if its mesh is in the registry, use the RECORDED server +
     // mode, not DEFAULT_SERVER: a project started with `--server …:4333` must spawn against :4333,
     // and a recorded OPEN mesh must not mint creds off stale `.cotal/auth` left on disk. Fall back
     // to the local default only when nothing is recorded for this root.
-    const recorded = meshes.find((m) => resolve(m.root) === resolve(root));
+    const rootMatches = meshes.filter((m) => resolve(m.root) === resolve(root));
+    // A broker that runs several spaces records one entry per space, all under this same root. With no
+    // `--space` to pick one, `.find()` would silently resolve whichever sorted first; name the tenants
+    // and refuse instead (the same posture as `soleSpaceOf` for an unrecorded multi-space root).
+    if (rootMatches.length > 1)
+      throw new MeshTargetError(
+        "ambiguous-target",
+        `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
+        { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
+      );
+    const recorded = rootMatches[0];
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded");
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

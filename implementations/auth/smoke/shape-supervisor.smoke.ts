@@ -52,7 +52,7 @@ const space = `shapesup-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-shapesup-"));
 const conf = join(tmp, "server.conf");
-writeFileSync(conf, serverConfig(auth, { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(conf, serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
 let srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };

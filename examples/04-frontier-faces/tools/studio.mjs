@@ -21,13 +21,14 @@
 
 import { createServer, request as httpRequest } from "node:http";
 import { readFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect as netConnect } from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { CotalEndpoint } from "@cotal-ai/core";
+import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, provisionAgent } from "@cotal-ai/core";
+import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // ---- paths + config -------------------------------------------------------------------------
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -60,9 +61,20 @@ function loadManifest() {
     publish: c?.allowPublish || [],
   }));
   if (!channels.some((c) => c.name === "general")) throw new Error(`${path}: needs a \`general\` channel`);
-  return { path, space: raw.space, servers: raw.broker?.servers, agents: Object.keys(raw.agents || {}), channels };
+  return {
+    path,
+    space: raw.space,
+    servers: raw.broker?.servers,
+    // `auth: true` ⇒ a JWT-authed mesh. The graph's membership spokes come from a system-account
+    // CONNZ feed, which only an authed space provisions. On an open broker the graph is
+    // traffic-only. In auth mode we mint a cred per agent (+ the operator seat) below.
+    auth: raw.broker?.auth === true,
+    agents: Object.keys(raw.agents || {}),
+    channels,
+  };
 }
 const manifest = loadManifest();
+const AUTH = manifest.auth;
 
 const SPACE = process.env.SPACE || manifest.space || "demo";
 // The manifest's broker wins over an ambient COTAL_SERVERS: the operator's own shell may be on a
@@ -163,16 +175,97 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let meshProc = null; // set only if WE started the mesh (so teardown stops it)
 
+// In AUTH mode every `cotal` call must run from ONE root, so the space's auth material (account
+// keys, the membership-observer cred, and the per-agent creds `cotal mint` writes) all land in the
+// same `.cotal/`. The example dir is its own mesh root, which keeps this space's auth material out
+// of the repo root's (a different space lives there).
+const AUTH_ROOT = AUTH ? EX : ROOT;
+const credsPath = (name) => join(AUTH_ROOT, ".cotal", "auth", "creds", `${name}.creds`);
+const agentCreds = new Map(); // agent name -> { path, lifecycleUid } (AUTH mode)
+
+/** Write the manifest's channels as a `cotal up --channels` registry seed; returns its path. */
+function writeChannelSeed() {
+  const channels = {};
+  for (const c of manifest.channels) channels[c.name] = c.description ? { description: c.description } : {};
+  const path = join(AUTH_ROOT, ".cotal", "studio-channels.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ channels }, null, 2));
+  return path;
+}
+
+/** Mint a per-principal cred scoped to exactly the channels this seat may read/post, and return
+ *  `{ path, lifecycleUid }`. The ACLs are the manifest's, so the BROKER, not agent goodwill,
+ *  enforces the topology.
+ *
+ *  Minted in-process rather than via `cotal mint`: an agent cred's dm/dlv/chathist grants are
+ *  lifecycle-keyed exact names (SPEC 13.1), so `mintCreds` needs the same `lifecycleUid` the agent
+ *  will launch with. The CLI mints its own identity and never surfaces that uid, so the launcher
+ *  has to own both halves. */
+let provisioner = null;
+/** A privileged, NON-consuming seat used only to pre-create other principals' broker footprint.
+ *  Minting a cred is not enough on an authed mesh: dm/dlv durables are BIND-ONLY lifecycle-keyed
+ *  names, so something privileged must create them first or the launch dies binding them
+ *  ("consumer not found"). `cotal spawn` does exactly this; the studio is its own launcher. */
+async function ensureProvisioner(auth) {
+  if (provisioner) return provisioner;
+  provisioner = new CotalEndpoint({
+    space: SPACE,
+    servers: SERVERS,
+    creds: await mintCreds(auth, newIdentity(), "provisioner"),
+    card: { name: "studio-provisioner", role: "provisioner", kind: "endpoint" },
+    channels: [],
+    consume: false,
+    registerPresence: false,
+    watchPresence: false,
+    watchChannels: false,
+  });
+  provisioner.on("error", (e) => warn(`provisioner: ${e?.message || e}`));
+  await provisioner.start();
+  return provisioner;
+}
+
+async function mintCred(name, subs, pubs, role) {
+  const store = workspaceSecretStore(AUTH_ROOT);
+  // Target THIS space explicitly: a sole-space lookup refuses to pick when the root holds any
+  // other (or unreadable) account record, and this root may carry more than one space's material.
+  const auth = await getSpaceAuth(store, SPACE);
+  if (!auth) throw new Error(`no auth material for space "${SPACE}" under ${AUTH_ROOT}/.cotal`);
+  const prov = await ensureProvisioner(auth);
+  const lifecycleUid = mintLifecycleUid();
+  // Durables + ACL row + scoped cred in one privileged step.
+  const creds = await provisionAgent(prov, auth, newIdentity(), {
+    subscribe: subs,
+    allowSubscribe: subs,
+    allowPublish: pubs,
+    // The role also scopes the TASK-queue consumer to `svc_<role>`; the endpoint looks that name
+    // up at start, so a cred minted without it is denied on its own queue.
+    ...(role ? { role } : {}),
+    lifecycleUid,
+  });
+  const out = credsPath(name);
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, creds, { mode: 0o600 });
+  return { path: out, lifecycleUid };
+}
+
 async function ensureMesh() {
   if (await reachable(SERVERS)) {
     log(`mesh already up on ${SERVERS} — reusing`);
     return { reused: true };
   }
-  log(`starting mesh: cotal up --open --space ${SPACE} --server ${SERVERS}`);
+  // AUTH mode: no `--open`, and seed the manifest's channels through `--channels` so the registry
+  // carries them from boot (an unseeded registry makes a zero-traffic channel invisible to the
+  // dashboard, which lists registry ∪ channels-with-messages). `cotal up` on a fresh authed space
+  // also provisions the membership-observer cred and starts the delivery daemon, which is what
+  // publishes the graph's membership spokes.
+  const upArgs = AUTH
+    ? ["cotal", "up", "--space", SPACE, "--server", SERVERS, "--channels", writeChannelSeed()]
+    : ["cotal", "up", "--open", "--space", SPACE, "--server", SERVERS];
+  log(`starting mesh: ${upArgs.slice(1).join(" ")}`);
   // stdio MUST be piped+drained, not "ignore": with its output sent to /dev/null `cotal up` exits
   // non-zero and orphans a half-configured broker (agents then can't bind). Forward it dimmed.
-  meshProc = spawn("pnpm", ["cotal", "up", "--open", "--space", SPACE, "--server", SERVERS], {
-    cwd: ROOT,
+  meshProc = spawn("pnpm", upArgs, {
+    cwd: AUTH_ROOT,
     detached: true, // own process group → teardown can reap nats-server too
     stdio: ["ignore", "pipe", "pipe"],
     env: cleanEnv(),
@@ -202,7 +295,7 @@ async function clearHistory(why = "fresh boot") {
   log(`${why} — clearing chat history on space "${SPACE}"`);
   await new Promise((resolve) => {
     const p = spawn("pnpm", ["cotal", "history", "clear", "--force", "--dms", "--space", SPACE], {
-      cwd: ROOT,
+      cwd: AUTH_ROOT,
       stdio: "ignore",
       env: cleanEnv(),
     });
@@ -215,10 +308,16 @@ const agents = []; // { name, persona, role, model, child, port, session, passwo
 const liveAgentNames = () => agents.filter((a) => !a.dead).map((a) => a.name); // for @mention-to-wake
 
 /** Spawn ONE real mesh agent headlessly and resolve once its OpenCode handshake lands. */
-function spawnAgent(name) {
+async function spawnAgent(name) {
   const { file, persona, role, model, founder } = agentMeta(name);
+  // An authed launch needs BOTH the cred and a launcher-minted lifecycle uid (the agent's durable
+  // names are keyed by it); the connector rejects a half-identity rather than silently degrading.
+  const cred = AUTH ? agentCreds.get(name) : undefined;
+  if (AUTH && !cred) throw new Error(`no minted cred for ${name}`);
+  const auth = AUTH ? { COTAL_CREDS: cred.path, COTAL_LIFECYCLE_UID: cred.lifecycleUid } : {};
   const env = {
     ...cleanEnv(),
+    ...auth,
     COTAL_SERVE_HEADLESS: "1",
     COTAL_SPACE: SPACE,
     COTAL_NAME: name,
@@ -355,9 +454,16 @@ const HOST = "host";
 const display = (n) => (n === HOST ? "you" : n);
 
 async function startOperator(reused) {
+  // The operator seat is a real principal too: on an authed mesh it connects with its own cred
+  // (content, not a path) scoped to every channel, since it watches the whole room.
+  // The endpoint needs the SAME lifecycleUid its cred was minted with: its dm/dlv/chathist
+  // resources are lifecycle-keyed names, and the cred only grants those exact names.
+  const host = AUTH ? await mintCred(HOST, CHANNELS, CHANNELS, "host") : undefined;
+  const hostCreds = host ? readFileSync(host.path, "utf8") : undefined;
   ep = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
+    ...(hostCreds ? { creds: hostCreds, lifecycleUid: host.lifecycleUid } : {}),
     card: { name: HOST, kind: "endpoint", role: "host" },
     channels: CHANNELS,
     consume: true, // we want every message
@@ -681,8 +787,14 @@ async function main() {
   if (!reused) await clearHistory(); // start clean unless we're joining someone else's live mesh
   await startOperator(reused);
 
+  // Mint every agent cred SEQUENTIALLY first: `cotal mint` mutates one shared auth dir, so six
+  // concurrent mints would race. The spawns below then just read the finished files.
+  if (AUTH) {
+    log(`minting ${roster.length} agent creds`);
+    for (const name of roster) agentCreds.set(name, await mintCred(name, subsOf(name), pubsOf(name), agentMeta(name).role));
+  }
   log(`spawning ${roster.length} agents: ${roster.join(", ")}`);
-  const results = await Promise.allSettled(roster.map(spawnAgent));
+  const results = await Promise.allSettled(roster.map((n) => spawnAgent(n)));
   const ok = results.filter((r) => r.status === "fulfilled").length;
   for (const r of results) if (r.status === "rejected") warn(r.reason.message);
   if (ok === 0) throw new Error("no agents came up — see the logs above");

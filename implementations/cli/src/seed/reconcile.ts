@@ -120,7 +120,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         throw new Error("a previous connector seed or repair was interrupted - run `cotal ext seed --repair`");
       }
-    } else if (readWitness() && authorityIntact() && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -150,6 +150,22 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
 function authorityIntact(): boolean {
   try {
     return readAuthority() !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/** The steady-state fast paths may NOOP only when every CURRENT built-in is accounted for in the
+ *  authority. Without this, a built-in ADDED at an unchanged generation (a source checkout, or a
+ *  prefix stamped before the built-in set grew) would stay never-seeded forever: the stamp says
+ *  "current" while the set it stamped no longer matches. A deliberately-removed built-in still
+ *  counts as accounted — the authority is monotonic (removed ids never leave it) — so
+ *  removed-stays-removed is unaffected. */
+function builtinsAccounted(): boolean {
+  try {
+    const ever = everSeededUnion();
+    if (!ever) return false;
+    return SEED_BUILTINS.every((name) => ever.has(name));
   } catch {
     return false;
   }
@@ -193,8 +209,18 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
   const everSeeded = resolveEverSeeded(mode, generation);
 
   // Stamp fast path under the lock: a competing boot may have reconciled while we waited. Only when no
-  // cursor or recovery obligation is outstanding (an interrupted run must proceed, not short-circuit).
-  if (mode === "auto" && !cursor && !recoveryPending() && readWitness() && readStamp()?.generation === generation) return NOOP;
+  // cursor or recovery obligation is outstanding (an interrupted run must proceed, not short-circuit),
+  // and only when every current built-in is accounted for (same rule as the lock-free fast path — a
+  // built-in added at an unchanged generation must fall through to the never-seeded branch below).
+  if (
+    mode === "auto" &&
+    !cursor &&
+    !recoveryPending() &&
+    readWitness() &&
+    readStamp()?.generation === generation &&
+    SEED_BUILTINS.every((name) => everSeeded.has(name))
+  )
+    return NOOP;
 
   const stampGen = readStamp()?.generation;
   const repairTarget = mode === "repair" ? cursor?.package : undefined;

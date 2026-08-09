@@ -1,9 +1,12 @@
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   abortMaintenanceCut,
   acquireMaintenanceLock,
+  assertSingleSpaceBroker,
+  authDir,
   beginMaintenanceCut,
   clearPreservationCommitIntent,
   clearPreservationPrepareIntent,
@@ -18,9 +21,11 @@ import {
   recordPreservationManagerCommit,
   releaseMaintenanceLock,
   removeMeshesByRoot,
+  resolveMeshTarget,
   sameStoreIdentity,
   writePreservationCommitIntent,
   writePreservationPrepareIntent,
+  spaceKey,
   type LocalProcess,
   type LocalProcessContext,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
@@ -47,6 +52,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
+import { parsePid, probeLiveness } from "../lib/pid.js";
 import { resolveSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -68,22 +74,25 @@ export function downComplete(argv: string[]): CompletionResult {
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
 export async function down(args: ParsedArgs): Promise<void> {
-  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string };
+  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string; space?: string };
   const requested = [...new Set(args.positionals)];
   if (values["preserve-state"]) {
-    if (requested.length || values.file || values.run || values["dry-run"])
-      throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --file, --run, or --dry-run");
+    if (requested.length || values.file || values.run || values["dry-run"] || values.space)
+      throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
+    assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
     await preserveStateDown(values["store-dir"]);
     return;
   }
   if (values["store-dir"]) throw new Error("--store-dir is only valid with down --preserve-state");
-  if ((values.file || values.run) && requested.length) {
-    throw new Error("component names cannot be combined with --file or --run");
+  if ((values.file || values.run) && (requested.length || values.space)) {
+    throw new Error("component names and --space cannot be combined with --file or --run");
   }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
+  if (values.space && !requested.length)
+    throw new Error("--space only selects the mesh for target-addressed components - name them (e.g. `cotal down web --space <name>`); bare `cotal down` always stops this folder's stack");
   const all = localProcessSurface();
   const known = all.map((component) => component.name).sort();
   const unknown = requested.filter((name) => !known.includes(name));
@@ -91,20 +100,54 @@ export async function down(args: ParsedArgs): Promise<void> {
     throw new Error(`unknown component${unknown.length > 1 ? "s" : ""} ${unknown.map((name) => JSON.stringify(name)).join(", ")} - known: ${known.join(", ")}`);
   const selected = (requested.length ? requested.map((name) => all.find((part) => part.name === name)!) : all)
     .sort((a, b) => Number(Boolean(a.stopLast)) - Number(Boolean(b.stopLast)) || (a.order ?? 50) - (b.order ?? 50));
-  const context: LocalProcessContext = { root: cotalRoot(), space: resolveSpace(process.cwd()) };
+  // A component whose START is target-resolved (`rootedAt: "target"` — the web dashboard) records
+  // its pidfile under the TARGET mesh's root, so a selective stop resolves the SAME mesh the start
+  // side did (registry current mesh first, `--space` to name one) instead of assuming this folder.
+  // Bare `cotal down` stays a sweep of this folder's stack: its pidfiles live here, and reaching
+  // into another mesh's root mid-sweep would stop a process the folder's broker does not own.
+  const targetAddressed = (component: LocalProcess): boolean => requested.length > 0 && component.rootedAt === "target";
+  if (values.space) {
+    const folderRooted = selected.filter((component) => !targetAddressed(component));
+    if (folderRooted.length)
+      throw new Error(`--space only applies to target-addressed components - ${folderRooted.map((component) => component.name).join(", ")} always stop${folderRooted.length === 1 ? "s" : ""} under this folder's root`);
+  }
+  // A `down` that touches this folder's stack stops the shared broker and its per-space daemons;
+  // none of them can address one space, so a multi-space root is refused up front rather than at
+  // the space-blind pidfile lookup below. A purely target-addressed stop never reads this folder's
+  // pidfiles, so it is exempt (its space comes from the resolved mesh target).
+  if (selected.some((component) => !targetAddressed(component))) assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
+  // Both contexts resolve lazily: a purely target-addressed stop must not require a mesh root at
+  // the cwd, and a folder sweep must not require a resolvable mesh target.
+  let folderContext: LocalProcessContext | undefined;
+  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveSpace(process.cwd()) });
+  let targetContext: LocalProcessContext | undefined;
+  const contextFor = (component: LocalProcess): LocalProcessContext => {
+    if (!targetAddressed(component)) return folderCtx();
+    if (!targetContext) {
+      const target = resolveMeshTarget(process.cwd(), values.space ? { space: values.space } : {});
+      targetContext = { root: target.root, space: target.space };
+    }
+    return targetContext;
+  };
 
   if (selected.some((component) => component.stopLast)) {
     const selectedNames = new Set(selected.map((component) => component.name));
-    const dependants = all.filter((component) => !selectedNames.has(component.name) && processAlive(component, context));
+    // Fail CLOSED: an unselected dependant that MIGHT be running (including one behind an
+    // unattributable/unknown pidfile) blocks a stop-last shutdown - stopping the broker out from
+    // under a live dependant we could not confirm gone is exactly the signer-orphan the contract
+    // forbids. `mayBeRunning`, not `processAlive` (which reads uncertainty as "not running").
+    // Folder context: the question is what depends on THIS folder's broker, so a dependant is
+    // judged by the record under this root regardless of how it would be addressed selectively.
+    const dependants = all.filter((component) => !selectedNames.has(component.name) && mayBeRunning(component, folderCtx()));
     if (dependants.length) {
       throw new Error(
-        `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running - name them too, or run bare \`cotal down\``,
+        `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running (or its liveness cannot be confirmed) - name them too, or run bare \`cotal down\``,
       );
     }
   }
 
   if (values["dry-run"]) {
-    const recorded = selected.filter((component) => processRecorded(component, context));
+    const recorded = selected.filter((component) => processRecorded(component, contextFor(component)));
     for (const component of recorded) console.log(c.dim(`would stop ${component.label}`));
     if (!recorded.length) {
       const target = requested.length ? requested.join(", ") : "the local stack";
@@ -118,13 +161,13 @@ export async function down(args: ParsedArgs): Promise<void> {
   let any = false;
   let allStopped = true;
   for (const component of selected) {
-    any = processRecorded(component, context) || any;
+    any = processRecorded(component, contextFor(component)) || any;
     if (component.stopLast && !allStopped) {
       console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
       continue;
     }
     try {
-      await stopLocalProcess(component, context);
+      await stopLocalProcess(component, contextFor(component));
     } catch (e) {
       allStopped = false;
       console.error(c.red(`✗ ${(e as Error).message}`));
@@ -137,14 +180,14 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
 
   for (const component of selected) {
-    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, context), { force: true });
+    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, contextFor(component)), { force: true });
   }
 
   // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
   // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
   if (selected.some((component) => component.clearsMesh)) {
-    rmSync(join(context.root, ".cotal", "run"), { recursive: true, force: true });
-    removeMeshesByRoot(context.root);
+    rmSync(join(folderCtx().root, ".cotal", "run"), { recursive: true, force: true });
+    removeMeshesByRoot(folderCtx().root);
   }
   if (!any) {
     const target = requested.length ? requested.join(", ") : "the local stack";
@@ -154,13 +197,12 @@ export async function down(args: ParsedArgs): Promise<void> {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const parsePid = (raw: string): number | undefined => {
-  const pid = Number(raw.trim());
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
-};
-export const isAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
-};
+// The pid parser + liveness probe are the SHARED pid-attribution contract (`lib/pid.ts`), the same
+// one `auth-proc` uses - so `cotal down`'s stop of the auth-service (a callout SIGNER) attributes a
+// torn pidfile exactly as the direct helper does, instead of the old unbounded parser + two-state
+// probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
+// stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
+export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
   return existsSync(localProcessPath(component.pidFile, context)) || (component.artifacts ?? []).map((artifact) => localProcessPath(artifact, context)).some(existsSync);
@@ -171,6 +213,24 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
   if (!existsSync(pidPath)) return false;
   const pid = parsePid(readFileSync(pidPath, "utf8"));
   return pid !== undefined && isAlive(pid);
+}
+
+/** Whether a component MIGHT still be running - the question the pre-stop `stopLast` guard must ask,
+ *  and it fails CLOSED on uncertainty. A component with NO pidfile, an EMPTY husk, or a valid pid
+ *  PROVEN dead (ESRCH) is not running. ANY other state - an unparsable/unattributable record, or a
+ *  valid pid that is alive or whose liveness cannot be confirmed (`unknown`) - MIGHT be running, so
+ *  it must BLOCK a stop-last (broker) shutdown. `processAlive` collapses unparsable and `unknown` to
+ *  "not alive", which is fine for "is it worth stopping" but WRONG for "is it safe to stop the broker
+ *  out from under this": that read would let `cotal down nats` orphan a live auth signer behind a
+ *  torn pidfile. Only an ESRCH-confirmed death (or no record) clears a dependant. */
+export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
+  const pidPath = localProcessPath(component.pidFile, context);
+  if (!existsSync(pidPath)) return false;
+  const raw = readFileSync(pidPath, "utf8");
+  if (raw.trim() === "") return false; // empty pre-protocol husk: no process behind it
+  const pid = parsePid(raw);
+  if (pid === undefined) return true; // unattributable content: cannot prove it gone → may be running
+  return probeLiveness(pid) !== "dead"; // alive OR unknown → may be running; only ESRCH clears it
 }
 
 /** Stop one recorded process and await its actual exit before the next dependency is stopped. */
@@ -192,27 +252,42 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
   const marker = `${pidPath}.stopping`;
   let markerFd: number | undefined;
   for (;;) {
+    // ATOMIC publish (the pid-slot pattern): fill a private temp inode with our pid FIRST, then
+    // `link(2)` it as the marker - a no-overwrite atomic op. A contender therefore never observes an
+    // empty marker mid-publish; the old `openSync(marker,"wx")` then `writeFileSync` left exactly
+    // that window, and a reader in it saw owner=undefined and reclaimed a LIVE owner's reservation
+    // (mutual exclusion defeated). The published name and the held fd both keep the inode alive.
+    const temp = `${marker}.${process.pid}.${randomBytes(4).toString("hex")}`;
     try {
-      markerFd = openSync(marker, "wx", 0o600);
+      markerFd = openSync(temp, "wx", 0o600);
       writeFileSync(markerFd, String(process.pid));
+      linkSync(temp, marker); // EEXIST here = the marker is already held
+      rmSync(temp, { force: true });
       break;
     } catch (e) {
       if (markerFd !== undefined) {
         closeSync(markerFd);
-        rmSync(marker, { force: true });
         markerFd = undefined;
       }
+      try { rmSync(temp, { force: true }); } catch { /* never created, or already gone */ }
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       let owner: number | undefined;
       try {
         owner = parsePid(readFileSync(marker, "utf8"));
       } catch (readErr) {
-        if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if ((readErr as NodeJS.ErrnoException).code === "ENOENT") continue; // holder released between publish-refusal and read
         throw readErr;
       }
-      if (owner && isAlive(owner))
+      // The atomic publish above is what closes the race: a LIVE `down` holding the marker always
+      // wrote its own POSITIVE pid into it (no empty/partial window), so a live holder is always a
+      // valid pid that is alive/EPERM/unknown - and THOSE we never reclaim (that is the mutual
+      // exclusion). An UNATTRIBUTABLE marker (empty / 0 / negative / garbled) therefore cannot
+      // represent a live holder; it is a stale or crashed reservation, and reclaiming it is both safe
+      // and required so a crashed `down` never wedges the next one. So: reclaim an unattributable
+      // owner or a valid pid PROVEN dead (ESRCH); refuse only a valid pid that is alive or whose
+      // liveness we cannot confirm.
+      if (owner !== undefined && probeLiveness(owner) !== "dead")
         throw new Error(`${component.name} is already being stopped by another \`cotal down\` (pid ${owner})`);
-      // A dead owner cannot finish cleanup. Reclaim its marker and retry the exclusive create.
       rmSync(marker, { force: true });
     }
   }
@@ -221,33 +296,55 @@ export async function stopLocalProcess(component: LocalProcess, context: LocalPr
   let stopped = false;
   try {
     if (pid === undefined) {
-      console.log(c.dim(`${component.label} had an invalid pidfile.`));
-      stopped = true;
-      return true;
+      // An EMPTY pidfile is a pre-protocol husk (no process behind it) and is safe to clear. Any
+      // OTHER unattributable content (garbled, fractional, out-of-range - anything `parsePid`
+      // rejects) may still front a LIVE process we cannot identify or signal; removing it would
+      // orphan that process while reporting a clean stop (the signer-orphan this slice must not do).
+      // Refuse loud and preserve it.
+      if (rawPid === "") {
+        console.log(c.dim(`${component.label} had an empty pidfile.`));
+        stopped = true; // husk cleared in `finally`
+        return true;
+      }
+      throw new Error(
+        `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
+      );
     }
     try {
       process.kill(pid, "SIGTERM");
-    } catch {
-      if (isAlive(pid)) throw new Error(`could not signal ${component.label} (pid ${pid})`);
-      console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
-      stopped = true;
-      return true;
+    } catch (e) {
+      // ONLY an ESRCH proves the process is already gone (safe to clear). EPERM (exists, another
+      // user's) or any other errno (EIO, argument errors, unknown) means we could NOT confirm death
+      // - reporting it stopped and removing its record would orphan a live process. Fail loud, keep
+      // the record. A two-state "not alive => gone" is exactly the bug: `unknown` is not `dead`.
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") {
+        console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
+        stopped = true;
+        return true;
+      }
+      throw new Error(`could not signal ${component.label} (pid ${pid}) (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to report it stopped or remove its record; stop it manually`);
     }
+    // Wait for CONFIRMED death (ESRCH), escalating to SIGKILL; `unknown`/`alive` both keep us
+    // waiting, and if death is never confirmed the record is preserved (never deleted on a guess).
     const graceDeadline = Date.now() + 15_000;
-    while (isAlive(pid) && Date.now() < graceDeadline) await sleep(100);
-    if (isAlive(pid)) {
+    while (probeLiveness(pid) !== "dead" && Date.now() < graceDeadline) await sleep(100);
+    if (probeLiveness(pid) !== "dead") {
       try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
       const hardDeadline = Date.now() + 3_000;
-      while (isAlive(pid) && Date.now() < hardDeadline) await sleep(100);
+      while (probeLiveness(pid) !== "dead" && Date.now() < hardDeadline) await sleep(100);
     }
-    if (isAlive(pid)) throw new Error(`${component.label} (pid ${pid}) did not exit; its pidfile was preserved`);
+    if (probeLiveness(pid) !== "dead")
+      throw new Error(`${component.label} (pid ${pid}) did not exit, or its death could not be confirmed; its pidfile was preserved`);
     stopped = true;
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
-    if (stopped || pid === undefined || !isAlive(pid)) {
-      rmSync(pidPath, { force: true });
-    }
+    // Remove the pidfile ONLY when we confirmed a clean stop: `stopped` is set exclusively on an
+    // ESRCH-proven death (already-gone, or a confirmed exit). Every other exit from the try above is
+    // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
+    // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
+    // `unknown` as gone and deleted a live process's record; it is gone.
+    if (stopped) rmSync(pidPath, { force: true });
     rmSync(marker, { force: true });
   }
 }
@@ -303,7 +400,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         // the re-prepared inventory is byte-identical to the journaled resume document.
         const manager = all.find((component) => component.name === "manager");
         if (!manager) throw new Error("local process registry has no manager descriptor");
-        if (!processAlive(manager, context)) {
+        if (!mayBeRunning(manager, context)) { // fail-closed: an uncertain manager is treated as alive, not dead
           const committing = readPreservationCommitIntent(root);
           if (!committing || committing.attemptId !== attemptId) {
             // No commit intent recorded: the child-stopping RPC was never invoked, so nothing was
@@ -335,7 +432,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         const retryTarget = await resolveControlTarget({ space: mesh.space, server: mesh.server }, "control-caller-admin");
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
-        if (retryDelivery && processAlive(retryDelivery, context)) await stopLocalProcess(retryDelivery, context);
+        if (retryDelivery && mayBeRunning(retryDelivery, context)) await stopLocalProcess(retryDelivery, context); // fence an uncertain delivery too (stopLocalProcess throws loud on unattributable → abort)
         const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, "any", 60_000);
         const replan = reprepared.ok ? reprepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } : undefined;
         if (!replan?.inventory || (replan.failures?.length ?? 0) !== 0 || (replan.state !== "prepared" && replan.state !== "preserved"))
@@ -376,7 +473,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       // Fence Plane 3 BEFORE any inventory work: with the delivery daemon stopped, no durable
       // join/leave can mutate MEMBERS at or after the moment the inventory is taken.
       const delivery = all.find((component) => component.name === "delivery");
-      if (delivery && processAlive(delivery, context)) await stopLocalProcess(delivery, context);
+      if (delivery && mayBeRunning(delivery, context)) await stopLocalProcess(delivery, context); // fence an uncertain delivery: no MEMBERS mutation may race the inventory
       const prepared = await askManager(
         target.space,
         target.server,
@@ -431,6 +528,10 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     if (existing?.state !== "cut-committed" && !managerCommitJournaled) {
       const manager = all.find((component) => component.name === "manager");
       if (!manager) throw new Error("local process registry has no manager descriptor");
+      // This one DELIBERATELY keeps `processAlive` (provably alive), not `mayBeRunning`: here we must
+      // USE the manager to prove every retained child stopped, so anything short of provably-alive -
+      // dead OR uncertain - must fail closed and preserve the cut. `processAlive` already returns
+      // false on `unknown`, so an uncertain manager throws here rather than being trusted to attest.
       if (!processAlive(manager, context))
         throw new Error("cannot complete preservation because the attempt-bound manager is not alive to prove every retained child stopped; recovery must preserve the cut-intent journal for inspection");
       // Fault window: cut-intent journaled but the child-stopping RPC not yet invoked (no commit
@@ -484,9 +585,11 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     // rank() keeps auth (40) ahead of the broker (stopLast, 100) within this phase.
     for (const component of ranked.filter(afterQuiescence))
       await stopLocalProcess(component, context);
-    const stillRunning = all.filter((component) => processAlive(component, context));
+    // Fail-closed: a component we cannot PROVE stopped (unattributable/unknown pidfile) leaves the
+    // cut partial - it must not be silently counted as gone, or `unknown` becomes a "successful cut".
+    const stillRunning = all.filter((component) => mayBeRunning(component, context));
     if (stillRunning.length)
-      throw new Error(`preservation cut is partial; still running: ${stillRunning.map((component) => component.name).join(", ")}`);
+      throw new Error(`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(", ")}`);
     await waitForEndpointUnreachable(mesh.server);
     completeMaintenanceCut(lock, {
       attemptId,
@@ -614,7 +717,7 @@ export function pidfileTargets(space: string): Array<[file: string, label: strin
   return [
     ["manager.pid", "manager"],
     ["delivery.pid", "delivery daemon"],
-    [`auth-service.${encodeURIComponent(space)}.pid`, "user-auth service"],
+    [`auth-service.${spaceKey(space)}.pid`, "user-auth service"],
     ["web.pid", "web dashboard"],
     ["nats.pid", "nats-server"],
   ];

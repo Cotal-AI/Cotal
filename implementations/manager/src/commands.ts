@@ -6,7 +6,7 @@ import {
   type Command,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, soleSpaceOf } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
@@ -18,7 +18,7 @@ type Values = Record<string, string | undefined>;
 /** The space to operate on: explicit `--space`, else this folder's `.cotal/auth` space, else the
  *  default — so a manually-run manager matches the folder's mesh instead of assuming the default. */
 function spaceFor(v: Values): string {
-  return v.space ?? loadSpaceAuth(authDir(findCotalRoot()))?.space ?? DEFAULT_SPACE;
+  return v.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE;
 }
 
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
@@ -59,6 +59,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // P2 item 6: the broker ws listener port (loopback) `cotal up` allocated — the console's mesh
   // session client builds its wsUrl from it. Absent ⇒ no console session client (POST /session 503s).
   const wsPort = v["ws-port"] ? Number(v["ws-port"]) : undefined;
+  // Where the console face binds. Absent → loopback, so a bare `cotal supervise` keeps a
+  // machine-local console. `cotal up` passes the address it bound the broker to when the operator
+  // asked for an exposed console; the terminal itself rides the mesh either way.
+  const attachHost = v["console-host"];
   // Construction resolves the runtime (createRuntime) — which fails loud on an unusable env, e.g. the
   // pty runtime under Bun. Render that as one actionable line, not a raw stack (this also lands in
   // `.cotal/manager.log` for a detached `cotal up` daemon).
@@ -73,6 +77,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       runtime,
       consolePort,
       wsPort,
+      attachHost,
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
@@ -175,6 +180,7 @@ const managerCommands: Command[] = [
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
+      { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
       { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client (P2 item 6)" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },

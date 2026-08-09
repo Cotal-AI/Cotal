@@ -327,7 +327,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata; reserved keys include `connector` (host harness name) and `model` (pinned model), both advisory only |
+| `meta` | object | MAY | free-form display metadata; reserved keys include `connector` (host harness name), `model` (pinned model), and `host` (the machine the session runs on, self-reported by that machine), all advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -552,8 +552,13 @@ operator-facing views of this section: [docs/identity-and-auth.md](docs/identity
 [docs/channels-and-permissions.md](docs/channels-and-permissions.md); the threat model is
 [docs/security.md](docs/security.md).)*
 
-- **Account = space, user = agent.** A space is one NATS account. A per-space operator signs
-  the account; an account signing key mints per-agent user JWTs.
+- **Account = space, user = agent.** A space is one NATS account. The **broker's** operator signs
+  the account; an account signing key mints per-agent user JWTs. A broker (one nats-server trust
+  root: one operator, one system account) MAY host several spaces — one account per space, every
+  account signed by that one operator. Broker trust is therefore per-broker, never per-space: a
+  space owns only its own account and references the broker's operator, and rotating or replacing
+  broker trust is intrinsically broker-wide - it affects every tenant on the broker at once and
+  cannot be scoped to a single space.
 - **Profiles are default-deny allow-lists.** Subject, stream, durable, and KV names are built
   from the same builders as §3 and §8. Exact profile shapes are in Appendix B.
 - **An agent's channel scope is three concepts**, each a list of channel names or wildcard

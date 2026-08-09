@@ -13,6 +13,20 @@ const empty = document.getElementById("empty");
 const meta = document.getElementById("meta");
 const panes = new Map(); // name -> { el, term, fit, session, status }
 
+// The console token, taken once from this page's own URL and kept only in memory. Deliberately not
+// stored in a cookie: cookies are host-scoped and not port-scoped, so a cookie set here would be
+// sent to every other HTTP service on this host, and two managers on one host would clobber each
+// other's. The manager serves the static shell openly and requires this on every route that carries
+// real data (/agents, /feed) or mints one (/session/<name>).
+// Preferred source is the FRAGMENT: a browser never sends it to a server, so the credential stays
+// out of request logs, proxies, and `Referer`. The query is accepted as a fallback for a hand-built
+// URL.
+const TOKEN =
+  new URLSearchParams(location.hash.replace(/^#/, "")).get("t") ??
+  new URLSearchParams(location.search).get("t") ??
+  "";
+const withToken = (path) => `${path}${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(TOKEN)}`;
+
 function layout() {
   const n = panes.size;
   const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
@@ -52,7 +66,7 @@ async function openSession(name, pane) {
   if (!S) { term.write("\r\n[cotal: session bundle not loaded]\r\n"); return; }
   let est;
   try {
-    const res = await fetch(`/session/${encodeURIComponent(name)}`, { method: "POST" });
+    const res = await fetch(withToken(`/session/${encodeURIComponent(name)}`), { method: "POST" });
     if (!res.ok) { term.write(`\r\n[cotal: attach failed (${res.status})]\r\n`); return; }
     est = await res.json();
   } catch { term.write("\r\n[cotal: attach request failed]\r\n"); return; }
@@ -120,7 +134,7 @@ function setStatus(name, status) {
 
 async function poll() {
   try {
-    const agents = await (await fetch("/agents")).json();
+    const agents = await (await fetch(withToken("/agents"))).json();
     meta.textContent = `${agents.length} agent${agents.length === 1 ? "" : "s"} · space ${agents[0]?.space ?? ""}`.trim();
     const seen = new Set();
     for (const a of agents) {

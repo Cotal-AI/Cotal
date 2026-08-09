@@ -68,11 +68,11 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     {
       name: "node-version",
       title: "Check Node.js",
-      explain: "Cotal needs Node 20 or newer.",
+      explain: "Cotal needs Node 22 or newer.",
       context: [README_URL],
       async run() {
         const major = Number(process.versions.node.split(".")[0]);
-        if (major < 20) throw new Error(`Node ${process.versions.node} is too old; Cotal needs Node >= 20`);
+        if (major < 22) throw new Error(`Node ${process.versions.node} is too old; Cotal needs Node >= 22`);
         return `Node ${process.versions.node}`;
       },
     },
@@ -295,6 +295,13 @@ async function runEnsure(demo: boolean): Promise<void> {
   if (demo) seedDemoTeam(); // `cotal setup --demo` on a configured machine: add the team, then card
   ensureSkillsPlugin(); // fail-loud: close the upgrade gap so an onboarded machine re-running setup gets/refreshes (not silently stale) the Claude skills plugin
   seedAgentSkills(); // reconcile the cross-vendor `.agents/skills` drop so an upgrade + re-run isn't stale
+  // A repeat `npx cotal-ai setup` on an onboarded machine that still lacks a durable `cotal` must
+  // ALSO get the global-install offer — the first-run stamp is written once, so without this any
+  // second setup (declined/failed install the first time, or a machine onboarded before the offer
+  // existed) never installs `cotal`. The offer no-ops for a dev clone (`!isNpx()`) or an already
+  // installed `cotal` (`cotalOnPath()`), so only the npx-without-cotal case is affected. Before the
+  // card so its hints render `cotal` rather than `npx cotal-ai`.
+  await offerGlobalInstall(false);
   await readyCard(process.cwd());
 }
 
@@ -462,8 +469,13 @@ function registerMarketplace(): void {
 function installOrUpdatePlugin(name: string, scope: string, expectedVersion?: string): void {
   registerMarketplace();
   const install = claude("plugin", "install", `${name}@cotal-mesh`, "--scope", scope);
-  if (install.status !== 0) {
-    if (!/already installed/i.test(install.output)) throw new Error(`plugin install failed (${name}):\n${install.output}`);
+  // Trigger the update on what `plugin install` SAYS, not on its exit status: when the plugin is
+  // already installed it reports that and exits ZERO. Gating the update on a non-zero status meant
+  // it never ran on an upgrade, so the cache kept the old version and verifyPluginLoaded below
+  // threw "the update did not take" at every customer who upgraded.
+  const already = /already installed/i.test(install.output);
+  if (install.status !== 0 && !already) throw new Error(`plugin install failed (${name}):\n${install.output}`);
+  if (already) {
     const update = claude("plugin", "update", `${name}@cotal-mesh`, "--scope", scope);
     if (update.status !== 0) throw new Error(`plugin update failed (${name}):\n${update.output}`);
   }
