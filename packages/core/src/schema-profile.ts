@@ -22,44 +22,67 @@ export const SCHEMA_PROFILE = Object.freeze({
   maxClosureBytes: 1024 * 1024,
   /** Structural nesting depth of any document. */
   maxDepth: 32,
-  /** Max SUBSCHEMA NODES in a document — the deterministic replacement for the compile-time
-   *  budget, computable exactly before compiling and identical on every host.
+  /** Max SUBSCHEMA NODES in a document. THIS BOUND EXISTS TO PREVENT A COMPILER CRASH, NOT A SLOW
+   *  COMPILE, and that distinction is its entire basis. An earlier value was justified by compile
+   *  time and could not be defended: the corpus that justified it was drawn from what the bound
+   *  already admitted, so nothing above the line was ever observed.
    *
-   *  256 is a decision, taken from measurement, and here is the measurement so a later reader can
-   *  re-derive it instead of treating the number as folklore. On a quiet box, warm (each schema
-   *  compiled once and discarded first, so this is the schema's intrinsic cost and not V8 cold
-   *  start):
+   *  A patterned-properties schema at 2048 nodes STACK-OVERFLOWS Ajv's codegen at 186,165 bytes —
+   *  INSIDE `maxDocumentBytes`. No byte bound in this profile stands in front of that, and a node
+   *  bound is the only thing that does. It is also not a budget overrun a timer could classify
+   *  after the fact: there is no after.
    *
-   *    largest contract this repo actually registers   20 nodes    6.4ms CPU
-   *    cheapest schema that genuinely burns the budget  801 nodes  112.0ms CPU
-   *    margin                                          781 nodes / 40.0x
+   *  MEASURED with the guard bypassed, raw Ajv with these exact options, each point in a fresh
+   *  process. CPU ms, cold / warm-median-of-3:
    *
-   *  256 sits 12.8x above everything we register and 3.1x below the pathological edge. 100 would
-   *  leave only 5x of headroom against contracts that will grow; 400 spends margin we have no use
-   *  for.
+   *      nodes | object-patterned | boolean-anyOf | multi-member closure
+   *       512  | 135.3 / 83.3     | 35.0 / 13.9   | 107.2 / 61.5
+   *      1024  | 360.3 / 278.6    | 42.6 / 19.7   | 204.9 / 155.7
+   *      2048  | STACK OVERFLOW   | 73.4 / 39.9   | 498.8 / 417.6
    *
-   *  READ THIS BEFORE TRUSTING THE NUMBER FOR ANYTHING ELSE: node count is a sound BOUND, not a
-   *  good PREDICTOR. Cost varies ~5x at IDENTICAL node count across schema shapes (at 801 nodes,
-   *  a wide `anyOf` costs 23ms where patterned properties cost 112ms), and on our own contract the
-   *  costliest schema is not the largest. The 40x margin absorbs that spread with room left, which
-   *  is what makes the bound usable — but a large, cheap `anyOf` schema an order of magnitude
-   *  bigger than anything we register today could be refused while being fast. That is the known
-   *  and accepted false-refusal shape.
+   *  DERIVATION. The highest point safe in EVERY family is 1024, and a single scalar bound is set
+   *  by the worst family — object-patterned — which dies somewhere in (1024, 2048]. 512 is one full
+   *  doubling below the last known-good measurement, because the crash point belongs to Ajv rather
+   *  than to this repo and can move without notice. Against real use it is 25x the largest schema
+   *  registered here (20 nodes; the whole 23-schema startup set is 115), so it refuses nothing
+   *  legitimate and leaves an order of magnitude for growth.
    *
-   *  Counts SUBSCHEMA nodes, matching {@link countSchemaNodes} — the same function the calibration
-   *  runs, so the ceiling is enforced against the quantity it was calibrated on. */
-  maxSchemaNodes: 256,
+   *  WHAT DID NOT DECIDE IT: there is no time knee anywhere in that table. Every family compiles in
+   *  under 140ms cold at 512. Choosing by compile time is what produced the previous value.
+   *
+   *  INVALIDATING CONDITION, because this constant has a short half-life: the stack overflow is an
+   *  Ajv-version and Node-version fact, measured on Ajv 8.20.0 / Node 26.7.0 / one macOS host. If
+   *  either moves, RE-DERIVE — find where the object family crashes and set this a doubling below.
+   *  A constant whose basis has expired is worse than one that never had a basis, because it looks
+   *  derived.
+   *
+   *  AND IT IS NOT A COST MODEL. At a FIXED 1024 nodes the table spans 278.6ms (object) to 19.7ms
+   *  (boolean): a 14x spread at one node count. This works because it sits below a CRASH, not
+   *  because it tracks cost, and it will refuse a large cheap `anyOf` before a smaller expensive
+   *  object schema. That false-refusal shape is known and accepted.
+   *
+   *  Counts SUBSCHEMA nodes via {@link countSchemaNodes}, booleans included — `true`/`false` are
+   *  valid subschemas, and skipping them made the whole count bypassable. */
+  maxSchemaNodes: 512,
   /** Max subschema nodes across a whole REFERENCE CLOSURE (root plus every reachable member).
    *
-   *  The per-document bound alone is bypassable, and that was reproduced rather than theorised: the
-   *  document check runs once per document, so 16 members of 252 nodes each is 4,049 nodes with
-   *  EVERY document passing 256. The compiler pays the aggregate; the guard was reading the parts.
+   *  ITS BASIS IS NOT THE SAME AS `maxSchemaNodes`, and conflating them would be wrong. The
+   *  per-document bound sits below an Ajv CODEGEN CRASH. This one bounds AGGREGATE COMPILE COST:
+   *  splitting a schema across members means every document passes the per-document check while the
+   *  compiler pays the sum. Reproduced rather than theorised — members each under the document
+   *  ceiling aggregated past it with every document passing.
+   *
+   *  A closure cannot crash the way one document can, because each member is independently held
+   *  under `maxSchemaNodes` and the overflow is per-document codegen. So this is a cost ceiling, and
+   *  the measured cost at it is ~500ms cold for a multi-member closure — a bounded, one-time
+   *  registration cost rather than a failure mode.
    *
    *  4x the per-document ceiling, matching the ratio the profile already uses between
-   *  `maxClosureBytes` (1 MiB) and `maxDocumentBytes` (256 KiB) — that precedent existed for exactly
-   *  this reason and should have been followed the first time. Every contract this repo registers
-   *  is 114 nodes for its ENTIRE 23-schema set, so 1024 for one closure is far above real use. */
-  maxClosureNodes: 1024,
+   *  `maxClosureBytes` (1 MiB) and `maxDocumentBytes` (256 KiB). That precedent existed for exactly
+   *  this reason and should have been followed when the per-document bound was first added. Every
+   *  contract this repo registers is 115 nodes for its ENTIRE 23-schema set, so this is far above
+   *  real use. */
+  maxClosureNodes: 2048,
   /** Digest-reference chain depth (root → member → member …). */
   maxRefChain: 32,
   /** Compile budget per closure, ms. */
