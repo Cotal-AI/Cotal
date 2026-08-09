@@ -241,26 +241,25 @@ export async function web(args: ParsedArgs): Promise<void> {
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged
       // ({mode, msg}) to match the live feed so DMs render as DMs.
       //
-      // BYTES ARE THE COST HERE, not round trips (the per-channel fetches already run concurrently).
-      // This asked EVERY channel for a full `limit` and then discarded all but the newest `limit` of
-      // the union, so a mesh with ten channels moved roughly eleven times what it displayed.
-      // Measured at 77s for 251KB against a mesh on a slow link.
+      // NOT OPTIMISED, DELIBERATELY. An earlier version fetched an even share per channel and
+      // topped up only channels that saturated their share, to avoid moving (channels + 1) times
+      // what it displays. That is WRONG for a global top-N: saturation counts messages, not
+      // recency. With ten channels, limit 200 and a share of 40, if every channel holds at least 40
+      // messages the top-up never fires, so a channel owning the globally newest 200 contributes
+      // only its newest 40 and 160 genuinely-newer messages are dropped for 160 older ones.
       //
-      // A channel can only contribute more than its even share when the others contribute less, so
-      // fetch an even share (doubled, for skew) and top up only the channels that actually filled
-      // their quota — the busy-channel case costs a second pass instead of taxing every request.
+      // A correct cheap version needs an iterative timestamp-aware top-up: compute the provisional
+      // cutoff (the ts of the limit-th newest in the union) and re-fetch only channels whose oldest
+      // fetched message is still at or above it, until none can extend above the cutoff. That is
+      // worth doing, with a test encoding the counterexample above, and it is not this change.
+      // Correctness first: fetch a full page per channel and merge.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
       const chans = await ep.listChannels();
-      const share = Math.max(20, Math.ceil((limit / Math.max(1, chans.length)) * 2));
-      const first = await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit: share })));
-      const saturated = chans.filter((_, i) => first[i]!.length >= share);
-      const topUp = saturated.length && saturated.length < chans.length
-        ? await Promise.all(saturated.map((ch) => ep.channelHistory(ch.channel, { limit })))
-        : [];
-      const byId = new Map<string, { mode: "chat"; msg: (typeof first)[number][number] }>();
-      for (const msg of [...first.flat(), ...topUp.flat()]) byId.set(msg.id, { mode: "chat", msg });
+      const chat = (await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit }))))
+        .flat()
+        .map((msg) => ({ mode: "chat" as const, msg }));
       const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
-      const all = [...byId.values(), ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
+      const all = [...chat, ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
       return json(res, all.slice(-limit));
     }
     if (path === "/api/dms") {

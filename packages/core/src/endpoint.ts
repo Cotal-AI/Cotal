@@ -1714,31 +1714,65 @@ export class CotalEndpoint extends EventEmitter {
       const ceiling = before !== undefined ? before - 1 : (await jsm.streams.info(stream)).state.last_seq;
       if (ceiling < 1) return [];
 
-      let span = Math.max(limit * 4, 64);
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const start = Math.max(1, ceiling - span + 1);
-        const page = await this.drainWindow(js, stream, subject, start, ceiling);
-        // Enough for a full page, or we have reached the head of the stream and this is all there is.
-        if (page.length >= limit || start === 1) return page.slice(-limit);
-        span *= 4;
-      }
-      // Widening capped: return the widest window we drained rather than nothing.
-      return (await this.drainWindow(js, stream, subject, 1, ceiling)).slice(-limit);
-    } catch (e) {
-      // Empty is still the RESULT — `dmHistory` is god-view, and a normal agent's ACL denying the DM
-      // backlog is a documented, expected "no history for you here", not a fault to throw at it.
+      // WIDEN BY MEASURING, DRAIN ONCE. An earlier version drained at every widening step and, after
+      // a fixed eight attempts, fell back to draining from sequence 1. On a quiet channel buried in a
+      // busy stream that is the worst case in the file: the widest attempted window is about a
+      // million sequence positions, so a channel whose newest message is older than that fell through
+      // to a FULL BACKLOG read, having already paid for eight partial reads on the way. That restores
+      // exactly the multi-round-trip, whole-backlog transfer this function exists to remove.
       //
-      // But a permission denial must not be INVISIBLE. This function previously located its upper
-      // bound with `getMessage({ last_by_subj })`, which needs `$JS.API.STREAM.MSG.GET` — authority
-      // read credentials do not hold. This very catch turned that Permissions Violation into an empty
-      // result, so every non-admin history read silently returned nothing while looking exactly like
-      // a quiet channel. The unit smoke passed because it runs as admin against a local broker; only
-      // a live check against a real mesh found it. Surfacing on the `error` event keeps the degrade
-      // while making the ACL problem observable, which is the same reason `watchStatus` surfaces
-      // async permission violations instead of letting an over-tight ACL look like absence.
-      if (e instanceof PermissionViolationError)
-        this.emit("error", new Error(`history read denied on ${stream} (${e.message}) - returning no history; this is expected for a non-admin reading the DM backlog, and a BUG if it happens on a stream this endpoint should be able to read`));
-      return [];
+      // `num_pending` on a filtered consumer answers "how many matches at or after this sequence"
+      // WITHOUT transferring any of them, so the search is cheap: widen while measuring, then drain
+      // the one window that holds a full page. Geometric growth bounds the number of measurements,
+      // and there is exactly one bulk transfer however far back the channel's traffic sits.
+      let span = Math.max(limit * 4, 64);
+      let start = Math.max(1, ceiling - span + 1);
+      while (start > 1 && (await this.pendingFrom(js, stream, subject, start)) < limit) {
+        span *= 4;
+        start = Math.max(1, ceiling - span + 1);
+      }
+      return (await this.drainWindow(js, stream, subject, start, ceiling)).slice(-limit);
+    } catch (e) {
+      // NARROW. This catch is how the MSG.GET grant bug shipped: it turned a Permissions Violation
+      // into an empty history, so every non-admin read looked exactly like a quiet channel, and the
+      // smokes stayed green because they run as admin against a local broker. Emitting on the error
+      // event is not enough either — callers consume the RETURN VALUE, and the dashboard renders
+      // empty regardless of what an operator log says.
+      //
+      // So only two things may still produce an empty result:
+      //   1. The stream does not exist (a space with no history yet).
+      //   2. A permission denial on the DM backlog specifically. `dmHistory` is god-view by
+      //      contract: a normal agent's ACL denies it, and returning empty there is documented
+      //      behaviour, not a bug being hidden.
+      // Anything else — a denial on CHAT, a timeout, a 503, a protocol or consumer-create failure —
+      // is raised, because "no history" and "I could not read the history" are different answers and
+      // only one of them is safe to render as an empty conversation.
+      const msg = String((e as { message?: unknown } | null)?.message ?? "");
+      if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
+      if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
+      throw e;
+    }
+  }
+
+  /** How many messages matching `subject` sit at or after `start`, WITHOUT transferring any of them.
+   *  The measurement that lets the window search widen cheaply: a consumer's `num_pending` is
+   *  returned by its create, so this costs the create plus its delete and moves no message bodies.
+   *
+   *  NOTE it counts to the END of the stream, not to a `ceiling`. That is exact for the default read
+   *  (where `ceiling` IS the stream head) and an OVER-count when paging with `before`, which would
+   *  make the search stop widening too early. `before` is not wired to any caller yet; wiring it
+   *  needs this to bound at the ceiling too. */
+  private async pendingFrom(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+    start: number,
+  ): Promise<number> {
+    const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
+    try {
+      return (await consumer.info(true)).num_pending;
+    } finally {
+      await consumer.delete().catch(() => { /* already gone, or denied */ });
     }
   }
 
