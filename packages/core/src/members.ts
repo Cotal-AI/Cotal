@@ -15,6 +15,7 @@
 import { Kvm, type KV } from "@nats-io/kv";
 import { membersBucket, memberKey, parseMemberKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
+import { liveKvEntries } from "./kv-scan.js";
 
 /** Thrown when a write would regress membership generation — a stale/late control reply. Callers
  *  treat this as "a newer membership change already won", not an error to retry. */
@@ -175,26 +176,35 @@ export async function deleteMember(kv: KV, channel: string, owner: string, lifec
 /**
  * Scan the registry, yielding every live (non-deleted) record matching the filter. `channel` →
  * that channel's members (fan-out's per-channel list); `owner` → that owner's memberships. With no
- * filter, every record. MVP does a full `keys()` scan + per-key get + in-code filter — correct and
- * fine at local scale; a derived channel→members index is the deferred web-scale optimization
- * (the registry stays the single canonical source). Tombstones (with `leaveCursor`) ARE yielded —
- * a caller that wants only currently-open memberships filters on `leaveCursor === undefined`.
+ * filter, every record. Tombstones (with `leaveCursor`) ARE yielded — a caller that wants only
+ * currently-open memberships filters on `leaveCursor === undefined`.
+ *
+ * ONE pass. This was a `keys()` scan plus a sequential per-key `get()`, which cost one round trip
+ * per surviving key; a filtered caller paid for the keys that matched, an unfiltered one paid for
+ * all of them. The filtering is still done in code (the registry stays the single canonical source;
+ * a derived channel→members index remains a separate, deferred decision), but the READ is now
+ * independent of record count.
  */
 export async function listMembers(
   kv: KV,
   filter: { channel?: string; owner?: string } = {},
 ): Promise<MembershipRecord[]> {
   const out: MembershipRecord[] = [];
-  for await (const key of await kv.keys()) {
-    const parsed = parseMemberKey(key);
+  for (const e of await liveKvEntries(kv)) {
+    const parsed = parseMemberKey(e.key);
     if (!parsed) continue;
     // `parsed.principal` is the member's owner+actor dot-form (membership is per-agent); the
     // members.ts API calls this identity token `owner` throughout — under the owner+actor grammar an
     // "owner" here IS the full principal `<owner>.<actor>`, so `filter.owner` compares to it directly.
     if (filter.channel !== undefined && parsed.channel !== filter.channel) continue;
     if (filter.owner !== undefined && parsed.principal !== filter.owner) continue;
-    const rec = await readMember(kv, parsed.channel, parsed.principal, parsed.lifecycleUid);
-    if (rec) out.push(rec.record);
+    // Same decode + skip-garbled behaviour readMember applies; the DEL/PURGE half is already handled
+    // by the collapse in liveKvEntries.
+    try {
+      out.push(e.json<MembershipRecord>());
+    } catch {
+      /* skip undecodable */
+    }
   }
   return out;
 }
