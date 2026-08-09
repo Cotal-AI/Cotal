@@ -1349,20 +1349,22 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
   };
 }
 
-/** CONTROL-CALLER (PR 1.5) — the operator's lifecycle commands (`cotal ps/start/stop/attach`,
- *  `manager/commands.ts`). It CALLS ONE of the running manager's control tiers and reads the bounded
- *  reply on its own inbox. That is ALL — no `$JS`, no `$KV`, no chat/DM: it forges nothing, reads no body.
+/** CONTROL-CALLER (PR 1.5; ep-only since 1d) — the operator's lifecycle commands
+ *  (`cotal ps/start/stop/attach`, `manager/commands.ts`). It invokes the manager's v0.4 service
+ *  endpoint and reads the bounded reply on the ep reply rail. That is ALL — no `$JS`, no `$KV`,
+ *  no chat/DM: it forges nothing, reads no body.
  *
- *  The tiers are SPLIT because the manager's control authz is SUBJECT-gated, NOT caller-identity-gated
- *  (`manager.ts authorizeNamed`: `if (admin) return undefined` — ANY caller reaching `ctl.<admin>` may
- *  stop/attach ANY agent; the privileged tier restricts named ops to the caller's OWN spawned child).
- *  So the BROKER grant is load-bearing: holding `ctl.<admin>.<id>` pub *is* cross-agent stop/attach
- *  power — the manager does not re-narrow it by `req.from.id`. Therefore:
- *   • `control-caller-privileged` (ps/start) gets ONLY `ctl.<privileged>.<id>` — structurally barred from
- *     cross-agent admin ops by the broker. This is the high-frequency path; it never needs admin reach.
- *   • `control-caller-admin` (stop/attach) gets ONLY `ctl.<admin>.<id>` — it genuinely needs cross-agent
- *     reach. Its containment is NOT a manager re-check (there is none): it is the broker gating the admin
- *     subject + the cred being ephemeral (mint → one request → disconnect, from the local signing seed). */
+ *  The tiers stay SPLIT because the BROKER grant is load-bearing (the 1c decision): an any-mode
+ *  despawn/attach row *is* cross-agent reach — the manager maps mode `any` to its admin
+ *  authorization path, so which ROWS an instrument holds is the tier boundary. Therefore:
+ *   • `control-caller-privileged` (ps/start) holds the manager reads + untargeted `spawn` +
+ *     `define-persona` — structurally barred from cross-agent ops (no any-mode row). This is the
+ *     high-frequency path; it never needs admin reach.
+ *   • `control-caller-admin` (stop/attach) adds the any-mode despawn/attach rows + the
+ *     `manager.admin` family — it genuinely needs cross-agent reach. Its containment is the
+ *     broker gating the any-mode rows + the cred being ephemeral (mint → one request →
+ *     disconnect, from the local signing seed); on a user mesh the manager's serve-time ledger
+ *     re-check sits on top. */
 function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin"): Record<string, unknown> {
   // 1d: the manager `ctl` rail is gone — an operator instrument holds ONLY its v0.4 ep rows (the
   // tier-matched request set, the reply rail, describe, the one epc fetch). The `epTier` selects

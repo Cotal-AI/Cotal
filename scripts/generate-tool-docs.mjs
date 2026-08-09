@@ -92,7 +92,7 @@ const ANNOTATIONS = {
   cotal_despawn: {
     effect: "stops a teammate (or yourself)",
     availability:
-      "self-despawn (no name) is granted to all; stopping a *named* peer rides the privileged tier (your own children only)",
+      "self-despawn (no name) is granted to all; stopping a *named* peer rides the spawn capability's owner-mode reach (your own owner's agents only)",
   },
   cotal_persona: {
     effect: "writes a persona file via the manager (becomes spawnable)",

@@ -67,7 +67,8 @@ export async function resolveControlTarget(
  *  owner/any-mode terminal (`despawn`), the per-agent `status` read is `inspect`; the camelCase
  *  admin family maps to its kebab-case wire names. `targeted` marks the two commands whose
  *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
- *  a `ps` read first — the wire target is (owner, actor, lifecycleUid), never an alias). */
+ *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
+ *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
 const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   start: { command: "spawn" },
   stop: { command: "despawn", targeted: true },
