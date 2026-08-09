@@ -170,10 +170,14 @@ try {
   // ── THE CORPSE CASE, asserted rather than papered over ──
   // A live-superseded manager committing the terminal of a goal IT accepted is INDISTINGUISHABLE
   // here from the true executor: both stamp `committed == accepted`. This suite asserts that fact
-  // explicitly so nobody reads the attribution rule as a write fence it is not. What stops the
-  // corpse is the §13.1 barrier (revoke + cluster-verified eviction, fail-closed, BEFORE the epoch
-  // advances), so on an auth mesh a live corpse and a live successor cannot coexist; on an OPEN
-  // mesh nothing durable stops it and the belt is cooperative only.
+  // explicitly so nobody reads the attribution rule as a write fence it is not.
+  //
+  // What stops the corpse is the §13.1 barrier's CLUSTER-VERIFIED EVICTION — and only from the
+  // moment that eviction is verified. Read the module header for the full window: a freeze neither
+  // kills the connection nor advances the epoch, so the corpse's own currency belt still passes
+  // through it, and a ledger revoke marks a row rather than killing a live publisher. Successor
+  // EXISTENCE (PHASE 4) and corpse DEATH (PHASE 2 eviction) are different steps, so an ordering
+  // fact about the phases licenses no conclusion about when the corpse stops being able to write.
   {
     const g = await newGoal(ctx, "g-corpse", 0);
     const corpse = await commitGoalResult(ctx, {

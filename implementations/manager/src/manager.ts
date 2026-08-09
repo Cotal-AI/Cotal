@@ -3996,18 +3996,6 @@ export class Manager {
     return creds;
   }
 
-  /** The (i) fence resolver (SPEC 13.6 P2 item 3): this incarnation's CURRENT gate epoch for its
-   *  OWN registration instanceId, else `null` (a foreign/retired instance has no current terminal
-   *  to surface). The serve grant's epoch is fixed for the incarnation — renewals re-mint the same
-   *  nkey at the same epoch; only a NEW registration / takeover barrier advances it, and a successor
-   *  is a DIFFERENT process whose own {@link serviceServe} carries the advanced epoch. So a corpse
-   *  resolves its stale epoch (its terminal parks on the stale-epoch subject) and the successor
-   *  resolves the current one (its settle is what current readers see). */
-  private currentInstanceEpoch(instanceId: string): number | null {
-    if (instanceId === this.managerInstanceId && this.serviceServe !== undefined) return this.serviceServe.grant.epoch;
-    return null;
-  }
-
   /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
    *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh uses the
    *  scoped `goal-writer` credential already minted + family-STAGED inside registration's run block
@@ -4261,17 +4249,32 @@ export class Manager {
     }
   }
 
-  /** must-5 (a) — the own-gate currency belt: before the goal-writer commits a terminal fact, the
-   *  manager reads its OWN issuance gate epoch and REFUSES the commit if superseded (a takeover
-   *  advanced the epoch). Auth mode only — an open mesh has no gate. This is the fast-fail belt that
-   *  narrows the read→commit window; the durable fence is the (b) barrier-revoke that evicts this
-   *  connection. NAMED RESIDUAL (closed by item-3 slice 3.0, never a permanent residual): between
-   *  this read and the create-only terminal CAS a freshly-superseded corpse can still win a WRONG
-   *  terminal fact — the accept→terminal-honesty window, misreporting the ACTION OUTCOME. It is
-   *  reachable ONLY via a LIVE-superseded manager (item-3 multi-manager takeover); single-manager
-   *  item 2 supersedes only a DEAD process (no live corpse, window closed). The PHYSICAL spawn
-   *  side-effects are separately fenced (mint/reserve + barrier-revoke), so the exposed surface is
-   *  callers trusting the terminal fact, never orphaned processes. */
+  /** The own-gate currency belt: before the goal-writer commits a terminal fact, the manager reads
+   *  its OWN issuance gate epoch and REFUSES the commit if superseded. This NARROWS the window; it
+   *  is not the fence. Layer 1 below is closed by the sibling-mint fence; layers 2 and 3 are not
+   *  closed by any planned slice and must not be described as temporary.
+   *
+   *  THE RESIDUAL, STACKED:
+   *   1. SIBLING-MINT INJECTION. A §13.1 barrier's revoke/evict loop closes only over the family
+   *      SNAPSHOT IT ENUMERATED, so a sibling mint that observes the gate and stages a ledger row
+   *      WITHOUT the observe/open/commit fence can be staged and released AFTER that enumerate and
+   *      never be revoked. This layer is closed exactly where BOTH sibling mint sites
+   *      ({@link mintAndStageGoalWriter}, {@link mintAndStageSessionWriter}) route their stage
+   *      through `commitSiblingIssuance` (the revision-pinned CAS that makes a losing mint release
+   *      nothing), and open exactly where they do not — state the mechanism, never the branch.
+   *   2. THE BARRIER WINDOW. A gate FREEZE neither kills this connection nor advances the epoch,
+   *      and this belt compares `processEpoch` alone, so it still PASSES from barrier start until
+   *      the reopen. A ledger revoke marks a row; it does not re-check a live JWT mid-publish. The
+   *      durable kill is the CLUSTER-VERIFIED EVICTION, so a deposed manager can INITIATE new
+   *      terminal publishes from barrier start until eviction is verified — not merely finish bytes
+   *      already on the wire. Successor EXISTENCE and corpse DEATH are different phases, so the
+   *      barrier's ordering licenses no conclusion about when the corpse stops being able to write.
+   *   3. OPEN MESH. No credential family exists, so the revoke/evict loop is vacuous and this belt
+   *      is COOPERATIVE only: a non-conformant process simply does not run it.
+   *  The named follow-up that would close 2 and 3 is the gate-linearized commit (routing the
+   *  terminal through the issuance gate's own CAS), deliberately deferred as substrate territory.
+   *  An earlier revision of this comment claimed the residual was "closed by item-3 slice 3.0,
+   *  never a permanent residual". That asserted a closure that does not exist. */
   private async assertGoalWriterEpochCurrent(epoch: number): Promise<void> {
     const gate = this.goalWriter?.gate;
     if (!gate) return; // no goal-writer standing yet
