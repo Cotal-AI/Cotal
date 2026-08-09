@@ -403,8 +403,29 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  * strictly worse than the DoS this was guarding, which needs an attacker able to register a
  * contract. So enforcement stays where the attack actually lives — the REGISTRATION path, where
  * {@link import("./schema-profile.js").compileContract} still refuses `contract-invalid`, a false
- * positive fails a boot loudly rather than lying to a caller, and the deterministic profile bounds
- * (document/closure bytes, depth, ref-chain, bounded patterns) do the pre-emptive work.
+ * positive fails a boot loudly rather than lying to a caller.
+ *
+ * WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said the deterministic profile bounds
+ * "do the pre-emptive work", i.e. that registration-time bounds REPLACE request-path enforcement.
+ * They do not, and that was disproved by execution rather than argued: a four-node schema —
+ * trivially inside every byte, depth, ref-chain, node and closure bound — declaring
+ * `uniqueItems: true` over an array of OBJECTS makes validation QUADRATIC IN THE CALLER'S DATA.
+ * 3,000 valid objects measured 75ms and 5,000 measured 227ms, from ~54KB of entirely legitimate
+ * input. No registration power, no oversized payload, no forgery. The profile bounds the SIZE and
+ * SHAPE of a schema and the BACKTRACKING class via `maxPatternChars`; it has nothing for keywords
+ * whose cost is non-linear in the VALUE being validated.
+ *
+ * So this demotion left a real gap on the request path, and the honest statement is that the
+ * enforced ceiling is currently registration-time only and that is NOT SUFFICIENT. A deterministic
+ * invocation-path defence is owed — the candidates are refusing non-linearly-validating keywords at
+ * registration (the same shape as the bounded-pattern gate) and a deterministic bound on argument
+ * bytes/items before validation — and until one lands, this path is bounded by nothing.
+ *
+ * THE GENERAL LESSON, because this is the SECOND thing this timer turned out to be holding up: the
+ * same throw was also standing in for a reply-payload preflight, whose absence left callers in
+ * silence on an over-`max_payload` reply. One unsound guard was doing three jobs and was removed
+ * having enumerated one. REMOVING A GUARD REQUIRES ENUMERATING WHAT IT WAS HOLDING UP, and the
+ * enumeration is the work, not the removal.
  *
  * The number stays, as an approximate observation, because it is still the only signal that a
  * registered contract is costing more than the profile intended. Treat it as a hint to go look at
@@ -417,7 +438,7 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
   console.error(
     `! schema: ${what} validation took ~${cpuMs}ms of process CPU (§13.8 reference budget ${SCHEMA_PROFILE.validateBudgetMs}ms; ` +
     `${Date.now() - startedMs}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
-    `Not a refusal: registration-time bounds are the enforced ceiling.`,
+    `Not a refusal. NOTE: registration-time bounds do NOT cover this path - a keyword whose cost is non-linear in the VALUE (e.g. uniqueItems over objects) is unbounded here. A deterministic invocation-path defence is owed.`,
   );
 }
 
@@ -431,7 +452,8 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
  *  The §13.8 validation budget is REPORTED here, not enforced — see {@link reportValidateBudget}
  *  for why no available instrument can justify refusing a request on it. The only `bad-request`
  *  this raises is the schema's own verdict. Enforcement lives at registration
- *  ({@link import("./schema-profile.js").compileContract}), which is where the DoS lives and where
+ *  ({@link import("./schema-profile.js").compileContract}), which is where the COMPILE-time DoS
+ *  lives - not the only place a DoS lives, see the note on `reportValidateBudget` - and where
  *  a false positive fails loudly instead of lying to a caller. */
 export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
