@@ -33,6 +33,7 @@ import {
 import { recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
+import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 
 const dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -76,15 +77,19 @@ const JOIN_CHILD = [
   "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
   "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1<<30);});",
 ].join("");
+// The OS allow-list a real connector supplies, not a bare PATH: a pty (ConPTY) child inherits
+// NOTHING but `spec.env`, and on Windows a node child without `SystemRoot` aborts at startup
+// before its first line (see connector-core's OS_ENV_ALLOW). With only PATH set, every child here
+// died on launch and the suite read it as a readiness failure.
 const envJoin = (o: LaunchOpts): Record<string, string> => ({
-  PATH: process.env.PATH ?? "", CORE_DIST: coreDist,
+  ...launchEnv(), CORE_DIST: coreDist,
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVER),
   COTAL_ID: o.id ?? "", COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "", COTAL_NAME: o.name,
 });
-const joinCon: Connector = { kind: "connector", name: "join", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
-const PATH_ENV = { PATH: process.env.PATH ?? "" };
-const exitCon: Connector = { kind: "connector", name: "exit", requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: "node", args: ["-e", "process.exit(3)"], env: PATH_ENV }) };
-const stuckCon: Connector = { kind: "connector", name: "stuck", requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: "node", args: ["-e", "setInterval(()=>{},1<<30)"], env: PATH_ENV }) };
+const joinCon: Connector = { kind: "connector", name: "join", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
+const PATH_ENV = launchEnv(); // same reason as envJoin above
+const exitCon: Connector = { kind: "connector", name: "exit", requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", "process.exit(3)"], env: PATH_ENV }) };
+const stuckCon: Connector = { kind: "connector", name: "stuck", requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", "setInterval(()=>{},1<<30)"], env: PATH_ENV }) };
 for (const c of [joinCon, exitCon, stuckCon]) registry.register(c);
 
 /** A bare open-mesh caller: epCall on the `one` rail with a synthetic caller triple (open broker

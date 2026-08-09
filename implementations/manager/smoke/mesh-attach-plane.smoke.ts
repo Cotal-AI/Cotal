@@ -15,7 +15,7 @@
  *
  * Proven: establishAttach mints+redeems+serves atomically; the ledger row lands `active` (the
  * one-use durable record); a foreign presenter is refused; the ready→backlog reconstruction
- * handshake replays the pty screen; duplex byte flow through `cat`; endForTarget surfaces a
+ * handshake replays the pty screen; duplex byte flow through the echo child; endForTarget surfaces a
  * DISTINCT end reason to the client; a re-establish after target-despawn is a fresh session.
  */
 import { spawn } from "node:child_process";
@@ -44,6 +44,17 @@ import {
 // dev-only smoke import: the CLI's mesh transport is the real caller consumer; implementations do
 // not import each other in production, but a cross-impl integration smoke may (like attach.smoke.ts).
 import { meshSessionTransport } from "../../cli/src/lib/attach-client.js";
+import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+
+// A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller
+// sends comes back as output — a genuine duplex byte stream over the two eps rails. `process.execPath`
+// rather than a bare name because the pty child gets ONLY `spec.env` (P3 isolation), so there is no
+// PATH to resolve against; `launchEnv()` is the same OS allow-list a real connector supplies, and on
+// Windows a child without `SystemRoot` aborts before its first line. (This was `cat`, which windows
+// runners do not have.)
+const ECHO_CHILD = { command: process.execPath, args: ["-e", "process.stdin.pipe(process.stdout)"], env: launchEnv() };
+
+
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -95,7 +106,7 @@ const TARGET = { name: "worker-1", lifecycleUid: "w".repeat(26) };
 
 // --------------------------------------------------------------------------------------------
 console.log("A. establishAttach: mint + redeem (one-use CAS) + serve, atomically");
-const handle = createRuntime("pty", "mesh-plane-smoke").spawn("worker-1", { command: "cat", args: [] }, process.cwd());
+const handle = createRuntime("pty", "mesh-plane-smoke").spawn("worker-1", ECHO_CHILD, process.cwd());
 const session = handle.attach();
 session.write("SEEDLINE\n");
 await wait(150);
@@ -143,7 +154,7 @@ handle.stop({ graceful: false });
 console.log("D. a foreign presenter is refused (holder-bound); re-establish is a fresh session");
 // A second target incarnation → a fresh session (target-despawn ended the first).
 const target2 = { name: "worker-1", lifecycleUid: "x".repeat(26) };
-const h2 = createRuntime("pty", "mesh-plane-smoke2").spawn("worker-1", { command: "cat", args: [] }, process.cwd());
+const h2 = createRuntime("pty", "mesh-plane-smoke2").spawn("worker-1", ECHO_CHILD, process.cwd());
 const s2 = h2.attach();
 const r2 = await plane.establishAttach({ ...CALLER, uid: "d".repeat(26) }, target2, s2);
 c("re-establish after despawn is a fresh session (new sessionId)", r2.grant.sessionId !== grant.sessionId && plane.liveSessions === 1);
@@ -179,7 +190,7 @@ await ncCli.close();
 // session (rail open, writing into a corpse, no end frame). This is the NATURAL exit path (not
 // endForTarget, not handle.stop) — the one section C never exercised.
 console.log("F. a NATURAL pty exit (the child dies on its own) surfaces `process-exit` to a live caller");
-const h3 = createRuntime("pty", "mesh-plane-smoke3").spawn("worker-3", { command: "cat", args: [] }, process.cwd());
+const h3 = createRuntime("pty", "mesh-plane-smoke3").spawn("worker-3", ECHO_CHILD, process.cwd());
 const s3 = h3.attach();
 const r3 = await plane.establishAttach({ ...CALLER, uid: "e".repeat(26) }, { name: "worker-3", lifecycleUid: "y".repeat(26) }, s3);
 const ncCaller3: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
@@ -204,7 +215,7 @@ await ncCaller3.close();
 // session: node-pty REJECTS a 0-dim resize (throws), and an uncaught throw in the serving frame
 // handler would silently wedge the rail (no more echo, no end frame — the coordinator's zombie).
 console.log("G. a 0-dim caller resize must NOT wedge the session (bad frame is tolerated)");
-const h4 = createRuntime("pty", "mesh-plane-smoke4").spawn("worker-4", { command: "cat", args: [] }, process.cwd());
+const h4 = createRuntime("pty", "mesh-plane-smoke4").spawn("worker-4", ECHO_CHILD, process.cwd());
 const s4 = h4.attach();
 const r4 = await plane.establishAttach({ ...CALLER, uid: "f".repeat(26) }, { name: "worker-4", lifecycleUid: "z".repeat(26) }, s4);
 const ncCaller4: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
@@ -230,7 +241,7 @@ h4.stop({ graceful: false });
 // so the bridge only learns of the death if onExit fires for an already-dead pty (waitForExit does;
 // onExit must too).
 console.log("H. establishing over an already-dead pty surfaces `process-exit` (no zombie)");
-const h5 = createRuntime("pty", "mesh-plane-smoke5").spawn("worker-5", { command: "cat", args: [] }, process.cwd());
+const h5 = createRuntime("pty", "mesh-plane-smoke5").spawn("worker-5", ECHO_CHILD, process.cwd());
 process.kill(h5.pid, "SIGKILL");
 await until(() => h5.status() === "exited");
 const s5 = h5.attach(); // attach over the DEAD pty

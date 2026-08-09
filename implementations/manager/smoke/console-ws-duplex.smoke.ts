@@ -20,6 +20,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 
 let pass = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -37,7 +38,10 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: brokerPort, storeDir: join(dir, "js"), host: "127.0.0.1", wsPort, wsHost: "127.0.0.1" }));
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "echo1.md"), "---\nname: echo1\nagent: echo\nrole: worker\n---\n");
-registry.register({ kind: "connector", name: "echo", requires: [], buildLaunch: () => ({ command: "cat", args: [], env: { PATH: process.env.PATH ?? "" } }) });
+// A portable line-echo pty. `process.execPath` needs no PATH resolution and `launchEnv()` is the OS
+// allow-list a real connector supplies — a ConPTY child inherits nothing but `spec.env`, and on
+// Windows a node child without `SystemRoot` aborts at startup. (This was `cat`, absent on Windows.)
+registry.register({ kind: "connector", name: "echo", requires: [], buildLaunch: () => ({ command: process.execPath, args: ["-e", "process.stdin.pipe(process.stdout)"], env: launchEnv() }) });
 
 const kids: ChildProcess[] = [];
 let mgr: InstanceType<typeof Manager> | undefined;
@@ -52,10 +56,18 @@ try {
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2500;
   await mgr.start();
   await mgr.startAgent({ name: "echo1", agent: "echo" }); // cat: a clean line-echo pty
-  const consoleUrl = mgr.consoleUrl.replace(/\/$/, "");
+  // The console URL carries the credential in the FRAGMENT, which is how the browser is handed it;
+  // the page reads it from `location.hash` and presents it on the routes that need it. Do the same:
+  // the mint route is credentialed, and without the token this POST gets a 401 (before the merge it
+  // silently got the HTML shell back, because the fragment had been pasted into the path).
+  const consoleUrl = new URL(mgr.consoleUrl);
+  const origin = consoleUrl.origin;
+  const token = new URLSearchParams(consoleUrl.hash.replace(/^#/, "")).get("t") ?? "";
+  c("the manager's console URL carries a credential for the page to present", token.length > 0);
 
   // ── the EXACT browser path: POST /session → wsconnect → rail ─────────────────────────────────
-  const est = await (await fetch(`${consoleUrl}/session/echo1`, { method: "POST" })).json() as { grant: { subjects: { in: string } }; wsUrl: string; creds: string };
+  c("the mint route refuses the page's POST without that credential", (await fetch(`${origin}/session/echo1`, { method: "POST" })).status === 401);
+  const est = await (await fetch(`${origin}/session/echo1?t=${token}`, { method: "POST" })).json() as { grant: { subjects: { in: string } }; wsUrl: string; creds: string };
   c("POST /session returns a grant + a broker ws url + a per-session cred (no /attach url)", typeof est.grant?.subjects?.in === "string" && /^ws:\/\/127\.0\.0\.1:\d+$/.test(est.wsUrl) && est.creds.length > 0, { wsUrl: est.wsUrl });
 
   const nc = await wsconnect({ servers: est.wsUrl, authenticator: credsAuthenticator(new TextEncoder().encode(est.creds)) });

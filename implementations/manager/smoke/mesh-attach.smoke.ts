@@ -22,7 +22,7 @@
  * presenter refuses), expiry; the user-mode seam refuses loud. (B) the PTY bridge over a REAL
  * broker + a REAL pty — the framing round-trips (raw bytes base64-in-JSON data payloads + JSON
  * control frames, §13.6 ruling 3), the ready→backlog reconstruction handshake (PR #158 preserved),
- * duplex byte flow through `cat`, resize, close BOTH ways surfaces a distinct end state, and
+ * duplex byte flow through the echo child, resize, close BOTH ways surfaces a distinct end state, and
  * backpressure emits an explicit DROP-NOTICE (never silent loss).
  */
 import { spawn } from "node:child_process";
@@ -51,6 +51,16 @@ import {
   decodeTerminalFrame,
   type TerminalFrame,
 } from "../src/session/index.js";
+import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+
+// A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller
+// sends comes back as output — a genuine duplex byte stream over the two eps rails. `process.execPath`
+// rather than a bare name because the pty child gets ONLY `spec.env` (P3 isolation), so there is no
+// PATH to resolve against; `launchEnv()` is the same OS allow-list a real connector supplies, and on
+// Windows a child without `SystemRoot` aborts before its first line. (This was `cat`, which windows
+// runners do not have.)
+const ECHO_CHILD = { command: process.execPath, args: ["-e", "process.stdin.pipe(process.stdout)"], env: launchEnv() };
+
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -179,7 +189,7 @@ console.log("B. the framing codec (raw bytes base64-in-JSON + JSON control frame
 }
 
 // ---------------------------------------------------------------------------------------------
-console.log("C. the PTY bridge over a real broker + a real pty (cat echoes the byte stream)");
+console.log("C. the PTY bridge over a real broker + a real pty (the echo child mirrors the byte stream)");
 
 const PORT = 14261;
 const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -197,9 +207,9 @@ const liveOffer = mintAttachOffer(
 const ncServing: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
 const ncCaller: NatsConnection = await connect({ servers: `nats://127.0.0.1:${PORT}` });
 
-// A real pty running `cat`: it echoes stdin to stdout, so a keystroke the caller sends comes back
+// A real pty running a node echo child: it echoes stdin to stdout, so a keystroke the caller sends comes back
 // as output — a genuine duplex byte stream over the two eps rails.
-const handle = createRuntime("pty", "mesh-attach-smoke").spawn("worker-1", { command: "cat", args: [] }, process.cwd());
+const handle = createRuntime("pty", "mesh-attach-smoke").spawn("worker-1", ECHO_CHILD, process.cwd());
 const session = handle.attach();
 session.write("SEEDLINE\n"); // sits in the pty's backlog so the ready→backlog handshake can replay it
 await wait(150);
@@ -237,7 +247,7 @@ callerRail.send({ k: "ready" } satisfies TerminalFrame);
 const gotBacklog = await until(() => Buffer.concat(received).toString("utf8").includes("SEEDLINE"));
 c("ready → the pty backlog is reconstructed on attach (PR #158 preserved over the mesh)", gotBacklog);
 
-// Duplex: a keystroke the caller sends is echoed by `cat` and returns as output.
+// Duplex: a keystroke the caller sends is echoed by the child and returns as output.
 callerRail.send(encodeTerminalData(Buffer.from("PINGPONG\n", "utf8")));
 const echoed = await until(() => Buffer.concat(received).toString("utf8").includes("PINGPONG"));
 c("caller keystrokes stream to the pty and its output streams back (duplex byte flow)", echoed);
