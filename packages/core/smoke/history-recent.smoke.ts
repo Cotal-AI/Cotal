@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
 
@@ -113,33 +113,95 @@ try {
     (await ep.channelHistory("never-used", { limit: 10 })).length === 0);
 
 
-  // ── REQUEST-SHAPE GATES. Everything above checks VALUES, and the discarded stream-head algorithm
-  //    returned the same values for these fixtures — so those assertions could not tell the two
-  //    apart. These two can: they fail against the old implementation, which widened from the
-  //    stream head and left every consumer it created behind.
+  // ── TRUNCATION GATES. These force the two clean-iterator-end shapes directly on the private
+  //    helpers. There is no PUBLIC seam into the endpoint's JetStream client, but a smoke can reach
+  //    the private connection, and that is enough: the consumer bind is real, so bind-time
+  //    `num_pending` is live, and only the fetch iterator's ENDING is simulated - as a clean stop
+  //    with no error, which is exactly what the pinned client does when a connection drops
+  //    ("we don't propagate the error here", @nats-io/jetstream consumer.js).
+  //
+  //    Deleting the completion checks from endpoint.ts must turn these red. That is the property an
+  //    output-only assertion could never have, because the discarded stream-head algorithm returned
+  //    identical values for every fixture in this file.
+  const epNc = (ep as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
+  const priv = ep as unknown as {
+    lastMatchingSeq(js: unknown, stream: string, subject: string): Promise<number>;
+    drainWindow(js: unknown, stream: string, subject: string, start: number, ceiling: number): Promise<unknown[]>;
+  };
+  const CHAT = `CHAT_${SPACE}`;
+  const TALK = `cotal.${SPACE}.chat.*.*.talk`;
 
+  /** The real JetStream client, with every consumer's `fetch` truncated to `cut` messages and then
+   *  ended cleanly - the shape a dropped link produces. */
+  const truncatingJs = (cut: number) => {
+    const real = jetstream(epNc);
+    return {
+      ...real,
+      consumers: {
+        ...real.consumers,
+        get: async (...args: unknown[]) => {
+          const c = await (real.consumers.get as (...a: unknown[]) => Promise<Record<string, unknown>>).apply(real.consumers, args);
+          const realFetch = (c.fetch as (o?: unknown) => Promise<AsyncIterable<unknown>>).bind(c);
+          return Object.assign(Object.create(c as object), {
+            fetch: async (o?: unknown) => {
+              const inner = await realFetch(o);
+              const gen = (async function* () {
+                let n = 0;
+                for await (const m of inner) { if (n++ >= cut) return; yield m; }
+              })();
+              return Object.assign(gen, { stop: () => (inner as { stop?: () => void }).stop?.() });
+            },
+          });
+        },
+      },
+    };
+  };
+
+  // 1. Last probe: bind says a message is pending, the fetch yields none, iterator ends cleanly.
+  //    Returning 0 here is what made streamHistory report a live channel as empty.
+  let lastThrew: unknown;
+  await priv.lastMatchingSeq(truncatingJs(0), CHAT, TALK).then(
+    (v) => { lastThrew = `RETURNED ${v}`; },
+    (e) => { lastThrew = e; },
+  );
+  check("Last probe: pending>0 with zero deliveries RAISES (never reports an empty channel)",
+    lastThrew instanceof Error, String(lastThrew));
+
+  // 2. Window drain: cut after 3 of the pending batch, ending cleanly. Returning those 3 is what
+  //    made a cut-short read look like a convincing short page.
+  let drainThrew: unknown;
+  await priv.drainWindow(truncatingJs(3), CHAT, TALK, 1, 10_000).then(
+    (r) => { drainThrew = `RETURNED ${(r as unknown[]).length} messages`; },
+    (e) => { drainThrew = e; },
+  );
+  check("window drain: a partial batch ending cleanly RAISES (never a short page)",
+    drainThrew instanceof Error, String(drainThrew));
+
+  // ── REQUEST-SHAPE GATE: count REQUESTS, not wall clock. An exact per-subject ceiling answers a
+  //    buried channel for about what a near-tail one costs; the discarded stream-head walk widened
+  //    repeatedly and cost visibly more. Wall clock cannot express that (it passes on loopback and
+  //    flakes on a loaded runner), so this measures the endpoint's outbound message delta.
+  const outFor = async (ch: string) => {
+    const b = epNc.stats().outMsgs;
+    await ep.channelHistory(ch, { limit: 5 });
+    return epNc.stats().outMsgs - b;
+  };
+  await outFor("noisy"); // warm any lazily-built client state so the comparison is fair
+  const nearTail = await outFor("noisy");
+  const buried = await outFor("quiet");
+  check(`a buried channel costs about what a near-tail one does (near ${nearTail}, buried ${buried})`,
+    buried <= nearTail + 4, { nearTail, buried });
+
+  // Consumer hygiene: every probe and window is reclaimed. Complements the above - that gate proves
+  // the ceiling is exact, this one proves nothing is left behind.
   const jsmc = await jetstreamManager((await connect({ servers: SERVER })));
-  const chatStreamName = `CHAT_${SPACE}`;
-  const consumers = async () => (await jsmc.streams.info(chatStreamName)).state.consumer_count;
-
-  // 1. CONSUMER HYGIENE. Every probe and every window must be reclaimed. The old code created a
-  //    consumer per widening attempt and deleted none, so a single far-gap read left nine behind.
+  const consumers = async () => (await jsmc.streams.info(CHAT)).state.consumer_count;
   const before = await consumers();
-  await ep.channelHistory("quiet", { limit: 10 });   // buried channel: exercises the probe + a window
-  await ep.channelHistory("noisy", { limit: 5 });
-  await ep.channelHistory("never-used", { limit: 10 }); // empty: probe only
+  await ep.channelHistory("quiet", { limit: 10 });
+  await ep.channelHistory("never-used", { limit: 10 });
   await wait(300);
   const after = await consumers();
   check(`history reclaims every consumer it creates (before ${before}, after ${after})`, after <= before, { before, after });
-
-  // 2. THE EXACT CEILING IS USED. An unused channel must cost ONE probe and stop. Under the old
-  //    stream-head walk it cost a widening search over the whole stream before concluding nothing
-  //    was there, so this bounds request count rather than just checking the empty result.
-  const t0 = Date.now();
-  const none = await ep.channelHistory("never-used", { limit: 10 });
-  const elapsed = Date.now() - t0;
-  check(`an unused channel is answered by the ceiling probe alone (${elapsed}ms, no search)`,
-    none.length === 0 && elapsed < 1000, { elapsed });
 
   await ep.stop();
   console.log(`\nhistory-recent smoke: ${pass} checks passed`);
