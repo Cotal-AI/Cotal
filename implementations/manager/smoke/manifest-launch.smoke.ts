@@ -7,6 +7,31 @@
  * with the space streams is part of startAgent's contract now), a fake runtime, decode the minted
  * creds JWT.
  * Run with: pnpm smoke:manifest-launch
+ *
+ * ── READ THIS BEFORE ADDING A CHECK HERE ─────────────────────────────────────────────────────
+ * This suite reaches the handler through a PRIVATE CAST — `(mgr as unknown as {opLaunch(...)})
+ * .opLaunch(...)` below — so NO CONTRACT IS EVER APPLIED to what it passes. That is not a
+ * stylistic note; it produced a real escape. PR #317 added remote manifest deploy (an inline
+ * launch spec pushed over the control plane) and a check here asserting `opLaunch boots from an
+ * INLINE spec`. It passed. The feature was dead: `LAUNCH_INPUT_SCHEMA` is
+ * `additionalProperties:false` over exactly `{runId, name}`, so the ep door refuses the call
+ * before `opLaunch` ever runs. Main shipped a PASSING TEST FOR EXACTLY THE FEATURE THAT WAS
+ * BROKEN, and it could not catch the break because it tested one layer BELOW the contract that
+ * refuses the call. That is not a missing suite; it is a test whose green is meaningless for the
+ * property its name claims.
+ *
+ * Generalise it: any test that reaches past a boundary via a cast proves nothing about traffic
+ * that must CROSS that boundary. A door-enforced property needs a door-level suite —
+ * `manager-service-ops` / `manager-service-invoke`, which drive `A.call(...)` through the real ep
+ * door and are in `smoke:ci`.
+ *
+ * And the correlation, which is the generalisable half: every suite in this repo that invokes a
+ * handler through a cast (this one, `lifecycle-e2e`, `start-model-preflight`) is ALSO outside
+ * `smoke:ci`. The ungated set and the below-the-door set are the same set, so #317 was three
+ * independent misses — the feature had a test, the test sat below the contract, and it was
+ * ungated — each of which alone would have been survivable. When you gate a previously ungated
+ * suite, check FIRST whether it reaches its subject through the real door: an ungated suite has
+ * never had to be honest about that.
  */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";

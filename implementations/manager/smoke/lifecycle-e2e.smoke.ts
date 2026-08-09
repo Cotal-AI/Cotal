@@ -179,6 +179,10 @@ try {
   // 2 — DEPROVISION on despawn (real): the footprint is torn down.
   console.log("2. despawn → footprint deprovisioned:");
   const callerId = (mgr as unknown as { ep: { ref: () => { id: string } } }).ep.ref().id;
+  // NOTE ON REACH: this is a private cast onto the handler, so no ep contract is applied — this
+  // suite proves lifecycle TRANSITIONS and the broker footprint, never door admission. Nothing
+  // here would catch a contract/handler disagreement (see manifest-launch.smoke.ts's header for
+  // the escape that shape produced). The door-level suites are manager-service-ops/-invoke.
   (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, admin: boolean) => unknown }).opStop({ name: "w1", graceful: false }, callerId, true);
   check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1, uid1)), false), await footprint(id1, uid1, "w1"));
   check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)), false));

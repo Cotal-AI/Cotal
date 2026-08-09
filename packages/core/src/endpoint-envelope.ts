@@ -398,14 +398,25 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  *  over-budget code for validate time, distinct from compile's `contract-invalid`). Post-hoc
  *  measurement classifies, it cannot preempt — the pre-emptive defense is the registration-time
  *  bounded-pattern gate (schema-profile), which keeps the exponential backtracking class out of
- *  registered contracts in the first place. */
+ *  registered contracts in the first place.
+ *
+ *  It classifies on CPU TIME, not elapsed time, for the same reason the compile budget does: the
+ *  thing being refused is args whose VALIDATION is the DoS, and wall clock cannot tell that from a
+ *  busy host. This one is worse than the compile budget if it gets it wrong, because it is on the
+ *  per-request path and answers the CALLER: a loaded manager would start telling callers their
+ *  perfectly valid arguments are `bad-request`. Observed live on the gate at 82ms of elapsed time
+ *  for a small object against a 10ms ceiling, on the first validation in a process (cold JIT of
+ *  the compiled validator). `validate()` is synchronous, so the process-wide CPU delta is this
+ *  validation's own work. */
 export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
+  const startedCpu = process.cpuUsage();
   const started = Date.now();
   const okValid = validate(value);
-  const elapsed = Date.now() - started;
-  if (elapsed > SCHEMA_PROFILE.validateBudgetMs)
-    fail("bad-request", `args validation took ${elapsed}ms (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; over budget is bad-request, SPEC 13.8)`);
+  const cpu = process.cpuUsage(startedCpu);
+  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
+  if (cpuMs > SCHEMA_PROFILE.validateBudgetMs)
+    fail("bad-request", `args validation took ${cpuMs}ms of CPU (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; over budget is bad-request, SPEC 13.8; ${Date.now() - started}ms elapsed)`);
   if (!okValid) {
     const first = validate.errors?.[0];
     fail("bad-request", `args do not validate against the input schema${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
@@ -423,11 +434,13 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
  *  mirroring the args side. */
 export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
   const value = data === undefined ? null : data;
+  const startedCpu = process.cpuUsage();
   const started = Date.now();
   const okValid = validate(value);
-  const elapsed = Date.now() - started;
-  if (elapsed > SCHEMA_PROFILE.validateBudgetMs)
-    fail("internal", `output validation took ${elapsed}ms (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; an over-budget output validation is a responder bug, SPEC 13.7/13.8)`);
+  const cpu = process.cpuUsage(startedCpu);
+  const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
+  if (cpuMs > SCHEMA_PROFILE.validateBudgetMs)
+    fail("internal", `output validation took ${cpuMs}ms of CPU (budget ${SCHEMA_PROFILE.validateBudgetMs}ms; an over-budget output validation is a responder bug, SPEC 13.7/13.8; ${Date.now() - started}ms elapsed)`);
   if (!okValid) {
     const first = validate.errors?.[0];
     fail("internal", `output does not validate against the pinned output schema; an invalid reply is a responder bug, never success (SPEC 13.7)${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);

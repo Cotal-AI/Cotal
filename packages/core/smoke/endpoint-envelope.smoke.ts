@@ -168,5 +168,28 @@ c("absent args validate against the void schema as null", assertArgsValid(voidVa
 rejects("present args against the void schema are bad-request", "bad-request",
   () => assertArgsValid(voidValidate, { any: 1 }));
 
+// The §13.8 validation budget classifies on CPU TIME, not elapsed. It must still refuse args whose
+// VALIDATION is genuinely the cost (below), and must NOT fire because the host is busy — the second
+// half was established by execution (this same budget threw at 82ms elapsed on a small object during
+// a loaded gate run, and does not under CPU measurement), which no in-process assertion can restage,
+// since a smoke cannot make the OS deschedule it on demand.
+{
+  const perItem = compileContractSchema({
+    root: { type: "array", items: { type: "object", properties: { s: { type: "string", pattern: "^[a-z]{1,12}-[0-9]{1,6}$" } }, required: ["s"], additionalProperties: false } },
+  });
+  const heavy = Array.from({ length: 300_000 }, (_, i) => ({ s: `item-${i % 999999}` }));
+  // `rejects` alone would pass for the WRONG reason here: invalid args are ALSO `bad-request`, so a
+  // heavy payload that merely failed the schema would look identical to a budget refusal. Pin the
+  // message to the budget, and keep the payload VALID so the only way out is over-budget.
+  let budgetErr = "", budgetCode = "";
+  try { assertArgsValid(perItem, heavy as unknown as Record<string, unknown>); }
+  catch (e) { budgetCode = e instanceof EpEnvelopeError ? e.code : ""; budgetErr = (e as Error).message; }
+  c("args whose validation genuinely burns the budget are refused", budgetCode === "bad-request", budgetCode || "no throw");
+  c("...refused BY THE BUDGET, not by the schema (the message names CPU)", /validation took \d+ms of CPU/.test(budgetErr), budgetErr);
+  c("...and the payload it refused was schema-VALID, so over-budget is the only route", perItem(heavy) === true);
+  const small = [{ s: "item-1" }];
+  c("ordinary args validate well inside the budget", Array.isArray(assertArgsValid(perItem, small as unknown as Record<string, unknown>)));
+}
+
 console.log(`\nENDPOINT ENVELOPE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 if (fail > 0) process.exit(1);
