@@ -17,6 +17,7 @@ import {
 } from "@nats-io/transport-node";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
+import { liveKvEntries } from "./kv-scan.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -1617,16 +1618,18 @@ export class CotalEndpoint extends EventEmitter {
     const kv = await this.membershipFeedRegistry();
     const members: MembershipEntry[] = [];
     let asOf: number | undefined;
-    for await (const key of await kv.keys()) {
-      const e = await kv.get(key);
-      if (!e || e.operation === "DEL" || e.operation === "PURGE") continue;
-      if (key === MEMBERSHIP_FEED_KEY) {
+    // ONE pass. This was `kv.keys()` followed by a sequential `kv.get()` per key — O(N) round trips,
+    // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
+    // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
+    // than reporting a partial roster as the whole one.
+    for (const e of await liveKvEntries(kv)) {
+      if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
       }
       try {
         const rec = e.json<ChannelMembership>();
-        members.push({ id: key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt });
+        members.push({ id: e.key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt });
       } catch { /* skip undecodable */ }
     }
     return { asOf, members };
