@@ -219,7 +219,18 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
  *  `.cotal/` to actually be there, and never accept the machine-home dir, which holds the daemon's
  *  own state rather than a space's. */
 function addRoot(flag: string | undefined): string {
-  if (flag) return resolve(flag);
+  if (flag) {
+    // An explicit `--root` still has to be a directory that exists: the record's whole job is to
+    // point at `.cotal/auth` and `.cotal/agents` under it, and a regular file or a typo'd path can
+    // never hold either. (It need NOT already contain `.cotal` — naming the folder is the operator
+    // saying "here", and an auth registration is separately gated on trust that composes.)
+    const dir = resolve(flag);
+    if (!isDir(dir)) {
+      console.error(c.red(`✗ --root ${dir} is not a directory - it must be the folder holding this mesh's .cotal/auth and .cotal/agents`));
+      process.exit(1);
+    }
+    return dir;
+  }
   const root = findCotalRoot(process.cwd());
   if (!isDir(join(root, ".cotal")) || resolve(root, ".cotal") === resolve(homeCotalDir())) {
     console.error(c.red("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas"));
@@ -256,6 +267,10 @@ function addServer(raw: string): string {
   if (u.search || u.hash) {
     // Named, not quoted — a query string is exactly where a token would ride (`?token=…`).
     console.error(c.red(`✗ --server must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`));
+    process.exit(1);
+  }
+  if (u.pathname && u.pathname !== "/") {
+    console.error(c.red("✗ --server must be a bare broker URL - drop its path"));
     process.exit(1);
   }
   if (!u.hostname) {

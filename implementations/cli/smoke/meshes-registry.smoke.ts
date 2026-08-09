@@ -22,10 +22,10 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -186,14 +186,38 @@ try {
   // ROOT INFERENCE. `findCotalRoot` returns its starting directory when it finds no `.cotal`
   // up-tree, so the "outside a project" guard has to check the directory really is one — without
   // that, running this from `/` recorded `root: "/"`.
-  const bare = mkdtempSync(join(tmpdir(), "cotal-noproject-")); // no .cotal anywhere in it
+  //
+  // The walk goes UP, so this case depends on ANCESTORS of the temp dir, which we do not own: a
+  // stray `/tmp/.cotal` on the machine silently turns the assertion green for the wrong reason
+  // (`findCotalRoot` returns `/tmp`, which IS a project, so the guard correctly accepts and the
+  // check fails) — or, worse, hides a real regression on a differently-dirty box. Assert the
+  // precondition instead of assuming it, so a polluted workstation gets a precise, actionable
+  // failure rather than a misleading verdict.
+  const bare = mkdtempSync(join(tmpdir(), "cotal-noproject-"));
   roots.push(bare);
+  for (let dir = bare; ; dir = dirname(dir)) {
+    assert.ok(
+      dir === bare || !existsSync(join(dir, ".cotal")),
+      `this case needs a temp dir with no .cotal above it, but ${join(dir, ".cotal")} exists - move it aside and re-run`,
+    );
+    if (dirname(dir) === dir) break;
+  }
   const prevCwd2 = process.cwd();
   process.chdir(bare);
   const rootless = await run(["add", "rootless"], { server: LIVE });
   process.chdir(prevCwd2);
   check("add outside a project requires --root", rootless.code === 1 && findMesh("rootless") === undefined, rootless.out);
   check("…and names --root as the fix", rootless.out.includes("--root"), rootless.out);
+  // An EXPLICIT --root is not exempt from being a real directory.
+  const notADir = join(bare, "a-file");
+  writeFileSync(notADir, "x");
+  const fileRoot = await run(["add", "filey"], { server: LIVE, root: notADir });
+  check("add refuses a --root that is not a directory", fileRoot.code === 1 && findMesh("filey") === undefined, fileRoot.out);
+  const missingRoot = await run(["add", "missy"], { server: LIVE, root: join(bare, "nope", "nope") });
+  check("add refuses a --root that does not exist", missingRoot.code === 1 && findMesh("missy") === undefined, missingRoot.out);
+  // …and the URL contract it claims: a bare broker URL has no path either.
+  const pathy = await run(["add", "pathy"], { server: `${LIVE}/subject`, root });
+  check("add refuses a --server with a path", pathy.code === 1 && findMesh("pathy") === undefined, pathy.out);
 
   // ── THE INVARIANT: a sweep prunes an `up` record and keeps an operator-registered one ──────────
   rmSync(join(home, "meshes"), { recursive: true, force: true });
