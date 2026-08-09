@@ -9,10 +9,15 @@
  *  • an `up` record whose broker is dead is pruned; a `manual` one is KEPT and reported `offline`,
  *    on that sweep and on every later one;
  *  • `add` verifies against the real broker before recording, and records nothing when that fails;
- *  • `--force` is the explicit unverified/replace escape;
+ *  • `--force` is the explicit record-without-verifying / replace escape;
  *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here.
  *
- * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the one live-broker probe.
+ * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes.
+ *
+ * KNOWN LIMIT: the live broker here is open and JetStream-less, so the AUTH admission path is
+ * covered only by its refusals (a broker that enforces nothing, a root whose trust does not
+ * compose). A positive auth registration against a provisioned mesh belongs with the provisioning
+ * smokes (`multi-space`), not here — this file must not be read as proving that path works.
  * Run: pnpm smoke:meshes-registry
  */
 import { strict as assert } from "node:assert";
@@ -120,8 +125,8 @@ try {
   check("add says nothing was registered, and how to override", dead.out.includes("nothing was registered") && dead.out.includes("--force"), dead.out);
 
   const forced = await run(["add", "ghost"], { server: DEAD, root, force: true });
-  check("add --force registers an unverified (currently down) mesh", forced.code === 0 && findMesh("ghost")?.origin === "manual", forced.out);
-  check("add --force marks the line unverified", forced.out.includes("unverified"), forced.out);
+  check("add --force registers a mesh that is currently down", forced.code === 0 && findMesh("ghost")?.origin === "manual", forced.out);
+  check("add --force says the record was written without verifying", forced.out.includes("without verifying"), forced.out);
   check("add --force does NOT steal a usable current", getCurrent() === "beta", getCurrent());
 
   // ── add: guards ───────────────────────────────────────────────────────────────────────────────
@@ -215,10 +220,20 @@ try {
   check("`up` refuses to reclaim a registered space rather than deleting it", claimError !== undefined, claimError?.message);
   check("…and the registration survives the refusal", findMesh("claimed") !== undefined, loadMeshes());
   check("…naming `cotal meshes rm` as the way through", claimError?.message.includes("cotal meshes rm claimed") === true, claimError?.message);
+  // A LIVE registered holder must reach the SAME refusal. Deciding liveness first sent the operator
+  // to `cotal down`, which cannot stop a mesh this machine does not run.
+  recordMesh({ space: "claimed-live", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  let liveClaimError: Error | undefined;
+  await claimSpace("claimed-live", DEAD, localRoot).catch((e: Error) => void (liveClaimError = e));
+  check("a LIVE registered holder gets the same refusal, not `cotal down`",
+    liveClaimError?.message.includes("cotal meshes rm claimed-live") === true && !liveClaimError.message.includes("cotal down"),
+    liveClaimError?.message);
+  check("…and it survives", findMesh("claimed-live") !== undefined, loadMeshes());
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
+  removeMesh("claimed-live");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability

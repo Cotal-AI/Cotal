@@ -1754,15 +1754,16 @@ function ensureRootForSpace(useAuth: boolean, space: string): void {
 export async function claimSpace(space: string, server: string, root: string): Promise<void> {
   const existing = findMesh(space);
   if (!existing || (existing.server === server && existing.root === root)) return;
+  // An OPERATOR-REGISTERED holder is decided FIRST, before liveness, because liveness changes
+  // nothing about it and the two outcomes would otherwise print the wrong remedy. It is never
+  // reclaimed: unreachable is not proof the mesh is gone (the record describes a broker on another
+  // machine), the reclaim runs BEFORE this launch starts anything, and `cotal down` — what the
+  // liveness branch below would advise — cannot stop a mesh this machine does not run.
+  if (existing.origin === "manual")
+    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it was registered by hand, so \`cotal up\` neither takes it over nor reclaims the name: \`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``);
   if (await isReachable(existing.server)) {
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
-  // An OPERATOR-REGISTERED holder is never auto-reclaimed. Unreachable is not proof it is gone —
-  // that record describes a mesh on another machine, and this reclaim runs BEFORE the broker starts,
-  // so a `up` that then fails for any reason (a bound port, bad trust material) would leave the
-  // operator with neither mesh and no way to rebuild the record. Make them say so instead.
-  if (existing.origin === "manual")
-    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) that is not answering right now - it was registered by hand, so it is not reclaimed automatically: \`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``);
   removeMesh(space); // the prior holder's broker is gone — reclaim the name
 }
 

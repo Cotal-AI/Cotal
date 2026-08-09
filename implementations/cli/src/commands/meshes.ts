@@ -186,7 +186,10 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   recordMesh(entry);
   console.log(
     c.green(`✓ registered "${space}"`),
-    c.dim(`${server}  ${mode}  ${root}${v.force ? "  (unverified)" : ""}`),
+    // "(unverified)" describes THIS registration, not a durable property of the record: verification
+    // is a point-in-time fact that a verified record also loses the moment a port is reused, so it
+    // is reported as what just happened rather than persisted as a claim that would decay on disk.
+    c.dim(`${server}  ${mode}  ${root}${v.force ? "  (recorded without verifying)" : ""}`),
   );
   // Same policy as `cotal up`: adopt the default only when there isn't a usable one, and never
   // silently redirect a default that still resolves.
