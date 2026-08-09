@@ -141,13 +141,28 @@ try {
   const complete = await liveKvEntries(stubKv([entry("a", 1, 1), entry("b", 2, 0)]));
   check("a pass that reaches the terminal message returns normally", complete.length === 2, complete.map((e) => e.key));
 
-  // Death BEFORE the first message is indistinguishable from an empty bucket by count alone — this
-  // is precisely why the helper owns the pass rather than wrapping history(). A bucket that reports
-  // content but delivered nothing was truncated, and must not read as "empty".
-  let blank: unknown;
-  await liveKvEntries(stubKv([], 7)).catch((e) => { blank = e; });
-  check("zero entries from a NON-empty bucket THROWS (not a confident empty set)", blank instanceof IncompleteKvScan, String(blank));
+  // THE KNOWN GAP, asserted so it stays known. A pass that dies before its first message cannot be
+  // told apart from an empty bucket through this client's API, so it reads as empty.
+  //
+  // An earlier version tried to close that by asking `kv.status()` and throwing when the bucket
+  // reported entries. That was unsound in the other direction: `history()` ends on a CACHED
+  // `num_pending === 0` and `status()` is a later round trip, so a first PUT landing in the gap
+  // turned a legitimately-empty snapshot into a throw — a false failure on a healthy read, on
+  // exactly the slow links that widen the window, and one round trip wasted on every empty scan.
+  // Closing this properly needs the helper to bind its own consumer and read `num_pending` at bind
+  // time. Until it does, this is the honest behaviour and it is pinned here.
+  check("zero entries reads as empty, whatever the bucket reports (documented gap)",
+    (await liveKvEntries(stubKv([], 7))).length === 0);
   check("zero entries from a genuinely empty bucket returns []", (await liveKvEntries(stubKv([], 0))).length === 0);
+  check("no round trip is spent proving emptiness (status() is never consulted)", await (async () => {
+    let statusCalls = 0;
+    const counting = {
+      history: async () => (async function* () { /* empty */ })(),
+      status: async () => { statusCalls++; return { bucket: "stub", values: 7 }; },
+    } as never;
+    await liveKvEntries(counting);
+    return statusCalls === 0;
+  })());
 
   await nc.close();
   console.log(`\nkv-scan smoke: ${pass} checks passed`);
