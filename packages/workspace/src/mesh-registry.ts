@@ -41,6 +41,12 @@ export interface MeshEntry {
    *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
    *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
   attachHost?: string;
+  /** Who put this record here — and therefore who may take it out. `up` (the default, and what any
+   *  record written without the field is) means THIS machine started the mesh: an auto-prune may
+   *  drop it, because `cotal up` writes it straight back. `manual` means an operator registered it
+   *  by hand (`cotal meshes add`) — typically a mesh running on another machine, whose record
+   *  nothing here can reconstruct — so it is never auto-pruned; only `cotal meshes rm` removes it. */
+  origin?: "up" | "manual";
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -153,6 +159,26 @@ export function recordMesh(m: MeshEntry): void {
 export function removeMesh(space: string): void {
   rmSync(meshFile(space), { force: true });
   removeLegacyMeshFiles(space); // else a pre-hex record would resurrect the mesh in every listing
+}
+
+/**
+ * Drop a record because its mesh looks GONE — the auto-prune path, as opposed to the operator
+ * saying so. Returns whether the record was actually removed.
+ *
+ * Every automatic deletion goes through here rather than {@link removeMesh}, because the rule is one
+ * rule and forgetting it at a single site is the whole failure: a `manual` record (`cotal meshes
+ * add`) is NEVER auto-pruned. An `up` record is safe to drop — `cotal up` writes it back — but a
+ * manual one usually describes a mesh on ANOTHER machine, and nothing on this machine can
+ * reconstruct the server URL, root and mode the operator typed. A sleeping laptop or a VPN blip
+ * would otherwise unregister a perfectly healthy remote mesh for good (observed exactly once, and
+ * once was enough). An unreachable manual record is a STATE the surfaces report ("offline"), not a
+ * deletion; `cotal meshes rm` is how it leaves.
+ */
+export function pruneMesh(space: string): boolean {
+  const m = findMesh(space);
+  if (!m || m.origin === "manual") return false;
+  removeMesh(space);
+  return true;
 }
 
 /** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was

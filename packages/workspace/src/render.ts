@@ -42,7 +42,11 @@ function renderTargetError(err: MeshTargetError): string {
     case "default-occupied":
       return `✗ another mesh ("${d.space}") is running at ${d.server} - run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`;
     case "stale-auth-root":
-      return `✗ registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}" - stale entry removed; re-run \`cotal up\` or check \`cotal meshes\``;
+      // An operator-registered entry is KEPT (only `cotal meshes rm` drops it), so the recovery
+      // there is to point it at the right root — never a claim that it was removed for you.
+      return d.removed === false
+        ? `✗ registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}" - re-register it with \`cotal meshes add ${d.space} --server <url> --root <dir>\` (\`--force\` replaces), or \`cotal meshes rm ${d.space}\``
+        : `✗ registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}" - stale entry removed; re-run \`cotal up\` or check \`cotal meshes\``;
     case "unreadable-auth":
       return `✗ space "${d.space}"'s trust material under ${d.root} will not load (${err.message}) - repair or remove the account record, then re-run \`cotal up\``;
     case "user-auth-unrecorded":
@@ -57,6 +61,10 @@ function renderTargetError(err: MeshTargetError): string {
 function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: boolean): string {
   switch (kind) {
     case "unreachable":
+      // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
+      // remedy here — this machine can only wait for it or stop pointing at it.
+      if (t.origin === "manual")
+        return `✗ no broker answered at ${t.server} - "${t.space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`;
       return `✗ no mesh running at ${t.server}${pruned ? " (stale registry entry - removed)" : ""} - run \`cotal up\``;
     case "registry-creds-rejected":
       return `✗ mesh "${t.space}" at ${t.server} no longer matches its registry entry (credentials rejected - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;

@@ -341,12 +341,31 @@ restore only when its details prove manager commit and its exact recorded listen
 
 ```bash
 cotal meshes
+cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open] [--force]
+cotal meshes rm <space> [<space> …] [--force]
 cotal use <space>
 cotal status [--space <s>] [--server <url>]
 ```
 
-`meshes` lists the running meshes on this machine; a `*` marks the `current` default a bare
-`cotal spawn` joins. `use <space>` sets that default; the selection applies from every directory,
+`meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
+`cotal spawn` joins.
+
+`cotal up` and `cotal down` maintain their own records. `meshes add` registers a mesh they cannot
+speak for: one running on another machine, a shared broker, a hosted space. `--root` is the folder
+whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas
+(default: the project you run it in) — the registry stores that path, never a secret. `--mode`
+defaults to `auth` when the root holds the space's account record and to `open` otherwise; a
+user-auth space cannot be registered by hand, because its IdP pins are trust that only
+`cotal up --user-auth` establishes. The broker is probed before anything is recorded, so a wrong
+address, or credentials that mesh will not accept, fails here instead of at the first `spawn`;
+`--force` records unverified (and replaces an existing record).
+
+`meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
+is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is never
+removed for you: when its broker is unreachable it is listed `offline` and stays until you remove
+it, because nothing on this machine could write it back.
+
+`use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,

@@ -103,6 +103,27 @@ The registry stores a *path*, never a secret; trust material stays in each proje
 `.cotal/auth`. If the mesh is down or won't take your creds, spawn fails with one
 sentence, never a raw NATS trace.
 
+### Meshes you did not start here
+
+A mesh running on another machine has no `cotal up` on this one, so register it by hand:
+
+```bash
+cotal meshes add optiplex --server nats://10.0.0.5:4222 --root ~/meshes/optiplex
+cotal meshes rm optiplex
+```
+
+`--root` is the local folder holding that mesh's `.cotal/auth` (credentials you minted where it
+runs) and `.cotal/agents` (its personas); the mode is inferred from what that folder holds. The
+broker is probed before the record is written, so a bad address or a credential that mesh will not
+accept fails at registration rather than at your first `spawn` (`--force` records it unverified —
+useful when the mesh is simply down right now).
+
+Records added this way are never removed automatically. A mesh this machine started can be pruned
+safely, because `cotal up` writes the record straight back; one you registered by hand cannot be
+reconstructed, so an unreachable broker is shown as `offline` in `cotal meshes` and the record stays
+until `cotal meshes rm` drops it. `rm` only forgets a mesh — to stop one running here, use
+`cotal down`.
+
 ## Watching
 
 `cotal console` is the terminal view (TUI on a real terminal, plain line stream when

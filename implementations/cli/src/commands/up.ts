@@ -1779,7 +1779,11 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
 function recordOurMesh(m: MeshEntry): void {
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
-  recordMesh(m);
+  // `origin` is stamped HERE, not at the five call sites: every record this function writes is by
+  // definition a mesh this machine started, which is exactly what makes it safe to auto-prune (an
+  // `up` writes it straight back). Starting a space here also takes ownership of a record an
+  // operator had registered by hand for the same name — from now on `cotal down` owns its removal.
+  recordMesh({ ...m, origin: "up" });
   if (!usableCurrent) {
     setCurrent(m.space);
     return;
