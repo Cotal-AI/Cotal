@@ -432,6 +432,7 @@ try {
   check("the wizard asks before replacing a record named on the command line",
     clashOut === false && clash.asked.some((a) => a.kind === "select" && a.message.includes("already registered")), clash.asked);
   check("…and cancelling there writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
+  removeMesh("taken"); // this block's fixture; later cases assert on an empty registry
 
   // 2. "Point at a different folder" must ASK for one, not re-infer the folder it just rejected.
   const noTrust = projectRoot("wiz-notrust");
@@ -446,12 +447,17 @@ try {
   removeMesh("openbroker");
 
   // 3. A replacement is still VERIFIED — "replace" must not imply "skip the checks".
-  recordMesh({ space: "taken", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
-  const replacing = driver(["replace", true]);
-  const replacedOut = await addWizard({ space: "taken", server: LIVE }, root, replacing.io as never);
+  //    Asserted where it can FAIL: replacing toward a broker that rejects these credentials must
+  //    reach the failure prompt. Pointing it at a broker that accepts them would pass either way,
+  //    which is no assertion at all — it would still be green if replace skipped verification.
+  recordMesh({ space: "openbroker", server: LIVE, root: trustRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const replacing = driver(["replace", "cancel"]);
+  const replacedOut = await addWizard({ space: "openbroker", server: AUTH_LIVE, root: trustRoot }, trustRoot, replacing.io as never);
   check("replacing a record still runs the checks (it is not a --force)",
-    replacedOut === true && findMesh("taken")?.server === LIVE, findMesh("taken"));
-  removeMesh("taken");
+    replacedOut === false && replacing.asked.some((a) => a.message.includes("The check did not pass")), replacing.asked);
+  check("…and a declined replacement leaves the original record untouched",
+    findMesh("openbroker")?.server === LIVE, findMesh("openbroker"));
+  removeMesh("openbroker");
 
   // 4. An unreachable broker must not be read as "open" for a space this root holds trust for.
   const downAuth = driver(["anyway", "openbroker", true]);
