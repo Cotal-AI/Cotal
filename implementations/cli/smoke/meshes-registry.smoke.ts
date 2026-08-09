@@ -99,6 +99,12 @@ const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
 const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort)], { stdio: "ignore" });
+// A second broker that actually ENFORCES something, so the guided flow's auth branches (the
+// "this folder holds no credentials" recovery) are reachable at all. Password auth is enough:
+// probeEnforcement only asks whether a bare connect is refused.
+const authPort = await freePort();
+const AUTH_LIVE = `nats://127.0.0.1:${authPort}`;
+const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p"], { stdio: "ignore" });
 broker.on("error", () => {
   console.error("needs nats-server on PATH");
   process.exit(1);
@@ -388,13 +394,86 @@ try {
   const { canPrompt } = await import("../src/commands/meshes-wizard.js");
 
   check("a pipe is never prompted at (scripts and agents keep the fail-loud form)", canPrompt() === false);
+
+  // The wizard's VALUE is its control flow, and every one of these was answered wrong at least once
+  // before a reviewer caught it. Driving the real function with scripted answers is the only way a
+  // suite can catch that: asserting the rules alone stayed green while `add <already-registered>`
+  // silently overwrote a record and "point at a different folder" asked nothing.
+  const { addWizard } = await import("../src/commands/meshes-wizard.js");
+  interface Asked { kind: "text" | "select" | "confirm"; message: string }
+  /** A scripted terminal: answers in order, and records what it was asked. */
+  const driver = (answers: unknown[]) => {
+    const asked: Asked[] = [];
+    let i = 0;
+    // Running out of answers is a FAILURE, not a source of `undefined`: a wizard that loops asks
+    // forever, and without this the suite hangs until the CI job times out instead of saying which
+    // question it could not answer.
+    const nextAnswer = (q: string) => {
+      if (i >= answers.length) throw new Error(`wizard asked more than the script answers: "${q}" (after ${asked.length} prompts)`);
+      return answers[i++];
+    };
+    return {
+      asked,
+      io: {
+        intro() {}, outro() {}, note() {}, cancel() {},
+        log: { info() {}, warn() {}, error() {} },
+        spinner: () => ({ start() {}, stop() {} }),
+        async text(o: { message: string }) { asked.push({ kind: "text", message: o.message }); return nextAnswer(o.message) as string; },
+        async select<T>(o: { message: string }) { asked.push({ kind: "select", message: o.message }); return nextAnswer(o.message) as T; },
+        async confirm(o: { message: string }) { asked.push({ kind: "confirm", message: o.message }); return nextAnswer(o.message) as boolean; },
+      },
+    };
+  };
+
+  // 1. A name that came in on the command line must still hit the clash gate.
+  recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const clash = driver(["cancel"]);
+  const clashOut = await addWizard({ space: "taken", server: LIVE }, root, clash.io as never);
+  check("the wizard asks before replacing a record named on the command line",
+    clashOut === false && clash.asked.some((a) => a.kind === "select" && a.message.includes("already registered")), clash.asked);
+  check("…and cancelling there writes nothing", findMesh("taken")?.ts === new Date(0).toISOString(), findMesh("taken"));
+
+  // 2. "Point at a different folder" must ASK for one, not re-infer the folder it just rejected.
+  const noTrust = projectRoot("wiz-notrust");
+  const recover = driver(["root", trustRoot, "openbroker", "anyway", true]);
+  const recovered = await addWizard({ server: AUTH_LIVE }, noTrust, recover.io as never);
+  const askedForFolder = recover.asked.filter((a) => a.kind === "text" && a.message.includes("Local folder"));
+  check("the different-folder recovery actually prompts for a folder", askedForFolder.length === 1, recover.asked);
+  check("…and does not loop back to the same dead end",
+    recover.asked.filter((a) => a.message.includes("holds no credentials")).length === 1, recover.asked);
+  check("…and the recovered registration lands on the folder that was named",
+    recovered === true && findMesh("openbroker")?.root === trustRoot, findMesh("openbroker"));
+  removeMesh("openbroker");
+
+  // 3. A replacement is still VERIFIED — "replace" must not imply "skip the checks".
+  recordMesh({ space: "taken", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const replacing = driver(["replace", true]);
+  const replacedOut = await addWizard({ space: "taken", server: LIVE }, root, replacing.io as never);
+  check("replacing a record still runs the checks (it is not a --force)",
+    replacedOut === true && findMesh("taken")?.server === LIVE, findMesh("taken"));
+  removeMesh("taken");
+
+  // 4. An unreachable broker must not be read as "open" for a space this root holds trust for.
+  const downAuth = driver(["anyway", "openbroker", true]);
+  const downOut = await addWizard({ server: DEAD }, trustRoot, downAuth.io as never);
+  check("a mesh registered while DOWN keeps the mode its trust implies, not open",
+    downOut === true && findMesh("openbroker")?.mode === "auth", findMesh("openbroker"));
+  removeMesh("openbroker");
   check("the broker's ENFORCEMENT is read from the broker, not assumed", (await probeEnforcement(LIVE)) === "open");
   check("…and a dead address is 'unreachable', never 'open'", (await probeEnforcement(DEAD)) === "unreachable");
-  check("an unreachable broker does NOT let an auth mesh be recorded open (the wizard's fallback)",
-    checkMode("openbroker", trustRoot, spacesAtRoot(trustRoot), undefined).ok &&
-      (checkMode("openbroker", trustRoot, spacesAtRoot(trustRoot), undefined) as { value: string }).value === "auth");
+  // (the "unreachable ⇒ not open" rule is asserted by DRIVING the wizard further down — asserting
+  // `checkMode` alone here passed with the wizard's fallback deleted, which is no assertion at all)
+  const candidates = spacesAtRoot(trustRoot);
   check("the space candidates a guided run offers come from trust on disk",
-    spacesAtRoot(trustRoot).includes("openbroker") && spacesAtRoot(root).length === 0, spacesAtRoot(trustRoot));
+    candidates.ok && candidates.value.includes("openbroker"), candidates);
+  // An auth dir that cannot be ENUMERATED is not an empty one: swallowing that error let the flag
+  // form infer `open` for a root whose credentials merely could not be read.
+  const unreadable = projectRoot("unreadable");
+  writeFileSync(join(unreadable, ".cotal", "auth"), "not a directory");
+  check("an unreadable auth dir is reported, never read as 'no accounts'", !spacesAtRoot(unreadable).ok, spacesAtRoot(unreadable));
+  const blocked = await run(["add", "blind"], { server: LIVE, root: unreadable });
+  check("…and the flag form exits non-zero rather than recording an open mesh",
+    blocked.code === 1 && findMesh("blind") === undefined, blocked.out);
   check("checkEnforcement refuses auth-on-open", !checkEnforcement("auth", "open", LIVE, "x", root).ok);
   check("checkEnforcement refuses open-on-auth", !checkEnforcement("open", "auth", LIVE, "x", root).ok);
   check("checkEnforcement passes a matching pair", checkEnforcement("auth", "auth", LIVE, "x", root).ok && checkEnforcement("open", "open", LIVE, "x", root).ok);
@@ -415,6 +494,7 @@ try {
 } finally {
   process.chdir(cwd);
   broker.kill("SIGKILL");
+  authBroker.kill("SIGKILL");
   for (const r of roots) rmSync(r, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 }

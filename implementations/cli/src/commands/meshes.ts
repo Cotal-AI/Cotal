@@ -137,7 +137,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   }
   const server = take(checkServer(v.server));
   const root = take(checkRoot(v.root, process.cwd()));
-  const accounts = spacesAtRoot(root);
+  const accounts = take(spacesAtRoot(root));
   const mode = take(checkMode(space, root, accounts, v.mode));
   if (mode === "open" && accounts.includes(space))
     console.log(c.dim(`note: ${authDir(root)} holds trust for "${space}", but --mode open records a credless connect`));

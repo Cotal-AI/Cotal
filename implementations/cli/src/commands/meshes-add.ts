@@ -195,11 +195,20 @@ export function writeRecord(entry: MeshEntry): { adoptedCurrent: boolean; keptCu
   return { adoptedCurrent: false, ...(usableCurrent !== entry.space ? { keptCurrent: usableCurrent } : {}) };
 }
 
-/** The spaces this root holds account records for — the candidates a guided registration offers. */
-export function spacesAtRoot(root: string): string[] {
+/**
+ * The spaces this root holds account records for — the candidates a guided registration offers,
+ * and the evidence the mode is inferred from.
+ *
+ * An enumeration failure is REPORTED, never flattened to "none". `listSpaceAccounts` throws when
+ * the auth dir cannot be read (EACCES, a corrupt record), and treating that as an empty inventory
+ * would infer `open` for a root whose trust merely could not be read — recording a credless connect
+ * against a mesh whose credentials are sitting right there, unreadable. The pre-refactor call let
+ * that throw reach the operator; so does this.
+ */
+export function spacesAtRoot(root: string): Check<string[]> {
   try {
-    return listSpaceAccounts(authDir(root));
-  } catch {
-    return []; // an unreadable auth dir offers no candidates; the mode/trust rules still fail loud
+    return good(listSpaceAccounts(authDir(root)));
+  } catch (e) {
+    return bad(`✗ ${authDir(root)} cannot be read (${(e as Error).message}) - repair or remove the unreadable account record before registering against this folder`);
   }
 }

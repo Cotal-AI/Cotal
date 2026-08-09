@@ -32,6 +32,48 @@ import {
  * recording anyway) instead of ending the command.
  */
 
+/**
+ * The prompts, as an interface rather than direct clack calls.
+ *
+ * Not indirection for its own sake: the wizard's VALUE is its control flow — does a name that came
+ * from the command line still hit the clash gate, does "point at a different folder" actually ask
+ * for one, does a replacement still get verified — and every one of those questions was answered
+ * wrong at least once. None of it is reachable by a test that cannot answer a prompt, so the review
+ * that caught those bugs was doing work the suite structurally could not. With the prompts injected,
+ * a test drives the real function with scripted answers and asserts what it asked and what it wrote.
+ */
+export interface WizardIO {
+  intro(message: string): void;
+  outro(message: string): void;
+  note(body: string, title: string): void;
+  cancel(message: string): void;
+  log: { info(m: string): void; warn(m: string): void; error(m: string): void };
+  spinner(): { start(m: string): void; stop(m: string): void };
+  text(opts: { message: string; placeholder?: string; validate?: (v: string | undefined) => string | undefined }): Promise<string>;
+  select<T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }): Promise<T>;
+  confirm(opts: { message: string }): Promise<boolean>;
+}
+
+/** The real terminal, via clack. Cancellation (Ctrl-C / Esc) exits here rather than returning a
+ *  sentinel the wizard body would have to thread through every branch. */
+export function clackIO(): WizardIO {
+  return {
+    intro: (m) => p.intro(m),
+    outro: (m) => p.outro(m),
+    note: (body, title) => p.note(body, title),
+    cancel: (m) => p.cancel(m),
+    log: { info: (m) => p.log.info(m), warn: (m) => p.log.warn(m), error: (m) => p.log.error(m) },
+    spinner: () => {
+      const s = p.spinner();
+      return { start: (m) => s.start(m), stop: (m) => s.stop(m) };
+    },
+    text: async (opts) => abortIfCancel(await p.text(opts as never)),
+    select: async <T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }) =>
+      abortIfCancel(await p.select<T>(opts as never)) as T,
+    confirm: async (opts) => abortIfCancel(await p.confirm({ ...opts, initialValue: true })),
+  };
+}
+
 /** Whether a guided run is possible at all: both ends of the pipe must be a real terminal. Without
  *  this a missing flag would hang a script waiting on input nobody is there to give; the flag form
  *  keeps failing loud instead. */
@@ -51,9 +93,9 @@ export interface WizardSeed {
 
 /** Run the guided registration. Returns false if the operator backed out (the caller exits 0 —
  *  cancelling is not a failure). */
-export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean> {
-  p.intro(brandBold("Register a mesh"));
-  p.note(
+export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = clackIO()): Promise<boolean> {
+  io.intro(brandBold("Register a mesh"));
+  io.note(
     "A mesh running somewhere else - another machine, a shared broker, a hosted space - so that\n`cotal spawn` and `--space` can reach it from any folder on this machine.\n\nNothing is written until you confirm.",
     brand("What this does"),
   );
@@ -73,8 +115,7 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
 
   for (;;) {
     if (!server) {
-      server = abortIfCancel(
-        await p.text({
+      server = await io.text({
           message: "Broker URL of the mesh you want to reach",
           placeholder: "nats://10.0.0.5:4222",
           validate: (v) => {
@@ -82,18 +123,17 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
             const r = checkServer(v);
             return r.ok ? undefined : r.message.replace(/^✗ (--server )?/, "");
           },
-        }),
-      );
+        });
     } else {
       const pre = checkServer(server);
       if (!pre.ok) {
-        p.log.error(pre.message);
+        io.log.error(pre.message);
         server = undefined;
         continue;
       }
     }
 
-    const spin = p.spinner();
+    const spin = io.spinner();
     spin.start(`Asking ${server} what it is`);
     enforces = await probeEnforcement(server);
     spin.stop(
@@ -105,17 +145,15 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
     );
     if (enforces !== "unreachable") break;
 
-    const next = abortIfCancel(
-      await p.select({
+    const next = await io.select({
         message: "No broker answered there.",
         options: [
           { value: "retype", label: "Use a different address", hint: "typo, wrong port, VPN not up" },
           { value: "anyway", label: "Register it anyway", hint: "the mesh is down right now; nothing is verified" },
           { value: "cancel", label: "Cancel" },
         ],
-      }),
-    );
-    if (next === "cancel") return cancelled();
+      });
+    if (next === "cancel") return cancelled(io);
     if (next === "anyway") {
       unverified = true;
       break;
@@ -129,32 +167,38 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
   // re-hit the same dead end, and offer the same useless choice forever.
   const inferred = checkRoot(seed.root, cwd);
   let root = inferred.ok ? inferred.value : undefined;
-  if (root && !seed.root) p.log.info(`Using this project as its local folder: ${bold(root)}`);
+  if (root && !seed.root) io.log.info(`Using this project as its local folder: ${bold(root)}`);
   // The cwd is only a sensible default the FIRST time. After the operator has been told this
   // folder holds no credentials, offering it back pre-filled makes them clear the field to answer
   // the question at all — so the recovery ask starts empty and insists on a real path.
   let defaultRoot: string | undefined = cwd;
   let accounts: string[] = [];
   for (;;) {
-    while (!root) root = await askRoot(cwd, defaultRoot);
-    accounts = spacesAtRoot(root);
+    while (!root) root = await askRoot(io, cwd, defaultRoot);
+    const inventory = spacesAtRoot(root);
+    if (!inventory.ok) {
+      // Unreadable trust is not "no trust": say so and let them point somewhere else.
+      io.log.error(inventory.message);
+      root = undefined;
+      defaultRoot = undefined;
+      continue;
+    }
+    accounts = inventory.value;
     // An auth broker with no trust here cannot be registered at all — say what is missing and where
     // it comes from, rather than failing after more questions.
     if (enforces !== "auth" || accounts.length > 0) break;
-    p.log.warn(
+    io.log.warn(
       `That broker requires credentials, and ${bold(root)} holds none.\n` +
         dim("Copy the mesh's .cotal/auth from the machine it runs on (or `cotal mint` there), then point at that folder."),
     );
-    const next = abortIfCancel(
-      await p.select({
-        message: "How do you want to continue?",
+    const next = await io.select({
+        message: "That folder holds no credentials for this broker. What next?",
         options: [
           { value: "root", label: "Point at a different folder", hint: "one that already holds its credentials" },
           { value: "cancel", label: "Cancel" },
         ],
-      }),
-    );
-    if (next === "cancel") return cancelled();
+      });
+    if (next === "cancel") return cancelled(io);
     root = undefined; // ask for a path; never re-infer, or this offers the same dead end again
     defaultRoot = undefined; // …and never offer the folder we just rejected as the default
   }
@@ -167,40 +211,34 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
   for (;;) {
     while (!space) {
       if (accounts.length > 0) {
-        const picked = abortIfCancel(
-          await p.select<string | null>({
+        const picked = await io.select<string | null>({
             message: "Which space on that broker?",
             options: [
               ...accounts.map((s) => ({ value: s as string | null, label: s, hint: "credentials for this space are already here" })),
               { value: null, label: "Another name…" }, // null, not a sentinel string: no space name can collide with it
             ],
-          }),
-        );
+          });
         if (picked !== null) space = picked;
       }
       if (!space) {
-        space = abortIfCancel(
-          await p.text({
+        space = await io.text({
             message: "Space name on that broker",
             placeholder: "the name the mesh was started with",
             validate: (v) => (v ? undefined : "Required - it must match the space name where the mesh runs."),
-          }),
-        );
+          });
       }
     }
     const clash = findMesh(space);
     if (!clash || replace) break;
-    const next = abortIfCancel(
-      await p.select({
+    const next = await io.select({
         message: `"${space}" is already registered here (${clash.server}).`,
         options: [
           { value: "replace", label: "Replace that record", hint: clash.root },
           { value: "rename", label: "Use a different name" },
           { value: "cancel", label: "Cancel" },
         ],
-      }),
-    );
-    if (next === "cancel") return cancelled();
+      });
+    if (next === "cancel") return cancelled(io);
     if (next === "rename") space = undefined;
     else {
       replace = true;
@@ -216,47 +254,45 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
   const modeHint = seed.mode ?? (enforces === "unreachable" ? undefined : enforces);
   const modeCheck = checkMode(space, root, accounts, modeHint);
   if (!modeCheck.ok) {
-    p.log.error(modeCheck.message);
-    return cancelled("Nothing was registered.");
+    io.log.error(modeCheck.message);
+    return cancelled(io, "Nothing was registered.");
   }
   const mode = modeCheck.value;
   const trust = checkTrust(mode, root, space);
   if (!trust.ok) {
-    p.log.error(trust.message);
-    return cancelled("Nothing was registered.");
+    io.log.error(trust.message);
+    return cancelled(io, "Nothing was registered.");
   }
   if (!unverified) {
     const match = checkEnforcement(mode, enforces, server as string, space, root);
     if (!match.ok) {
-      p.log.error(match.message);
-      return cancelled("Nothing was registered.");
+      io.log.error(match.message);
+      return cancelled(io, "Nothing was registered.");
     }
   }
 
   // ── 5. verify for real, then confirm ──────────────────────────────────────────────────────────
   if (!unverified) {
     const target = candidateTarget(space, server as string, root, mode, trust.value);
-    const spin = p.spinner();
+    const spin = io.spinner();
     spin.start(mode === "auth" ? `Checking this folder's credentials for "${space}"` : `Checking the connection to "${space}"`);
     const verified = await verifyTarget(target);
     spin.stop(verified.ok ? `${ok("✓")} ${mode === "auth" ? "Credentials accepted" : "Connected"}` : "Could not connect");
     if (!verified.ok) {
-      p.log.error(verified.message);
-      const next = abortIfCancel(
-        await p.select({
-          message: "How do you want to continue?",
+      io.log.error(verified.message);
+      const next = await io.select({
+          message: "The check did not pass. What next?",
           options: [
-            { value: "anyway", label: "Register it anyway", hint: "nothing is verified" },
+            { value: "anyway", label: "Register it anyway", hint: "the record will say it was not verified" },
             { value: "cancel", label: "Cancel" },
           ],
-        }),
-      );
-      if (next === "cancel") return cancelled("Nothing was registered.");
+        });
+      if (next === "cancel") return cancelled(io, "Nothing was registered.");
       unverified = true;
     }
   }
 
-  p.note(
+  io.note(
     [
       `${dim("space ")}  ${bold(space)}`,
       `${dim("broker")}  ${server}`,
@@ -266,8 +302,8 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
     ].join("\n"),
     brand("About to record"),
   );
-  const go = abortIfCancel(await p.confirm({ message: "Register this mesh?", initialValue: true }));
-  if (!go) return cancelled("Nothing was registered.");
+  const go = await io.confirm({ message: "Register this mesh?" });
+  if (!go) return cancelled(io, "Nothing was registered.");
 
   const entry: MeshEntry = { space, server: server as string, root, mode, origin: "manual", ts: new Date().toISOString() };
   const result = writeRecord(entry);
@@ -282,17 +318,16 @@ export async function addWizard(seed: WizardSeed, cwd: string): Promise<boolean>
     [`cotal meshes rm ${space}`, "forget it again (never stops the mesh)"],
   ];
   const width = Math.max(...rows.map(([cmd]) => cmd.length));
-  p.note(rows.map(([cmd, why]) => `${bold(cmd.padEnd(width))}  ${dim(why)}`).join("\n"), brand("What you can do now"));
-  p.outro(ok(`Registered "${space}"${result.keptCurrent ? ` - "${result.keptCurrent}" is still the default` : ""}`));
+  io.note(rows.map(([cmd, why]) => `${bold(cmd.padEnd(width))}  ${dim(why)}`).join("\n"), brand("What you can do now"));
+  io.outro(ok(`Registered "${space}"${result.keptCurrent ? ` - "${result.keptCurrent}" is still the default` : ""}`));
   return true;
 }
 
 /** Ask for the folder, re-asking until it resolves. `defaultTo` is accepted on an empty answer;
  *  without one, an empty answer is a non-answer rather than a silent fallback. */
-async function askRoot(cwd: string, defaultTo: string | undefined): Promise<string> {
+async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined): Promise<string> {
   for (;;) {
-    const typed = abortIfCancel(
-      await p.text({
+    const typed = await io.text({
         message: "Local folder for this mesh's credentials and personas",
         placeholder: defaultTo ?? "the folder holding its .cotal/auth",
         validate: (v) => {
@@ -300,15 +335,14 @@ async function askRoot(cwd: string, defaultTo: string | undefined): Promise<stri
           if (!candidate) return "Required - the folder that holds this mesh's .cotal/auth and .cotal/agents.";
           return isDir(candidate) ? undefined : "Not a directory - it must already exist.";
         },
-      }),
-    );
+      });
     const r = checkRoot(typed || (defaultTo as string), cwd);
     if (r.ok) return r.value;
-    p.log.error(r.message);
+    io.log.error(r.message);
   }
 }
 
-function cancelled(message = "Cancelled."): false {
-  p.cancel(message);
+function cancelled(io: WizardIO, message = "Cancelled."): false {
+  io.cancel(message);
   return false;
 }
