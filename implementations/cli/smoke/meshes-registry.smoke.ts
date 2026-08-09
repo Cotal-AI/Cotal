@@ -36,8 +36,8 @@ process.env.COTAL_HOME = home;
 // CLI composition root, and `rm`'s "is this mesh running here" check reads them — import it first,
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
-const { isReachable } = await import("@cotal-ai/core");
-const { findMesh, getCurrent, loadMeshes, pruneStaleMeshes, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { createSpaceAuth, isReachable } = await import("@cotal-ai/core");
+const { authDir, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneStaleMeshes, recordMesh, removeMesh, saveSpaceAuth, setCurrent } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -149,13 +149,29 @@ try {
   // MODE HONESTY. A NATS broker with no auth configured accepts a credential-bearing CONNECT and
   // ignores it, so "the creds were accepted" is not evidence of enforcement. Registering `auth`
   // against an open broker would promise JWT/ACL protection that does not exist.
+  //
+  // This needs REAL composed trust, not a marker file: with nothing usable on disk the compose
+  // guard fires first and the mode probe is never reached — the assertion would then pass with the
+  // whole mode-verification branch deleted, which is the circular-test trap this file is meant to
+  // avoid. So mint an actual space auth and save it the way `cotal up` does.
   const trustRoot = projectRoot("trust");
-  writeFileSync(join(trustRoot, ".cotal", "auth-marker"), "x"); // keeps the dir; trust itself is faked below
+  saveSpaceAuth(authDir(trustRoot), await createSpaceAuth("openbroker"));
   const fakeAuth = await run(["add", "openbroker"], { server: LIVE, root: trustRoot, mode: "auth" });
   check("add --mode auth is refused against a broker that enforces nothing",
     fakeAuth.code === 1 && findMesh("openbroker") === undefined, fakeAuth.out);
-  check("…and says the broker accepts unauthenticated connections",
-    fakeAuth.out.includes("accepts unauthenticated connections") || fakeAuth.out.includes("trust material"), fakeAuth.out);
+  check("…for the RIGHT reason: the broker accepts unauthenticated connections",
+    fakeAuth.out.includes("accepts unauthenticated connections"), fakeAuth.out);
+  check("…and the trust it was given really does compose (so the probe was reached)",
+    loadSpaceAuth(authDir(trustRoot), "openbroker") !== undefined);
+  // The compose guard is its own case: an account record with no usable trust behind it.
+  const accountOnly = projectRoot("account-only");
+  saveSpaceAuth(authDir(accountOnly), await createSpaceAuth("halfspace"));
+  rmSync(join(authDir(accountOnly), "broker.json"), { force: true }); // account survives, trust cannot compose
+  const halfTrust = await run(["add", "halfspace"], { server: LIVE, root: accountOnly, mode: "auth" });
+  check("add --mode auth is refused when the root's trust does not compose",
+    halfTrust.code === 1 && findMesh("halfspace") === undefined, halfTrust.out);
+  check("…naming the missing half rather than a connection problem",
+    halfTrust.out.includes("does not compose") || halfTrust.out.includes("trust material"), halfTrust.out);
 
   // CREDENTIALS IN THE URL. The record is written to disk and echoed back by add + list, so an
   // inline password would be copied into both. Refuse it without repeating the secret.
@@ -239,13 +255,22 @@ try {
   // start (the "a broker is already on this port" branch concludes it is up from reachability
   // alone). Restamping `origin: "up"` there would quietly make a record only the operator can
   // rebuild deletable by the next sweep.
+  // …and the distinction is per CALL SITE, not blanket: the refresh branch starts nothing, so it
+  // preserves; a branch that actually spawned the broker (or proved a listener it owns) must claim
+  // the record, or `cotal down` would leave a stale record behind and `rm` would treat a mesh this
+  // machine is running as someone else's.
   const { recordOurMeshForTest } = await import("../src/commands/up.js");
   recordMesh({ space: "refreshed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
-  recordOurMeshForTest({ space: "refreshed", server: LIVE, root, mode: "open", ts: new Date().toISOString() });
+  recordOurMeshForTest({ space: "refreshed", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "refresh");
   check("an `up` refresh keeps a hand-registered record's origin", findMesh("refreshed")?.origin === "manual", findMesh("refreshed"));
-  recordOurMeshForTest({ space: "ours-now", server: LIVE, root, mode: "open", ts: new Date().toISOString() });
+  recordMesh({ space: "started-over", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "started-over", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
+  check("a launch that STARTED the broker claims the record, even over a manual one",
+    findMesh("started-over")?.origin === "up", findMesh("started-over"));
+  recordOurMeshForTest({ space: "ours-now", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
   check("…and still stamps `up` on a record it created", findMesh("ours-now")?.origin === "up", findMesh("ours-now"));
   removeMesh("refreshed");
+  removeMesh("started-over");
   removeMesh("ours-now");
 
   const listed = await run([]);
@@ -287,6 +312,17 @@ try {
     foreign.code === 0 && findMesh("not-ours") === undefined, foreign.out);
   const dropped = await run(["rm", "live-local"], { force: true });
   check("rm --force drops a running mesh's record", dropped.code === 0 && findMesh("live-local") === undefined, loadMeshes());
+  // …and --force must not be defeated by the guard it is meant to skip. The ownership probe reads
+  // the root's local process state; on a root it cannot make sense of, that probe throws, and
+  // running it anyway would make the documented override unusable exactly when it is needed.
+  const brokenRoot = projectRoot("broken");
+  saveSpaceAuth(authDir(brokenRoot), await createSpaceAuth("tenant-a"));
+  writeFileSync(join(authDir(brokenRoot), "account.deadbeef.json"), "{ not json"); // unreadable tenant
+  writeFileSync(join(brokenRoot, ".cotal", "nats.pid"), String(process.pid), { mode: 0o600 });
+  recordMesh({ space: "tenant-a", server: LIVE, root: brokenRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const forcedOnBroken = await run(["rm", "tenant-a"], { force: true });
+  check("rm --force works on a root whose space cannot be resolved",
+    forcedOnBroken.code === 0 && findMesh("tenant-a") === undefined, forcedOnBroken.out);
   brokerStandIn.kill("SIGKILL");
 
   // A live mesh registered BY HAND is not this machine's to stop, so `rm` just drops it.

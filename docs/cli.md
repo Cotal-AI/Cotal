@@ -358,7 +358,7 @@ defaults to `auth` when the root holds the space's account record and to `open` 
 user-auth space cannot be registered by hand, because its IdP pins are trust that only
 `cotal up --user-auth` establishes. The broker is probed before anything is recorded, so a wrong
 address, or credentials that mesh will not accept, fails here instead of at the first `spawn`;
-`--force` records unverified (and replaces an existing record).
+`--force` records without verifying (and replaces an existing record).
 
 `meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is only

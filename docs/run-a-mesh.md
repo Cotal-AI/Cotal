@@ -115,7 +115,7 @@ cotal meshes rm optiplex
 `--root` is the local folder holding that mesh's `.cotal/auth` (credentials you minted where it
 runs) and `.cotal/agents` (its personas); the mode is inferred from what that folder holds. The
 broker is probed before the record is written, so a bad address or a credential that mesh will not
-accept fails at registration rather than at your first `spawn` (`--force` records it unverified —
+accept fails at registration rather than at your first `spawn` (`--force` records it without verifying —
 useful when the mesh is simply down right now).
 
 Records added this way are removed only by something that names them. A mesh this machine started

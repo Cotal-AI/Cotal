@@ -582,7 +582,9 @@ export async function up(args: ParsedArgs): Promise<void> {
         if (!controlPlane) process.exitCode = 1;
       }
       const heldAttachHost = attachHostFor(held.space, values.host);
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ts: new Date().toISOString() });
+      // A broker was already answering here — this branch starts nothing, so it must not claim the
+      // record as ours (see `Provenance`).
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ts: new Date().toISOString() }, "refresh");
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -783,7 +785,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       // though the operator had chosen it.
       ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
       ts: new Date().toISOString(),
-    });
+    }, "started");
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     // Class-2 credential renewal is NOT wired here: the MANAGER is the renewal owner (it is resident
@@ -1128,7 +1130,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Pro
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
     ts: new Date().toISOString(),
-  });
+  }, "started");
   const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, {
     runtime: pending.runtime,
     attachHost: adoptAttachHost,
@@ -1174,7 +1176,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<v
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
     ts: new Date().toISOString(),
-  });
+  }, "started");
   const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, {
     runtime: prepared.runtime,
     attachHost: restoreAttachHost,
@@ -1691,7 +1693,7 @@ export async function startMeshDetached(
     // Persist only a real decision — declared now, or carried forward — never the loopback default.
     ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
     ts: new Date().toISOString(),
-  });
+  }, "started");
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
   const controlPlane = await startDeliveryWithBroker(space, server, {
     runtime: opts.runtime,
@@ -1787,26 +1789,30 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
  *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
  *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
  *  mesh; just say another is the default and how to switch. */
-/** {@link recordOurMesh} under a name that says it is a test seam: the origin rule it enforces (a
- *  hand-registered record is never restamped by a refresh) is asserted directly by the registry
- *  smoke, since reaching it through a full `up` would need a live broker per case. */
-export const recordOurMeshForTest = (m: MeshEntry): void => recordOurMesh(m);
+/**
+ * Did THIS launch bring the broker up, or is it re-recording one that was already there?
+ *
+ * The distinction is provenance, and it has to come from the call site because it cannot be
+ * observed here: `started` covers the paths that spawned the broker or proved a listener this
+ * attempt owns, and stamps `origin: "up"` — a record this machine can always write back, so the
+ * liveness sweep and `cotal down` may drop it. `refresh` is the "a broker is already on this port"
+ * branch, which concludes the mesh is up from reachability alone and starts nothing; stamping `up`
+ * there would silently convert a hand-registered record into one the next sweep may delete, so it
+ * keeps whatever origin the record already had.
+ */
+type Provenance = "started" | "refresh";
 
-function recordOurMesh(m: MeshEntry): void {
+/** {@link recordOurMesh} under a name that says it is a test seam: the origin rule it enforces is
+ *  asserted directly by the registry smoke, since reaching each branch through a full `up` would
+ *  need a live broker per case. */
+export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void => recordOurMesh(m, provenance);
+
+function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
-  // `origin` is stamped HERE, not at the five call sites: a record this function writes is normally
-  // a mesh this machine started, which is what makes it safe to auto-prune (an `up` writes it
-  // straight back).
-  //
-  // A HAND-REGISTERED record keeps its origin. Several paths reach here without this machine having
-  // started anything — most plainly the "a broker is already on this port" refresh, which concludes
-  // the mesh is up from reachability alone. Stamping `up` there would silently convert a record only
-  // the operator can rebuild into one the next liveness sweep may delete: a provenance downgrade
-  // nobody asked for, from a path that started no broker. Ownership moves when the operator says so
-  // (`cotal meshes rm`, `add --force`), never as a side effect of a refresh.
   const prior = findMesh(m.space);
-  recordMesh({ ...m, origin: prior?.origin === "manual" ? "manual" : "up" });
+  const origin = provenance === "refresh" && prior?.origin === "manual" ? "manual" : "up";
+  recordMesh({ ...m, origin });
   if (!usableCurrent) {
     setCurrent(m.space);
     return;

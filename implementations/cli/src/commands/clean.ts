@@ -150,12 +150,16 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
  *  undefined when everything is stopped. A stale pidfile (recorded pid no longer alive) does not
  *  block: a crashed broker must not wedge its own cleanup. Liveness rides the shared hardened
  *  probe (`pidfileState`): pid > 0 only, EPERM counts as alive. */
-export function liveMeshProcess(root: string): string | undefined {
-  return liveMeshProcesses(root)[0];
+export function liveMeshProcess(root: string, space?: string): string | undefined {
+  return liveMeshProcesses(root, space)[0];
 }
 
-export function liveMeshProcesses(root: string): string[] {
-  const context: LocalProcessContext = { root, space: resolveSpace(root) };
+/** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
+ *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
+ *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
+ *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
+export function liveMeshProcesses(root: string, space?: string): string[] {
+  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
   const running: string[] = [];
   for (const component of localProcessSurface()) {
     const state = pidfileState(localProcessPath(component.pidFile, context));

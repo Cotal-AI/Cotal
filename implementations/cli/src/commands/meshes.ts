@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { probeConnect, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -45,6 +45,13 @@ const SUBCOMMANDS = ["list", "add", "rm", "remove"] as const;
  *  "the broker is open" (it is only ever read as `ok` vs a reason), and this runs once, at
  *  registration, where a second of patience is cheaper than a wrong record. */
 const MODE_PROBE_TIMEOUT_MS = 5_000;
+
+/** Is this path a directory? `existsSync` alone is not the question being asked: a regular FILE
+ *  named `.cotal` would pass it and record a root whose `.cotal/auth` and `.cotal/agents` can never
+ *  exist. `statSync` follows symlinks, so a symlinked project dir keeps working. */
+function isDir(path: string): boolean {
+  try { return statSync(path).isDirectory(); } catch { return false; }
+}
 
 export const meshesFlags = [
   { name: "server", type: "string", value: "<url>", description: "add: the mesh's broker URL (required)" },
@@ -213,7 +220,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
 function addRoot(flag: string | undefined): string {
   if (flag) return resolve(flag);
   const root = findCotalRoot(process.cwd());
-  if (!existsSync(join(root, ".cotal")) || resolve(root, ".cotal") === resolve(homeCotalDir())) {
+  if (!isDir(join(root, ".cotal")) || resolve(root, ".cotal") === resolve(homeCotalDir())) {
     console.error(c.red("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas"));
     process.exit(1);
   }
@@ -231,7 +238,10 @@ function addServer(raw: string): string {
   try {
     u = new URL(raw);
   } catch {
-    console.error(c.red(`✗ --server "${raw}" is not a valid URL (e.g. nats://127.0.0.1:4222)`));
+    // The input is NOT echoed: the most common malformed broker URL is a half-typed credential one
+    // (`nats://user:secret@`), and repeating it here would print the secret this function exists to
+    // keep out of the terminal and the registry.
+    console.error(c.red("✗ --server is not a valid URL (expected something like nats://127.0.0.1:4222)"));
     process.exit(1);
   }
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol)) {
@@ -243,7 +253,12 @@ function addServer(raw: string): string {
     process.exit(1);
   }
   if (u.search || u.hash) {
-    console.error(c.red(`✗ --server must be a bare broker URL - drop the "${u.search || u.hash}" part`));
+    // Named, not quoted — a query string is exactly where a token would ride (`?token=…`).
+    console.error(c.red(`✗ --server must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`));
+    process.exit(1);
+  }
+  if (!u.hostname) {
+    console.error(c.red("✗ --server names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)"));
     process.exit(1);
   }
   return raw;
@@ -315,8 +330,14 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     // root. Reachability was the wrong test: any broker on that address answers, including a
     // reused port or a foreign NATS, which produced a refusal plus a `cotal down` instruction that
     // would stop nothing. Local process ownership is the fact the refusal actually claims.
-    const running = m.origin !== "manual" ? liveMeshProcess(m.root) : undefined;
-    if (running && !v.force) {
+    //
+    // Deliberately NOT gated on origin: a live local broker is a fact about this machine whatever
+    // the record says about who wrote it, and tying the safety check to provenance would let a
+    // mis-stamped record unregister a running mesh. Probed only when `--force` was not passed —
+    // the probe itself can throw on a multi-tenant or unreadable root, which must not defeat the
+    // documented override — and keyed on the entry's OWN space, never one re-resolved from the root.
+    const running = v.force ? undefined : liveMeshProcess(m.root, m.space);
+    if (running) {
       console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
       failed = true;
       continue;
