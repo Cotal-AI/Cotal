@@ -22,6 +22,20 @@ import { PtyRuntime } from "../src/runtime/pty.js";
 import type { LaunchSpec } from "@cotal-ai/core";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Poll `read` until `done`, or throw naming what was still missing. A fixed sleep is a race against
+ *  the child's render; this is the same shape the detach leg already uses, and its timeout message
+ *  distinguishes "never rendered" from "rendered the wrong thing". */
+async function until(read: () => Promise<string>, done: (s: string) => boolean, ms: number, what: string): Promise<string> {
+  const deadline = Date.now() + ms;
+  let last = "";
+  for (;;) {
+    last = await read();
+    if (done(last)) return last;
+    if (Date.now() > deadline)
+      throw new Error(`timed out after ${ms}ms waiting for ${what}; last snapshot was ${last.length} bytes: ${JSON.stringify(last.slice(0, 120))}`);
+    await sleep(10);
+  }
+}
 const str = (b: Buffer | Promise<Buffer>) => Promise.resolve(b).then((x) => x.toString("utf8"));
 
 // A full-screen program: enter the alternate screen, draw PHASE-ONE, then after 400ms clear and
@@ -40,8 +54,18 @@ async function testPtyReconstruction(): Promise<void> {
   const spec = { command: process.execPath, args: CHILD, env: { PATH: process.env.PATH ?? "" } } as LaunchSpec;
   const handle = rt.spawn("probe", spec, process.cwd());
   try {
-    await sleep(250); // let PHASE-ONE render into the mirror
-    const snap1 = await str(handle.attach().backlog());
+    // POLL for PHASE-ONE rather than sleeping a fixed window. A 250ms sleep raced the child's first
+    // render: on a loaded box the snapshot came back EMPTY and the suite died here having asserted
+    // nothing at all — exit 1, zero checks, indistinguishable in the output from a real defect. The
+    // detach case below already polls for exactly this reason; this leg was the one that did not.
+    // The ceiling is generous and the timeout is DIAGNOSTIC: a genuine regression still fails, and
+    // says whether it saw nothing or saw the wrong thing.
+    const snap1 = await until(
+      () => str(handle.attach().backlog()),
+      (s) => /\x1b\[\?1049h/.test(s) && s.includes("PHASE-ONE-MARKER"),
+      5_000,
+      "the child to render PHASE-ONE into the alt screen",
+    );
     assert.match(snap1, /\x1b\[\?1049h/, "A: snapshot re-enters the alternate screen");
     assert.match(snap1, /PHASE-ONE-MARKER/, "A: snapshot reconstructs the current alt-screen content");
     assert.doesNotMatch(snap1, /PHASE-TWO/, "A: PHASE-TWO not drawn yet");
@@ -51,8 +75,16 @@ async function testPtyReconstruction(): Promise<void> {
     const snap2 = await str(handle.attach().backlog());
     assert.strictEqual(snap2, snap1, "A: repeat attach reconstructs the same full screen");
 
-    await sleep(300); // now past the 400ms redraw
-    const snap3 = await str(handle.attach().backlog());
+    // POLL for the redraw too. This sleep was 300ms on the assumption that the FIRST wait had
+    // already burned 250 of the child's 400ms redraw timer — so replacing that one with a poll,
+    // which returns as soon as PHASE-ONE appears, moved the failure here instead of fixing it. A
+    // fixed wait that depends on how long an EARLIER fixed wait took is two races, not one.
+    const snap3 = await until(
+      () => str(handle.attach().backlog()),
+      (s) => s.includes("PHASE-TWO-MARKER"),
+      5_000,
+      "the child's 400ms redraw to land",
+    );
     assert.match(snap3, /PHASE-TWO-MARKER/, "A: snapshot tracks the live redraw");
     assert.doesNotMatch(snap3, /PHASE-ONE/, "A: the cleared PHASE-ONE is gone");
     console.log("  ✓ pty reconstructs the alt-screen on (repeat) attach and tracks redraws");
