@@ -21,14 +21,23 @@ import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
  * ACL reads that ambiguity produces a confident empty set, which is worse than a short one because
  * nothing about it looks wrong.
  *
- * ## Completeness is not optional
+ * ## What the completeness check does and does NOT guarantee
  *
  * In `@nats-io/kv`, `iter.closed().then(...)` ends the iterator CLEANLY on any mid-stream
  * termination: a dropped connection, a deleted consumer, a server error. Nothing throws. On exactly
  * the high-latency, jittery links this helper exists to serve, a silently truncated read is the
- * default failure mode. So the pass is bounded by the terminal `pending === 0` sentinel and any
- * short read THROWS. A caller may then retry or surface the failure; it may not be handed a
- * partial answer dressed as a complete one.
+ * default failure mode. So a pass that delivered entries and then stopped WITHOUT its terminal
+ * `pending === 0` sentinel throws rather than returning a partial answer dressed as a complete one.
+ *
+ * The limits matter, because a guarantee that is believed but not held is worse than none:
+ *   - A pass that dies BEFORE its first message cannot be told apart from an empty bucket through
+ *     this client's API, and is returned as empty. Closing that needs the helper to bind its own
+ *     consumer and read `num_pending` at bind time; today it wraps `history()`, which does not
+ *     expose it. That is the honest gap.
+ *   - `history()` also ends on an idle heartbeat, which the client reads as "caught up". If the last
+ *     initially-pending message is purged before delivery, a HEALTHY pass can end without the
+ *     sentinel. The check is conservative in that direction: it can call a healthy read incomplete.
+ *     So `IncompleteKvScan` means "retry this", never "data was lost".
  *
  * ## Why tombstones are carried through the collapse
  *
@@ -104,13 +113,15 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
   // cannot be told apart from a death-before-first-message by the entry count alone. Distinguish
   // them by asking the bucket how many entries it holds — a bucket that reports content but
   // delivered none was truncated. This costs a round trip ONLY on the empty path.
-  if (received === 0) {
-    const st = await kv.status();
-    // A FILTERED scan legitimately matches nothing in a non-empty bucket, so a positive bucket-wide
-    // count is not evidence of truncation there. Only an unfiltered empty read can be checked.
-    if (filter === undefined && st.values > 0) throw new IncompleteKvScan(st.bucket, 0, st.values);
-    return [];
-  }
+  // NO EMPTY-BUCKET PROBE. An earlier version asked `kv.status()` here and threw when the bucket
+  // reported entries, to tell "genuinely empty" apart from "died before the first message". That
+  // check was unsound and is gone:
+  //   - It is a TOCTOU. `history()` ends immediately on a cached `num_pending === 0`, and `status()`
+  //     is a LATER round trip; a first PUT landing in that gap turns a correct empty snapshot into a
+  //     throw, and the extra round trip widens the window on exactly the slow links this serves.
+  //   - It spent that round trip on EVERY empty scan, including filtered ones, whose result cannot
+  //     use a bucket-wide count at all (two per `readAclForAlias` miss).
+  if (received === 0) return [];
   if (!sawTerminal) throw new IncompleteKvScan(bucket, received, received);
 
   const out: KvEntry[] = [];

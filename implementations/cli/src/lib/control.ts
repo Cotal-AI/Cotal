@@ -43,18 +43,20 @@ export async function resolveControlTarget(
   // USER MODE rides through: the control call connects with the operator's bearer (actor `cli`) and
   // publishes on its OWN ctl principal subject — the broker grants that publish only when the cli
   // actor's ledger scope carries the matching capability (`spawn` → privileged, `admin` → admin).
-  // SKIP THE PREFLIGHT PROBE. A control command's very next act is `askManager`, which opens a real
-  // connection to the SAME broker with the SAME creds — so the probe was a full extra
-  // connect-and-close for information the following connect produces anyway, i.e. a duplicated auth
-  // handshake on every `ps`/`stop`/`attach`. On a high-latency link that is a wasted round trip per
-  // command. `askManager` renders the connect failure itself, so nothing is lost but the duplicate.
-  const conn = await connectOrExit(withSpace, profile, { skipPreflight: true });
+  // The preflight probe STAYS, and the duplicate handshake with it. Removing it saved one connect
+  // per control command, and cost two things worth more: the classified failure (a live broker
+  // rejecting stale registry creds reads as `registry-creds-rejected`/`stale-auth` with the right
+  // repair, not "is it running? run cotal up"), and the probe's 8s bound — `CotalEndpoint` passes no
+  // connect timeout, so nats-core's 20s default would apply and a blackholed target would hang more
+  // than twice as long to produce worse copy. Reusing the real connection is the right idea; it needs
+  // the endpoint to accept a deadline and the classifier to move with it, which is not this change.
+  const conn = await connectOrExit(withSpace, profile);
   return { space: conn.space, server: conn.server, auth: endpointAuth(conn) };
 }
 
 /** Connect a short-lived client with the resolved creds, send one control request to the manager,
- *  disconnect. This connect IS the reachability + auth check ({@link resolveControlTarget} skips the
- *  separate probe rather than handshaking twice), so a connect failure is rendered here. `tier` picks the control
+ *  disconnect. The target is already reachability- + auth-preflighted by
+ *  {@link resolveControlTarget}, so this connects straight through. `tier` picks the control
  *  subject: privileged for spawn --detach/ps — and, on a user mesh, for stop/attach too (the
  *  operator's bearer publishes there with scope "spawn"; the MANAGER authorizes owner-domain vs
  *  ledger-admin). On a static mesh stop/attach stay admin-tier ops. `creds` is the tier-scoped
@@ -80,18 +82,7 @@ export async function askManager(
     card: { name: "cli", kind: "endpoint" },
   });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
-  try {
-    await ep.start();
-  } catch (e) {
-    // This connect stands in for the preflight probe, so it owns the preflight's copy: name the
-    // broker and the likely repair rather than surfacing a raw NATS trace. The registry entry is
-    // never touched on a failure to reach a broker.
-    await ep.stop().catch(() => {});
-    return {
-      ok: false,
-      error: `could not reach the mesh "${space}" at ${server} (${(e as Error).message}) - is it running? Start it with \`cotal up\` from its project folder. The registry entry is kept.`,
-    };
-  }
+  await ep.start();
   try {
     return await ep.requestControl(tier, { op, args }, timeoutMs);
   } catch (e) {

@@ -1724,8 +1724,20 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Widening capped: return the widest window we drained rather than nothing.
       return (await this.drainWindow(js, stream, subject, 1, ceiling)).slice(-limit);
-    } catch {
-      /* stream missing or read denied (non-admin) */
+    } catch (e) {
+      // Empty is still the RESULT — `dmHistory` is god-view, and a normal agent's ACL denying the DM
+      // backlog is a documented, expected "no history for you here", not a fault to throw at it.
+      //
+      // But a permission denial must not be INVISIBLE. This function previously located its upper
+      // bound with `getMessage({ last_by_subj })`, which needs `$JS.API.STREAM.MSG.GET` — authority
+      // read credentials do not hold. This very catch turned that Permissions Violation into an empty
+      // result, so every non-admin history read silently returned nothing while looking exactly like
+      // a quiet channel. The unit smoke passed because it runs as admin against a local broker; only
+      // a live check against a real mesh found it. Surfacing on the `error` event keeps the degrade
+      // while making the ACL problem observable, which is the same reason `watchStatus` surfaces
+      // async permission violations instead of letting an over-tight ACL look like absence.
+      if (e instanceof PermissionViolationError)
+        this.emit("error", new Error(`history read denied on ${stream} (${e.message}) - returning no history; this is expected for a non-admin reading the DM backlog, and a BUG if it happens on a stream this endpoint should be able to read`));
       return [];
     }
   }
@@ -1743,20 +1755,29 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<CotalMessage[]> {
     const out: CotalMessage[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
-    // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
-    // explicit uncached `info()` this used to call was a round trip for data we already had.
-    const pending = (await consumer.info(true)).num_pending;
-    if (pending === 0) return out;
-    const iter = await consumer.fetch({ max_messages: pending });
-    for await (const m of iter) {
-      if (m.seq > ceiling) break; // past this page's upper bound
-      try {
-        out.push(m.json<CotalMessage>());
-      } catch {
-        /* skip undecodable */
+    try {
+      // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
+      // explicit uncached `info()` this used to call was a round trip for data we already had.
+      const pending = (await consumer.info(true)).num_pending;
+      if (pending === 0) return out;
+      const iter = await consumer.fetch({ max_messages: pending });
+      for await (const m of iter) {
+        if (m.seq > ceiling) break; // past this page's upper bound
+        try {
+          out.push(m.json<CotalMessage>());
+        } catch {
+          /* skip undecodable */
+        }
       }
+      return out;
+    } finally {
+      // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
+      // inactive threshold, so leaving them behind is not free: the widening search below can make
+      // up to eight per call, the dashboard makes one call per channel, and a reload repeats it.
+      // Left alone that accumulates consumers on the broker until the thresholds expire, and the
+      // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
+      await consumer.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
     }
-    return out;
   }
 
   // ---- internals -----------------------------------------------------------
