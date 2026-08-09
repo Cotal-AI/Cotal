@@ -362,6 +362,17 @@ try {
   const foreign = await run(["rm", "not-ours"]);
   check("rm does not refuse merely because something answers on the address",
     foreign.code === 0 && findMesh("not-ours") === undefined, foreign.out);
+  // …and a live process that is NOT the broker must not claim ownership: a manager (or a dashboard)
+  // under this root can be watching a mesh that runs somewhere else entirely.
+  const watcherRoot = projectRoot("watcher");
+  const watcher = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)"], { stdio: "ignore" });
+  writeFileSync(join(watcherRoot, ".cotal", "manager.pid"), String(watcher.pid), { mode: 0o600 });
+  recordMesh({ space: "watched", server: LIVE, root: watcherRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const watched = await run(["rm", "watched"]);
+  check("rm is not blocked by a local process that isn't the broker",
+    watched.code === 0 && findMesh("watched") === undefined, watched.out);
+  watcher.kill("SIGKILL");
+
   const dropped = await run(["rm", "live-local"], { force: true });
   check("rm --force drops a running mesh's record", dropped.code === 0 && findMesh("live-local") === undefined, loadMeshes());
   // …and --force must not be defeated by the guard it is meant to skip. The ownership probe reads

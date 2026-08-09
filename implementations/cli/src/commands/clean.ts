@@ -158,6 +158,27 @@ export function liveMeshProcess(root: string, space?: string): string | undefine
  *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
  *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
  *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
+/**
+ * The live process that makes this root the mesh's HOME, or undefined.
+ *
+ * Not "any Cotal process here": a manager, a delivery daemon or a web dashboard under this root can
+ * perfectly well be pointed at a mesh running on another machine, and their liveness says nothing
+ * about who owns the record. The BROKER is the mesh — and `clearsMesh` already marks it, because it
+ * is the component whose teardown drops the registry entry (`down`). Asking the same question here
+ * keeps "this mesh is running here, use `cotal down`" a true statement: found live against a real
+ * registry, where a dashboard watching the remote optiplex mesh made `meshes rm` refuse and point
+ * at a `cotal down` that would not have stopped that mesh at all.
+ */
+export function liveMeshOwner(root: string, space?: string): string | undefined {
+  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
+  for (const component of localProcessSurface()) {
+    if (!component.clearsMesh) continue;
+    const state = pidfileState(localProcessPath(component.pidFile, context));
+    if (state.live) return `${component.label}, pid ${state.pid}`;
+  }
+  return undefined;
+}
+
 export function liveMeshProcesses(root: string, space?: string): string[] {
   const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
   const running: string[] = [];

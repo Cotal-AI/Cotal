@@ -11,7 +11,7 @@ import {
 import { c } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 import { completingFlagValue } from "../lib/completion.js";
-import { liveMeshProcess } from "./clean.js";
+import { liveMeshOwner } from "./clean.js";
 import {
   candidateTarget,
   checkEnforcement,
@@ -222,7 +222,7 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     // Skipped entirely under `--force`: the probe itself throws on a multi-tenant or unreadable
     // root, which must not defeat the documented override. Keyed on the entry's OWN space rather
     // than one re-resolved from the root, which on a multi-tenant root can name another tenant.
-    const running = m.origin === "manual" || v.force ? undefined : liveMeshProcess(m.root, m.space);
+    const running = m.origin === "manual" || v.force ? undefined : liveMeshOwner(m.root, m.space);
     if (running) {
       console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
       failed = true;
