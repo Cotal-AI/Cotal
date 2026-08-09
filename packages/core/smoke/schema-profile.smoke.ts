@@ -102,8 +102,13 @@ refuses("patternProperties key bomb refused", () =>
 // wildly-over case: maxSchemaNodes properties compile, one more refuses. A ceiling asserted only
 // far from its edge would still pass if the constant silently moved.
 {
+  // Exactly at the ceiling: the root object is one node and `additionalProperties: false` is
+  // another, since a boolean IS a subschema — so the property count is the ceiling MINUS TWO.
+  // This fixture said minus one until booleans started counting, at which point it built 257 and
+  // the "at the limit compiles" case began failing. That is the fix changing the measurement and
+  // the fixture following it, not a regression.
   const atLimit: Record<string, unknown> = {};
-  for (let i = 0; i < SCHEMA_PROFILE.maxSchemaNodes - 1; i++) atLimit[`p${i}`] = { type: "string" };
+  for (let i = 0; i < SCHEMA_PROFILE.maxSchemaNodes - 2; i++) atLimit[`p${i}`] = { type: "string" };
   ok("a schema exactly AT the node ceiling compiles", (() => {
     compileContractSchema({ root: { type: "object", properties: atLimit, additionalProperties: false } });
     return true;
@@ -112,7 +117,47 @@ refuses("patternProperties key bomb refused", () =>
   refuses("one node OVER the ceiling refuses", () =>
     compileContractSchema({ root: { type: "object", properties: overLimit, additionalProperties: false } }), "subschema nodes");
 }
+// 6c) THE TWO WAYS THE NODE COUNT WAS BYPASSABLE. Both were reproduced against the shipped guard
+// before these were written, and both compiled a schema the ceiling claims to refuse. The
+// object-valued single-document case above is real but NARROWER THAN THE CLAIM the guard makes,
+// which is exactly how it passed while the bound leaked.
+{
+  // BOOLEANS ARE SUBSCHEMAS. `false` is a valid 2020-12 schema, so every branch here is a compile
+  // unit — but the walk returned on any non-object, so this counted as ONE node. Measured on the
+  // shipped guard: 40,000 branches, 240KB (inside every byte bound), ~3.8s to compile, ACCEPTED.
+  refuses("boolean subschema branches are counted, not skipped", () =>
+    compileContractSchema({ root: { anyOf: Array.from({ length: SCHEMA_PROFILE.maxSchemaNodes + 50 }, () => false) } }),
+    "subschema nodes");
+  // …and a handful of them is still an ordinary schema, so the fix must not refuse legitimate use.
+  ok("a schema with a few boolean branches still compiles", (() => {
+    compileContractSchema({ root: { anyOf: [{ type: "string" }, false, true] } });
+    return true;
+  })());
+}
+{
+  // SPLITTING ACROSS THE CLOSURE. The node bound ran per DOCUMENT, so members each under the
+  // ceiling aggregated past it while every document passed. The compiler pays the sum.
+  //
+  // The members MUST be distinct: identical members share a content digest and collapse to one
+  // entry. A first version of this proof built 16 identical members, deduped to 1, and "passed"
+  // while measuring nothing — the same vacuous shape this file exists to keep out.
+  const members: Record<string, unknown> = {};
+  const refs: unknown[] = [];
+  for (let i = 0; i < 8; i++) {
+    const props: Record<string, unknown> = {};
+    for (let j = 0; j < SCHEMA_PROFILE.maxSchemaNodes - 5; j++) props[`m${i}p${j}`] = { type: "string" };
+    const m = { type: "object", properties: props, additionalProperties: false };
+    const d = contractDigest(m);
+    members[d] = m;
+    refs.push({ $ref: `cotal:${d}` });
+  }
+  ok("the closure proof uses DISTINCT members (identical ones dedupe and prove nothing)", Object.keys(members).length === 8);
+  refuses("members each under the per-document ceiling cannot aggregate past the CLOSURE ceiling", () =>
+    compileContract({ root: { allOf: refs }, members: members as Record<string, Record<string, unknown>> }),
+    "closure is");
+}
 // The bound must not tax ordinary contracts: every schema this repo registers is far below it.
+// Measured: the largest single manager contract document is 21 nodes against a ceiling of 256.
 ok("a trivial closure compiles well inside the node ceiling", (() => {
   compileContractSchema({ root: { type: "object", properties: { a: { type: "string" } }, additionalProperties: false } });
   return true;

@@ -49,6 +49,17 @@ export const SCHEMA_PROFILE = Object.freeze({
    *  Counts SUBSCHEMA nodes, matching {@link countSchemaNodes} — the same function the calibration
    *  runs, so the ceiling is enforced against the quantity it was calibrated on. */
   maxSchemaNodes: 256,
+  /** Max subschema nodes across a whole REFERENCE CLOSURE (root plus every reachable member).
+   *
+   *  The per-document bound alone is bypassable, and that was reproduced rather than theorised: the
+   *  document check runs once per document, so 16 members of 252 nodes each is 4,049 nodes with
+   *  EVERY document passing 256. The compiler pays the aggregate; the guard was reading the parts.
+   *
+   *  4x the per-document ceiling, matching the ratio the profile already uses between
+   *  `maxClosureBytes` (1 MiB) and `maxDocumentBytes` (256 KiB) — that precedent existed for exactly
+   *  this reason and should have been followed the first time. Every contract this repo registers
+   *  is 114 nodes for its ENTIRE 23-schema set, so 1024 for one closure is far above real use. */
+  maxClosureNodes: 1024,
   /** Digest-reference chain depth (root → member → member …). */
   maxRefChain: 32,
   /** Compile budget per closure, ms. */
@@ -178,6 +189,12 @@ const SUBSCHEMA_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
 export function countSchemaNodes(doc: unknown): number {
   let nodes = 0;
   const walk = (d: unknown): void => {
+    // A BOOLEAN IS A SUBSCHEMA. `true` and `false` are valid 2020-12 schemas, and in an applicator
+    // position each one is a branch the compiler generates code for. Skipping them made the whole
+    // count bypassable: `{anyOf: [false, …x40000]}` is legal, costs ~3.8s to compile at 240KB —
+    // inside every byte bound — and counted as ONE node, so the ceiling never engaged. Reproduced
+    // before this line existed.
+    if (typeof d === "boolean") { nodes++; return; }
     if (d === null || typeof d !== "object") return;
     if (Array.isArray(d)) { for (const v of d) walk(v); return; }
     nodes++;
@@ -267,6 +284,10 @@ function assertClosureProfile(bundle: SchemaBundle): string {
   let closureBytes = 0;
   let frontier = assertDocumentProfile(bundle.root, "root schema");
   closureBytes += Buffer.byteLength(canonicalOrInvalid(bundle.root, "root schema"), "utf8");
+  // Nodes accumulate across the closure exactly as bytes do. The per-document ceiling alone is
+  // bypassable by splitting: 16 members of 252 nodes each is 4,049 nodes with every document
+  // passing 256, and the compiler pays the aggregate.
+  let closureNodes = countSchemaNodes(bundle.root);
   for (let chain = 0; frontier.length > 0; chain++) {
     if (chain >= SCHEMA_PROFILE.maxRefChain)
       throw new ContractInvalidError(`reference chain exceeds profile depth ${SCHEMA_PROFILE.maxRefChain}`);
@@ -282,6 +303,9 @@ function assertClosureProfile(bundle: SchemaBundle): string {
       closureBytes += Buffer.byteLength(canonicalOrInvalid(member, `member ${digest}`), "utf8");
       if (closureBytes > SCHEMA_PROFILE.maxClosureBytes)
         throw new ContractInvalidError(`closure is ${closureBytes} bytes (profile max ${SCHEMA_PROFILE.maxClosureBytes})`);
+      closureNodes += countSchemaNodes(member);
+      if (closureNodes > SCHEMA_PROFILE.maxClosureNodes)
+        throw new ContractInvalidError(`closure is ${closureNodes} subschema nodes (profile max ${SCHEMA_PROFILE.maxClosureNodes}); a per-document bound alone is bypassable by splitting one schema across members`);
       next.push(...assertDocumentProfile(member, `member ${digest}`));
     }
     frontier = next;
