@@ -147,7 +147,12 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
-  if (!(await isReachable(server, { creds: latestCreds }))) {
+  // REQUIRE TLS when the operator said to. This daemon holds a STANDING credential and reconnects
+  // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
+  // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
+  // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
+  const tls = v.tls === true || v.tls === "true";
+  if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
     process.exit(1);
   }
@@ -155,6 +160,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const ep = new CotalEndpoint({
     space,
     servers: server,
+    ...(tls ? { tls: true } : {}),
     // The RELOAD seam (D5 slice 5 class 2): the endpoint re-invokes the source at 75% of each JWT's
     // lifetime and swaps the connection onto the re-signed file — bounded delivery creds renew with
     // no daemon restart. The explicit card.id pins the daemon's nkey across renewals.
