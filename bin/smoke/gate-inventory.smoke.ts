@@ -122,6 +122,32 @@ if (unexplained.length) {
   console.log(`  ✓ every ungated suite is listed with a reason`);
 }
 
+// THE REVERSE DIRECTION, and the gate needs both. Everything above asks "is this script reached?".
+// This asks "does this chain entry resolve?" — a composite naming a script that does not exist.
+// pnpm fails loudly on it, so it is not silent like the others, but it is the same family and it
+// costs nothing to pin: a rename that updates the definition and not the chain, or updates the
+// chain and not the definition, breaks the gate at the point of the rename rather than later. It
+// came out of a real three-way merge where one side's chain named two scripts the other side had
+// renamed away.
+// Only ROOT invocations can dangle. A segment carrying `-F`/`--filter <pkg>` resolves its script in
+// THAT PACKAGE's package.json, so `smoke:backup-perms:live` delegating to `smoke:backup:live` is
+// correct even though no root script has that name — the first version of this check flagged it and
+// it was a phantom. Split on `&&` so one delegating segment does not excuse the others.
+const dangling: Array<[string, string]> = [];
+for (const [name, body] of Object.entries(pkg.scripts))
+  for (const segment of body.split("&&")) {
+    if (/(^|\s)(-F|--filter)\s/.test(segment)) continue; // resolves in another package
+    for (const m of segment.matchAll(SCRIPT_RE))
+      if (m[1] !== name && !(m[1] in pkg.scripts)) dangling.push([name, m[1]]);
+  }
+if (dangling.length) {
+  fail++;
+  console.log(`  ✗ FAIL: ${dangling.length} composite entr(ies) name a script that does not exist:`);
+  for (const [host, missing] of dangling) console.log(`      ${host} -> ${missing}`);
+} else {
+  console.log(`  ✓ every composite entry resolves to a defined script`);
+}
+
 // An allowlist that outlives its entries rots into a place where gating a suite goes unnoticed.
 if (staleAllowlist.length) {
   fail++;
