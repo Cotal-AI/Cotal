@@ -92,7 +92,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-mgrops-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["w1", "w2", "w3", "wp1", "wp2"])
+for (const n of ["w1", "w2", "w3", "wp1", "wp2", "m6pin"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -284,6 +284,50 @@ try {
     check("targeted attach returns the holder-bound session grant (no ws url)", rAttach.reply.ok === true && typeof attachData.grant?.sessionId === "string" && attachData.ws === undefined, rAttach.reply);
     const rLaunch = await A.call("launch", { runId: "zzzz", name: "x" });
     check("launch with an unknown runId refuses through the shared core", rLaunch.reply.ok === false && rLaunch.reply.error?.code === "failed-precondition", rLaunch.reply);
+
+    // ── M6, BOTH ARMS OF THE DISJUNCTION, ADJACENT ────────────────────────────────────────────
+    // The accept path's `hardPinned` is ONE boolean over TWO arms: `opts.identity` (a --name /
+    // identity override) and `opts.resolved` (a MANIFEST-DECLARED name). They are reachable through
+    // DIFFERENT doors — identity through `spawn`, resolved ONLY through `launch`, since
+    // `launchAgentToStartOpts` is the single place that sets it. spawn-action's M6 exercises the
+    // identity arm, which makes the whole feature LOOK covered: a gated, correctly-layered,
+    // honestly-passing test that says nothing whatever about the other half. And the manifest arm is
+    // the one that BREAKS shipped behaviour — those names used to number — so the half that most
+    // needed a test was the half that had none. Both are asserted here side by side so the
+    // disjunction cannot half-rot again.
+    {
+      // THE SHARED NAME SERIES IS LOAD-BEARING. DO NOT SPLIT THESE TWO CHECKS INTO INDEPENDENT
+      // FIXTURES. Both arms run against the SAME live occupant and the SAME base name, so they are
+      // coupled through the real allocator rather than each asserting a constant, and neither can
+      // pass by accident while the other is broken. Proven, not assumed: mutating the
+      // implementation so the manifest arm stops refusing makes it CONSUME `m6pin-2`, which pushes
+      // the persona-derived control to `m6pin-3` and fails that check too. Two interfering tests
+      // look like a smell and isolating them reads as tidying — but isolation would convert a
+      // coupled proof into two independent constants that can both drift green.
+      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      check("M6 setup: a live incarnation holds the name", held.name === "m6pin", held);
+
+      // THE BREAKING ARM: a manifest-declared name colliding with that live incarnation.
+      const m6Run = "m6run00001";
+      mkdirSync(join(workspaceRoot, ".cotal", "run"), { recursive: true });
+      writeFileSync(join(workspaceRoot, ".cotal", "run", `${m6Run}.json`), JSON.stringify({
+        apiVersion: "cotal-launch/v1", space, runId: m6Run,
+        agents: [{
+          name: "m6pin", agent: "e2e-stub", subscribe: ["general"],
+          allowSubscribe: ["general"], allowPublish: [], hash: "m6hash",
+        }],
+      }));
+      const rPinned = await A.call("launch", { runId: m6Run, name: "m6pin" });
+      check("M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent -2 (breaking vs shipped main, and the arm nothing covered)",
+        rPinned.reply.ok === false && /hard-pinned \(manifest-declared\)/.test(rPinned.reply.error?.message ?? ""), rPinned.reply);
+
+      // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
+      // the same base name still numbers. Same live occupant, same base name, opposite outcome —
+      // that contrast is the whole content of M6.
+      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      check("M6 persona-derived: the SAME base name against the SAME live occupant still NUMBERS",
+        numbered.name === "m6pin-2", numbered);
+    }
     const rRes = await A.call("resume-preserved", { attemptId: "nope", inventory: { version: "cotal-manager-resume/v1", space, createdAt: "x", agents: [] } });
     check("resumePreserved refuses with the EXACT ctl core message (no --resume-attempt manager)",
       rRes.reply.ok === false && String(rRes.reply.error?.message ?? "").includes("requires a manager started with --resume-attempt"), rRes.reply);
