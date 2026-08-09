@@ -22,67 +22,46 @@ export const SCHEMA_PROFILE = Object.freeze({
   maxClosureBytes: 1024 * 1024,
   /** Structural nesting depth of any document. */
   maxDepth: 32,
-  /** Max SUBSCHEMA NODES in a document. THIS BOUND EXISTS TO PREVENT A COMPILER CRASH, NOT A SLOW
-   *  COMPILE, and that distinction is its entire basis. An earlier value was justified by compile
-   *  time and could not be defended: the corpus that justified it was drawn from what the bound
-   *  already admitted, so nothing above the line was ever observed.
-   *
-   *  A patterned-properties schema at 2048 nodes STACK-OVERFLOWS Ajv's codegen at 186,165 bytes —
-   *  INSIDE `maxDocumentBytes`. No byte bound in this profile stands in front of that, and a node
-   *  bound is the only thing that does. It is also not a budget overrun a timer could classify
-   *  after the fact: there is no after.
-   *
-   *  MEASURED with the guard bypassed, raw Ajv with these exact options, each point in a fresh
-   *  process. CPU ms, cold / warm-median-of-3:
-   *
-   *      nodes | object-patterned | boolean-anyOf | multi-member closure
-   *       512  | 135.3 / 83.3     | 35.0 / 13.9   | 107.2 / 61.5
-   *      1024  | 360.3 / 278.6    | 42.6 / 19.7   | 204.9 / 155.7
-   *      2048  | STACK OVERFLOW   | 73.4 / 39.9   | 498.8 / 417.6
-   *
-   *  DERIVATION. The highest point safe in EVERY family is 1024, and a single scalar bound is set
-   *  by the worst family — object-patterned — which dies somewhere in (1024, 2048]. 512 is one full
-   *  doubling below the last known-good measurement, because the crash point belongs to Ajv rather
-   *  than to this repo and can move without notice. Against real use it is 25x the largest schema
-   *  registered here (20 nodes; the whole 23-schema startup set is 115), so it refuses nothing
-   *  legitimate and leaves an order of magnitude for growth.
-   *
-   *  WHAT DID NOT DECIDE IT: there is no time knee anywhere in that table. Every family compiles in
-   *  under 140ms cold at 512. Choosing by compile time is what produced the previous value.
-   *
-   *  INVALIDATING CONDITION, because this constant has a short half-life: the stack overflow is an
-   *  Ajv-version and Node-version fact, measured on Ajv 8.20.0 / Node 26.7.0 / one macOS host. If
-   *  either moves, RE-DERIVE — find where the object family crashes and set this a doubling below.
-   *  A constant whose basis has expired is worse than one that never had a basis, because it looks
-   *  derived.
-   *
-   *  AND IT IS NOT A COST MODEL. At a FIXED 1024 nodes the table spans 278.6ms (object) to 19.7ms
-   *  (boolean): a 14x spread at one node count. This works because it sits below a CRASH, not
-   *  because it tracks cost, and it will refuse a large cheap `anyOf` before a smaller expensive
-   *  object schema. That false-refusal shape is known and accepted.
-   *
-   *  Counts SUBSCHEMA nodes via {@link countSchemaNodes}, booleans included — `true`/`false` are
-   *  valid subschemas, and skipping them made the whole count bypassable. */
-  maxSchemaNodes: 512,
-  /** Max subschema nodes across a whole REFERENCE CLOSURE (root plus every reachable member).
-   *
-   *  ITS BASIS IS NOT THE SAME AS `maxSchemaNodes`, and conflating them would be wrong. The
-   *  per-document bound sits below an Ajv CODEGEN CRASH. This one bounds AGGREGATE COMPILE COST:
-   *  splitting a schema across members means every document passes the per-document check while the
-   *  compiler pays the sum. Reproduced rather than theorised — members each under the document
-   *  ceiling aggregated past it with every document passing.
-   *
-   *  A closure cannot crash the way one document can, because each member is independently held
-   *  under `maxSchemaNodes` and the overflow is per-document codegen. So this is a cost ceiling, and
-   *  the measured cost at it is ~500ms cold for a multi-member closure — a bounded, one-time
-   *  registration cost rather than a failure mode.
-   *
-   *  4x the per-document ceiling, matching the ratio the profile already uses between
-   *  `maxClosureBytes` (1 MiB) and `maxDocumentBytes` (256 KiB). That precedent existed for exactly
-   *  this reason and should have been followed when the per-document bound was first added. Every
-   *  contract this repo registers is 115 nodes for its ENTIRE 23-schema set, so this is far above
-   *  real use. */
-  maxClosureNodes: 2048,
+  // THERE IS DELIBERATELY NO SUBSCHEMA-NODE BOUND HERE, and this note is the guard on that: a node
+  // ceiling was proposed twice, and the second attempt was killed by the measurement it asked for.
+  //
+  // The proposal was to refuse a "pathological" schema by counting subschema nodes before compiling
+  // — deterministic, host-independent, and unlike a timer, immune to the machine. Two bases were
+  // offered for the constant, and both are dead:
+  //
+  //   COST. There is no knee, and the spread WIDENS with size rather than converging. Warm CPU
+  //   across four schema families at one node count: 2.2x at ~256 nodes, 8.8x at ~512, 27.3x at
+  //   ~1024 (6.3ms boolean-anyOf against 173.0ms object-patterned), and 45.8x at ~2048 (13.4ms
+  //   against 611.7ms). Node count is a sound bound and a poor predictor, so any single scalar is
+  //   set by the worst family and refuses the best — it would reject a cheap 2048-branch union
+  //   while admitting an object schema costing 45x more.
+  //
+  //   CRASH. A 2048-node patterned-properties document was observed to RangeError in Ajv's codegen
+  //   at ~186KB — inside `maxDocumentBytes` — which looked like a hard edge worth standing in front
+  //   of. It is not an edge, and it failed to reproduce twice over. THE SAME SCHEMA IN THE SAME
+  //   PROCESS threw after 95.7ms cold and then COMPILED in 1035.5ms on the immediate warm retry;
+  //   and on the host these figures were taken from it does not throw at all, compiling in 679.8ms
+  //   cold and 544.8ms warm. A boundary that moves between two consecutive runs of one process, and
+  //   is absent on the next host, cannot be the basis of a frozen constant.
+  //
+  //   AND THE VALUE WAS UNSAFE ON AN AXIS NOBODY MEASURED. Under `node --stack-size=256` a 512-node
+  //   object RangeErrors, while 384 compiles — so the proposed `maxSchemaNodes: 512` did not hold
+  //   at a supported process configuration. A bound that is not a bound across the axes it ships on
+  //   is not a bound.
+  //
+  // WHAT STANDS IN ITS PLACE is what was doing the work the whole time: `maxDocumentBytes` and
+  // `maxClosureBytes`, `maxDepth`, `maxRefChain`, `maxPatternChars`, the admitted-vocabulary
+  // refusal, and — for exactly the codegen overflow above — the compile-error catch in
+  // `compileWithinBudget`, which has been normalising these to `contract-invalid` all along. That
+  // set refuses everything it refused before; removing an unfounded bound only LOOSENS, and
+  // loosening cannot break a contract that was already valid.
+  //
+  // BEFORE PROPOSING ONE AGAIN, run `implementations/manager/smoke/_probe-nodecount-rejected.ts`.
+  // It reproduces the table above against the compiler that actually ships. The first version of
+  // this ceiling was derived from a corpus THE CEILING ITSELF BOUNDED — every synthetic above the
+  // line was refused, so the calibration reported that nothing measured had exceeded the budget,
+  // and the number was unfalsifiable the moment it shipped. Measure above the line, or do not set
+  // the line.
   /** Digest-reference chain depth (root → member → member …). */
   maxRefChain: 32,
   /** Compile budget per closure, ms. */
@@ -98,32 +77,17 @@ export const SCHEMA_PROFILE = Object.freeze({
 } as const);
 
 /**
- * The EXACT Ajv configuration the profile compiles with. Exported so a calibration can measure the
- * real compiler rather than an approximation of it.
+ * The EXACT Ajv configuration the profile compiles with. Module-private: it was briefly exported so
+ * a node-ceiling calibration could measure the real compiler, and that ceiling is gone (see
+ * SCHEMA_PROFILE), so the export would be a public surface with nothing behind it.
  *
- * WHY THIS IS EXPORTED, and it is the structural fix for how `maxSchemaNodes` came to be wrong: the
- * first version of that ceiling was derived from a corpus THE CEILING ITSELF BOUNDED. Every
- * synthetic above the line was refused, so it measured as "unmeasurable", and the calibration then
- * reported that nothing measured had exceeded the budget. Circular by construction — no evidence
- * above the line could exist, so the number was unfalsifiable the moment it shipped.
- *
- * A bound whose calibration must go through the bound cannot be re-derived. So the re-derivation
- * path compiles with THESE OPTIONS DIRECTLY, past every profile bound, and asks where the compiler
- * actually fails:
- *
- *     import { Ajv2020 } from "ajv/dist/2020.js";
- *     const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
- *     ajv.compile(schemaWayAboveTheCeiling);   // no profile bounds involved
- *
- * That is NOT a bypass of enforcement: nothing here weakens `compileContract`, and any caller could
- * already construct its own Ajv. What it removes is the need to reverse-engineer the compiler's
- * configuration in order to check whether the constants still hold — the two must be identical or
- * the measurement describes a different compiler than the one that ships.
- *
- * Re-derive whenever Ajv or Node moves: find where the object-patterned family stack-overflows and
- * set `maxSchemaNodes` a doubling below it.
+ * EVERY OPTION HERE IS PINNED RATHER THAN INHERITED, including the ones whose pinned value equals
+ * Ajv's current default. An inherited default is a behaviour this profile depends on and does not
+ * control: it can change in a minor release, and a `^8` range will take that change silently. The
+ * two comments below record what each pin is load-bearing FOR, because a pin nobody can explain is
+ * the first one someone deletes.
  */
-export const AJV_PROFILE_OPTIONS = Object.freeze({
+const AJV_PROFILE_OPTIONS = Object.freeze({
   strict: false, // the wire accepts full 2020-12, not ajv's strict-mode dialect subset
   allErrors: false,
   validateFormats: false,
@@ -141,17 +105,19 @@ export const AJV_PROFILE_OPTIONS = Object.freeze({
   // ONE `ajv.compile` on the root, with members merely `addSchema`'d — so under inlining the
   // codegen units are NOT one-per-document: leaf members merge upward into the root's function.
   //
-  // That matters because `maxClosureNodes`'s stated basis is that each member is independently held
-  // under `maxSchemaNodes` and therefore no single codegen unit can reach the size that
-  // stack-overflows the compiler. UNDER INLINING THAT IS NOT TRUE, and the per-document ceiling
-  // stops describing the thing that actually gets compiled. The invariant was resting on an option
-  // nobody had chosen.
+  // THE PER-DOCUMENT BOUNDS DEPEND ON THAT NOT HAPPENING. `maxDocumentBytes` and `maxDepth` are
+  // enforced per document, and they are worth something only if a document is what gets compiled.
+  // Under inlining, N members each comfortably inside the per-document bounds become ONE generated
+  // function that no per-document bound describes — the check keeps passing while the thing it
+  // claims to bound stops existing. `maxClosureBytes` still caps the aggregate, so this is not a
+  // hole; it is the difference between a bound that means what it says and one that happens to be
+  // covered by a neighbour.
   //
-  // `false` costs a function call per referenced schema at validation time and buys a structural
-  // guarantee: each referenced schema is its own compiled unit, so the per-document bound bounds
-  // what is actually generated. On a DoS boundary a deterministic structure is worth more than
-  // inlining's marginal speed, and it makes the closure bound's comment true by construction rather
-  // than by accident.
+  // It is also observably load-bearing rather than theoretically so: flipping it changes compile
+  // cost and changes the outcome of a high-fanout closure that otherwise compiles. `false` costs a
+  // function call per referenced schema at validation time and buys the structural guarantee that
+  // each referenced schema is its own compiled unit. On a DoS boundary a deterministic structure is
+  // worth more than inlining's marginal speed.
   inlineRefs: false,
 } as const);
 
@@ -285,7 +251,28 @@ const SCHEMA_VALUED_KEYS = ["not", "if", "then", "else", "items", "contains", "a
 const SCHEMA_VALUED_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"];
 const SCHEMA_VALUED_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
 /** Admitted, never containing a subschema: validation assertions, annotations, and core identifiers.
- *  Listed exhaustively so an addition is a decision rather than an oversight. */
+ *  Listed exhaustively so an addition is a decision rather than an oversight.
+ *
+ *  THE RULE FOR ADMITTING A KEYWORD, because "ask the reviewer" is not a rule and the next person
+ *  should not have to guess:
+ *
+ *  1. CAN IT HOLD A SUBSCHEMA? Then it belongs in one of the three positional lists above, never
+ *     here. Getting this wrong is not a stylistic error — the walk stops descending, and a schema
+ *     position gets treated as inert data. That is exactly how `contentSchema` and `dependencies`
+ *     went unrecognised, and it is the defect this whole inversion exists to make impossible.
+ *  2. IS IT INERT? An annotation that cannot change the validation outcome or its cost is admitted
+ *     freely, and the ENTIRE 2020-12 annotation vocabulary is listed below for that reason:
+ *     `title`, `description`, `default`, `deprecated`, `readOnly`, `writeOnly`, `examples`,
+ *     `$comment`. Refusing a contract for carrying documentation would be an absurd outcome, and
+ *     the inversion is only defensible if the admitted set is wide enough to hold everything inert.
+ *  3. OTHERWISE it changes validation semantics or cost, and it goes here only once someone has
+ *     confirmed it holds no subschema in any position.
+ *
+ *  AND AN UNLISTED KEYWORD IS REFUSED EVEN WHEN IT IS OBVIOUSLY HARMLESS — a vendor extension, a
+ *  2020-13 annotation, anything invented after this line was written. That is the cost of the
+ *  inversion and it is paid deliberately: the alternative is a prefix or heuristic escape hatch,
+ *  and any rule of the form "keywords like THIS are fine" is a rule an attacker also gets to use.
+ *  The remedy for a legitimately harmless keyword is one reviewed line here. */
 const SCALAR_KEYS = [
   "type", "enum", "const", "multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum",
   "maxLength", "minLength", "pattern", "maxItems", "minItems", "uniqueItems", "maxContains",
@@ -327,36 +314,7 @@ function assertAdmittedVocabulary(doc: unknown, label: string): void {
 
 
 
-/** Count the subschema nodes in a schema document. Deterministic, cheap, computable BEFORE
- *  compiling, and identical on every host — which is the entire point, since the instrument it
- *  replaces (`process.cpuUsage()` around the compile) measures the machine as much as the schema.
- *  Independent of spelling: 1000 patterned properties is ~1000 nodes however tersely written.
- *
- *  Exported so the calibration probe measures the SAME quantity this bound enforces. A ceiling
- *  calibrated against one definition of "node" and enforced against another is not calibrated. */
-export function countSchemaNodes(doc: unknown): number {
-  let nodes = 0;
-  const walk = (d: unknown): void => {
-    // A BOOLEAN IS A SUBSCHEMA. `true` and `false` are valid 2020-12 schemas, and in an applicator
-    // position each one is a branch the compiler generates code for. Skipping them made the whole
-    // count bypassable: `{anyOf: [false, …x40000]}` is legal, costs ~3.8s to compile at 240KB —
-    // inside every byte bound — and counted as ONE node, so the ceiling never engaged. Reproduced
-    // before this line existed.
-    if (typeof d === "boolean") { nodes++; return; }
-    if (d === null || typeof d !== "object") return;
-    if (Array.isArray(d)) { for (const v of d) walk(v); return; }
-    nodes++;
-    for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
-      if (SCHEMA_VALUED_KEYS.includes(k)) walk(v);
-      else if (SCHEMA_VALUED_MAP_KEYS.includes(k) && v && typeof v === "object") for (const s of Object.values(v as object)) walk(s);
-      else if (SCHEMA_VALUED_LIST_KEYS.includes(k) && Array.isArray(v)) for (const s of v) walk(s);
-    }
-  };
-  walk(doc);
-  return nodes;
-}
-
-/** Enforce the D27 profile on one document: size, depth, node count, and reference closure.
+/** Enforce the D27 profile on one document: size, depth, vocabulary, and reference closure.
  *  Returns the digest-refs the document makes (for closure walking). */
 function assertDocumentProfile(doc: unknown, label: string): string[] {
   const canonical = canonicalOrInvalid(doc, label); // also enforces I-JSON, as contract-invalid
@@ -366,9 +324,6 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
   if (structuralDepth(doc) > SCHEMA_PROFILE.maxDepth)
     throw new ContractInvalidError(`${label}: nesting exceeds profile depth ${SCHEMA_PROFILE.maxDepth}`);
   assertAdmittedVocabulary(doc, label);
-  const nodes = countSchemaNodes(doc);
-  if (nodes > SCHEMA_PROFILE.maxSchemaNodes)
-    throw new ContractInvalidError(`${label}: ${nodes} subschema nodes (profile max ${SCHEMA_PROFILE.maxSchemaNodes}); the compile cost of a contract is bounded BEFORE compiling it, deterministically and identically on every host`);
   const storeRefs: string[] = [];
   for (const ref of collectRefs(doc, label)) {
     if (ref.startsWith("#")) continue; // local pointer/anchor — resolved within the document
@@ -433,10 +388,6 @@ function assertClosureProfile(bundle: SchemaBundle): string {
   let closureBytes = 0;
   let frontier = assertDocumentProfile(bundle.root, "root schema");
   closureBytes += Buffer.byteLength(canonicalOrInvalid(bundle.root, "root schema"), "utf8");
-  // Nodes accumulate across the closure exactly as bytes do. The per-document ceiling alone is
-  // bypassable by splitting: 16 members of 252 nodes each is 4,049 nodes with every document
-  // passing 256, and the compiler pays the aggregate.
-  let closureNodes = countSchemaNodes(bundle.root);
   for (let chain = 0; frontier.length > 0; chain++) {
     if (chain >= SCHEMA_PROFILE.maxRefChain)
       throw new ContractInvalidError(`reference chain exceeds profile depth ${SCHEMA_PROFILE.maxRefChain}`);
@@ -452,9 +403,6 @@ function assertClosureProfile(bundle: SchemaBundle): string {
       closureBytes += Buffer.byteLength(canonicalOrInvalid(member, `member ${digest}`), "utf8");
       if (closureBytes > SCHEMA_PROFILE.maxClosureBytes)
         throw new ContractInvalidError(`closure is ${closureBytes} bytes (profile max ${SCHEMA_PROFILE.maxClosureBytes})`);
-      closureNodes += countSchemaNodes(member);
-      if (closureNodes > SCHEMA_PROFILE.maxClosureNodes)
-        throw new ContractInvalidError(`closure is ${closureNodes} subschema nodes (profile max ${SCHEMA_PROFILE.maxClosureNodes}); a per-document bound alone is bypassable by splitting one schema across members`);
       next.push(...assertDocumentProfile(member, `member ${digest}`));
     }
     frontier = next;
@@ -470,9 +418,24 @@ function assertClosureProfile(bundle: SchemaBundle): string {
 }
 
 function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
-  // THE REFUSAL HAS MOVED. The pathological-schema ceiling is now `maxSchemaNodes`, enforced in
-  // `assertDocumentProfile` BEFORE this function runs. The timing below is kept as an OBSERVATION
-  // and refuses nothing.
+  // NOTHING HERE REFUSES A SCHEMA FOR BEING EXPENSIVE, and that is deliberate rather than
+  // overlooked. The timing below is an OBSERVATION and refuses nothing; the node ceiling that was
+  // briefly going to carry the refusal is gone, for the reasons recorded at `SCHEMA_PROFILE`.
+  //
+  // SO SAY PLAINLY WHAT IS ADMITTED NOW. A document of ~1000 patterned properties is ~90KB, depth
+  // 2, ref-chain 0, every pattern inside `maxPatternChars` — it passes every remaining bound and
+  // COMPILES, in a few hundred ms. It is admitted. The reason that is the right trade and not a
+  // hole: reaching this function at all requires the authority to REGISTER a contract, the cost is
+  // paid once at registration rather than per call, and the alternative on offer was a constant
+  // whose two candidate bases were both falsified by measurement. An unfounded bound is not a
+  // cheap safety margin — it refuses real contracts on a number nobody can defend, which is the
+  // failure this profile already made once with a timer.
+  //
+  // AND THE CODEGEN OVERFLOW IS CAUGHT, not unguarded. A large patterned document can RangeError
+  // inside Ajv's code generator; that throw lands in the catch below and is normalised to
+  // `contract-invalid`, the same as any other schema that does not compile. It has been doing that
+  // the whole time. The overflow is also not a stable edge to bound against — the same schema in
+  // this same process has thrown cold and compiled on the immediate warm retry.
   //
   // Why the timing could not stay a refusal: no instrument available on this package's Node floor
   // measures the right quantity. Wall clock counts the machine — a trivial two-property closure
@@ -489,13 +452,11 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   // compile work, and the same contract compiled fine in four sibling jobs on the same runner
   // image. The number was very nearly all instrument, and it made the required gate unmergeable.
   //
-  // Nothing is left unguarded by the move. The gap the other deterministic bounds miss — 1000
-  // patterned properties is ~90KB, inside maxDocumentBytes and maxClosureBytes, depth 2, ref-chain
-  // 0, every pattern legal — is 1001 NODES, so the node bound refuses it four times over while
-  // every contract this repo registers sits at or below 20.
-  //
-  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant, and a node-count refusal
-  // is still `contract-invalid` at registration, so this needs no spec amendment.
+  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant, so reporting rather than
+  // refusing on it needs no spec amendment. What §13.8 must be amended to say is that the profile
+  // enforces its registration bounds structurally — bytes, depth, ref-chain, pattern length,
+  // vocabulary — and treats the time budget as an observation, because no instrument available on
+  // the supported Node floor measures the quantity the budget names.
   const startedCpu = process.cpuUsage();
   const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI
@@ -517,7 +478,8 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
     console.error(
       `! schema: compile took ~${cpuMs}ms of process CPU (SPEC 2458 reference budget ${SCHEMA_PROFILE.compileBudgetMs}ms; ` +
       `${Date.now() - started}ms elapsed). Approximate - process-wide CPU includes JIT/Worker threads. ` +
-      `Not a refusal: the enforced ceiling is ${SCHEMA_PROFILE.maxSchemaNodes} subschema nodes, checked before compiling.`,
+      `Not a refusal, and no schema-size ceiling stands behind it: registration is bounded structurally ` +
+      `(document/closure bytes, depth, ref-chain, pattern length, admitted vocabulary).`,
     );
   return validate;
 }

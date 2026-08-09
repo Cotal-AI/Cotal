@@ -85,83 +85,52 @@ refuses("pattern bomb refused", () =>
 refuses("patternProperties key bomb refused", () =>
   compileContractSchema({ root: { type: "object", patternProperties: { ["x".repeat(SCHEMA_PROFILE.maxPatternChars + 1)]: { type: "string" } } } }), "complexity bound");
 
-// 6b) The pathological-schema ceiling is NODE COUNT, checked before compiling — deterministic and
-// identical on every host. It replaced a CPU-time budget that refused the manager's own service
-// contract on Windows CI at "125ms of CPU ... 80ms elapsed" (CPU above wall clock is only possible
-// with concurrent threads, so that number was mostly V8's JIT threads, not the schema). The timing
-// still prints as an observation and refuses nothing.
+// 6b) THERE IS NO SUBSCHEMA-NODE CEILING, AND THIS PINS THE CONSEQUENCE RATHER THAN LEAVING IT
+// IMPLIED. A node bound was proposed as the structural replacement for the CPU-time budget that
+// refused the manager's own service contract on Windows CI ("125ms of CPU ... 80ms elapsed" — CPU
+// above wall clock is only possible with concurrent threads, so that number was mostly V8's JIT).
+// It was removed because neither candidate basis survived measurement: cost has no knee (a 14x
+// spread at one node count), and the codegen RangeError it was meant to sit below is not a stable
+// edge (the same document threw cold and compiled on the immediate warm retry in one process).
+//
+// So the shape the byte/depth/ref-chain bounds always missed is now ADMITTED, and asserting that it
+// COMPILES is the point: a silently re-added ceiling would fail here, and whoever adds it has to
+// come to this case and argue for the number.
 {
   const heavy: Record<string, unknown> = {};
   for (let i = 0; i < 1000; i++) heavy[`p${i}`] = { type: "string", pattern: `^a{0,4}b${i}c[0-9]{1,3}$`, minLength: 1, maxLength: 40 };
-  // The exact shape the deterministic bounds used to miss: ~90KB, inside maxDocumentBytes and
-  // maxClosureBytes, depth 2, ref-chain 0, every pattern legal — and 1001 nodes.
-  refuses("the schema that genuinely burns the compiler is refused, now by NODE COUNT", () =>
-    compileContractSchema({ root: { type: "object", properties: heavy, additionalProperties: false } }), "subschema nodes");
-}
-// The refusal must be the NODE bound and nothing else, so pin the boundary rather than only a
-// wildly-over case: maxSchemaNodes properties compile, one more refuses. A ceiling asserted only
-// far from its edge would still pass if the constant silently moved.
-{
-  // Exactly at the ceiling: the root object is one node and `additionalProperties: false` is
-  // another, since a boolean IS a subschema — so the property count is the ceiling MINUS TWO.
-  // This fixture said minus one until booleans started counting, at which point it built 257 and
-  // the "at the limit compiles" case began failing. That is the fix changing the measurement and
-  // the fixture following it, not a regression.
-  const atLimit: Record<string, unknown> = {};
-  for (let i = 0; i < SCHEMA_PROFILE.maxSchemaNodes - 2; i++) atLimit[`p${i}`] = { type: "string" };
-  ok("a schema exactly AT the node ceiling compiles", (() => {
-    compileContractSchema({ root: { type: "object", properties: atLimit, additionalProperties: false } });
+  // ~90KB, inside maxDocumentBytes and maxClosureBytes, depth 2, ref-chain 0, every pattern legal.
+  ok("the expensive-but-legal schema is ADMITTED (no node ceiling stands in front of it)", (() => {
+    compileContractSchema({ root: { type: "object", properties: heavy, additionalProperties: false } });
     return true;
   })());
-  const overLimit = { ...atLimit, extra: { type: "string" } };
-  refuses("one node OVER the ceiling refuses", () =>
-    compileContractSchema({ root: { type: "object", properties: overLimit, additionalProperties: false } }), "subschema nodes");
 }
-// 6c) THE TWO WAYS THE NODE COUNT WAS BYPASSABLE. Both were reproduced against the shipped guard
-// before these were written, and both compiled a schema the ceiling claims to refuse. The
-// object-valued single-document case above is real but NARROWER THAN THE CLAIM the guard makes,
-// which is exactly how it passed while the bound leaked.
 {
-  // BOOLEANS ARE SUBSCHEMAS. `false` is a valid 2020-12 schema, so every branch here is a compile
-  // unit — but the walk returned on any non-object, so this counted as ONE node. Measured on the
-  // shipped guard: 40,000 branches, 240KB (inside every byte bound), ~3.8s to compile, ACCEPTED.
-  refuses("boolean subschema branches are counted, not skipped", () =>
-    compileContractSchema({ root: { anyOf: Array.from({ length: SCHEMA_PROFILE.maxSchemaNodes + 50 }, () => false) } }),
-    "subschema nodes");
-  // …and a handful of them is still an ordinary schema, so the fix must not refuse legitimate use.
-  ok("a schema with a few boolean branches still compiles", (() => {
+  // BOOLEANS ARE SUBSCHEMAS — `false` is a valid 2020-12 schema and each branch is a compile unit.
+  // That fact was load-bearing for the node count and is now load-bearing for the VOCABULARY walk
+  // one section down, which must treat a boolean as a schema position rather than as a scalar.
+  ok("a schema with boolean branches compiles", (() => {
     compileContractSchema({ root: { anyOf: [{ type: "string" }, false, true] } });
     return true;
   })());
+  // STATED, NOT ASSERTED, because asserting it would put its cost in the gate: 40,000 boolean
+  // branches is 240KB — inside every byte bound — and compiles in ~3.8s. It is admitted. That is
+  // the honest price of removing an unfounded bound: a one-time registration cost, paid by a
+  // principal that already holds the authority to register a contract, in exchange for not refusing
+  // real contracts on a constant nobody could defend.
 }
 {
-  // SPLITTING ACROSS THE CLOSURE. The node bound ran per DOCUMENT, so members each under the
-  // ceiling aggregated past it while every document passed. The compiler pays the sum.
+  // WHAT ACTUALLY CATCHES A SCHEMA THE COMPILER CANNOT BUILD: the try/catch around `ajv.compile`,
+  // which normalises any codegen failure to `contract-invalid`. It has been doing this the whole
+  // time, including for the RangeError the node bound was proposed to pre-empt.
   //
-  // The members MUST be distinct: identical members share a content digest and collapse to one
-  // entry. A first version of this proof built 16 identical members, deduped to 1, and "passed"
-  // while measuring nothing — the same vacuous shape this file exists to keep out.
-  const members: Record<string, unknown> = {};
-  const refs: unknown[] = [];
-  for (let i = 0; i < 8; i++) {
-    const props: Record<string, unknown> = {};
-    for (let j = 0; j < SCHEMA_PROFILE.maxSchemaNodes - 5; j++) props[`m${i}p${j}`] = { type: "string" };
-    const m = { type: "object", properties: props, additionalProperties: false };
-    const d = contractDigest(m);
-    members[d] = m;
-    refs.push({ $ref: `cotal:${d}` });
-  }
-  ok("the closure proof uses DISTINCT members (identical ones dedupe and prove nothing)", Object.keys(members).length === 8);
-  refuses("members each under the per-document ceiling cannot aggregate past the CLOSURE ceiling", () =>
-    compileContract({ root: { allOf: refs }, members: members as Record<string, Record<string, unknown>> }),
-    "closure is");
+  // Deliberately proven with a DETERMINISTIC non-compiling schema. The RangeError itself is not
+  // reproducible on demand — it is exactly the "boundary" that moved between two consecutive runs
+  // of one process — so an assertion built on it would be a flake dressed as a guard.
+  refuses("a schema the compiler rejects is contract-invalid, not a thrown RangeError", () =>
+    compileContractSchema({ root: { type: "object", properties: { a: { $ref: "#/$defs/absent" } } } }),
+    "does not compile");
 }
-// The bound must not tax ordinary contracts: every schema this repo registers is far below it.
-// Measured: the largest single manager contract document is 21 nodes against a ceiling of 256.
-ok("a trivial closure compiles well inside the node ceiling", (() => {
-  compileContractSchema({ root: { type: "object", properties: { a: { type: "string" } }, additionalProperties: false } });
-  return true;
-})());
 
 // 7) A member that does not hash to its digest key refuses (also the cache-soundness gate).
 refuses("forged member content refused", () =>
