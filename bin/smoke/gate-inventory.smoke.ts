@@ -63,14 +63,12 @@ const UNGATED: Record<string, string> = {
   "smoke:delivery-broker-coupling": "UNTRIAGED", "smoke:delivery-old-manager": "UNTRIAGED",
   "smoke:delivery-shards-reject": "UNTRIAGED", "smoke:doctor-auth": "UNTRIAGED",
   "smoke:feedback": "UNTRIAGED", "smoke:install": "UNTRIAGED", "smoke:ledger": "UNTRIAGED",
-  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED",
-  "smoke:manager-name-claim": "UNTRIAGED", "smoke:manager-on-route": "UNTRIAGED",
-  "smoke:manager-reconcile-ownership": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
+  "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
   "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
   "smoke:membership-feed:auth": "UNTRIAGED", "smoke:plane3-activation:auth": "UNTRIAGED",
   "smoke:plane3-gate:auth": "UNTRIAGED", "smoke:presence-scrub": "UNTRIAGED",
   "smoke:self-serve-join-coverage:auth": "UNTRIAGED", "smoke:send": "UNTRIAGED",
-  "smoke:start-model": "UNTRIAGED", "smoke:static-lifecycle": "UNTRIAGED",
+  "smoke:start-model": "UNTRIAGED",
 };
 
 /**
