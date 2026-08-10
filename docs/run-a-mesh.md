@@ -144,8 +144,9 @@ options, not the scheme, that make the client insist.
 So the address is the gate, and only two kinds are accepted:
 
 - **loopback** — `127.0.0.0/8` or `::1`, where nothing leaves the machine;
-- **your private overlay** — `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, where a WireGuard tunnel
-  already authenticates and encrypts the link between two machines you enrolled.
+- **your private overlay** — `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, but only with
+  `--allow-unencrypted-overlay`, because the protection is real only while the tunnel is running
+  and this command cannot check that for you.
 
 Everything else is refused, including ordinary private ranges like `10.x` and `192.168.x`: a
 café's wifi is a private network too, and being private is not the same as being yours. `--force`
