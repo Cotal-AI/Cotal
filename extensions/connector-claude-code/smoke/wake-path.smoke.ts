@@ -504,16 +504,28 @@ try {
   // meant the FIRST verdict unpinned ids the SECOND was still delivering, and an arrival in between
   // acked one. Same permanent loss as §7, reached through the concurrency the keying deliberately
   // allows, so the hold has to be counted rather than flagged.
+  // Driven through the SHIPPED handler directly (as §3b does) rather than by racing two relay
+  // processes: the interleaving is the whole point, so it has to be exact rather than probable. An
+  // earlier version raced two real relays, and a mutation that removed the refcount still passed it —
+  // the overlap simply had not happened. A check that survives deleting the thing it tests is worth
+  // nothing, so this drives the two verdicts by hand.
   await waitFor("a full inbox to overflow against", () => agent.inboxCount("automatic") >= FILL, 60_000);
   const twoFrameOldest = agent.peekInbox("automatic")[0].text.slice(0, 20);
-  const overlapB = fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { starveStdout: true });
-  await sleep(150); // B is surfaced and holding
-  await fireHook({ hook_event_name: "UserPromptSubmit" }, { dropReply: true }); // frame A: holds, then fails fast
-  await sleep(250); // A's verdict has landed; B is STILL in flight
+  const overlapA = { hook_event_name: "UserPromptSubmit" };
+  const overlapBFrame = { hook_event_name: "UserPromptSubmit" };
+  await claude.handle(agent, overlapA); // frame A surfaces and holds every id
+  await claude.handle(agent, overlapBFrame); // frame B surfaces and holds the SAME ids
+  claude.onReply(overlapA, false); // A's verdict lands first — B is still in flight
   await dmOtto("dm-seven-b-overflow: arrives between the two verdicts");
-  const bResult = await overlapB;
-  check("the second frame's handoff also failed, as this check requires", bResult.stdout.length === 0);
-  await sleep(500);
+  await sleep(300);
+  claude.onReply(overlapBFrame, false); // ...and only now does B report
+  // The precondition this check rests on: the arrival really did drive an eviction. Without it the
+  // assertion below would pass for the boring reason that nothing was ever at risk.
+  check("the arrival between the verdicts really did overflow the inbox", agent.inboxCount("automatic") <= FILL, {
+    automatic: agent.inboxCount("automatic"),
+    cap: FILL,
+  });
+  await sleep(300);
   const twoFrameBack = async (): Promise<boolean> => {
     for (let i = 0; i < (ACK_WAIT_MS + 8_000) / 250 && !stillPending(twoFrameOldest); i++) await sleep(250);
     return stillPending(twoFrameOldest);
