@@ -390,4 +390,39 @@ log(caught, r.status);
   ok("a journalled result cannot be mutated by the program", v.status === "done", v);
 }
 
+// ---- 13) an edited sleep duration diverges rather than keeping the old path -------------------
+
+/**
+ * This suite was 29 checks green while this was broken, which is the reason the section exists.
+ *
+ * §5.12 puts `sleep.duration` on the HASHED side: it determines the recorded fact, because a
+ * resumed run reads the elapsed time back through the run clock and branches on it. The
+ * interpreter hashed `null`, so editing 1h to 1m left the recorded hash matching and the resumed
+ * run silently kept the path the OLD duration had chosen. No divergence, no error, wrong branch.
+ *
+ * Nothing here tested it because every existing resume test replays a program it did not edit.
+ * A durability suite that never edits the source cannot see a hashing bug at all.
+ */
+{
+  const timed = (d: string) => `
+const t0 = now();
+await sleep("${d}", { name: "pause" });
+if (now() - t0 >= 1800000) { await sleep("1s", { name: "long-path" }); }
+else { await sleep("1s", { name: "short-path" }); }
+`;
+  const live = await run(timed("1h"), { runId: "r-13", handler: new SimHandler({ clock: { start: 0 } }) });
+  ok("a long sleep takes the long path", keysOf(live.journal).some((k) => k.includes("long-path")), keysOf(live.journal));
+
+  let diverged: unknown;
+  try {
+    await resume(timed("1m"), live.journal, { runId: "r-13", handler: new SimHandler({ clock: { start: 0 } }) });
+  } catch (e) {
+    diverged = e;
+  }
+  ok("editing the duration diverges instead of replaying", diverged instanceof RunDivergence, String(diverged).slice(0, 60));
+  // Pinned on the step, not merely on the class: divergence must be reported for the SLEEP whose
+  // input changed, not for whatever the run happened to reach first.
+  ok("and it names the sleep as the changed step", (diverged as RunDivergence)?.stepKey?.includes("sleep:pause"), (diverged as RunDivergence)?.stepKey);
+}
+
 console.log(`interpret.smoke: ${pass} checks passed`);

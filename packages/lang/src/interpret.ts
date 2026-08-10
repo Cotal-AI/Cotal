@@ -203,7 +203,7 @@ export class RunDivergence extends Error {
     readonly programHash: string,
   ) {
     super(
-      `L5001 Run divergence\n\n  step  ${stepKey}   INPUT CHANGED\n        recorded  ${recordedHash}\n        program   ${programHash}\n\nThe recorded result was produced from different inputs, so replaying it would hand the program an answer to a question it is no longer asking.\n\nOptions\n  fork(run, "${stepKey}")   re-run from this step, keeping everything before it\n  rename the step           force a fresh run of this step in a migration\n  revert the inputs         keep the recorded result`,
+      `L5001 Run divergence\n\n  step  ${stepKey}   INPUT CHANGED\n        recorded  ${recordedHash}\n        program   ${programHash}\n\nThe recorded result was produced from different inputs, so replaying it would hand the program an answer to a question it is no longer asking.\n\nOptions\n  fork(run, "${stepKey}")   re-run from this step, keeping everything before it\n  revert the inputs         keep the recorded result`,
     );
     this.name = "RunDivergence";
   }
@@ -691,7 +691,18 @@ class Interpreter {
       case "sleep": {
         const duration = args[0] as string;
         parseDuration(duration); // fail at the call, not inside the handler
-        return await this.performEffect("sleep", stepName ?? "", null, (ctx) => handler.sleep({ duration }, ctx), frame);
+        // The duration IS hashed (design 5.12). It determines the recorded fact: a resumed run
+        // reads the elapsed time back through the run clock, so editing 1h to 1m must diverge
+        // rather than silently keep the path the old duration chose. This hashed `null` until
+        // critic2 executed it, and the rule it violates is one this lane wrote and then only
+        // ever applied to the document.
+        return await this.performEffect(
+          "sleep",
+          stepName ?? "",
+          { duration },
+          (ctx) => handler.sleep({ duration }, ctx),
+          frame,
+        );
       }
       case "wait": {
         const event = deepFreeze(args[0]) as EventDescriptor;

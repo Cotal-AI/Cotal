@@ -106,7 +106,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     hashesSubject: false,
     opensScope: false,
     signature: "sleep(duration, { name? }) -> null",
-    doc: "A durable timer. A resumed run does not re-sleep an elapsed sleep; rename the step to force a fresh wait.",
+    doc: "A durable timer. A resumed run does not re-sleep an elapsed sleep; use fork to re-run from this step.",
     example: 'await sleep("30m")',
   },
   wait: {
