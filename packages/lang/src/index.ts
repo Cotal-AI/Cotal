@@ -63,6 +63,20 @@ export {
 } from "./effects.js";
 
 export {
+  DurationError,
+  isDuration,
+  parseDuration,
+} from "./duration.js";
+
+export {
+  SimHandler,
+  SimUnscriptedError,
+  type Scripted,
+  type SimFault,
+  type SimScript,
+} from "./sim.js";
+
+export {
   Journal,
   JournalReadOnlyError,
   RunClock,

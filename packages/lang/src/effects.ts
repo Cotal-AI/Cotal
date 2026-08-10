@@ -163,6 +163,15 @@ export interface EffectContext {
 }
 
 export interface EffectHandler {
+  /**
+   * The host clock, which the interpreter uses to stamp `startedAt` and `endedAt` on journal
+   * entries. Production reads the wall clock; simulation reads a virtual one, which is how a
+   * program that waits four hours is tested in microseconds without pretending the wait did not
+   * happen. The program's own `now()` never reads this: it reads the run clock derived from
+   * those journalled stamps, which is what makes time advance only at effect boundaries.
+   */
+  now(): number;
+
   spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue>;
   turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue>;
   ask(req: AskRequest, ctx: EffectContext): Promise<unknown>;
