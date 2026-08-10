@@ -17,6 +17,7 @@ import { LangError, LangErrors, type LangErrorCode, type SourceSpan } from "./er
 import {
   BUILTINS,
   FORBIDDEN_GLOBALS,
+  NOTIFY_BOUND,
   PRIMITIVES,
   PROMISE_NAMES,
   RESERVED_NAMES,
@@ -458,6 +459,135 @@ function patternNames(node: AnyNode, out: string[]): void {
   }
 }
 
+/**
+ * `notify`'s fact is a bounded decision record, not a message.
+ *
+ * This is the one place a program can push its own bytes toward another agent's context, so the
+ * bound is what keeps "conversation is the data plane, the program is the control plane" true at
+ * the one boundary where it is easiest to break. A literal fact is checked exactly; a computed
+ * one is checked at the effect boundary by the same rules.
+ */
+function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
+  if (fact === undefined || fact.type !== "ObjectExpression") return; // computed: checked at run time
+
+  const seen = new Map<string, AnyNode>();
+  for (const p of (fact.properties as AnyNode[]) ?? []) {
+    if (p.type !== "Property") continue;
+    const key = p.key as AnyNode;
+    const keyName =
+      key.type === "Identifier"
+        ? (key.name as string)
+        : key.type === "Literal" && typeof key.value === "string"
+          ? key.value
+          : null;
+    if (keyName !== null) seen.set(keyName, p);
+  }
+
+  for (const [key, prop] of seen) {
+    if (key !== "decision" && key !== "outcome" && key !== "detail") {
+      v.fail(
+        "L3043",
+        prop,
+        `A notify fact carries \`decision\`, \`outcome\`, and an optional \`detail\`, and nothing else. \`${key}\` would be an unbounded channel from the program into another agent's context.`,
+        "Move the information into `detail` as a short scalar, or leave it for the agent to read from the channel.",
+        "notify",
+      );
+    }
+  }
+
+  for (const field of ["decision", "outcome"] as const) {
+    const prop = seen.get(field);
+    if (prop === undefined) {
+      v.fail(
+        "L3043",
+        fact,
+        `A notify fact needs a \`${field}\`.`,
+        'Name the decision and its outcome as tokens: { decision: "build", outcome: "blocked" }',
+        "notify",
+      );
+      continue;
+    }
+    const value = prop.value as AnyNode;
+    if (value.type !== "Literal" || typeof value.value !== "string") continue; // computed
+    if (!NOTIFY_BOUND.tokenRe.test(value.value)) {
+      v.fail(
+        "L3043",
+        value,
+        `\`${field}\` names a decision, so it is a token rather than prose. "${value.value}" is not one.`,
+        'Use kebab-case, 1 to 64 characters: { decision: "approve-plan", outcome: "auto-proceeded" }',
+        "notify",
+      );
+    }
+  }
+
+  const detail = seen.get("detail");
+  if (detail === undefined) return;
+  const value = detail.value as AnyNode;
+  if (value.type !== "ObjectExpression") {
+    v.fail(
+      "L3043",
+      value,
+      "`detail` is a record of short scalars.",
+      "Use `{ attempts: 3 }` rather than a value of another shape.",
+      "notify",
+    );
+    return;
+  }
+
+  const props = (value.properties as AnyNode[]) ?? [];
+  if (props.length > NOTIFY_BOUND.maxDetailKeys) {
+    v.fail(
+      "L3043",
+      value,
+      `\`detail\` carries at most ${NOTIFY_BOUND.maxDetailKeys} keys; this one has ${props.length}. The cap is what keeps a notice a decision rather than a message.`,
+      "Keep the fields that name the decision and drop the rest.",
+      "notify",
+    );
+  }
+
+  for (const p of props) {
+    if (p.type !== "Property") continue;
+    const key = p.key as AnyNode;
+    const keyName =
+      key.type === "Identifier"
+        ? (key.name as string)
+        : key.type === "Literal" && typeof key.value === "string"
+          ? key.value
+          : null;
+    if (keyName !== null && !NOTIFY_BOUND.detailKeyRe.test(keyName)) {
+      v.fail(
+        "L3043",
+        key,
+        `\`${keyName}\` is not a detail key; they are kebab-case tokens of at most 32 characters.`,
+        "Rename it, for example `attempt-count`.",
+        "notify",
+      );
+    }
+    const dv = p.value as AnyNode;
+    if (dv.type === "ObjectExpression" || dv.type === "ArrayExpression") {
+      v.fail(
+        "L3043",
+        dv,
+        "Detail values are scalars: a short string, a number, or a boolean. A nested structure is an unbounded pipe into another agent's context.",
+        "Flatten it, or leave it for the agent to read from the channel.",
+        "notify",
+      );
+    } else if (
+      dv.type === "Literal" &&
+      typeof dv.value === "string" &&
+      dv.value.length > NOTIFY_BOUND.maxDetailStringLength
+    ) {
+      v.fail(
+        "L3043",
+        dv,
+        `A detail string is at most ${NOTIFY_BOUND.maxDetailStringLength} characters; this one is ${dv.value.length}. Longer than that is prose, and prose belongs in the channel where the agent can answer it.`,
+        "Shorten it to a label, or put the content on the run record.",
+        "notify",
+      );
+    }
+  }
+}
+
 function checkCall(node: AnyNode, v: Validator): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
@@ -550,6 +680,8 @@ function checkCall(node: AnyNode, v: Validator): void {
       }
     }
   }
+
+  if (name === "notify") checkNotifyFact(args[1], v);
 
   // fanOut needs a stable branch key, or items that carry one.
   if (name === "fanOut" && !given.has("key")) {

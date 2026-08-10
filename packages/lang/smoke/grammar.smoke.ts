@@ -151,6 +151,47 @@ rejects(
   ok("the blame frame is in user coordinates", rendered.includes("1 | async function f(a)"));
 }
 
+// ---- 5b) notify is a decision, not a message -----------------------------------------------
+
+// `notify` is the only primitive that moves program-authored bytes toward an agent's context, so
+// this is where the "conversation is the data plane" rule is easiest to break by accident. The
+// bound is what makes it hard: eight short scalars in a labelled table cannot carry an
+// instruction.
+accepts(
+  "a bounded decision record is fine",
+  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { attempt: 3, sha: "abc123" } });',
+);
+rejects(
+  "prose in a decision token is refused",
+  "L3043",
+  'const a = spawn("x");\nawait notify([a], { decision: "the build step", outcome: "blocked" });',
+);
+rejects(
+  "an extra top-level field is refused",
+  "L3043",
+  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", instructions: "now go fix it" });',
+);
+rejects(
+  "a nested detail value is refused",
+  "L3043",
+  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { plan: { steps: 3 } } });',
+);
+rejects(
+  "a long detail string is refused",
+  "L3043",
+  `const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { note: "${"x".repeat(200)}" } });`,
+);
+rejects(
+  "more than eight detail keys is refused",
+  "L3043",
+  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 } });',
+);
+rejects(
+  "a fact with no outcome is refused",
+  "L3043",
+  'const a = spawn("x");\nawait notify([a], { decision: "build" });',
+);
+
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
 rejects("no classes", "L1001", "class Foo { }");

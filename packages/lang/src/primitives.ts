@@ -280,6 +280,23 @@ export const PROMISE_NAMES: ReadonlySet<string> = new Set(["Promise"]);
 /** Step names: kebab-case, 1 to 64 characters. */
 export const STEP_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/;
 
+/**
+ * The bound on a `notify` fact.
+ *
+ * `notify` is the only primitive that moves program-authored bytes toward an agent's context, so
+ * an unconstrained field here would be scripted payloads through the side door and the first
+ * non-negotiable would hold everywhere except the one place it is easiest to break. Eight short
+ * scalars rendered as a labelled table is not enough room to write an instruction, which is the
+ * property we want.
+ */
+export const NOTIFY_BOUND = Object.freeze({
+  /** `decision` and `outcome` are tokens, not prose. */
+  tokenRe: STEP_NAME_RE,
+  detailKeyRe: /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/,
+  maxDetailKeys: 8,
+  maxDetailStringLength: 128,
+});
+
 export function primitiveDoc(name: string): CalleeDoc | undefined {
   return PRIMITIVES[name] ?? EVENT_CONSTRUCTORS[name] ?? PURE_PRIMITIVES[name];
 }
