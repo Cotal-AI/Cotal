@@ -49,8 +49,9 @@
 export type JoinReach =
   /** A loopback literal: the bytes never leave the machine. */
   | "loopback"
-  /** A private-overlay literal, permitted only alongside required TLS. See the note on
-   *  {@link DialPolicy} for why the address alone is not enough. */
+  /** A private-overlay literal. Permitted TODAY without required TLS, carrying a
+   *  {@link JoinTarget.residual} that says so; it becomes conditional on TLS in step two. The
+   *  address alone is not a guarantee - see {@link DialPolicy.tlsRequired}. */
   | "overlay";
 
 export interface JoinTarget {
@@ -131,7 +132,7 @@ function bareHost(url: URL): string {
 }
 
 /**
- * Classify a `--join <url>` target, or throw the reason it is refused.
+ * Classify a registration target, or throw the reason it is refused.
  *
  * Refusal is the point: an unclassifiable target is one whose credentials would cross a network
  * this build cannot encrypt, so it fails loud here rather than dialing and hoping.
@@ -141,12 +142,12 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(`--join ${JSON.stringify(raw)} is not a URL - pass a broker address like nats://100.64.0.1:4222`);
+    throw new Error(`${JSON.stringify(raw)} is not a URL - pass a broker address like nats://100.64.0.1:4222`);
   }
   if (url.protocol !== "nats:" && url.protocol !== "tls:")
-    throw new Error(`--join ${JSON.stringify(raw)} must be a nats:// or tls:// URL, not ${url.protocol}//`);
+    throw new Error(`${JSON.stringify(raw)} must be a nats:// or tls:// URL, not ${url.protocol}//`);
   const host = bareHost(url);
-  if (!host) throw new Error(`--join ${JSON.stringify(raw)} has no host`);
+  if (!host) throw new Error(`${JSON.stringify(raw)} has no host`);
   const port = url.port || String(DEFAULT_PORT);
   const server = `${url.protocol}//${url.hostname}:${port}`;
 
@@ -170,7 +171,7 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
 
   throw new Error(
     `${JSON.stringify(raw)} refused: this build cannot protect a connection to ${host}, and a machine that registers a mesh sends its agent credentials to that broker.\n` +
-      `  Only a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) may be registered, and the overlay one only once TLS can be required.\n` +
+      `  Only a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) may be registered. An overlay literal registers today, with a warning about what is not guaranteed.\n` +
       `  Ordinary private ranges are refused too: a cafe network is private, and private is not the same as yours.\n` +
       `  A hostname is refused even when it resolves somewhere permitted - otherwise whoever answers the lookup chooses which machine receives the credentials. Pass the address itself.`,
   );

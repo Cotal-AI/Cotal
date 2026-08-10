@@ -207,7 +207,10 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     if (enforces !== "auth" || accounts.length > 0) break;
     io.log.warn(
       `That broker requires credentials, and ${bold(root)} holds none.\n` +
-        dim("Copy the mesh's .cotal/auth from the machine it runs on (or `cotal mint` there), then point at that folder."),
+        dim("Copy the mesh's .cotal/auth from the machine it runs on, then point at that folder.\n") +
+        dim("That directory carries the space's account SIGNING SEED: a machine holding it can mint any\n") +
+        dim("identity in the space, so it is a certificate authority for the mesh rather than a client of it.\n") +
+        dim("`cotal mint` alone does NOT satisfy this - registration needs composable signing material."),
     );
     const next = await io.select({
         message: "That folder holds no credentials for this broker. What next?",
