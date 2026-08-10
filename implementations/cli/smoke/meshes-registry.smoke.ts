@@ -493,6 +493,31 @@ try {
     findMesh("overlaid")?.unencryptedOverlay === true, findMesh("overlaid"));
   removeMesh("overlaid");
 
+  // …and the NEGATIVE CONTROLS, which are what make the acceptance mean something. Consent is
+  // evidence ABOUT A TARGET. A boolean that merely remembers the operator once said yes survives
+  // "use a different address", so accepting an overlay and finishing on loopback would record a
+  // consent nobody gave for the address actually written — and the field exists precisely to feed
+  // a future use-time fence, which would read it as authorization.
+  const switched = driver([
+    true,        // accept the dependency for the OVERLAY
+    "retype",    // …then change your mind and use a different address
+    LIVE,        // a loopback broker that really answers
+    "openmesh",  // space name
+    true,        // register
+  ]);
+  const switchedOut = await addWizard({ server: OVERLAY, root }, root, switched.io as never);
+  check("switching to a safe address after accepting still registers", switchedOut === true, switched.asked);
+  check("…and the record carries NO acceptance, because the final target needed none",
+    findMesh("openmesh") !== undefined && findMesh("openmesh")?.unencryptedOverlay === undefined, findMesh("openmesh"));
+  removeMesh("openmesh");
+
+  // The same hole reached without any address change: a pre-seeded flag plus a loopback server.
+  const seededSafe = driver(["seeded-safe", true]);
+  const seededOut = await addWizard({ server: LIVE, root, allowUnencryptedOverlay: true } as never, root, seededSafe.io as never);
+  check("a pre-seeded acceptance does not attach itself to a loopback registration",
+    seededOut === true && findMesh("seeded-safe")?.unencryptedOverlay === undefined, findMesh("seeded-safe"));
+  removeMesh("seeded-safe");
+
   // 1. A name that came in on the command line must still hit the clash gate.
   recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const clash = driver(["cancel"]);
