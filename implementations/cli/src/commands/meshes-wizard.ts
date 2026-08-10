@@ -52,7 +52,7 @@ export interface WizardIO {
   spinner(): { start(m: string): void; stop(m: string): void };
   text(opts: { message: string; placeholder?: string; validate?: (v: string | undefined) => string | undefined }): Promise<string>;
   select<T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }): Promise<T>;
-  confirm(opts: { message: string }): Promise<boolean>;
+  confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>;
 }
 
 /** The real terminal, via clack. Cancellation (Ctrl-C / Esc) exits here rather than returning a
@@ -71,7 +71,10 @@ export function clackIO(): WizardIO {
     text: async (opts) => abortIfCancel(await p.text(opts as never)),
     select: async <T>(opts: { message: string; options: { value: T; label: string; hint?: string }[] }) =>
       abortIfCancel(await p.select<T>(opts as never)) as T,
-    confirm: async (opts) => abortIfCancel(await p.confirm({ ...opts, initialValue: true })),
+    // `initialValue` is a per-call decision, not a house style: an ordinary "register this?"
+    // may default yes, but a consent to an unencrypted transport must not be given by pressing
+    // Enter. Callers that omit it keep the old default.
+    confirm: async (opts) => abortIfCancel(await p.confirm({ initialValue: true, ...opts })),
   };
 }
 
@@ -114,6 +117,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
 
   // ── 1. the one thing that cannot be derived ────────────────────────────────────────────────────
   let server = seed.server;
+  let overlayAcked = Boolean(seed.allowUnencryptedOverlay);
   let enforces: "auth" | "open" | "unreachable" = "unreachable";
 
   for (;;) {
@@ -128,7 +132,11 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
             // The same safety gate the flag form applies, asked here so a refused address is
             // caught at the prompt instead of after the operator has answered three more
             // questions. Both front ends must agree; that is what this module exists for.
-            const d = checkDialPolicy(v);
+            // Classified as a CANDIDATE here (acceptance granted for the check) so an overlay
+            // address survives the prompt and reaches the question below. Refusing it here made
+            // that question unreachable: the operator could never say yes to something the
+            // validator had already rejected.
+            const d = checkDialPolicy(v, true);
             return d.ok ? undefined : d.message.replace(/^✗ /, "");
           },
         });
@@ -139,7 +147,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
         server = undefined;
         continue;
       }
-      const dial = checkDialPolicy(server);
+      const dial = checkDialPolicy(server, true); // candidate; the ask below decides
       if (!dial.ok) {
         io.log.error(dial.message);
         server = undefined;
@@ -154,15 +162,19 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // different surface. Refusing here without offering the choice would make the wizard unable to
     // register an overlay mesh at all, and silently accepting would be the warning-and-continue
     // shape that was just removed.
-    let overlayAcked = Boolean(seed.allowUnencryptedOverlay);
     if (!overlayAcked) {
       const probe = checkDialPolicy(server, true);
       if (probe.ok && probe.value.residual) {
         io.log.warn(probe.value.residual);
-        overlayAcked = await io.confirm({ message: "Register it anyway, accepting that dependency?" });
+        // DEFAULT DENY. This is the one confirmation in the wizard where pressing Enter must not
+        // agree: everything else here is a convenience default, this is consent to a transport we
+        // cannot verify.
+        overlayAcked = await io.confirm({ message: "Register it anyway, accepting that dependency?", initialValue: false });
         if (!overlayAcked) { server = undefined; continue; }
       }
     }
+    // Re-checked with the REAL answer, so the decision is enforced by the same rule the flag form
+    // uses rather than by the branch above happening to be right.
     const settled = checkDialPolicy(server, overlayAcked);
     if (!settled.ok) { io.log.error(settled.message); server = undefined; continue; }
 
@@ -341,7 +353,14 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   const go = await io.confirm({ message: "Register this mesh?" });
   if (!go) return cancelled(io, "Nothing was registered.");
 
-  const entry: MeshEntry = { space, server: server as string, root, mode, origin: "manual", ts: new Date().toISOString() };
+  // The guided consent is PERSISTED, exactly as the flag form persists it. Asking the operator and
+  // then writing a record that does not remember the answer is the printed-and-forgotten shape the
+  // opt-in replaced, one surface over.
+  const entry: MeshEntry = {
+    space, server: server as string, root, mode, origin: "manual",
+    ...(overlayAcked ? { unencryptedOverlay: true } : {}),
+    ts: new Date().toISOString(),
+  };
   const result = writeRecord(entry);
 
   // Padded from the rendered widths, not a guess: the commands carry the space name, so a

@@ -1,9 +1,10 @@
 ---
+"@cotal-ai/workspace": minor
 "@cotal-ai/cli": minor
 "cotal-ai": minor
 ---
 
-Refuse to register a mesh at an address this build cannot protect.
+Gate which broker addresses a mesh may be registered at, and make the unsafe one an explicit choice.
 
 Registering a mesh is how a machine starts sending agent credentials to a broker it does not run,
 and nothing here can require an encrypted connection yet. NATS announces itself in plaintext

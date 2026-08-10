@@ -309,9 +309,26 @@ try {
     findMesh("started-over")?.origin === "up", findMesh("started-over"));
   recordOurMeshForTest({ space: "ours-now", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
   check("…and still stamps `up` on a record it created", findMesh("ours-now")?.origin === "up", findMesh("ours-now"));
+  // The overlay ACCEPTANCE is the same class as origin and was not carried, so a no-op refresh
+  // silently erased a consent the operator had given. It is asserted beside origin because the two
+  // are the same rule: a refresh starts nothing, so it may not overwrite what only the operator
+  // knows. A `started` takeover MAY replace it — that launch really is the mesh now.
+  recordMesh({ space: "acked", server: LIVE, root, mode: "open", origin: "manual", unencryptedOverlay: true, ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "acked", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "refresh");
+  check("an `up` refresh keeps a recorded overlay acceptance", findMesh("acked")?.unencryptedOverlay === true, findMesh("acked"));
+  recordMesh({ space: "acked-taken", server: LIVE, root, mode: "open", origin: "manual", unencryptedOverlay: true, ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "acked-taken", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
+  check("…but a launch that STARTED the broker may replace it", findMesh("acked-taken")?.unencryptedOverlay === undefined, findMesh("acked-taken"));
+  // The control for the pair above: a refresh must not INVENT an acceptance nobody gave.
+  recordMesh({ space: "never-acked", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "never-acked", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "refresh");
+  check("…and a refresh never invents one", findMesh("never-acked")?.unencryptedOverlay === undefined, findMesh("never-acked"));
   removeMesh("refreshed");
   removeMesh("started-over");
   removeMesh("ours-now");
+  removeMesh("acked");
+  removeMesh("acked-taken");
+  removeMesh("never-acked");
 
   const listed = await run([]);
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);

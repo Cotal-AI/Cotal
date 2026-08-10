@@ -123,7 +123,8 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   if ((!space || !v.server) && canPrompt()) {
     const done = await addWizard(
       { ...(space ? { space } : {}), ...(v.server ? { server: v.server } : {}), ...(v.root ? { root: v.root } : {}),
-        ...(v.mode ? { mode: v.mode } : {}), ...(v.force ? { force: true } : {}) },
+        ...(v.mode ? { mode: v.mode } : {}), ...(v.force ? { force: true } : {}),
+        ...(v["allow-unencrypted-overlay"] ? { allowUnencryptedOverlay: true } : {}) },
       process.cwd(),
     );
     if (!done) process.exitCode = 0; // backing out of a wizard is not a failure

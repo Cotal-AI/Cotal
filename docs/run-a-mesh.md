@@ -109,7 +109,8 @@ A mesh running on another machine has no `cotal up` on this one, so register it 
 
 ```bash
 cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
-cotal meshes add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex
+cotal meshes add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
+  --allow-unencrypted-overlay      # see below: an overlay address needs this
 cotal meshes rm optiplex
 ```
 
