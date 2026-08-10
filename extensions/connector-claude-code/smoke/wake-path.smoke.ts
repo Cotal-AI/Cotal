@@ -65,6 +65,8 @@ const space = "ccwake";
 const ACK_WAIT_MS = 10_000;
 /** The retry's first attempt is at 1s; anything inside this window predates any possible redelivery. */
 const RETRY_DEADLINE_MS = 5_000;
+/** `NUDGE_RETRY_INITIAL_MS` in `../src/hooks.ts` — the earliest the retry timer can possibly fire. */
+const NUDGE_RETRY_FIRST_MS = 1_000;
 const TOKEN = "wake-path-test-token";
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-ccwake-"));
@@ -333,10 +335,20 @@ try {
     RETRY_DEADLINE_MS,
   );
   const retryElapsed = Date.now() - retryClock;
+  console.log(`    (retry nudge observed after ${retryElapsed}ms; timer fires at ${NUDGE_RETRY_FIRST_MS}ms, redelivery at ${ACK_WAIT_MS}ms)`);
   check(
     "a rejected claude/channel push is retried, before any redelivery could explain it",
     nudges.length > nudgesBeforeRetry && retryElapsed < ACK_WAIT_MS,
     { retryElapsed, ackWaitMs: ACK_WAIT_MS },
+  );
+  // Upper bound alone only rules out the redelivery. A nudge arriving IMMEDIATELY would mean some
+  // other producer satisfied the check — a live/durable duplicate re-announcing the same item, say —
+  // and the assertion would be green for the wrong reason. The retry timer cannot fire before its
+  // first delay, so a lower bound pins the observation to the mechanism being claimed.
+  check(
+    "and it was the retry timer that produced it, not a same-instant duplicate",
+    retryElapsed >= NUDGE_RETRY_FIRST_MS,
+    { retryElapsed, timerFiresAtMs: NUDGE_RETRY_FIRST_MS },
   );
   const retried = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("the DM behind the rejected push is delivered", injected(retried).includes("dm-four: first push fails"), injected(retried));
