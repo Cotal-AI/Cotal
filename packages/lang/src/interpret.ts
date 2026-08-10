@@ -159,6 +159,22 @@ export interface RunOptions {
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
   /**
+   * Fail loud on a loop the effect ceiling cannot see, counted in walker dispatches (L4013).
+   *
+   * `while (true) { n = n + 1 }` performs no effect, so nothing increments the effect count. This
+   * one counts the work itself.
+   */
+  readonly stepBudget?: number;
+  /**
+   * How many dispatches the walker runs before handing the macrotask queue back to the host.
+   *
+   * This is the load-bearing half of the ceiling, not the budget. The walker is async all the way
+   * down, so a pure loop floods the MICROTASK queue and starves the macrotask queue completely: a
+   * host watchdog's setTimeout never fires, and the runaway takes the timer plane, the run lease,
+   * and every other run on that host down with it. Yielding turns an outage back into an incident.
+   */
+  readonly yieldEvery?: number;
+  /**
    * Where `log(...)` goes. Not journalled, and it must never influence control flow: it exists so
    * a human reading a trace can follow what the author meant. Each line carries the scope it was
    * written from, which is what makes a log from inside a concurrent branch readable.
@@ -170,6 +186,13 @@ export interface RunResult {
   readonly value: unknown;
   readonly journal: Journal;
   readonly programHash: string;
+  /**
+   * Walker dispatches charged against the step budget.
+   *
+   * Reported rather than merely counted, so a host can see how close a program runs to the ceiling
+   * before the ceiling is what tells it.
+   */
+  readonly steps: number;
 }
 
 /** A recorded step's inputs changed, so its recorded result may no longer be the truth. */
@@ -191,6 +214,10 @@ class Interpreter {
   readonly prng: Prng;
   private effectCount = 0;
   private readonly ceiling: number;
+  private steps = 0;
+  private nextYield: number;
+  private readonly stepBudget: number;
+  private readonly yieldEvery: number;
 
   constructor(
     readonly ast: AnyNode,
@@ -200,6 +227,52 @@ class Interpreter {
     this.journal = options.journal ?? new Journal({ run: options.runId });
     this.prng = new Prng(options.seed ?? options.runId);
     this.ceiling = options.effectCeiling ?? 10_000;
+    this.stepBudget = options.stepBudget ?? 1_000_000;
+    this.yieldEvery = options.yieldEvery ?? 1_024;
+    this.nextYield = this.yieldEvery;
+  }
+
+  // ---- the fuel ceiling -----------------------------------------------------------------------
+
+  /**
+   * Charge one walker dispatch.
+   *
+   * Returns null on the common path and a promise only when it is time to breathe, so a dispatch
+   * normally costs an increment and a compare rather than an allocated promise. Callers await the
+   * result only when it is non-null, which is why this is not simply an async method.
+   */
+  private tick(frame: Frame): Promise<void> | null {
+    this.steps += 1;
+    if (this.steps > this.stepBudget) {
+      throw new RuntimeFault(
+        "L4013",
+        `this run has taken more than ${this.stepBudget} interpreter steps without finishing, which means a loop that performs no effect is not terminating. The effect ceiling cannot see such a loop, because it performs nothing to count. Add an exit condition, or raise stepBudget if the program legitimately does this much work.`,
+      );
+    }
+    if (this.steps < this.nextYield) return null;
+    this.nextYield = this.steps + this.yieldEvery;
+    return this.breathe(frame);
+  }
+
+  /**
+   * Hand the macrotask queue back, then notice if this branch was cancelled while we were away.
+   *
+   * The cancellation check is deliberately HERE and not on every dispatch. Cancellation is
+   * otherwise observed only at effect boundaries (see {@link Interpreter.performEffect}), so a race
+   * loser that spins without performing an effect never learns it lost and spins forever. Checking
+   * at the yield boundary reaches exactly that case and no other: a branch that runs fewer than
+   * `yieldEvery` dispatches between two effects never crosses this line, so the cancellation law
+   * for ordinary programs is unchanged.
+   */
+  get stepCount(): number {
+    return this.steps;
+  }
+
+  private async breathe(frame: Frame): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? "cancelled");
   }
 
   // ---- the effect seam ------------------------------------------------------------------------
@@ -293,6 +366,8 @@ class Interpreter {
   // ---- expressions ------------------------------------------------------------------------------
 
   async evaluate(node: AnyNode, env: Env, frame: Frame): Promise<unknown> {
+    const pause = this.tick(frame);
+    if (pause !== null) await pause;
     switch (node.type) {
       case "Literal":
         return node.value;
@@ -732,6 +807,8 @@ class Interpreter {
   }
 
   async execute(node: AnyNode, env: Env, frame: Frame): Promise<Completion> {
+    const pause = this.tick(frame);
+    if (pause !== null) await pause;
     switch (node.type) {
       case "ExpressionStatement":
         await this.evaluate(node.expression as AnyNode, env, frame);
@@ -914,6 +991,7 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
     value: completion.type === "return" ? completion.value : undefined,
     journal: interp.journal,
     programHash,
+    steps: interp.stepCount,
   };
 }
 
