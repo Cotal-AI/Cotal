@@ -232,6 +232,43 @@ const out = await fanOut([{ n: 1 }, { n: 2 }], (i) => turn(spawn("r"), { name: "
     threw = (e as Error).message;
   }
   ok("items with no stable key are refused at run time", threw.includes("L3021"), threw.slice(0, 120));
+
+  // The width control: the same mechanism, one variable changed. Items that DO carry a string id
+  // must run, or the rule is refusing the documented default along with the broken case.
+  const GOOD = `
+const out = await fanOut(
+  [{ id: "security" }, { id: "perf" }],
+  (i) => turn(spawn("r", { role: i.id }), { name: "review" }),
+  { name: "reviews" },
+);
+`;
+  const good = await run(GOOD, {
+    runId: "r-6b",
+    handler: new SimHandler({ turns: { review: [{ status: "done", at: 0 }, { status: "done", at: 0 }] } }),
+  });
+  const gk = keysOf(good.journal);
+  ok(
+    "items carrying a string id key the branches by that id, with no key function",
+    gk.includes("/fanOut:reviews#0/b:security/turn:review#0") && gk.includes("/fanOut:reviews#0/b:perf/turn:review#0"),
+    gk,
+  );
+
+  // And duplicate keys must be refused: two branches sharing a namespace would overwrite each
+  // other's steps, which is the same defect as having no key at all.
+  const DUP = `
+const out = await fanOut(
+  [{ id: "same" }, { id: "same" }],
+  (i) => turn(spawn("r"), { name: "review" }),
+  { name: "reviews" },
+);
+`;
+  let dup = "";
+  try {
+    await run(DUP, { runId: "r-6c", handler: new SimHandler({ turns: { review: { status: "done", at: 0 } } }) });
+  } catch (e) {
+    dup = (e as Error).message;
+  }
+  ok("duplicate branch keys are refused", dup.includes("L3021") && dup.includes("duplicate"), dup.slice(0, 100));
 }
 
 // ---- 7) a changed input diverges rather than replaying the wrong answer -------------------------------------

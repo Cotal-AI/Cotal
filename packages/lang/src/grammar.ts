@@ -603,6 +603,22 @@ function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
   }
 }
 
+/** True when every element of an array literal is a record literal with a string `id`. */
+function arrayItemsCarryId(items: AnyNode): boolean {
+  const els = (items.elements as (AnyNode | null)[]) ?? [];
+  if (els.length === 0) return false;
+  return els.every((el) => {
+    if (el === null || el === undefined || el.type !== "ObjectExpression") return false;
+    return ((el.properties as AnyNode[]) ?? []).some((p) => {
+      if (p.type !== "Property") return false;
+      const key = p.key as AnyNode;
+      const name = key.type === "Identifier" ? (key.name as string) : key.value;
+      const value = p.value as AnyNode;
+      return name === "id" && value.type === "Literal" && typeof value.value === "string";
+    });
+  });
+}
+
 function checkCall(node: AnyNode, v: Validator): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
@@ -698,15 +714,21 @@ function checkCall(node: AnyNode, v: Validator): void {
 
   if (name === "notify") checkNotifyFact(args[1], v);
 
-  // fanOut needs a stable branch key, or items that carry one.
+  // fanOut needs a stable branch key, or items that carry one. Warn only when the source SHOWS
+  // there are no ids: items carrying a string `id` supply the key by design, so warning on those
+  // would flag correct code, and a computed list cannot be judged from here at all. The runtime
+  // refuses the genuinely unkeyable case, which is where an unknown list gets decided.
   if (name === "fanOut" && !given.has("key")) {
-    v.warn(
-      "L3021",
-      node,
-      "Without a stable key, a reordered or filtered input list silently reshuffles every journal key underneath this fan-out. Items carrying a string `id` supply one; anything else needs `key`.",
-      'Pass a key function: fanOut(items, fn, { name: "reviews", key: (i) => i.id })',
-      name,
-    );
+    const items = args[0];
+    if (items !== undefined && items.type === "ArrayExpression" && !arrayItemsCarryId(items)) {
+      v.warn(
+        "L3021",
+        node,
+        "These items carry no `id`, so this fan-out has no stable branch key, and a reordered or filtered list would silently reshuffle every journal key underneath it.",
+        'Pass a key function: fanOut(items, fn, { name: "reviews", key: (i) => i.id })',
+        name,
+      );
+    }
   }
 
   // Array-form concurrency branches are keyed by index (design doc 7.2). Legal, linted.

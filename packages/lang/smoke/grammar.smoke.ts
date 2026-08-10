@@ -192,6 +192,54 @@ rejects(
   'const a = spawn("x");\nawait notify([a], { decision: "build" });',
 );
 
+// ---- 5c) width controls: the nearest legitimate input must still be admitted ------------------
+
+// Every refusal above is compatible with a rule that refuses far too much, and "right in shape,
+// wrong in width" is the failure a refusal-only suite cannot see. Each of these sits exactly at
+// the boundary the rule draws and MUST pass.
+{
+  const eightKeys = "a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8";
+  accepts(
+    "exactly eight detail keys is at the cap, not over it",
+    `const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { ${eightKeys} } });`,
+  );
+  accepts(
+    "a detail string of exactly 128 characters is admitted",
+    `const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { note: "${"x".repeat(128)}" } });`,
+  );
+  accepts(
+    "detail values may be strings, numbers and booleans",
+    'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "ok", detail: { sha: "abc", n: 3, clean: true } });',
+  );
+  accepts("a fact with no detail at all is admitted", 'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "ok" });');
+}
+{
+  const name64 = "a".repeat(64);
+  accepts("a step name of exactly 64 characters is admitted", `const a = spawn("x");\nawait turn(a, { name: "${name64}" });`);
+  rejects("65 characters is over the cap", "L3014", `const a = spawn("x");\nawait turn(a, { name: "${"a".repeat(65)}" });`);
+  accepts("a single-character step name is admitted", 'const a = spawn("x");\nawait turn(a, { name: "b" });');
+  accepts("digits and inner hyphens are admitted", 'const a = spawn("x");\nawait turn(a, { name: "build-2-final" });');
+}
+{
+  // The fanOut lint must not fire on the documented default, which is items carrying a string id.
+  const withIds = 'await fanOut([{ id: "a" }, { id: "b" }], (i) => turn(spawn("r", { role: i.id }), { name: "review" }), { name: "reviews" });';
+  const r = validate(withIds);
+  ok("items carrying a string id are not linted: that is the documented default", r.warnings.length === 0, r.warnings.map((w) => w.code));
+
+  const noIds = 'await fanOut(["security", "perf"], (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });';
+  ok(
+    "items that visibly carry no id still are",
+    validate(noIds).warnings.some((w) => w.code === "L3021"),
+  );
+
+  const computed = 'const items = range(3);\nawait fanOut(items, (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });';
+  ok(
+    "a computed list is not judged statically: the runtime decides it",
+    validate(computed).warnings.length === 0,
+    validate(computed).warnings.map((w) => w.code),
+  );
+}
+
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
 rejects("no classes", "L1001", "class Foo { }");
@@ -282,8 +330,9 @@ accepts("role-parametric procedures are the reuse mechanism",
   ok("array-form parallel is linted", r.warnings.some((w) => w.code === "L3023"), r.warnings.map((w) => w.code));
 }
 {
-  const r = validate('async function f(items, g) { await fanOut(items, g, { name: "reviews" }); }');
-  ok("fanOut without a key is linted", r.warnings.some((w) => w.code === "L3021"), r.warnings.map((w) => w.code));
+  // A list whose items visibly carry no id: the source shows there is no stable key.
+  const r = validate('await fanOut(["a", "b"], (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });');
+  ok("fanOut over visibly unkeyable items is linted", r.warnings.some((w) => w.code === "L3021"), r.warnings.map((w) => w.code));
 }
 {
   const r = validate('async function f(items, g) { await fanOut(items, g, { name: "reviews", key: (i) => i.id }); }');
