@@ -177,6 +177,31 @@ try {
   check("window drain: a partial batch ending cleanly RAISES (never a short page)",
     drainThrew instanceof Error, String(drainThrew));
 
+  // ── CROSS THE DOOR. The two gates above call the private helpers directly, so they prove the
+  //    helpers raise but say NOTHING about whether the public entry point propagates that. If
+  //    `streamHistory`'s catch swallowed an incomplete read back into `[]`, both would stay green
+  //    while the shipped behaviour was the exact bug this branch fixed: "could not read" rendering
+  //    as "no history". That catch has already been wrong once here, so the door needs its own gate.
+  //
+  //    Shadow the private helper on the instance to raise, then call the PUBLIC `channelHistory`.
+  for (const method of ["lastMatchingSeq", "drainWindow"] as const) {
+    const shadowed = ep as unknown as Record<string, unknown>;
+    const real = shadowed[method];
+    shadowed[method] = async () => { throw new Error(`forced ${method} truncation`); };
+    let doorThrew: unknown;
+    await ep.channelHistory("talk", { limit: 10 }).then(
+      (r) => { doorThrew = `RETURNED ${r.length} messages`; },
+      (e) => { doorThrew = e; },
+    );
+    shadowed[method] = real;
+    check(`channelHistory PROPAGATES a cut-short ${method} (never renders it as an empty channel)`,
+      doorThrew instanceof Error && /forced/.test(String((doorThrew as Error).message)), String(doorThrew));
+  }
+  // ...and the door still works normally once the shadow is removed, so the check above cannot pass
+  // by having broken the endpoint.
+  check("channelHistory still reads normally after the door gate",
+    (await ep.channelHistory("talk", { limit: 3 })).length === 3);
+
   // ── REQUEST-SHAPE GATE: count REQUESTS, not wall clock. An exact per-subject ceiling answers a
   //    buried channel for about what a near-tail one costs; the discarded stream-head walk widened
   //    repeatedly and cost visibly more. Wall clock cannot express that (it passes on loopback and
