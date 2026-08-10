@@ -59,11 +59,19 @@ export interface ControlServerOpts {
    *  `delivered === true` and leaves them un-acked otherwise, so the durable redelivery brings them
    *  back instead of the batch being silently consumed.
    *
+   *  **Frames overlap, so correlate on `ev`.** This is the identical object passed to `handle`, and
+   *  it is the only thing tying a verdict to the reply that carried a batch: each frame is its own
+   *  connection, and a `PreToolUse` can land while a `UserPromptSubmit` reply is still being written.
+   *  A single mutable "pending" slot will therefore commit one frame's messages on another frame's
+   *  verdict. Key per event (a WeakMap, so a frame whose verdict never arrives is collected).
+   *
    *  How strong `delivered` is depends on the client. A client that sets `handoff: true` (the hook
-   *  relay does) confirms only after the reply has cleared its own output to the runtime, so
-   *  `delivered` covers the whole journey. For any other client it means "written to a socket that
-   *  was still open" — exact for the case that matters, a client that had already gone away when we
-   *  answered, but blind to one that dies with the reply still unflushed downstream. */
+   *  relay does) confirms only after its own write to the runtime-facing pipe completed cleanly —
+   *  strictly more than a socket write, and still short of proof the host read or applied the reply:
+   *  a small payload can sit in a kernel buffer that nobody ever drains. For any other client it
+   *  means only "written to a socket that was still open" — exact for the case that matters, a client
+   *  that had already gone away when we answered, but blind to one that dies with the reply
+   *  unflushed downstream. Both are why this errs toward at-least-once. */
   onReply?: (ev: HookEvent, delivered: boolean) => void;
 }
 

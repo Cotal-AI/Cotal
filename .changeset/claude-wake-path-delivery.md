@@ -14,9 +14,9 @@ connector had already committed it — and because the message was recorded as h
 JetStream redelivery was acked and discarded on arrival, so nothing could bring it back. The peer
 simply stopped answering, and only a human noticed.
 
-A message is now committed only once the reply carrying it has reached the runtime — the whole
-journey, not the first leg. The hook relay confirms the handoff back to the connector after the
-reply has cleared its own stdout, and the connector waits for that receipt
+A message is now committed only once the reply carrying it has cleared both legs of its journey, not
+just the first. The hook relay confirms back to the connector only after its own write to the
+runtime has completed cleanly, and the connector waits for that receipt
 (`startControlServer` gains an additive `onReply(event, delivered)`, and a client opts in with
 `handoff: true`); anything less leaves the message un-acked, so it redelivers and the agent is woken
 again. Binding to the connector's own socket write was not enough: a large injection that the

@@ -38,6 +38,10 @@ function done(out: string, confirm?: (then: () => void) => void): void {
   const exit = (): void => process.exit(0);
   const t = out.trim();
   if (!t) return exit(); // fail open — never blocks the session
+  // A failing stdout ALSO emits "error"; unhandled on a stream that throws, which would turn a
+  // vanished runtime into a non-zero hook exit. The callback below is what decides the receipt; this
+  // only keeps the promise that a hook never blocks the session.
+  process.stdout.on("error", () => exit());
   // The callback fires on FAILURE too (EPIPE, ERR_STREAM_DESTROYED — a runtime that closed the pipe).
   // Confirming there would be the exact lie this receipt exists to prevent: a commit with zero bytes
   // delivered. Only a clean write earns the receipt; anything else exits silent and the batch

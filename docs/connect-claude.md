@@ -122,12 +122,16 @@ delivers, the other only wakes:
 - **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks read automatic inbox items and
   inject them as `additionalContext`. This is the single authoritative path: deterministic and works
   on any Claude Code build. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
-  A message is **acked only once the hook reply carrying it has reached the runtime**. That is two
-  legs, and both are confirmed: the connector's control socket to the hook process (which gives up
-  after 2s), and the hook process's own stdout to Claude Code (which it force-exits 1s after
-  starting to write). The hook relay sends a receipt back down the control socket from that stdout
-  flush callback, and the connector treats the receipt — not its own write — as delivery, so a large
-  injection killed mid-flush leaves the message un-acked and JetStream redelivers it. Acking when
+  A message is **acked only once the hook reply carrying it has cleared both legs of its journey**:
+  the connector's control socket to the hook process (which gives up after 2s), and the hook
+  process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
+  sends a receipt back down the control socket from that stdout write's callback, and only on a
+  clean write — a runtime whose pipe has gone away fails it — and the connector treats that receipt,
+  not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
+  broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
+  that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
+  reported written the moment the kernel takes it. That residual is why the path errs toward
+  at-least-once rather than treating a confirmed write as a confirmed read. Acking when
   the reply was merely *formatted* meant a lost reply was a lost message: it was already marked
   handled, so its own redelivery was silently acked on arrival.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
