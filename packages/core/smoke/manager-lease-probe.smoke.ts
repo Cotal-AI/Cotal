@@ -36,8 +36,13 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, managerBucket, managerLeaseKey, MANAGER_LEASE_KEY } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 14893;
+// An OS-assigned port, not a fixed one. A hard-coded port silently hands the suite whatever broker
+// already owns it: the first run of this file bound nothing, talked to a leftover AUTHED server, and
+// died with an Authorization Violation before reaching a single cell. That still exits non-zero, so a
+// red-first proof would have counted it as the defect reproducing.
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "leaseprobe";
 const store = mkdtempSync(join(tmpdir(), "cotal-leaseprobe-"));
@@ -55,7 +60,14 @@ const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 const lease = (instanceId: string) => ({ instanceId, holder: `HOLDER_${instanceId}`, pid: 1, root: "/tmp", runtime: "pty", since: Date.now() });
 
 try {
-  await isReachable(SERVER, 15000);
+  // `isReachable` is a PREDICATE, not a barrier. Calling it once and proceeding raced the broker's
+  // bind and failed with a connection refusal that had nothing to do with the probe under test.
+  let up = false;
+  for (let i = 0; i < 100 && !up; i++) {
+    if (await isReachable(SERVER)) { up = true; break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!up) throw new Error(`fixture broker never came up on ${SERVER} - refusing to report a result about a server that never started`);
   const nc = await connect({ servers: SERVER });
   const kvm = new Kvm(nc);
   const bucket = managerBucket(SPACE);
