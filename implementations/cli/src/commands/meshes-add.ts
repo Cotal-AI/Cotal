@@ -34,6 +34,18 @@ import {
 export type Check<T> = { ok: true; value: T } | { ok: false; message: string };
 
 const bad = (message: string): Check<never> => ({ ok: false, message });
+
+/** The cost of the copy every "copy the mesh's auth here" recovery asks the operator to make.
+ *
+ *  It is one shared constant because there are five such instructions and the review found four of
+ *  them saying only "credentials". A directory that composes for an auth mesh carries the account
+ *  SIGNING SEED, so the machine holding it can mint any identity in the space: the honest word is
+ *  authority, not credentials, and the operator hears it at the moment they are told to copy
+ *  rather than only in a guide they may never open. */
+const CA_COST =
+  "\n  Note: that directory carries the space's account signing seed, so any machine holding it can mint" +
+  "\n  any identity in the space until the signing key is rotated and every credential re-minted. Copy it" +
+  "\n  only to machines you would trust with the whole mesh.";
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
 
 /** Is this path a directory? `existsSync` is not the question: a regular FILE named `.cotal` would
@@ -136,7 +148,7 @@ export function checkMode(space: string, root: string, accounts: string[], flag:
     return bad(`✗ --mode user cannot be registered by hand - a user-auth space carries pinned IdP trust (issuer, audience, login URL) that only \`cotal up --user-auth\` establishes, in the root where its broker runs`);
   const mode = flag ?? (accounts.includes(space) ? "auth" : "open");
   if (mode === "auth" && !accounts.includes(space))
-    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open`);
+    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST);
   return good(mode);
 }
 
@@ -149,7 +161,7 @@ export function checkTrust(mode: MeshEntry["mode"], root: string, space: string)
   const auth = loadSpaceAuth(authDir(root), space);
   return auth
     ? good(auth)
-    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open`);
+    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open` + CA_COST);
 }
 
 /** Budget for the credless mode probe. Generous on purpose: a slow answer must not be read as "the
@@ -174,7 +186,7 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`);
   if (mode === "open" && enforces === "auth")
-    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth`);
+    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST);
   return good(undefined);
 }
 
@@ -204,7 +216,7 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} rejected the credentials for "${space}" under ${authDir(root)} - re-mint them where the mesh runs, or check that --server points at that mesh`;
     case "open-wants-auth":
     case "registry-open-now-auth":
-      return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth`;
+      return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth` + CA_COST;
     case "stale-auth":
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
   }

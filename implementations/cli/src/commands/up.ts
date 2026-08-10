@@ -1812,7 +1812,14 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
   const prior = findMesh(m.space);
   const origin = provenance === "refresh" && prior?.origin === "manual" ? "manual" : "up";
-  recordMesh({ ...m, origin });
+  // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, and rebuilds `m`
+  // from what THIS launch knows, which is never the operator's past decisions. `origin` was already
+  // carried across for that reason; the overlay acceptance is the same class and was not, so a
+  // no-op refresh silently erased a consent the operator had given. A `started` takeover may
+  // replace it (that launch really is the mesh now); a refresh may not quietly drop it.
+  const unencryptedOverlay =
+    provenance === "refresh" && m.unencryptedOverlay === undefined ? prior?.unencryptedOverlay : m.unencryptedOverlay;
+  recordMesh({ ...m, origin, ...(unencryptedOverlay !== undefined ? { unencryptedOverlay } : {}) });
   if (!usableCurrent) {
     setCurrent(m.space);
     return;
