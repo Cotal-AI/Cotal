@@ -51,7 +51,7 @@ const refuses = (url: string, why: string, policy = TODAY): string => {
 };
 
 console.log("loopback literals — the bytes never leave the machine");
-permits("nats://127.0.0.1:4222", "loopback", "nats://127.0.0.1:4222");
+permits("nats://127.0.0.1:4222", "loopback", TODAY, "nats://127.0.0.1:4222");
 permits("nats://127.0.0.1:47811", "loopback", "nats://127.0.0.1:47811");
 permits("nats://127.9.9.9:4222", "loopback"); // all of 127.0.0.0/8, not just .0.1
 permits("nats://[::1]:4222", "loopback");
@@ -107,7 +107,7 @@ for (const policy of [TODAY, WITH_TLS]) {
 
 console.log("\npublic addresses — the case this exists to stop");
 const publicMsg = refuses("nats://203.0.113.7:4222", "a public address in the clear");
-check("  the refusal names TLS as the unlock", /only once TLS can be required/i.test(publicMsg), publicMsg);
+check("  the refusal names the permitted classes", /Only a loopback literal/i.test(publicMsg), publicMsg);
 check("  and says private is not the same as yours", /private is not the same/i.test(publicMsg), publicMsg);
 refuses("nats://203.0.113.7:4222", "still refused even with TLS required — wrong address class", WITH_TLS);
 refuses("tls://203.0.113.7:4222", "tls:// is cosmetic in this client and must not buy passage");

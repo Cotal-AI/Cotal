@@ -118,8 +118,17 @@ reports whether it is open or requires credentials, offers the spaces the folder
 credentials for, and shows the record before writing it. Scripts and agents keep the flag form -
 without a terminal nothing prompts.
 
-`--root` is the local folder holding that mesh's `.cotal/auth` (credentials you minted where it
-runs) and `.cotal/agents` (its personas); the mode is inferred from what that folder holds. The
+`--root` is the local folder holding that mesh's `.cotal/auth` and `.cotal/agents` (its personas);
+the mode is inferred from what that folder holds.
+
+**Know what you are copying.** For an authenticated mesh that folder carries the space's account
+**signing seed**, which is the authority to mint any identity in the space. A machine holding it
+is a certificate authority for the mesh rather than a client of it: anyone who reads it can
+impersonate any agent, read every retained channel and DM, change ACLs, and keep issuing
+themselves credentials. There is no per-machine revocation; undoing it means rotating the signing
+key and re-minting every credential in the space. Copy it only to machines you would trust with
+the whole mesh. `cotal mint` on its own does not substitute here: registering an `auth` mesh needs
+signing material that composes, which a minted user credential is not. The
 broker is probed before the record is written, so a bad address or a credential that mesh will not
 accept fails at registration rather than at your first `spawn` (`--force` records it without verifying —
 useful when the mesh is simply down right now).
