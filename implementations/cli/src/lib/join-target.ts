@@ -1,10 +1,11 @@
 /**
- * Where `cotal up --join <url>` is allowed to dial.
+ * Which broker addresses `cotal meshes add` may register.
  *
- * A joining machine sends its agent credentials to a broker it does not run. NATS sends the
- * initial INFO in plaintext and unauthenticated, so an on-path attacker can forge one that does
- * not set `tls_required`, and a client that was never told to demand encryption puts its
- * credentials in the CONNECT line for the attacker to read. The fence has to be client-side.
+ * Registering a mesh is how a machine begins sending its agent credentials to a broker it does
+ * not run. NATS sends the initial INFO in plaintext and unauthenticated, so an on-path attacker
+ * can forge one that does not set `tls_required`, and a client that was never told to demand
+ * encryption puts its credentials in the CONNECT line for the attacker to read. The fence has to
+ * be client-side.
  *
  * The URL scheme is NOT that fence. Measured against `@nats-io/transport-node` 3.4.0 (the client
  * this repo uses) pointed at a broker with no TLS configured at all:
@@ -14,9 +15,12 @@
  *     nats://host:port  {tls:{}}    -> REFUSED: server does not support 'tls'
  *
  * Only the explicit `tls` connect option makes the client demand TLS, and that option is the
- * broker-TLS work's surface, not this one's. So until it lands, `--join` does not warn and dial
- * anyway (that would be a fallback, which this repo forbids). It classifies the target and
- * refuses the ones it cannot protect.
+ * broker-TLS work's surface, not this one's. So this gates on the ADDRESS instead, in two steps.
+ * Step one, here: refuse public addresses, ordinary private ranges and every hostname outright,
+ * and permit an overlay literal while returning a {@link JoinTarget.residual} saying what is not
+ * guaranteed about it. Step two, once a record can carry TLS intent: the call site treats that
+ * residual as fatal. See {@link JoinTarget.residual} for why it is a returned value rather than a
+ * throw.
  *
  * ONE deliberate limitation, stated rather than papered over: this classifies an ADDRESS, which
  * is a guard against the obvious mistake (dialing a LAN or public address in the clear), not
@@ -80,9 +84,11 @@ export interface DialPolicy {
    * willing to consider the target; requiring TLS is what makes it safe.
    *
    * There is no field on the mesh record to source this from yet — it arrives with the work that
-   * teaches the broker to serve TLS — so callers pass `false` today and every non-loopback target
-   * is refused. That is the intended sequencing, not an oversight: see the caller for the note
-   * that must be updated at the same time the field appears.
+   * teaches the broker to serve TLS — so callers pass `false` today. That does NOT mean every
+   * non-loopback target is refused: an overlay literal is still permitted, and carries a
+   * {@link JoinTarget.residual} the caller shows the operator. Refusing it outright is step two,
+   * and it becomes correct only once this can be `true`. An editor who believes non-loopback is
+   * already refused will simplify away the residual, which is the one piece step two needs.
    */
   tlsRequired: boolean;
 }

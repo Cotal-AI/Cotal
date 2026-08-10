@@ -103,7 +103,9 @@ try {
   // credentials across an untrusted network", so it must be refused on BOTH paths.
   const publicPlain = await run(["add", "hostile"], { server: "nats://203.0.113.7:4222", root: joinRoot });
   check("a public plaintext broker is refused", publicPlain.code === 1, publicPlain.out);
-  check("  the refusal explains itself", /cannot encrypt|refused/i.test(publicPlain.out), publicPlain.out);
+  // Pinned to the classifier's own words. This previously read /cannot encrypt|refused/ and
+  // "cannot encrypt" is a string the classifier never emits, so it passed only on the soft arm.
+  check("  the refusal names the address, not the network", /cannot protect/i.test(publicPlain.out), publicPlain.out);
   const publicForced = await run(["add", "hostile"], { server: "nats://203.0.113.7:4222", root: joinRoot, force: true });
   check("--force does NOT waive the dial policy", publicForced.code === 1, publicForced.out);
   check("nothing was recorded for either attempt", findMesh("hostile") === undefined);

@@ -69,7 +69,9 @@ try {
   const started = Date.now();
   const pub = await add("hostile", "nats://203.0.113.7:4222");
   check("`meshes add` exits non-zero for a public address", pub.code === 1, pub);
-  check("  it names the address problem, not a connection failure", /cannot protect|refused/i.test(pub.out), pub.out);
+  // Pinned to the CLASSIFIER'S OWN WORDS. A softer `|refused` arm would also match a literal
+  // "connection refused", i.e. the fence being absent, which is the thing this must detect.
+  check("  it names the address problem, not a connection failure", /cannot protect/i.test(pub.out), pub.out);
   check("  it records nothing", findMesh("hostile") === undefined);
   check("  and it refused WITHOUT dialing (returned fast)", Date.now() - started < 2_000, Date.now() - started);
 

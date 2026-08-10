@@ -93,10 +93,13 @@ export function checkDialPolicy(server: string): Check<JoinTarget> {
     // WHEN THE RECORD CAN CARRY TLS INTENT, THIS LINE CHANGES AND THIS COMMENT GOES.
     // `tlsRequired` is a property of the connection this registration will produce, and no field
     // records it yet; it arrives with the work that teaches the broker to serve TLS. Passing a
-    // hardcoded `false` is therefore honest rather than lazy: today no dial can require TLS, so
-    // every non-loopback target is refused, and this command can register only a loopback mesh
-    // until that work lands. That is deliberate sequencing — this branch is not meant to reach
-    // users ahead of it, precisely because the alternative is removing a capability people use.
+    // hardcoded `false` is honest rather than lazy: today no dial can require TLS.
+    //
+    // What that means CONCRETELY, because getting it backwards would break the next step: public
+    // addresses, ordinary private ranges and hostnames are refused outright, and an overlay
+    // literal is PERMITTED while returning a residual the caller prints. It is not refused. When
+    // the field exists, this passes the record's real intent and the caller treats a residual as
+    // fatal — so the residual is the thing step two needs, not dead weight to simplify away.
     return good(classifyJoinTarget(server, { tlsRequired: false }));
   } catch (e) {
     return bad(`✗ ${(e as Error).message}`);
