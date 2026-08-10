@@ -39,6 +39,42 @@ export {
 export { validate, type ValidateResult } from "./grammar.js";
 
 export {
+  Cancelled,
+  EffectError,
+  type AgentHandleValue,
+  type AskRequest,
+  type CancelSignal,
+  type ChannelHandleValue,
+  type CheckpointRequest,
+  type CheckpointResultValue,
+  type ConclaveRequest,
+  type EffectContext,
+  type EffectHandler,
+  type EventDescriptor,
+  type MonitorRequest,
+  type NotifyFact,
+  type NotifyRequest,
+  type SleepRequest,
+  type SpawnRequest,
+  type TurnRequest,
+  type TurnResultValue,
+  type TurnStatus,
+  type WaitRequest,
+} from "./effects.js";
+
+export {
+  Journal,
+  JournalReadOnlyError,
+  RunClock,
+  type EntryError,
+  type EntryState,
+  type EntryStatus,
+  type JournalEntry,
+  type JournalInit,
+  type LookupVerdict,
+} from "./journal.js";
+
+export {
   DIGEST_PREFIX,
   KeyScope,
   branchKeys,
