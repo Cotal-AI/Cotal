@@ -4,6 +4,7 @@ import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import {
   candidateTarget,
+  checkDialPolicy,
   checkEnforcement,
   checkMode,
   checkRoot,
@@ -117,17 +118,28 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     if (!server) {
       server = await io.text({
           message: "Broker URL of the mesh you want to reach",
-          placeholder: "nats://10.0.0.5:4222",
+          placeholder: "nats://100.90.12.34:4222",
           validate: (v) => {
             if (!v) return "Required - this is the address the mesh's broker listens on.";
             const r = checkServer(v);
-            return r.ok ? undefined : r.message.replace(/^✗ (--server )?/, "");
+            if (!r.ok) return r.message.replace(/^✗ (--server )?/, "");
+            // The same safety gate the flag form applies, asked here so a refused address is
+            // caught at the prompt instead of after the operator has answered three more
+            // questions. Both front ends must agree; that is what this module exists for.
+            const d = checkDialPolicy(v);
+            return d.ok ? undefined : d.message.replace(/^✗ /, "");
           },
         });
     } else {
       const pre = checkServer(server);
       if (!pre.ok) {
         io.log.error(pre.message);
+        server = undefined;
+        continue;
+      }
+      const dial = checkDialPolicy(server);
+      if (!dial.ok) {
+        io.log.error(dial.message);
         server = undefined;
         continue;
       }

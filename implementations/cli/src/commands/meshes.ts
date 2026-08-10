@@ -14,6 +14,7 @@ import { completingFlagValue } from "../lib/completion.js";
 import { liveMeshOwner } from "./clean.js";
 import {
   candidateTarget,
+  checkDialPolicy,
   checkEnforcement,
   checkMode,
   checkRoot,
@@ -132,10 +133,13 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     process.exit(1);
   }
   if (!v.server) {
-    console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://10.0.0.5:4222)"));
+    console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://100.90.12.34:4222, its address on your private overlay)"));
     process.exit(1);
   }
   const server = take(checkServer(v.server));
+  // Above the `--force` branch on purpose: this decides whether credentials may cross the network
+  // to that address at all, which `--force` ("the mesh is down right now") must never waive.
+  take(checkDialPolicy(server));
   const root = take(checkRoot(v.root, process.cwd()));
   const accounts = take(spacesAtRoot(root));
   const mode = take(checkMode(space, root, accounts, v.mode));
