@@ -170,4 +170,44 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   ok("and the message names the primitive", String((caught as Error)?.message).includes("conclave"), String(caught).slice(0, 80));
 }
 
+// ---- 4) the OBJECT form of spawn, which this suite did not exercise until it had to ------------
+
+/**
+ * `spawn` takes a persona name OR a record carrying the persona with its model and variant. This
+ * suite tested only the string form, so it certified "no accepted option is silently dropped" while
+ * the object form dropped `model` and `variant` from both the request and the input hash. Editing a
+ * model did not diverge, and the handler was never told which model to run.
+ *
+ * The audit was not wrong about what it measured. It measured one of the two call forms, and
+ * reported the answer as if it covered the primitive. An instrument's universe is a choice, and
+ * this one was mine.
+ */
+{
+  const capture: Record<string, unknown>[] = [];
+  const spy = (inner: EffectHandler): EffectHandler =>
+    ({
+      ...inner,
+      now: () => inner.now(),
+      spawn: async (req: Record<string, unknown>, ctx: EffectContext) => {
+        capture.push(req);
+        return (inner as unknown as { spawn: (r: unknown, c: EffectContext) => Promise<unknown> }).spawn(req, ctx);
+      },
+    }) as unknown as EffectHandler;
+
+  const src = (model: string) =>
+    `await spawn({ persona: "worker", model: "${model}", variant: "v1" }, { name: "worker" });\n`;
+  const a = await run(src("m1"), { runId: "o-obj", handler: spy(new SimHandler({})) });
+  const b = await run(src("m2"), { runId: "o-obj", handler: spy(new SimHandler({})) });
+
+  const req = capture[0] as { model?: string; variant?: string };
+  ok("the object form forwards the model", req?.model === "m1", req);
+  ok("and the variant", req?.variant === "v1", req);
+
+  // The identity half: model and variant are hashed with the persona, so swapping a model is a
+  // different agent and a resumed run must not replay a fact recorded about the other one.
+  const ha = a.journal.entries()[0]?.inputHash;
+  const hb = b.journal.entries()[0]?.inputHash;
+  ok("and swapping the model changes the input hash", ha !== hb, { ha, hb });
+}
+
 console.log(`options.smoke: ${pass} checks passed`);

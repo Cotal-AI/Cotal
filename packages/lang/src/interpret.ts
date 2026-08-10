@@ -606,7 +606,16 @@ class Interpreter {
 
     switch (name) {
       case "spawn": {
-        const persona = typeof args[0] === "string" ? (args[0] as string) : String(this.option(args[0], "persona"));
+        // The first argument is a persona name, or a record carrying the persona WITH its model
+        // and variant. Only the persona was ever read, so the object form silently dropped model
+        // and variant from both the request and the hash: editing a model did not diverge, and the
+        // handler was never told which model to run. This was missed by an audit that exercised
+        // only the string form, which is the same defect one level up.
+        const spawnSubject = args[0];
+        const persona =
+          typeof spawnSubject === "string" ? spawnSubject : String(this.option(spawnSubject, "persona"));
+        const model = typeof spawnSubject === "string" ? undefined : (this.option(spawnSubject, "model") as string | undefined);
+        const variant = typeof spawnSubject === "string" ? undefined : (this.option(spawnSubject, "variant") as string | undefined);
         // Every accepted option is forwarded, including the three that are policy rather than
         // identity. Dropping them here would be silent: the validator accepts `permits`, so an
         // author who writes a budget gets no error and no budget. They are deliberately absent
@@ -614,6 +623,8 @@ class Interpreter {
         // recorded fact, so they are reapplied from current source on resume rather than hashed.
         const req = {
           persona,
+          ...(model !== undefined ? { model } : {}),
+          ...(variant !== undefined ? { variant } : {}),
           ...(this.option(bag, "worktree") !== undefined ? { worktree: this.option(bag, "worktree") as string } : {}),
           ...(this.option(bag, "role") !== undefined ? { role: this.option(bag, "role") as string } : {}),
           ...(this.option(bag, "join") !== undefined ? { join: this.option(bag, "join") as ChannelHandleValue[] } : {}),
@@ -628,7 +639,17 @@ class Interpreter {
         return await this.performEffect(
           "spawn",
           stepName ?? persona,
-          { persona, worktree: req.worktree ?? null, role: req.role ?? null, join: (req.join ?? []).map((c) => c.channel) },
+          // Model and variant are part of the IDENTITY being spawned, so they are hashed with the
+          // persona (design 5.12). A run that swapped the model under a recorded agent would be
+          // replaying a fact about a different agent.
+          {
+            persona,
+            model: model ?? null,
+            variant: variant ?? null,
+            worktree: req.worktree ?? null,
+            role: req.role ?? null,
+            join: (req.join ?? []).map((c) => c.channel),
+          },
           (ctx) => handler.spawn(req, ctx),
           frame,
         );
