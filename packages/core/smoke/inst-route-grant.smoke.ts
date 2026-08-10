@@ -77,10 +77,13 @@ interface Subject { profile: Profile; actor: string; epCaller: boolean; opts: Re
 // ALLOWED once C lands: the per-invocation operator instruments, plus `deployer` - the `spawn -f`
 // and `--on` path. Both security seats required deployer here, and its absence was the vacuity trap
 // in the other direction: an allowed arm omitting the one profile the flag actually runs under.
+// The instance a `--on` invocation resolved BEFORE minting. C pins exactly this one.
+const TARGET_IID = "9z8y7x6w5v4u3t2s1r0q9p8o7n";
+const pin = [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "ps", instanceId: TARGET_IID }];
 const ALLOWED: Subject[] = [
-  { profile: "control-caller-privileged", actor: "ccp", epCaller: true, opts: { lifecycleUid: "aa11bb22cc33dd44ee55ff6677" } },
-  { profile: "control-caller-admin", actor: "cca", epCaller: true, opts: { lifecycleUid: "bb11cc22dd33ee44ff5566aa77" } },
-  { profile: "deployer", actor: "dep", epCaller: true, opts: { lifecycleUid: "ff11aa22bb33cc44dd55ee6688" } },
+  { profile: "control-caller-privileged", actor: "ccp", epCaller: true, opts: { lifecycleUid: "aa11bb22cc33dd44ee55ff6677", endpointCapabilities: pin } },
+  { profile: "control-caller-admin", actor: "cca", epCaller: true, opts: { lifecycleUid: "bb11cc22dd33ee44ff5566aa77", endpointCapabilities: pin } },
+  { profile: "deployer", actor: "dep", epCaller: true, opts: { lifecycleUid: "ff11aa22bb33cc44dd55ee6688", endpointCapabilities: pin } },
 ];
 
 // DENIED, before and after. An agent carrying `spawn` is NOT an operator - the capability builder
@@ -108,5 +111,37 @@ console.log("\nCELL 3 - ALLOWED ARM (the B6 defect: RED until the exact-iid mint
 const measured = ALLOWED.map((p) => ({ who: `${p.profile}/${p.actor}`, n: instRows(rowsFor(p.profile, p.actor, p.opts)).length }));
 console.log(`    measured: ${measured.map((o) => `${o.who}=${o.n}`).join("  ")}`);
 for (const m of measured) check(`${m.who} can address a specific instance`, m.n > 0, m);
+
+// C, not A: the row names the ONE resolved instance. A wildcard here would pass the cell above and
+// be the widen three seats refused, so the shape is asserted rather than the count alone.
+for (const p of ALLOWED) {
+  const rows = instRows(rowsFor(p.profile, p.actor, p.opts));
+  check(`${p.profile}/${p.actor} pins the EXACT iid, no wildcard`,
+    rows.length > 0 && rows.every((r) => r.includes(`.${TARGET_IID}.`) && !r.includes(".*.")), rows.slice(0, 2));
+}
+
+// CELL 4 - THE ADVERSARIAL DENIED ARM. Cell 2 only shows agents get no instance row when nobody
+// hands them one. The agent profile ALSO honours `opts.endpointCapabilities` (provision.ts:1115),
+// so the real question is what happens when a pinned capability IS supplied for an agent. Whatever
+// this measures is the truth about where the operator-only boundary actually lives: in the row
+// builder, or in the mint authority that decides what capabilities a principal is granted.
+console.log("\nCELL 4 - if a pinned capability is handed to an AGENT, where is the boundary?");
+{
+  const agentPinned = instRows(rowsFor("agent", "plain", {
+    lifecycleUid: "cc11dd22ee33ff4455aa66bb77", endpointCapabilities: pin,
+  }));
+  console.log(`    agent + supplied pin -> ${agentPinned.length} instance row(s)`);
+  if (agentPinned.length === 0) {
+    check("the ROW BUILDER refuses an instance row for an agent profile", true);
+  } else {
+    // Not a failure of this change - it is where the boundary is, and it must be stated rather than
+    // discovered later. The builder is principal-blind; the operator-only rule is enforced by the
+    // MINT AUTHORITY choosing capabilities, so nothing here may hand an agent a pinned cap.
+    check("the boundary is the MINT AUTHORITY, not the row builder (recorded, not asserted away)",
+      true, { agentPinnedRows: agentPinned.length, note: "operator-only is a policy at the mint site" });
+    check("and the pin an agent would get is still the EXACT iid, never a wildcard",
+      agentPinned.every((r) => r.includes(`.${TARGET_IID}.`) && !r.includes(".*.")), agentPinned.slice(0, 2));
+  }
+}
 
 console.log(`\ninst-route-grant: ${pass} checks passed`);

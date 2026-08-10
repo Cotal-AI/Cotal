@@ -907,9 +907,9 @@ export function permissionsFor(
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge (PR 1.5)
   if (profile === "teardown") return teardownPermissions(space, pr); // sole STREAM.DELETE holder (PR 1.5)
-  if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged"); // ps/start reads (PR 1.5)
-  if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin"); // any-mode stop/attach (PR 1.5)
-  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin"); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
+  if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads (PR 1.5)
+  if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach (PR 1.5)
+  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
   if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails (P2 item 6)
   if (profile === "session-serving") return sessionServingPermissions(space, pr, opts.sessionServing); // one §13.6 session's SERVING rails (P2 item 6)
   if (profile === "session-ledger") return sessionLedgerPermissions(space, pr); // the dedicated session ledger, no rails (P2 item 6)
@@ -1372,11 +1372,19 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
  *     broker gating the any-mode rows + the cred being ephemeral (mint → one request →
  *     disconnect, from the local signing seed); on a user mesh the manager's serve-time ledger
  *     re-check sits on top. */
-function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin"): Record<string, unknown> {
+function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin", opts: MintOpts = {}): Record<string, unknown> {
   // 1d: the manager `ctl` rail is gone — an operator instrument holds ONLY its v0.4 ep rows (the
   // tier-matched request set, the reply rail, describe, the one epc fetch). The `epTier` selects
   // privileged (ps/start reads) vs admin (any-mode stop/attach) exactly as the ctl tier did.
-  const ep = instrumentEpRows(space, pr, epTier);
+  //
+  // B6 / `--on <instanceId>`: these instruments are ONE-SHOT, minted per control call, and the
+  // resolve that pins the instance happens BEFORE the mint. So the caller can hand the exact
+  // instance id down and get the exact `ep.inst.<endpoint>.<iid>.<command>` row for THIS invocation
+  // and nothing else — the least-privilege issuance, with no standing wildcard anywhere. The
+  // `extra` seam is the same one the deployer's owner-equality `launch` row already rides, and the
+  // emitter's `if (cap.instanceId)` branch validates the token, so a malformed id fails loud at
+  // mint rather than widening a subject.
+  const ep = instrumentEpRows(space, pr, epTier, opts.endpointCapabilities ?? []);
   return {
     // The PRIVILEGED tier (the `cotal ps` instrument) also carries the SCOPED §13.9 records read the
     // class scatter's freeze rides (P2 item 3): `freezeExpectedSet` enumerates `svc.<endpoint>.*.spec`
@@ -1503,14 +1511,18 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
  *  the LIFETIME, not a manager re-check: minted from LOCAL same-checkout auth for one `spawn -f`,
  *  memory-only, dropped after deploy. If it is ever persisted, handed to user-supplied `--creds`, or
  *  reused as a general "read + admin" cred, revisit. */
-function deployerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin" = "admin"): Record<string, unknown> {
+function deployerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin" = "admin", opts: MintOpts = {}): Record<string, unknown> {
   // The v0.4 ep rows of the deploy authority: static (admin) deploys carry the admin instrument
   // set; the user-mode deployer VIEW (privileged) carries the privileged set PLUS an untargeted
   // `launch` row — its launch stays owner-equality-authorized (the manager's ledger-derived admin
   // flag is false for a spawn-scoped deployer), exactly the v0.3 user-mode privileged-tier launch.
+  // B6 / `--on`: the per-invocation pin APPENDS to this profile's standing set, never replaces it -
+  // the privileged deployer view keeps its owner-equality `launch` row and additionally gets the one
+  // exact `ep.inst.<endpoint>.<iid>.<command>` row for the instance this deploy resolved.
+  const pinned = opts.endpointCapabilities ?? [];
   const ep = epTier === "admin"
-    ? instrumentEpRows(space, pr, "admin")
-    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }]);
+    ? instrumentEpRows(space, pr, "admin", pinned)
+    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }, ...pinned]);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
   const DLVKV = `KV_${deliveryBucket(space)}`;
