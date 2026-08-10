@@ -2186,22 +2186,46 @@ export class CotalEndpoint extends EventEmitter {
     } catch { /* not ours / already gone */ }
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
-   *  presence/existence check — the most-recently-written live `lease.*` key across all instances (a
-   *  point `last_by_subj` wildcard get, no consumer). Single-instance-exact; the CLI's `spawn -f` reuse
-   *  and `waitLeaseGone` only need "is any manager here". Open-only — never creates the bucket, so a probe
-   *  that finds no manager leaves none behind. (Instance-precise enumeration for the class scatter comes
-   *  from the registration records KV in 3b-4, not this liveness bucket.) */
+   *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
+   *  manager here". Open-only — never creates the bucket, so a probe that finds no manager leaves none
+   *  behind. (Instance-precise enumeration for the class scatter comes from the registration records KV
+   *  in 3b-4, not this liveness bucket.)
+   *
+   *  MULTI-INSTANCE EXACT, and it has to be read that way rather than as a point get. Several managers
+   *  may hold one space, each renewing its own `lease.<instanceId>`. A single `last_by_subj` over
+   *  `lease.*` returns the newest message under the wildcard REGARDLESS OF KEY — so a stopping peer's
+   *  DEL tombstone, being newest, answered "no manager here" while a sibling was alive and renewing.
+   *  Only an explicit `kv.delete` writes that tombstone: a manager whose lease TTL-expires is removed by
+   *  limits and leaves nothing behind, so the poisoning case was the ORDINARY one (stop a manager
+   *  cleanly, then `spawn -f`), not the crash. Enumerating live entries collapses to the greatest
+   *  revision PER KEY and drops keys whose final state is a marker, so a peer's DEL can only retire that
+   *  peer's own key and can never mask a live one. */
   async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
     if (!this.nc) return undefined;
     try {
-      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
-      const m = await jsm.streams.getMessage(`KV_${managerBucket(this.space)}`, { last_by_subj: `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.*` });
-      const op = m?.header?.get("KV-Operation");
-      if (m === null || op === "DEL" || op === "PURGE" || m.data.length === 0) return undefined;
-      return JSON.parse(new TextDecoder().decode(m.data)) as ManagerLeaseInfo;
-    } catch {
-      // 10037 = no message on the subtree (genuinely no manager); any other read error ⇒ none found.
-      return undefined;
+      const kv = await this.managerLeaseRegistry();
+      let newest: KvEntry | undefined;
+      for (const e of await liveKvEntries(kv, `${MANAGER_LEASE_KEY}.*`)) {
+        if (e.value.length === 0) continue; // a lease written empty is not a holder
+        if (newest === undefined || e.revision > newest.revision) newest = e;
+      }
+      if (newest === undefined) return undefined;
+      return newest.json<ManagerLeaseInfo>();
+    } catch (e) {
+      // ABSENCE MUST BE PROVEN, NOT INFERRED FROM A FAILED READ. Exactly two outcomes mean "genuinely
+      // no manager": 10037, no message on the subtree, and a missing bucket — this probe is open-only
+      // and on an authed mesh nothing creates it until a manager first takes a lease, so a space that
+      // has never run one has no stream to read. Every OTHER failure (a JetStream hiccup, a request
+      // timeout, a permissions refusal, or `liveKvEntries` refusing a pass that died mid-delivery) used
+      // to return undefined here as well, and every caller reads undefined as "the space is empty": the
+      // CLI's `spawn -f` reuse stands a SECOND manager up against a live one and `waitLeaseGone` reports
+      // the space free. A read that failed is not evidence of absence, so refuse loudly rather than
+      // degrade (AGENTS.md: no fallbacks). This is the wider of the two doors the point-get fix closes:
+      // it needs only a transient error, where the tombstone path needed a peer to stop.
+      const code = (e as { code?: unknown }).code;
+      if (code === 10037) return undefined;
+      if (code === 404 || /stream not found/i.test((e as Error)?.message ?? "")) return undefined;
+      throw e;
     }
   }
 

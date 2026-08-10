@@ -703,8 +703,20 @@ async function readPresenceWithoutConsumer(space: string, server: string): Promi
       if (!presence.card?.id) throw new Error(`presence record ${subject} is malformed`);
       roster.push(presence);
     }
+    // ENUMERATE THE PER-INSTANCE LEASE KEYS. P2 item 3 demoted this bucket from a single `lease` key to
+    // one `lease.<instanceId>` per manager, and NOTHING WRITES THE BARE PREFIX ANY MORE — the supervisor's
+    // grant is `$KV.<bucket>.lease.*`, which does not even cover it, so no writer can legalise it. Reading
+    // the bare subject threw inside `directKvValue` on every preserve-state cut, which meant the holder
+    // guard on the next line was unreachable and the operator saw "maintenance inventory read failed"
+    // instead. Same STREAM.INFO + point-get shape as `liveKeys` above: no consumer, no new grant.
     const leaseBucket = managerBucket(space);
-    const lease = await directValue<ManagerLeaseInfo>(`KV_${leaseBucket}`, `$KV.${leaseBucket}.${MANAGER_LEASE_KEY}`);
+    const leaseStream = `KV_${leaseBucket}`;
+    const leaseInfo = await (await jetstreamManager(nc)).streams.info(leaseStream, { subjects_filter: `$KV.${leaseBucket}.${MANAGER_LEASE_KEY}.>` });
+    let lease: ManagerLeaseInfo | undefined;
+    for (const subject of Object.keys(leaseInfo.state.subjects ?? {})) {
+      const held = await directValue<ManagerLeaseInfo>(leaseStream, subject);
+      if (held?.holder) { lease = held; break; }
+    }
     if (!lease?.holder) throw new Error("manager lease has no authoritative holder principal");
     return { roster, managerId: parsePrincipalKey(lease.holder) ? lease.holder : principalKey(DEV_OWNER, lease.holder).key };
   } finally {
