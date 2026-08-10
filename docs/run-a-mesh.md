@@ -109,7 +109,7 @@ A mesh running on another machine has no `cotal up` on this one, so register it 
 
 ```bash
 cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
-cotal meshes add optiplex --server nats://10.0.0.5:4222 --root ~/meshes/optiplex
+cotal meshes add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex
 cotal meshes rm optiplex
 ```
 
@@ -123,6 +123,30 @@ runs) and `.cotal/agents` (its personas); the mode is inferred from what that fo
 broker is probed before the record is written, so a bad address or a credential that mesh will not
 accept fails at registration rather than at your first `spawn` (`--force` records it without verifying —
 useful when the mesh is simply down right now).
+
+#### Which addresses you may register
+
+Registering a mesh is how this machine starts sending agent credentials to a broker it does not
+run, and this build has no way to demand an encrypted connection yet: NATS announces itself in
+plaintext before anyone authenticates, so an attacker on the path can pose as the broker and read
+the credential out of the connect. A `tls://` URL does not help, because it is the connect
+options, not the scheme, that make the client insist.
+
+So the address is the gate, and only two kinds are accepted:
+
+- **loopback** — `127.0.0.0/8` or `::1`, where nothing leaves the machine;
+- **your private overlay** — `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, where a WireGuard tunnel
+  already authenticates and encrypts the link between two machines you enrolled.
+
+Everything else is refused, including ordinary private ranges like `10.x` and `192.168.x`: a
+café's wifi is a private network too, and being private is not the same as being yours. `--force`
+does not waive this — it exists for a mesh that is *down*, not for sending credentials somewhere
+unsafe.
+
+Hostnames are refused as well, even ones that resolve somewhere allowed, because then whoever
+answers the lookup would be choosing which machine receives your credentials. Pass the address
+itself. When serving the broker over TLS arrives, the client will verify the certificate's
+hostname and names become safe to use again.
 
 Records added this way are removed only by something that names them. A mesh this machine started
 can be dropped on a hunch — a failed liveness probe, a `cotal down` in its project — because

@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { probeConnect, type SpaceAuth } from "@cotal-ai/core";
+import { classifyJoinTarget, type JoinTarget } from "../lib/join-target.js";
 import {
   authDir,
   findCotalRoot,
@@ -70,6 +71,29 @@ export function checkServer(raw: string): Check<string> {
   if (u.pathname && u.pathname !== "/") return bad("✗ --server must be a bare broker URL - drop its path");
   if (!u.hostname) return bad("✗ --server names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)");
   return good(raw);
+}
+
+/**
+ * May this machine send its credentials to that address?
+ *
+ * Registering a mesh is how a machine joins a broker it does not run, and every later command then
+ * dials that address with an agent credential in the CONNECT line. NATS sends the initial INFO in
+ * plaintext and unauthenticated, so an on-path attacker forges one that does not set
+ * `tls_required` and reads the credential; the client side is the only fence, and this build has
+ * no client-TLS surface yet. So the address itself is the gate. See {@link classifyJoinTarget} for
+ * the ranges and for why hostnames are refused even when they resolve somewhere permitted.
+ *
+ * This is a SAFETY rule, not a liveness check, which is why it sits with {@link checkServer} above
+ * the `--force` branch rather than inside it. `--force` exists to register a mesh that is *down*
+ * right now; it must not double as permission to ship credentials across an untrusted network,
+ * where there is nothing to verify later and no error to come back and fix.
+ */
+export function checkDialPolicy(server: string): Check<JoinTarget> {
+  try {
+    return good(classifyJoinTarget(server));
+  } catch (e) {
+    return bad(`✗ ${(e as Error).message}`);
+  }
 }
 
 /** Where this mesh's local trust + personas live. An explicit path must be an existing directory
