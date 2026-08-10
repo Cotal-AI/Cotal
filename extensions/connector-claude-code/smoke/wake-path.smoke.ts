@@ -498,6 +498,34 @@ try {
     { oldest, stillBuffered: agent.inboxCount("automatic") },
   );
 
+  // ---- 7b. TWO frames hold the same ids; one verdict must not unprotect the other ---------------
+  // Found by review, after §7's guard shipped. Frames overlap by design — that is why the batch map
+  // is keyed on event identity — so the same ids sit in two open batches at once. A boolean hold
+  // meant the FIRST verdict unpinned ids the SECOND was still delivering, and an arrival in between
+  // acked one. Same permanent loss as §7, reached through the concurrency the keying deliberately
+  // allows, so the hold has to be counted rather than flagged.
+  await waitFor("a full inbox to overflow against", () => agent.inboxCount("automatic") >= FILL, 60_000);
+  const twoFrameOldest = agent.peekInbox("automatic")[0].text.slice(0, 20);
+  const overlapB = fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { starveStdout: true });
+  await sleep(150); // B is surfaced and holding
+  await fireHook({ hook_event_name: "UserPromptSubmit" }, { dropReply: true }); // frame A: holds, then fails fast
+  await sleep(250); // A's verdict has landed; B is STILL in flight
+  await dmOtto("dm-seven-b-overflow: arrives between the two verdicts");
+  const bResult = await overlapB;
+  check("the second frame's handoff also failed, as this check requires", bResult.stdout.length === 0);
+  await sleep(500);
+  const twoFrameBack = async (): Promise<boolean> => {
+    for (let i = 0; i < (ACK_WAIT_MS + 8_000) / 250 && !stillPending(twoFrameOldest); i++) await sleep(250);
+    return stillPending(twoFrameOldest);
+  };
+  const twoFrameRecovered = await twoFrameBack();
+  console.log(`    (overlapping frames: ${twoFrameOldest} recoverable: ${twoFrameRecovered})`);
+  check(
+    "one frame's verdict does not unprotect ids another frame is still delivering",
+    twoFrameRecovered,
+    { oldest: twoFrameOldest, buffered: agent.inboxCount("automatic") },
+  );
+
   // ---- 8. the stdout write FAILS — the receipt must not be sent -------------------------------
   // Found by review, reproduced independently by two seats. A failed write and a successful one both
   // invoke the same callback; the difference is only the error argument. Ignoring it meant the relay
@@ -544,6 +572,31 @@ try {
   check("and it was the retry timer, not an instant duplicate", mentionElapsed >= NUDGE_RETRY_FIRST_MS, {
     mentionElapsed,
   });
+  // ---- 9b. an UNRELATED nudge succeeding is not this mention's delivery -------------------------
+  // Found by review, after §9's retry shipped. Clearing the pending mention on ANY successful push
+  // read "the session is awake, it will pull" — but the notice that woke it is about a DM, carries no
+  // pull hint, and the ack-dropped mention is in no inbox to be stumbled upon. So an ordinary DM
+  // landing between the rejected mention push and its retry cancelled the only recovery that mention
+  // had. Only the mention's own notice may discharge it.
+  failNudges = 1;
+  const mentionOnly = nudges.filter((n) => n.includes("pull it with cotal_inbox")).length;
+  await pub.multicast("@Otto second focus mention: rejected, then a DM lands", {
+    channel: "team",
+    mentions: ["Otto"],
+  });
+  await sleep(120); // the mention push has been rejected; its retry is pending
+  await dmOtto("dm-nine-b: an unrelated DM whose nudge succeeds");
+  await waitFor("the unrelated DM nudge to succeed", () => nudges.some((n) => n.includes("New dm")), 3_000);
+  await waitFor(
+    "the mention retry to survive the unrelated success",
+    () => nudges.filter((n) => n.includes("pull it with cotal_inbox")).length > mentionOnly,
+    RETRY_DEADLINE_MS + 2_000,
+  );
+  check(
+    "an unrelated nudge succeeding does not cancel the focus mention's only recovery",
+    nudges.filter((n) => n.includes("pull it with cotal_inbox")).length > mentionOnly,
+    { mentionNoticesBefore: mentionOnly, now: nudges.filter((n) => n.includes("pull it with cotal_inbox")).length },
+  );
   await agent.setAttention("open");
 
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);

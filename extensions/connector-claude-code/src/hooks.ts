@@ -304,13 +304,17 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
     retryMs = Math.min(retryMs * 2, NUDGE_RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
       retryTimer = undefined;
-      if (agent.pendingWake() > 0) nudge();
-      else if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint);
+      // The mention goes FIRST when both are outstanding. A buffered message still has JetStream
+      // behind it — un-acked, it redelivers and re-announces itself — whereas the ack-dropped mention
+      // has nothing but this timer. Checking the inbox first meant any buffered DM starved the
+      // mention retry indefinitely, since the batch nudge kept succeeding and rescheduling itself.
+      if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);
+      else if (agent.pendingWake() > 0) nudge();
     }, delay);
     retryTimer.unref?.(); // a pending retry must never hold the process open
   };
 
-  const nudge = (item?: InboxItem, pullHint?: string): void => {
+  const nudge = (item?: InboxItem, pullHint?: string, isMentionWake = false): void => {
     if (!channelActive) return;
     const n = agent.inboxCount("automatic");
     const content = pullHint
@@ -320,8 +324,13 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
       : `📨 ${n} Cotal message${n === 1 ? "" : "s"} waiting — delivering your inbox now.`;
     void notify({ content, meta: item ? channelMeta(item) : { kind: "batch" } }).then(
       () => {
-        pendingMentionWake = undefined; // a push landed: the session is awake and will pull
+        // ONLY the mention's own notice discharges it. Waking for a DM tells the session about the
+        // DM: that notice carries no pull hint, and the ack-dropped mention is in no inbox to be
+        // found by accident. Treating any success as "awake, will pull" cancelled the sole recovery
+        // for the one wake nothing else can replay.
+        if (isMentionWake) pendingMentionWake = undefined;
         clearRetry(true);
+        if (pendingMentionWake) scheduleRetry(); // someone else's success is not this one's delivery
       },
       (e: Error) => {
         log(`channel nudge failed: ${e.message}`);
@@ -346,7 +355,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   agent.on("mention-wake", (item: InboxItem) => {
     const hint = `You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — pull it with cotal_inbox.`;
     pendingMentionWake = { item, hint }; // remembered BEFORE the push, so a rejection is retryable
-    nudge(item, hint);
+    nudge(item, hint, true);
   });
   agent.on("wake", () => nudge());
 

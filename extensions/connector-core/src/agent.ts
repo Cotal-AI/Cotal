@@ -144,8 +144,9 @@ export class MeshAgent extends EventEmitter {
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
   private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
-  /** Surfaced to the host but not yet committed or abandoned. See {@link holdInFlight}. */
-  private inFlightIds = new Set<string>();
+  /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
+   *  frames overlap. See {@link holdInFlight}. */
+  private inFlightIds = new Map<string, number>();
   private classificationUnsafe = false;
   /** Terminal receive-time decisions that must survive the live→durable transition: successfully
    *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
@@ -456,18 +457,33 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Mark a surfaced batch as mid-delivery, so the overflow valve will not ack it out from under the
-   *  host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes: a host
-   *  that holds forever would pin the buffer against eviction, so the set is capped and dropped
-   *  wholesale if it ever exceeds what the buffer could legitimately have produced. Dropping the
-   *  marks only restores the previous behaviour; it can never ack anything early. */
+   *  host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes.
+   *
+   *  **Counted, not a set.** Hook frames overlap, so the same id is routinely in two open batches at
+   *  once; if a hold were a boolean, the first frame's verdict would unprotect ids the second is
+   *  still delivering, and an arrival between the two verdicts would ack one — the very loss this
+   *  guard exists to stop, reached through the concurrency the per-frame keying deliberately allows.
+   *
+   *  The cap is FAIL-SAFE: at the ceiling we decline to protect NEW ids and never revoke a live hold.
+   *  An unprotected batch is only as exposed as it was before this guard existed, whereas dropping
+   *  live holds would ack a message someone is mid-way through delivering. */
   holdInFlight(ids: readonly string[]): void {
-    for (const id of ids) this.inFlightIds.add(id);
-    if (this.inFlightIds.size > MAX_INBOX * 2) this.inFlightIds.clear();
+    for (const id of ids) {
+      const held = this.inFlightIds.get(id);
+      if (held === undefined && this.inFlightIds.size >= MAX_INBOX * 2) continue;
+      this.inFlightIds.set(id, (held ?? 0) + 1);
+    }
   }
 
-  /** The delivery verdict is in (either way) — these ids are ordinary backlog again. */
+  /** One frame's verdict is in (either way). The id is ordinary backlog again only once EVERY frame
+   *  holding it has reported — a release from one must not speak for another still in flight. */
   releaseInFlight(ids: readonly string[]): void {
-    for (const id of ids) this.inFlightIds.delete(id);
+    for (const id of ids) {
+      const held = this.inFlightIds.get(id);
+      if (held === undefined) continue;
+      if (held <= 1) this.inFlightIds.delete(id);
+      else this.inFlightIds.set(id, held - 1);
+    }
   }
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
