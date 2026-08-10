@@ -226,6 +226,30 @@ function sandbox(): { home: string; cwd: string } {
   return { home, cwd };
 }
 
+
+/**
+ * Run one route and RECORD its outcome instead of aborting the suite.
+ *
+ * A fail-fast suite cannot answer the question a mutation proof asks. When the `--detach` threading
+ * was deliberately broken, route A reddened correctly and routes B through E never executed — so the
+ * run showed that A's assertion was load-bearing and said NOTHING about whether the routes are
+ * independently covered. A log that stops at the first failure looks the same as one where the rest
+ * were fine.
+ *
+ * Collecting failures makes the mutation answer both halves: exactly one route red, four green, is
+ * evidence of independent coverage. Everything red is evidence of a broken harness.
+ */
+const outcomes: { route: string; ok: boolean; err?: string }[] = [];
+async function route(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+    outcomes.push({ route: name, ok: true });
+  } catch (e) {
+    outcomes.push({ route: name, ok: false, err: e instanceof Error ? e.message : String(e) });
+    console.log(`  ✗ ${name}: FAILED`);
+  }
+}
+
 async function main(): Promise<void> {
   need("nats-server");
   need("openssl");
@@ -233,7 +257,7 @@ async function main(): Promise<void> {
   caFile = pkiFiles.ca;
 
   // ── ROUTE A: `up --detach`. Served PLAINTEXT while printing `✓ mesh up`. ──────────────────────
-  {
+  await route("--detach", async () => {
     const { home, cwd } = sandbox();
     const port = await freePort();
     homes.push({ home, port, cwd });
@@ -258,10 +282,10 @@ async function main(): Promise<void> {
       `The mesh is --open, so this cannot be an auth refusal; the server parsed our CONNECT in the clear.`);
     console.log("  ✓ --detach: tls_required, verifying client ADMITTED (PONG over TLS), cleartext REFUSED");
     cotal(["down"], home, cwd);
-  }
+  });
 
   // ── ROUTE B: `up -f manifest`. Same downgrade, different entry point. ─────────────────────────
-  {
+  await route("-f manifest", async () => {
     const { home, cwd } = sandbox();
     const port = await freePort();
     homes.push({ home, port, cwd });
@@ -280,10 +304,10 @@ async function main(): Promise<void> {
     assert.equal(clear, undefined, `GATE FAILED (-f manifest): cleartext CONNECT answered with ${JSON.stringify(clear)}`);
     console.log("  ✓ -f manifest: tls_required, verifying client ADMITTED, cleartext REFUSED");
     cotal(["down"], home, cwd);
-  }
+  });
 
   // ── ROUTE C: the already-running refresh. Printed `✓ already running` over an unchanged listener. ─
-  {
+  await route("refresh", async () => {
     const { home, cwd } = sandbox();
     const port = await freePort();
     homes.push({ home, port, cwd });
@@ -301,10 +325,10 @@ async function main(): Promise<void> {
     assert.notEqual(info?.tls_required, true, "the running listener must be unchanged by a refused refresh");
     console.log("  ✓ refresh: --tls-cert against a running mesh REFUSED, naming the transport; listener untouched");
     cotal(["down"], home, cwd);
-  }
+  });
 
   // ── D: an EXPIRED cert must refuse before launch. nats-server would start and serve it. ───────
-  {
+  await route("expired-cert", async () => {
     const { home, cwd } = sandbox();
     const port = await freePort();
     homes.push({ home, port, cwd });
@@ -314,10 +338,10 @@ async function main(): Promise<void> {
     assert.match(r.out, /EXPIRED/, `the refusal must name expiry as the cause:\n${r.out}`);
     assert.equal(await serverInfo(port), undefined, "nothing may be listening after an expired-cert refusal");
     console.log("  ✓ expired cert: refused before launch, naming expiry, no listener");
-  }
+  });
 
   // ── E: a cert for the WRONG host must refuse, and say which check failed. ─────────────────────
-  {
+  await route("wrong-host", async () => {
     const { home, cwd } = sandbox();
     const port = await freePort();
     homes.push({ home, port, cwd });
@@ -327,9 +351,17 @@ async function main(): Promise<void> {
     assert.match(r.out, /does not cover the dial host/, `the refusal must name the host mismatch:\n${r.out}`);
     assert.equal(await serverInfo(port), undefined, "nothing may be listening after a hostname refusal");
     console.log("  ✓ wrong-host cert: refused before launch, naming the mismatch, no listener");
-  }
+  });
 
-  console.log("✓ up-tls-routes: every route encrypts or refuses; admission proved on each, one variable apart");
+  // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
+  console.log("  ── route outcomes ──");
+  for (const o of outcomes) console.log(`  ${o.ok ? "PASS" : "FAIL"}  ${o.route}${o.ok ? "" : `  :: ${(o.err ?? "").split("\n")[0]}`}`);
+  const failed = outcomes.filter((o) => !o.ok);
+  if (outcomes.length !== 5)
+    throw new Error(`HARNESS: expected 5 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (failed.length > 0)
+    throw new Error(`${failed.length}/5 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 5/5 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {
