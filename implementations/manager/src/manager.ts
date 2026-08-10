@@ -4710,18 +4710,26 @@ export class Manager {
     // optimisation that has already-awaited by the time it matters; removing or weakening this line
     // promotes that filter into the whole guard, with nothing failing at the moment of the change.
     //
-    // UNVERIFIED RESIDUAL, recorded because it is real in the code and its reachability is not
-    // established. This check runs at ENTRY and there are FOUR awaits before the two writes below
-    // (`secrets.put` and `materializeSecretToFile`). A despawn landing in that window latches
-    // `terminalizing` and the retirement cleanup deletes exactly those two things — same secret key,
-    // same path — so an in-flight renewal can RE-CREATE a valid bounded credential after teardown
-    // removed it, and `appendStaticCredentialRow` lands in the window too, which is the worse half:
-    // a stale file is recoverable by re-running cleanup, a durable credential row is the journal
-    // asserting the credential is legitimate. Nobody has reproduced the interleaving or traced
-    // whether a despawn reliably reaches that cleanup mid-renewal — do not treat this as confirmed,
-    // and do not fix it without a repro. If it confirms, the fix is to make the WRITES conditional
-    // on the same latch the teardown orders against rather than to retry: the correct outcome is
-    // "no credential", never "a credential minted later".
+    // CONFIRMED, OPEN, AND UNGATED. This check runs at ENTRY and there are FOUR awaits before the
+    // two writes below (`secrets.put` and `materializeSecretToFile`). A despawn landing in that
+    // window latches `terminalizing` and the retirement cleanup deletes exactly those two things —
+    // same secret key, same path — so an in-flight renewal RE-CREATES a valid bounded credential
+    // after teardown removed it, and `appendStaticCredentialRow` lands in the window too, which is
+    // the worse half: a stale file is recoverable by re-running cleanup, a durable credential row
+    // is the journal asserting the credential is legitimate.
+    //
+    // Reproduced by `smoke:renewal-terminal-race` (`renewal-terminal-race.smoke.ts`), which asserts
+    // the DURABLE ROW rather than the file — the file is timing-dependent, the row is a KV read.
+    // That suite is deliberately NOT in `smoke:ci`: it is expected RED until this is fixed, and
+    // gating a known red trains readers to treat the gate as noisy. So the absence of a red here
+    // is not evidence this is closed; run that suite.
+    //
+    // The defect blocks its own re-test — the alias stays reserved pending the retirement this bug
+    // leaves incomplete, so later attempts are refused at spawn. One of one attempts that REACHED
+    // the race, which is the complete evidence the world permits and not a weak sample.
+    //
+    // The fix is to make the WRITES conditional on the same latch the teardown orders against,
+    // never to retry: the correct outcome is "no credential", never "a credential minted later".
     if (a.terminalizing) throw new Error("renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins");
     const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
