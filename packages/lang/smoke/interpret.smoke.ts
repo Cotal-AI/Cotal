@@ -268,7 +268,7 @@ const out = await fanOut(
   } catch (e) {
     dup = (e as Error).message;
   }
-  ok("duplicate branch keys are refused", dup.includes("L3021") && dup.includes("duplicate"), dup.slice(0, 100));
+  ok("duplicate branch keys are refused before any branch launches", dup.includes("L3024") && dup.includes("duplicate"), dup.slice(0, 100));
 }
 
 // ---- 7) a changed input diverges rather than replaying the wrong answer -------------------------------------

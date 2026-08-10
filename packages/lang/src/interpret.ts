@@ -700,8 +700,8 @@ class Interpreter {
       }
       if (new Set(branchKeys).size !== branchKeys.length) {
         throw new RuntimeFault(
-          "L3021",
-          `fanOut produced duplicate branch keys (${branchKeys.join(", ")}), so two branches would share one journal namespace and overwrite each other's steps`,
+          "L3024",
+          `fanOut produced duplicate branch keys (${branchKeys.join(", ")}), so two branches would share one journal namespace and allocate the same step key with different inputs. Nothing has run yet: the keys are all evaluated before any branch launches, because rejecting after launch would be too late by exactly the side effects the check exists to prevent.`,
         );
       }
 
