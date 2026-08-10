@@ -156,41 +156,101 @@ export function loadLedger(path: string): MeshLedger {
   return led;
 }
 
-/** Every valid ledger under `<root>/.cotal/manifests/`. Unparseable/foreign files are skipped (a
- *  targeted `down -f --run <id>` names one directly); used to resolve a `down -f cotal.yaml` to its
- *  run by `manifestHash`. */
+/** Build the ledger row for ONE launched agent, and PARSE it rather than assert it.
+ *
+ *  WHICH SIDE EACH FIELD COMES FROM IS THE WHOLE POINT. `requested` and `hash` are the DEPLOY
+ *  CALLER'S OWN inputs — it submitted the manifest key and resolved the drift hash before it ever
+ *  called the manager — so they are read from the plan. Only the SPAWNED identity (`name`, `id`,
+ *  `lifecycleUid`) can come from the reply, and that is exactly what the v0.4 action acceptance
+ *  floor carries (P2 item 2 ruling 3: the manifest details are deliberately NOT in the launch
+ *  output contract, because the caller can re-derive them). Reaching across the wire for a value
+ *  already in local scope is what broke this: the reply stopped carrying them, `as` could not warn,
+ *  `JSON.stringify` dropped the undefined keys, and the row only failed months later at teardown.
+ *
+ *  PARSE, NEVER CAST. A cast is a claim about a shape the compiler then stops checking; the whole
+ *  defect lived in the gap between that claim and the wire. This throws at WRITE time, naming the
+ *  field, instead of persisting a record the reader will refuse. */
+export function buildLedgerAgentRow(
+  planned: { requested: string; hash: string },
+  spawned: { name?: unknown; id?: unknown; lifecycleUid?: unknown },
+): LedgerAgent {
+  const parsed = LedgerAgentSchema.safeParse({
+    requested: planned.requested,
+    hash: planned.hash,
+    name: spawned.name,
+    id: spawned.id,
+    // Omit rather than pass undefined: a pre-split manager's reply carries no uid, and the row must
+    // stay name-keyed in that case rather than carry an explicit empty.
+    ...(spawned.lifecycleUid !== undefined ? { lifecycleUid: spawned.lifecycleUid } : {}),
+  });
+  if (!parsed.success)
+    throw new Error(`refusing to record an unreadable ledger row for "${planned.requested}": ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  return parsed.data;
+}
+
+/** Every valid ledger under `<root>/.cotal/manifests/`. Foreign files are skipped (a targeted
+ *  `down -f --run <id>` names one directly); used to resolve a `down -f cotal.yaml` to its run by
+ *  `manifestHash`.
+ *
+ *  A REFUSED file is NOT the same as an absent one, and collapsing the two cost a release. When a
+ *  file under this root is named for its own `runId` but fails validation, it is OURS and broken,
+ *  not somebody else's: swallowing that turned a zod error NAMING the missing fields into
+ *  `findLedgerByHash`'s "was it edited since `spawn -f`?", which accuses the operator of editing a
+ *  manifest they never touched. So refusals are RETURNED alongside the valid rows and the caller
+ *  decides; the message that already existed is surfaced rather than replaced. */
 export function listLedgers(root: string): Array<{ path: string; ledger: MeshLedger }> {
+  return listLedgerFiles(root).valid;
+}
+
+/** {@link listLedgers} plus the files this root REFUSED, so a caller can tell "no ledger here" from
+ *  "a ledger I could not read". `refused` carries the validator's own message verbatim. */
+export function listLedgerFiles(root: string): {
+  valid: Array<{ path: string; ledger: MeshLedger }>;
+  refused: Array<{ path: string; why: string }>;
+} {
   // Prove `.cotal/manifests` is a real (non-symlink) directory chain before reading under it — a
   // symlinked parent could redirect `down -f` to attacker-chosen ledgers.
   const dir = realDirNoSymlink(root, ".cotal", "manifests");
-  if (!dir) return [];
+  if (!dir) return { valid: [], refused: [] };
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
-    return [];
+    return { valid: [], refused: [] };
   }
-  const out: Array<{ path: string; ledger: MeshLedger }> = [];
+  const valid: Array<{ path: string; ledger: MeshLedger }> = [];
+  const refused: Array<{ path: string; why: string }> = [];
   for (const n of names) {
     if (!n.endsWith(".json") || n.startsWith(".")) continue;
     const p = join(dir, n);
     try {
       const ledger = loadLedger(p);
       if (`${ledger.runId}.json` !== n) continue; // filename must match the declared runId (no spoofed authority)
-      out.push({ path: p, ledger });
-    } catch {
-      /* skip — a foreign/corrupt file isn't this run's ledger; `--run` targets a known one */
+      valid.push({ path: p, ledger });
+    } catch (e) {
+      // A file named `<runId>.json` is a ledger THIS root wrote; a validation failure on it is our
+      // own bad record, not a foreign file. Keep the validator's message: it names the offending
+      // field, which is the whole diagnosis.
+      refused.push({ path: p, why: (e as Error).message });
     }
   }
-  return out;
+  return { valid, refused };
 }
 
 /** Resolve a `down -f cotal.yaml` to its ledger by the manifest's content hash. Fails (never
  *  guesses) when nothing matches (edited file) or more than one does — `--run <id>` is the escape. */
 export function findLedgerByHash(root: string, manifestHash: string): { path: string; ledger: MeshLedger } {
-  const matches = listLedgers(root).filter((l) => l.ledger.manifestHash === manifestHash);
-  if (matches.length === 0)
+  const { valid, refused } = listLedgerFiles(root);
+  const matches = valid.filter((l) => l.ledger.manifestHash === manifestHash);
+  if (matches.length === 0) {
+    // A REFUSED ledger is not an absent one. Reporting "was it edited?" while holding a validator
+    // error that names the offending field sends the operator to look at a file that is fine, and
+    // hides the record that is not. Report what we actually know, and never let the accusation
+    // stand in for a diagnosis we already have.
+    if (refused.length)
+      throw new Error(`this root has ${refused.length} ledger(s) it cannot read, so a matching run may exist but be unreadable - fix or remove them, then retry:\n${refused.map((r) => `  ${r.path}: ${r.why}`).join("\n")}`);
     throw new Error(`no ledger matches this manifest's current contents (was it edited since \`spawn -f\`?) - tear down by run id: \`cotal down -f <file> --run <id>\``);
+  }
   if (matches.length > 1)
     throw new Error(`${matches.length} runs share this manifest - name one: ${matches.map((m) => m.ledger.runId).join(", ")} (\`--run <id>\`)`);
   return matches[0];
