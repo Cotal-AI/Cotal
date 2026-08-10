@@ -53,6 +53,19 @@ export interface JoinTarget {
   /** The normalized dial URL, port defaulted. */
   server: string;
   reach: JoinReach;
+  /**
+   * Set when the target is permitted but its protection is NOT guaranteed, carrying the sentence
+   * the operator needs to read. Exactly one case produces it today: an overlay literal dialed
+   * without required TLS, where the address class is right but the tunnel being up is an
+   * assumption rather than a fact.
+   *
+   * Keeping this as a returned RESIDUAL rather than a refusal is what lets the fence ship in two
+   * honest steps. Step one (now) permits it and says so out loud, which is strictly safer than
+   * today, where the same dial happens silently and public addresses are permitted too. Step two,
+   * once a record can carry TLS intent, turns a residual into a refusal at the call site: one line
+   * changes, and the rule and its tests are already here rather than needing to be rebuilt.
+   */
+  residual?: string;
 }
 
 /** What the eventual connection will insist on, which the address alone cannot tell us. */
@@ -137,11 +150,16 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
 
   if (isOverlayLiteral(host)) {
     if (policy.tlsRequired) return { server, reach: "overlay" };
-    throw new Error(
-      `${JSON.stringify(raw)} refused: ${host} is a private-overlay address, but this build cannot require TLS on the connection, and a machine that registers a mesh sends its agent credentials to that broker.\n` +
-        `  The address alone is not enough. With the overlay's tunnel down, that range is ordinary carrier-grade NAT space, and whoever answers the dial receives the credentials.\n` +
-        `  Serving the broker over TLS - the thing that makes this address safe - is not in this build yet. Until then only a loopback literal (127.0.0.0/8, ::1) can be registered.`,
-    );
+    return {
+      server,
+      reach: "overlay",
+      residual:
+        `${host} is a private-overlay address, and this build cannot yet require TLS on the connection.\n` +
+        `  That is safe while the overlay tunnel is actually up: it authenticates both machines and encrypts the link.\n` +
+        `  It is NOT safe if the tunnel is down. That range is then ordinary carrier-grade NAT space, and whoever\n` +
+        `  answers the dial receives the credentials this machine will send. Keep the tunnel up, and expect this to\n` +
+        `  become a refusal once the broker can be served over TLS and the record can say TLS is required.`,
+    };
   }
 
   throw new Error(

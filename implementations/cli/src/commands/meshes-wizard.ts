@@ -145,6 +145,12 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
       }
     }
 
+    // A permitted-but-not-guaranteed target is said out loud here too, not only in the flag form.
+    // Recomputed rather than threaded because the typed path validates inside its own callback:
+    // the check is pure, and one call site for the warning beats two ways of reaching it.
+    const settled = checkDialPolicy(server);
+    if (settled.ok && settled.value.residual) io.log.warn(settled.value.residual);
+
     const spin = io.spinner();
     spin.start(`Asking ${server} what it is`);
     enforces = await probeEnforcement(server);

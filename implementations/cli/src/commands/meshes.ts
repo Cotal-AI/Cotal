@@ -139,7 +139,11 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   const server = take(checkServer(v.server));
   // Above the `--force` branch on purpose: this decides whether credentials may cross the network
   // to that address at all, which `--force` ("the mesh is down right now") must never waive.
-  take(checkDialPolicy(server));
+  const dial = take(checkDialPolicy(server));
+  // A permitted-but-not-guaranteed target is SAID OUT LOUD, never recorded quietly. Today that is
+  // the overlay literal whose protection depends on a tunnel we cannot verify from here; the
+  // operator is the only one who can know whether it is up, so the operator is told.
+  if (dial.residual) console.error(c.yellow(`! ${dial.residual}`));
   const root = take(checkRoot(v.root, process.cwd()));
   const accounts = take(spacesAtRoot(root));
   const mode = take(checkMode(space, root, accounts, v.mode));

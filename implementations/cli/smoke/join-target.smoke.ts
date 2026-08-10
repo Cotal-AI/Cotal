@@ -61,20 +61,33 @@ permits("nats://127.0.0.1", "loopback", TODAY, "nats://127.0.0.1:4222");
 // Loopback needs no transport guarantee either way: nothing leaves the machine.
 permits("nats://127.0.0.1:4222", "loopback", WITH_TLS);
 
-console.log("\nAN OVERLAY ADDRESS IS NOT A GUARANTEE — the same literal, both policies");
-// The defect this pair exists to prevent: with the tunnel daemon stopped, 100.64.0.0/10 is
-// ordinary carrier-grade NAT space and hostile routing can answer the dial. The address class
-// says only that we are willing to consider the target; requiring TLS is what makes it safe.
-const overlayPlain = refuses("nats://100.64.0.1:4222", "overlay address, but nothing can require TLS yet", TODAY);
+console.log("\nAN OVERLAY ADDRESS IS NOT A GUARANTEE — permitted now, but never silently");
+// The hazard: with the tunnel daemon stopped, 100.64.0.0/10 is ordinary carrier-grade NAT space
+// and hostile routing can answer the dial. The address class says only that we are willing to
+// consider the target. Increment 1 permits it and SAYS SO; increment 2, once a record can carry
+// TLS intent, turns the residual into a refusal at the call site. Both are pinned here so the
+// second step is a one-line change with its test already written.
+const overlay = classifyJoinTarget("nats://100.64.0.1:4222", TODAY);
+check("permits an overlay literal today", overlay.reach === "overlay", overlay);
+check("  but returns a residual rather than staying silent", Boolean(overlay.residual), overlay);
 check(
-  "  the refusal says the address alone is not enough",
-  /not enough|tunnel down|carrier-grade NAT/i.test(overlayPlain),
-  overlayPlain,
+  "  and the residual names the tunnel-down hazard",
+  /tunnel is down|carrier-grade NAT/i.test(overlay.residual ?? ""),
+  overlay.residual,
 );
-permits("nats://100.64.0.1:4222", "overlay", WITH_TLS);
+check(
+  "  and warns the operator this becomes a refusal",
+  /become a refusal/i.test(overlay.residual ?? ""),
+  overlay.residual,
+);
+// With TLS required the same address is permitted with NOTHING outstanding — that is what
+// increment 2 buys, and what the call site will demand before it stops warning.
+const overlayTls = classifyJoinTarget("nats://100.64.0.1:4222", WITH_TLS);
+check("with TLS required, the same literal has no residual", overlayTls.residual === undefined, overlayTls);
 permits("nats://100.100.100.100:4222", "overlay", WITH_TLS);
 permits("nats://100.127.255.255:4222", "overlay", WITH_TLS); // top of 100.64.0.0/10
 permits("nats://[fd7a:115c:a1e0::1]:4222", "overlay", WITH_TLS);
+permits("nats://100.64.0.1:4222", "overlay", TODAY); // permitted under increment 1
 
 console.log("\nthe boundary of 100.64.0.0/10 — off-by-one here silently widens the fence");
 // Checked under WITH_TLS so a boundary failure cannot hide behind the blanket no-TLS refusal.
