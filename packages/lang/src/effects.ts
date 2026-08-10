@@ -152,6 +152,13 @@ export interface EffectContext {
   readonly key: StepKey;
   readonly signal: CancelSignal;
   /**
+   * Present when a previous attempt at this step started but never settled, carrying whatever it
+   * passed to {@link EffectContext.bind}. The handler must RE-BIND to that resource and await its
+   * terminal, not issue a fresh action: the goal already exists, the checkpoint token is already
+   * minted, and issuing a second one is how a crash turns into a duplicate side effect.
+   */
+  readonly resume?: Readonly<Record<string, unknown>>;
+  /**
    * Declare the external resource this effect just created, BEFORE awaiting its terminal.
    *
    * This is what makes a crash mid-effect recoverable: the pending journal entry points at a

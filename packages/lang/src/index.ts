@@ -39,6 +39,17 @@ export {
 export { validate, type ValidateResult } from "./grammar.js";
 
 export {
+  RunDivergence,
+  RuntimeFault,
+  resume,
+  run,
+  type RunOptions,
+  type RunResult,
+} from "./interpret.js";
+
+export { Prng, assertCrossable, deepFreeze } from "./values.js";
+
+export {
   Cancelled,
   EffectError,
   type AgentHandleValue,

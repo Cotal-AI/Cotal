@@ -213,6 +213,13 @@ rejects("no computed property names", "L1011", "function f(k) { return { [k]: 1 
 // rather than a rule and a newline hazard could silently change what a program means.
 rejects("no reliance on automatic semicolon insertion", "L1008", 'const a = spawn("x")\nlog(a)\n');
 accepts("explicit terminators are fine", 'const a = spawn("x");\nlog(a);\n');
+// A for-header's declaration and update have no terminator of their own: the loop's semicolons
+// separate them. Requiring one there would reject every for loop, which the retry pattern needs.
+accepts(
+  "a for loop header is not an ASI violation",
+  'for (let i = 0; i < 3; i = i + 1) {\n  log(i);\n}\n',
+);
+accepts("a for-of header is not an ASI violation", 'for (const k of range(3)) {\n  log(k);\n}\n');
 rejects("no array elision", "L1012", "const a = [1, , 3];");
 rejects("no labels", "L1017", "function f() { outer: while (true) { break outer; } }");
 rejects("unbraced branches are refused", "L1009", "function f(x) { if (x) log(1); }");

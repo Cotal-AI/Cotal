@@ -34,6 +34,7 @@ export const CATALOG = {
   L1021: "Forbidden syntax: `delete`",
   L1022: "Forbidden syntax: `do...while`",
   L1023: "Forbidden syntax: `await` outside an async function",
+  L1024: "`return` outside a function",
 
   // ---- L2xxx: name resolution and static rules ----------------------------------------------
   L2001: "Unknown identifier",

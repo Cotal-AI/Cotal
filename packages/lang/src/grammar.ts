@@ -46,6 +46,8 @@ export interface ValidateResult {
 class Validator {
   readonly errors: LangError[] = [];
   readonly warnings: LangError[] = [];
+  /** Declarations in a `for` header: their `;` belongs to the loop, not to them. */
+  readonly semicolonExempt = new Set<AnyNode>();
 
   constructor(
     readonly source: string,
@@ -200,6 +202,13 @@ const PARSE_ERROR_MAP: readonly {
   readonly fix: string;
 }[] = [
   {
+    test: /'return' outside of function/i,
+    code: "L1024",
+    cause:
+      "A program has no return value. Its outcome is what it did: the journal of its effects, and whatever it published onto the run record. There is nobody for a top-level `return` to return to.",
+    fix: "Publish the result onto the run record, or use `log(...)` if you only wanted it in the trace.",
+  },
+  {
     test: /keyword 'await' outside an async function|await is only valid in async/i,
     code: "L1023",
     cause:
@@ -252,7 +261,7 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
     v.fail(rule.code, node, rule.cause, rule.fix);
   }
 
-  if (NEEDS_SEMICOLON.has(type)) {
+  if (NEEDS_SEMICOLON.has(type) && !v.semicolonExempt.has(node)) {
     const end = node.end as number;
     if (v.source[end - 1] !== ";") {
       v.fail(
@@ -318,6 +327,12 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
     case "ForStatement":
     case "ForOfStatement":
     case "WhileStatement": {
+      // A `for` header's declaration and update do not carry their own terminator: the loop's
+      // own semicolons separate them, so requiring one here would reject every `for` loop.
+      for (const slot of ["init", "update", "left"]) {
+        const n = node[slot];
+        if (isNode(n)) v.semicolonExempt.add(n);
+      }
       const body = node.body;
       if (isNode(body) && body.type !== "BlockStatement") {
         v.fail("L1009", body, "Every loop body is a block.", "Wrap the body in braces.");
