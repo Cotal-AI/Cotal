@@ -2203,14 +2203,29 @@ export class CotalEndpoint extends EventEmitter {
   async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
     if (!this.nc) return undefined;
     try {
-      const kv = await this.managerLeaseRegistry();
-      let newest: KvEntry | undefined;
-      for (const e of await liveKvEntries(kv, `${MANAGER_LEASE_KEY}.*`)) {
-        if (e.value.length === 0) continue; // a lease written empty is not a holder
-        if (newest === undefined || e.revision > newest.revision) newest = e;
+      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
+      const stream = `KV_${managerBucket(this.space)}`;
+      const prefix = `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.`;
+      // STREAM.INFO to learn WHICH instance keys exist, then one point-get per key. NOT a bucket
+      // scan: `liveKvEntries` binds a push consumer, and this principal's grant on this bucket is
+      // STREAM.INFO + STREAM.MSG.GET + the `lease.*` publish only (`provision.ts`, supervisor). A
+      // consumer here is a permissions violation for the very callers this probe serves, and no
+      // open-mesh test can see that, because an open mesh has no permissions to violate.
+      const info = await jsm.streams.info(stream, { subjects_filter: `${prefix}*` });
+      let newest: { data: Uint8Array; seq: number } | undefined;
+      for (const subject of Object.keys(info.state.subjects ?? {})) {
+        // `last_by_subj` is CORRECT PER KEY and wrong across keys. Scoped to one instance's subject
+        // it returns that instance's latest state, so a DEL here retires only its own key. The
+        // defect was asking one wildcard for the newest message in the whole subtree, where a
+        // stopping peer's tombstone outranks a live sibling's older PUT.
+        const m = await jsm.streams.getMessage(stream, { last_by_subj: subject }).catch(() => null);
+        if (m === null) continue; // key vanished between INFO and GET: it is not a live holder
+        const op = m.header?.get("KV-Operation");
+        if (op === "DEL" || op === "PURGE" || m.data.length === 0) continue;
+        if (newest === undefined || m.seq > newest.seq) newest = { data: m.data, seq: m.seq };
       }
       if (newest === undefined) return undefined;
-      return newest.json<ManagerLeaseInfo>();
+      return JSON.parse(new TextDecoder().decode(newest.data)) as ManagerLeaseInfo;
     } catch (e) {
       // ABSENCE MUST BE PROVEN, NOT INFERRED FROM A FAILED READ. Exactly two outcomes mean "genuinely
       // no manager": 10037, no message on the subtree, and a missing bucket — this probe is open-only
