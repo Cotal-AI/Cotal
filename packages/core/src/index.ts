@@ -47,6 +47,7 @@ export * from "./launch.js";
 export * from "./fs-safe.js";
 export * from "./secret-fs.js";
 export * from "./connector-config.js";
+export * from "./kv-scan.js";
 export * from "./endpoint.js";
 export * from "./spaces.js";
 export * from "./connector.js";

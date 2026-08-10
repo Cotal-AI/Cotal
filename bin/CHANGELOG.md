@@ -1,5 +1,68 @@
 # cotal-ai
 
+## 0.16.0
+
+### Minor Changes
+
+- 531d37d: Register, list and unregister meshes from the CLI.
+
+  `cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open]` records a mesh this
+  machine did not start — one running on another machine, a shared broker, a hosted space — so
+  `--space`, `cotal use` and a bare `cotal spawn` can reach it from any directory. The broker is
+  probed before anything is written, so a wrong address or credentials that mesh will not accept fail
+  at registration instead of at the first spawn; `--force` records without verifying and replaces an existing
+  record. `cotal meshes rm <space> …` drops records (never stopping a mesh: a mesh running here is
+  refused in favour of `cotal down`) and releases the `current` pointer when it pointed at one.
+
+  Registry records now carry an origin, and an automatic prune only ever deletes records that
+  `cotal up` wrote. A record added by hand cannot be reconstructed by this machine, so an unreachable
+  broker under one is reported — `offline` in `cotal meshes`, and a preflight failure that names
+  `cotal meshes rm` rather than `cotal up` — instead of silently unregistering a mesh that was live
+  all along.
+
+- 498055c: Stop paying one network round trip per record, and return the recent messages history claimed to return.
+
+  Several read paths issued one sequential round trip per record, which is invisible against a loopback
+  broker and ruinous on any ordinary cross-continent link. Measured against a mesh at 534ms RTT with
+  healthy uplinks at both ends, reading the membership feed took 30 to 34 seconds for 89 entries; it
+  now takes under a second for 93.
+
+  - `liveKvEntries` is the one sanctioned full-bucket KV read: a single pass whose request count is
+    independent of record count, which collapses by greatest revision with tombstones so a deleted key
+    cannot resurrect, and which binds its own consumer so that an empty result is PROVEN by the
+    bind-time pending count rather than inferred from silence. A pass that is cut short raises rather
+    than returning what arrived. That distinction is load-bearing on the ACL path: read this way, a
+    dropped link mid-scan would otherwise report a provisioned principal as having no ACL row, and a
+    durable join would be refused as "not provisioned" instead of as "could not read". The membership
+    feed, the members and channel registries, and the ACL alias enumeration all read through it. No
+    change to broker authority: the same ordered push consumer over the same subject.
+  - `channelHistory` and `dmHistory` returned the OLDEST messages on any channel holding more than the
+    requested limit, while being documented as recent and rendered everywhere as the latest. They now
+    return the newest, read through a bounded window rather than by draining the backlog.
+  - `cotal status` started the Claude CLI twice for data one listing contains.
+
+  Two optimisations were attempted and REVERTED during review, and are not part of this change: the
+  dashboard's activity feed still fetches a full page per channel (the cheaper version dropped
+  genuinely-newer messages, because saturation counts messages rather than recency), and control
+  commands still open a probe connection before the real one (skipping it flattened typed auth
+  failures and lost the probe's deadline).
+
+  This is the read-path half of the work. The registry-safety half — a failed network probe must not
+  delete a mesh record — is a separate change on top of the `origin`/`pruneMesh` model from
+  `cotal meshes add`.
+
+### Patch Changes
+
+- Updated dependencies [531d37d]
+- Updated dependencies [498055c]
+  - @cotal-ai/workspace@0.16.0
+  - @cotal-ai/cli@0.16.0
+  - @cotal-ai/core@0.16.0
+  - @cotal-ai/auth@0.16.0
+  - @cotal-ai/delivery@0.16.0
+  - @cotal-ai/manager@0.16.0
+  - @cotal-ai/connector-core@0.16.0
+
 ## 0.15.0
 
 ### Minor Changes

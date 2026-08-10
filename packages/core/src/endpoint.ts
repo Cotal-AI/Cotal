@@ -21,6 +21,7 @@ import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedServic
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
+import { liveKvEntries } from "./kv-scan.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -1681,16 +1682,18 @@ export class CotalEndpoint extends EventEmitter {
     const kv = await this.membershipFeedRegistry();
     const members: MembershipEntry[] = [];
     let asOf: number | undefined;
-    for await (const key of await kv.keys()) {
-      const e = await kv.get(key);
-      if (!e || e.operation === "DEL" || e.operation === "PURGE") continue;
-      if (key === MEMBERSHIP_FEED_KEY) {
+    // ONE pass. This was `kv.keys()` followed by a sequential `kv.get()` per key — O(N) round trips,
+    // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
+    // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
+    // than reporting a partial roster as the whole one.
+    for (const e of await liveKvEntries(kv)) {
+      if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
       }
       try {
         const rec = e.json<ChannelMembership>();
-        members.push({ id: key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt });
+        members.push({ id: e.key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt });
       } catch { /* skip undecodable */ }
     }
     return { asOf, members };
@@ -1734,34 +1737,174 @@ export class CotalEndpoint extends EventEmitter {
     );
   }
 
-  /** Drain up to `limit` recent messages matching `subject` from a stream's backlog via a
-   *  throwaway consumer. Fetches exactly the pending count (from consumer info) so it returns
-   *  the moment the backlog is delivered — a plain `fetch({max_messages: limit})` would instead
-   *  block for the pull's full expiry (~30s) whenever the backlog is smaller than `limit`. */
+  /**
+   * The `limit` MOST RECENT messages matching `subject`, oldest-first within the page.
+   *
+   * **This used to return the OLDEST N.** `js.consumers.get(stream, {...})` builds an ORDERED
+   * consumer, which defaults to `DeliverPolicy.StartSequence` with `opt_start_seq: 1` — the very
+   * beginning of the stream. Capping the fetch at `limit` therefore took the first N messages ever
+   * sent, while this method is documented as "recent" and every caller (the dashboard feed, the
+   * agent-facing history tools) presents the result as the latest. Confirmed live against a
+   * 123-message channel: `limit=10` returned the ten oldest, not the ten newest.
+   *
+   * Fixing it by draining from the start and keeping the tail would be correct and ruinous: it
+   * transfers the entire backlog to show one screen. Instead, find the newest matching sequence and
+   * consume a WINDOW ending there, widening geometrically until the window holds `limit` matches.
+   * A filtered subject's sequences are non-contiguous (other channels interleave in the same
+   * stream), so the window cannot be computed arithmetically. A FAILED attempt holds fewer than a
+   * page by definition, so wasted transfer stays page-sized and geometric growth keeps the number of
+   * attempts logarithmic. The one unbounded case is named in the body: a channel whose matches are
+   * all old and sparse walks back to the start of the stream and reads its whole retained set.
+   *
+   * `before` pages toward the past: pass the `seq` of the oldest message you already have.
+   */
   private async streamHistory(
     stream: string,
     subject: string,
     limit: number,
+    before?: number,
   ): Promise<CotalMessage[]> {
     if (!this.nc) throw new Error("endpoint not started");
+    if (limit <= 0) return [];
     const js = jetstream(this.nc);
-    const msgs: CotalMessage[] = [];
     try {
-      const consumer = await js.consumers.get(stream, { filter_subjects: [subject] });
-      const pending = Math.min(limit, (await consumer.info()).num_pending);
-      if (pending === 0) return msgs;
+      // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
+      // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
+      // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
+      // instead (which is all `STREAM.INFO` offers) was a loose upper bound, and on a quiet channel
+      // in a busy stream the gap between the two is the whole problem: every window near the stream
+      // head is empty, so the search widened over and over before finding anything.
+      //
+      // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
+      // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
+      // shipped once from this function and turned every non-admin history read into an empty list.
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subject);
+      if (ceiling < 1) return [];
+
+      // Widen from the exact ceiling until a window holds a full page, or until the window IS the
+      // whole subject. Draining each attempt is bounded, and that is the point: a window only fails
+      // when it holds FEWER than `limit` matches, so every wasted drain moves less than one page.
+      // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
+      // small multiple of a page.
+      //
+      // NAMED POLICY for the remaining case: when a channel's matches are all old and sparse, the
+      // search walks back to sequence 1 and the final drain transfers that subject's whole retained
+      // set. That is chosen deliberately — a FULL page of genuinely recent messages, at the cost of
+      // an unbounded read on a channel that has not been used in a long time — over returning a
+      // short page while older messages exist. The exact ceiling above means this is now reached
+      // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
+      let span = Math.max(limit * 4, 64);
+      for (;;) {
+        const start = Math.max(1, ceiling - span + 1);
+        const page = await this.drainWindow(js, stream, subject, start, ceiling);
+        if (page.length >= limit || start === 1) return page.slice(-limit);
+        span *= 4;
+      }
+    } catch (e) {
+      // NARROW. This catch is how the MSG.GET grant bug shipped: it turned a Permissions Violation
+      // into an empty history, so every non-admin read looked exactly like a quiet channel, and the
+      // smokes stayed green because they run as admin against a local broker. Emitting on the error
+      // event is not enough either — callers consume the RETURN VALUE, and the dashboard renders
+      // empty regardless of what an operator log says.
+      //
+      // So only two things may still produce an empty result:
+      //   1. The stream does not exist (a space with no history yet).
+      //   2. A permission denial on the DM backlog specifically. `dmHistory` is god-view by
+      //      contract: a normal agent's ACL denies it, and returning empty there is documented
+      //      behaviour, not a bug being hidden.
+      // Anything else — a denial on CHAT, a timeout, a 503, a protocol or consumer-create failure —
+      // is raised, because "no history" and "I could not read the history" are different answers and
+      // only one of them is safe to render as an empty conversation.
+      const msg = String((e as { message?: unknown } | null)?.message ?? "");
+      if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
+      if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
+      throw e;
+    }
+  }
+
+  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *
+   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
+   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
+   *  already uses, so no broker authority is added. */
+  private async lastMatchingSeq(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+  ): Promise<number> {
+    const consumer = await js.consumers.get(stream, {
+      filter_subjects: [subject],
+      deliver_policy: DeliverPolicy.Last,
+    });
+    try {
+      // Bind-time zero is the ONLY thing that means "this subject has no messages".
+      if ((await consumer.info(true)).num_pending === 0) return 0;
+      const iter = await consumer.fetch({ max_messages: 1 });
+      for await (const m of iter) return m.seq;
+      // Bind said a message was pending and none arrived. The pinned client's pull iterator ends
+      // CLEANLY when the connection closes ("we don't propagate the error here"), so this is what a
+      // dropped link looks like from here. Returning 0 would make the caller report an empty
+      // channel, which is the same "could not read means no history" lie the narrowed catch above
+      // exists to stop.
+      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+    } finally {
+      await consumer.delete().catch(() => { /* already gone, or denied */ });
+    }
+  }
+
+  /** Drain every message matching `subject` with sequence in `[start, ceiling]`, oldest-first.
+   *  One ephemeral ordered consumer, one batched pull — `AckPolicy.None`, so no per-message ack
+   *  round trip. Fetches exactly the pending count so it returns as soon as the window is
+   *  delivered rather than blocking for the pull's full expiry. */
+  private async drainWindow(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+    start: number,
+    ceiling: number,
+  ): Promise<CotalMessage[]> {
+    const out: CotalMessage[] = [];
+    const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
+    try {
+      // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
+      // explicit uncached `info()` this used to call was a round trip for data we already had.
+      const pending = (await consumer.info(true)).num_pending;
+      if (pending === 0) return out;
       const iter = await consumer.fetch({ max_messages: pending });
+      // PROVE THE WINDOW COMPLETED. The pull iterator ends cleanly on a dropped connection, so a
+      // close after three of ten deliveries would otherwise return a convincing three-message page.
+      // The window is done when we have reached its upper bound or consumed everything bind said
+      // was pending; anything else is a cut-short read and must say so.
+      let delivered = 0;
+      let complete = false;
       for await (const m of iter) {
+        delivered++;
+        if (m.seq >= ceiling) { // reached the page's upper bound
+          if (m.seq === ceiling) {
+            try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+          }
+          complete = true;
+          break;
+        }
         try {
-          msgs.push(m.json<CotalMessage>());
+          out.push(m.json<CotalMessage>());
         } catch {
           /* skip undecodable */
         }
+        if (delivered >= pending) { complete = true; break; }
       }
-    } catch {
-      /* stream missing or consumer create denied (non-admin) */
+      if (!complete)
+        throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the window was cut short, not empty`);
+      return out;
+    } finally {
+      // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
+      // inactive threshold, so leaving them behind is not free: the widening search below can make
+      // up to eight per call, the dashboard makes one call per channel, and a reload repeats it.
+      // Left alone that accumulates consumers on the broker until the thresholds expire, and the
+      // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
+      await consumer.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
     }
-    return msgs;
   }
 
   // ---- internals -----------------------------------------------------------
