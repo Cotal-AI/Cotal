@@ -17,10 +17,10 @@
  * Only the explicit `tls` connect option makes the client demand TLS, and that option is the
  * broker-TLS work's surface, not this one's. So this gates on the ADDRESS instead, in two steps.
  * Step one, here: refuse public addresses, ordinary private ranges and every hostname outright,
- * and permit an overlay literal while returning a {@link JoinTarget.residual} saying what is not
- * guaranteed about it. Step two, once a record can carry TLS intent: the call site treats that
- * residual as fatal. See {@link JoinTarget.residual} for why it is a returned value rather than a
- * throw.
+ * and refuse an overlay literal TOO unless the operator accepted it explicitly
+ * ({@link DialPolicy.allowUnencryptedOverlay}); accepted, it returns a {@link JoinTarget.residual}
+ * the caller prints and records as consent. Step two, once a record can carry TLS intent: the
+ * acceptance stops being needed because the transport is proven instead of promised.
  *
  * ONE deliberate limitation, stated rather than papered over: this classifies an ADDRESS, which
  * is a guard against the obvious mistake (dialing a LAN or public address in the clear), not
@@ -64,11 +64,10 @@ export interface JoinTarget {
    * without required TLS, where the address class is right but the tunnel being up is an
    * assumption rather than a fact.
    *
-   * Keeping this as a returned RESIDUAL rather than a refusal is what lets the fence ship in two
-   * honest steps. Step one (now) permits it and says so out loud, which is strictly safer than
-   * today, where the same dial happens silently and public addresses are permitted too. Step two,
-   * once a record can carry TLS intent, turns a residual into a refusal at the call site: one line
-   * changes, and the rule and its tests are already here rather than needing to be rebuilt.
+   * It is a returned value rather than a throw because by the time it is produced the operator has
+   * ALREADY accepted the risk, so the remaining job is to carry the sentence: the caller prints it
+   * as a second notice and records it on the entry as evidence of consent. The refusal for someone
+   * who has NOT accepted happens earlier, and is a throw.
    */
   residual?: string;
 }
@@ -85,11 +84,10 @@ export interface DialPolicy {
    * willing to consider the target; requiring TLS is what makes it safe.
    *
    * There is no field on the mesh record to source this from yet — it arrives with the work that
-   * teaches the broker to serve TLS — so callers pass `false` today. That does NOT mean every
-   * non-loopback target is refused: an overlay literal is still permitted, and carries a
-   * {@link JoinTarget.residual} the caller shows the operator. Refusing it outright is step two,
-   * and it becomes correct only once this can be `true`. An editor who believes non-loopback is
-   * already refused will simplify away the residual, which is the one piece step two needs.
+   * teaches the broker to serve TLS — so callers pass `false` today, and with it false an overlay
+   * literal is refused unless {@link DialPolicy.allowUnencryptedOverlay} says the operator
+   * accepted the tunnel dependency. When this can be `true` the acceptance stops being needed:
+   * the transport is then proven rather than promised, and the flag can go.
    */
   tlsRequired: boolean;
   /**
@@ -193,7 +191,7 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
 
   throw new Error(
     `${JSON.stringify(raw)} refused: this build cannot protect a connection to ${host}, and a machine that registers a mesh sends its agent credentials to that broker.\n` +
-      `  Only a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) may be registered. An overlay literal registers today, with a warning about what is not guaranteed.\n` +
+      `  Only a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) may be registered. An overlay literal additionally needs --allow-unencrypted-overlay, which records that you accepted its tunnel dependency.\n` +
       `  Ordinary private ranges are refused too: a cafe network is private, and private is not the same as yours.\n` +
       `  A hostname is refused even when it resolves somewhere permitted - otherwise whoever answers the lookup chooses which machine receives the credentials. Pass the address itself.`,
   );
