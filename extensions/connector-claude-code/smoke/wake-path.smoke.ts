@@ -168,7 +168,7 @@ function fireHook(event: Record<string, unknown>, opts: { dropReply?: boolean } 
  */
 function fireHookViaRealRelay(
   event: Record<string, unknown>,
-  opts: { starveStdout?: boolean } = {},
+  opts: { starveStdout?: boolean; breakStdout?: boolean } = {},
 ): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [tsxCli, hookEntry], {
@@ -184,7 +184,11 @@ function fireHookViaRealRelay(
     // starveStdout models a runtime that is not draining the hook's output: we never read the pipe,
     // so a reply larger than the OS pipe buffer can never flush and the relay's 1s backstop kills it
     // mid-write. Reading it (the normal case) is what lets a large reply through at all.
-    if (!opts.starveStdout) {
+    // breakStdout models a runtime that has gone away: we tear the read end down, so the relay's
+    // write FAILS (EPIPE) rather than merely not flushing. The write callback fires either way, which
+    // is exactly why it has to inspect its error argument before confirming the handoff.
+    if (opts.breakStdout) child.stdout.destroy();
+    else if (!opts.starveStdout) {
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (d) => (out += d));
     }
@@ -493,6 +497,26 @@ try {
     recovered,
     { oldest, stillBuffered: agent.inboxCount("automatic") },
   );
+
+  // ---- 8. the stdout write FAILS — the receipt must not be sent -------------------------------
+  // Found by review, reproduced independently by two seats. A failed write and a successful one both
+  // invoke the same callback; the difference is only the error argument. Ignoring it meant the relay
+  // confirmed a handoff for a reply that got EPIPE — `delivered=true`, zero bytes at the runtime,
+  // batch committed. Group 6 starves the pipe (no error, just no flush); this is the other half.
+  await dmOtto("dm-eight: the runtime's pipe is gone");
+  await waitFor("the DM to buffer", () => stillPending("dm-eight"));
+  const broken = await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { breakStdout: true });
+  check("the relay survives a destroyed stdout without blocking the session", broken.code === 0, broken.code);
+  await sleep(500);
+  check("a reply whose stdout write FAILED does not consume the batch", stillPending("dm-eight"), {
+    inbox: agent.peekInbox("all").map((i) => i.text.slice(0, 24)),
+  });
+  const afterBroken = await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" });
+  await sleep(400);
+  check("and it reaches a runtime whose pipe is intact", injected(afterBroken.stdout).includes("dm-eight"), {
+    bytes: afterBroken.stdout.length,
+  });
+  check("only then is it committed", !stillPending("dm-eight"));
 
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);
 } finally {

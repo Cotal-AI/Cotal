@@ -37,6 +37,9 @@ export const HANDOFF_RECEIPT = '{"handoff":"ok"}\n';
  *  own stdout backstop is 1s, and a client that dies takes the socket with it (→ `close` → not
  *  delivered), so this only catches a wedged one. Un-delivered on expiry: never commit on a guess. */
 const HANDOFF_DEADLINE_MS = 5_000;
+/** Bound on awaiting a NON-handoff client's reply write. Such a client makes no delivery promise, so
+ *  this only stops one that never reads from pinning a handler; the socket is left alone to flush. */
+const LEGACY_WRITE_DEADLINE_MS = 5_000;
 
 export interface ControlServerOpts {
   /** Fail loud on a bind we can't hold. A managed listener (the in-agent MCP server, the Hermes
@@ -127,9 +130,19 @@ function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: 
     sock.once("error", () => done(false));
     sock.once("close", () => done(false));
     if (!awaitHandoff) {
+      // This write used to be fire-and-forget; awaiting it means a peer that never reads can hold the
+      // handler open for as long as it likes (`end()`'s callback waits for the flush). Bound the WAIT
+      // rather than the socket: resolving early reports what we honestly know — not confirmed — while
+      // the kernel finishes the write in the background, so a merely slow reader is never truncated.
+      const stall = setTimeout(() => done(false), LEGACY_WRITE_DEADLINE_MS);
+      stall.unref?.();
       try {
-        sock.end(JSON.stringify(reply) + "\n", ((err?: Error | null) => done(!err)) as () => void);
+        sock.end(JSON.stringify(reply) + "\n", ((err?: Error | null) => {
+          clearTimeout(stall);
+          done(!err);
+        }) as () => void);
       } catch {
+        clearTimeout(stall);
         done(false); // already destroyed — end() throws rather than calling back
       }
       return;
