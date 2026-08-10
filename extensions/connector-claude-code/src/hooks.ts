@@ -130,6 +130,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     if (!body) return undefined;
     const ids = items.map((i) => i.id);
     inFlight.set(ev, { ids, agent });
+    // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
+    // from under us mid-delivery — unrecoverable, since an acked id is never redelivered.
+    agent.holdInFlight(ids);
     // At-least-once, deliberately: an unconfirmed batch is re-surfaced rather than dropped, so a
     // reply that DID land but whose confirmation was lost shows the model the same message twice.
     // Say so, so a repeat reads as a repeat instead of as a peer sending twice.
@@ -224,6 +227,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     if (!batch) return; // this frame carried no peer messages (PreToolUse, Notification, Stop, …)
     inFlight.delete(ev);
     const { ids, agent } = batch;
+    agent.releaseInFlight(ids); // verdict is in, either way — ordinary backlog again
     if (!delivered) {
       markUnconfirmed(ids);
       return;

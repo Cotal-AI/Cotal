@@ -454,6 +454,46 @@ try {
   });
   await fireHook({ hook_event_name: "Stop" });
 
+  // ---- 7. the capacity valve must not consume an in-flight batch --------------------------------
+  // Found by review, not by this suite. Committing on the handoff means a surfaced batch stays in
+  // the inbox (peekInbox does not remove) for the whole handoff window. `buffer`'s overflow evicts
+  // the OLDEST pending and ACKS it without marking it handled — deliberate bounded loss for a
+  // backlog nobody has looked at, but the oldest pending is exactly what a surfaced batch is made
+  // of. So a message arriving while a batch is in flight can ack an id that is mid-delivery, and if
+  // that delivery then fails there is nothing left to recover it from: gone from the inbox, never
+  // marked handled, and already acked in JetStream. That is this branch's own loss class, re-entered
+  // through the capacity valve.
+  const FILL = 200; // MAX_INBOX
+  const BODY = 1024; // big enough that FILL of them outrun the pipe buffer and the handoff must fail
+  for (let i = 0; i < FILL; i++) await dmOtto(`dm-seven-${String(i).padStart(3, "0")}: ${"y".repeat(BODY)}`);
+  await waitFor("the inbox to reach capacity", () => agent.inboxCount("automatic") >= FILL, 60_000);
+  const oldest = "dm-seven-000";
+  check("the inbox is at capacity with the oldest message pending", stillPending(oldest), {
+    automatic: agent.inboxCount("automatic"),
+  });
+  // Surface all of it into an in-flight batch whose handoff is guaranteed to fail...
+  const inFlightHandoff = fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { starveStdout: true });
+  await sleep(400); // ...and, while it is in flight, push one more message through the capacity valve
+  await dmOtto("dm-seven-overflow: arrives mid-handoff and evicts the oldest");
+  const starvedBig = await inFlightHandoff;
+  check("the in-flight handoff failed, as this check requires", starvedBig.stdout.length === 0, {
+    stdoutBytes: starvedBig.stdout.length,
+  });
+  await sleep(500);
+  // The oldest id was evicted+acked by the overflow while it was mid-delivery. Nothing showed it to
+  // the model. It must still come back — JetStream redelivery is the only thing that can bring it.
+  const backAfterOverflow = async (): Promise<boolean> => {
+    for (let i = 0; i < (ACK_WAIT_MS + 8_000) / 250 && !stillPending(oldest); i++) await sleep(250);
+    return stillPending(oldest);
+  };
+  const recovered = await backAfterOverflow();
+  console.log(`    (after a failed handoff + overflow, ${oldest} recoverable: ${recovered})`);
+  check(
+    "a message evicted by overflow WHILE in flight is not consumed by a failed handoff",
+    recovered,
+    { oldest, stillBuffered: agent.inboxCount("automatic") },
+  );
+
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);
 } finally {
   wake.stop();

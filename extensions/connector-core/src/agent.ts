@@ -144,6 +144,8 @@ export class MeshAgent extends EventEmitter {
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
   private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
+  /** Surfaced to the host but not yet committed or abandoned. See {@link holdInFlight}. */
+  private inFlightIds = new Set<string>();
   private classificationUnsafe = false;
   /** Terminal receive-time decisions that must survive the live→durable transition: successfully
    *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
@@ -373,7 +375,13 @@ export class MeshAgent extends EventEmitter {
         if (index < 0) index = 0;
         const [evicted] = this.inbox.splice(index, 1);
         this.rememberEvicted(evicted);
-        evicted.ack();
+        // ...but NOT an id that is mid-delivery. Overflow prefers the oldest, which is exactly what a
+        // surfaced batch is made of, so without this an arrival can ack a message a host is still
+        // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
+        // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
+        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxIds} marks the
+        // now-missing id handled so that redelivery is silently acked.
+        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -445,6 +453,21 @@ export class MeshAgent extends EventEmitter {
    *  pull-only is the explicit cotal_inbox lane. */
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
     return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
+  }
+
+  /** Mark a surfaced batch as mid-delivery, so the overflow valve will not ack it out from under the
+   *  host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes: a host
+   *  that holds forever would pin the buffer against eviction, so the set is capped and dropped
+   *  wholesale if it ever exceeds what the buffer could legitimately have produced. Dropping the
+   *  marks only restores the previous behaviour; it can never ack anything early. */
+  holdInFlight(ids: readonly string[]): void {
+    for (const id of ids) this.inFlightIds.add(id);
+    if (this.inFlightIds.size > MAX_INBOX * 2) this.inFlightIds.clear();
+  }
+
+  /** The delivery verdict is in (either way) — these ids are ordinary backlog again. */
+  releaseInFlight(ids: readonly string[]): void {
+    for (const id of ids) this.inFlightIds.delete(id);
   }
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
