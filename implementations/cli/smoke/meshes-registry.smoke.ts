@@ -428,7 +428,7 @@ try {
   // suite can catch that: asserting the rules alone stayed green while `add <already-registered>`
   // silently overwrote a record and "point at a different folder" asked nothing.
   const { addWizard } = await import("../src/commands/meshes-wizard.js");
-  interface Asked { kind: "text" | "select" | "confirm"; message: string }
+  interface Asked { kind: "text" | "select" | "confirm"; message: string; initialValue?: boolean }
   /** A scripted terminal: answers in order, and records what it was asked. */
   const driver = (answers: unknown[]) => {
     const asked: Asked[] = [];
@@ -448,10 +448,34 @@ try {
         spinner: () => ({ start() {}, stop() {} }),
         async text(o: { message: string }) { asked.push({ kind: "text", message: o.message }); return nextAnswer(o.message) as string; },
         async select<T>(o: { message: string }) { asked.push({ kind: "select", message: o.message }); return nextAnswer(o.message) as T; },
-        async confirm(o: { message: string }) { asked.push({ kind: "confirm", message: o.message }); return nextAnswer(o.message) as boolean; },
+        async confirm(o: { message: string; initialValue?: boolean }) { asked.push({ kind: "confirm", message: o.message, initialValue: o.initialValue }); return nextAnswer(o.message) as boolean; },
       },
     };
   };
+
+  // 0. THE GUIDED OVERLAY CONSENT. It shipped as dead code: both early paths validated the address
+  // with acceptance withheld, so an overlay URL was refused before this question could be asked and
+  // the operator could never say yes to something the validator had already rejected. These cases
+  // exist because "the flag form works" is not the same claim as "the feature works", and this file
+  // is the one that holds the two front ends to the same behaviour.
+  const OVERLAY = "nats://100.64.0.1:4222"; // an overlay literal; nothing listens there
+  const declined = driver([false]);
+  // Declining sends the wizard back to the address prompt, which is correct behaviour and means the
+  // script runs out. That exhaustion IS the terminator here, and it doubles as proof the decline
+  // did not fall through into registration.
+  let declineReprompted = false;
+  try {
+    await addWizard({ server: OVERLAY }, root, declined.io as never);
+  } catch (e) {
+    declineReprompted = /asked more than the script answers/.test((e as Error).message);
+    if (!declineReprompted) throw e;
+  }
+  const consentAsk = declined.asked.find((a) => a.kind === "confirm" && /accepting that dependency/i.test(a.message));
+  check("the wizard ASKS before registering an unencrypted overlay", consentAsk !== undefined, declined.asked);
+  check("…and asks it DEFAULT-DENY, so Enter does not accept an unverifiable transport",
+    consentAsk?.initialValue === false, consentAsk);
+  check("…and declining returns to the address prompt rather than registering", declineReprompted, declined.asked);
+  check("…and writes nothing", loadMeshes().every((m) => m.server !== OVERLAY), loadMeshes());
 
   // 1. A name that came in on the command line must still hit the clash gate.
   recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
