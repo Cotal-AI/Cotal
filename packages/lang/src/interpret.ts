@@ -353,10 +353,19 @@ class Interpreter {
         this.journal.settle(key, { status: "cancelled" }, endedAt);
         throw e;
       }
+      // A handler may raise a language code directly, and it survives. The simulator's "unscripted
+      // effect" is L6001, and flattening that to a generic handler fault would tell a caller acting
+      // on `code` that the handler broke, when what actually happened is that their script is
+      // incomplete. Only the L-code shape is honoured: anything else a thrown object happens to
+      // call `code` (an errno, an HTTP status) is a handler fault and is recorded as one.
+      const raised = (e as { code?: unknown }).code;
+      const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
       const error: EntryError =
         e instanceof EffectError
           ? { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }
-          : { code: "L4000", kind: "handler-fault", message: (e as Error).message };
+          : carried !== null
+            ? { code: carried, kind: "handler-fault", message: (e as Error).message }
+            : { code: "L4000", kind: "handler-fault", message: (e as Error).message };
       this.journal.settle(key, { status: "failed", error }, endedAt);
       frame.clock.advance(endedAt);
       throw e instanceof EffectError ? e : new EffectError(error.code, error.kind, error.message);
@@ -598,11 +607,23 @@ class Interpreter {
     switch (name) {
       case "spawn": {
         const persona = typeof args[0] === "string" ? (args[0] as string) : String(this.option(args[0], "persona"));
+        // Every accepted option is forwarded, including the three that are policy rather than
+        // identity. Dropping them here would be silent: the validator accepts `permits`, so an
+        // author who writes a budget gets no error and no budget. They are deliberately absent
+        // from `hashedOptions` (§5.12) because they decide the INTERPRETATION of a result, not the
+        // recorded fact, so they are reapplied from current source on resume rather than hashed.
         const req = {
           persona,
           ...(this.option(bag, "worktree") !== undefined ? { worktree: this.option(bag, "worktree") as string } : {}),
           ...(this.option(bag, "role") !== undefined ? { role: this.option(bag, "role") as string } : {}),
           ...(this.option(bag, "join") !== undefined ? { join: this.option(bag, "join") as ChannelHandleValue[] } : {}),
+          ...(this.option(bag, "permits") !== undefined
+            ? { permits: this.option(bag, "permits") as Record<string, unknown> }
+            : {}),
+          ...(this.option(bag, "supervise") !== undefined
+            ? { supervise: this.option(bag, "supervise") as Record<string, unknown> }
+            : {}),
+          ...(this.option(bag, "onFork") !== undefined ? { onFork: this.option(bag, "onFork") as "respawn" | "adopt" } : {}),
         };
         return await this.performEffect(
           "spawn",

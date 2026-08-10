@@ -55,7 +55,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     signature:
       "spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork? }) -> AgentHandle",
     doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy.",
-    example: 'const builder = spawn("builder", { worktree: "wt-1", join: [team] })',
+    example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },
   turn: {
     kind: "turn",
@@ -145,7 +145,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     opensScope: false,
     signature: "monitor(agent, { name? }) -> null",
     doc: "Register interest in an agent's health, after which down(agent) is an ordinary awaitable event a concurrent branch can watch.",
-    example: 'monitor(builder)\nconst d = await wait(down(builder), { timeout: "1h" })',
+    example: 'await monitor(builder)\nconst d = await wait(down(builder), { name: "gone", timeout: "1h" })',
   },
   parallel: {
     kind: null,

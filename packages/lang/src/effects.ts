@@ -73,6 +73,8 @@ export interface SpawnRequest {
   readonly role?: string;
   readonly permits?: Readonly<Record<string, unknown>>;
   readonly supervise?: Readonly<Record<string, unknown>>;
+  /** What a fork does with this agent: spawn a fresh one, or reuse the original. Default respawn. */
+  readonly onFork?: "respawn" | "adopt";
 }
 
 export interface TurnRequest {

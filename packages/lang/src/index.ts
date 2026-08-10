@@ -80,6 +80,17 @@ export {
 } from "./duration.js";
 
 export {
+  RecordingHandler,
+  dryRun,
+  renderReport,
+  type DryRunOptions,
+  type DryRunReport,
+  type PlannedAgent,
+  type PlannedCheckpoint,
+  type PlannedEffect,
+} from "./dryrun.js";
+
+export {
   SimHandler,
   SimUnscriptedError,
   type Scripted,
