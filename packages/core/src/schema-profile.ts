@@ -29,12 +29,15 @@ export const SCHEMA_PROFILE = Object.freeze({
   // — deterministic, host-independent, and unlike a timer, immune to the machine. Two bases were
   // offered for the constant, and both are dead:
   //
-  //   COST. There is no knee, and the spread WIDENS with size rather than converging. Warm CPU
-  //   across four schema families at one node count: 2.2x at ~256 nodes, 8.8x at ~512, 27.3x at
-  //   ~1024 (6.3ms boolean-anyOf against 173.0ms object-patterned), and 45.8x at ~2048 (13.4ms
-  //   against 611.7ms). Node count is a sound bound and a poor predictor, so any single scalar is
-  //   set by the worst family and refuses the best — it would reject a cheap 2048-branch union
-  //   while admitting an object schema costing 45x more.
+  //   COST. There is no knee. Compile cost varies by an ORDER OF MAGNITUDE across schema shapes at a
+  //   single node count, the spread itself grows with node count, and no two measurements of one
+  //   cell have ever agreed. NO FIGURE IS QUOTED HERE ON PURPOSE. Six runs of the same quantity
+  //   across four parties spanned a factor of six, agreeing only where one had read another's number
+  //   first, so any single ratio in this comment would be an unreplicated observation presented as a
+  //   measurement. Node count is a sound bound and a poor predictor: a single scalar is set by the
+  //   worst family and refuses the best, rejecting a cheap union while admitting a far costlier
+  //   object schema. THAT SHAPE is what defeats the proposal, and unlike a ratio it survives a re-run
+  //   on another host. To see the numbers for your host, run the probe named below.
   //
   //   CRASH. A 2048-node patterned-properties document was observed to RangeError in Ajv's codegen
   //   at ~186KB — inside `maxDocumentBytes` — which looked like a hard edge worth standing in front
@@ -57,7 +60,8 @@ export const SCHEMA_PROFILE = Object.freeze({
   // loosening cannot break a contract that was already valid.
   //
   // BEFORE PROPOSING ONE AGAIN, run `implementations/manager/smoke/_probe-nodecount-rejected.ts`.
-  // It reproduces the table above against the compiler that actually ships. The first version of
+  // It MEASURES the spread and the crash boundary on your host, against the compiler that actually
+  // ships, and reports no stored figures of its own. The first version of
   // this ceiling was derived from a corpus THE CEILING ITSELF BOUNDED — every synthetic above the
   // line was refused, so the calibration reported that nothing measured had exceeded the budget,
   // and the number was unfalsifiable the moment it shipped. Measure above the line, or do not set
@@ -229,7 +233,11 @@ export interface SchemaBundle {
  * count was bypassed three separate times — booleans, closure splitting, legacy `dependencies` — and
  * each repair added entries to a hand-maintained list of things to walk. Then asking Ajv what it
  * actually registers (63 keywords, against 19 walked) produced a FOURTH within the hour:
- * `contentSchema` is native 2020-12, holds a subschema, and hid 400 nodes while counting as 2.
+ * `contentSchema` is native 2020-12 and holds a subschema, so it is admitted on the specification's
+ * authority and NOT on any hole observed here: Ajv 8.20.0 does not implement it (absent from
+ * `RULES.all`; codegen length is unchanged by a 400-property `contentSchema`), so counting it as one
+ * node matched an ignore and hid no compiler work. It is listed because that stops being true the
+ * day a compiler implements it. `dependencies` is the keyword that actually bypassed the counter.
  *
  * "Count the keywords I know" cannot be made sound by knowing more keywords, because its failure
  * mode is silent: an unrecognised schema-valued position contributes ZERO and the count still looks
@@ -258,8 +266,9 @@ const SCHEMA_VALUED_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
  *
  *  1. CAN IT HOLD A SUBSCHEMA? Then it belongs in one of the three positional lists above, never
  *     here. Getting this wrong is not a stylistic error — the walk stops descending, and a schema
- *     position gets treated as inert data. That is exactly how `contentSchema` and `dependencies`
- *     went unrecognised, and it is the defect this whole inversion exists to make impossible.
+ *     position gets treated as inert data. That is exactly how `dependencies` went unrecognised (600
+ *     schemas under it counted as 1 while Ajv generated 684,811 source characters and enforced every
+ *     one), and it is the defect this whole inversion exists to make impossible.
  *  2. IS IT INERT? An annotation that cannot change the validation outcome or its cost is admitted
  *     freely, and the ENTIRE 2020-12 annotation vocabulary is listed below for that reason:
  *     `title`, `description`, `default`, `deprecated`, `readOnly`, `writeOnly`, `examples`,

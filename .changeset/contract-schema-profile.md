@@ -10,7 +10,8 @@ profile (SPEC §13.7/§13.8) now validates a schema document
 against an explicit admitted vocabulary and raises `contract-invalid` for any keyword outside it.
 JSON Schema says an unknown keyword is ignored as an annotation; this profile refuses it, because a
 profile that enforces bounds cannot soundly bound what it does not recognise — counting only known
-keywords silently skipped `contentSchema` and `dependencies`, both of which hold subschemas. The
+keywords silently skipped `dependencies`, whose legacy schema form holds subschemas the walk never
+reached. The
 admitted set covers the full 2020-12 assertion, applicator and annotation vocabulary, so
 documentation keywords (`title`, `description`, `default`, `examples`, `deprecated`, `readOnly`,
 `writeOnly`, `$comment`) and the `$`-identifiers are all accepted; a vendor extension or a keyword
@@ -19,7 +20,7 @@ schemas, check them against the admitted list before upgrading.
 
 Everything else in this change admits more, not less. The `maxSchemaNodes` and `maxClosureNodes`
 ceilings are removed: neither candidate basis for the constant survived measurement, since compile
-cost varies up to 46x across schema shapes at one node count, and the compiler crash the bound was
+cost varies by an order of magnitude across schema shapes at one node count, and the compiler crash the bound was
 meant to sit below is not a stable edge (the same document threw on a cold compile and succeeded on
 the immediate warm retry in the same process). Registration remains bounded by document and closure
 bytes, structural depth, reference-chain depth, pattern complexity, the admitted vocabulary, and the

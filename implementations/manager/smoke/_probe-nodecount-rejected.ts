@@ -9,10 +9,12 @@
  *
  * VERDICT: REJECTED, and both candidate bases for the constant were falsified by running this.
  *
- *   COST HAS NO KNEE, AND THE SPREAD WIDENS WITH SIZE. Across four families at one node count:
- *   2.2x at ~256 nodes, 8.8x at ~512, 27.3x at ~1024, 45.8x at ~2048. Any single scalar is set by
- *   the worst family and refuses the best, and "poor predictor" is fatal when the bound BREAKS
- *   CONTRACTS. Section 2 recomputes this every run rather than quoting it.
+ *   COST HAS NO KNEE, AND THE SPREAD GROWS WITH NODE COUNT. Section 2 measures it; THIS HEADER
+ *   DELIBERATELY REPORTS NO NUMBERS. An earlier version quoted the ratios here and claimed two lines
+ *   later that section 2 recomputes them rather than quoting them. It quoted them. A reviewer sent
+ *   here for an independent figure then measured one matching the header to three significant
+ *   figures, having read it first, and disclosed the exposure itself. AN INSTRUMENT SOMEONE IS SENT
+ *   TO IN ORDER TO SETTLE A QUESTION MUST NOT OPEN BY TELLING THEM THE ANSWER.
  *
  *   THE CRASH IS NOT AN EDGE. A 2048-node patterned document was observed to RangeError in Ajv's
  *   codegen at ~186KB — inside `maxDocumentBytes`, which is what made it look like the one gap
