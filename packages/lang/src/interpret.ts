@@ -650,7 +650,20 @@ class Interpreter {
           "ask",
           stepName as string,
           { agent: agent.agent, schema: schema ?? null },
-          (ctx) => handler.ask({ agent, schema }, ctx),
+          (ctx) =>
+            handler.ask(
+              {
+                agent,
+                schema,
+                ...(this.option(bag, "deadline") !== undefined
+                  ? { deadline: this.option(bag, "deadline") as string }
+                  : {}),
+                ...(this.option(bag, "attempts") !== undefined
+                  ? { attempts: this.option(bag, "attempts") as number }
+                  : {}),
+              },
+              ctx,
+            ),
           frame,
         );
       }
@@ -668,6 +681,7 @@ class Interpreter {
                 ...(schema !== undefined ? { schema } : {}),
                 ...(this.option(bag, "timeout") !== undefined ? { timeout: this.option(bag, "timeout") as string } : {}),
                 ...(this.option(bag, "onExpiry") !== undefined ? { onExpiry: this.option(bag, "onExpiry") as "fail" | "proceed" | "escalate" } : {}),
+                ...(this.option(bag, "to") !== undefined ? { to: this.option(bag, "to") as string } : {}),
               },
               ctx,
             ),
