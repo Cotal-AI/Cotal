@@ -490,74 +490,65 @@ async function main(): Promise<void> {
   //    connecting — which is the whole failure mode, since the server's cooperation was doing the
   //    work the client should have been doing.
   await route("web+status-demand-tls", async () => {
-    const { home, cwd } = sandbox();
-    const port = await freePort();
-    homes.push({ home, port, cwd });
+    for (const command of ["web", "status"] as const) {
+      const { home, cwd } = sandbox();
+      const port = await freePort();
+      homes.push({ home, port, cwd });
 
-    const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
-      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
-    assert.equal(up.status, 0, `TLS mesh must start for the web cell:\n${up.out}`);
-    const tlsInfo = await serverInfo(port);
-    assert.equal(tlsInfo?.tls_required, true, "web cell setup: broker must be TLS-required");
+      const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+        "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+      assert.equal(up.status, 0, `TLS mesh must start for the ${command} cell:\n${up.out}`);
+      const tlsInfo = await serverInfo(port);
+      assert.equal(tlsInfo?.tls_required, true, `${command} cell setup: broker must be TLS-required`);
 
-    // Swap the listener underneath the record: same port, no TLS. The RECORD MUST SURVIVE.
-    //
-    // `cotal down` is WRONG here and this cell caught me using it: down REMOVES the registry entry,
-    // so the client then has no record to resolve, falls back to the default :4222, and the cell
-    // tests something else entirely — it reached for the shared demo broker, which this suite is
-    // not allowed to touch. Both testers killed the broker BY PID for exactly this reason; their
-    // repro was better than mine.
-    const pidFile = join(cwd, ".cotal", "nats.pid");
-    const brokerPid = Number(readFileSync(pidFile, "utf8").trim());
-    assert.ok(brokerPid > 0, `could not read the broker pid from ${pidFile} - fixture broken`);
-    try { process.kill(brokerPid, "SIGTERM"); } catch { /* already gone */ }
-    for (let i = 0; i < 40; i++) {
-      if ((await serverInfo(port, 400)) === undefined) break;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    assert.equal(await serverInfo(port), undefined,
-      "fixture: the TLS broker did not stop, so the substitution never happened");
-    const nats = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port)], { detached: true, stdio: "ignore" });
-    nats.unref();
-    for (let i = 0; i < 40; i++) {
-      const info = await serverInfo(port, 500);
-      if (info && info.tls_required !== true) break;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    const plainInfo = await serverInfo(port);
-    assert.ok(plainInfo, "web cell setup: the replacement plaintext broker never answered");
-    assert.notEqual(plainInfo?.tls_required, true, "web cell setup: replacement broker must be PLAINTEXT");
+      // Swap the listener underneath the record: same port, no TLS. `cotal down` is wrong here: it
+      // removes the record and makes the command fall back to the default mesh, testing nothing.
+      const pidFile = join(cwd, ".cotal", "nats.pid");
+      const brokerPid = Number(readFileSync(pidFile, "utf8").trim());
+      assert.ok(brokerPid > 0, `could not read the broker pid from ${pidFile} - fixture broken`);
+      try { process.kill(brokerPid, "SIGTERM"); } catch { /* already gone */ }
+      for (let i = 0; i < 40; i++) {
+        if ((await serverInfo(port, 400)) === undefined) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      assert.equal(await serverInfo(port), undefined,
+        "fixture: the TLS broker did not stop, so the substitution never happened");
+      const nats = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port)], { detached: true, stdio: "ignore" });
+      nats.unref();
+      for (let i = 0; i < 40; i++) {
+        const info = await serverInfo(port, 500);
+        if (info && info.tls_required !== true) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const plainInfo = await serverInfo(port);
+      assert.ok(plainInfo, `${command} cell setup: the replacement plaintext broker never answered`);
+      assert.notEqual(plainInfo?.tls_required, true, `${command} cell setup: replacement broker must be PLAINTEXT`);
 
-    try {
-      const web = cotal(["web", "--port", String(await freePort()), "--no-open"], home, cwd);
-      // A client that REQUIRES TLS cannot use this broker. Refusal is the pass.
-      assert.notEqual(web.status, 0,
-        `GATE FAILED (web): \`cotal web\` connected to a PLAINTEXT broker while its mesh record ` +
-        `requires TLS. The endpoint tolerated the transport instead of demanding it, which is the ` +
-        `downgrade this feature exists to prevent.\n${web.out}`);
-      // THE REASON, and the real one is not the one I first asserted. The TLS-required preflight
-      // fails against the plaintext substitute, so resolution reports the mesh UNREACHABLE and
-      // prunes the entry — "no mesh running … (stale registry entry - removed)". The refusal is
-      // correct and fail-closed; the DIAGNOSIS misattributes a transport mismatch as a dead broker,
-      // and it destroys the record on the way past. Recorded as a residual rather than papered over:
-      // this cell asserts the refusal is about reachability/transport and NOT a success, and the
-      // wording it accepts is documented above so nobody reads the match as approval of the message.
-      assert.match(web.out, /tls|TLS|no mesh running|stale registry/,
-        `web refused, but for none of the transport/reachability reasons — assert on the REASON, or ` +
-        `this passes for any startup failure:\n${web.out}`);
-      assert.doesNotMatch(web.out, /connection\s+ok/,
-        `web reported a healthy connection to a substituted plaintext broker:\n${web.out}`);
-
-      // SAME substituted broker, same record: `status` must refuse too. It previously returned
-      // rc=0 and "connection ok" here, which is worse than silence — an operator's rational
-      // response to a green check is to stop looking.
-      const st = cotal(["status"], home, cwd);
-      assert.notEqual(st.status, 0,
-        `GATE FAILED (status): reported success against a PLAINTEXT broker substituted on a ` +
-        `TLS-required mesh's port. A monitoring tool that green-lights the exact substitution this ` +
-        `feature detects is a hazard, not a gap.\n${st.out}`);
-    } finally {
-      try { process.kill(-nats.pid!, "SIGKILL"); } catch { try { nats.kill("SIGKILL"); } catch { /* */ } }
+      try {
+        const result = command === "web"
+          ? cotal(["web", "--port", String(await freePort()), "--no-open"], home, cwd)
+          : cotal(["status"], home, cwd);
+        // Each command gets its own record because the correct fail-closed preflight prunes the
+        // substituted listener. Sharing one makes the second command fall back to the default mesh.
+        if (command === "web") {
+          assert.notEqual(result.status, 0,
+            `GATE FAILED (web): connected to a PLAINTEXT broker while its mesh record requires TLS. ` +
+            `The client tolerated the transport instead of demanding it, which is the downgrade this ` +
+            `feature exists to prevent.\n${result.out}`);
+        } else {
+          // `status` is intentionally informational and exits 0 for resolver failures. Its security
+          // claim is the rendered verdict: the substituted listener must be UNREACHABLE, never ok.
+          assert.match(result.out, /connection\s+.*unreachable/,
+            `GATE FAILED (status): did not report the substituted plaintext broker unreachable:\n${result.out}`);
+        }
+        assert.match(result.out, /tls|TLS|no mesh running|stale registry/,
+          `${command} refused, but for none of the transport/reachability reasons — assert on the ` +
+          `REASON, or this passes for any startup failure:\n${result.out}`);
+        assert.doesNotMatch(result.out, /connection\s+ok/,
+          `${command} reported a healthy connection to a substituted plaintext broker:\n${result.out}`);
+      } finally {
+        try { process.kill(-nats.pid!, "SIGKILL"); } catch { try { nats.kill("SIGKILL"); } catch { /* */ } }
+      }
     }
     console.log("  ✓ web + status: both DEMAND TLS — refused a plaintext broker under a TLS-required record");
   });
