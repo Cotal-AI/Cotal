@@ -38,18 +38,40 @@
  * certs). Do not pre-relax: with nothing requiring TLS today, literals-only is the correct rule.
  */
 
-/** How a permitted join target is protected in transit. */
+/** The address class a permitted target belongs to. This is a REACHABILITY allowlist: it says the
+ *  address is one we are willing to consider, never that the connection is protected. What
+ *  protects it is {@link DialPolicy.tlsRequired}, except on loopback where nothing leaves the
+ *  machine to protect. */
 export type JoinReach =
   /** A loopback literal: the bytes never leave the machine. */
   | "loopback"
-  /** A private-overlay literal: a WireGuard tunnel between two enrolled machines, mutually
-   *  authenticated by per-node keys, with relays carrying only ciphertext. */
+  /** A private-overlay literal, permitted only alongside required TLS. See the note on
+   *  {@link DialPolicy} for why the address alone is not enough. */
   | "overlay";
 
 export interface JoinTarget {
   /** The normalized dial URL, port defaulted. */
   server: string;
   reach: JoinReach;
+}
+
+/** What the eventual connection will insist on, which the address alone cannot tell us. */
+export interface DialPolicy {
+  /**
+   * Will the dial to this target REQUIRE TLS?
+   *
+   * This is the difference between an address and a guarantee, and getting it wrong was the
+   * defect this parameter exists to close. An overlay address is not proof the overlay transport
+   * is up: with the tunnel daemon stopped, `100.64.0.0/10` is ordinary CGNAT space, and hostile
+   * DHCP or routing can answer a dial to it. So the address class establishes only that we are
+   * willing to consider the target; requiring TLS is what makes it safe.
+   *
+   * There is no field on the mesh record to source this from yet — it arrives with the work that
+   * teaches the broker to serve TLS — so callers pass `false` today and every non-loopback target
+   * is refused. That is the intended sequencing, not an oversight: see the caller for the note
+   * that must be updated at the same time the field appears.
+   */
+  tlsRequired: boolean;
 }
 
 /** The NATS default client port, used when the join URL omits one. */
@@ -95,7 +117,7 @@ function bareHost(url: URL): string {
  * Refusal is the point: an unclassifiable target is one whose credentials would cross a network
  * this build cannot encrypt, so it fails loud here rather than dialing and hoping.
  */
-export function classifyJoinTarget(raw: string): JoinTarget {
+export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget {
   let url: URL;
   try {
     url = new URL(raw);
@@ -109,13 +131,23 @@ export function classifyJoinTarget(raw: string): JoinTarget {
   const port = url.port || String(DEFAULT_PORT);
   const server = `${url.protocol}//${url.hostname}:${port}`;
 
+  // Loopback is the one class that needs no transport guarantee: nothing leaves the machine, so
+  // there is nothing on a wire for anyone to sit on.
   if (isLoopbackLiteral(host)) return { server, reach: "loopback" };
-  if (isOverlayLiteral(host)) return { server, reach: "overlay" };
+
+  if (isOverlayLiteral(host)) {
+    if (policy.tlsRequired) return { server, reach: "overlay" };
+    throw new Error(
+      `${JSON.stringify(raw)} refused: ${host} is a private-overlay address, but this build cannot require TLS on the connection, and a machine that registers a mesh sends its agent credentials to that broker.\n` +
+        `  The address alone is not enough. With the overlay's tunnel down, that range is ordinary carrier-grade NAT space, and whoever answers the dial receives the credentials.\n` +
+        `  Serving the broker over TLS - the thing that makes this address safe - is not in this build yet. Until then only a loopback literal (127.0.0.0/8, ::1) can be registered.`,
+    );
+  }
 
   throw new Error(
-    `--join ${JSON.stringify(raw)} refused: this build cannot encrypt a dial to ${host}, and a joining machine sends its agent credentials to the broker.\n` +
-      `  A join target must be a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48).\n` +
-      `  A hostname is refused even when it resolves to one of those: the verdict must not depend on a lookup someone else can answer - pass the address itself.\n` +
-      `  Serving the broker over TLS, which is what would make any address safe here, is not in this build yet.`,
+    `${JSON.stringify(raw)} refused: this build cannot protect a connection to ${host}, and a machine that registers a mesh sends its agent credentials to that broker.\n` +
+      `  Only a loopback literal (127.0.0.0/8, ::1) or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) may be registered, and the overlay one only once TLS can be required.\n` +
+      `  Ordinary private ranges are refused too: a cafe network is private, and private is not the same as yours.\n` +
+      `  A hostname is refused even when it resolves somewhere permitted - otherwise whoever answers the lookup chooses which machine receives the credentials. Pass the address itself.`,
   );
 }
