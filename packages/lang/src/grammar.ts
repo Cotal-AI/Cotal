@@ -276,7 +276,7 @@ function isNode(v: unknown): v is AnyNode {
   return v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string";
 }
 
-function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
+function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNode | null = null): void {
   const type = node.type;
 
   // Labels and labelled jumps: a bare break/continue is fine, a labelled one is not.
@@ -303,6 +303,7 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
   if (type === "CallExpression" || (type === "MemberExpression" && node.computed === true)) {
     checkContinuationHazard(node, v);
   }
+  if (type === "CallExpression") checkAsyncCallPosition(node, parent, v);
 
   switch (type) {
     case "VariableDeclaration":
@@ -451,7 +452,7 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
       ? node.async === true
       : inAsync;
 
-  for (const child of children(node)) walkShape(child, v, nowAsync);
+  for (const child of children(node)) walkShape(child, v, nowAsync, node);
 }
 
 // ---- walk 2: resolution and effect call shape --------------------------------------------
@@ -642,6 +643,43 @@ function arrayItemsCarryId(items: AnyNode): boolean {
       return name === "id" && value.type === "Literal" && typeof value.value === "string";
     });
   });
+}
+
+/**
+ * L2013: an async call must be immediately awaited, immediately returned, or be the thunk a
+ * combinator owns.
+ *
+ * Banning `Promise` is not enough, because calling an async function is itself a way to start
+ * work. `const pa = work(a); const pb = work(b);` reads as two concurrent chains and never
+ * mentions a combinator. The defect is not the race a reviewer predicted: executed, those calls
+ * run strictly sequentially because the walker awaits every call site. It is the mirror image,
+ * and for an author who is a language model it is worse. The program says "concurrently" and the
+ * runtime silently runs them one after the other, and nothing says so.
+ */
+function checkAsyncCallPosition(node: AnyNode, parent: AnyNode | null, v: Validator): void {
+  const callee = node.callee;
+  if (!isNode(callee) || callee.type !== "Identifier") return;
+  const name = callee.name as string;
+  // Primitives are always effects; a user function is only interesting if it was declared async,
+  // which the resolution walk cannot know here, so both are treated the same way: the POSITION
+  // is what is checked, not the callee's nature.
+  const isEffect = PRIMITIVES[name] !== undefined;
+  if (!isEffect) return;
+  if (parent === null) return;
+  // Only two positions are legal: awaited, or the concise body of an arrow that a combinator
+  // owns as a thunk. Everything else, including a bare statement, starts work nothing waits for.
+  const ok =
+    parent.type === "AwaitExpression" ||
+    parent.type === "ArrowFunctionExpression" ||
+    parent.type === "ReturnStatement";
+  if (ok) return;
+  v.fail(
+    "L2013",
+    node,
+    `This \`${name}\` is not awaited, so it starts work whose result nothing waits for. Read literally the program says one thing and the runtime does another: calls outside a combinator run in sequence, not concurrently.`,
+    `Await it (\`await ${name}(...)\`), return it, or make it a branch of \`parallel\`, \`race\` or \`fanOut\`.`,
+    name,
+  );
 }
 
 function checkCall(node: AnyNode, v: Validator): void {

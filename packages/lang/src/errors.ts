@@ -41,6 +41,7 @@ export const CATALOG = {
   L2002: "Shadows a builtin or a primitive",
   L2003: "Assignment to a `const` binding",
   L2011: "The Promise API is not available",
+  L2013: "An async call is not awaited",
   L2012: "Host global is not available",
   L2031: "Mutation of a frozen value",
 
@@ -52,6 +53,7 @@ export const CATALOG = {
   L3021: "`fanOut` has no stable key",
   L3022: "Two agents share a worktree concurrently",
   L3023: "Array-form `parallel` holds named effects",
+  L3024: "`fanOut` branch keys are not unique",
   L3041: "Value cannot cross an effect boundary",
   L3042: "Function passed as effect data",
   L3043: "`notify` fact is not a bounded decision record",
@@ -66,6 +68,7 @@ export const CATALOG = {
   L4007: "Checkpoint expired",
   L4008: "Concurrent worktree write",
   L4009: "Run effect ceiling reached",
+  L4013: "Step budget exhausted",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

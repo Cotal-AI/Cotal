@@ -35,8 +35,8 @@ const keysOf = (j: Journal) =>
 
 const PROGRAM = `
 const team = channel("feat-auth");
-const planner = spawn("planner", { worktree: "wt-1", join: [team] });
-const builder = spawn("builder", { worktree: "wt-1", join: [team] });
+const planner = await spawn("planner", { worktree: "wt-1", join: [team] });
+const builder = await spawn("builder", { worktree: "wt-1", join: [team] });
 
 await turn(planner, { name: "draft-plan" });
 
@@ -124,7 +124,7 @@ let firstJournal: Journal;
   // `rescue` keyword. Each attempt gets a fresh occurrence, so the retry re-runs by construction
   // rather than by anything unwinding the journal.
   const RETRY = `
-let builder = spawn("builder", { worktree: "wt-1" });
+let builder = await spawn("builder", { worktree: "wt-1" });
 let built = null;
 for (let attempt = 0; attempt < 3; attempt = attempt + 1) {
   try {
@@ -132,7 +132,7 @@ for (let attempt = 0; attempt < 3; attempt = attempt + 1) {
     break;
   } catch (e) {
     if (e.kind !== "agent-down") { throw e; }
-    builder = spawn("builder", { worktree: "wt-1" });
+    builder = await spawn("builder", { worktree: "wt-1" });
   }
 }
 log(built.status);
@@ -169,8 +169,8 @@ log(built.status);
 
 {
   const CONCURRENT = `
-const a = spawn("reviewer", { role: "security" });
-const b = spawn("reviewer", { role: "perf" });
+const a = await spawn("reviewer", { role: "security" });
+const b = await spawn("reviewer", { role: "perf" });
 const out = await parallel({
   security: () => turn(a, { name: "review" }),
   perf: () => turn(b, { name: "review" }),
@@ -202,7 +202,7 @@ const out = await parallel({
 const t = channel("t");
 const reviews = await fanOut(
   ["security", "perf"],
-  (lens) => turn(spawn("reviewer", { role: lens, join: [t] }), { name: "review" }),
+  async (lens) => turn(await spawn("reviewer", { role: lens, join: [t] }), { name: "review" }),
   { name: "reviews", key: (lens) => lens },
 );
 `;
@@ -223,7 +223,7 @@ const reviews = await fanOut(
 
 {
   const BAD = `
-const out = await fanOut([{ n: 1 }, { n: 2 }], (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });
+const out = await fanOut([{ n: 1 }, { n: 2 }], async (i) => turn(await spawn("r"), { name: "review" }), { name: "reviews" });
 `;
   let threw = "";
   try {
@@ -238,7 +238,7 @@ const out = await fanOut([{ n: 1 }, { n: 2 }], (i) => turn(spawn("r"), { name: "
   const GOOD = `
 const out = await fanOut(
   [{ id: "security" }, { id: "perf" }],
-  (i) => turn(spawn("r", { role: i.id }), { name: "review" }),
+  async (i) => turn(await spawn("r", { role: i.id }), { name: "review" }),
   { name: "reviews" },
 );
 `;
@@ -258,7 +258,7 @@ const out = await fanOut(
   const DUP = `
 const out = await fanOut(
   [{ id: "same" }, { id: "same" }],
-  (i) => turn(spawn("r"), { name: "review" }),
+  async (i) => turn(await spawn("r"), { name: "review" }),
   { name: "reviews" },
 );
 `;
@@ -303,7 +303,7 @@ const out = await fanOut(
 
 {
   const CLOCK = `
-const a = spawn("x");
+const a = await spawn("x");
 const t0 = now();
 const t1 = now();
 await sleep("2h");
@@ -322,7 +322,7 @@ log(t0, t1, t2);
 
 {
   const RAND = `
-const a = spawn("x");
+const a = await spawn("x");
 await turn(a, { name: "go" });
 log(random());
 `;
@@ -347,7 +347,7 @@ log(random());
 
 {
   const OTHERWISE = `
-const a = spawn("x");
+const a = await spawn("x");
 const reply = await wait(replied(a), { name: "await-reply", timeout: "20m" });
 const chased = reply ?? await turn(a, { name: "chase" });
 log(chased.status);
@@ -368,7 +368,7 @@ log(chased.status);
 
 {
   const FREEZE = `
-const a = spawn("x");
+const a = await spawn("x");
 const r = await turn(a, { name: "go" });
 let caught = "none";
 try {

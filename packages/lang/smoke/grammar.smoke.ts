@@ -48,8 +48,8 @@ accepts(
   "the worked example from the design doc, at the top level",
   `
 const team = channel("feat-auth");
-const planner = spawn("planner", { worktree: "wt-1", join: [team] });
-const builder = spawn("builder", { worktree: "wt-1", join: [team], permits: { turns: 40 } });
+const planner = await spawn("planner", { worktree: "wt-1", join: [team] });
+const builder = await spawn("builder", { worktree: "wt-1", join: [team], permits: { turns: 40 } });
 
 await turn(planner, { name: "draft-plan" });
 
@@ -67,7 +67,7 @@ while (r.status === "blocked") {
 
 const reviews = await fanOut(
   ["security", "perf"],
-  (lens) => turn(spawn("reviewer", { worktree: "wt-1", join: [team], role: lens }), { name: "review" }),
+  async (lens) => turn(await spawn("reviewer", { worktree: "wt-1", join: [team], role: lens }), { name: "review" }),
   { name: "reviews", key: (lens) => lens },
 );
 log(reviews);
@@ -98,7 +98,7 @@ rejects(
 );
 accepts(
   "the sanctioned form is the record-shaped parallel",
-  'async function f(a, b) { return parallel({ x: () => turn(a, { name: "x" }), y: () => turn(b, { name: "y" }) }, { name: "both" }); }',
+  'async function f(a, b) { await parallel({ x: () => turn(a, { name: "x" }), y: () => turn(b, { name: "y" }) }, { name: "both" }); }',
 );
 
 // ---- 4) journal keys that cannot survive an edit are refused ------------------------------
@@ -159,37 +159,37 @@ rejects(
 // instruction.
 accepts(
   "a bounded decision record is fine",
-  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { attempt: 3, sha: "abc123" } });',
+  'const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { attempt: 3, sha: "abc123" } });',
 );
 rejects(
   "prose in a decision token is refused",
   "L3043",
-  'const a = spawn("x");\nawait notify([a], { decision: "the build step", outcome: "blocked" });',
+  'const a = await spawn("x");\nawait notify([a], { decision: "the build step", outcome: "blocked" });',
 );
 rejects(
   "an extra top-level field is refused",
   "L3043",
-  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", instructions: "now go fix it" });',
+  'const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", instructions: "now go fix it" });',
 );
 rejects(
   "a nested detail value is refused",
   "L3043",
-  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { plan: { steps: 3 } } });',
+  'const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { plan: { steps: 3 } } });',
 );
 rejects(
   "a long detail string is refused",
   "L3043",
-  `const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { note: "${"x".repeat(200)}" } });`,
+  `const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { note: "${"x".repeat(200)}" } });`,
 );
 rejects(
   "more than eight detail keys is refused",
   "L3043",
-  'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 } });',
+  'const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9 } });',
 );
 rejects(
   "a fact with no outcome is refused",
   "L3043",
-  'const a = spawn("x");\nawait notify([a], { decision: "build" });',
+  'const a = await spawn("x");\nawait notify([a], { decision: "build" });',
 );
 
 // The design's section 1 example, verbatim, semicolon-free and with an un-awaited spawn. Both
@@ -197,9 +197,9 @@ rejects(
 accepts(
   "the design's section 1 example parses exactly as written",
   `const team    = channel("feat-auth")
-const planner = spawn("planner", { worktree: "wt-1", join: [team] })
-const builder = spawn("builder", { worktree: "wt-1", join: [team],
-                                   permits: { turns: 40, spend: "5usd" } })
+const planner = await spawn("planner", { worktree: "wt-1", join: [team] })
+const builder = await spawn("builder", { worktree: "wt-1", join: [team],
+                                         permits: { turns: 40, spend: "5usd" } })
 
 await turn(planner, { name: "draft-plan" })
 await checkpoint("approve-plan", "approve the plan?", { timeout: "10m", onExpiry: "proceed" })
@@ -220,44 +220,63 @@ while (r.status === "blocked") {
   const eightKeys = "a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8";
   accepts(
     "exactly eight detail keys is at the cap, not over it",
-    `const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { ${eightKeys} } });`,
+    `const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { ${eightKeys} } });`,
   );
   accepts(
     "a detail string of exactly 128 characters is admitted",
-    `const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { note: "${"x".repeat(128)}" } });`,
+    `const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "blocked", detail: { note: "${"x".repeat(128)}" } });`,
   );
   accepts(
     "detail values may be strings, numbers and booleans",
-    'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "ok", detail: { sha: "abc", n: 3, clean: true } });',
+    'const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "ok", detail: { sha: "abc", n: 3, clean: true } });',
   );
-  accepts("a fact with no detail at all is admitted", 'const a = spawn("x");\nawait notify([a], { decision: "build", outcome: "ok" });');
+  accepts("a fact with no detail at all is admitted", 'const a = await spawn("x");\nawait notify([a], { decision: "build", outcome: "ok" });');
 }
 {
   const name64 = "a".repeat(64);
-  accepts("a step name of exactly 64 characters is admitted", `const a = spawn("x");\nawait turn(a, { name: "${name64}" });`);
-  rejects("65 characters is over the cap", "L3014", `const a = spawn("x");\nawait turn(a, { name: "${"a".repeat(65)}" });`);
-  accepts("a single-character step name is admitted", 'const a = spawn("x");\nawait turn(a, { name: "b" });');
-  accepts("digits and inner hyphens are admitted", 'const a = spawn("x");\nawait turn(a, { name: "build-2-final" });');
+  accepts("a step name of exactly 64 characters is admitted", `const a = await spawn("x");\nawait turn(a, { name: "${name64}" });`);
+  rejects("65 characters is over the cap", "L3014", `const a = await spawn("x");\nawait turn(a, { name: "${"a".repeat(65)}" });`);
+  accepts("a single-character step name is admitted", 'const a = await spawn("x");\nawait turn(a, { name: "b" });');
+  accepts("digits and inner hyphens are admitted", 'const a = await spawn("x");\nawait turn(a, { name: "build-2-final" });');
 }
 {
   // The fanOut lint must not fire on the documented default, which is items carrying a string id.
-  const withIds = 'await fanOut([{ id: "a" }, { id: "b" }], (i) => turn(spawn("r", { role: i.id }), { name: "review" }), { name: "reviews" });';
+  const withIds = 'await fanOut([{ id: "a" }, { id: "b" }], async (i) => turn(await spawn("r", { role: i.id }), { name: "review" }), { name: "reviews" });';
   const r = validate(withIds);
   ok("items carrying a string id are not linted: that is the documented default", r.warnings.length === 0, r.warnings.map((w) => w.code));
 
-  const noIds = 'await fanOut(["security", "perf"], (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });';
+  const noIds = 'await fanOut(["security", "perf"], async (i) => turn(await spawn("r"), { name: "review" }), { name: "reviews" });';
   ok(
     "items that visibly carry no id still are",
     validate(noIds).warnings.some((w) => w.code === "L3021"),
   );
 
-  const computed = 'const items = range(3);\nawait fanOut(items, (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });';
+  const computed = 'const items = range(3);\nawait fanOut(items, async (i) => turn(await spawn("r"), { name: "review" }), { name: "reviews" });';
   ok(
     "a computed list is not judged statically: the runtime decides it",
     validate(computed).warnings.length === 0,
     validate(computed).warnings.map((w) => w.code),
   );
 }
+
+// ---- 5d) concurrency must be explicit, not implied by the text -------------------------------
+
+// Banning Promise is not enough: calling an async function is itself a way to start work, and
+// the program text then reads as concurrency the runtime does not provide.
+rejects(
+  "a primitive call held in a variable is refused",
+  "L2013",
+  'const a = await spawn("x");\nconst p = turn(a, { name: "build" });\nawait p;',
+);
+rejects(
+  "a bare un-awaited primitive statement is refused",
+  "L2013",
+  'const a = await spawn("x");\nmonitor(a);',
+);
+accepts(
+  "awaited is fine, and so is a combinator thunk",
+  'const a = await spawn("x");\nawait monitor(a);\nawait parallel({ one: () => turn(a, { name: "b" }) }, { name: "p" });',
+);
 
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
@@ -279,8 +298,8 @@ rejects("no computed property names", "L1011", "function f(k) { return { [k]: 1 
 // ASI is ALLOWED, against Jessie: the author writes the JavaScript it would write anyway, which
 // is frequently semicolon-free, and ASI is parse-deterministic so determinism is untouched. Only
 // the two constructs where a newline genuinely changes meaning stay errors.
-accepts("semicolon-free source is ordinary", 'const a = spawn("x")\nlog(a)\n');
-accepts("explicit terminators are fine too", 'const a = spawn("x");\nlog(a);\n');
+accepts("semicolon-free source is ordinary", 'const a = await spawn("x")\nlog(a)\n');
+accepts("explicit terminators are fine too", 'const a = await spawn("x");\nlog(a);\n');
 rejects(
   "a return whose value is on the next line is a hazard",
   "L1008",
@@ -289,12 +308,12 @@ rejects(
 rejects(
   "a line starting with ( continues the one above it",
   "L1008",
-  'const a = spawn("x")\n(log(a));\n',
+  'const a = await spawn("x")\n(log(a));\n',
 );
 rejects(
   "a line starting with [ does the same",
   "L1008",
-  'const a = spawn("x")\n[1, 2];\n',
+  'const a = await spawn("x")\n[1, 2];\n',
 );
 // A for-header's declaration and update have no terminator of their own: the loop's semicolons
 // separate them. Requiring one there would reject every for loop, which the retry pattern needs.
@@ -315,7 +334,7 @@ rejects(
 
 // async/await itself is the one deviation from Jessie, and it must work in both positions.
 accepts("async and await are restored", 'async function f(a) { await turn(a, { name: "build" }); }');
-accepts("top-level await is the normal program shape", 'const a = spawn("x");\nawait turn(a, { name: "build" });');
+accepts("top-level await is the normal program shape", 'const a = await spawn("x");\nawait turn(a, { name: "build" });');
 
 // ---- 7) static name resolution -------------------------------------------------------------
 
@@ -366,7 +385,7 @@ accepts("role-parametric procedures are the reuse mechanism",
 }
 {
   // A list whose items visibly carry no id: the source shows there is no stable key.
-  const r = validate('await fanOut(["a", "b"], (i) => turn(spawn("r"), { name: "review" }), { name: "reviews" });');
+  const r = validate('await fanOut(["a", "b"], async (i) => turn(await spawn("r"), { name: "review" }), { name: "reviews" });');
   ok("fanOut over visibly unkeyable items is linted", r.warnings.some((w) => w.code === "L3021"), r.warnings.map((w) => w.code));
 }
 {
