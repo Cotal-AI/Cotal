@@ -27,8 +27,16 @@ export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<str
  *  endpoint `token` as their first field, validated before anything else runs. Shutdown is an
  *  explicit op, NOT a disguised hook event. */
 type ControlFrame =
-  | { token?: unknown; event?: unknown; op?: undefined }
+  | { token?: unknown; event?: unknown; handoff?: unknown; op?: undefined }
   | { token?: unknown; op?: "shutdown" };
+
+/** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
+ *  Content is irrelevant — arrival is the signal — but a stable token keeps a transcript readable. */
+export const HANDOFF_RECEIPT = '{"handoff":"ok"}\n';
+/** Backstop for a client that declared `handoff` and then neither confirmed nor closed. The relay's
+ *  own stdout backstop is 1s, and a client that dies takes the socket with it (→ `close` → not
+ *  delivered), so this only catches a wedged one. Un-delivered on expiry: never commit on a guess. */
+const HANDOFF_DEADLINE_MS = 5_000;
 
 export interface ControlServerOpts {
   /** Fail loud on a bind we can't hold. A managed listener (the in-agent MCP server, the Hermes
@@ -48,10 +56,11 @@ export interface ControlServerOpts {
    *  `delivered === true` and leaves them un-acked otherwise, so the durable redelivery brings them
    *  back instead of the batch being silently consumed.
    *
-   *  `delivered` is "the reply was written to a socket that was still open", which is as far as this
-   *  process can see. It does NOT prove the relay printed it or that the runtime applied it: a client
-   *  that closes between our write and the kernel flush still reads as delivered. It is exact for the
-   *  case that matters — a client that had already gone away when we answered. */
+   *  How strong `delivered` is depends on the client. A client that sets `handoff: true` (the hook
+   *  relay does) confirms only after the reply has cleared its own output to the runtime, so
+   *  `delivered` covers the whole journey. For any other client it means "written to a socket that
+   *  was still open" — exact for the case that matters, a client that had already gone away when we
+   *  answered, but blind to one that dies with the reply still unflushed downstream. */
   onReply?: (ev: HookEvent, delivered: boolean) => void;
 }
 
@@ -92,10 +101,20 @@ export function formatInjection(items: InboxItem[]): string | undefined {
   return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
 }
 
-/** Write one reply frame and report whether it reached a live client. Resolves `false` when the
- *  socket had already gone (the relay timed out and destroyed it, or the hook process was killed) —
- *  the signal {@link ControlServerOpts.onReply} carries so a handler never commits into the void. */
-function writeReply(sock: Socket, reply: Record<string, unknown>): Promise<boolean> {
+/** Write one reply frame and report whether it actually reached the runtime.
+ *
+ *  Two strengths, chosen by the client:
+ *
+ *  - **Socket write** (default). Resolves `false` when the socket had already gone (the relay timed
+ *    out and destroyed it, or the hook process was killed). This is as far as we can see on our own,
+ *    and it is NOT the whole journey: the reply still has to cross the client's own output to the
+ *    runtime, and a client that dies with it unflushed reads as delivered here.
+ *  - **Confirmed handoff** (`handoff: true` in the request frame). We hold the connection open until
+ *    the client writes {@link HANDOFF_RECEIPT} back, which it does only once the reply has cleared
+ *    its output. A close, an error, or the deadline without that receipt is NOT delivered. This is
+ *    what closes the large-reply hole: a 6 MiB injection that the relay's 1s stdout backstop kills
+ *    mid-flush leaves the batch un-acked, so JetStream redelivers it. */
+function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: boolean): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (ok: boolean): void => {
@@ -107,10 +126,41 @@ function writeReply(sock: Socket, reply: Record<string, unknown>): Promise<boole
     // `finish` (the end callback) precedes `close` on the success path, so the first signal wins.
     sock.once("error", () => done(false));
     sock.once("close", () => done(false));
+    if (!awaitHandoff) {
+      try {
+        sock.end(JSON.stringify(reply) + "\n", ((err?: Error | null) => done(!err)) as () => void);
+      } catch {
+        done(false); // already destroyed — end() throws rather than calling back
+      }
+      return;
+    }
+    const deadline = setTimeout(() => {
+      sock.destroy(); // wedged client: stop waiting, and do NOT credit a handoff we never saw
+      done(false);
+    }, HANDOFF_DEADLINE_MS);
+    deadline.unref?.();
+    let receipt = "";
+    sock.on("data", (d: string) => {
+      receipt += d;
+      if (!receipt.includes("\n")) return;
+      clearTimeout(deadline);
+      try {
+        sock.end();
+      } catch {
+        /* client already gone; the receipt is what mattered and we have it */
+      }
+      done(true);
+    });
     try {
-      sock.end(JSON.stringify(reply) + "\n", ((err?: Error | null) => done(!err)) as () => void);
+      // write, not end: the client cannot send its receipt down a connection we have half-closed.
+      sock.write(JSON.stringify(reply) + "\n", (err?: Error | null) => {
+        if (!err) return;
+        clearTimeout(deadline);
+        done(false);
+      });
     } catch {
-      done(false); // already destroyed — end() throws rather than calling back
+      clearTimeout(deadline);
+      done(false);
     }
   });
 }
@@ -183,8 +233,9 @@ export function startControlServer(
         return;
       }
       const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
+      const awaitHandoff = (frame as { handoff?: unknown }).handoff === true;
       const reply = await handle(agent, ev);
-      opts.onReply?.(ev, await writeReply(sock, reply));
+      opts.onReply?.(ev, await writeReply(sock, reply, awaitHandoff));
     });
     sock.on("error", () => {
       /* ignore client errors */

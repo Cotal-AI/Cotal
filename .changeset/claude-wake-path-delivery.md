@@ -14,12 +14,17 @@ connector had already committed it — and because the message was recorded as h
 JetStream redelivery was acked and discarded on arrival, so nothing could bring it back. The peer
 simply stopped answering, and only a human noticed.
 
-A message is now committed only once the reply carrying it is confirmed delivered to a live hook
-client (`startControlServer` gains an additive `onReply(event, delivered)`); anything less leaves it
-un-acked, so it redelivers and the agent is woken again. The verdict is tracked per hook event
-rather than in one slot, because hook frames are separate connections that can overlap and would
-otherwise let one frame's outcome commit another frame's messages. This errs toward delivering
-twice rather than losing one: a re-surfaced batch is flagged as a possible repeat.
+A message is now committed only once the reply carrying it has reached the runtime — the whole
+journey, not the first leg. The hook relay confirms the handoff back to the connector after the
+reply has cleared its own stdout, and the connector waits for that receipt
+(`startControlServer` gains an additive `onReply(event, delivered)`, and a client opts in with
+`handoff: true`); anything less leaves the message un-acked, so it redelivers and the agent is woken
+again. Binding to the connector's own socket write was not enough: a large injection that the
+relay's one-second flush backstop kills mid-write reaches nothing, and the batch was still
+committed. The verdict is tracked per hook event rather than in one slot, because hook frames are
+separate connections that can overlap and would otherwise let one frame's outcome commit another
+frame's messages. This errs toward delivering twice rather than losing one: a re-surfaced batch is
+flagged as a possible repeat.
 
 Two further ways the same path could go quiet are closed. Presence updates no longer gate delivery —
 a failed presence write used to skip both the message injection and the end-of-turn flush of

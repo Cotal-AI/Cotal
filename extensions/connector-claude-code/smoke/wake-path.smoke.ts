@@ -166,7 +166,10 @@ function fireHook(event: Record<string, unknown>, opts: { dropReply?: boolean } 
  * own 2s abandon timer and its stdout-flush backstop. Without it, `delivered === true` might be
  * unreachable in production and every message would redeliver forever behind a green suite.
  */
-function fireHookViaRealRelay(event: Record<string, unknown>): Promise<{ stdout: string; code: number | null }> {
+function fireHookViaRealRelay(
+  event: Record<string, unknown>,
+  opts: { starveStdout?: boolean } = {},
+): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [tsxCli, hookEntry], {
       env: {
@@ -178,8 +181,13 @@ function fireHookViaRealRelay(event: Record<string, unknown>): Promise<{ stdout:
       stdio: ["pipe", "pipe", "ignore"],
     });
     let out = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (d) => (out += d));
+    // starveStdout models a runtime that is not draining the hook's output: we never read the pipe,
+    // so a reply larger than the OS pipe buffer can never flush and the relay's 1s backstop kills it
+    // mid-write. Reading it (the normal case) is what lets a large reply through at all.
+    if (!opts.starveStdout) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (d) => (out += d));
+    }
     child.on("close", (code) => resolve({ stdout: out.trim(), code }));
     child.stdin.end(JSON.stringify(event));
   });
@@ -406,6 +414,44 @@ try {
     injected(afterAckFailure).includes("may be a repeat"),
     injected(afterAckFailure),
   );
+  await fireHook({ hook_event_name: "Stop" });
+
+  // ---- 6. the reply is too big to flush, and the relay's backstop kills it -----------------------
+  // Found by an independent tester, not by this suite. Writing the reply to the CONNECTOR'S socket
+  // is not the end of the journey: the hook process still has to push it out of its own stdout, and
+  // `runHookRelay`'s `done()` force-exits 1s later whether or not that flushed. A reply larger than
+  // the OS pipe buffer, into a runtime that is not reading, therefore vanished AFTER the connector
+  // had committed the batch — the exact permanent-silence state this whole fix exists to remove,
+  // reached through the stdout leg instead of the socket leg. The relay now sends its receipt from
+  // the flush callback only, and the connector waits for that receipt instead of its own write.
+  const BIG = 64 * 1024; // > the 64 KiB pipe buffer once a few are batched; < the 1 MiB NATS payload cap
+  const BIG_N = 20;
+  for (let i = 0; i < BIG_N; i++) await dmOtto(`dm-six-${i}: ${"x".repeat(BIG)}`);
+  await waitFor("the large batch to buffer", () => agent.inboxCount("automatic") >= BIG_N, 15_000);
+  const bigPending = agent.inboxCount("automatic");
+  check("the oversized batch is buffered and ready to surface", bigPending >= BIG_N, { bigPending });
+  const starved = await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { starveStdout: true });
+  console.log(`    (starved relay exited ${starved.code} with ${starved.stdout.length} bytes read by the runtime)`);
+  check("the starved relay still exits without blocking the session", starved.code === 0, starved.code);
+  check("the runtime received none of it, so the batch was NOT handed off", starved.stdout.length === 0, {
+    stdoutBytes: starved.stdout.length,
+  });
+  await sleep(500); // the connector's verdict lands just after the child dies
+  check(
+    "a reply the runtime never received does NOT consume the batch",
+    agent.inboxCount("automatic") >= BIG_N,
+    { stillBuffered: agent.inboxCount("automatic"), expected: BIG_N },
+  );
+  // The same batch, to a runtime that IS reading: it must get through and commit, or the fix above
+  // would "pass" by never delivering anything.
+  const bigOk = await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" });
+  await sleep(500);
+  check("the same batch DOES reach a runtime that is reading", injected(bigOk.stdout).includes("dm-six-0"), {
+    bytes: bigOk.stdout.length,
+  });
+  check("and only then is it committed", agent.inboxCount("automatic") === 0, {
+    stillBuffered: agent.inboxCount("automatic"),
+  });
   await fireHook({ hook_event_name: "Stop" });
 
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);

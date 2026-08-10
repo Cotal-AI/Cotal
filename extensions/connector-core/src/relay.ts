@@ -9,6 +9,7 @@
  */
 import { connect } from "node:net";
 import { hasIdentity } from "./config.js";
+import { HANDOFF_RECEIPT } from "./control.js";
 
 const TIMEOUT_MS = 2000;
 
@@ -23,13 +24,22 @@ function readStdin(): Promise<string> {
   });
 }
 
-function done(out: string): void {
+/**
+ * Print the reply for the runtime and leave.
+ *
+ * `confirm` is the connector's delivery receipt. stdout to a pipe is async, so exit()ing right
+ * after write() can truncate a large reply — we exit from the write callback, and a 1s backstop
+ * guarantees we still leave if it never flushes. That backstop is the dangerous path: the connector
+ * has already handed us peer messages, and if we die here they are gone from the runtime's point of
+ * view. So the receipt is sent from the flush callback ONLY. A backstop exit sends nothing, the
+ * connector scores the reply undelivered, and the batch stays un-acked for redelivery.
+ */
+function done(out: string, confirm?: (then: () => void) => void): void {
+  const exit = (): void => process.exit(0);
   const t = out.trim();
-  if (!t) return process.exit(0); // fail open — never blocks the session
-  // Flush before exiting: stdout to a pipe is async, so exit()ing right after write() can
-  // truncate a large reply. Exit from the write callback; a 1s backstop guarantees we still leave.
-  process.stdout.write(t + "\n", () => process.exit(0));
-  setTimeout(() => process.exit(0), 1000);
+  if (!t) return exit(); // fail open — never blocks the session
+  process.stdout.write(t + "\n", () => (confirm ? confirm(exit) : exit()));
+  setTimeout(exit, 1000);
 }
 
 /** Relay one hook event from stdin to the connector's control socket and print the reply. */
@@ -52,26 +62,48 @@ export async function runHookRelay(): Promise<void> {
 
   let reply = "";
   let settled = false;
-  const finish = (out: string): void => {
-    if (settled) return;
-    settled = true;
+  const drop = (): void => {
     try {
       sock.destroy();
     } catch {
       /* ignore */
     }
+  };
+  const finish = (out: string): void => {
+    if (settled) return;
+    settled = true;
+    drop();
     done(out);
+  };
+  /** Got a reply: keep the socket until stdout has flushed, then send the receipt down it. Anything
+   *  that kills us first (the 1s backstop, the runtime SIGKILLing the hook) closes the socket with
+   *  no receipt, which is exactly the signal the connector needs to NOT commit the batch. */
+  const finishWithReceipt = (out: string): void => {
+    if (settled) return;
+    settled = true;
+    done(out, (then) => {
+      try {
+        sock.write(HANDOFF_RECEIPT, () => {
+          drop();
+          then();
+        });
+      } catch {
+        then(); // connector already gone; it scores this undelivered and redelivers
+      }
+    });
   };
   const timer = setTimeout(() => finish(""), TIMEOUT_MS);
 
   sock.setEncoding("utf8");
-  sock.on("connect", () => sock.write(JSON.stringify({ token, event }) + "\n"));
+  // `handoff` opts into the confirmed-delivery protocol: the connector holds the connection open and
+  // treats our receipt, not its own socket write, as proof the reply reached the runtime.
+  sock.on("connect", () => sock.write(JSON.stringify({ token, event, handoff: true }) + "\n"));
   sock.on("data", (d) => {
     reply += d;
     const nl = reply.indexOf("\n");
     if (nl >= 0) {
       clearTimeout(timer);
-      finish(reply.slice(0, nl));
+      finishWithReceipt(reply.slice(0, nl));
     }
   });
   sock.on("error", () => {
