@@ -23,7 +23,12 @@ const rejects = async (name: string, values: Record<string, string>) => {
     fail++;
     console.log(`  ✗ FAIL: ${name} — expected a throw, got none`);
   } catch (e) {
-    const ok = /shards|N=1|not supported|sharded/i.test((e as Error).message);
+    // PIN THE STRUCTURAL CLAUSE, NOT A WORD SHARED WITH OTHER REFUSALS. This was
+    // `/shards|N=1|not supported|sharded/i`, and a disjunction is only as strong as its weakest arm:
+    // `not supported` matches 18 throw sites across the product (`shards` lands twice inside this one
+    // message alone), so the suite accepted eighteen unrelated refusals as proof of the shard check.
+    // The clause below is one source site and one landing place in the rendered message.
+    const ok = (e as Error).message.includes("sharded operation is not supported");
     if (ok) { pass++; console.log(`  ✓ ${name}`); }
     else { fail++; console.log(`  ✗ FAIL: ${name} — threw the wrong error: ${(e as Error).message}`); }
   }
