@@ -25,6 +25,16 @@
  * at all, and the broker's enforcement IS its subject. Nothing is reverted to test it, so the
  * attachment rule that forbids transcription in a regression cell does not apply here.
  *
+ * ONE DEFECT WORTH LEAVING WRITTEN DOWN, because it is invisible to every check this repo runs.
+ * The first version called `setupSpaceStreams(SERVERS, space, auth)` positionally against a
+ * signature that takes an OPTIONS OBJECT (`streams.ts:281-287`). `opts.servers` was therefore
+ * undefined, `connect` fell back to its default target, and THE FIXTURE RAN AGAINST WHATEVER
+ * BROKER HAPPENED TO BE ON `:4222` rather than its own. It surfaced only as an Authorization
+ * Violation in setup. `pnpm typecheck` is green through this: the tsconfigs include `src` only,
+ * so no smoke file is typechecked and a wrong-arity call here is caught by nothing but running it.
+ * An authed fixture must therefore prove it is talking to ITS OWN server, because being pointed
+ * somewhere else looks exactly like being refused.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:manager-lease-grant
  */
 import { strict as assert } from "node:assert";
@@ -33,12 +43,13 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { KvWatchInclude } from "@nats-io/kv/internal";
 import {
   CotalEndpoint, isReachable, createSpaceAuth, serverConfig, mintCreds, newIdentity,
-  setupSpaceStreams, managerBucket, presenceBucket, managerLeaseKey, principalKey, DEV_OWNER,
+  setupSpaceStreams, standaloneConnectOpts, managerBucket, presenceBucket, managerLeaseKey,
+  principalKey, DEV_OWNER,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -63,9 +74,15 @@ const holder = principalKey(DEV_OWNER, "sup").key;
 const lease = (instanceId: string) => ({ instanceId, holder, pid: 1, root: "/tmp", runtime: "pty", since: Date.now() });
 
 /** `liveKvEntries`' two load-bearing calls, performed rather than imported. Returns the broker's
- *  verdict on binding a push consumer over `$KV.<bucket>.>` under this credential. */
+ *  verdict on binding a push consumer over `$KV.<bucket>.>` under this credential.
+ *
+ *  `standaloneConnectOpts`, not a bare `credsAuthenticator`: a scoped grant allows only
+ *  `_INBOX_<connId>.>` (`provision.ts:1205`) and a push consumer's deliver subject IS an inbox
+ *  subject. A bare connect keeps the default `_INBOX.` prefix, so the ALLOWED arm would be refused
+ *  on its subscription. That is a red rather than a false green, but it would break the
+ *  discriminator: both arms denied, for a reason with nothing to do with the grant under test. */
 async function consumerBind(creds: string, bucket: string): Promise<"allowed" | "denied"> {
-  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(bucket);
     const b = kv as unknown as {
@@ -91,11 +108,21 @@ try {
   }
   if (!up) throw new Error(`fixture broker never came up on ${SERVERS} - refusing to report on a server that never started`);
 
-  await setupSpaceStreams(SERVERS, space, auth);
+  // `provisioner` for the pre-create, `supervisor` for everything under test. setupSpaceStreams
+  // CREATES the streams and buckets (`streams.ts:317` creates managerBucket itself) and the
+  // supervisor grant carries no stream create (`provision.ts:1181`), so this is the same split
+  // production uses at `cotal up` rather than one invented for the fixture.
+  const setupCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space, creds: setupCreds });
   const supCreds = await mintCreds(auth, newIdentity(), "supervisor");
 
   console.log("CELL A - the shipped probe under a real supervisor credential");
-  const seedNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(supCreds)), maxReconnectAttempts: 0 });
+  const seedNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: supCreds }), maxReconnectAttempts: 0 });
+  // The fixture proves its own target before it reports on anything. Being pointed at another
+  // broker looks identical to being refused by this one, and that is how this suite first failed.
+  check("the fixture is talking to ITS OWN broker, not whatever is on the default port",
+    seedNc.info?.port === PORT, { got: seedNc.info?.port, want: PORT });
+
   const kv = await new Kvm(seedNc).open(managerBucket(space));
   await kv.put(managerLeaseKey("stopped"), enc(lease("stopped")));
   await kv.delete(managerLeaseKey("stopped"));       // the clean-stop tombstone
