@@ -46,8 +46,6 @@ export interface ValidateResult {
 class Validator {
   readonly errors: LangError[] = [];
   readonly warnings: LangError[] = [];
-  /** Declarations in a `for` header: their `;` belongs to the loop, not to them. */
-  readonly semicolonExempt = new Set<AnyNode>();
 
   constructor(
     readonly source: string,
@@ -177,18 +175,58 @@ const FORBIDDEN_NODES: Readonly<
 });
 
 /**
- * Statements that must carry their own `;`. Acorn applies automatic semicolon insertion happily,
- * so without this check the "no ASI reliance" rule would be a claim rather than a rule, and a
- * newline hazard would silently change what a program means.
+ * Automatic semicolon insertion is ALLOWED, against Jessie, and this is a declared deviation.
+ *
+ * Jessie bans ASI reliance because a newline hazard can silently change what a program means. Two
+ * things break that argument here: the author is a language model writing the JavaScript it would
+ * write anyway, which is frequently semicolon-free, and ASI is parse-deterministic, so
+ * determinism by construction is untouched either way. Banning it also rejected constructs nobody
+ * intended, including every `for` loop and the design's own examples.
+ *
+ * What survives is the part with a live rationale: the two constructs where a newline genuinely
+ * changes meaning stay errors, so the hazard is caught without taxing the ordinary program.
  */
-const NEEDS_SEMICOLON: ReadonlySet<string> = new Set([
-  "ExpressionStatement",
-  "VariableDeclaration",
-  "ReturnStatement",
-  "ThrowStatement",
-  "BreakStatement",
-  "ContinueStatement",
-]);
+function checkAsiHazards(block: AnyNode, v: Validator): void {
+  const body = (block.body as AnyNode[]) ?? [];
+  for (let i = 0; i < body.length - 1; i += 1) {
+    const here = body[i] as AnyNode;
+    const next = body[i + 1] as AnyNode;
+    if (here.type !== "ReturnStatement") continue;
+    if (here.argument !== null && here.argument !== undefined) continue;
+    if (next.type !== "ExpressionStatement") continue;
+    v.fail(
+      "L1008",
+      next,
+      "This value follows a bare `return`, so the statement already ended on the line above and this expression is unreachable. The newline decided that, not the code.",
+      "Put the value on the same line as `return`, or terminate the return with `;` if it was meant to return nothing.",
+    );
+  }
+}
+
+/**
+ * The continuation hazard, checked where it actually lives.
+ *
+ * A line beginning with `(` or `[` continues the statement above it rather than starting a new
+ * one, and by the time there are two statements to compare the parser has already made that
+ * choice: it produced ONE. So the check is on the call itself, looking for a newline between a
+ * callee and the `(` that a semicolon would have separated.
+ */
+function checkContinuationHazard(node: AnyNode, v: Validator): void {
+  const inner = node.type === "CallExpression" ? node.callee : node.object;
+  if (!isNode(inner)) return;
+  const gap = v.source.slice(inner.end as number, node.end as number);
+  const openAt = gap.indexOf(node.type === "CallExpression" ? "(" : "[");
+  if (openAt < 0) return;
+  if (!gap.slice(0, openAt).includes("\n")) return;
+  v.fail(
+    "L1008",
+    node,
+    node.type === "CallExpression"
+      ? "The `(` on this line continues the expression above it, so this is one call rather than two statements. A semicolon is what decides that, and there is not one."
+      : "The `[` on this line indexes the expression above it, so this is one expression rather than two statements. A semicolon is what decides that, and there is not one.",
+    "Terminate the previous statement with `;`.",
+  );
+}
 
 /**
  * Acorn's own parse errors, re-coded. The default is "this is not valid JavaScript", which is
@@ -261,16 +299,9 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
     v.fail(rule.code, node, rule.cause, rule.fix);
   }
 
-  if (NEEDS_SEMICOLON.has(type) && !v.semicolonExempt.has(node)) {
-    const end = node.end as number;
-    if (v.source[end - 1] !== ";") {
-      v.fail(
-        "L1008",
-        node,
-        "This statement relies on automatic semicolon insertion, which makes what the program means depend on where the line breaks fall.",
-        "Terminate the statement with `;`.",
-      );
-    }
+  if (type === "Program" || type === "BlockStatement") checkAsiHazards(node, v);
+  if (type === "CallExpression" || (type === "MemberExpression" && node.computed === true)) {
+    checkContinuationHazard(node, v);
   }
 
   switch (type) {
@@ -327,12 +358,6 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean): void {
     case "ForStatement":
     case "ForOfStatement":
     case "WhileStatement": {
-      // A `for` header's declaration and update do not carry their own terminator: the loop's
-      // own semicolons separate them, so requiring one here would reject every `for` loop.
-      for (const slot of ["init", "update", "left"]) {
-        const n = node[slot];
-        if (isNode(n)) v.semicolonExempt.add(n);
-      }
       const body = node.body;
       if (isNode(body) && body.type !== "BlockStatement") {
         v.fail("L1009", body, "Every loop body is a block.", "Wrap the body in braces.");

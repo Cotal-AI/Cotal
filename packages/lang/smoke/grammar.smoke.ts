@@ -192,6 +192,25 @@ rejects(
   'const a = spawn("x");\nawait notify([a], { decision: "build" });',
 );
 
+// The design's section 1 example, verbatim, semicolon-free and with an un-awaited spawn. Both
+// reviewers made this the test of whether the document describes the language it ships.
+accepts(
+  "the design's section 1 example parses exactly as written",
+  `const team    = channel("feat-auth")
+const planner = spawn("planner", { worktree: "wt-1", join: [team] })
+const builder = spawn("builder", { worktree: "wt-1", join: [team],
+                                   permits: { turns: 40, spend: "5usd" } })
+
+await turn(planner, { name: "draft-plan" })
+await checkpoint("approve-plan", "approve the plan?", { timeout: "10m", onExpiry: "proceed" })
+
+let r = await turn(builder, { name: "build" })
+while (r.status === "blocked") {
+  await turn(planner, { name: "unblock" })
+  r = await turn(builder, { name: "build" })
+}`,
+);
+
 // ---- 5c) width controls: the nearest legitimate input must still be admitted ------------------
 
 // Every refusal above is compatible with a rule that refuses far too much, and "right in shape,
@@ -257,10 +276,26 @@ rejects("no imports", "L1020", 'import { x } from "y";');
 rejects("no delete", "L1021", "function f(o) { delete o.x; }");
 rejects("no do-while", "L1022", "function f() { do { log(1); } while (false); }");
 rejects("no computed property names", "L1011", "function f(k) { return { [k]: 1 }; }");
-// Acorn applies ASI happily, so without an explicit check "no ASI reliance" would be a claim
-// rather than a rule and a newline hazard could silently change what a program means.
-rejects("no reliance on automatic semicolon insertion", "L1008", 'const a = spawn("x")\nlog(a)\n');
-accepts("explicit terminators are fine", 'const a = spawn("x");\nlog(a);\n');
+// ASI is ALLOWED, against Jessie: the author writes the JavaScript it would write anyway, which
+// is frequently semicolon-free, and ASI is parse-deterministic so determinism is untouched. Only
+// the two constructs where a newline genuinely changes meaning stay errors.
+accepts("semicolon-free source is ordinary", 'const a = spawn("x")\nlog(a)\n');
+accepts("explicit terminators are fine too", 'const a = spawn("x");\nlog(a);\n');
+rejects(
+  "a return whose value is on the next line is a hazard",
+  "L1008",
+  'function f() {\n  return\n  42;\n}',
+);
+rejects(
+  "a line starting with ( continues the one above it",
+  "L1008",
+  'const a = spawn("x")\n(log(a));\n',
+);
+rejects(
+  "a line starting with [ does the same",
+  "L1008",
+  'const a = spawn("x")\n[1, 2];\n',
+);
 // A for-header's declaration and update have no terminator of their own: the loop's semicolons
 // separate them. Requiring one there would reject every for loop, which the retry pattern needs.
 accepts(
