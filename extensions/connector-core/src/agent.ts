@@ -464,15 +464,18 @@ export class MeshAgent extends EventEmitter {
    *  still delivering, and an arrival between the two verdicts would ack one — the very loss this
    *  guard exists to stop, reached through the concurrency the per-frame keying deliberately allows.
    *
-   *  The cap is FAIL-SAFE: at the ceiling we decline to protect NEW ids and never revoke a live hold.
-   *  An unprotected batch is only as exposed as it was before this guard existed, whereas dropping
-   *  live holds would ack a message someone is mid-way through delivering. */
-  holdInFlight(ids: readonly string[]): void {
-    for (const id of ids) {
-      const held = this.inFlightIds.get(id);
-      if (held === undefined && this.inFlightIds.size >= MAX_INBOX * 2) continue;
-      this.inFlightIds.set(id, (held ?? 0) + 1);
-    }
+   *  **All or nothing, and it says which.** At the ceiling this refuses the whole batch and returns
+   *  `false`; the caller must then NOT surface it. Protecting only part of a batch, or protecting
+   *  none while the caller surfaces anyway, silently reopens exactly the loss this guard exists to
+   *  close — the unprotected ids sit in the inbox for the whole handoff window with the overflow
+   *  valve free to ack them. Declining to surface costs a deferral: the messages stay buffered and go
+   *  out on a later frame, once a verdict releases capacity. */
+  holdInFlight(ids: readonly string[]): boolean {
+    let fresh = 0;
+    for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
+    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;
+    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
+    return true;
   }
 
   /** One frame's verdict is in (either way). The id is ordinary backlog again only once EVERY frame

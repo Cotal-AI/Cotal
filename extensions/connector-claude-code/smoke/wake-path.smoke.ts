@@ -517,14 +517,17 @@ try {
   await claude.handle(agent, overlapBFrame); // frame B surfaces and holds the SAME ids
   claude.onReply(overlapA, false); // A's verdict lands first — B is still in flight
   await dmOtto("dm-seven-b-overflow: arrives between the two verdicts");
-  await sleep(300);
-  claude.onReply(overlapBFrame, false); // ...and only now does B report
-  // The precondition this check rests on: the arrival really did drive an eviction. Without it the
-  // assertion below would pass for the boring reason that nothing was ever at risk.
-  check("the arrival between the verdicts really did overflow the inbox", agent.inboxCount("automatic") <= FILL, {
+  await waitFor("the overflow arrival to land", () => stillPending("dm-seven-b-overflow"), 15_000);
+  // The precondition, asserted rather than assumed. An earlier version checked `inboxCount <= FILL`,
+  // which `buffer()` enforces unconditionally and which was already true before the arrival — a
+  // tautology wearing a precondition's label, so the grade below could have been handed out for an
+  // ordering that never happened. What actually has to be true is that the arrival evicted THE ID
+  // FRAME B IS STILL DELIVERING: gone from the buffer while its delivery is still open.
+  check("the arrival evicted the very id the second frame is still delivering", !stillPending(twoFrameOldest), {
+    oldest: twoFrameOldest,
     automatic: agent.inboxCount("automatic"),
-    cap: FILL,
   });
+  claude.onReply(overlapBFrame, false); // ...and only now does B report
   await sleep(300);
   const twoFrameBack = async (): Promise<boolean> => {
     for (let i = 0; i < (ACK_WAIT_MS + 8_000) / 250 && !stillPending(twoFrameOldest); i++) await sleep(250);
@@ -537,6 +540,36 @@ try {
     twoFrameRecovered,
     { oldest: twoFrameOldest, buffered: agent.inboxCount("automatic") },
   );
+
+  // ---- 7c. at the hold ceiling, DECLINE to surface rather than surface unprotected --------------
+  // Found by review, after §7b's refcount shipped. The cap protected existing holds but let a NEW
+  // batch through unprotected and told the caller nothing, so at the ceiling the handler surfaced a
+  // batch the overflow valve was still free to ack mid-handoff — F-1 again, reached through the
+  // guard's own limit. The hold is all-or-nothing now and reports it; a batch that cannot be
+  // protected is not surfaced at all, and simply waits for a later frame.
+  const saturate = Array.from({ length: 400 }, (_, i) => `synthetic-hold-${i}`); // MAX_INBOX * 2
+  check("the agent accepts holds up to its ceiling", agent.holdInFlight(saturate));
+  check("and refuses a further batch rather than half-protecting it", !agent.holdInFlight(["one-too-many"]));
+  const ceilFrame = { hook_event_name: "UserPromptSubmit" };
+  const atCeiling = await claude.handle(agent, ceilFrame); // declined → no hold, no inFlight entry
+  check(
+    "a batch that cannot be protected is NOT surfaced",
+    !injected(JSON.stringify(atCeiling)).includes("dm-seven"),
+    { injected: injected(JSON.stringify(atCeiling)).slice(0, 60) },
+  );
+  check("and nothing was consumed by the refusal", agent.inboxCount("automatic") >= FILL, {
+    automatic: agent.inboxCount("automatic"),
+  });
+  agent.releaseInFlight(saturate);
+  const freeFrame = { hook_event_name: "UserPromptSubmit" };
+  const afterCeiling = await claude.handle(agent, freeFrame);
+  check(
+    "once capacity frees, the same batch surfaces normally",
+    injected(JSON.stringify(afterCeiling)).includes("dm-seven"),
+  );
+  // Release on the SAME object the handler saw — a fresh literal is a different WeakMap key and
+  // would leak the hold into the groups below.
+  claude.onReply(freeFrame, false);
 
   // ---- 8. the stdout write FAILS — the receipt must not be sent -------------------------------
   // Found by review, reproduced independently by two seats. A failed write and a successful one both
@@ -597,8 +630,22 @@ try {
     mentions: ["Otto"],
   });
   await sleep(120); // the mention push has been rejected; its retry is pending
+  // Count DM nudges rather than testing for any — earlier groups already produced them, so
+  // `some(...)` was true before this group started and would have graded an ordering that never
+  // occurred. The unrelated success has to land FIRST, and the mention must still be undelivered at
+  // that instant, or this proves nothing about G-2 at all.
+  const dmNudgesBefore = nudges.filter((n) => n.includes("New dm")).length;
   await dmOtto("dm-nine-b: an unrelated DM whose nudge succeeds");
-  await waitFor("the unrelated DM nudge to succeed", () => nudges.some((n) => n.includes("New dm")), 3_000);
+  await waitFor(
+    "the unrelated DM nudge to succeed",
+    () => nudges.filter((n) => n.includes("New dm")).length > dmNudgesBefore,
+    3_000,
+  );
+  check(
+    "the unrelated success landed while the mention was still outstanding",
+    nudges.filter((n) => n.includes("pull it with cotal_inbox")).length === mentionOnly,
+    { mentionNoticesAtThatInstant: nudges.filter((n) => n.includes("pull it with cotal_inbox")).length, mentionOnly },
+  );
   await waitFor(
     "the mention retry to survive the unrelated success",
     () => nudges.filter((n) => n.includes("pull it with cotal_inbox")).length > mentionOnly,

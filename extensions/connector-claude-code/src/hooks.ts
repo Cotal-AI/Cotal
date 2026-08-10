@@ -129,10 +129,13 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     const body = formatInjection(items);
     if (!body) return undefined;
     const ids = items.map((i) => i.id);
-    inFlight.set(ev, { ids, agent });
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
-    // from under us mid-delivery — unrecoverable, since an acked id is never redelivered.
-    agent.holdInFlight(ids);
+    // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
+    // agent cannot protect the whole batch (too many frames already open), DO NOT SURFACE IT: an
+    // unprotected in-flight batch is the very loss this guards against. The messages stay buffered
+    // and go out on a later frame once a verdict frees capacity.
+    if (!agent.holdInFlight(ids)) return undefined;
+    inFlight.set(ev, { ids, agent });
     // At-least-once, deliberately: an unconfirmed batch is re-surfaced rather than dropped, so a
     // reply that DID land but whose confirmation was lost shows the model the same message twice.
     // Say so, so a repeat reads as a repeat instead of as a peer sending twice.
@@ -284,8 +287,9 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let retryMs = NUDGE_RETRY_INITIAL_MS;
   /** The one wake with no second chance: a focus-mode @mention, already acked and dropped at ingest,
-   *  so it is in no inbox and no stream. Held only until some push succeeds — any successful nudge
-   *  means the session is awake and will pull, so it clears this too. */
+   *  so it is in no inbox and no stream. Held until THIS mention's own notice succeeds — an
+   *  unrelated push landing means the session woke for something else, and that notice carries no
+   *  pull hint, so it reschedules this rather than discharging it. */
   let pendingMentionWake: { item: InboxItem; hint: string } | undefined;
 
   const clearRetry = (resetDelay: boolean): void => {
