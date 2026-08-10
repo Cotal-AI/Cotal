@@ -92,6 +92,20 @@ export interface DialPolicy {
    * already refused will simplify away the residual, which is the one piece step two needs.
    */
   tlsRequired: boolean;
+  /**
+   * Did the operator EXPLICITLY accept the overlay's tunnel dependency?
+   *
+   * The default is `false` and the default refuses, because the previous shape — permit and print
+   * a warning — is not a fence. A warning is written to stderr, which a non-interactive caller
+   * need not read, and it was not persisted, so nothing repeated it at the dials that followed. A
+   * scripted registration therefore got the risk with none of the notice.
+   *
+   * A flag is the one form of notice a script cannot miss: without it the command fails, and the
+   * failure is in the exit code rather than in prose nobody reads. The acceptance is then recorded
+   * on the mesh entry, so a later dial can tell that a human agreed to this rather than inferring
+   * consent from an address.
+   */
+  allowUnencryptedOverlay: boolean;
 }
 
 /** The NATS default client port, used when the join URL omits one. */
@@ -157,6 +171,14 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
 
   if (isOverlayLiteral(host)) {
     if (policy.tlsRequired) return { server, reach: "overlay" };
+    if (!policy.allowUnencryptedOverlay)
+      throw new Error(
+        `${JSON.stringify(raw)} refused: ${host} is a private-overlay address, and this build cannot require TLS on the connection.\n` +
+          `  That is safe while the overlay tunnel is up, and NOT safe if it is down: the range is then ordinary carrier-grade\n` +
+          `  NAT, and whoever answers the dial receives the credentials this machine sends.\n` +
+          `  Only you can know whether the tunnel is up, so accept it explicitly with --allow-unencrypted-overlay, which records\n` +
+          `  your acceptance on the mesh entry. The flag goes away once the broker can be served over TLS.`,
+      );
     return {
       server,
       reach: "overlay",

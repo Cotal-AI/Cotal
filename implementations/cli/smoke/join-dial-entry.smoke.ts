@@ -99,10 +99,16 @@ try {
   // the registration path's own sentence instead — the assertion is only as strong as its weakest
   // alternative, and the loose arm is always the one added "just in case".
   check("  it fails later, on the broker instead of the address", /no broker answered/i.test(loopback.out), loopback.out);
-  const overlay = await add("boxmesh", "nats://100.64.0.1:14899");
-  check("an overlay literal is NOT refused by the dial policy", !/cannot protect/i.test(overlay.out), overlay.out);
+  // An overlay address is refused BY DEFAULT through the real command: a printed warning was not
+  // a fence, because stderr is unread by scripts and nothing persisted it for later dials.
+  const overlayBare = await add("boxmesh", "nats://100.64.0.1:14899");
+  check("an overlay literal is REFUSED without explicit acceptance", overlayBare.code === 1, overlayBare);
+  check("  and the refusal names the flag that accepts it", /--allow-unencrypted-overlay/.test(overlayBare.out), overlayBare.out);
+  check("  nothing recorded", findMesh("boxmesh") === undefined);
 
-  console.log("\nand the overlay residual reaches the operator through the real command");
+  console.log("\nthe opt-in accepts it, and the dependency still reaches the operator");
+  const overlay = await add("boxmesh", "nats://100.64.0.1:14899", { "allow-unencrypted-overlay": true });
+  check("with the flag it is NOT refused by the dial policy", !/cannot protect/i.test(overlay.out), overlay.out);
   check("  the warning is printed, not swallowed", /tunnel is down|carrier-grade NAT/i.test(overlay.out), overlay.out);
   check("  it says the rule will tighten", /become a refusal/i.test(overlay.out), overlay.out);
 

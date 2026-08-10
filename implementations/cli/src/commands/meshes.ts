@@ -49,6 +49,7 @@ export const meshesFlags = [
   { name: "root", type: "string", value: "<dir>", description: "add: folder holding this mesh's .cotal/auth + .cotal/agents (default: this project)" },
   { name: "mode", type: "string", value: "<auth|open>", description: "add: how the broker authenticates (default: inferred from --root)" },
   { name: "force", type: "boolean", description: "add: record without verifying, replacing any existing record · rm: drop a running mesh's record" },
+  { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up (recorded on the entry)" },
 ] as const satisfies readonly FlagSpec[];
 
 type Values = FlagValues<typeof meshesFlags>;
@@ -139,7 +140,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   const server = take(checkServer(v.server));
   // Above the `--force` branch on purpose: this decides whether credentials may cross the network
   // to that address at all, which `--force` ("the mesh is down right now") must never waive.
-  const dial = take(checkDialPolicy(server));
+  const dial = take(checkDialPolicy(server, Boolean(v["allow-unencrypted-overlay"])));
   // A permitted-but-not-guaranteed target is SAID OUT LOUD, never recorded quietly. Today that is
   // the overlay literal whose protection depends on a tunnel we cannot verify from here; the
   // operator is the only one who can know whether it is up, so the operator is told.
@@ -172,7 +173,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     }
   }
 
-  const result = writeRecord({ space, server, root, mode, origin: "manual", ts: new Date().toISOString() });
+  const result = writeRecord({ space, server, root, mode, origin: "manual", ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() });
   console.log(
     c.green(`✓ registered "${space}"`),
     // "recorded without verifying" describes THIS registration, not a durable property of the
