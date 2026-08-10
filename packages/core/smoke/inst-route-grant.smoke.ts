@@ -66,47 +66,47 @@ const ordinaryRows = (rows: string[]) => rows.filter((r) => /\.ep\.(one|all)\./.
 
 // The profiles the `--on` route matters for, and the ones it must never reach. Names come from the
 // shipped `Profile` union, so a renamed profile fails to compile rather than silently dropping an arm.
-// The ep-CALLER profiles, which are not the same set as "the privileged profiles". `operator`,
-// `admin` and `deployer` hold no ordinary ep request rows at all, so measuring "no instance row" on
-// them would be vacuous - CELL 1 caught exactly that and refused to let this suite pretend
-// otherwise. These three are the ones whose rows come from operatorInstrumentCapabilities.
-const OPERATOR: Array<{ profile: Profile; actor: string; opts?: Record<string, unknown> }> = [
-  { profile: "control-caller-privileged", actor: "ccp", opts: { lifecycleUid: "aa11bb22cc33dd44ee55ff6677" } },
-  { profile: "control-caller-admin", actor: "cca", opts: { lifecycleUid: "bb11cc22dd33ee44ff5566aa77" } },
-];
-const ORDINARY: Array<{ profile: Profile; actor: string; opts?: Record<string, unknown> }> = [
-  { profile: "agent", actor: "plain", opts: { lifecycleUid: "cc11dd22ee33ff4455aa66bb77" } },
-  { profile: "agent", actor: "spawner", opts: { lifecycleUid: "dd11ee22ff33aa4455bb66cc77", capabilities: ["spawn"] } },
-  { profile: "observer", actor: "obs", opts: { lifecycleUid: "ee11ff22aa33bb4455cc66dd77" } },
+// Each entry DECLARES whether it is an ep caller, and CELL 1 checks the declaration against the
+// measurement. That is the fix for the third position of one defect: a profile holding zero ordinary
+// ep rows sits in an arm proving nothing, and it does so silently. `operator`, `admin` and a
+// uid-less `deployer` all read "no instance route" for reasons with nothing to do with instance
+// addressing. Declaring the expectation makes a profile that GAINS or LOSES ep rows fail loudly here
+// rather than quietly weakening whichever arm it is in.
+interface Subject { profile: Profile; actor: string; epCaller: boolean; opts: Record<string, unknown> }
+
+// ALLOWED once C lands: the per-invocation operator instruments, plus `deployer` - the `spawn -f`
+// and `--on` path. Both security seats required deployer here, and its absence was the vacuity trap
+// in the other direction: an allowed arm omitting the one profile the flag actually runs under.
+const ALLOWED: Subject[] = [
+  { profile: "control-caller-privileged", actor: "ccp", epCaller: true, opts: { lifecycleUid: "aa11bb22cc33dd44ee55ff6677" } },
+  { profile: "control-caller-admin", actor: "cca", epCaller: true, opts: { lifecycleUid: "bb11cc22dd33ee44ff5566aa77" } },
+  { profile: "deployer", actor: "dep", epCaller: true, opts: { lifecycleUid: "ff11aa22bb33cc44dd55ee6688" } },
 ];
 
-console.log("CELL 1 - CONTROL: every profile under test can reach an ORDINARY route");
-// Without this the denied arm below is uninformative: a profile with NO ep rows at all would
-// "correctly" lack an instance row while proving nothing about instance addressing.
-for (const p of [...OPERATOR, ...ORDINARY]) {
-  const rows = rowsFor(p.profile, p.actor, p.opts);
-  const ordinary = ordinaryRows(rows);
-  if (p.profile === "observer") {
-    // An observer legitimately holds no request rows; it is here to keep the sweep honest about who
-    // is in it, not as an ep caller. Recorded rather than asserted either way.
-    console.log(`    (observer holds ${ordinary.length} ordinary ep rows - not an ep caller)`);
-    continue;
-  }
-  check(`${p.profile}/${p.actor} holds at least one ordinary ep route`, ordinary.length > 0, {
-    endpoint: BASELINE_LIFECYCLE_ENDPOINT, count: ordinary.length,
-  });
+// DENIED, before and after. An agent carrying `spawn` is NOT an operator - the capability builder
+// claims exactly that boundary, so the spawn-capable agent is measured, not just the plain one.
+const DENIED: Subject[] = [
+  { profile: "agent", actor: "plain", epCaller: true, opts: { lifecycleUid: "cc11dd22ee33ff4455aa66bb77" } },
+  { profile: "agent", actor: "spawner", epCaller: true, opts: { lifecycleUid: "dd11ee22ff33aa4455bb66cc77", capabilities: ["spawn"] } },
+  { profile: "observer", actor: "obs", epCaller: false, opts: { lifecycleUid: "ee11ff22aa33bb4455cc66dd77" } },
+];
+
+console.log("CELL 1 - CONTROL: each profile's ep-caller status matches what it was DECLARED to be");
+for (const p of [...ALLOWED, ...DENIED]) {
+  const n = ordinaryRows(rowsFor(p.profile, p.actor, p.opts)).length;
+  check(`${p.profile}/${p.actor} is ${p.epCaller ? "an" : "NOT an"} ep caller, as declared (${n} ordinary rows)`,
+    (n > 0) === p.epCaller, { declared: p.epCaller, ordinaryRows: n, endpoint: BASELINE_LIFECYCLE_ENDPOINT });
 }
 
-console.log("\nCELL 2 - DENIED ARM (written first, must stay green through the fix)");
-for (const p of ORDINARY) {
+console.log("\nCELL 2 - DENIED ARM (written first, must stay green through the mint)");
+for (const p of DENIED) {
   const rows = instRows(rowsFor(p.profile, p.actor, p.opts));
   check(`${p.profile}/${p.actor} holds NO instance route`, rows.length === 0, rows.slice(0, 3));
 }
 
-console.log("\nCELL 3 - ALLOWED ARM (the B6 defect: RED until the capability is issued)");
-const operatorInst = OPERATOR.map((p) => ({ who: `${p.profile}/${p.actor}`, n: instRows(rowsFor(p.profile, p.actor, p.opts)).length }));
-console.log(`    measured: ${operatorInst.map((o) => `${o.who}=${o.n}`).join("  ")}`);
-check("at least one operator instrument can address a specific instance",
-  operatorInst.some((o) => o.n > 0), operatorInst);
+console.log("\nCELL 3 - ALLOWED ARM (the B6 defect: RED until the exact-iid mint lands)");
+const measured = ALLOWED.map((p) => ({ who: `${p.profile}/${p.actor}`, n: instRows(rowsFor(p.profile, p.actor, p.opts)).length }));
+console.log(`    measured: ${measured.map((o) => `${o.who}=${o.n}`).join("  ")}`);
+for (const m of measured) check(`${m.who} can address a specific instance`, m.n > 0, m);
 
 console.log(`\ninst-route-grant: ${pass} checks passed`);
