@@ -271,7 +271,16 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   let lastReachable = Date.now();
   const brokerWatch = setInterval(() => {
     if (stopping) return;
-    void isReachable(server, { creds: latestCreds })
+    // THE SAME TRANSPORT AS EVERY OTHER DIAL IN THIS PROCESS. This poll carries `latestCreds` — a
+    // standing credential — and `isReachable` performs a real authenticated connect whenever creds
+    // are supplied, every 2 seconds, for the life of the daemon. It is the most repeated credential
+    // presentation in the system, and it was the one dial here that did not name its transport.
+    //
+    // The poll predates TLS and is identical on `main`, where nothing is encrypted and it is at
+    // least consistent. What is new is the ASYMMETRY: with the two dials above upgraded, an operator
+    // who enables TLS would get a protected main path and an unprotected watchdog. An inconsistent
+    // guarantee is worse than a uniformly absent one, because the operator now believes something.
+    void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
       .then((ok) => {
         if (ok) { lastReachable = Date.now(); return; }
         if (Date.now() - lastReachable > BROKER_GONE_MS) {

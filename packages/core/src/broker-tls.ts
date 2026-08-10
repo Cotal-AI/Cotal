@@ -56,6 +56,13 @@ export class TlsMaterialError extends Error {
  *                 a broker may bind `0.0.0.0` while clients verify `broker.example`. Omit only
  *                 when no dial name is known yet.
  */
+/** Whether a dial host is an IP literal (v4 or v6) rather than a DNS name. Decides which of Node's
+ *  two certificate matchers applies: IP SANs answer to `checkIP`, DNS SANs to `checkHost`, and
+ *  neither one falls back to the other. */
+function isIpLiteral(host: string): boolean {
+  return net.isIP(host) !== 0;
+}
+
 export function validateTlsMaterial(t: TlsRequired, opts: { dialHost?: string; now?: Date } = {}): TlsMaterial {
   const now = opts.now ?? new Date();
 
@@ -110,11 +117,29 @@ export function validateTlsMaterial(t: TlsRequired, opts: { dialHost?: string; n
   if (now > notAfter)
     throw new TlsMaterialError(`TLS certificate ${t.certFile} EXPIRED at ${notAfter.toISOString()} (now ${now.toISOString()}); nats-server would start and serve it anyway`);
 
-  if (opts.dialHost !== undefined && cert.checkHost(opts.dialHost) === undefined)
-    throw new TlsMaterialError(
-      `TLS certificate ${t.certFile} does not cover the dial host "${opts.dialHost}" ` +
-      `(subject ${cert.subject}, SAN ${cert.subjectAltName ?? "none"}); clients would fail hostname verification`,
-    );
+  // AN IP LITERAL IS NOT A HOSTNAME, AND `checkHost` WILL NOT MATCH ONE.
+  //
+  // Node checks IP subject-alternative names through `checkIP` and DNS names through `checkHost`;
+  // `checkHost` returns undefined for "127.0.0.1" even when the certificate carries
+  // `IP Address:127.0.0.1`, because an IP literal is never a DNS name. Using the wrong one here
+  // rejected a correct certificate, and the error text printed the very SAN entry that covered the
+  // host it claimed was uncovered — the message contained its own refutation.
+  //
+  // This mattered far more than an edge case: `cotal up` binds and dials 127.0.0.1 by default, so
+  // the wrong check refused nearly every real TLS launch. It failed CLOSED, which is the safe
+  // direction and is exactly why no amount of "does it refuse?" testing would have found it. It
+  // took running the actual command.
+  if (opts.dialHost !== undefined) {
+    const covered = isIpLiteral(opts.dialHost)
+      ? cert.checkIP(opts.dialHost) !== undefined
+      : cert.checkHost(opts.dialHost) !== undefined;
+    if (!covered)
+      throw new TlsMaterialError(
+        `TLS certificate ${t.certFile} does not cover the dial host "${opts.dialHost}" ` +
+        `(subject ${cert.subject}, SAN ${cert.subjectAltName ?? "none"}); clients would fail ` +
+        `${isIpLiteral(opts.dialHost) ? "IP address" : "hostname"} verification`,
+      );
+  }
 
   return { notBefore, notAfter, fingerprint256: cert.fingerprint256, subject: cert.subject };
 }

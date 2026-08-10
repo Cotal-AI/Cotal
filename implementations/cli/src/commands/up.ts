@@ -418,6 +418,20 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
+  // THE TRANSPORT IS DECIDED HERE, ABOVE EVERY BRANCH, AND THIS POSITION IS THE FIX.
+  //
+  // It used to be resolved inside the foreground path only, which meant three routes to a listener
+  // never saw it: `up -f` (manifest), `up --detach`, and the already-running refresh. Each accepted
+  // `--tls-cert`/`--tls-key`, validated nothing, and served PLAINTEXT while printing `✓ mesh up`.
+  // Every one of those was a separate exit from the same room, and closing them one at a time is
+  // what produced three rounds of the same defect.
+  //
+  // A guard only fences what comes AFTER it, so the decision has to dominate the branch rather than
+  // sit in one arm of it. The dial-host SAN is deliberately NOT checked here — the effective host is
+  // not known until a route picks it — so each route re-asserts it via `assertServesDialHost` once
+  // it does. Decide early so nothing can skip it; check late so it checks the right host.
+  const transport = resolveTransport(values, undefined, cotalRoot());
+
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
@@ -425,6 +439,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.file) {
     if (values["dry-run"]) {
       await upManifest(values.file, {
+        transport,
         dryRun: true,
         server: values.server,
         host: values.host,
@@ -440,6 +455,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     try {
       assertOrdinaryUpAllowed(cotalRoot());
       await upManifest(values.file, {
+        transport,
         dryRun: Boolean(values["dry-run"]),
         server: values.server,
         host: values.host,
@@ -530,6 +546,23 @@ export async function up(args: ParsedArgs): Promise<void> {
         );
         process.exit(1);
       }
+      // A running broker cannot change its transport either, and for exactly the reason it cannot
+      // change its auth mode: the listener's TLS config was fixed when nats-server read its config
+      // file. This branch starts nothing, so `--tls-cert`/`--tls-key` here can only be a request to
+      // change something that is already decided — and answering it with `✓ mesh up` told the
+      // operator they had TLS while the live broker went on serving whatever it was started with.
+      //
+      // Refuse rather than warn. The whole feature is that a command accepting a TLS flag either
+      // encrypts or refuses to start; printing a success line over an unchanged plaintext listener
+      // is the precise outcome that must be unreachable.
+      if (values["tls-cert"] || values["tls-key"]) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change its transport; \`cotal down\` it first, then \`cotal up --tls-cert <cert> --tls-key <key>\``,
+          ),
+        );
+        process.exit(1);
+      }
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -592,7 +625,11 @@ export async function up(args: ParsedArgs): Promise<void> {
       const heldAttachHost = attachHostFor(held.space, values.host);
       // A broker was already answering here — this branch starts nothing, so it must not claim the
       // record as ours (see `Provenance`).
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ts: new Date().toISOString() }, "refresh");
+      // `tlsRequired` is CARRIED FORWARD, not re-derived. This branch starts no listener, so it has
+      // no transport decision to record — and `recordOurMesh` writes the entry whole, so omitting
+      // the field here would erase the requirement on every bare refresh, exactly the way dropping
+      // `attachHost` would silently demote the mesh to loopback.
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ts: new Date().toISOString() }, "refresh");
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -613,6 +650,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.detach) {
     const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
+      transport,
       server,
       storeDir: values["store-dir"],
       space: values.space,
@@ -677,7 +715,9 @@ export async function up(args: ParsedArgs): Promise<void> {
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
-  const transport = resolveTransport(values, new URL(server).hostname, cotalRoot());
+  // Decided above the branch; the dial host is only settled here (a port collision may have moved
+  // the server, and the hostname is what the certificate has to match).
+  assertServesDialHost(transport, new URL(server).hostname);
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
@@ -793,6 +833,11 @@ export async function up(args: ParsedArgs): Promise<void> {
     recordOurMesh({
       space, server, root: cotalRoot(),
       mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
+      // Written ALWAYS, as a boolean, unlike `attachHost` below. Absence and `false` resolve
+      // identically for clients, so an omitted field would be indistinguishable from a deliberate
+      // plaintext mesh — and this is the one field whose whole purpose is that the answer was
+      // stated rather than defaulted.
+      tlsRequired: transport.kind === "tls-required",
       ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
       // Only a real decision is persisted — an explicit `--host` now, or one carried forward from a
       // previous launch. The bare case stays absent rather than recording the loopback default as
@@ -1141,6 +1186,8 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume): Pro
     server: pending.server,
     root: pending.root,
     mode: pending.mode,
+    // Adopted from the recorded policy: this path proves and re-adopts a listener it did not start.
+    tlsRequired: adoptedTlsRequired(pending.root),
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
     ts: new Date().toISOString(),
@@ -1187,6 +1234,9 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore): Promise<v
     server: prepared.server,
     root: prepared.root,
     mode: prepared.mode,
+    // Same as the ordinary-resume path: a restore adopts an existing listener, so the requirement
+    // comes from the policy that listener was started from, never from a default.
+    tlsRequired: adoptedTlsRequired(prepared.root),
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
     ts: new Date().toISOString(),
@@ -1490,7 +1540,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (userAuth) {
     try {
       mkdirSync(cotalPath("nats"), { recursive: true });
-      const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth);
+      const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth, assertServesDialHost(opts.transport, new URL(server).hostname));
       owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
@@ -1514,7 +1564,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   try {
     // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
     // manifest actually declared is an exposure decision worth persisting.
-    ({ pid, controlPlane, authService } = await startMeshDetached({ server, space: m.space, open, userAuth, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath }));
+    ({ pid, controlPlane, authService } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -1545,6 +1595,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
  *  `userAuth`/`idp` are consistency ASSERTIONS against the manifest, not overrides: the manifest
  *  declares the auth mode; a disagreeing flag is a hard error, never a silent re-mode. */
 interface UpManifestFlags {
+  /** The listener's transport, decided above the `--file` branch. NON-OPTIONAL: this path is one of
+   *  the three that used to drop `--tls-cert`/`--tls-key` at the call boundary and serve plaintext. */
+  transport: BrokerTransport;
   dryRun: boolean;
   server?: string;
   host?: string;
@@ -1610,6 +1663,17 @@ async function startDeliveryWithBroker(
 }
 
 export interface DetachOpts {
+  /**
+   * The listener's transport, resolved and validated by the CALLER.
+   *
+   * NON-OPTIONAL. This function used to re-derive it here from `opts`, which never carried
+   * `--tls-cert`/`--tls-key` — so `cotal up --detach --tls-cert …` validated the pair, dropped it at
+   * this boundary, fell through to the recorded policy (absent on a first enable), and served
+   * PLAINTEXT while printing `✓ mesh up`. Re-deriving a decision in the callee is what let the
+   * caller's copy be silently unused; the fix is that there is one decision and it arrives as an
+   * argument.
+   */
+  transport: BrokerTransport;
   server?: string;
   storeDir?: string;
   space?: string;
@@ -1649,7 +1713,9 @@ export interface DetachOpts {
  * parent exiting.
  */
 export async function startMeshDetached(
-  opts: DetachOpts = {},
+  // The `= {}` default is gone with the optional transport: an options object that can be omitted
+  // entirely cannot carry a mandatory decision.
+  opts: DetachOpts,
 ): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean; delivery: boolean; manager: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
   const useAuth = !opts.open;
@@ -1661,7 +1727,10 @@ export async function startMeshDetached(
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
-  const transport = resolveTransport(opts as { "tls-cert"?: string; "tls-key"?: string }, new URL(server).hostname, cotalRoot());
+  // The transport arrives decided. The dial-host SAN is re-checked here because THIS is where the
+  // effective server is finally known — a manifest may name a different host than the flags did, and
+  // a certificate that is valid for one is not thereby valid for the other.
+  const transport = assertServesDialHost(opts.transport, new URL(server).hostname);
   const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
@@ -1717,6 +1786,9 @@ export async function startMeshDetached(
   recordOurMesh({
     space, server, root: cotalRoot(),
     mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
+    // The detached listener is started from `transport` a few lines above, so this is the same
+    // decision that shaped the config file — not a re-derivation.
+    tlsRequired: transport.kind === "tls-required",
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     // Persist only a real decision — declared now, or carried forward — never the loopback default.
     ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
@@ -2043,6 +2115,52 @@ function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, d
   return validated;
 }
 
+/**
+ * Re-assert that `transport` is valid for the host clients will actually dial, and exit loudly if
+ * not. A no-op for plaintext.
+ *
+ * This exists because the transport is decided ONCE, early, before the route is known, so that no
+ * route can be reached without one — but the effective dial host is decided LATE and differs per
+ * route: a manifest may set `broker.host`, and a certificate valid for the flag-derived host is not
+ * thereby valid for that one. Deciding early and checking late is the only ordering that satisfies
+ * both, so the check is deliberately separate from the decision rather than folded into it.
+ *
+ * Quiet on success: `resolveTransport` already printed what is being served, and a second identical
+ * line reads like a second broker.
+ */
+function assertServesDialHost(transport: BrokerTransport, dialHost: string | undefined): BrokerTransport {
+  if (transport.kind !== "tls-required" || dialHost === undefined) return transport;
+  try {
+    validateTlsMaterial(transport, { dialHost });
+  } catch (e) {
+    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+  return transport;
+}
+
+/**
+ * The client-side TLS requirement to persist for a listener THIS PROCESS DID NOT START — the
+ * restore and ordinary-resume paths, which adopt a broker that is already listening.
+ *
+ * They have no `transport` in scope because they never decided one, so the honest source is the
+ * recorded policy: the listener they are adopting was started from it. Reading it here is what stops
+ * a resume from writing a registry entry that says "plaintext" over a broker serving TLS — clients
+ * resolved from that entry would then connect without requiring it, which is the downgrade this
+ * feature exists to prevent, arriving by way of a recovery path rather than a launch.
+ *
+ * Fails loud on an unusable policy for the same reason `resolveTransport` does: a resume that cannot
+ * tell what it is adopting must not guess.
+ */
+function adoptedTlsRequired(root: string): boolean {
+  try {
+    return readBrokerPolicy(root)?.transport.kind === "tls-required";
+  } catch (e) {
+    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+}
+
 /** Validate a TLS pair and exit loudly on anything wrong. Shared by the flag path and the
  *  recorded-policy path so a cert that rots on disk is caught on the NEXT `up`, not only on the
  *  one that first configured it. */
@@ -2083,8 +2201,13 @@ async function authSetup(
   server: string,
   space: string,
   host: string = "127.0.0.1",
-  user?: { idpUrl?: string },
-  transport: BrokerTransport = { kind: "plaintext" },
+  user: { idpUrl?: string } | undefined,
+  // NON-OPTIONAL, and it used to default to `{ kind: "plaintext" }`. That default was the hole: the
+  // manifest path called this with five arguments and silently got a cleartext listener while the
+  // operator's `--tls-cert` sat validated and unused. A default here cannot be right, because the
+  // safe value and the common value are different values — every caller knows its transport, and
+  // the one that does not is the one that must not compile.
+  transport: BrokerTransport,
 ): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());

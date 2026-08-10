@@ -152,15 +152,25 @@ export function candidateTarget(space: string, server: string, root: string, mod
     space,
     mode,
     // A probe target for a registration that has not happened yet, so there is no recorded
-    // transport to honour and this stays non-strict.
+    // transport to honour and this stays non-strict. That reason stands on its own and is the
+    // whole justification.
     //
-    // Note what is DELIBERATELY not done here. `meshes add` accepts `tls://` and `wss://` server
-    // schemes, and it would be easy to derive strictness from one. That is the separately-tracked
-    // bug: the scheme is a LABEL today — nats.js strips it and `MeshEntry` cannot persist the
-    // intent — so a client resolved from such a record connects plaintext-capable regardless.
-    // Making the scheme enforce is a fix to that bug and is not absorbed into this change; deriving
-    // strictness here without the rest of it would make `meshes add` claim a guarantee the resolved
-    // connection still would not keep.
+    // WHAT USED TO BE WRITTEN HERE WAS FALSE, and it is worth saying so rather than quietly
+    // deleting it. This comment claimed the scheme could not enforce because "`MeshEntry` cannot
+    // persist the intent" — a constraint removed three commits earlier by adding
+    // `MeshEntry.tlsRequired`. A dead premise was holding a live decision in place, and it is
+    // exactly why that field had no writers.
+    //
+    // The open question is now genuinely open: `tls://` is COSMETIC at the client (nats.js connects
+    // plaintext to `tls://host` with empty options; only the explicit `tls` option refuses), so an
+    // operator who types `tls://` today gets a record that resolves to a plaintext-tolerant client.
+    // Deriving `tlsRequired` from the scheme would make that typed intent real.
+    //
+    // It is deliberately NOT done in this change, for a reason that is true: it converts `meshes
+    // add tls://…` against a plaintext broker from a successful registration into a refusal. That
+    // is a behaviour change to this command's accept/refuse contract, it belongs with the dial-policy
+    // work being done in this file by another lane, and it is not one of the downgrades this branch
+    // exists to close. Tracked, owned, and not smuggled in beside them.
     tlsRequired: false,
     ...(auth ? { auth } : {}),
     personaRoot: personaDir(root),
