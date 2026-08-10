@@ -4724,9 +4724,11 @@ export class Manager {
     // gating a known red trains readers to treat the gate as noisy. So the absence of a red here
     // is not evidence this is closed; run that suite.
     //
-    // The defect blocks its own re-test — the alias stays reserved pending the retirement this bug
-    // leaves incomplete, so later attempts are refused at spawn. One of one attempts that REACHED
-    // the race, which is the complete evidence the world permits and not a weak sample.
+    // Reproduced on the FIRST attempt that reached the race, and that suite cannot produce a second:
+    // the alias frees only when teardown completes, and the defect is that teardown does not, so
+    // every later attempt is refused at spawn. That is a limit of the probe, NOT of the world — a
+    // FRESH ALIAS PER ATTEMPT makes a rate measurable. Do not read hits-over-attempts off that file
+    // as written; it is a number that is not a count.
     //
     // The fix is to make the WRITES conditional on the same latch the teardown orders against,
     // never to retry: the correct outcome is "no credential", never "a credential minted later".
