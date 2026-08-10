@@ -22,6 +22,12 @@
  * confirmed flushed to the hook client. Anything less must leave it un-acked so JetStream
  * redelivers it.
  *
+ * It also pins the same property one layer down, in code this fix depends on and does not own: when
+ * the ack itself throws (a JetStream ack publishes, so a closed connection fails), the message must
+ * come back. That holds only because `commitPending` acks BEFORE marking handled; reverse those two
+ * lines and a failed ack is marked handled without being acked, which is this branch's original bug
+ * with a new cause. Nothing else in the repo covers that ordering.
+ *
  * Run: pnpm smoke:claude-wake
  */
 import { strict as assert } from "node:assert";
@@ -352,6 +358,54 @@ try {
   );
   const retried = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("the DM behind the rejected push is delivered", injected(retried).includes("dm-four: first push fails"), injected(retried));
+  await fireHook({ hook_event_name: "Stop" });
+
+  // ---- 5. the ack ITSELF fails — the branch that runs when the commit does not ------------------
+  // A JetStream ack publishes, so a closed connection throws. `drainInboxIds` removes the batch from
+  // the in-memory buffer BEFORE acking, so a throw part-way through leaves the remainder neither
+  // acked nor marked handled. That is the safe direction — JetStream still owns it — but it is the
+  // branch nobody exercises, and it is safe ONLY because `commitPending` acks before it marks
+  // handled. Swap those two lines in connector-core and a failed ack becomes permanent loss: marked
+  // handled, so `ingest` silently acks the redelivery. That is this branch's original bug, one layer
+  // down, in code this fix depends on and does not own. This is the check that would catch it.
+  await dmOtto("dm-five-a: acks cleanly");
+  await dmOtto("dm-five-b: ack throws");
+  await waitFor("both DMs buffered", () => stillPending("dm-five-a") && stillPending("dm-five-b"));
+  const pendings = (agent as unknown as { inbox: { item: InboxItem; ack: () => void }[] }).inbox;
+  const doomed = pendings.find((p) => p.item.text.includes("dm-five-b"));
+  check("the fault target is buffered and reachable, so the fault is really wired", !!doomed, {
+    buffered: pendings.map((p) => p.item.text),
+  });
+  let ackAttempted = false;
+  doomed!.ack = () => {
+    ackAttempted = true;
+    throw new Error("simulated: connection closed before the ack could publish");
+  };
+  const bothSurfaced = await fireHook({ hook_event_name: "UserPromptSubmit" });
+  check(
+    "both DMs reach the model in one batch",
+    injected(bothSurfaced).includes("dm-five-a") && injected(bothSurfaced).includes("dm-five-b"),
+    injected(bothSurfaced),
+  );
+  await sleep(300); // the verdict lands just after the reply is written
+  check("the failing ack was attempted, so the batch really did try to commit", ackAttempted);
+  check("a throwing ack does not take the session down: the clean sibling still commits", !stillPending("dm-five-a"));
+  check("the un-acked message left the local buffer, because the drain removes before it acks", !stillPending("dm-five-b"));
+  // ...and comes BACK. Un-acked AND un-handled is the only state from which JetStream can recover it.
+  await waitFor("the un-acked DM to be redelivered", () => stillPending("dm-five-b"), ACK_WAIT_MS + 8_000);
+  check("a message whose ack threw is redelivered, not lost", stillPending("dm-five-b"));
+  check("and its cleanly-acked sibling is NOT redelivered with it", !stillPending("dm-five-a"));
+  const afterAckFailure = await fireHook({ hook_event_name: "UserPromptSubmit" });
+  check(
+    "the recovered message reaches the model",
+    injected(afterAckFailure).includes("dm-five-b: ack throws"),
+    injected(afterAckFailure),
+  );
+  check(
+    "and it is labelled a possible repeat, because this one HAD already been shown",
+    injected(afterAckFailure).includes("may be a repeat"),
+    injected(afterAckFailure),
+  );
   await fireHook({ hook_event_name: "Stop" });
 
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);

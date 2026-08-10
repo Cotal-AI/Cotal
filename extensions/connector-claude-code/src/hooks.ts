@@ -105,6 +105,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  the message), because the label is a courtesy and the message is the product. */
   const unconfirmed = new Set<string>();
 
+  /** Flag ids whose delivery this process could not confirm, so a re-surface is labelled a possible
+   *  repeat. Past the cap the labels go, never the messages: an unlabelled repeat is cosmetic, a
+   *  dropped message is not. */
+  const markUnconfirmed = (ids: readonly string[]): void => {
+    if (unconfirmed.size + ids.length <= REPEAT_LABEL_CAP) for (const id of ids) unconfirmed.add(id);
+    else unconfirmed.clear();
+  };
+
   /** Presence is advisory — never let a failed publish skip the delivery work around it. */
   const safeStatus = async (agent: MeshAgent, status: PresenceStatus, activity?: string): Promise<void> => {
     try {
@@ -217,15 +225,19 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     inFlight.delete(ev);
     const { ids, agent } = batch;
     if (!delivered) {
-      if (unconfirmed.size + ids.length <= REPEAT_LABEL_CAP) for (const id of ids) unconfirmed.add(id);
-      else unconfirmed.clear(); // drop the advisory labels, never the messages
+      markUnconfirmed(ids);
       return;
     }
     for (const id of ids) unconfirmed.delete(id);
     try {
       agent.drainInboxIds(ids);
     } catch {
-      /* an ack failure must never block the session; the ids stay un-acked and redeliver */
+      // The ack itself failed — a JetStream ack publishes, so a closed connection throws. Whatever
+      // did not ack is also not marked handled, so JetStream redelivers it and nothing is lost. But
+      // it WAS shown, so re-flag the batch: the repeat arrives labelled instead of looking fresh.
+      // Imprecise on purpose — a mid-batch throw may have acked a prefix we cannot identify from
+      // here, so ids already committed linger as stale labels until the cap clears them.
+      markUnconfirmed(ids);
     }
   };
 
