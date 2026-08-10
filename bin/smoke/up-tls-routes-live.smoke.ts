@@ -26,9 +26,17 @@
  *    completes". Here the material is signed by a throwaway CA that is passed to `tls.connect` as
  *    `ca`, with `rejectUnauthorized: true`, so the chain and the hostname are both actually checked.
  *
- *  - REFUSALS ASSERT ON THE REASON. Every mesh here runs `--open`, so there are no credentials to
- *    reject: a refused CONNECT cannot be an auth failure, and a transport refusal is the only thing
- *    it can be. `no protocol reply` therefore means what this suite says it means.
+ *  - REFUSALS ASSERT ON THE REASON, and every refusal cell first proves it reached the RIGHT broker.
+ *    `assertCleartextRefused` requires an `INFO` line (a broker exists) advertising `tls_required`
+ *    (it is the listener under test) BEFORE it will accept silence as evidence. Without those two,
+ *    "no reply" is satisfied by a closed port, a wrong port, or a typo — and since the expected
+ *    result is silence, nothing would be left over to look wrong.
+ *
+ *  - ROUTES A–E RUN `--open` so a refused CONNECT cannot be an auth failure, which is what lets them
+ *    assert on the transport. ROUTE F RUNS AUTHED, because testing a fence with the fence disabled
+ *    is a structural blind spot: an open-mesh green has hidden a permissions fact repeatedly
+ *    elsewhere. It carries its own discriminator — the same credential admitted over TLS and refused
+ *    in the clear — so the two questions stay separable rather than collapsing into one boolean.
  *
  * COTAL_HOME is sandboxed and every broker started here is reaped in the `finally`.
  * Needs `nats-server` and `openssl` on PATH. Run: pnpm smoke:up-tls:live  (BUILD FIRST — the CLI
@@ -41,6 +49,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
 import tls from "node:tls";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 
 const CLI = join(import.meta.dirname, "..", "cotal.ts");
 
@@ -156,30 +165,80 @@ function serverInfo(port: number, timeoutMs = 4000): Promise<Record<string, unkn
  *  producing one means the server parsed our CONNECT in the clear — and a real client's CONNECT line
  *  is where its credentials ride. Requiring a `PONG` specifically would conflate a TLS refusal with
  *  an auth refusal and pass against a plaintext broker; that was this suite's first bug. */
-function cleartextReply(port: number, timeoutMs = 4000): Promise<string | undefined> {
+interface Cleartext {
+  /** An `INFO` line arrived, so the socket reached A BROKER rather than a closed port. */
+  sawInfo: boolean;
+  /** That `INFO` advertised `tls_required`, so it reached the RIGHT broker and the right mode. */
+  tlsRequired: boolean;
+  /** A protocol reply to our cleartext CONNECT. Present means the credential was read in the clear. */
+  reply?: string;
+}
+
+/**
+ * THE THREE OUTCOMES ARE SEPARATE FIELDS, NOT ONE VALUE, AND THAT IS THE POINT.
+ *
+ * This used to return `string | undefined`, where `undefined` meant BOTH "no INFO ever arrived" and
+ * "INFO arrived, CONNECT sent, silence". Those are opposite facts: the first is a broken fixture, the
+ * second is the claim. Collapsed together, `reply === undefined` is satisfied by a closed port, a
+ * wrong port, a broker that never started, or a typo in the address — every one of which passes a
+ * cell whose expected result is silence, leaving nothing over to look wrong.
+ *
+ * The three existing cells were safe only because `serverInfo` and the `tls_required` assertion
+ * happened to run above them in the same block. Nothing forced that ordering, and a new cell or a
+ * reordered one got a vacuous pass with no warning. Splitting the fields makes the vacuous
+ * construction unwritable rather than merely discouraged.
+ *
+ * `sawInfo` is deliberately NOT acceptance. A NATS server sends `INFO` on the raw socket before any
+ * TLS handshake — that is how `tls_required` is observable at all — so the greeting proves the
+ * fixture is aimed correctly and proves nothing about the fence. Only `reply` is acceptance, because
+ * producing one means the server parsed our CONNECT, and a real client's CONNECT line carries its
+ * credentials. Any of `PONG`, `+OK` or `-ERR` counts: an auth error is the loudest confirmation that
+ * the transport fence was absent, since the server had to read the credential to reject it.
+ */
+function cleartextReply(port: number, connectLine?: string, timeoutMs = 4000): Promise<Cleartext> {
   return new Promise((res) => {
     const sock = net.connect(port, "127.0.0.1");
     let buf = "";
     let sent = false;
-    const done = (v: string | undefined) => { try { sock.destroy(); } catch { /* */ } res(v); };
-    sock.setTimeout(timeoutMs, () => done(undefined));
-    sock.on("error", () => done(undefined));
+    const out: Cleartext = { sawInfo: false, tlsRequired: false };
+    const done = () => { try { sock.destroy(); } catch { /* */ } res(out); };
+    sock.setTimeout(timeoutMs, done);
+    sock.on("error", done);
     // THE REFUSAL USUALLY ARRIVES AS A CLOSE, NOT A SILENCE. A TLS-required listener hangs up on a
     // cleartext CONNECT rather than answering it, so waiting for an inactivity timeout would be both
     // slow and — with no close handler at all — a promise that never settles. That is exactly how
     // this suite first failed: no assertion, no error, no output, just an unsettled await.
-    sock.on("close", () => done(undefined));
+    sock.on("close", done);
     sock.on("data", (d) => {
       buf += d.toString("utf8");
       if (!sent && buf.includes("\r\n")) {
+        const line = buf.slice(0, buf.indexOf("\r\n"));
+        out.sawInfo = /^INFO\s/.test(line);
+        try { out.tlsRequired = JSON.parse(line.replace(/^INFO\s+/, "")).tls_required === true; } catch { /* leave false */ }
         sent = true;
         buf = "";
-        sock.write('CONNECT {"verbose":true,"pedantic":false,"protocol":1,"lang":"smoke","version":"0"}\r\nPING\r\n');
+        sock.write(connectLine ?? 'CONNECT {"verbose":true,"pedantic":false,"protocol":1,"lang":"smoke","version":"0"}\r\nPING\r\n');
         return;
       }
-      if (sent && /(PONG|\+OK|-ERR)/.test(buf)) done(buf.split("\r\n")[0]);
+      if (sent && /(PONG|\+OK|-ERR)/.test(buf)) { out.reply = buf.split("\r\n")[0]; done(); }
     });
   });
+}
+
+/** Assert a cleartext CONNECT was refused BY THE TRANSPORT, with its own positive controls first.
+ *  Steps 1 and 2 are what stop step 3 being vacuous, and they belong here rather than in a comment
+ *  asking the next caller to remember them. */
+function assertCleartextRefused(r: Cleartext, where: string): void {
+  assert.equal(r.sawInfo, true,
+    `FIXTURE BROKEN (${where}): no INFO on the raw socket, so nothing was reached. "No reply" here ` +
+    `would be a pass against a closed port, not evidence of a TLS fence.`);
+  assert.equal(r.tlsRequired, true,
+    `FIXTURE BROKEN (${where}): the broker reached does not advertise tls_required, so this is not ` +
+    `the listener under test. A refusal from it proves nothing about the feature.`);
+  assert.equal(r.reply, undefined,
+    `GATE FAILED (${where}): a TLS-required listener answered a CLEARTEXT CONNECT with ` +
+    `${JSON.stringify(r.reply)}. The server parsed our CONNECT in the clear — which is where a real ` +
+    `client's credentials ride.`);
 }
 
 /** THE ADMISSION, and the control that makes the negative mean anything. Same broker, same port,
@@ -276,10 +335,9 @@ async function main(): Promise<void> {
       `ADMISSION FAILED (--detach): a legitimate verifying client could not use the mesh over TLS ` +
       `(${admitted.detail}). Without this leg, the refusal below is satisfied by a broker that refuses everything.`);
 
-    const clear = await cleartextReply(port);
-    assert.equal(clear, undefined,
-      `GATE FAILED (--detach): a TLS-required listener answered a CLEARTEXT CONNECT with ${JSON.stringify(clear)}. ` +
-      `The mesh is --open, so this cannot be an auth refusal; the server parsed our CONNECT in the clear.`);
+    // The mesh is --open, so there are no credentials to reject: a refusal here cannot be an auth
+    // failure, which is what lets this assert on the REASON rather than on a boolean.
+    assertCleartextRefused(await cleartextReply(port), "--detach");
     console.log("  ✓ --detach: tls_required, verifying client ADMITTED (PONG over TLS), cleartext REFUSED");
     cotal(["down"], home, cwd);
   });
@@ -300,8 +358,7 @@ async function main(): Promise<void> {
 
     const admitted = await admitOverTls(port, pkiFiles.ca, "localhost");
     assert.equal(admitted.ok, true, `ADMISSION FAILED (-f manifest): ${admitted.detail}`);
-    const clear = await cleartextReply(port);
-    assert.equal(clear, undefined, `GATE FAILED (-f manifest): cleartext CONNECT answered with ${JSON.stringify(clear)}`);
+    assertCleartextRefused(await cleartextReply(port), "-f manifest");
     console.log("  ✓ -f manifest: tls_required, verifying client ADMITTED, cleartext REFUSED");
     cotal(["down"], home, cwd);
   });
@@ -353,15 +410,87 @@ async function main(): Promise<void> {
     console.log("  ✓ wrong-host cert: refused before launch, naming the mismatch, no listener");
   });
 
+
+  // ── F: AN AUTHED MESH. Every arm above runs --open, and an open-mesh green has repeatedly hidden
+  //    a permissions fact elsewhere in this campaign — testing a fence with the fence disabled is a
+  //    structural blind spot, not bad luck. This arm carries its own discriminator so the two
+  //    questions stay separable. ──────────────────────────────────────────────────────────────────
+  await route("authed", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+
+    // No --open: auth is the default, so the CLI provisions the space and we never touch
+    // `setupSpaceStreams` or the JS API. Both of those carry fixture traps that present as a
+    // permissions refusal and would be indistinguishable from a real finding. Driving the real
+    // entry point avoids them by construction rather than by care.
+    const up = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(up.status, 0, `authed mesh with a valid TLS pair must start: exit ${up.status}\n${up.out}`);
+
+    const credsFile = join(cwd, "probe.creds");
+    // `observer`, not `agent`: the agent profile's dm/dlv/chathist grants are lifecycle-keyed exact
+    // names (SPEC 13.1) and minting one requires a lifecycleUid that only a real spawn supplies.
+    // This cell needs A credential the broker accepts, not a particular role.
+    const mint = cotal(["mint", "probe", "--profile", "observer", "--out", credsFile], home, cwd);
+    assert.equal(mint.status, 0, `minting a probe credential must succeed:\n${mint.out}`);
+    const creds = readFileSync(credsFile, "utf8");
+
+    // ── CELL A: the authed client succeeds OVER TLS. Real credential, real nkey signature, real
+    //    verification (`caFile`, so `rejectUnauthorized` stays on). This is the admission half.
+    const nc = await connect({
+      servers: `127.0.0.1:${port}`,
+      authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
+      tls: { caFile },
+      maxReconnectAttempts: 0,
+      timeout: 10_000,
+    });
+    try {
+      await nc.flush();
+      // Being pointed somewhere else looks exactly like being refused, so name the target rather
+      // than inferring it from success.
+      assert.equal(nc.info?.port, port, `CELL A connected to the WRONG broker: ${nc.info?.port} != ${port}`);
+      assert.equal(nc.info?.tls_required, true, "CELL A: the broker it reached does not require TLS");
+    } finally {
+      await nc.close();
+    }
+
+    // ── CELL B: the SAME credential, in the clear, must be refused BY THE TRANSPORT.
+    //    This cannot be built with the client library: nats.js upgrades the socket itself once it
+    //    reads `tls_required`, so a "plaintext" nats.js client SUCCEEDS against a TLS broker. That
+    //    is the very fact this feature exists to address, which makes a library-based control
+    //    satisfied by the defect it is meant to detect. Raw protocol is the only construction in
+    //    which "plaintext" is expressible.
+    //
+    //    The JWT rides unsigned on purpose. The claim is that the transport refuses BEFORE auth is
+    //    consulted, so the server never reaches the signature; and if the fence were missing it
+    //    would answer `-ERR Authorization Violation`, which `assertCleartextRefused` counts as
+    //    acceptance. An auth error here is the loudest possible proof that the credential was read
+    //    in the clear.
+    const jwt = /-----BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*-----END NATS USER JWT-----/.exec(creds)?.[1]?.trim();
+    assert.ok(jwt, "could not extract the JWT from the minted credential - fixture broken, not a finding");
+    const line = `CONNECT {"verbose":true,"pedantic":false,"protocol":1,"lang":"smoke","version":"0","jwt":"${jwt}"}\r\nPING\r\n`;
+    assertCleartextRefused(await cleartextReply(port, line), "authed/cleartext");
+
+    console.log("  ✓ authed: TLS+creds ADMITTED (flush, right port), same credential in cleartext REFUSED");
+    cotal(["down"], home, cwd);
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
-  for (const o of outcomes) console.log(`  ${o.ok ? "PASS" : "FAIL"}  ${o.route}${o.ok ? "" : `  :: ${(o.err ?? "").split("\n")[0]}`}`);
+  for (const o of outcomes) {
+    console.log(`  ${o.ok ? "PASS" : "FAIL"}  ${o.route}`);
+    // The WHOLE error, not its first line. Assertion messages here embed the CLI's own output,
+    // which is the part that explains the failure — truncating to one line discards exactly the
+    // evidence and forces a second run to recover it.
+    if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
+  }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 5)
-    throw new Error(`HARNESS: expected 5 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 6)
+    throw new Error(`HARNESS: expected 6 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/5 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 5/5 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/6 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 6/6 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {
