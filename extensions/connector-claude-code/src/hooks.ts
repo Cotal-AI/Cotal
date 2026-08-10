@@ -11,6 +11,7 @@
  * binds them to the real MCP server. The behaviour lives here so `smoke/wake-path.smoke.ts`
  * drives the SHIPPED code rather than a copy of it.
  */
+import type { PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
   fmtFrom,
@@ -37,8 +38,53 @@ export interface ClaudeHandleDeps {
   mirror?: () => TranscriptMirror | undefined;
 }
 
-/** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages. */
-export function createClaudeHandle(deps: ClaudeHandleDeps = {}): HookHandle {
+/** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
+const REPEAT_NOTE = "(A previous delivery of one or more of these was not confirmed, so they may be a repeat.)";
+/** Bound on the advisory repeat labels. Only grows on undelivered replies, so it is normally empty. */
+const REPEAT_LABEL_CAP = 512;
+
+/** The hook side of the connector: the handler plus the delivery callback that commits what it
+ *  injected. Both must be wired into {@link startControlServer} — the handler surfaces, the
+ *  callback is the only place a peer message is ever acked. */
+export interface ClaudeHooks {
+  handle: HookHandle;
+  /** Pass as {@link ControlServerOpts.onReply}. */
+  onReply: (ev: HookEvent, delivered: boolean) => void;
+}
+
+/**
+ * Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
+ *
+ * Two properties keep an unattended peer answering:
+ *
+ * **Presence never gates delivery.** `setStatus`/`setAttention` are broker round-trips that throw
+ * while the endpoint is mid-reconnect ({@link MeshAgent.setStatus} calls `assertConnected`). They
+ * used to sit inside the same try/catch as the delivery work that followed them, so a single failed
+ * presence write skipped the injection on `UserPromptSubmit` and — worse — the `Stop` wake flush,
+ * leaving held messages with nothing left to deliver them. Presence is observability; the wake path
+ * is the product, so presence failures are swallowed here and nothing is sequenced behind them.
+ *
+ * **Peer messages are surfaced, then committed on handoff.** The injection is built with
+ * {@link MeshAgent.peekInbox} and the ids are remembered, not acked. A hook reply still has to reach
+ * the runtime through the relay (which abandons the exchange after 2s) and the ids are committed
+ * only once {@link ClaudeHooks.onReply} says it did. Acking at format time was silent loss: the
+ * message was already in `handledIds`, so its durable redelivery was acked and discarded on arrival
+ * and no retry could ever surface it — the peer just never replied.
+ *
+ * **This is a deliberate choice of at-least-once over at-most-once.** The delivery verdict is not
+ * perfectly two-sided, so pick which way it errs:
+ *   • reply landed, confirmation lost  ⇒ the batch is surfaced again and the model reads it twice;
+ *   • reply lost, treated as delivered ⇒ the message is buried and the peer never answers.
+ * The first costs a duplicate injection (labelled — see {@link REPEAT_NOTE}); the second costs the
+ * workflow. Do not "fix" the duplicate by committing optimistically: that is the burial this whole
+ * file exists to prevent.
+ *
+ * Deferring the ack to turn completion (the OpenCode connector's `ackSurfaced` on `session.idle`)
+ * does NOT substitute for this. `Stop` fires whether or not the reply survived, so it would commit a
+ * batch the model never saw — the same loss, later. OpenCode can bind its ack to the turn because
+ * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
+ */
+export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   const mirror = (): TranscriptMirror | undefined => deps.mirror?.();
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
@@ -46,8 +92,43 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): HookHandle {
    * command/action awaiting approval, not just "Claude needs your permission".
    */
   let pendingTool: { name: string; detail: string } | undefined;
+  /** Batches awaiting a delivery verdict, keyed by the EVENT OBJECT the control server passes to
+   *  both `handle` and `onReply`. Frames are separate socket connections and can overlap (a
+   *  `PreToolUse` from a parallel tool batch while a `UserPromptSubmit` reply is still being
+   *  written), so a single mutable slot would let one frame's verdict commit another frame's ids —
+   *  the same mis-ack this file exists to prevent, just with a new cause. The event identity is the
+   *  only thing that correlates a verdict to the reply that carried the batch. A WeakMap so an
+   *  event whose verdict never arrives is collected rather than leaked. */
+  const inFlight = new WeakMap<HookEvent, { ids: string[]; agent: MeshAgent }>();
+  /** Ids whose delivery could not be confirmed, so they are being surfaced again. Advisory only —
+   *  it labels a possible repeat for the model. Bounded; on overflow the label is dropped (never
+   *  the message), because the label is a courtesy and the message is the product. */
+  const unconfirmed = new Set<string>();
 
-  return async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
+  /** Presence is advisory — never let a failed publish skip the delivery work around it. */
+  const safeStatus = async (agent: MeshAgent, status: PresenceStatus, activity?: string): Promise<void> => {
+    try {
+      await agent.setStatus(status, activity);
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
+  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent): string | undefined => {
+    const items = agent.peekInbox("automatic");
+    if (!items.length) return undefined;
+    const body = formatInjection(items);
+    if (!body) return undefined;
+    const ids = items.map((i) => i.id);
+    inFlight.set(ev, { ids, agent });
+    // At-least-once, deliberately: an unconfirmed batch is re-surfaced rather than dropped, so a
+    // reply that DID land but whose confirmation was lost shows the model the same message twice.
+    // Say so, so a repeat reads as a repeat instead of as a peer sending twice.
+    return ids.some((id) => unconfirmed.has(id)) ? `${REPEAT_NOTE}\n${body}` : body;
+  };
+
+  const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
     const withContext = (text: string | undefined): Record<string, unknown> =>
       text ? { hookSpecificOutput: { hookEventName: event, additionalContext: text } } : {};
@@ -59,19 +140,25 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): HookHandle {
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
           // next (re)start — acceptable for a display-only discovery field. setModel keeps the pin wins.
-          if (typeof ev.model === "string") await agent.setModel(ev.model);
-          await agent.setStatus("idle");
-          await agent.setAttention("open"); // F3: reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently deaf
+          if (typeof ev.model === "string") await agent.setModel(ev.model).catch(() => {});
+          await safeStatus(agent, "idle");
+          // Reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently
+          // deaf. Advisory: the local default is already "open", so a failed mirror changes nothing.
+          try {
+            await agent.setAttention("open");
+          } catch {
+            /* best-effort */
+          }
           // Boot push: a one-line note per subscribed channel (if the registry has loaded),
           // plus any messages waiting. Both are advisory context.
-          const parts = [agent.channelBriefing(), formatInjection(agent.drainInbox(undefined, "automatic"))].filter(Boolean);
+          const parts = [agent.channelBriefing(), surfaceAutomatic(agent, ev)].filter(Boolean);
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit":
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           mirror()?.flush(ev.transcript_path);
-          await agent.setStatus("working");
-          return withContext(formatInjection(agent.drainInbox(undefined, "automatic")));
+          await safeStatus(agent, "working");
+          return withContext(surfaceAutomatic(agent, ev));
         case "PreToolUse":
           // Remember what Claude is about to do; if it needs permission, the Notification
           // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
@@ -88,26 +175,27 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): HookHandle {
           const activity = pendingTool
             ? `${pendingTool.name}${pendingTool.detail ? `: ${pendingTool.detail}` : ""}`
             : msg;
-          await agent.setStatus("waiting", activity);
+          await safeStatus(agent, "waiting", activity);
           return {};
         }
         case "Stop":
         case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
           mirror()?.flush(ev.transcript_path);
-          await agent.setStatus("idle");
+          await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
-          // wake one turn so its UserPromptSubmit drains+acks the batch. (Ack sites are two:
-          // drainInbox for surfaced items, and the focus ingest ack-drop for ambient/mentions a
-          // focus agent declined.) Stop can't inject context itself, so we must NOT drain here —
-          // that would ack with no vehicle to the model and silently lose the messages.
+          // wake one turn so its UserPromptSubmit surfaces the batch. (Ack sites are two: the
+          // delivery verdict in onReply, and the focus ingest ack-drop for ambient/mentions a focus
+          // agent declined.) Stop can't inject context itself, so we must NOT surface here — that
+          // would open a batch with no vehicle to the model.
           // Mode-and-channel-aware (pendingWake): open flushes held normal ambient too; dnd/focus and
           // per-channel `quiet` wake only for held DIRECTED items (quiet ambient remains pull-only).
+          // This runs after a presence write that can fail; it must NOT be sequenced behind one.
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
         case "SessionEnd":
           mirror()?.flush(ev.transcript_path); // best-effort — the process may exit before it lands
-          await agent.setStatus("offline");
+          await safeStatus(agent, "offline");
           return {};
         default:
           return {};
@@ -116,6 +204,32 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): HookHandle {
       return {}; // never block the session
     }
   };
+
+  /**
+   * The reply carrying an injected batch either reached the runtime or it did not. Delivered ⇒
+   * commit exactly those ids (the sole ack site for automatic peer messages). Not delivered ⇒
+   * abandon them un-acked, so JetStream redelivers, `incoming` fires again, and the peer is nudged
+   * again — a dropped reply costs a round trip, never the message.
+   */
+  const onReply = (ev: HookEvent, delivered: boolean): void => {
+    const batch = inFlight.get(ev);
+    if (!batch) return; // this frame carried no peer messages (PreToolUse, Notification, Stop, …)
+    inFlight.delete(ev);
+    const { ids, agent } = batch;
+    if (!delivered) {
+      if (unconfirmed.size + ids.length <= REPEAT_LABEL_CAP) for (const id of ids) unconfirmed.add(id);
+      else unconfirmed.clear(); // drop the advisory labels, never the messages
+      return;
+    }
+    for (const id of ids) unconfirmed.delete(id);
+    try {
+      agent.drainInboxIds(ids);
+    } catch {
+      /* an ack failure must never block the session; the ids stay un-acked and redeliver */
+    }
+  };
+
+  return { handle, onReply };
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */
@@ -124,9 +238,12 @@ export type ChannelNotify = (params: { content: string; meta: Record<string, str
 export interface WakePolicy {
   /** Flip once the MCP handshake confirms the client speaks `claude/channel`. */
   setChannelActive(active: boolean): void;
-  /** Teardown hook. */
+  /** Teardown: stop the retry timer. */
   stop(): void;
 }
+
+const NUDGE_RETRY_INITIAL_MS = 1_000;
+const NUDGE_RETRY_MAX_MS = 30_000;
 
 /**
  * The push side of the wake path: turn mesh events into `claude/channel` notifications.
@@ -134,14 +251,39 @@ export interface WakePolicy {
  * A nudge only ever *wakes* a turn — the body is surfaced by the hook handler above (or by an
  * explicit `cotal_inbox` pull). It stays gated on a *mutable* `channelActive` flag (flipped true
  * only after the MCP handshake confirms the client speaks claude/channel). If it fires before
- * then it simply no-ops; a *buffered* message waits in the inbox and is drained at the next
- * UserPromptSubmit, so nothing is lost. This only ever *wakes* a turn (drainInbox and the focus
- * ingest ack-drop are the ack sites). One exception: a focus @mention's body was already
+ * then it simply no-ops; a *buffered* message waits in the inbox and is surfaced at the next
+ * UserPromptSubmit, so nothing is lost. One exception: a focus @mention's body was already
  * ack-dropped at ingest (not buffered), so a missed mention-wake is recoverable only by an
- * explicit cotal_inbox pull (recall) — there is no buffered copy to drain.
+ * explicit cotal_inbox pull (recall) — there is no buffered copy to surface.
+ *
+ * **A rejected push is retried.** The notification can fail (a closed or wedged stdio pipe), and it
+ * is the ONLY thing that wakes an idle session: no later hook fires on its own, so a dropped nudge
+ * used to mean silence until a human typed. A bounded backoff re-nudges while anything is still
+ * pending, mirroring the OpenCode connector's `scheduleErrorRetry`. It is driven off
+ * {@link MeshAgent.pendingWake}, so it stops as soon as the batch is delivered and committed, and
+ * it never wakes for held ambient the agent's attention mode says to hold.
  */
 export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (msg: string) => void = () => {}): WakePolicy {
   let channelActive = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryMs = NUDGE_RETRY_INITIAL_MS;
+
+  const clearRetry = (resetDelay: boolean): void => {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined;
+    if (resetDelay) retryMs = NUDGE_RETRY_INITIAL_MS;
+  };
+
+  const scheduleRetry = (): void => {
+    if (retryTimer || !channelActive || agent.pendingWake() === 0) return;
+    const delay = retryMs;
+    retryMs = Math.min(retryMs * 2, NUDGE_RETRY_MAX_MS);
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (agent.pendingWake() > 0) nudge();
+    }, delay);
+    retryTimer.unref?.(); // a pending retry must never hold the process open
+  };
 
   const nudge = (item?: InboxItem, pullHint?: string): void => {
     if (!channelActive) return;
@@ -151,8 +293,12 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
       : item
       ? `📨 New ${item.kind}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
       : `📨 ${n} Cotal message${n === 1 ? "" : "s"} waiting — delivering your inbox now.`;
-    void notify({ content, meta: item ? channelMeta(item) : { kind: "batch" } }).catch((e: Error) =>
-      log(`channel nudge failed: ${e.message}`),
+    void notify({ content, meta: item ? channelMeta(item) : { kind: "batch" } }).then(
+      () => clearRetry(true),
+      (e: Error) => {
+        log(`channel nudge failed: ${e.message}`);
+        scheduleRetry();
+      },
     );
   };
 
@@ -177,9 +323,10 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   return {
     setChannelActive(active: boolean): void {
       channelActive = active;
+      if (!active) clearRetry(true);
     },
     stop(): void {
-      /* nothing to tear down */
+      clearRetry(true);
     },
   };
 }

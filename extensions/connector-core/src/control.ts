@@ -8,7 +8,7 @@
  * that maps its runtime's events to presence changes + (for inject-capable events)
  * queued peer messages, in that runtime's own hook-output shape.
  */
-import { createServer, type Server } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { MeshAgent, InboxItem } from "./agent.js";
@@ -41,6 +41,18 @@ export interface ControlServerOpts {
    *  its own clean teardown (close the server, `agent.stop()` to leave the mesh, then exit) — the
    *  server never owns `process.exit`. Absent → shutdown frames are accepted + acked but inert. */
   onShutdown?: () => void;
+  /** Called once per handled hook frame, after the reply has been written, with whether it reached a
+   *  LIVE client. A hook reply is the only vehicle for the peer messages a handler injects, and it is
+   *  not guaranteed to arrive: the relay abandons the exchange after its own timeout, and the runtime
+   *  can kill the hook process outright. A handler that surfaced messages therefore commits them on
+   *  `delivered === true` and leaves them un-acked otherwise, so the durable redelivery brings them
+   *  back instead of the batch being silently consumed.
+   *
+   *  `delivered` is "the reply was written to a socket that was still open", which is as far as this
+   *  process can see. It does NOT prove the relay printed it or that the runtime applied it: a client
+   *  that closes between our write and the kernel flush still reads as delivered. It is exact for the
+   *  case that matters — a client that had already gone away when we answered. */
+  onReply?: (ev: HookEvent, delivered: boolean) => void;
 }
 
 /** Hard cap on the first (only) frame: a control request is a token + one small lifecycle event —
@@ -78,6 +90,29 @@ export function formatInjection(items: InboxItem[]): string | undefined {
   const head = `📨 Cotal — ${items.length} new message${items.length === 1 ? "" : "s"} from peers:`;
   const tail = `(Reply with cotal_send / cotal_dm, or cotal_roster to see who's here.)`;
   return `${head}\n${items.map(fmtItem).join("\n")}\n${tail}`;
+}
+
+/** Write one reply frame and report whether it reached a live client. Resolves `false` when the
+ *  socket had already gone (the relay timed out and destroyed it, or the hook process was killed) —
+ *  the signal {@link ControlServerOpts.onReply} carries so a handler never commits into the void. */
+function writeReply(sock: Socket, reply: Record<string, unknown>): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    // A destroyed/half-closed peer surfaces as an error or a close before the write ever finishes;
+    // `finish` (the end callback) precedes `close` on the success path, so the first signal wins.
+    sock.once("error", () => done(false));
+    sock.once("close", () => done(false));
+    try {
+      sock.end(JSON.stringify(reply) + "\n", ((err?: Error | null) => done(!err)) as () => void);
+    } catch {
+      done(false); // already destroyed — end() throws rather than calling back
+    }
+  });
 }
 
 /** Start the authenticated control server. One newline-delimited JSON {@link ControlFrame} → one
@@ -149,11 +184,7 @@ export function startControlServer(
       }
       const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
       const reply = await handle(agent, ev);
-      try {
-        sock.end(JSON.stringify(reply) + "\n");
-      } catch {
-        /* client gone */
-      }
+      opts.onReply?.(ev, await writeReply(sock, reply));
     });
     sock.on("error", () => {
       /* ignore client errors */

@@ -119,17 +119,25 @@ through an at-most-once core subscription. A durable message sent while the agen
 or offline waits on the stream. Two things move a message from inbox to model; one
 delivers, the other only wakes:
 
-- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks drain automatic inbox items,
-  inject the messages as `additionalContext`, and **ack** them. This is the single
-  authoritative path: deterministic, works on any Claude Code build, and a crash before
-  injection redelivers. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
+- **Hook drain (delivery).** `SessionStart` / `UserPromptSubmit` hooks read automatic inbox items and
+  inject them as `additionalContext`. This is the single authoritative path: deterministic and works
+  on any Claude Code build. Quiet ambient is excluded and stays buffered for `cotal_inbox`.
+  A message is **acked only once the hook reply carrying it is confirmed delivered to the hook
+  client** — the reply still has to cross the connector's control socket to the hook process, which
+  gives up after 2s, so anything less than a confirmed handoff leaves the message un-acked and
+  JetStream redelivers it. Acking when the reply was merely *formatted* meant a lost reply was a lost
+  message: it was already marked handled, so its own redelivery was silently acked on arrival.
+  This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
+  surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops
+  the peer answering at all.
 - **Channel nudge (wake).** An arriving message fires a `notifications/claude/channel`
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
-  the next prompt. The nudge never acks anything. If a nudge is lost (a race in the host's
-  channel startup, a dropped notification), JetStream redelivery re-announces the unacked
-  durable item through the same attention policy, so a durable message always wakes the
-  session eventually. If the channel cannot run at all, delivery still waits for the next
-  hook. Live-only traffic has no durable retry.
+  the next prompt. The nudge never acks anything. A nudge that the host rejects is retried with a
+  bounded backoff while anything is still pending — for an idle session it is the only wake source,
+  so dropping it means silence until someone types. If a nudge is lost anyway (a race in the host's
+  channel startup), JetStream redelivery re-announces the unacked durable item through the same
+  attention policy, so a durable message always wakes the session eventually. If the channel cannot
+  run at all, delivery still waits for the next hook. Live-only traffic has no durable retry.
 
 **Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
 `@mentions` us) always nudges. *Ambient* channel chatter does not nudge mid-turn; it
@@ -184,15 +192,17 @@ Your attention is mirrored into presence so peers can see it.
 ## Presence mapping
 
 The connector wires a small subset of Claude Code hooks to presence states; presence is
-coarse, and "what it is doing" rides on activity updates:
+coarse, and "what it is doing" rides on activity updates. Presence is **advisory**: a presence
+publish that fails (the endpoint mid-reconnect, say) is swallowed and never prevents the same hook
+from delivering messages or flushing held ones.
 
 | Hook | → state |
 |---|---|
-| `SessionStart` | `idle` (join; drains the inbox; captures the live model into `meta.model` when no pin) |
-| `UserPromptSubmit` | `working` (turn starts; drains the inbox) |
+| `SessionStart` | `idle` (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
+| `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
 | `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
 | `Notification` (permission / elicitation) | `waiting` (blocked on a human: activity leads with the pending tool, e.g. `Bash: git push …`) |
-| `Stop` / `StopFailure` | `idle` (turn done / died on an API error) |
+| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy) |
 | `SessionEnd` | `offline` (graceful leave) |
 
 Hooks are relayed over the connector's **authenticated** local control endpoint (per-user

@@ -31,9 +31,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
+
+const here = fileURLToPath(new URL(".", import.meta.url));
+/** The real per-event hook entry Claude Code runs, and the loader that can execute its TS. */
+const hookEntry = join(here, "..", "src", "hook.ts");
+const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 
 async function freePort(): Promise<number> {
   const srv = createNetServer();
@@ -98,8 +105,10 @@ const wake = createWakePolicy(
 );
 
 // ---- the hook side: the SHIPPED handler behind the SHIPPED control server ---------------------
-const handle = createClaudeHandle();
-const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN }, handle);
+const claude = createClaudeHandle();
+const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN }, claude.handle, {
+  onReply: claude.onReply,
+});
 
 /**
  * Speak the real control-frame protocol the hook relay speaks.
@@ -127,6 +136,36 @@ function fireHook(event: Record<string, unknown>, opts: { dropReply?: boolean } 
     });
     sock.on("error", () => resolve(undefined));
     setTimeout(() => finish(undefined), 5_000).unref?.();
+  });
+}
+
+/**
+ * Run the REAL hook entry point — `src/hook.ts`, the same one-liner over `runHookRelay` that
+ * Claude Code executes per lifecycle event — as its own process, event JSON on stdin, and return
+ * what it prints on stdout.
+ *
+ * `fireHook` above hand-builds the control frame, which is fine for driving exact interleavings but
+ * proves nothing about the production path. This is the positive control for the whole chain:
+ * relay process → control socket → handler → reply → relay stdout → runtime, including the relay's
+ * own 2s abandon timer and its stdout-flush backstop. Without it, `delivered === true` might be
+ * unreachable in production and every message would redeliver forever behind a green suite.
+ */
+function fireHookViaRealRelay(event: Record<string, unknown>): Promise<{ stdout: string; code: number | null }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [tsxCli, hookEntry], {
+      env: {
+        ...process.env,
+        COTAL_NAME: "Otto", // hasIdentity() gate — the relay no-ops for an unmanaged session
+        COTAL_CONTROL_SOCKET: socketPath,
+        COTAL_CONTROL_TOKEN: TOKEN,
+      },
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    let out = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (d) => (out += d));
+    child.on("close", (code) => resolve({ stdout: out.trim(), code }));
+    child.stdin.end(JSON.stringify(event));
   });
 }
 
@@ -224,6 +263,51 @@ try {
   );
   const afterPresenceFailure = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("the held DM survives the presence failure and is injected", injected(afterPresenceFailure).includes("dm-three: held behind a turn"), injected(afterPresenceFailure));
+  await fireHook({ hook_event_name: "Stop" });
+
+  // ---- 3b. one frame's delivery verdict must never commit another frame's batch ------------------
+  // Hook frames are separate socket connections and can overlap (a PreToolUse from a parallel tool
+  // batch while a UserPromptSubmit reply is still being written). Driven directly, not over the
+  // socket, so the interleaving is exact rather than timing-dependent.
+  await dmOtto("dm-cross: belongs to frame A");
+  await waitFor("the cross-frame DM to buffer", () => stillPending("dm-cross: belongs to frame A"));
+  const frameA = { hook_event_name: "UserPromptSubmit" };
+  const frameB = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } };
+  const replyA = await claude.handle(agent, frameA);
+  check(
+    "frame A carries the batch",
+    JSON.stringify(replyA).includes("dm-cross: belongs to frame A"),
+    replyA,
+  );
+  await claude.handle(agent, frameB);
+  claude.onReply(frameB, true); // B delivered — it carried nothing, so it must commit nothing
+  check(
+    "another frame's delivered reply does not commit frame A's batch",
+    stillPending("dm-cross: belongs to frame A"),
+    { inbox: agent.peekInbox("all").map((i) => i.text) },
+  );
+  claude.onReply(frameA, true); // A delivered — now, and only now, it commits
+  check("frame A's own verdict commits frame A's batch", !stillPending("dm-cross: belongs to frame A"));
+
+  // ---- 3c. POSITIVE CONTROL: the same thing through the REAL hook process -----------------------
+  // Every check above drives a frame this file wrote. This one runs the actual entry point Claude
+  // Code invokes, so the whole production chain — relay process, its 2s abandon timer, its stdout
+  // flush, the control socket, the handler, the delivery verdict — is what delivers and commits.
+  await dmOtto("dm-relay: through the real hook");
+  await waitFor("the relay DM to buffer", () => stillPending("dm-relay: through the real hook"));
+  const viaRelay = await fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" });
+  check("the real hook process exits cleanly", viaRelay.code === 0, viaRelay);
+  check(
+    "the real hook process prints the injected DM for the runtime to apply",
+    injected(viaRelay.stdout).includes("dm-relay: through the real hook"),
+    viaRelay.stdout,
+  );
+  await sleep(300); // the verdict lands just after the child's stdout closes
+  check(
+    "a batch delivered through the real relay IS committed",
+    !stillPending("dm-relay: through the real hook"),
+    { inbox: agent.peekInbox("all").map((i) => i.text) },
+  );
   await fireHook({ hook_event_name: "Stop" });
 
   // ---- 4. a rejected nudge is retried — an idle session has no other wake source ----------------

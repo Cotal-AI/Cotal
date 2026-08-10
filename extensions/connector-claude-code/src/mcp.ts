@@ -28,8 +28,9 @@ import { TranscriptMirror, transcriptChannel } from "./transcript.js";
 let mirror: TranscriptMirror | undefined;
 
 /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
- *  Read `mirror` lazily: main() assigns it after this handler is built. */
-const claudeHandle = createClaudeHandle({ mirror: () => mirror });
+ *  Read `mirror` lazily: main() assigns it after this handler is built. `onReply` is the commit
+ *  half — an injected batch is acked only once its reply is confirmed delivered. */
+const claude = createClaudeHandle({ mirror: () => mirror });
 
 async function main(): Promise<void> {
   // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
@@ -81,8 +82,8 @@ async function main(): Promise<void> {
   controlServer = startControlServer(
     agent,
     { path: controlPath, token: controlToken },
-    claudeHandle,
-    { fatalBind: true, onShutdown: () => void shutdown() },
+    claude.handle,
+    { fatalBind: true, onShutdown: () => void shutdown(), onReply: claude.onReply },
   );
 
   const server = new McpServer(
