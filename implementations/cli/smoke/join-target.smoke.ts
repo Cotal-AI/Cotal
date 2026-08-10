@@ -25,9 +25,11 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 /** The policy as it stands on this branch: nothing can require TLS yet. */
-const TODAY = { tlsRequired: false };
+const TODAY = { tlsRequired: false, allowUnencryptedOverlay: false };
 /** The policy once the broker can serve TLS and the record can say so. */
-const WITH_TLS = { tlsRequired: true };
+const WITH_TLS = { tlsRequired: true, allowUnencryptedOverlay: false };
+/** The operator explicitly accepted the tunnel dependency (`--allow-unencrypted-overlay`). */
+const ACKED = { tlsRequired: false, allowUnencryptedOverlay: true };
 
 /** Classify, expecting a permitted verdict. */
 const permits = (url: string, reach: "loopback" | "overlay", policy = TODAY, server?: string) => {
@@ -67,8 +69,13 @@ console.log("\nAN OVERLAY ADDRESS IS NOT A GUARANTEE — permitted now, but neve
 // consider the target. Increment 1 permits it and SAYS SO; increment 2, once a record can carry
 // TLS intent, turns the residual into a refusal at the call site. Both are pinned here so the
 // second step is a one-line change with its test already written.
-const overlay = classifyJoinTarget("nats://100.64.0.1:4222", TODAY);
-check("permits an overlay literal today", overlay.reach === "overlay", overlay);
+// DEFAULT REFUSES. A printed warning was not a fence: stderr is unread by scripts and it was
+// never persisted, so a scripted registration got the risk with none of the notice. A flag is
+// the one notice a script cannot miss, because without it the command fails.
+const overlayDefault = refuses("nats://100.64.0.1:4222", "overlay, no TLS, no explicit acceptance", TODAY);
+check("  the refusal names the opt-in flag", /--allow-unencrypted-overlay/.test(overlayDefault), overlayDefault);
+const overlay = classifyJoinTarget("nats://100.64.0.1:4222", ACKED);
+check("permits an overlay literal once explicitly accepted", overlay.reach === "overlay", overlay);
 check("  but returns a residual rather than staying silent", Boolean(overlay.residual), overlay);
 check(
   "  and the residual names the tunnel-down hazard",
@@ -85,13 +92,15 @@ check(
 const overlayTls = classifyJoinTarget("nats://100.64.0.1:4222", WITH_TLS);
 check("with TLS required, the same literal has no residual", overlayTls.residual === undefined, overlayTls);
 permits("nats://100.100.100.100:4222", "overlay", WITH_TLS);
+permits("nats://100.100.100.100:4222", "overlay", ACKED);
 permits("nats://100.127.255.255:4222", "overlay", WITH_TLS); // top of 100.64.0.0/10
 permits("nats://[fd7a:115c:a1e0::1]:4222", "overlay", WITH_TLS);
-permits("nats://100.64.0.1:4222", "overlay", TODAY); // permitted under increment 1
+permits("nats://100.64.0.1:4222", "overlay", ACKED); // only with explicit acceptance
 
 console.log("\nthe boundary of 100.64.0.0/10 — off-by-one here silently widens the fence");
 // Checked under WITH_TLS so a boundary failure cannot hide behind the blanket no-TLS refusal.
 refuses("nats://100.63.255.255:4222", "just below the overlay range", WITH_TLS);
+refuses("nats://100.63.255.255:4222", "just below the range, even WITH the opt-in", ACKED);
 refuses("nats://100.128.0.1:4222", "just above the overlay range", WITH_TLS);
 refuses("nats://100.0.0.1:4222", "100.x but outside the /10", WITH_TLS);
 

@@ -157,10 +157,13 @@ answers the lookup would be choosing which machine receives your credentials. Pa
 itself. When serving the broker over TLS arrives, the client will verify the certificate's
 hostname and names become safe to use again.
 
-An overlay address is accepted with a warning rather than silently, because the address is not
-the guarantee: it is protected while the tunnel is up, and if the tunnel is down that range is
-ordinary carrier-grade NAT and whoever answers the dial receives your credentials. Read the
-warning; it is telling you to check something this command cannot check for you.
+An overlay address is **refused unless you accept the dependency explicitly**, with
+`--allow-unencrypted-overlay`. The address is not the guarantee: it is protected while the tunnel
+is up, and if the tunnel is down that range is ordinary carrier-grade NAT and whoever answers the
+dial receives your credentials. Only you can know which it is, so the command asks you to say so.
+Your acceptance is recorded on the mesh entry rather than printed and forgotten. The guided form
+asks the same question instead of taking the flag, and the flag disappears once the broker can be
+served over TLS.
 
 This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
 explicit connection at face value and does not consult the registry, so it is not covered — join

@@ -88,19 +88,20 @@ export function checkServer(raw: string): Check<string> {
  * right now; it must not double as permission to ship credentials across an untrusted network,
  * where there is nothing to verify later and no error to come back and fix.
  */
-export function checkDialPolicy(server: string): Check<JoinTarget> {
+export function checkDialPolicy(server: string, allowUnencryptedOverlay = false): Check<JoinTarget> {
   try {
     // WHEN THE RECORD CAN CARRY TLS INTENT, THIS LINE CHANGES AND THIS COMMENT GOES.
     // `tlsRequired` is a property of the connection this registration will produce, and no field
     // records it yet; it arrives with the work that teaches the broker to serve TLS. Passing a
     // hardcoded `false` is honest rather than lazy: today no dial can require TLS.
     //
-    // What that means CONCRETELY, because getting it backwards would break the next step: public
-    // addresses, ordinary private ranges and hostnames are refused outright, and an overlay
-    // literal is PERMITTED while returning a residual the caller prints. It is not refused. When
-    // the field exists, this passes the record's real intent and the caller treats a residual as
-    // fatal — so the residual is the thing step two needs, not dead weight to simplify away.
-    return good(classifyJoinTarget(server, { tlsRequired: false }));
+    // What that means CONCRETELY: public addresses, ordinary private ranges and hostnames are
+    // refused outright. An overlay literal is refused TOO unless the operator passed the explicit
+    // opt-in, because a printed warning is not a fence — stderr is not read by scripts, and the
+    // warning was never persisted, so nothing repeated it at the dials that followed. With the
+    // opt-in it is permitted and returns a residual, which the caller both prints AND records as
+    // consent. When the TLS field exists this passes the record's real intent and the opt-in goes.
+    return good(classifyJoinTarget(server, { tlsRequired: false, allowUnencryptedOverlay }));
   } catch (e) {
     return bad(`✗ ${(e as Error).message}`);
   }

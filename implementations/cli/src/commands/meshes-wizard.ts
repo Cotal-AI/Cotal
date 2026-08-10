@@ -90,6 +90,8 @@ export interface WizardSeed {
   root?: string;
   mode?: string;
   force?: boolean;
+  /** Pre-accepted overlay tunnel dependency (the flag form's `--allow-unencrypted-overlay`). */
+  allowUnencryptedOverlay?: boolean;
 }
 
 /** Run the guided registration. Returns false if the operator backed out (the caller exits 0 —
@@ -148,8 +150,21 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     // A permitted-but-not-guaranteed target is said out loud here too, not only in the flag form.
     // Recomputed rather than threaded because the typed path validates inside its own callback:
     // the check is pure, and one call site for the warning beats two ways of reaching it.
-    const settled = checkDialPolicy(server);
-    if (settled.ok && settled.value.residual) io.log.warn(settled.value.residual);
+    // The guided form ASKS instead of taking a flag, which is the same explicit acceptance by a
+    // different surface. Refusing here without offering the choice would make the wizard unable to
+    // register an overlay mesh at all, and silently accepting would be the warning-and-continue
+    // shape that was just removed.
+    let overlayAcked = Boolean(seed.allowUnencryptedOverlay);
+    if (!overlayAcked) {
+      const probe = checkDialPolicy(server, true);
+      if (probe.ok && probe.value.residual) {
+        io.log.warn(probe.value.residual);
+        overlayAcked = await io.confirm({ message: "Register it anyway, accepting that dependency?" });
+        if (!overlayAcked) { server = undefined; continue; }
+      }
+    }
+    const settled = checkDialPolicy(server, overlayAcked);
+    if (!settled.ok) { io.log.error(settled.message); server = undefined; continue; }
 
     const spin = io.spinner();
     spin.start(`Asking ${server} what it is`);
