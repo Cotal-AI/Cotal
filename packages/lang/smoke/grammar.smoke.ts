@@ -145,7 +145,14 @@ rejects(
   } catch (e) {
     rendered = (e as LangErrors).render();
   }
-  ok("the typo error names the accepted keys", rendered.includes("deadline"), rendered.slice(0, 200));
+  // Pinned on the full fix line, not on "deadline" alone: that word also appears in the signature
+  // below it, so the loose pin passed on the signature even if the accepted-key list broke. One
+  // site is a pin; two is a coincidence waiting (counted, not assumed).
+  ok(
+    "the typo error names the accepted keys",
+    rendered.includes("Accepted keys: name, deadline"),
+    rendered.slice(0, 200),
+  );
   ok("the typo error carries the callee signature", rendered.includes("turn(agent, { name, deadline? })"));
   ok("the typo error carries a working example", rendered.includes('await turn(builder, { name: "build" })'));
   ok("the blame frame is in user coordinates", rendered.includes("1 | async function f(a)"));
