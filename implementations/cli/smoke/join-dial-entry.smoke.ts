@@ -94,7 +94,11 @@ try {
   // and this is the assertion that catches it.
   const loopback = await add("localmesh", "nats://127.0.0.1:14899");
   check("a loopback literal is NOT refused by the dial policy", !/cannot protect/i.test(loopback.out), loopback.out);
-  check("  it fails later, on the broker instead of the address", /no broker answered|unreachable/i.test(loopback.out), loopback.out);
+  // Scored by throw-site count before trusting it: "unreachable" matches 68 places in the source,
+  // so a disjunction including it would ride on that arm and accept almost any refusal. Pinned to
+  // the registration path's own sentence instead — the assertion is only as strong as its weakest
+  // alternative, and the loose arm is always the one added "just in case".
+  check("  it fails later, on the broker instead of the address", /no broker answered/i.test(loopback.out), loopback.out);
   const overlay = await add("boxmesh", "nats://100.64.0.1:14899");
   check("an overlay literal is NOT refused by the dial policy", !/cannot protect/i.test(overlay.out), overlay.out);
 
