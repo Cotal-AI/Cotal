@@ -109,6 +109,7 @@
     "smoke:views": "tsx implementations/auth/smoke/views.smoke.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
+    "smoke:inst-route-grant": "tsx packages/core/smoke/inst-route-grant.smoke.ts",
     "smoke:manager-lease-grant": "tsx packages/core/smoke/manager-lease-grant.smoke.ts",
     "smoke:manager-lease-probe": "tsx packages/core/smoke/manager-lease-probe.smoke.ts",
     "smoke:kv-scan": "tsx packages/core/smoke/kv-scan.smoke.ts",
