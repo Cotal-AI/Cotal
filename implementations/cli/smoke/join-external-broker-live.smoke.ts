@@ -82,7 +82,7 @@ try {
   saveSpaceAuth(authDir(boxRoot), auth);
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: broker.servers, space: SPACE, creds: provisioner });
-  await seedChannelRegistry({ servers: broker.servers, space: SPACE, creds: provisioner }, { channels: { general: {} } });
+  await seedChannelRegistry({ servers: broker.servers, space: SPACE, creds: provisioner, file: { channels: { general: {} } } });
   console.log(`box: broker + streams up at ${broker.servers}`);
 
   // ── the joining machine: its OWN registry, and trust material copied over ────────────────────
