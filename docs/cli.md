@@ -123,6 +123,7 @@ current.
 
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
@@ -141,6 +142,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
+| `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
+| `--tls-key <path>` | — | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |

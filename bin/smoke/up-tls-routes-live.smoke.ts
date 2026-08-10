@@ -43,8 +43,8 @@
  * subprocess runs built dist, so an unbuilt edit to `packages/core` is invisible to it.)
  */
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync, spawn as spawnProc } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
@@ -124,7 +124,7 @@ function freePort(): Promise<number> {
 let caFile = "";
 
 interface Run { status: number | null; out: string }
-function cotal(args: string[], home: string, cwd: string): Run {
+function cotal(args: string[], home: string, cwd: string, env: Record<string, string> = {}): Run {
   const r = spawnSync("npx", ["tsx", CLI, ...args], {
     encoding: "utf8", cwd, timeout: 180_000,
     // `up` verifies the broker it just started with its OWN client, and `EndpointOptions.tls` is a
@@ -133,7 +133,7 @@ function cotal(args: string[], home: string, cwd: string): Run {
     // through the documented escape hatch is not a workaround for the test's benefit: it is the
     // exact remedy the changeset tells private-CA operators to use, so this exercises it rather than
     // asserting it works.
-    env: { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: caFile },
+    env: { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: caFile, ...env },
   });
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
@@ -476,6 +476,160 @@ async function main(): Promise<void> {
     cotal(["down"], home, cwd);
   });
 
+
+  // ── G: `cotal web` MUST DEMAND TLS, not merely tolerate it. ─────────────────────────────────────
+  //    This is an ENFORCEMENT cell, not a wiring assertion, and the distinction is the point: a
+  //    check that the option is present in a constructed object proves the string is there and says
+  //    nothing about whether the connection would refuse. So the pair below discriminates on
+  //    BEHAVIOUR, one variable apart.
+  //
+  //    The state is built by the product, not by hand: `up --tls-cert` writes the record, then the
+  //    TLS broker is replaced by a PLAINTEXT one on the same port. A client that merely tolerates
+  //    TLS connects to that happily; a client that requires it cannot. Before the fix, `web` dropped
+  //    `conn.tls` at the CotalEndpoint construction and this cell would have gone green by
+  //    connecting — which is the whole failure mode, since the server's cooperation was doing the
+  //    work the client should have been doing.
+  await route("web+status-demand-tls", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+
+    const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(up.status, 0, `TLS mesh must start for the web cell:\n${up.out}`);
+    const tlsInfo = await serverInfo(port);
+    assert.equal(tlsInfo?.tls_required, true, "web cell setup: broker must be TLS-required");
+
+    // Swap the listener underneath the record: same port, no TLS. The RECORD MUST SURVIVE.
+    //
+    // `cotal down` is WRONG here and this cell caught me using it: down REMOVES the registry entry,
+    // so the client then has no record to resolve, falls back to the default :4222, and the cell
+    // tests something else entirely — it reached for the shared demo broker, which this suite is
+    // not allowed to touch. Both testers killed the broker BY PID for exactly this reason; their
+    // repro was better than mine.
+    const pidFile = join(cwd, ".cotal", "nats.pid");
+    const brokerPid = Number(readFileSync(pidFile, "utf8").trim());
+    assert.ok(brokerPid > 0, `could not read the broker pid from ${pidFile} - fixture broken`);
+    try { process.kill(brokerPid, "SIGTERM"); } catch { /* already gone */ }
+    for (let i = 0; i < 40; i++) {
+      if ((await serverInfo(port, 400)) === undefined) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.equal(await serverInfo(port), undefined,
+      "fixture: the TLS broker did not stop, so the substitution never happened");
+    const nats = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port)], { detached: true, stdio: "ignore" });
+    nats.unref();
+    for (let i = 0; i < 40; i++) {
+      const info = await serverInfo(port, 500);
+      if (info && info.tls_required !== true) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const plainInfo = await serverInfo(port);
+    assert.ok(plainInfo, "web cell setup: the replacement plaintext broker never answered");
+    assert.notEqual(plainInfo?.tls_required, true, "web cell setup: replacement broker must be PLAINTEXT");
+
+    try {
+      const web = cotal(["web", "--port", String(await freePort()), "--no-open"], home, cwd);
+      // A client that REQUIRES TLS cannot use this broker. Refusal is the pass.
+      assert.notEqual(web.status, 0,
+        `GATE FAILED (web): \`cotal web\` connected to a PLAINTEXT broker while its mesh record ` +
+        `requires TLS. The endpoint tolerated the transport instead of demanding it, which is the ` +
+        `downgrade this feature exists to prevent.\n${web.out}`);
+      // THE REASON, and the real one is not the one I first asserted. The TLS-required preflight
+      // fails against the plaintext substitute, so resolution reports the mesh UNREACHABLE and
+      // prunes the entry — "no mesh running … (stale registry entry - removed)". The refusal is
+      // correct and fail-closed; the DIAGNOSIS misattributes a transport mismatch as a dead broker,
+      // and it destroys the record on the way past. Recorded as a residual rather than papered over:
+      // this cell asserts the refusal is about reachability/transport and NOT a success, and the
+      // wording it accepts is documented above so nobody reads the match as approval of the message.
+      assert.match(web.out, /tls|TLS|no mesh running|stale registry/,
+        `web refused, but for none of the transport/reachability reasons — assert on the REASON, or ` +
+        `this passes for any startup failure:\n${web.out}`);
+      assert.doesNotMatch(web.out, /connection\s+ok/,
+        `web reported a healthy connection to a substituted plaintext broker:\n${web.out}`);
+
+      // SAME substituted broker, same record: `status` must refuse too. It previously returned
+      // rc=0 and "connection ok" here, which is worse than silence — an operator's rational
+      // response to a green check is to stop looking.
+      const st = cotal(["status"], home, cwd);
+      assert.notEqual(st.status, 0,
+        `GATE FAILED (status): reported success against a PLAINTEXT broker substituted on a ` +
+        `TLS-required mesh's port. A monitoring tool that green-lights the exact substitution this ` +
+        `feature detects is a hazard, not a gap.\n${st.out}`);
+    } finally {
+      try { process.kill(-nats.pid!, "SIGKILL"); } catch { try { nats.kill("SIGKILL"); } catch { /* */ } }
+    }
+    console.log("  ✓ web + status: both DEMAND TLS — refused a plaintext broker under a TLS-required record");
+  });
+
+
+  // ── H: `--dry-run` VALIDATES BUT DOES NOT PERSIST. ──────────────────────────────────────────────
+  //    Hoisting `resolveTransport` above the `--file` branch is what makes the transport dominate
+  //    every route, and it put a WRITE in front of a command whose whole contract is "mutate
+  //    nothing": `up -f --dry-run --tls-cert` printed "nothing was changed" and left a
+  //    broker-policy.json behind. An instrument that modifies what it inspects is a defect even
+  //    when everything it reports is true.
+  //
+  //    Both halves are asserted, because suppressing the write is only correct if the CHECKING
+  //    survives: a dry run that stopped refusing an expired certificate would be a worse bug than
+  //    the one being fixed.
+  await route("dry-run-no-write", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    writeFileSync(join(cwd, "cotal.yaml"),
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdry\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    const policy = join(cwd, ".cotal", "broker-policy.json");
+
+    const dry = cotal(["up", "-f", "cotal.yaml", "--dry-run",
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(dry.status, 0, `a valid dry run must succeed:\n${dry.out}`);
+    assert.equal(existsSync(policy), false,
+      `GATE FAILED (dry-run): the broker policy was WRITTEN by a command that printed "nothing was ` +
+      `changed". ${policy}`);
+    assert.equal(await serverInfo(port), undefined, "a dry run must start no listener");
+
+    // The other half: validation must still run, or suppressing the write broke the check.
+    const bad = cotal(["up", "-f", "cotal.yaml", "--dry-run",
+      "--tls-cert", pkiFiles.expiredCert, "--tls-key", pkiFiles.expiredKey], home, cwd);
+    assert.notEqual(bad.status, 0, `a dry run with an EXPIRED cert must still refuse:\n${bad.out}`);
+    assert.match(bad.out, /EXPIRED/, `the dry-run refusal must name expiry:\n${bad.out}`);
+    assert.equal(existsSync(policy), false, "a refused dry run must not write the policy either");
+    console.log("  ✓ dry-run: validates (expired refused) and writes NOTHING");
+  });
+
+
+  // ── I: A POST-START FAILURE MUST NOT LEAVE AN ORPHAN LISTENER. ──────────────────────────────────
+  //    The port is bound and `nats.pid` written before the mesh is recorded, so a throw in between
+  //    used to exit non-zero while leaving a live broker that `cotal down` cannot reach — it works
+  //    from the registry, and there is no entry. A third state between started and refused.
+  //
+  //    Reachable only BECAUSE of TLS: the post-start client verifies the certificate, so a private
+  //    CA with no `NODE_EXTRA_CA_CERTS` fails after the listener is up. The feature introduced the
+  //    state, so the feature tears it down.
+  await route("no-orphan-on-postfail", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+    // NODE_EXTRA_CA_CERTS deliberately BLANK: this is the operator who forgot it.
+    const r = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+
+    // CONTROL: the failure must be the POST-START one, not an earlier refusal — otherwise this cell
+    // passes for the wrong reason and proves nothing about teardown.
+    assert.notEqual(r.status, 0, `an untrusted CA must fail the post-start verification:\n${r.out}`);
+    assert.match(r.out, /TLS: serving/,
+      `CONTROL FAILED: the listener never started, so this is not the post-start path and the ` +
+      `teardown was never exercised:\n${r.out}`);
+    assert.match(r.out, /self-signed|unable to verify|certificate/,
+      `CONTROL FAILED: failed for some reason other than certificate verification:\n${r.out}`);
+
+    // THE CLAIM: nothing is left holding the port.
+    assert.equal(await serverInfo(port), undefined,
+      `GATE FAILED: a broker survived a post-start failure and is holding ${port} with no registry ` +
+      `entry — \`cotal down\` cannot reach it, because it works from the registry.`);
+    console.log("  ✓ post-start failure: listener torn down, no orphan holding the port");
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -486,11 +640,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 6)
-    throw new Error(`HARNESS: expected 6 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 9)
+    throw new Error(`HARNESS: expected 9 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/6 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 6/6 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/9 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 9/9 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

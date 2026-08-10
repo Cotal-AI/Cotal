@@ -54,16 +54,31 @@ upgrades the same socket once it reads the server's `INFO`. Making that field re
 follow-up. It is called out here because "Cotal supports TLS" is not something you should be able to
 believe while your own client is connecting without requiring it.
 
-**Processes that connect without requiring TLS.** The broker refuses cleartext, so these do not
-connect in the clear against it. What they lack is their own requirement, which is the fence that
-protects them against a stripped or forged `INFO`:
+**Client-side strictness is NOT complete, and the honest scope is wider than a short list.** The
+broker refuses cleartext, so none of these connects in the clear against a healthy TLS broker — a
+NATS client upgrades the same socket once it reads `tls_required`. What they lack is their own
+requirement, which is the fence against a stripped or forged `INFO`, and that is the whole reason
+this feature exists.
 
-- the mesh manager (`manager.ts`, including its raw `connect` for credential probing)
-- the user-auth service
-- the membership feed
-- the web dashboard's server-side client
-- `waitForDeliveryLease` (`packages/core/src/lease.ts`), which builds its own `connect` options
-  rather than going through `standaloneConnectOpts` and so has no TLS path at all
+Two distinct cases, and the second is worse:
+
+*Never had a TLS path.* `waitForDeliveryLease` (`packages/core/src/lease.ts`) builds its own
+`connect` options rather than going through `standaloneConnectOpts`. The user-auth service and the
+membership feed connect the same way. Numerous helpers pass `tls: false` explicitly or omit it:
+sites in `streams.ts`, `channels.ts`, `down.ts`, `spaces.ts`, `evict.ts`, and `up.ts`'s own setup
+connects.
+
+*Resolves the decision and then drops it.* The mesh manager and the web dashboard are worse than
+the above, because the answer is available at the call and is discarded:
+`ensureControlPlane` holds the broker's transport and forwards `--tls` to the delivery daemon, but
+`startManagerDetached`'s options type has no `tls` field, so the value is dropped at that boundary
+and the manager is launched without it. `cotal web` resolves a `Connection` that carries `tls`, then
+constructs its `CotalEndpoint` without passing it. `cotal status` likewise probes with no transport
+and prints no TLS indicator, so a TLS mesh is indistinguishable from a plaintext one in its output.
+
+**Do not read the above as exhaustive.** It is the set found by an adversarial pass, not by an
+enumeration of every dial in the tree, and the honest statement is that client-side strictness landed
+for the `cotal up` path, the recorded mesh record, and the delivery daemon — and nowhere else yet.
 
 The delivery daemon is strict on all three of its dials, including the every-two-seconds reachability
 poll that re-presents its standing credential for the life of the process.

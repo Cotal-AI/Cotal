@@ -148,6 +148,19 @@ export async function web(args: ParsedArgs): Promise<void> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
+    // THE RESOLVED TRANSPORT, NOT A DEFAULT. `connectOrExit` already decided this from the mesh
+    // record and `Connection.tls` is non-optional, so the answer was in scope and was being dropped
+    // here — the same shape as `--tls-cert` being validated and then discarded at a call boundary,
+    // which is the defect this branch exists to close.
+    //
+    // It matters more here than the omission looks. Against a TLS broker this endpoint CONNECTED
+    // FINE without it, by upgrading the socket once it read `tls_required` — so nothing was visibly
+    // wrong. But that INFO is unauthenticated plaintext: an on-path attacker strips `tls_required`
+    // and a client with no requirement of its own carries on in the clear, with its credentials in
+    // the CONNECT line. The client's own `tls` is the PRIMARY fence, not a second layer, so a
+    // dashboard that omits it is protected by the server's cooperation rather than by its own
+    // demand.
+    tls: conn.tls,
     ...(user
       ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
       : { creds: conn.creds, card: { name: "web", kind: "endpoint" as const } }),

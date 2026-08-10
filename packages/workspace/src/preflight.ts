@@ -70,7 +70,18 @@ export async function preflightTarget(
     throw new Error("preflightTarget: a user-mode target cannot be credless-probed - the caller owns the user connect (see preflightOrExit's user branch)");
   const creds =
     probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "probe") : undefined);
-  const auth = creds ? { creds } : {};
+  // THE RECORDED TLS REQUIREMENT IS PART OF THE PROBE, not decoration on the record.
+  //
+  // Without it this probe connects to ANY broker on the recorded address, including a plaintext one
+  // substituted for the TLS broker the record describes — and reports `ok`. Two independent testers
+  // drove exactly that: record a TLS mesh, kill its broker, start a plaintext `nats-server` on the
+  // same port, and `cotal status` returned rc=0 and "connection ok".
+  //
+  // That is worse than a missing feature. A tool that is silent about a substitution is a gap; one
+  // that AFFIRMATIVELY REPORTS HEALTHY is a hazard, because the operator's rational response to a
+  // green check is to stop looking. The recorded requirement is the only thing that can tell those
+  // two brokers apart, since the plaintext one answers perfectly well.
+  const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
   if (probe.ok) return { ok: true };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED

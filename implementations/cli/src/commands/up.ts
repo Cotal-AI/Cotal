@@ -430,7 +430,16 @@ export async function up(args: ParsedArgs): Promise<void> {
   // sit in one arm of it. The dial-host SAN is deliberately NOT checked here — the effective host is
   // not known until a route picks it — so each route re-asserts it via `assertServesDialHost` once
   // it does. Decide early so nothing can skip it; check late so it checks the right host.
-  const transport = resolveTransport(values, undefined, cotalRoot());
+  // `persist` is false on a dry run, and that is a REGRESSION THIS HOIST CAUSED. Before the move,
+  // `resolveTransport` ran inside the launch path and a `--dry-run` never reached it. Hoisting it
+  // above the branch is what makes the transport dominate every route — and it also put a WRITE in
+  // front of a command whose entire contract is "mutate nothing", so `up -f --dry-run --tls-cert`
+  // printed "Dry run - nothing was changed" and left a broker-policy.json behind.
+  //
+  // Validation still runs: a dry run should absolutely refuse an expired or unreadable cert, and
+  // reporting that is the point of it. Only the persistence is suppressed. An instrument that
+  // modifies what it inspects is a defect even when everything it reports is true.
+  const transport = resolveTransport(values, undefined, cotalRoot(), { persist: !values["dry-run"] });
 
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
@@ -1773,7 +1782,30 @@ export async function startMeshDetached(
   }
   if (!opts.boundListener) writeFileSync(cotalPath("nats.pid"), String(child.pid));
   if (opts.boundListener) await opts.boundListener.verify();
-  if (!opts.skipPostStart) await postStart(server, space, setup, seedFile);
+  // POST-START MUST NOT LEAVE AN ORPHAN LISTENER.
+  //
+  // Everything above has already bound the port and written `nats.pid`, but NOTHING has recorded the
+  // mesh yet — `recordOurMesh` is below. So a throw between here and there used to exit non-zero
+  // while leaving a live broker holding the port with no registry entry, which `cotal down` cannot
+  // reach because `down` works from the registry. A third state between "started" and "refused",
+  // and the operator's only recourse is to hunt a pid.
+  //
+  // This is reachable BECAUSE of TLS and cannot happen on `main`: the post-start client verifies the
+  // certificate, so a private CA without `NODE_EXTRA_CA_CERTS` fails here — after the listener is up.
+  // The feature introduced the state, so the feature tears it down.
+  //
+  // Deliberately narrow: this is a teardown on the failure path, not a restructuring of the launch
+  // sequence. The listener is stopped and the pid file removed, then the original error is rethrown
+  // unchanged — the operator needs the certificate error, not a message about cleanup.
+  if (!opts.skipPostStart) {
+    try {
+      await postStart(server, space, setup, seedFile);
+    } catch (e) {
+      try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      try { rmSync(cotalPath("nats.pid"), { force: true }); } catch { /* best effort */ }
+      throw e;
+    }
+  }
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
   const svc = await startUserAuthService(space, server, setup);
   // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
@@ -2076,7 +2108,14 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
  * @param dialHost the hostname clients will verify against, which is NOT the bind host — a broker
  *                 may bind `0.0.0.0` while clients dial `broker.example`.
  */
-function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, dialHost: string | undefined, root: string): BrokerTransport {
+function resolveTransport(
+  values: { "tls-cert"?: string; "tls-key"?: string },
+  dialHost: string | undefined,
+  root: string,
+  /** `persist: false` validates and decides WITHOUT recording. For `--dry-run`, whose contract is
+   *  that it changes nothing — see the call site. Validation is deliberately unaffected. */
+  opts: { persist?: boolean } = {},
+): BrokerTransport {
   const certFile = values["tls-cert"], keyFile = values["tls-key"];
 
   // NO FLAGS: inherit the RECORDED decision rather than defaulting to plaintext. This is the half
@@ -2111,7 +2150,7 @@ function resolveTransport(values: { "tls-cert"?: string; "tls-key"?: string }, d
   const validated = validateRecorded(transport, dialHost);
   // RECORD it, so every later path - a bare `up`, a resume, a restore, a detach - reads the same
   // decision instead of each re-deriving one from whatever is in scope. One writer, many readers.
-  writeBrokerPolicy(root, { version: 1, transport: validated });
+  if (opts.persist !== false) writeBrokerPolicy(root, { version: 1, transport: validated });
   return validated;
 }
 

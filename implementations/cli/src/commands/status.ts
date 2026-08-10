@@ -281,6 +281,11 @@ async function liveSnapshot(target: ReturnType<typeof resolveMeshTarget>): Promi
   const ep = new CotalEndpoint({
     space: target.space,
     servers: target.server,
+    // The recorded requirement, for the same reason as the preflight probe above it: a monitoring
+    // command that connects to whatever answers on the address cannot report on the one property
+    // this feature provides, and reporting "ok" against a substituted plaintext broker is worse
+    // than reporting nothing.
+    tls: target.tlsRequired,
     creds,
     channels: [],
     consume: false,
