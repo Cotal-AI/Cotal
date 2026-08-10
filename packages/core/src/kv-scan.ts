@@ -6,13 +6,19 @@ import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
  *
  * ## Why this exists
  *
- * Six-plus call sites independently open-coded the same shape: enumerate keys, then fetch each
- * key's value. `kv.keys()` is one ordered-consumer pass, but every yielded key then costs a separate
- * `STREAM.MSG.GET` round trip, sequentially. That is O(N) round trips to read N records. It is
- * invisible against a loopback broker and catastrophic anywhere else: 89 membership keys measured
- * 30-34 seconds against a mesh at 534ms RTT, where a single pass is ~3 round trips regardless of N.
+ * Four call sites independently open-coded a whole-bucket read. `readMembership` had the worst
+ * shape: enumerate keys, then fetch each key's value. `kv.keys()` is one ordered-consumer pass, but
+ * every yielded key then costs a separate `STREAM.MSG.GET` round trip, sequentially. That is O(N)
+ * round trips to read N records. It is invisible against a loopback broker and catastrophic anywhere
+ * else: 89 membership keys measured 30-34 seconds against a mesh at 534ms RTT, where a single pass is
+ * ~3 round trips regardless of N.
  *
- * Fixing the call sites one at a time guarantees a seventh, so no call site may open-code this.
+ * The other three were already close to a single pass; what they gained is the completeness
+ * guarantee below, which none of them had.
+ *
+ * Fixing the call sites one at a time guarantees a fifth, so no call site may open-code this. That is
+ * currently a CONVENTION, not an enforced rule: nothing in the build rejects a new `keys()`-then-
+ * `get()` loop.
  *
  * ## Why it owns the pass instead of wrapping `kv.history()`
  *
