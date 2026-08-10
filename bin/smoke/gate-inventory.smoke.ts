@@ -50,10 +50,6 @@ const UNGATED: Record<string, string> = {
   // credential and an `active` durable row for a retired lifecycle). Gating a known red is how a
   // chain teaches its readers to skim reds, which is the most expensive habit a gate can pick up.
   "smoke:renewal-terminal-race": "reproduction of an open defect; gate when the fix lands",
-  // B6: `--on` is dead on any authed mesh because no profile mints an `ep.inst` row. The DENIED arm
-  // is already green and must stay so; the ALLOWED arm is the red. Gate it when the capability is
-  // issued - gating it now would teach every lane to skim a red.
-  "smoke:inst-route-grant": "reproduction of an open defect (B6, instance-route capability); gate when the mint lands",
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
