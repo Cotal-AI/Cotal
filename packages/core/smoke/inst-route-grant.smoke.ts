@@ -137,6 +137,20 @@ console.log("\nCELL 4 - if a pinned capability is handed to an AGENT, where is t
     // Not a failure of this change - it is where the boundary is, and it must be stated rather than
     // discovered later. The builder is principal-blind; the operator-only rule is enforced by the
     // MINT AUTHORITY choosing capabilities, so nothing here may hand an agent a pinned cap.
+    // REACHABILITY, AS OBSERVED ON 2026-08-10 AT `2cb88763`, AND DELIBERATELY NOT AS A GUARANTEE.
+    // No production path mints an agent with a pinned capability: the agent-mint sites pass explicit
+    // field-by-field opts and none lists `endpointCapabilities` (note `capabilities` is a DIFFERENT
+    // field and is easy to mistake for it at a glance). But `provisionAgent` (provision.ts:712)
+    // spreads `{ ...opts }` straight into the agent mint, so a future caller building opts from a
+    // payload gains this silently - no error, no refusal, a valid pinned row in an agent JWT.
+    // The honest label is UNREACHABLE FROM TODAY'S CALLERS, UNENFORCED BY CONSTRUCTION. It is held
+    // by callers choosing to enumerate their fields, not by the grammar.
+    //
+    // And the same door is bolted on one side only: the STATIC managed spawn REFUSES
+    // `endpointCapabilities` outright (manager.ts:2868-2870, Unit B F2, with a stated reason); the
+    // DYNAMIC path merely omits it. Somebody already judged this vector real enough to close one
+    // path. Why the two differ is a smaller and better-posed question than inverting the builder,
+    // which both security seats ruled NON-BLOCKING for this change.
     check("the boundary is the MINT AUTHORITY, not the row builder (recorded, not asserted away)",
       true, { agentPinnedRows: agentPinned.length, note: "operator-only is a policy at the mint site" });
     check("and the pin an agent would get is still the EXACT iid, never a wildcard",
