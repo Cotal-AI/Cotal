@@ -518,6 +518,34 @@ try {
   });
   check("only then is it committed", !stillPending("dm-eight"));
 
+  // ---- 9. the one wake with no second chance ----------------------------------------------------
+  // Found by review. A focus-mode @mention is ack-dropped at ingest, not buffered — so it is in no
+  // inbox and no stream, and the `claude/channel` push is its ONLY notice. The retry was gated on
+  // `pendingWake() > 0`, which is 0 precisely for this case, so the single wake that nothing else can
+  // recover was the single wake never retried.
+  await fireHook({ hook_event_name: "Stop" });
+  await agent.setAttention("focus");
+  failNudges = 1; // reject the mention push, exactly as the host would mid-restart
+  const nudgesBeforeMention = nudges.length;
+  const mentionClock = Date.now();
+  await pub.multicast("@Otto focus mention: the push will be rejected", { channel: "team", mentions: ["Otto"] });
+  await waitFor(
+    "the retried mention-wake after the first push was rejected",
+    () => nudges.length > nudgesBeforeMention,
+    RETRY_DEADLINE_MS,
+  );
+  const mentionElapsed = Date.now() - mentionClock;
+  console.log(`    (mention-wake retry observed after ${mentionElapsed}ms; nothing else can recover it)`);
+  check(
+    "a rejected focus mention-wake IS retried, though nothing buffered it",
+    nudges.some((n) => n.includes("pull it with cotal_inbox")),
+    nudges.slice(-2),
+  );
+  check("and it was the retry timer, not an instant duplicate", mentionElapsed >= NUDGE_RETRY_FIRST_MS, {
+    mentionElapsed,
+  });
+  await agent.setAttention("open");
+
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);
 } finally {
   wake.stop();
