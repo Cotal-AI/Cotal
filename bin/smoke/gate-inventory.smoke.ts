@@ -37,6 +37,7 @@ const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
  * ADDING A LINE HERE IS A DECISION, NOT A FIX. If a suite proves shipped behaviour, gate it.
  */
 const UNGATED: Record<string, string> = {
+  "smoke:manager-lease-grant": "authed fixture does not stand up yet (Authorization Violation during setup, before its first cell); the CELLS are the ones both security seats asked for - a supervisor-credential read of the lease probe, and a consumer bind REFUSED on the lease bucket while ALLOWED on presence. Gate it when the fixture works; do not delete it, the open-mesh probe is blind to exactly this.",
   // Need external tooling no CI runner has.
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
