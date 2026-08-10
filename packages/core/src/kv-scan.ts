@@ -35,6 +35,14 @@ import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
  * the high-latency, jittery links this helper exists to serve, a silently truncated read would
  * otherwise be the default failure mode.
  *
+ * MEASURED, not inferred. Against `@nats-io/kv` 3.4.0 and a real broker, with the link destroyed
+ * mid-delivery through a TCP proxy: `history()` on a bucket of 1500 records returned 20 of them,
+ * threw nothing, and ended its iterator exactly as a complete read does. Reported upstream as
+ * https://github.com/nats-io/nats.js/issues/426. If that is fixed, this can go back to the public
+ * API and drop the `@nats-io/kv/internal` import below; until then the import is load-bearing,
+ * because `history()` cannot express the difference between a short answer and a wrong one.
+ * Re-run that check on any client bump rather than assuming the behaviour still holds.
+ *
  * Because the pass is bound here, both halves are decidable:
  *   - EMPTY is proven, not inferred. `num_pending` is read at bind, before any delivery, so an empty
  *     result means the bucket (or the filtered subset) really had nothing — never that the pass died
