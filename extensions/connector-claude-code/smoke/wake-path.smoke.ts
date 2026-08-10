@@ -55,8 +55,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "ccwake";
-/** Short so redelivery (the recovery path this test asserts) is observable in seconds, not a minute. */
-const ACK_WAIT_MS = 2_500;
+/**
+ * Short so redelivery (the recovery path this test asserts) is observable in seconds, not a minute —
+ * but LONG relative to the nudge retry's 1s first attempt. Both mechanisms produce an identical
+ * nudge, so the retry check below can only be about the retry if redelivery cannot have happened
+ * yet: keep `RETRY_DEADLINE_MS` comfortably under this. At 2.5s they were indistinguishable and the
+ * retry check passed with the retry deleted.
+ */
+const ACK_WAIT_MS = 10_000;
+/** The retry's first attempt is at 1s; anything inside this window predates any possible redelivery. */
+const RETRY_DEADLINE_MS = 5_000;
 const TOKEN = "wake-path-test-token";
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-ccwake-"));
@@ -235,7 +243,7 @@ try {
   );
   // Un-acked means JetStream is still on the hook for it: the message comes back on its own.
   const nudgesBeforeRedelivery = nudges.length;
-  await waitFor("JetStream to redeliver the abandoned DM", () => nudges.length > nudgesBeforeRedelivery, ACK_WAIT_MS * 4);
+  await waitFor("JetStream to redeliver the abandoned DM", () => nudges.length > nudgesBeforeRedelivery, ACK_WAIT_MS * 3);
   check("the abandoned DM is redelivered and re-nudged, so the peer still hears about it", nudges.length > nudgesBeforeRedelivery);
   const recovery = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("the recovered DM reaches the model on the next turn", injected(recovery).includes("dm-two: reply is lost"), injected(recovery));
@@ -311,15 +319,25 @@ try {
   await fireHook({ hook_event_name: "Stop" });
 
   // ---- 4. a rejected nudge is retried — an idle session has no other wake source ----------------
+  // The retry and a JetStream redelivery emit the SAME nudge, so this must be timed to exclude the
+  // latter: the deadline is well under ack_wait, so a nudge inside it can only have come from the
+  // retry timer. (Measured, not assumed — with the two windows overlapping, this check passed with
+  // the retry deleted, proving the redelivery and not the fix.)
   failNudges = 1;
   const nudgesBeforeRetry = nudges.length;
+  const retryClock = Date.now();
   await dmOtto("dm-four: first push fails");
   await waitFor(
     "the retried nudge after the first push was rejected",
     () => nudges.length > nudgesBeforeRetry,
-    10_000,
+    RETRY_DEADLINE_MS,
   );
-  check("a rejected claude/channel push is retried rather than dropped", nudges.length > nudgesBeforeRetry);
+  const retryElapsed = Date.now() - retryClock;
+  check(
+    "a rejected claude/channel push is retried, before any redelivery could explain it",
+    nudges.length > nudgesBeforeRetry && retryElapsed < ACK_WAIT_MS,
+    { retryElapsed, ackWaitMs: ACK_WAIT_MS },
+  );
   const retried = await fireHook({ hook_event_name: "UserPromptSubmit" });
   check("the DM behind the rejected push is delivered", injected(retried).includes("dm-four: first push fails"), injected(retried));
   await fireHook({ hook_event_name: "Stop" });
