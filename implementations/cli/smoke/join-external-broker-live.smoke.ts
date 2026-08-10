@@ -2,8 +2,8 @@
  * A1 end-to-end: a machine joins a broker it does not run.
  *
  * The shape this proves is the whole point, so it is worth stating before the code. An always-on
- * box runs the broker AND the control plane (delivery daemon + manager). Another machine copies
- * the space's trust material, registers the mesh, and from then on its agents are ordinary peers.
+ * box runs the broker AND the control plane (delivery daemon + manager). Another machine holds the
+ * space's trust material, registers the mesh, and from then on its agents are ordinary peers.
  * It elects no lease and runs no daemon, which is not a limitation we tolerate but the design:
  * the manager is a per-space singleton whose lease TTL is 10s and whose renew-failure path tears
  * down its agents and exits, so a laptop holding it would destroy its own agents on any network
@@ -31,7 +31,7 @@ process.env.COTAL_NO_PROMPT = "1"; // the flag form's fail-loud sentences, never
 // does, or that check has nothing to look at and passes vacuously.
 await import("../src/index.js");
 const {
-  createSpaceAuth, mintCreds, newIdentity, provisionAgent, setupSpaceStreams,
+  createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, setupSpaceStreams,
   seedChannelRegistry, CotalEndpoint,
 } = await import("@cotal-ai/core");
 const {
@@ -86,9 +86,14 @@ try {
   console.log(`box: broker + streams up at ${broker.servers}`);
 
   // ── the joining machine: its OWN registry, and trust material copied over ────────────────────
-  // This copy IS the P1 credential posture: the account signing seed lands on the joining
-  // machine, which is authority to mint any identity in the space. Deployment-appropriate (one
-  // owner, one private overlay), not architecturally right; the auth-callout mint deletes it.
+  // This is the EXISTING seedful flow, which is what this slice hardens rather than replaces, so
+  // the copy here is deliberate and matches what an operator does today. It is not an endorsement:
+  // that directory carries the account signing seed, which is authority to mint any identity in
+  // the space, so a machine holding it is a certificate authority for the mesh rather than a
+  // client of it. Removing it is a successor slice (a record that references pre-minted creds,
+  // so `checkTrust` can accept "I hold a credential" instead of "I can mint any credential"),
+  // and that slice owns rewriting this setup. What this file proves is narrower and true: the
+  // registration path is now fenced, and a joining machine elects no lease and runs no daemon.
   process.env.COTAL_HOME = joinHome;
   check("the joining machine starts with an empty registry", loadMeshes().length === 0);
   saveSpaceAuth(authDir(joinRoot), auth);
@@ -118,21 +123,27 @@ try {
   const boxIdent = newIdentity();
   const joinIdent = newIdentity();
   const supervisor = new CotalEndpoint({
-    space: SPACE, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "supervisor"),
-    card: { name: "sup", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false,
+    space: SPACE, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "provisioner"),
+    card: { name: "prov", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false,
   });
   await supervisor.start();
   cleanup.push(() => supervisor.stop());
 
-  const boxCreds = await provisionAgent(supervisor, auth, boxIdent, { subscribe: ["general"], allowSubscribe: ["general"] });
-  const joinCreds = await provisionAgent(supervisor, auth, joinIdent, { subscribe: ["general"], allowSubscribe: ["general"] });
+  // An agent's broker footprint is lifecycle-keyed (SPEC 13.1), so each one is provisioned under
+  // its own UID, minted here exactly as a launcher would and carried onto the endpoint.
+  const boxUid = mintLifecycleUid();
+  const joinUid = mintLifecycleUid();
+  const boxCreds = await provisionAgent(supervisor, auth, boxIdent, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: boxUid });
+  const joinCreds = await provisionAgent(supervisor, auth, joinIdent, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: joinUid });
 
   const onBox = new CotalEndpoint({
-    space: SPACE, servers: broker.servers, creds: boxCreds,
+    space: SPACE, servers: broker.servers, creds: boxCreds, lifecycleUid: boxUid,
     card: { name: "on-box", kind: "agent", id: boxIdent.id }, channels: ["general"],
   });
+  // The joining machine's agent dials the address the REGISTRY resolved, not the one the test
+  // happens to know: that is the path a real joiner takes, and it is what makes this an e2e.
   const onLaptop = new CotalEndpoint({
-    space: SPACE, servers: entry!.server, creds: joinCreds,
+    space: SPACE, servers: entry!.server, creds: joinCreds, lifecycleUid: joinUid,
     card: { name: "on-laptop", kind: "agent", id: joinIdent.id }, channels: ["general"],
   });
   await onBox.start();
@@ -141,9 +152,14 @@ try {
   cleanup.push(() => onLaptop.stop());
 
   const heard: string[] = [];
-  onBox.on("message", (m: { text?: string }) => { if (m?.text) heard.push(m.text); });
+  // A message carries `parts`, not a flat string: read the text parts so a shape change surfaces
+  // as a failed assertion rather than as a silently empty inbox.
+  onBox.on("message", (m: { parts?: Array<{ kind: string; text?: string }> }) => {
+    for (const part of m?.parts ?? []) if (part.kind === "text" && part.text) heard.push(part.text);
+  });
   await wait(300);
-  await onLaptop.dm("on-box", "hello from the machine that runs no broker");
+  // Addressed by principal (`<owner>.<actor>`), which is what a real peer does.
+  await onLaptop.unicast(onBox.ref().id, "hello from the machine that runs no broker");
   for (let i = 0; i < 40 && !heard.length; i++) await wait(100);
   check("a DM from the joining machine reaches an agent on the box", heard.length > 0, heard);
   check("  and it is the message that was sent", heard[0]?.includes("runs no broker"), heard[0]);
