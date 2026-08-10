@@ -148,6 +148,15 @@ answers the lookup would be choosing which machine receives your credentials. Pa
 itself. When serving the broker over TLS arrives, the client will verify the certificate's
 hostname and names become safe to use again.
 
+An overlay address is accepted with a warning rather than silently, because the address is not
+the guarantee: it is protected while the tunnel is up, and if the tunnel is down that range is
+ordinary carrier-grade NAT and whoever answers the dial receives your credentials. Read the
+warning; it is telling you to check something this command cannot check for you.
+
+This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
+explicit connection at face value and does not consult the registry, so it is not covered — join
+that way only to an address you would have registered.
+
 Records added this way are removed only by something that names them. A mesh this machine started
 can be dropped on a hunch — a failed liveness probe, a `cotal down` in its project — because
 `cotal up` writes the record straight back. One you registered by hand cannot be reconstructed, so
