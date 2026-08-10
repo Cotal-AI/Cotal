@@ -477,6 +477,22 @@ try {
   check("…and declining returns to the address prompt rather than registering", declineReprompted, declined.asked);
   check("…and writes nothing", loadMeshes().every((m) => m.server !== OVERLAY), loadMeshes());
 
+  // …and the ACCEPTING path, which is the half that proves consent is not printed and forgotten:
+  // say yes, take the "register it anyway" exit (nothing listens on an overlay literal here), and
+  // assert the WRITTEN record carries the acceptance. The wizard shipped asking a question whose
+  // answer reached no record at all, so a test that stops at "it asked" would pass over that.
+  const accepted = driver([
+    true,        // yes, accept the tunnel dependency  (the transport consent)
+    "anyway",    // no broker answered -> record it unverified
+    "overlaid",  // space name on that broker
+    true,        // register this mesh?
+  ]);
+  const acceptedOut = await addWizard({ server: OVERLAY, root }, root, accepted.io as never);
+  check("accepting the dependency carries the wizard through to a record", acceptedOut === true, accepted.asked);
+  check("…and the WRITTEN entry carries the acceptance, not just the prompt",
+    findMesh("overlaid")?.unencryptedOverlay === true, findMesh("overlaid"));
+  removeMesh("overlaid");
+
   // 1. A name that came in on the command line must still hit the clash gate.
   recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const clash = driver(["cancel"]);
