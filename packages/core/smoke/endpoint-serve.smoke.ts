@@ -247,7 +247,7 @@ throws("a duplicate command declaration refuses to parse",
 // is never an empty success (SPEC 13.5). So both arms pin their MESSAGE, and a third asserts the two
 // messages actually differ — the discriminator has to be absent from one side to discriminate at all.
 const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: string }> => {
-  try { await freezeExpectedSet(jsmStub as never, {} as never, SPACE, "manager"); return { message: "NO THROW" }; }
+  try { await freezeExpectedSet(jsmStub as never, SPACE, "manager"); return { message: "NO THROW" }; }
   catch (e) { return { code: (e as EpEnvelopeError).code, message: (e as Error).message }; }
 };
 {
@@ -327,7 +327,7 @@ try {
   c("a FIRST registration of a fresh instanceId keeps epoch 0 (a never-restarted single manager)",
     gateStates.get(`manager/${IID_B}`)!.processEpoch === 0);
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regB.registrationRevision } });
-  const frozen = await freezeExpectedSet(jsm, kv, SPACE, "manager");
+  const frozen = await freezeExpectedSet(jsm, SPACE, "manager");
   c("the frozen expected set carries (instanceId, registrationRevision, epoch) per live instance",
     frozen.length === 2
     && frozen.some((f) => f.instanceId === IID_A && f.registrationRevision === regA2.registrationRevision && f.epoch === 3)
@@ -340,16 +340,16 @@ try {
     gateStates.get(`manager/${IID_B}`)!.processEpoch === 1);
   c("a stale projection (status behind the CURRENT registration) leaves the frozen set",
     regB2.registrationRevision > regB.registrationRevision
-    && (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
+    && (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_EXITED, observedSpecRevision: regB2.registrationRevision } });
-  c("an exited instance leaves the frozen set", (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
+  c("an exited instance leaves the frozen set", (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
   await rejects("an empty registry is failed-precondition, never an empty scatter success",
-    () => freezeExpectedSet(jsm, kv, SPACE, "ghost"), "failed-precondition");
+    () => freezeExpectedSet(jsm, SPACE, "ghost"), "failed-precondition");
   // Malformed mediated-writer state fails LOUD (§13.9), never enters the set.
   await kv.put(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]), new TextEncoder().encode(JSON.stringify({ attackerControlled: true, owner: "u_evil" })));
   await kv.put(`svc.manager.${T_UID}.status`, new TextEncoder().encode(JSON.stringify({ epoch: 1, state: SERVICE_READY, observedSpecRevision: 1 })));
   await rejects("a malformed registered spec fails LOUD at the freeze, never enters the set",
-    () => freezeExpectedSet(jsm, kv, SPACE, "manager"), "internal");
+    () => freezeExpectedSet(jsm, SPACE, "manager"), "internal");
   await kv.purge(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]));
   await kv.purge(`svc.manager.${T_UID}.status`);
 
@@ -944,7 +944,7 @@ try {
       () => epochOf("z".repeat(26)), "failed-precondition");
 
     // scatter: freeze -> gather -> production reconcile, one call
-    const s1 = await epScatterService(nc, jsm, kv, SPACE, opC("status"), { deadlineMs: 4000 });
+    const s1 = await epScatterService(nc, jsm, SPACE, opC("status"), { deadlineMs: 4000 });
     c("epScatterService freezes from the LIVE registry and completes over both instances",
       s1.complete === true && s1.replies.size === 2 && s1.churn.length === 0 && s1.missing.length === 0 && s1.invalid.length === 0,
       JSON.stringify({ complete: s1.complete, replies: s1.replies.size, churn: s1.churn, missing: s1.missing, invalid: s1.invalid }));
@@ -961,11 +961,11 @@ try {
       info: () => new Promise(() => { /* never settles */ }),
     });
     await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
-      () => epScatterService(nc, stalledJsm, kv, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
+      () => epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)
-    const frozen1 = await freezeExpectedSet(jsm, kv, SPACE, EPC);
+    const frozen1 = await freezeExpectedSet(jsm, SPACE, EPC);
     const regCB2 = await reg(kv, { spec: { endpoint: EPC, owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 } }, instanceId: IID_B, registrant: asOp, authority });
     const s2 = await epScatter(nc, SPACE, opC("status"), { deadlineMs: 4000, expected: frozen1, reconcileRegistration: registrationReconciler(jsm, SPACE, EPC, frozen1) });
     c("a mid-scatter re-registration is `registration` churn through the PRODUCTION reconciler (counted reply dropped)",
@@ -976,7 +976,7 @@ try {
     // a REAL mid-scatter deregistration: the explicit registered:false verdict — a departure
     // does NOT invalidate the reply the departed instance already gave (§13.5)
     await writeServiceStatus(kv, { endpoint: EPC, instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regCB2.registrationRevision } });
-    const frozen2 = await freezeExpectedSet(jsm, kv, SPACE, EPC);
+    const frozen2 = await freezeExpectedSet(jsm, SPACE, EPC);
     c("(setup) the re-converged freeze holds both instances again", frozen2.length === 2);
     await kv.delete(recordSpecKey(RECORD_KINDS.svc, [EPC, IID_B]));
     await kv.delete(recordStatusKey(RECORD_KINDS.svc, [EPC, IID_B]));

@@ -717,7 +717,7 @@ export interface FrozenInstance {
  *  is `failed-precondition`, never an empty success (§13.5); a MALFORMED registry record fails
  *  loud (`internal`, §13.9: readers fail loud on invalid mediated-writer state). The read grant
  *  this runs under is a §13.9 matrix row. */
-export async function freezeExpectedSet(jsm: JetStreamManager, kv: KV, space: string, endpoint: string): Promise<FrozenInstance[]> {
+export async function freezeExpectedSet(jsm: JetStreamManager, space: string, endpoint: string): Promise<FrozenInstance[]> {
   const e = endpointToken(endpoint);
   const frozen: FrozenInstance[] = [];
   const instanceIds: string[] = [];
@@ -730,18 +730,14 @@ export async function freezeExpectedSet(jsm: JetStreamManager, kv: KV, space: st
     // same subjects; `kv.keys()` rides an ORDERED EPHEMERAL CONSUMER, so every caller of this
     // function needs CONSUMER.CREATE/INFO/DELETE on the bucket — three consumer-lifecycle verbs to
     // list keys. `subjects_filter` is the native JetStream feature for exactly this and needs one
-    // read-only metadata verb instead. The bucket comes from the HANDLE, never recomputed from
-    // `space`: this function is generic over the KV it is given and its suites pass their own.
+    // read-only metadata verb instead. The bucket name is derived from `space` (same derivation
+    // `scatterFreezeReadRows` uses for the grant); there is no KV handle parameter because nothing
+    // here opens one — per-slot reads are leader-served `STREAM.MSG.GET` via `jsm`.
     //
     // `state.subjects` counts messages per subject, so a key whose latest write is a DELETE marker
     // still appears where `kv.keys()` would omit it. That is already handled and always was — the
     // per-slot read below reports a tombstone as `{ deleted: true }` and the loop skips it as "gone
     // since the enumeration list", which is the same tolerance a bounded-lag list needs anyway.
-    // The bucket is derived, not queried. Every caller opens this handle with `openRecordsBucket`
-    // (checked: all 10 call sites across core + manager), and `scatterFreezeReadRows` already
-    // computes `KV_${recordsBucket(space)}` locally to build the grant — so asking the server for a
-    // name it already knows would add a round trip INSIDE the deadline-raced region for nothing,
-    // and would need a `status` grant of its own.
     const REC = recordsBucket(space);
     const prefix = `$KV.${REC}.`;
     const info = await jsm.streams.info(`KV_${REC}`, { subjects_filter: `${prefix}svc.${e}.*.spec` });

@@ -23,7 +23,6 @@ import {
   EpEnvelopeError, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock,
 } from "./endpoint-envelope.js";
-import type { KV } from "@nats-io/kv";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import type { CompiledContract } from "./schema-profile.js";
 import { freezeExpectedSet, registrationReconciler, serviceEpochReader, type FrozenInstance } from "./endpoint-service.js";
@@ -670,18 +669,17 @@ export async function epScatter(
 export async function epScatterService(
   nc: NatsConnection,
   jsm: JetStreamManager,
-  kv: KV,
   space: string,
   op: EpVerbOp,
   opts: { deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number },
 ): Promise<EpScatterResult> {
-  // ONE ABSOLUTE deadline covers the whole op (distsys BLOCKING 2): the freeze (kv.keys enumeration
-  // + per-slot leader reads) is charged against `deadlineMs`, not run unbounded before it. A freeze
-  // that never settles is `deadline-exceeded`, never a scatter that silently overruns its budget,
-  // and the gather runs on the REMAINING budget.
+  // ONE ABSOLUTE deadline covers the whole op (distsys BLOCKING 2): the freeze (STREAM.INFO
+  // enumeration + per-slot leader reads) is charged against `deadlineMs`, not run unbounded before
+  // it. A freeze that never settles is `deadline-exceeded`, never a scatter that silently overruns
+  // its budget, and the gather runs on the REMAINING budget.
   const deadlineMs = assertDeadline(opts.deadlineMs);
   const started = Date.now();
-  const expected = await raceBounded(() => freezeExpectedSet(jsm, kv, space, op.endpoint), deadlineMs, `the scatter freeze for ${op.endpoint}`);
+  const expected = await raceBounded(() => freezeExpectedSet(jsm, space, op.endpoint), deadlineMs, `the scatter freeze for ${op.endpoint}`);
   const remaining = deadlineMs - (Date.now() - started);
   if (remaining <= 0)
     throw new EpEnvelopeError("deadline-exceeded", `the scatter freeze for ${op.endpoint} consumed the whole ${deadlineMs}ms budget; no time left to gather (SPEC 13.5)`);

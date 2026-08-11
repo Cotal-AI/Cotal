@@ -93,7 +93,7 @@ try {
   // scatterCommand constructs its JSM); the freeze rides only the `svc.*` records rows.
   const jsm = await jetstreamManager(nc, { checkAPI: false });
   const recKv = await openRecordsBucket(nc, SPACE);
-  const frozen = await freezeExpectedSet(jsm, recKv, SPACE, MANAGER_ENDPOINT);
+  const frozen = await freezeExpectedSet(jsm, SPACE, MANAGER_ENDPOINT);
   const frozenIds = new Set(frozen.map((f) => f.instanceId));
   check("the caller instrument can FREEZE the class (scoped records-read grant) — both instances present",
     frozen.length === 2 && frozenIds.has(IID1) && frozenIds.has(IID2), frozen);
@@ -113,7 +113,7 @@ try {
   await wait(500);
   // The freeze STILL names IID2 (READY record, no deregistration): a severed instance is not silently
   // dropped from the expected set.
-  const frozen2 = await freezeExpectedSet(jsm, recKv, SPACE, MANAGER_ENDPOINT);
+  const frozen2 = await freezeExpectedSet(jsm, SPACE, MANAGER_ENDPOINT);
   check("the severed instance is STILL frozen (READY record, no clean deregister)",
     new Set(frozen2.map((f) => f.instanceId)).has(IID2), frozen2);
   const t0 = Date.now();
