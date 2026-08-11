@@ -418,6 +418,34 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
+  // THE EFFECTIVE PROJECT ROOT IS PINNED BEFORE THE TRANSPORT IS DECIDED.
+  //
+  // `ensureRootForSpace` may create `cwd/.cotal` when the nearest ancestor root already owns a
+  // different auth space — the child becomes its own mesh root. That pin used to run AFTER
+  // `resolveTransport`, so a TLS policy was written to the PARENT root while the listener and
+  // MeshEntry landed on the CHILD. First `up --tls-*` looked green (transport was in memory);
+  // `down` then bare `up` from the child found no policy and served plaintext, rewriting
+  // `tlsRequired: false`. Same class as B4/B5: operator-visible TLS success, silent cleartext on
+  // the documented retain path. Also polluted the parent's policy file.
+  //
+  // Dry-run must not pin (mkdir is a mutation). Validation still uses whatever root is visible;
+  // persistence is already suppressed below.
+  if (!values["dry-run"]) {
+    const spaceForRoot = values.space ?? resolveSpace(process.cwd());
+    if (values.file) {
+      try {
+        const prepared = loadManifest(resolve(values.file));
+        const space = values.space ?? prepared.manifest.space;
+        const open = Boolean(values.open) || prepared.manifest.broker?.auth === false;
+        ensureRootForSpace(!open, space);
+      } catch {
+        // Manifest errors are reported by the -f path with the same load; do not double-print.
+      }
+    } else {
+      ensureRootForSpace(!values.open, spaceForRoot);
+    }
+  }
+
   // THE TRANSPORT IS DECIDED HERE, ABOVE EVERY BRANCH, AND THIS POSITION IS THE FIX.
   //
   // It used to be resolved inside the foreground path only, which meant three routes to a listener
@@ -439,7 +467,11 @@ export async function up(args: ParsedArgs): Promise<void> {
   // Validation still runs: a dry run should absolutely refuse an expired or unreadable cert, and
   // reporting that is the point of it. Only the persistence is suppressed. An instrument that
   // modifies what it inspects is a defect even when everything it reports is true.
-  const transport = resolveTransport(values, undefined, cotalRoot(), { persist: !values["dry-run"] });
+  //
+  // The root argument is the PINNED root (or the walked root on dry-run). One root for policy,
+  // auth, store, and MeshEntry — never a second walk that can disagree after a later pin.
+  const meshRoot = cotalRoot();
+  const transport = resolveTransport(values, undefined, meshRoot, { persist: !values["dry-run"] });
 
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.

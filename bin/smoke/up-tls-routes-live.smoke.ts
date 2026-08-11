@@ -48,7 +48,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawnSync, spawn as spawnProc } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
@@ -635,6 +635,92 @@ async function main(): Promise<void> {
     console.log("  ✓ post-start failure: listener torn down, no orphan holding the port");
   });
 
+  // ── J: POLICY ROOT MUST BE THE FINAL MESH ROOT (S4). ───────────────────────────────────────────
+  //    When the nearest ancestor root already owns a different auth space, `ensureRootForSpace`
+  //    creates `cwd/.cotal` for the new space. That pin used to run AFTER `resolveTransport`, so
+  //    the TLS policy was written to the PARENT while the listener and MeshEntry landed on the
+  //    CHILD. First `up --tls-*` looked green (transport in memory); `down` then bare `up` from
+  //    the child found no policy and served plaintext. Also polluted the parent's policy file.
+  //
+  //    The gate is the documented retain path: parent auth mesh → child TLS up → down → bare up
+  //    still TLS; child policy exists; parent policy unchanged by the child launch.
+  await route("policy-root-before-transport", async () => {
+    const home = join(root, `home-s4`);
+    const parent = join(root, `parent-s4`);
+    const child = join(parent, `child-s4`);
+    mkdirSync(join(parent, ".cotal"), { recursive: true });
+    mkdirSync(child, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    const parentPort = await freePort();
+    const childPort = await freePort();
+    homes.push({ home, port: parentPort, cwd: parent });
+    homes.push({ home, port: childPort, cwd: child });
+
+    const parentUp = cotal(["up", "--detach", "--space", "parent-space",
+      "--server", `nats://127.0.0.1:${parentPort}`], home, parent);
+    assert.equal(parentUp.status, 0, `parent auth mesh must start:\n${parentUp.out}`);
+    const parentPolicyBefore = join(parent, ".cotal", "broker-policy.json");
+    const parentPolicySnap = existsSync(parentPolicyBefore)
+      ? readFileSync(parentPolicyBefore, "utf8") : null;
+
+    const childUp = cotal(["up", "--detach", "--space", "child-space",
+      "--server", `nats://127.0.0.1:${childPort}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, child);
+    assert.equal(childUp.status, 0, `child TLS mesh must start:\n${childUp.out}`);
+    assert.match(childUp.out, /making this folder its own root|TLS: serving/,
+      `CONTROL: expected a root pin and/or TLS serving line:\n${childUp.out}`);
+
+    const childPolicy = join(child, ".cotal", "broker-policy.json");
+    assert.equal(existsSync(childPolicy), true,
+      `GATE FAILED (S4): child has no broker-policy.json — policy was written to the wrong root`);
+    assert.match(readFileSync(childPolicy, "utf8"), /tls-required/,
+      `GATE FAILED (S4): child policy is not tls-required:\n${readFileSync(childPolicy, "utf8")}`);
+
+    if (parentPolicySnap === null) {
+      assert.equal(existsSync(parentPolicyBefore), false,
+        `GATE FAILED (S4): child launch wrote a policy into the parent root`);
+    } else {
+      assert.equal(readFileSync(parentPolicyBefore, "utf8"), parentPolicySnap,
+        `GATE FAILED (S4): child launch mutated the parent's broker-policy.json`);
+    }
+
+    const firstInfo = await serverInfo(childPort);
+    assert.equal(firstInfo?.tls_required, true, "first child listener must require TLS");
+    assertCleartextRefused(await cleartextReply(childPort), "s4/first-up");
+
+    cotal(["down"], home, child);
+    const bare = cotal(["up", "--detach", "--space", "child-space",
+      "--server", `nats://127.0.0.1:${childPort}`], home, child);
+    assert.equal(bare.status, 0, `bare child re-up must inherit TLS policy:\n${bare.out}`);
+    assert.match(bare.out, /inheriting the recorded broker policy|TLS: serving/,
+      `bare re-up must name the inherited TLS decision:\n${bare.out}`);
+
+    const bareInfo = await serverInfo(childPort);
+    assert.equal(bareInfo?.tls_required, true,
+      `GATE FAILED (S4): bare re-up after down served plaintext — the retain path evaporated`);
+    assertCleartextRefused(await cleartextReply(childPort), "s4/bare-reup");
+
+    // Registry bit must still claim TLS (a green first session that rewrites the bit off is the
+    // same defect wearing a different hat).
+    const meshes = cotal(["meshes"], home, child);
+    assert.match(meshes.out, /child-space/, `meshes must list the child:\n${meshes.out}`);
+    // The record is a JSON file under COTAL_HOME; assert the durable field, not display copy.
+    const meshesDir = join(home, "meshes");
+    const recPath = spawnSync("bash", ["-lc",
+      `grep -l 'child-space' "${meshesDir}"/*.json 2>/dev/null | head -1`], { encoding: "utf8" }).stdout.trim();
+    assert.ok(recPath, `CONTROL: no mesh record for child-space under ${meshesDir}`);
+    const rec = JSON.parse(readFileSync(recPath, "utf8")) as { tlsRequired?: boolean; root?: string };
+    assert.equal(rec.tlsRequired, true,
+      `GATE FAILED (S4): MeshEntry.tlsRequired rewritten false after bare re-up:\n${JSON.stringify(rec)}`);
+    // macOS: /var → /private/var; compare realpaths so a symlink does not look like a wrong root.
+    assert.equal(realpathSync(rec.root ?? ""), realpathSync(child),
+      `GATE FAILED (S4): MeshEntry.root is not the child root:\n${JSON.stringify(rec)}`);
+
+    console.log("  ✓ S4: child TLS policy on child root; bare re-up retains TLS; parent policy untouched");
+    cotal(["down"], home, child);
+    cotal(["down"], home, parent);
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -645,11 +731,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 9)
-    throw new Error(`HARNESS: expected 9 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 10)
+    throw new Error(`HARNESS: expected 10 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/9 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 9/9 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/10 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 10/10 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {
