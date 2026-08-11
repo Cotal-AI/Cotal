@@ -467,4 +467,47 @@ if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
   ok("editing onExpiry to fail makes the resume throw", (threw as { code?: string })?.code === "L4007", String(threw).slice(0, 60));
 }
 
+// ---- 15) escalation: one entry, two identities -------------------------------------------------
+
+/**
+ * The program made ONE call, so there is one journal entry: the interpreter owns key allocation
+ * and a second mint must not become a second occurrence. But two mints need two IDENTITIES, and
+ * both have to be derivable BEFORE their mint, or a crash between minting and recording leaves
+ * live work that nothing in the journal names.
+ *
+ * The failure this replaces had no third answer: reusing one id makes the second mint resolve as
+ * cached against the first attempt, and inventing one at mint time breaks the rule that an
+ * identity is journalled before dispatch.
+ */
+{
+  const ESCALATE = `
+const c = await checkpoint("gate", "Approve?", { timeout: "1m", onExpiry: "escalate", to: "david" });
+log(c.status);
+`;
+  const logs: unknown[] = [];
+  const r = await run(ESCALATE, {
+    runId: "r-15",
+    onLog: (l) => logs.push(l.values[0]),
+    handler: new SimHandler({
+      // First mint expires, the escalated one is answered.
+      checkpoints: { gate: [{ status: "expired", by: "sim" }, { status: "resolved", value: true, by: "david" }] },
+      clock: { start: 0 },
+    }),
+  });
+
+  const cps = r.journal.entries().filter((e) => e.kind === "checkpoint");
+  ok("escalation stays inside ONE journal entry", cps.length === 1, cps.length);
+  ok("and that entry is occurrence 0, not a second occurrence", cps[0]?.occurrence === 0);
+
+  const attempts = (cps[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+  ok("the entry records both attempts", attempts.length === 2, attempts);
+  ok(
+    "each attempt has its OWN identity, derivable before its mint",
+    attempts[0]?.requestId !== undefined && attempts[1]?.requestId !== undefined
+      && attempts[0]?.requestId !== attempts[1]?.requestId,
+    attempts.map((a) => a.requestId),
+  );
+  ok("the program sees the escalated answer", logs[0] === "resolved", logs);
+}
+
 console.log(`interpret.smoke: ${pass} checks passed`);

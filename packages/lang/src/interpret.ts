@@ -703,22 +703,47 @@ class Interpreter {
         // onExpiry throws even though nothing about the recorded expiry changed.
         const onExpiry = this.option(bag, "onExpiry") as "fail" | "proceed" | "escalate" | undefined;
         const schema = this.option(bag, "schema");
+        // The SAME projection the entry is keyed by, so an attempt's identity is a function of the
+        // step it belongs to rather than of anything the escalation invents.
+        const cpInput = { prompt, schema: schema ?? null };
+        const attemptId = (ctx: EffectContext, n: number) =>
+          requestId(this.options.runId, ctx.key, digest(cpInput), n);
         return applyCheckpointPolicy(
           (await this.performEffect(
           "checkpoint",
           stepName as string,
-          { prompt, schema: schema ?? null },
-          (ctx) =>
-            handler.checkpoint(
-              {
-                prompt,
-                ...(schema !== undefined ? { schema } : {}),
-                ...(this.option(bag, "timeout") !== undefined ? { timeout: this.option(bag, "timeout") as string } : {}),
-                ...(this.option(bag, "onExpiry") !== undefined ? { onExpiry: this.option(bag, "onExpiry") as "fail" | "proceed" | "escalate" } : {}),
-                ...(this.option(bag, "to") !== undefined ? { to: this.option(bag, "to") as string } : {}),
-              },
-              ctx,
-            ),
+          cpInput,
+          async (ctx) => {
+            const req = {
+              prompt,
+              ...(schema !== undefined ? { schema } : {}),
+              ...(this.option(bag, "timeout") !== undefined ? { timeout: this.option(bag, "timeout") as string } : {}),
+              ...(onExpiry !== undefined ? { onExpiry } : {}),
+              ...(this.option(bag, "to") !== undefined ? { to: this.option(bag, "to") as string } : {}),
+            };
+            const first = await handler.checkpoint(req, ctx);
+            if (first.outcome !== "expired" || onExpiry !== "escalate") {
+              return { ...first, attempts: [{ attempt: 0, requestId: ctx.requestId, settled: first.outcome }] };
+            }
+            // ESCALATION STAYS INSIDE THIS ENTRY. The program made one call, and the interpreter
+            // owns key allocation, so a second mint must not become a second occurrence. What it
+            // does need is a second IDENTITY, derived from attempt 1 before the mint happens, or a
+            // crash between minting and recording leaves live work nothing in the journal names.
+            const to = this.option(bag, "to") as string | undefined;
+            const second = await handler.checkpoint(
+              { ...req, ...(to !== undefined ? { to } : {}) },
+              { ...ctx, requestId: attemptId(ctx, 1) },
+            );
+            // ONE HOP. An escalation that can escalate again never terminates, so a second expiry
+            // settles as expired and the program decides, exactly as `proceed` would.
+            return {
+              ...second,
+              attempts: [
+                { attempt: 0, requestId: ctx.requestId, settled: "expired" },
+                { attempt: 1, requestId: attemptId(ctx, 1), to: to ?? null, settled: second.outcome },
+              ],
+            };
+          },
           frame,
           )) as CheckpointRaw,
           onExpiry,
