@@ -135,6 +135,41 @@ r = runTool([
 ]);
 check("a suite that is already red is refused", r.status !== 0 && r.stdout.includes("red BEFORE any mutation"), r.stdout.slice(-200));
 
+// 7b. A boolean flag must be typeable. `--allow-dirty` paired with the next token, so alone it
+// parsed as undefined and the guard never saw it: a documented escape hatch that could not be used.
+writeFileSync(join(root, "src/impl.js"), readFileSync(join(root, "src/impl.js"), "utf8") + "\n// dirty\n");
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+  "--allow-dirty",
+]);
+check("bare --allow-dirty is honoured, not swallowed as a value", r.stdout.includes("KILLED") && !r.stdout.includes("REFUSING"), r.stdout.slice(-260));
+execSync("git checkout -- .", { cwd: root });
+
+// 7c. A mutation at the suite's FIRST assertion has zero preceding progress marks. The tick floor is
+// a heuristic; a matched expectRed is direct evidence, and the heuristic must not overrule it.
+writeFileSync(
+  join(root, "first.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "if (admit(50) !== false) { console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm first", { cwd: root });
+r = runTool([
+  "--command", `${process.execPath} first.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("a named red at the FIRST assertion is KILLED, not WRONG-RED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });

@@ -39,11 +39,20 @@ function usage(msg) {
   process.exit(2);
 }
 
+/** Pairs `--k v`, but a flag whose next token is another flag (or nothing) is a boolean. Pairing
+ *  unconditionally made `--allow-dirty` unusable: alone it parsed as `undefined`, and followed by
+ *  another flag it swallowed it. A documented escape hatch that cannot be typed is not an escape. */
 function parseArgs(argv) {
   const a = {};
-  for (let i = 0; i < argv.length; i += 2) {
+  for (let i = 0; i < argv.length; i++) {
     if (!argv[i].startsWith("--")) usage(`unexpected argument: ${argv[i]}`);
-    a[argv[i].slice(2)] = argv[i + 1];
+    const key = argv[i].slice(2);
+    const next = argv[i + 1];
+    if (next === undefined || next.startsWith("--")) a[key] = true;
+    else {
+      a[key] = next;
+      i++;
+    }
   }
   return a;
 }
@@ -154,11 +163,16 @@ function proveOne(m, opts) {
         ticks,
       };
     }
-    if (opts.minTicks !== undefined && ticks < opts.minTicks) {
+    // The tick floor is a HEURISTIC for "did it get far enough to be about my check", and it must
+    // never overrule direct evidence. A matched `expectRed` IS that evidence: the suite printed the
+    // assertion we named. Letting the heuristic win graded a correct proof as WRONG-RED whenever the
+    // mutation targeted the suite's FIRST assertion — a false negative on a working test, which is
+    // the expensive direction, because the fix someone reaches for is to weaken the test.
+    if (!m.expectRed && opts.minTicks !== undefined && ticks < opts.minTicks) {
       return {
         label,
         verdict: "WRONG-RED",
-        why: `died after only ${ticks} progress marks (expected ≥ ${opts.minTicks}) — it failed before reaching the check`,
+        why: `died after only ${ticks} progress marks (expected ≥ ${opts.minTicks}) and no expectRed was given, so there is nothing to tie this red to your check`,
         ticks,
       };
     }
