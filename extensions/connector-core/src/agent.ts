@@ -146,6 +146,9 @@ export class MeshAgent extends EventEmitter {
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
   private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
+  /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
+   *  frames overlap. See {@link holdInFlight}. */
+  private inFlightIds = new Map<string, number>();
   private classificationUnsafe = false;
   /** Terminal receive-time decisions that must survive the live→durable transition: successfully
    *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
@@ -375,7 +378,13 @@ export class MeshAgent extends EventEmitter {
         if (index < 0) index = 0;
         const [evicted] = this.inbox.splice(index, 1);
         this.rememberEvicted(evicted);
-        evicted.ack();
+        // ...but NOT an id that is mid-delivery. Overflow prefers the oldest, which is exactly what a
+        // surfaced batch is made of, so without this an arrival can ack a message a host is still
+        // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
+        // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
+        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxIds} marks the
+        // now-missing id handled so that redelivery is silently acked.
+        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -447,6 +456,39 @@ export class MeshAgent extends EventEmitter {
    *  pull-only is the explicit cotal_inbox lane. */
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
     return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
+  }
+
+  /** Mark a surfaced batch as mid-delivery, so the overflow valve will not ack it out from under the
+   *  host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes.
+   *
+   *  **Counted, not a set.** Hook frames overlap, so the same id is routinely in two open batches at
+   *  once; if a hold were a boolean, the first frame's verdict would unprotect ids the second is
+   *  still delivering, and an arrival between the two verdicts would ack one — the very loss this
+   *  guard exists to stop, reached through the concurrency the per-frame keying deliberately allows.
+   *
+   *  **All or nothing, and it says which.** At the ceiling this refuses the whole batch and returns
+   *  `false`; the caller must then NOT surface it. Protecting only part of a batch, or protecting
+   *  none while the caller surfaces anyway, silently reopens exactly the loss this guard exists to
+   *  close — the unprotected ids sit in the inbox for the whole handoff window with the overflow
+   *  valve free to ack them. Declining to surface costs a deferral: the messages stay buffered and go
+   *  out on a later frame, once a verdict releases capacity. */
+  holdInFlight(ids: readonly string[]): boolean {
+    let fresh = 0;
+    for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
+    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;
+    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
+    return true;
+  }
+
+  /** One frame's verdict is in (either way). The id is ordinary backlog again only once EVERY frame
+   *  holding it has reported — a release from one must not speak for another still in flight. */
+  releaseInFlight(ids: readonly string[]): void {
+    for (const id of ids) {
+      const held = this.inFlightIds.get(id);
+      if (held === undefined) continue;
+      if (held <= 1) this.inFlightIds.delete(id);
+      else this.inFlightIds.set(id, held - 1);
+    }
   }
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
