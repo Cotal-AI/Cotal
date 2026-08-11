@@ -19,7 +19,7 @@ import {
 import { connect } from "@nats-io/transport-node";
 import {
   authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
-  soleSpaceOf, type MeshTarget,
+  pruneStaleMeshes, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
 import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
@@ -28,6 +28,14 @@ import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./co
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
  *  static mint produced one ({@link askManager}'s ep-rail path rides it). */
 export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller };
+
+/** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
+ *  only ones the mode peek in {@link resolveControlTarget} may absorb. Every other code means the
+ *  entry exists and is broken (`stale-auth-root`, `unreadable-auth`, `user-auth-unrecorded`,
+ *  `ambiguous-target`, `default-occupied`) — absorbing those would let a MISCONFIGURED mesh fall
+ *  through to a credential-less raw-open connect. Deliberately a closed allow-list, not a
+ *  deny-list: a new code defaults to failing loud. */
+const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["unknown-space", "no-meshes"]);
 
 /** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
  *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
@@ -69,16 +77,29 @@ export async function resolveControlTarget(
   // to run through `resolveTargetOrExit`, which EXITS on a WorkspaceTargetError, so it killed a
   // legitimate input on the way past: `--server` with an UNREGISTERED `--space` is the raw-open
   // escape hatch, and by definition it has no registry entry to carry a mode. Resolve through the
-  // THROWING form instead and read "no such target" as "not a registry mesh, therefore not user
-  // mode", leaving that path to `connectOrExit` below, which owns it and still exits loudly on a
-  // genuinely bad target. ONLY WorkspaceTargetError is absorbed; anything else propagates.
+  // THROWING form instead and read ABSENCE as "not a registry mesh, therefore not user mode",
+  // leaving that path to `connectOrExit` below, which owns it.
+  //
+  // ABSENCE ONLY. The two absent codes are the entire escape hatch; every other
+  // MeshTargetErrorCode means the entry EXISTS and is BROKEN, and swallowing those is a
+  // fallback, not a restoration. `stale-auth-root` is the one that bites: `targetFromEntry`
+  // PRUNES the entry before throwing it, so absorbing it leaves `connectOrExit` seeing no
+  // registration at all — and with an explicit `--server` it then takes the raw-open arm and
+  // connects with NO CREDENTIALS. A misconfigured AUTH mesh would silently become an OPEN one,
+  // hiding the misconfiguration and switching identity planes under the operator. Those codes
+  // rethrow and the command dies loud, exactly as it did before this peek existed.
   // Raw `--creds` skips the peek entirely (static/raw path below).
   if (!withSpace.creds) {
+    // Sweep first when no space is named, exactly as `resolveTargetOrExit` does before ITS
+    // resolve. Without it the peek reads a world `connectOrExit` never sees: a dead entry
+    // alongside a live one makes a bare resolve `ambiguous-target` here while the connect,
+    // having pruned, resolves the single survivor cleanly. Same sweep, same view, one answer.
+    if (!withSpace.space) await pruneStaleMeshes();
     let mode: MeshTarget["mode"] | undefined;
     try {
       mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
     } catch (e) {
-      if (!isWorkspaceTargetError(e)) throw e;
+      if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
     if (mode === "user") {
       const conn = await connectUserControlOrExit(withSpace);
