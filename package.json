@@ -14,6 +14,8 @@
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "gen:tooldocs": "tsx scripts/generate-tool-docs.mjs",
     "gen:docsbundle": "node scripts/generate-docs-bundle.mjs",
+    "mutation-proof": "node scripts/mutation-proof.mjs",
+    "mutation-proof:selftest": "node scripts/mutation-proof.selftest.mjs",
     "check:docsbundle": "pnpm gen:tooldocs && pnpm gen:docsbundle && git diff --exit-code -- docs/mcp-tools.md extensions/connector-core/src/docs-bundle.generated.ts",
     "test": "pnpm -r --if-present test",
     "check": "pnpm typecheck && pnpm check:docsbundle && pnpm test && pnpm smoke:docs && pnpm smoke:orientation && pnpm smoke:view && pnpm smoke:spawn-from-anywhere && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:connect && pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:update-concurrency && pnpm smoke:ci && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live && pnpm smoke:freeslot-barrier:live && pnpm smoke:int2-revoke:live && pnpm smoke:backup-perms:live && pnpm smoke:backup-restore:live && pnpm smoke:backup-conservation:live && pnpm smoke:backup-usermode:live && pnpm smoke:backup-faults:live && pnpm smoke:down-manifest-usermode:live",
