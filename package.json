@@ -147,6 +147,7 @@
     "smoke:delivery-boot-retry:auth": "tsx packages/core/smoke/delivery-boot-retry.smoke.ts",
     "smoke:delivery-old-manager": "tsx implementations/cli/smoke/delivery-old-manager-preflight.smoke.ts",
     "smoke:delivery-reconnect:auth": "tsx packages/core/smoke/delivery-reconnect.smoke.ts",
+    "smoke:read-history:auth": "tsx packages/core/smoke/read-history-auth.smoke.ts",
     "smoke:delivery-broker-coupling": "tsx implementations/delivery/smoke/delivery-broker-coupling.smoke.ts",
     "smoke:delivery-renewal": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-cred-renewal.smoke.ts",
     "smoke:principal-key": "tsx packages/core/smoke/principal-key.smoke.ts",
