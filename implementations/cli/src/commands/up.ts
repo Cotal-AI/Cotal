@@ -470,8 +470,19 @@ export async function up(args: ParsedArgs): Promise<void> {
   //
   // The root argument is the PINNED root (or the walked root on dry-run). One root for policy,
   // auth, store, and MeshEntry — never a second walk that can disagree after a later pin.
+  //
+  // PERSIST IS ALWAYS FALSE HERE (commit-after-apply). resolveTransport used to write the policy
+  // before the already-running refresh branch could refuse a transport change, so a failed
+  // `up --tls-*` against a live plaintext mesh left tls-required on disk; the next bare `up`
+  // printed "TLS: inheriting" / "TLS: serving" / green already-running over a cleartext listener
+  // (S5). Decide and validate early so every branch sees the transport; write only after a
+  // matching listener is started and proved (`commitTransportPolicy`), never on a refuse path.
+  // `quiet` suppresses the serving/inheriting lines until that commit (or a dry-run announce).
   const meshRoot = cotalRoot();
-  const transport = resolveTransport(values, undefined, meshRoot, { persist: !values["dry-run"] });
+  const transport = resolveTransport(values, undefined, meshRoot, {
+    persist: false,
+    quiet: true,
+  });
 
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
@@ -604,6 +615,27 @@ export async function up(args: ParsedArgs): Promise<void> {
         );
         process.exit(1);
       }
+      // Live INFO must agree with the recorded/requested transport. A bare refresh that greets
+      // "already running" over a plaintext listener while policy claims TLS is S5's second half —
+      // the refuse left a durable lie and this path used to reprint TLS success over cleartext.
+      const liveTls = await liveListenerRequiresTls(server);
+      const wantTls = transport.kind === "tls-required" || held.tlsRequired === true;
+      if (wantTls && liveTls === false) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" at ${server} is recorded/expected TLS-required but the live listener is plaintext - refuse rather than claim it is up; \`cotal down\` then \`cotal up --tls-cert <cert> --tls-key <key>\` (or fix the broker)`,
+          ),
+        );
+        process.exit(1);
+      }
+      if (!wantTls && liveTls === true) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" at ${server} is serving TLS but this mesh is recorded plaintext - \`cotal down\` then re-up with matching flags`,
+          ),
+        );
+        process.exit(1);
+      }
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -722,6 +754,8 @@ export async function up(args: ParsedArgs): Promise<void> {
       } : {}),
       skipPostStart: Boolean(resumeAttempt),
     });
+    // Listener is up and proved — NOW record the transport. Not before (S5).
+    commitTransportPolicy(meshRoot, transport);
     console.log(c.dim(`Started nats-server (${source}).`));
     console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager })));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -855,6 +889,8 @@ export async function up(args: ParsedArgs): Promise<void> {
     throw new Error(reason);
   }
   if (restored) await provePreparedRestoreListener(restored);
+  // Listener ready — commit the transport decision (S5: not before start).
+  commitTransportPolicy(meshRoot, transport);
   {
     if (!resumeAttempt) await postStart(server, space, setup, seedFile);
     // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
@@ -1552,6 +1588,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const runtime = m.runtime ?? "pty";
 
   if (opts.dryRun) {
+    // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
+    // the plan is computed; dry-run used to return before that check and green-lit a launch
+    // the applying command refuses. Validate against the effective server; still no writes.
+    // Announce only AFTER the dial-host check so a wrong-SAN dry-run does not print TLS: serving.
+    assertServesDialHost(opts.transport, new URL(server).hostname);
+    if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
     console.log(renderUpPlan(eff, server));
     return;
   }
@@ -1610,6 +1652,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
+  // Listener up — commit transport at the pinned root (S5).
+  commitTransportPolicy(cotalRoot(), opts.transport);
   console.log(c.green(`✓ mesh "${m.space}" up at ${server}`) + c.dim(` (broker pid ${pid})`));
   console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
   // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
@@ -2144,11 +2188,12 @@ function resolveTransport(
   values: { "tls-cert"?: string; "tls-key"?: string },
   dialHost: string | undefined,
   root: string,
-  /** `persist: false` validates and decides WITHOUT recording. For `--dry-run`, whose contract is
-   *  that it changes nothing — see the call site. Validation is deliberately unaffected. */
-  opts: { persist?: boolean } = {},
+  /** `persist` defaults false (commit-after-apply). `quiet` suppresses serving/inheriting lines
+   *  until the caller announces after a successful apply. */
+  opts: { persist?: boolean; quiet?: boolean } = {},
 ): BrokerTransport {
   const certFile = values["tls-cert"], keyFile = values["tls-key"];
+  const quiet = opts.quiet === true;
 
   // NO FLAGS: inherit the RECORDED decision rather than defaulting to plaintext. This is the half
   // that makes a bare `cotal up` after a `cotal down` keep serving TLS. Without it the decision
@@ -2165,8 +2210,8 @@ function resolveTransport(
       process.exit(1);
     }
     if (recorded?.transport.kind === "tls-required") {
-      console.log(c.dim("TLS: inheriting the recorded broker policy (no --tls-cert/--tls-key given)"));
-      return validateRecorded(recorded.transport, dialHost);
+      if (!quiet) console.log(c.dim("TLS: inheriting the recorded broker policy (no --tls-cert/--tls-key given)"));
+      return validateRecorded(recorded.transport, dialHost, { quiet });
     }
     return { kind: "plaintext" };
   }
@@ -2179,11 +2224,65 @@ function resolveTransport(
   }
 
   const transport: BrokerTransport = { kind: "tls-required", certFile: resolve(certFile), keyFile: resolve(keyFile) };
-  const validated = validateRecorded(transport, dialHost);
-  // RECORD it, so every later path - a bare `up`, a resume, a restore, a detach - reads the same
-  // decision instead of each re-deriving one from whatever is in scope. One writer, many readers.
-  if (opts.persist !== false) writeBrokerPolicy(root, { version: 1, transport: validated });
+  const validated = validateRecorded(transport, dialHost, { quiet });
+  // RECORD only when the caller has already applied the transport (started a matching listener).
+  // Eager write here is S5: a refuse path cannot unwrite, and the next bare up inherits fiction.
+  if (opts.persist === true) writeBrokerPolicy(root, { version: 1, transport: validated });
   return validated;
+}
+
+/** Persist + announce a transport that has been APPLIED (listener started and proved). */
+function commitTransportPolicy(root: string, transport: BrokerTransport): void {
+  if (transport.kind !== "tls-required") return;
+  writeBrokerPolicy(root, { version: 1, transport });
+  announceTransport(transport);
+}
+
+function announceTransport(transport: BrokerTransport): void {
+  if (transport.kind !== "tls-required") return;
+  try {
+    const material = validateTlsMaterial(transport, {});
+    console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
+  } catch {
+    // Already validated at decide-time; announce is best-effort display.
+  }
+}
+
+/** Read the live INFO greeting and report whether the listener requires TLS.
+ *  `undefined` means no usable INFO (timeout / closed) — caller treats as unknown. */
+async function liveListenerRequiresTls(server: string, timeoutMs = 2000): Promise<boolean | undefined> {
+  let host: string;
+  let port: number;
+  try {
+    const u = new URL(server);
+    host = u.hostname || "127.0.0.1";
+    port = Number(u.port) || 4222;
+  } catch {
+    return undefined;
+  }
+  return await new Promise((res) => {
+    const sock = createConnection({ host, port });
+    let buf = "";
+    const done = (v: boolean | undefined) => {
+      try { sock.destroy(); } catch { /* */ }
+      res(v);
+    };
+    sock.setTimeout(timeoutMs, () => done(undefined));
+    sock.on("error", () => done(undefined));
+    sock.on("close", () => done(undefined));
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      const nl = buf.indexOf("\r\n");
+      if (nl < 0) return;
+      const line = buf.slice(0, nl);
+      try {
+        const info = JSON.parse(line.replace(/^INFO\s+/, "")) as { tls_required?: boolean };
+        done(info.tls_required === true);
+      } catch {
+        done(undefined);
+      }
+    });
+  });
 }
 
 /**
@@ -2235,10 +2334,14 @@ function adoptedTlsRequired(root: string): boolean {
 /** Validate a TLS pair and exit loudly on anything wrong. Shared by the flag path and the
  *  recorded-policy path so a cert that rots on disk is caught on the NEXT `up`, not only on the
  *  one that first configured it. */
-function validateRecorded(transport: BrokerTransport, dialHost: string | undefined): BrokerTransport {
+function validateRecorded(
+  transport: BrokerTransport,
+  dialHost: string | undefined,
+  opts: { quiet?: boolean } = {},
+): BrokerTransport {
   try {
     const material = validateTlsMaterial(transport as Extract<BrokerTransport, { kind: "tls-required" }>, dialHost !== undefined ? { dialHost } : {});
-    console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
+    if (!opts.quiet) console.log(c.dim(`TLS: serving ${material.subject}, valid until ${material.notAfter.toISOString()}`));
   } catch (e) {
     // Surface the CERTIFICATE cause. A TLS failure reported as a generic startup error invites the
     // wrong remedy - operators go looking at ports and firewalls when the answer is the cert.

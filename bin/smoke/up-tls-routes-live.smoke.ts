@@ -721,6 +721,74 @@ async function main(): Promise<void> {
     cotal(["down"], home, parent);
   });
 
+  // ── K: REFRESH REFUSE MUST NOT MUTATE POLICY (S5). ─────────────────────────────────────────────
+  //    `up --tls-*` against a live plaintext mesh correctly refuses — but used to write
+  //    tls-required policy first. The next bare `up` then printed TLS: inheriting / serving /
+  //    green already-running over a cleartext listener. Commit-after-apply: refuse mutates nothing.
+  await route("refresh-refuse-no-policy-write", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+
+    const plain = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    assert.equal(plain.status, 0, `plaintext mesh must start:\n${plain.out}`);
+    assert.notEqual((await serverInfo(port))?.tls_required, true, "setup: listener must be plaintext");
+    const policy = join(cwd, ".cotal", "broker-policy.json");
+    const before = existsSync(policy) ? readFileSync(policy, "utf8") : null;
+
+    const refuse = cotal(["up", "--open", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.notEqual(refuse.status, 0, `TLS flags against a live mesh must refuse:\n${refuse.out}`);
+    assert.match(refuse.out, /can't change its transport|already running/,
+      `refusal must name the transport lock:\n${refuse.out}`);
+    assert.doesNotMatch(refuse.out, /TLS: serving|TLS: inheriting/,
+      `GATE FAILED (S5): refuse path printed TLS success copy:\n${refuse.out}`);
+    if (before === null) {
+      assert.equal(existsSync(policy), false,
+        `GATE FAILED (S5): refused refresh wrote broker-policy.json`);
+    } else {
+      assert.equal(readFileSync(policy, "utf8"), before,
+        `GATE FAILED (S5): refused refresh mutated broker-policy.json`);
+    }
+
+    const bare = cotal(["up", "--open", "--server", `nats://127.0.0.1:${port}`], home, cwd);
+    assert.equal(bare.status, 0, `bare refresh must still succeed:\n${bare.out}`);
+    assert.doesNotMatch(bare.out, /TLS: serving|TLS: inheriting/,
+      `GATE FAILED (S5): bare refresh claims TLS over a plaintext listener:\n${bare.out}`);
+    assert.notEqual((await serverInfo(port))?.tls_required, true, "listener must still be plaintext");
+    const ok = await cleartextReply(port);
+    assert.ok(ok.reply, `CONTROL: plaintext listener must still accept cleartext CONNECT:\n${JSON.stringify(ok)}`);
+
+    console.log("  ✓ S5: refused TLS refresh mutates nothing; bare refresh does not claim TLS");
+    cotal(["down"], home, cwd);
+  });
+
+  // ── L: DRY-RUN MUST CHECK DIAL-HOST SAN (S6). ──────────────────────────────────────────────────
+  //    `up -f --dry-run` returned before assertServesDialHost and green-lit a cert/server pair the
+  //    real command refuses. Validate against the effective manifest server; still no writes.
+  await route("dry-run-dial-host", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    writeFileSync(join(cwd, "cotal.yaml"),
+      `apiVersion: cotal/v1\nkind: Mesh\nspace: tlsdryhost\nbroker:\n  servers: nats://127.0.0.1:${port}\n  auth: false\nchannels:\n  general:\n    subscribe: []\n`);
+    const policy = join(cwd, ".cotal", "broker-policy.json");
+
+    const bad = cotal(["up", "-f", "cotal.yaml", "--dry-run",
+      "--tls-cert", pkiFiles.otherCert, "--tls-key", pkiFiles.otherKey], home, cwd);
+    assert.notEqual(bad.status, 0,
+      `GATE FAILED (S6): dry-run accepted a cert whose SAN does not match the planned server:\n${bad.out}`);
+    assert.match(bad.out, /host|SAN|IP|DNS|verify|mismatch|not-this-host|other/i,
+      `dry-run refusal must name the host/SAN problem:\n${bad.out}`);
+    assert.equal(existsSync(policy), false, "dry-run must not write policy");
+
+    const good = cotal(["up", "-f", "cotal.yaml", "--dry-run",
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(good.status, 0, `matching SAN dry-run must still succeed:\n${good.out}`);
+    assert.equal(existsSync(policy), false, "successful dry-run must not write either");
+
+    console.log("  ✓ S6: dry-run refuses wrong-SAN; matching SAN still green; no writes");
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -731,11 +799,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 10)
-    throw new Error(`HARNESS: expected 10 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 12)
+    throw new Error(`HARNESS: expected 12 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/10 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 10/10 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/12 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 12/12 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {
