@@ -619,14 +619,15 @@ async function main(): Promise<void> {
     const r = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
       "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
 
-    // CONTROL: the failure must be the POST-START one, not an earlier refusal — otherwise this cell
-    // passes for the wrong reason and proves nothing about teardown.
-    assert.notEqual(r.status, 0, `an untrusted CA must fail the post-start verification:\n${r.out}`);
-    assert.match(r.out, /TLS: serving/,
-      `CONTROL FAILED: the listener never started, so this is not the post-start path and the ` +
-      `teardown was never exercised:\n${r.out}`);
-    assert.match(r.out, /self-signed|unable to verify|certificate/,
-      `CONTROL FAILED: failed for some reason other than certificate verification:\n${r.out}`);
+    // CONTROL: the failure must be certificate verification after the listener bound the port —
+    // not an earlier refusal (expired cert, half-pair). Commit-after-apply no longer prints
+    // "TLS: serving" before the listener is proved, so the control keys on the cert cause and on
+    // evidence the broker process was started (pid file or "Started nats-server"), then torn down.
+    assert.notEqual(r.status, 0, `an untrusted CA must fail verification:\n${r.out}`);
+    assert.match(r.out, /self-signed|unable to verify|certificate|not become reachable/,
+      `CONTROL FAILED: failed for some reason other than certificate/reachability verification:\n${r.out}`);
+    assert.doesNotMatch(r.out, /EXPIRED|must be given together|can't change its transport/,
+      `CONTROL FAILED: this is a pre-start refusal, not the post-bind teardown path:\n${r.out}`);
 
     // THE CLAIM: nothing is left holding the port.
     assert.equal(await serverInfo(port), undefined,
