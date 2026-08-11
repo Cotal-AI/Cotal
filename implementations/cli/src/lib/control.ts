@@ -19,7 +19,7 @@ import {
 import { connect } from "@nats-io/transport-node";
 import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth, soleSpaceOf } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, resolveTargetOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
@@ -51,17 +51,21 @@ export async function resolveControlTarget(
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
-  // USER MODE rides through: the control call connects with the operator's bearer (actor `cli`) and
-  // publishes on its OWN ctl principal subject — the broker grants that publish only when the cli
-  // actor's ledger scope carries the matching capability (`spawn` → privileged, `admin` → admin).
-  // The preflight probe STAYS, and the duplicate handshake with it. Removing it saved one connect
-  // per control command, and cost two things worth more: the classified failure (a live broker
-  // rejecting stale registry creds reads as `registry-creds-rejected`/`stale-auth` with the right
-  // repair, not "is it running? run cotal up"), and the probe's 8s bound — `CotalEndpoint` passes no
-  // connect timeout, so nats-core's 20s default would apply and a blackholed target would hang more
-  // than twice as long to produce worse copy. Reusing the real connection is the right idea; it needs
-  // the endpoint to accept a deadline and the classifier to move with it, which is not this change.
-  const conn = await connectOrExit(withSpace, profile);
+  // USER MODE: the control call connects with the operator's bearer (actor `cli`). Ledger scope is
+  // the grant (`spawn` / `admin`); there is no static instrument mint. `connectOrExit` refuses
+  // `control-caller-*` on a user mesh (those profiles carry freeze rows the bearer does not hold),
+  // so translate here — this is the explicit user-mode control path, not a silent substitute.
+  // The preflight probe STAYS (classified failure + 8s bound); see prior notes on why.
+  let role = profile;
+  if (!withSpace.creds && (profile === "control-caller-privileged" || profile === "control-caller-admin")) {
+    try {
+      const target = await resolveTargetOrExit({ server: withSpace.server, space: withSpace.space });
+      if (target.mode === "user") role = "agent"; // any non-instrument; userConnectOrExit ignores it for minting
+    } catch {
+      // Raw / unresolved targets fall through; connectOrExit handles them.
+    }
+  }
+  const conn = await connectOrExit(withSpace, role);
   return {
     space: conn.space,
     server: conn.server,

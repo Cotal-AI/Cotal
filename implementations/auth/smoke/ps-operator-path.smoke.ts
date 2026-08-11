@@ -64,6 +64,29 @@ try {
     : "   => OPERATOR PATH BROKEN. The mesh came up (checked above), so this is the product, not the fixture.\n" +
       "      Most likely a records-bucket read the operator instrument no longer holds — read the denied\n" +
       "      subject above and compare it against scatterFreezeReadRows in packages/core/src/provision.ts.");
+
+  // Completeness honesty: with the manager dead, ps must not print a bare empty list that reads
+  // as "no agents". Scatter labels the instance unreachable; a total failure exits non-zero.
+  console.log("\n3) manager stopped — ps must not claim a completeness it lacks");
+  const { readFileSync, existsSync } = await import("node:fs");
+  const pidFile = join(root, ".cotal", "manager.pid");
+  if (existsSync(pidFile)) {
+    try { process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL"); } catch { /* already gone */ }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const psDead = await cotal(["ps", "--space", SPACE], 20_000);
+  console.log(`   dead-manager ps exit=${psDead.status}`);
+  console.log(psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
+  const claimsEmptySuccess =
+    psDead.status === 0 &&
+    !/unreachable/i.test(psDead.out) &&
+    (/\(no managed agents\)/.test(psDead.out) || psDead.out.trim() === "");
+  check(
+    "dead manager: ps does not print a bare empty success (unreachable or non-zero, never silent 'no agents')",
+    !claimsEmptySuccess,
+    { status: psDead.status, out: psDead.out.slice(-300) },
+  );
+
   console.log(`\nPS OPERATOR PATH ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } catch (e) {
   console.error("ps-operator-path threw:", e);

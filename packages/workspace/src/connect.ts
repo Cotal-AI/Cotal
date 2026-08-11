@@ -238,7 +238,28 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
   // on a user-auth broker — minting here would silently connect the operator on the wrong identity
   // plane) and never connects credlessly. Everything it needs comes from the login cache + the
   // provider's space-scoped state; every failure is one sentence with the exact operator action.
-  if (target.mode === "user") return userConnectOrExit(target);
+  //
+  // The logged-in user bearer is the control surface; ledger scope is the grant. Operator
+  // INSTRUMENTS (`control-caller-*`) are static-mesh only — they carry rows the user bearer does
+  // not (the freeze STREAM.INFO read). Requesting one here used to fall through to the user bearer
+  // silently, so a caller believed it held instrument grants it did not. Refuse loud.
+  // `deployer` is NOT in that set: user-mode deploy connects as the bearer then elevates via
+  // `userViewAuth("deployer")`, which is a real exchange, not a silent substitute.
+  //
+  // Role is ignored for MINTING on this path (there is no instrument mint). The caller triple
+  // still lands: `userConnectOrExit` sets `epCaller` from the bearer's principal, so ep request
+  // subjects can be built. "Never consults role" means never mints by role — not "no triple".
+  if (target.mode === "user") {
+    if (role === "control-caller-privileged" || role === "control-caller-admin") {
+      console.error(
+        c.red(
+          `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
+        ),
+      );
+      process.exit(1);
+    }
+    return userConnectOrExit(target);
+  }
   // An operator INSTRUMENT mint pins a fresh lifecycle uid: its ep-rail caller rows are
   // lifecycle-keyed (SPEC §13.1/§13.2 — the reply rail names one incarnation), and the caller
   // needs the triple back to build its request subjects. Every other profile mints as before.
