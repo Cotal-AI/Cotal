@@ -100,7 +100,11 @@ const ctxFor = (key: StepKey): EffectContext => ({
   });
   const s = new KeyScope();
   const r = await sim.checkpoint({ prompt: "ok?" }, ctxFor(s.nextEffect("checkpoint", "approve-plan")));
-  ok("a checkpoint answer is injected without a human", r.status === "resolved" && r.value === true);
+  // The handler reports WHAT HAPPENED, so the shape here is the raw outcome rather than the
+  // program-facing result. This assertion changed with that contract, deliberately: a simulator
+  // that returned the program's view would be deciding the disposition, which is the interpreter's
+  // job and is what makes an edited onExpiry reapplyable at all.
+  ok("a checkpoint answer is injected without a human", r.outcome === "resolved" && (r as { value?: unknown }).value === true, r);
 }
 
 // ---- 6) a scripted timeout is a choice, and costs its full budget ------------------------------------

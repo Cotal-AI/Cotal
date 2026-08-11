@@ -25,11 +25,13 @@ import { PRIMITIVES, type EffectKind } from "./primitives.js";
 import {
   Cancelled,
   EffectError,
+  applyCheckpointPolicy,
   type AgentHandleValue,
   type CancelSignal,
   type ChannelHandleValue,
   type EffectContext,
   type EffectHandler,
+  type CheckpointRaw,
   type EventDescriptor,
 } from "./effects.js";
 
@@ -695,8 +697,14 @@ class Interpreter {
       }
       case "checkpoint": {
         const prompt = args[1] as string;
+        // The disposition is computed from TODAY's source, after the journal is consulted, on the
+        // live path and the replay path alike. performEffect returns the RAW outcome, which is
+        // what the journal holds; the policy sandwich closes here so a resumed run under an edited
+        // onExpiry throws even though nothing about the recorded expiry changed.
+        const onExpiry = this.option(bag, "onExpiry") as "fail" | "proceed" | "escalate" | undefined;
         const schema = this.option(bag, "schema");
-        return await this.performEffect(
+        return applyCheckpointPolicy(
+          (await this.performEffect(
           "checkpoint",
           stepName as string,
           { prompt, schema: schema ?? null },
@@ -712,6 +720,8 @@ class Interpreter {
               ctx,
             ),
           frame,
+          )) as CheckpointRaw,
+          onExpiry,
         );
       }
       case "sleep": {

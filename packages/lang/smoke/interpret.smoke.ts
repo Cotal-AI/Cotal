@@ -425,4 +425,46 @@ else { await sleep("1s", { name: "short-path" }); }
   ok("and it names the sleep as the changed step", (diverged as RunDivergence)?.stepKey?.includes("sleep:pause"), (diverged as RunDivergence)?.stepKey);
 }
 
+// ---- 14) the raw outcome is journalled and today's policy decides the disposition --------------
+
+/**
+ * The reapply half of the hash rule, which was prose for a day and is now executable.
+ *
+ * A handler reports WHAT HAPPENED and never whether it throws. The journal holds that raw fact,
+ * and `onExpiry` is applied from current source after the journal is consulted, on the live path
+ * and the replay path alike. Written the other way round the rule cannot work: a handler that
+ * throws L4007 makes the journal record `failed`, and a replay under an edited `proceed` then has
+ * nothing but an error to reinterpret.
+ *
+ * So the test is a MIGRATION, not a replay: edit only the disposition, change nothing about the
+ * recorded fact, and require the resumed run to take the other path.
+ */
+{
+  const gate = (onExpiry: string) => `
+const c = await checkpoint("gate", "ok?", { timeout: "1m", onExpiry: "${onExpiry}" });
+if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
+`;
+  const script = { checkpoints: { gate: { status: "expired", by: "sim" } }, clock: { start: 0 } };
+
+  const live = await run(gate("proceed"), { runId: "r-14", handler: new SimHandler(script) });
+  ok("under proceed the program continues", keysOf(live.journal).some((k) => k.includes("continued")));
+
+  const recorded = live.journal.entries().find((e) => e.kind === "checkpoint")?.result;
+  // Pinned on the RAW shape, not on the program-facing one: if the handler's disposition ever gets
+  // baked in here, every reapply below becomes unreachable and this is the assertion that says so.
+  ok(
+    "the journal holds the RAW outcome, not the program's view",
+    JSON.stringify(recorded).includes('"outcome":"expired"'),
+    recorded,
+  );
+
+  let threw: unknown;
+  try {
+    await resume(gate("fail"), live.journal, { runId: "r-14", handler: new SimHandler(script) });
+  } catch (e) {
+    threw = e;
+  }
+  ok("editing onExpiry to fail makes the resume throw", (threw as { code?: string })?.code === "L4007", String(threw).slice(0, 60));
+}
+
 console.log(`interpret.smoke: ${pass} checks passed`);

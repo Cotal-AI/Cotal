@@ -26,7 +26,7 @@ import type {
   AskRequest,
   ChannelHandleValue,
   CheckpointRequest,
-  CheckpointResultValue,
+  CheckpointRaw,
   ConclaveRequest,
   EffectContext,
   EffectHandler,
@@ -104,7 +104,7 @@ export class RecordingHandler implements EffectHandler {
     return await this.inner.spawn(req, ctx);
   }
 
-  async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointResultValue> {
+  async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     this.checkpointsAsked.push({ req, step: stepKeyString(ctx.key) });
     return await this.inner.checkpoint(req, ctx);
   }

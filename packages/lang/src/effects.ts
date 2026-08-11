@@ -40,6 +40,31 @@ export interface TurnResultValue {
   readonly at: number;
 }
 
+/**
+ * WHAT HAPPENED, which is all a handler is allowed to decide.
+ *
+ * A handler never chooses whether an expiry is returned or thrown. It reports the raw outcome, the
+ * interpreter journals THAT, and the disposition is computed from today's source afterwards, on
+ * the live path and the replay path alike (see applyCheckpointPolicy).
+ *
+ * Written the other way round the reapply rule cannot work at all, and this package shipped it
+ * that way for a day: a handler that throws L4007 makes the journal record `failed`, and a replay
+ * under an edited `proceed` then has nothing but an error to reinterpret. A policy applied before
+ * the journal is a policy baked into the record.
+ */
+export type CheckpointRaw =
+  | {
+      readonly outcome: "resolved";
+      readonly value?: unknown;
+      readonly artifact?: string;
+      readonly by?: string;
+      readonly at: number;
+      /** Which answer the settle accepted. Every resolver presents as the run driver, so the
+       *  arbiter has to NAME its choice: a principal cannot discriminate between two answers. */
+      readonly answerId?: string;
+    }
+  | { readonly outcome: "expired"; readonly at: number };
+
 export interface CheckpointResultValue {
   readonly status: "resolved" | "expired";
   readonly value?: unknown;
@@ -143,6 +168,37 @@ export class Cancelled extends Error {
   }
 }
 
+/**
+ * Raw outcome to what the program sees, computed from TODAY's source.
+ *
+ * The same call runs on the live path and after a journal hit, which is the whole point: a resumed
+ * run must reach this with the recorded fact and the current `onExpiry`, so editing `proceed` to
+ * `fail` makes the resume throw even though nothing about the recorded expiry changed.
+ *
+ * `escalate` never arrives here. It mints an effect rather than choosing a disposition, so it is
+ * hashed (design 5.12) and an edit to it diverges before any of this runs.
+ */
+export function applyCheckpointPolicy(
+  raw: CheckpointRaw,
+  onExpiry: "fail" | "proceed" | "escalate" | undefined,
+): CheckpointResultValue {
+  if (raw.outcome === "resolved") {
+    return {
+      status: "resolved",
+      ...(raw.value !== undefined ? { value: raw.value } : {}),
+      ...(raw.by !== undefined ? { by: raw.by } : {}),
+      ...(raw.artifact !== undefined ? { artifact: raw.artifact } : {}),
+      at: raw.at,
+    };
+  }
+  if ((onExpiry ?? "fail") === "proceed") return { status: "expired", at: raw.at };
+  throw new EffectError(
+    "L4007",
+    "checkpoint-expired",
+    `L4007 Checkpoint expired\n\nNobody answered in time and this checkpoint's onExpiry is "fail".\n\nOptions\n  onExpiry: "proceed"    return { status: "expired" } and let the program decide\n  onExpiry: "escalate"   mint a second checkpoint addressed to someone else\n  raise the timeout`,
+  );
+}
+
 export interface CancelSignal {
   readonly cancelled: boolean;
   readonly reason?: string;
@@ -192,7 +248,7 @@ export interface EffectHandler {
   spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue>;
   turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue>;
   ask(req: AskRequest, ctx: EffectContext): Promise<unknown>;
-  checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointResultValue>;
+  checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw>;
   sleep(req: SleepRequest, ctx: EffectContext): Promise<null>;
   wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null>;
   notify(req: NotifyRequest, ctx: EffectContext): Promise<null>;

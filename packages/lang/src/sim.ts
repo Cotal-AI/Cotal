@@ -16,6 +16,7 @@ import type {
   AskRequest,
   ChannelHandleValue,
   CheckpointRequest,
+  CheckpointRaw,
   CheckpointResultValue,
   ConclaveRequest,
   EffectContext,
@@ -193,11 +194,23 @@ export class SimHandler implements EffectHandler {
     return value;
   }
 
-  async checkpoint(_req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointResultValue> {
+  /**
+   * Reports WHAT HAPPENED and never whether it throws. A script says `resolved` or `expired`; the
+   * interpreter journals that and applies today's `onExpiry` afterwards. A simulator that decided
+   * the disposition would bake it into the record exactly as a production handler would.
+   */
+  async checkpoint(_req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     const scripted = this.resolve("checkpoints", this.script.checkpoints, ctx);
     await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });
     this.advanceBy(this.script.clock?.checkpoint, "1m");
-    return { ...scripted, at: this.virtualNow };
+    if (scripted.status === "expired") return { outcome: "expired", at: this.virtualNow };
+    return {
+      outcome: "resolved",
+      ...(scripted.value !== undefined ? { value: scripted.value } : {}),
+      ...(scripted.by !== undefined ? { by: scripted.by } : {}),
+      ...(scripted.artifact !== undefined ? { artifact: scripted.artifact } : {}),
+      at: this.virtualNow,
+    };
   }
 
   /** Instant, and honest: the clock moves by exactly what the program asked to wait. */
