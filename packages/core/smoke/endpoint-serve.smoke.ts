@@ -40,6 +40,18 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 
+/** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
+ *
+ *  `c()` prints NOTHING on a pass. A cell's name appears in the output **if and only if it FAILED**.
+ *  So an empty grep for a cell name is the SUCCESS signal here, which is backwards from every other
+ *  instrument: normally an empty result means the pattern missed or the thing is absent. Someone
+ *  auditing a run by grepping for a cell name — without reading this line — misreads every run they
+ *  do, and half the misreadings are the reassuring direction.
+ *
+ *  So: to check ONE cell, grep its name and expect NOTHING when it passes. Never read the suite's
+ *  exit code as evidence about a single cell — any other cell failing gives you a red total while
+ *  the cell you care about quietly still passes, and still-passing is exactly what a vacuous cell
+ *  does. The aggregate cannot show you one vacuous cell; only that cell's absence-or-presence can. */
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown, code?: string) => {
