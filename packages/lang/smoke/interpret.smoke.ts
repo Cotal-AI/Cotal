@@ -603,7 +603,12 @@ log(c.status);
   // after the second mint leaves the far side holding work under an identity the journal never
   // recorded, and recovery reissues the first attempt and collects its cached expiry.
   const ESC = `await checkpoint("gate", "?", { timeout: "1m", onExpiry: "escalate", to: "d" });\n`;
-  let pendingIdAtSecondMint: string | undefined;
+  // Read the JOURNAL ROW during the second mint. An earlier version of this compared the id passed
+  // to the handler against the id in the recorded chain, and both come from the same derivation:
+  // deleting the journal write left every check green. The property is about the ROW, so the test
+  // has to look at the row, while the hop is in flight and before anything settles.
+  const journal = new Journal({ run: "r-16c" });
+  let rowIdAtSecondMint: string | undefined;
   const sim = new SimHandler({
     checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "resolved", value: 1, by: "d" }] },
     clock: { start: 0 },
@@ -612,12 +617,15 @@ log(c.status);
   let call = 0;
   const r = await run(ESC, {
     runId: "r-16c",
+    journal,
     handler: new Proxy(sim, {
       get(t, prop, recv) {
         if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
         return async (req: never, ctx: { requestId: string; key: unknown }) => {
           call += 1;
-          if (call === 2) pendingIdAtSecondMint = ctx.requestId;
+          if (call === 2) {
+            rowIdAtSecondMint = journal.entries().find((e) => e.kind === "checkpoint")?.requestId;
+          }
           return innerCp(req, ctx as never);
         };
       },
@@ -625,9 +633,9 @@ log(c.status);
   });
   const chain = (r.journal.entries()[0]?.result as { attempts?: { requestId: string }[] })?.attempts ?? [];
   ok(
-    "the row's open attempt matches the id the second mint used",
-    pendingIdAtSecondMint !== undefined && pendingIdAtSecondMint === chain[1]?.requestId,
-    { pendingIdAtSecondMint, recorded: chain[1]?.requestId },
+    "the pending ROW names attempt 1 while the hop is in flight",
+    rowIdAtSecondMint !== undefined && rowIdAtSecondMint === chain[1]?.requestId,
+    { rowIdAtSecondMint, recorded: chain[1]?.requestId },
   );
 }
 
