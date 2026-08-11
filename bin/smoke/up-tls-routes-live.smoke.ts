@@ -722,6 +722,71 @@ async function main(): Promise<void> {
     cotal(["down"], home, parent);
   });
 
+  // ── J2: S4 OPEN-CHILD ARM — pin is mode-independent. ───────────────────────────────────────────
+  //    Auth→auth was closed; open child under a foreign ancestor still wrote into the parent root
+  //    (ensureRootForSpace early-returned when !useAuth). Same retain gate with --open.
+  await route("policy-root-open-child", async () => {
+    const home = join(root, `home-s4o`);
+    const parent = join(root, `parent-s4o`);
+    const child = join(parent, `child-s4o`);
+    mkdirSync(join(parent, ".cotal"), { recursive: true });
+    mkdirSync(child, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    const parentPort = await freePort();
+    const childPort = await freePort();
+    homes.push({ home, port: parentPort, cwd: parent });
+    homes.push({ home, port: childPort, cwd: child });
+
+    const parentUp = cotal(["up", "--detach", "--space", "parent-oa",
+      "--server", `nats://127.0.0.1:${parentPort}`], home, parent);
+    assert.equal(parentUp.status, 0, `parent auth mesh must start:\n${parentUp.out}`);
+    const parentPolicyBefore = join(parent, ".cotal", "broker-policy.json");
+    const parentPidBefore = existsSync(join(parent, ".cotal", "nats.pid"))
+      ? readFileSync(join(parent, ".cotal", "nats.pid"), "utf8") : null;
+    const parentPolicySnap = existsSync(parentPolicyBefore)
+      ? readFileSync(parentPolicyBefore, "utf8") : null;
+
+    const childUp = cotal(["up", "--detach", "--open", "--space", "child-oa",
+      "--server", `nats://127.0.0.1:${childPort}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, child);
+    assert.equal(childUp.status, 0, `open child TLS mesh must start:\n${childUp.out}`);
+
+    const childPolicy = join(child, ".cotal", "broker-policy.json");
+    assert.equal(existsSync(childPolicy), true,
+      `GATE FAILED (S4-open): child has no broker-policy.json — open path still wrote the ancestor`);
+    assert.match(readFileSync(childPolicy, "utf8"), /tls-required/);
+    if (parentPolicySnap === null) {
+      assert.equal(existsSync(parentPolicyBefore), false,
+        `GATE FAILED (S4-open): open child wrote policy into the parent root`);
+    } else {
+      assert.equal(readFileSync(parentPolicyBefore, "utf8"), parentPolicySnap,
+        `GATE FAILED (S4-open): open child mutated parent broker-policy.json`);
+    }
+    if (parentPidBefore !== null) {
+      assert.equal(readFileSync(join(parent, ".cotal", "nats.pid"), "utf8"), parentPidBefore,
+        `GATE FAILED (S4-open): open child overwrote parent nats.pid`);
+    }
+
+    assert.equal((await serverInfo(childPort))?.tls_required, true, "child listener TLS");
+    assert.notEqual((await serverInfo(parentPort))?.tls_required, true, "parent still plaintext");
+    assertCleartextRefused(await cleartextReply(childPort), "s4o/first");
+
+    cotal(["down"], home, child);
+    // Parent must still be reachable after child down (no shared pid/store).
+    assert.ok(await serverInfo(parentPort), "parent listener must survive child down");
+
+    const bare = cotal(["up", "--detach", "--open", "--space", "child-oa",
+      "--server", `nats://127.0.0.1:${childPort}`], home, child);
+    assert.equal(bare.status, 0, `bare open child re-up must inherit TLS:\n${bare.out}`);
+    assert.equal((await serverInfo(childPort))?.tls_required, true,
+      `GATE FAILED (S4-open): bare re-up served plaintext`);
+    assertCleartextRefused(await cleartextReply(childPort), "s4o/bare");
+
+    console.log("  ✓ S4-open: open child owns root/policy/pid; parent untouched; bare re-up retains TLS");
+    cotal(["down"], home, child);
+    cotal(["down"], home, parent);
+  });
+
   // ── K: REFRESH REFUSE MUST NOT MUTATE POLICY (S5). ─────────────────────────────────────────────
   //    `up --tls-*` against a live plaintext mesh correctly refuses — but used to write
   //    tls-required policy first. The next bare `up` then printed TLS: inheriting / serving /
@@ -800,11 +865,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 12)
-    throw new Error(`HARNESS: expected 12 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 13)
+    throw new Error(`HARNESS: expected 13 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/12 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 12/12 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/13 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 13/13 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

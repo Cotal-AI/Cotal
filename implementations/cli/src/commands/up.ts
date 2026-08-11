@@ -13,6 +13,7 @@ import {
   closeSync,
   lstatSync,
   rmSync,
+  realpathSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -1933,26 +1934,42 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
   throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - \`--open\` would serve its streams without auth. Start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
 }
 
-/** Today a root's `.cotal/auth` is created for one space (its account is space-bound), so an
- *  explicit `--space` naming a different space cannot run against this root's trust material — the
- *  registry would point a `spawn --space` at mismatched creds. A mismatch only exists when
- *  `--space` was given (the default IS this root's space): clear intent for a different mesh. When
- *  the root was merely inherited from an ancestor folder (the cwd has no `.cotal` of its own),
- *  honor that intent — make the cwd the new space's own root. Only a folder that itself holds the
- *  other space's material refuses. (When multi-space-per-root lands, that refusal becomes
- *  provision-the-new-space instead.) */
-function ensureRootForSpace(useAuth: boolean, space: string): void {
-  if (!useAuth) return;
+/** Pin cwd as its own mesh root when the nearest ancestor root already belongs to a DIFFERENT
+ *  space — mode-independent.
+ *
+ *  Auth path: a root's `.cotal/auth` is space-bound, so an explicit `--space` naming another space
+ *  cannot share that trust material. Open path: the same ancestor still owns policy, store, pid
+ *  and MeshEntry; reusing it for a second space collides those (S4 open arm — child `--open --tls-*`
+ *  wrote the parent's broker-policy and nats.pid while a second broker shared the JetStream store).
+ *
+ *  A mismatch only exists when the resolved space differs from what the ancestor already hosts.
+ *  When the root was merely inherited (cwd has no `.cotal`), honor the new-space intent by making
+ *  cwd its own root. Only a folder that itself holds the other space's material refuses.
+ *  (When multi-space-per-root lands, that refusal becomes provision-the-new-space instead.) */
+function ensureRootForSpace(_useAuth: boolean, space: string): void {
   const root = cotalRoot();
-  const existing = loadSoleSpaceAuth(authDir(root));
-  if (!existing || existing.space === space) return;
   const cwd = process.cwd();
+  // What space does this root already host? Prefer auth material; fall back to a live MeshEntry
+  // whose root is this directory (open meshes have no auth dir).
+  const existingAuth = loadSoleSpaceAuth(authDir(root));
+  const existingSpace =
+    existingAuth?.space ??
+    loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space;
+  if (!existingSpace || existingSpace === space) return;
   if (root !== cwd) {
     mkdirSync(join(cwd, ".cotal"), { recursive: true });
-    console.log(c.dim(`nearest mesh root ${root} is space "${existing.space}" - making this folder its own root for "${space}"`));
+    console.log(c.dim(`nearest mesh root ${root} is space "${existingSpace}" - making this folder its own root for "${space}"`));
     return;
   }
-  throw new Error(`this folder is the root of space "${existing.space}" (${authDir(root)}), so it can't also run "${space}" - drop \`--space\` to run "${existing.space}", or start "${space}" from a different folder (it becomes that mesh's own root)`);
+  throw new Error(`this folder is the root of space "${existingSpace}" (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run "${existingSpace}", or start "${space}" from a different folder (it becomes that mesh's own root)`);
+}
+
+function realpathSafe(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
