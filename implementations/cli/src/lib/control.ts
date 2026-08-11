@@ -30,10 +30,13 @@ import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./co
 export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller };
 
 /** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
- *  only ones the mode peek in {@link resolveControlTarget} may absorb. Every other code means the
- *  entry exists and is broken (`stale-auth-root`, `unreadable-auth`, `user-auth-unrecorded`,
- *  `ambiguous-target`, `default-occupied`) — absorbing those would let a MISCONFIGURED mesh fall
- *  through to a credential-less raw-open connect. Deliberately a closed allow-list, not a
+ *  only ones the mode peek in {@link resolveControlTarget} may absorb. **Every other code is
+ *  NON-ABSENCE and must fail loud** — which is the precise claim, and covers more than one
+ *  situation: `stale-auth-root` / `unreadable-auth` / `user-auth-unrecorded` are an entry that
+ *  exists and is broken, while `ambiguous-target` can be several perfectly healthy entries and
+ *  `default-occupied` an intended local target with no entry at all. What unites them is not
+ *  breakage, it is that absence has NOT been established, so falling through to a
+ *  credential-less raw-open connect would be unsound. Deliberately a closed allow-list, not a
  *  deny-list: a new code defaults to failing loud. */
 const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["unknown-space", "no-meshes"]);
 
@@ -81,7 +84,7 @@ export async function resolveControlTarget(
   // leaving that path to `connectOrExit` below, which owns it.
   //
   // ABSENCE ONLY. The two absent codes are the entire escape hatch; every other
-  // MeshTargetErrorCode means the entry EXISTS and is BROKEN, and swallowing those is a
+  // MeshTargetErrorCode is NON-ABSENCE, and swallowing those is a
   // fallback, not a restoration. `stale-auth-root` is the one that bites: `targetFromEntry`
   // PRUNES the entry before throwing it, so absorbing it leaves `connectOrExit` seeing no
   // registration at all — and with an explicit `--server` it then takes the raw-open arm and
