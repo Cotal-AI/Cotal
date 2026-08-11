@@ -1746,8 +1746,11 @@ export class CotalEndpoint extends EventEmitter {
   /** Read a channel's recent history THROUGH THE DELIVERY DAEMON instead of through a consumer this
    *  connection creates itself — the mediated read of SPEC's "Mediated reads (normative)" rule (no raw
    *  consumer / `DIRECT.GET` / `STREAM.MSG.GET` for an untrusted holder; the trusted reader serves it
-   *  onto the caller's own confined rail). Same newest-N shape as {@link channelHistory}, so it is a
-   *  drop-in for it, plus the `complete` flag that says whether older history remains.
+   *  onto the caller's own confined rail). `items` is shape-identical to what {@link channelHistory}
+   *  returns — the same `CotalMessage[]`, the same newest-N selection, the same oldest-first order
+   *  within the page — so a caller migrates by reading `.items` and nothing else changes. The return
+   *  is WRAPPED rather than bare precisely because of `complete`: a bare array cannot say whether
+   *  older history remains behind it.
    *
    *  **Why this exists when `channelHistory` already works:** authorization. A consumer pins its
    *  authorization at CREATE time, so a caller whose read ACL is revoked mid-scroll keeps being served
