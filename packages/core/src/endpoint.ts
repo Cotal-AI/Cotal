@@ -271,6 +271,25 @@ const READ_HISTORY_MAX_LIMIT = 200;
  *  nothing about messages already aged out by retention — no reader can see those. */
 export type HistoryPage = { items: CotalMessage[]; complete: boolean };
 
+/** The NEWEST prefix-from-the-end of `items` whose serialized size fits `budget` bytes, order
+ *  preserved. Returns `[]` when not even the newest single message fits — the caller must refuse
+ *  loudly there rather than serve an empty page, which would read as "no history".
+ *
+ *  Measured in ENCODED bytes, not `string.length`: a page of multi-byte text would otherwise be
+ *  undercounted and still overflow the broker. Same discipline as `assertFactFits`. */
+export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMessage[] {
+  const enc = new TextEncoder();
+  let used = 2; // the enclosing `[]`
+  let first = items.length; // index of the oldest kept item
+  for (let i = items.length - 1; i >= 0; i--) {
+    const size = enc.encode(JSON.stringify(items[i])).length + 1; // + the `,` separator
+    if (used + size > budget) break;
+    used += size;
+    first = i;
+  }
+  return first === items.length ? [] : items.slice(first);
+}
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -2632,8 +2651,29 @@ export class CotalEndpoint extends EventEmitter {
       // otherwise reach the caller as an empty page and render as "no history".
       return { ok: false, error: `readHistory: ${(e as Error).message}` };
     }
-    const complete = page.length <= limit;
-    return { ok: true, data: { items: complete ? page : page.slice(-limit), complete } satisfies HistoryPage };
+    const reachedStart = page.length <= limit;
+    const wanted = reachedStart ? page : page.slice(-limit);
+
+    // A page that cannot be SENT is not a page. The reply rides one NATS message, so `limit` alone is
+    // the wrong bound: 200 large messages serialize past `max_payload`, `m.respond` throws inside
+    // `serveControl`'s swallow, and the caller sees a bare request timeout it cannot tell apart from a
+    // dead daemon. Measured, not predicted: 200 x ~6 KB timed out at 5s with the message "timeout".
+    //
+    // So bound by BYTES too, keeping the NEWEST that fit — which needs no new vocabulary, because
+    // `complete: false` already means "older history remains behind this page". Trimming here is the
+    // documented truncation signal doing its job, not a silent degradation.
+    const fitted = fitHistoryPage(wanted, this.payloadBudget());
+    if (fitted.length === 0)
+      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.payloadBudget()} bytes) - refused loudly rather than served as an empty page` };
+    return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
+  }
+
+  /** Bytes a control reply may occupy: the broker's `max_payload` less headroom for the `ControlReply`
+   *  envelope wrapped around the items. Read from the live server info rather than assumed, since an
+   *  operator can raise or lower it. */
+  private payloadBudget(): number {
+    const max = this.nc?.info?.max_payload ?? 1_048_576;
+    return Math.max(1, Math.floor(max * 0.9));
   }
 
   /** (Re)bind the Plane-3 fan-out writer + trusted reader. Idempotent — the durables resume from their

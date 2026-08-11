@@ -75,7 +75,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   await seedChannelRegistry({
     servers: SERVERS, space, creds: mgrCreds,
-    file: { defaults: { replay: true }, channels: { ops: { replay: true }, secret: { replay: true } } },
+    file: { defaults: { replay: true }, channels: { ops: { replay: true }, secret: { replay: true }, bulk: { replay: true } } },
   });
 
   mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
@@ -88,17 +88,21 @@ try {
   // Backlog worth reading back.
   const pId = newIdentity();
   const uidP = mintLifecycleUid();
-  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops"], allowPublish: ["ops"], subscribe: ["ops"], lifecycleUid: uidP });
-  poster = new CotalEndpoint({ space, servers: SERVERS, creds: pCreds, channels: ["ops"], consume: false, lifecycleUid: uidP, watchPresence: false, registerPresence: false, card: { id: pId.id, name: "poster", kind: "agent" } });
+  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops", "bulk"], allowPublish: ["ops", "bulk"], subscribe: ["ops", "bulk"], lifecycleUid: uidP });
+  poster = new CotalEndpoint({ space, servers: SERVERS, creds: pCreds, channels: ["ops", "bulk"], consume: false, lifecycleUid: uidP, watchPresence: false, registerPresence: false, card: { id: pId.id, name: "poster", kind: "agent" } });
   poster.on("error", () => {}); await poster.start();
   for (let i = 1; i <= 6; i++) await poster.multicast(`scrollback line ${i}`, { channel: "ops" });
-  await wait(400);
+  // A backlog whose full page CANNOT fit one NATS message: 20 x ~60 KB is over the 1 MB default
+  // max_payload, so a count-only bound would build a reply the broker refuses to carry.
+  const fat = "x".repeat(60_000);
+  for (let i = 1; i <= 20; i++) await poster.multicast(`fat ${i} ${fat}`, { channel: "bulk" });
+  await wait(600);
 
   // The CALLER: an ordinary provisioned agent whose ACL admits `ops` and not `secret`. It reads
   // through the mediator, so the interesting facts are about authorization, not about reachability.
   const rId = newIdentity();
   const uidR = mintLifecycleUid();
-  const rCreds = await provisionAgent(mgr, auth, rId, { allowSubscribe: ["ops"], subscribe: ["ops"], lifecycleUid: uidR });
+  const rCreds = await provisionAgent(mgr, auth, rId, { allowSubscribe: ["ops", "bulk"], subscribe: ["ops", "bulk"], lifecycleUid: uidR });
   reader = new CotalEndpoint({ space, servers: SERVERS, creds: rCreds, channels: [], consume: false, lifecycleUid: uidR, watchPresence: false, registerPresence: false, card: { id: rId.id, name: "reader", kind: "agent" } });
   reader.on("error", () => {}); await reader.start();
 
@@ -117,7 +121,26 @@ try {
   check("a read that reaches the start of retained history says complete", whole.complete === true, whole);
   check("...and carries the whole backlog, oldest-first", whole.items?.length === 6 && textOf(whole.items[0]) === "scrollback line 1", whole.items?.map(textOf));
 
-  // 3. A channel outside the ACL is refused, and SAYS so. An empty page would read as "no history",
+  // 3. A PAGE THAT CANNOT BE SENT IS NOT A PAGE. The reply rides one NATS message, so `limit` alone is
+  // the wrong bound: a full page of large messages serializes past `max_payload`, the respond throws
+  // inside serveControl's swallow, and the caller gets a bare request timeout indistinguishable from a
+  // dead daemon. Before the byte bound this exact call threw "timeout" after 5s. The fix needs no new
+  // vocabulary — trimming to the newest that fit IS `complete: false`.
+  const t0 = Date.now();
+  let fatErr = "";
+  let fatPage: { items: CotalMessage[]; complete: boolean } | undefined;
+  try { fatPage = await reader.readHistory("bulk", { limit: 20 }); }
+  catch (e) { fatErr = (e as Error).message; }
+  check("an oversized page is SERVED, not timed out", fatErr === "" && fatPage !== undefined, { fatErr, ms: Date.now() - t0 });
+  check("...trimmed to the newest that fit under the payload budget", (fatPage?.items.length ?? 0) > 0 && (fatPage?.items.length ?? 0) < 20, { got: fatPage?.items.length });
+  check("...and reported as incomplete, so a UI knows more remains", fatPage?.complete === false, fatPage?.complete);
+  // Guarded, not `fatPage!`: when the page above fails this check must REPORT, not throw. A check that
+  // crashes the runner takes every later check with it — including the ACL revocation one, the only
+  // check here that must never be silently skipped.
+  const fatNewest = fatPage?.items.length ? textOf(fatPage.items[fatPage.items.length - 1]) : "";
+  check("...keeping the NEWEST, so the trim drops old messages not recent ones", fatNewest.startsWith("fat 20 "), { fatNewest: fatNewest.slice(0, 12) });
+
+  // 4. A channel outside the ACL is refused, and SAYS so. An empty page would read as "no history",
   // which is the one answer a refusal must never be confusable with.
   let aclErr = "";
   let aclLeak: unknown;
@@ -126,7 +149,7 @@ try {
   check("readHistory refuses a channel outside the caller's ACL", aclErr !== "", { aclLeak });
   check("...loudly, not as an empty page", /acl|not permitted|refus|denied/i.test(aclErr), { aclErr });
 
-  // 4. THE PROPERTY THAT JUSTIFIES THE FEATURE, and the one check here that must never be relaxed:
+  // 5. THE PROPERTY THAT JUSTIFIES THE FEATURE, and the one check here that must never be relaxed:
   // authorization is re-read PER CALL. A consumer pins its ACL at create time and keeps serving after
   // a revocation; the mediator must stop on the very next read. Fully testable without cursors.
   const p3 = await reader.readHistory("ops", { limit: 1 });
