@@ -19,7 +19,7 @@ import {
 import { connect } from "@nats-io/transport-node";
 import {
   authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
-  pruneStaleMeshes, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
+  pruneStaleMeshes, renderWorkspaceError, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
 import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
@@ -102,6 +102,10 @@ export async function resolveControlTarget(
     try {
       mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
     } catch (e) {
+      // Non-absence propagates and ends the command. It is rethrown rather than rendered-and-exited
+      // here so this function stays composable and testable; the CLI boundary renders every
+      // WorkspaceTargetError through `renderWorkspaceError` (see the dispatcher's catch), which is
+      // what turns "entry X points at a root holding Y" into the removed-fact plus a recovery line.
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
     if (mode === "user") {

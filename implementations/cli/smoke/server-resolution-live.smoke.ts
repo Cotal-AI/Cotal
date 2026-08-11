@@ -34,6 +34,9 @@ const freePort = (): Promise<number> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-home-"));
 const cwd = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-cwd-"));
 const projectRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-root-"));
+// Created out here with its siblings so the `finally` sweep removes it on every exit path — a
+// dir made inside the `try` leaks one OS temp directory per run when a cell throws.
+const mismatchRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-mismatch-"));
 process.env.COTAL_HOME = home;
 const startCwd = process.cwd(); // restored before cleanup so Windows can rmdir `cwd` (it locks a live process's cwd)
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry
@@ -136,7 +139,7 @@ try {
   //    connected with NO CREDENTIALS. A misconfigured AUTH mesh silently became an OPEN one and the
   //    operator was never told. ABSENCE (`unknown-space`/`no-meshes`) may be absorbed; "registered
   //    and broken" may not. Regression guard for that exact swap.
-  const mismatchRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-mismatch-"));
+
   const mismatchAuth = join(mismatchRoot, ".cotal", "auth");
   mkdirSync(mismatchAuth, { recursive: true });
   // The root's on-disk auth is for a DIFFERENT space than the entry names — the exact divergence
@@ -181,5 +184,6 @@ try {
   rmSync(home, rmOpts);
   rmSync(cwd, rmOpts);
   rmSync(projectRoot, rmOpts);
+  rmSync(mismatchRoot, rmOpts);
 }
 process.exit(0);
