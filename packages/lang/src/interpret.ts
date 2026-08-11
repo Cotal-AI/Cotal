@@ -329,7 +329,14 @@ class Interpreter {
     }
 
     const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
-    const reqId = requestId(this.options.runId, key, inputHash);
+    // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
+    // moved, which is exactly why it read as correct: the whole point of writing the id down is
+    // the case where it does NOT agree, and a resumed run that re-derives is reissuing under an
+    // identity the far side may never have seen. An entry with no recorded id predates this rule.
+    const reqId =
+      verdict.verdict === "pending" && verdict.entry.requestId !== undefined
+        ? verdict.entry.requestId
+        : requestId(this.options.runId, key, inputHash);
     if (verdict.verdict === "miss") {
       this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
     }
@@ -705,7 +712,20 @@ class Interpreter {
         const schema = this.option(bag, "schema");
         // The SAME projection the entry is keyed by, so an attempt's identity is a function of the
         // step it belongs to rather than of anything the escalation invents.
-        const cpInput = { prompt, schema: schema ?? null };
+        // Design 5.12, and every field here earns its place. `timeout` STOPS OBSERVATION, so a
+        // record made under 1m cannot answer what a 3m wait would have seen. `escalate` and its
+        // `to` CREATE AN EFFECT rather than choosing a disposition, so editing them must diverge
+        // rather than be reapplied. `fail` versus `proceed` is the one genuine reapply and stays
+        // out. Hashing only prompt and schema left a timeout edit replaying clean, which is the
+        // silent-wrong-path class this projection exists to close.
+        const cpTimeout = this.option(bag, "timeout") as string | undefined;
+        const cpTo = this.option(bag, "to") as string | undefined;
+        const cpInput = {
+          prompt,
+          schema: schema ?? null,
+          timeout: cpTimeout ?? null,
+          ...(onExpiry === "escalate" ? { onExpiry, to: cpTo ?? null } : {}),
+        };
         const attemptId = (ctx: EffectContext, n: number) =>
           requestId(this.options.runId, ctx.key, digest(cpInput), n);
         return applyCheckpointPolicy(
@@ -717,9 +737,9 @@ class Interpreter {
             const req = {
               prompt,
               ...(schema !== undefined ? { schema } : {}),
-              ...(this.option(bag, "timeout") !== undefined ? { timeout: this.option(bag, "timeout") as string } : {}),
+              ...(cpTimeout !== undefined ? { timeout: cpTimeout } : {}),
               ...(onExpiry !== undefined ? { onExpiry } : {}),
-              ...(this.option(bag, "to") !== undefined ? { to: this.option(bag, "to") as string } : {}),
+              ...(cpTo !== undefined ? { to: cpTo } : {}),
             };
             const first = await handler.checkpoint(req, ctx);
             if (first.outcome !== "expired" || onExpiry !== "escalate") {
@@ -729,10 +749,14 @@ class Interpreter {
             // owns key allocation, so a second mint must not become a second occurrence. What it
             // does need is a second IDENTITY, derived from attempt 1 before the mint happens, or a
             // crash between minting and recording leaves live work nothing in the journal names.
-            const to = this.option(bag, "to") as string | undefined;
+            const to = cpTo;
+            // Name the open attempt on the pending row BEFORE issuing it, or the far side holds
+            // work under an identity the journal never recorded.
+            const nextId = attemptId(ctx, 1);
+            this.journal.reissueAs(ctx.key, nextId);
             const second = await handler.checkpoint(
               { ...req, ...(to !== undefined ? { to } : {}) },
-              { ...ctx, requestId: attemptId(ctx, 1) },
+              { ...ctx, requestId: nextId },
             );
             // ONE HOP. An escalation that can escalate again never terminates, so a second expiry
             // settles as expired and the program decides, exactly as `proceed` would.

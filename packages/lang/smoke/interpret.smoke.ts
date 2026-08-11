@@ -289,15 +289,32 @@ const out = await fanOut(
   ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")'));
 }
 
-// ---- 8) an edit that only steers live execution does NOT diverge ---------------------------------------------
+// ---- 8) an edit to an observation-stopping limit DOES diverge -----------------------------------
 
+/**
+ * This section used to claim the opposite, and asserted it with a hardcoded `true`.
+ *
+ * Both halves were wrong. The claim inverted when the hash rule was corrected: a timeout STOPS
+ * OBSERVATION, so a record made under 10m cannot answer what a 30m wait would have seen, and
+ * editing it has to diverge rather than replay. And the assertion could not have noticed either
+ * way, because it never looked at the resume it had just performed. A test that passes `true` is
+ * a comment with a green tick next to it.
+ */
 {
-  // The timeout is a control knob, not data: a completed checkpoint stays completed. If this
-  // diverged, every deadline tweak would re-ask a human who already answered.
   const RETIMED = PROGRAM.replace('timeout: "10m"', 'timeout: "30m"');
   const j = new Journal({ run: "r-1", entries: firstJournal.entries() });
-  await resume(RETIMED, j, { runId: "r-1", handler: new SimHandler({}) });
-  ok("changing a timeout replays cleanly instead of re-asking the human", true);
+  let diverged: unknown;
+  try {
+    await resume(RETIMED, j, { runId: "r-1", handler: new SimHandler({}) });
+  } catch (e) {
+    diverged = e;
+  }
+  ok("editing a timeout diverges rather than replaying", diverged instanceof RunDivergence, String(diverged).slice(0, 70));
+  ok(
+    "and it names the checkpoint whose observation window moved",
+    (diverged as RunDivergence)?.stepKey?.includes("checkpoint"),
+    (diverged as RunDivergence)?.stepKey,
+  );
 }
 
 // ---- 9) time advances only at effect boundaries ---------------------------------------------------------------
@@ -529,6 +546,88 @@ log(c.status);
     "attempt 1's id is derived from the entry's OWN inputHash",
     derivedFromEntry === attempts[1]?.requestId,
     { derivedFromEntry, recorded: attempts[1]?.requestId, entryHash },
+  );
+}
+
+// ---- 16) the three recovery rules a reviewer found unguarded ------------------------------------
+
+{
+  // (a) A COMPLETED ESCALATION TERMINATES AS EXPIRED, not as a throw. One hop, and a second expiry
+  // settles exactly as `proceed` would. Treating escalate as a throwing disposition made a
+  // finished chain raise L4007, which is the opposite of what the stop rule says.
+  const ESC = `
+const c = await checkpoint("gate", "Approve?", { timeout: "1m", onExpiry: "escalate", to: "david" });
+log(c.status);
+`;
+  const logs: unknown[] = [];
+  let threw: unknown;
+  try {
+    await run(ESC, {
+      runId: "r-16a",
+      onLog: (l) => logs.push(l.values[0]),
+      handler: new SimHandler({
+        checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "expired", by: "s" }] },
+        clock: { start: 0 },
+      }),
+    });
+  } catch (e) {
+    threw = e;
+  }
+  ok("a twice-expired escalation does not throw", threw === undefined, String(threw).slice(0, 60));
+  ok("it settles as expired and the program decides", logs[0] === "expired", logs);
+}
+
+{
+  // (b) RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving agrees whenever nothing moved,
+  // which is why it read as correct; the whole point of writing the id down is the case where it
+  // does not. Plant a different id on the pending row and require the handler to see THAT.
+  const P = `await turn(await spawn("a", { name: "a" }), { name: "go" });\n`;
+  const live = await run(P, { runId: "r-16b", handler: new SimHandler({ turns: { go: { status: "done", at: 0 } } }) });
+  const entries = live.journal.entries().map((e) =>
+    e.kind === "turn" ? { ...e, state: "pending" as const, status: undefined, requestId: "PLANTED-ID" } : e,
+  );
+
+  const seen: string[] = [];
+  const sim = new SimHandler({ turns: { go: { status: "done", at: 0 } } });
+  const innerTurn = sim.turn.bind(sim);
+  (sim as unknown as { turn: unknown }).turn = async (req: never, ctx: { requestId: string }) => {
+    seen.push(ctx.requestId);
+    return innerTurn(req, ctx as never);
+  };
+  await run(P, { runId: "r-16b", handler: sim, journal: new Journal({ run: "r-16b", entries }) });
+  ok("a pending effect is reissued under the RECORDED id", seen.includes("PLANTED-ID"), seen);
+}
+
+{
+  // (c) THE PENDING ROW NAMES THE OPEN ATTEMPT BEFORE THE HOP IS ISSUED. Without this a crash
+  // after the second mint leaves the far side holding work under an identity the journal never
+  // recorded, and recovery reissues the first attempt and collects its cached expiry.
+  const ESC = `await checkpoint("gate", "?", { timeout: "1m", onExpiry: "escalate", to: "d" });\n`;
+  let pendingIdAtSecondMint: string | undefined;
+  const sim = new SimHandler({
+    checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "resolved", value: 1, by: "d" }] },
+    clock: { start: 0 },
+  });
+  const innerCp = sim.checkpoint.bind(sim);
+  let call = 0;
+  const r = await run(ESC, {
+    runId: "r-16c",
+    handler: new Proxy(sim, {
+      get(t, prop, recv) {
+        if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
+        return async (req: never, ctx: { requestId: string; key: unknown }) => {
+          call += 1;
+          if (call === 2) pendingIdAtSecondMint = ctx.requestId;
+          return innerCp(req, ctx as never);
+        };
+      },
+    }) as never,
+  });
+  const chain = (r.journal.entries()[0]?.result as { attempts?: { requestId: string }[] })?.attempts ?? [];
+  ok(
+    "the row's open attempt matches the id the second mint used",
+    pendingIdAtSecondMint !== undefined && pendingIdAtSecondMint === chain[1]?.requestId,
+    { pendingIdAtSecondMint, recorded: chain[1]?.requestId },
   );
 }
 

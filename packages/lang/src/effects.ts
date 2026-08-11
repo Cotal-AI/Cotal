@@ -191,7 +191,12 @@ export function applyCheckpointPolicy(
       at: raw.at,
     };
   }
-  if ((onExpiry ?? "fail") === "proceed") return { status: "expired", at: raw.at };
+  // `escalate` reaching here means the chain is FINISHED: the interpreter already performed the
+  // one hop, and a second expiry settles exactly as `proceed` would (design 5.5, one hop). Only
+  // `fail` throws. Treating escalate as a throw made a completed escalation raise L4007, which is
+  // the opposite of what the stop rule says happens.
+  const disposition = onExpiry ?? "fail";
+  if (disposition === "proceed" || disposition === "escalate") return { status: "expired", at: raw.at };
   throw new EffectError(
     "L4007",
     "checkpoint-expired",

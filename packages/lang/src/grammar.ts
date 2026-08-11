@@ -508,6 +508,31 @@ function patternNames(node: AnyNode, out: string[]): void {
  * the one boundary where it is easiest to break. A literal fact is checked exactly; a computed
  * one is checked at the effect boundary by the same rules.
  */
+/**
+ * `to` addresses the escalated mint and nothing else, so accepting it elsewhere records an input
+ * that decides nothing, which the hash table then has to classify for no reason.
+ */
+function checkEscalateTo(bag: AnyNode | undefined, v: Validator): void {
+  if (bag === undefined || bag.type !== "ObjectExpression") return;
+  const prop = (want: string): AnyNode | undefined =>
+    ((bag.properties as AnyNode[]) ?? []).find((p) => {
+      const k = p.key as AnyNode | undefined;
+      return k !== undefined && (k.type === "Identifier" ? k.name === want : k.value === want);
+    });
+  const to = prop("to");
+  if (to === undefined) return;
+  const onExpiry = prop("onExpiry");
+  const value = onExpiry?.value as AnyNode | undefined;
+  if (value?.type === "Literal" && value.value === "escalate") return;
+  v.fail(
+    "L3044",
+    to,
+    "`to` only addresses an escalated checkpoint, and this one does not escalate.",
+    'Set `onExpiry: "escalate"`, or drop `to`.',
+    "checkpoint",
+  );
+}
+
 function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
   if (fact === undefined || fact.type !== "ObjectExpression") return; // computed: checked at run time
 
@@ -776,6 +801,7 @@ function checkCall(node: AnyNode, v: Validator): void {
   }
 
   if (name === "notify") checkNotifyFact(args[1], v);
+  if (name === "checkpoint") checkEscalateTo(bag, v);
 
   // fanOut needs a stable branch key, or items that carry one. Warn only when the source SHOWS
   // there are no ids: items carrying a string `id` supply the key by design, so warning on those

@@ -57,6 +57,7 @@ export const CATALOG = {
   L3041: "Value cannot cross an effect boundary",
   L3042: "Function passed as effect data",
   L3043: "`notify` fact is not a bounded decision record",
+  L3044: "`to` without `onExpiry: \"escalate\"`",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",

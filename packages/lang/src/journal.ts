@@ -156,6 +156,22 @@ export class Journal {
   }
 
   /** Record the external resource the handler created, before its terminal is awaited. */
+  /**
+   * Point the pending entry at a NEW open identity, before the work under it is issued.
+   *
+   * Escalation mints twice under one entry, so between the hops the row must name the attempt that
+   * is about to be open rather than the one that already settled. Without this a crash after the
+   * second mint leaves the far side holding work under an identity the journal never recorded, and
+   * recovery reissues the first attempt and gets its cached expiry.
+   */
+  reissueAs(key: StepKey, requestId: string): void {
+    if (this.readOnly) throw new JournalReadOnlyError(key);
+    const k = Journal.keyOf(key);
+    const entry = this.byKey.get(k);
+    if (entry === undefined) throw new Error(`reissueAs before begin for ${k}`);
+    this.byKey.set(k, { ...entry, requestId });
+  }
+
   bind(key: StepKey, external: Readonly<Record<string, unknown>>): void {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);

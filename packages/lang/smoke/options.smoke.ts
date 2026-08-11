@@ -113,7 +113,10 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
       method: "ask",
     },
     checkpoint: {
-      src: 'await checkpoint("approve", "ok?", { schema: { ok: "boolean" }, timeout: "10m", onExpiry: "proceed", to: "david" });\n',
+      // `to` only addresses an escalated mint (L3044), so the fixture that exercises every
+      // accepted option has to escalate. The validator refused this fixture the moment that rule
+      // landed, which is the audit catching its own test data rather than the other way round.
+      src: 'await checkpoint("approve", "ok?", { schema: { ok: "boolean" }, timeout: "10m", onExpiry: "escalate", to: "david" });\n',
       method: "checkpoint",
     },
     wait: {
