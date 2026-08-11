@@ -2663,7 +2663,12 @@ export class CotalEndpoint extends EventEmitter {
     // `complete: false` already means "older history remains behind this page". Trimming here is the
     // documented truncation signal doing its job, not a silent degradation.
     const fitted = fitHistoryPage(wanted, this.payloadBudget());
-    if (fitted.length === 0)
+    // `wanted.length > 0` is load-bearing, not defensive: an EMPTY channel also fits nothing, and
+    // without this guard a channel nobody has posted to was refused with "the newest message exceeds
+    // the payload budget" — a confident, entirely wrong explanation for a legitimately empty result.
+    // Genuine emptiness is `{ items: [], complete: true }`; only a message too large to ever send is
+    // the error.
+    if (wanted.length > 0 && fitted.length === 0)
       return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.payloadBudget()} bytes) - refused loudly rather than served as an empty page` };
     return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
   }

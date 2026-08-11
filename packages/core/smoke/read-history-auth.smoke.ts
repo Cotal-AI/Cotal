@@ -75,7 +75,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   await seedChannelRegistry({
     servers: SERVERS, space, creds: mgrCreds,
-    file: { defaults: { replay: true }, channels: { ops: { replay: true }, secret: { replay: true }, bulk: { replay: true } } },
+    file: { defaults: { replay: true }, channels: { ops: { replay: true }, secret: { replay: true }, bulk: { replay: true }, "ops.private": { replay: true }, bulk2: { replay: true } } },
   });
 
   mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
@@ -102,7 +102,7 @@ try {
   // through the mediator, so the interesting facts are about authorization, not about reachability.
   const rId = newIdentity();
   const uidR = mintLifecycleUid();
-  const rCreds = await provisionAgent(mgr, auth, rId, { allowSubscribe: ["ops", "bulk"], subscribe: ["ops", "bulk"], lifecycleUid: uidR });
+  const rCreds = await provisionAgent(mgr, auth, rId, { allowSubscribe: ["ops", "bulk", "bulk2"], subscribe: ["ops", "bulk", "bulk2"], lifecycleUid: uidR });
   reader = new CotalEndpoint({ space, servers: SERVERS, creds: rCreds, channels: [], consume: false, lifecycleUid: uidR, watchPresence: false, registerPresence: false, card: { id: rId.id, name: "reader", kind: "agent" } });
   reader.on("error", () => {}); await reader.start();
 
@@ -147,7 +147,30 @@ try {
   try { aclLeak = await reader.readHistory("secret", { limit: 10 }); }
   catch (e) { aclErr = (e as Error).message; }
   check("readHistory refuses a channel outside the caller's ACL", aclErr !== "", { aclLeak });
-  check("...loudly, not as an empty page", /acl|not permitted|refus|denied/i.test(aclErr), { aclErr });
+  // Assert it refused for the RIGHT REASON. `aclErr !== ""` and a loose /refus|denied/ both pass on
+  // ANY error, including a wrong one — proven: with the ACL gate disabled these two still passed,
+  // because the unreadable channels are empty and the handler failed further down with an unrelated
+  // message that happened to contain "refused". A test that cannot tell the intended refusal from an
+  // accidental one is not testing the gate.
+  check("...specifically as an ACL refusal, naming the ACL", /not within your read ACL/.test(aclErr), { aclErr });
+
+  // The OTHER confinement failure, and a different bug than the one above: a caller granted `ops` must
+  // not reach `ops.private` by prefix. `channelInAllow` is NATS subject matching, where a literal token
+  // does not cover a deeper subject — asserted here rather than trusted, because "the ACL entry is a
+  // prefix of the channel" is exactly the shape a hand-rolled check gets wrong.
+  let subErr = "";
+  let subLeak: unknown;
+  try { subLeak = await reader.readHistory("ops.private", { limit: 10 }); }
+  catch (e) { subErr = (e as Error).message; }
+  check("an ACL entry does not leak its SUB-channels (ops does not grant ops.private)", /not within your read ACL/.test(subErr), { subErr, subLeak });
+
+  // AN EMPTY CHANNEL IS NOT AN ERROR. Found by the same mutation: because a channel with no messages
+  // also "fits nothing", the payload guard refused it with "the newest message exceeds the payload
+  // budget" — a confident and completely wrong explanation. Genuine emptiness must be an empty
+  // COMPLETE page, distinguishable from both a refusal and a truncation.
+  const empty = await reader.readHistory("bulk2", { limit: 10 }).catch((e: Error) => e);
+  check("a channel with no history returns an empty COMPLETE page, not an error",
+    !(empty instanceof Error) && empty.items.length === 0 && empty.complete === true, empty);
 
   // 5. THE PROPERTY THAT JUSTIFIES THE FEATURE, and the one check here that must never be relaxed:
   // authorization is re-read PER CALL. A consumer pins its ACL at create time and keeps serving after
