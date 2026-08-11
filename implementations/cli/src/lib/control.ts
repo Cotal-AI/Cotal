@@ -17,9 +17,12 @@ import {
   type Profile,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth, soleSpaceOf } from "@cotal-ai/workspace";
+import {
+  authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
+  soleSpaceOf, type MeshTarget,
+} from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, connectUserControlOrExit, resolveTargetOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
@@ -62,11 +65,22 @@ export async function resolveControlTarget(
   // Accepted for this slice so mode choice stays where it is knowable. The two reads are not
   // atomic; a mesh that flips mode between them is an operator action mid-command.
   //
-  // `resolveTargetOrExit` EXITS on a WorkspaceTargetError (never returns). Any other throw
-  // propagates — there is no bare catch. Raw `--creds` skips the peek (static/raw path below).
+  // This peek reads the MODE and NOTHING ELSE — it must never decide the command's fate. It used
+  // to run through `resolveTargetOrExit`, which EXITS on a WorkspaceTargetError, so it killed a
+  // legitimate input on the way past: `--server` with an UNREGISTERED `--space` is the raw-open
+  // escape hatch, and by definition it has no registry entry to carry a mode. Resolve through the
+  // THROWING form instead and read "no such target" as "not a registry mesh, therefore not user
+  // mode", leaving that path to `connectOrExit` below, which owns it and still exits loudly on a
+  // genuinely bad target. ONLY WorkspaceTargetError is absorbed; anything else propagates.
+  // Raw `--creds` skips the peek entirely (static/raw path below).
   if (!withSpace.creds) {
-    const target = await resolveTargetOrExit({ server: withSpace.server, space: withSpace.space });
-    if (target.mode === "user") {
+    let mode: MeshTarget["mode"] | undefined;
+    try {
+      mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
+    } catch (e) {
+      if (!isWorkspaceTargetError(e)) throw e;
+    }
+    if (mode === "user") {
       const conn = await connectUserControlOrExit(withSpace);
       return {
         space: conn.space,
