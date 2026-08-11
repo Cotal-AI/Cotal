@@ -855,6 +855,32 @@ async function main(): Promise<void> {
     console.log("  ✓ S6: dry-run refuses wrong-SAN; matching SAN still green; no writes");
   });
 
+  // ── M: DELIVERY MUST LAUNCH WITH --tls ON A FRESH TLS MESH (S9). ───────────────────────────────
+  //    Commit-after-apply moved policy write after startMeshDetached; delivery inside still read
+  //    the (absent) policy and launched flagless — auto-upgrade only, INFO-downgrade harvestable.
+  //    Gate the real child argv, not daemon readiness.
+  await route("delivery-launches-with-tls", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+    const up = cotal(["up", "--detach", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(up.status, 0, `TLS auth mesh must start:\n${up.out}`);
+    assert.match(up.out, /delivery/, `CONTROL: summary should mention delivery:\n${up.out}`);
+
+    // Inspect the live delivery child. Prefer ps argv containing this server/space.
+    const ps = spawnSync("bash", ["-lc",
+      `ps -ax -o args= 2>/dev/null | grep -F 'deliver' | grep -F '${port}' | grep -v grep || true`],
+      { encoding: "utf8" });
+    const line = (ps.stdout ?? "").trim().split("\n").filter(Boolean)[0] ?? "";
+    assert.ok(line, `CONTROL: no delivery process found for port ${port};\nup out:\n${up.out}`);
+    assert.match(line, /--tls\b/,
+      `GATE FAILED (S9): delivery launched WITHOUT --tls (flagless auto-upgrade):\n${line}`);
+
+    console.log("  ✓ S9: fresh TLS detach launches delivery with --tls");
+    cotal(["down"], home, cwd);
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -865,11 +891,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 13)
-    throw new Error(`HARNESS: expected 13 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 14)
+    throw new Error(`HARNESS: expected 14 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/13 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 13/13 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/14 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 14/14 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

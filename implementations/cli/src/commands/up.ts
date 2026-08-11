@@ -755,8 +755,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       } : {}),
       skipPostStart: Boolean(resumeAttempt),
     });
-    // Listener is up and proved — NOW record the transport. Not before (S5).
-    commitTransportPolicy(meshRoot, transport);
+    // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     console.log(c.dim(`Started nats-server (${source}).`));
     console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager })));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -935,6 +934,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       attachHost: effectiveAttachHost,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
+      transport,
     });
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -1653,8 +1653,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
-  // Listener up — commit transport at the pinned root (S5).
-  commitTransportPolicy(cotalRoot(), opts.transport);
+  // Transport committed inside startMeshDetached before delivery (S5+S9).
   console.log(c.green(`✓ mesh "${m.space}" up at ${server}`) + c.dim(` (broker pid ${pid})`));
   console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
   // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
@@ -1724,20 +1723,25 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
 async function startDeliveryWithBroker(
   space: string,
   server: string,
-  mgr?: { runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string },
+  mgr?: {
+    runtime?: string;
+    launch?: string;
+    attachHost?: string;
+    resumeAttempt?: string;
+    resumeCommitToken?: string;
+    /** When the caller already applied a transport this turn, pass it so delivery does not
+     *  re-read a policy file that is not yet committed (S9). Otherwise fall back to the record. */
+    transport?: BrokerTransport;
+  },
 ): Promise<boolean> {
   try {
-    // The daemon's transport comes from the RECORDED policy, not from a parameter threaded through
-    // this function's five call sites. Three of those five - resume, restore, detach - have no
-    // natural source for the value, and a signature they can only satisfy by passing `false` makes
-    // "decided plaintext" indistinguishable from "had nothing to pass". Reading the one recorded
-    // decision removes the chance to be accidentally right.
-    //
-    // A policy that cannot be honoured throws rather than degrading, and that is correct here too:
-    // bringing up a control plane that connects in the clear, against a broker recorded as
-    // TLS-required, is the failure this whole change exists to prevent.
-    const tls = readBrokerPolicy(cotalRoot())?.transport.kind === "tls-required";
-    await ensureControlPlane({ space, server, tls, ...mgr });
+    // Prefer the in-memory decision for a fresh apply (policy may not be on disk yet — S9).
+    // Fall back to the recorded policy for resume/restore/refresh paths that start no new listener.
+    const tls =
+      mgr?.transport?.kind === "tls-required" ||
+      readBrokerPolicy(cotalRoot())?.transport.kind === "tls-required";
+    const { transport: _t, ...mgrRest } = mgr ?? {};
+    await ensureControlPlane({ space, server, tls, ...mgrRest });
     return true;
   } catch (e) {
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
@@ -1903,6 +1907,9 @@ export async function startMeshDetached(
     ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
     ts: new Date().toISOString(),
   }, "started");
+  // Commit policy BEFORE delivery launch (S9). Listener is proved; refuse paths never reach here.
+  // startDeliveryWithBroker also receives `transport` so it does not depend on the file alone.
+  commitTransportPolicy(cotalRoot(), transport);
   // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
   const controlPlane = await startDeliveryWithBroker(space, server, {
     runtime: opts.runtime,
@@ -1911,6 +1918,7 @@ export async function startMeshDetached(
     attachHost: effectiveAttachHost,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
+    transport,
   });
   return {
     server,
