@@ -206,6 +206,65 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   return !kept.includes("removed") && kept.includes("cotal meshes add") && gone.includes("stale entry removed");
 })());
 
+// ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
+// A TCP peer that greets with INFO {tls_required:true} only after 1.5s. probeConnect fails
+// (not a real NATS TLS handshake) → unreachable; without the confirm budget this would prune.
+{
+  const { createServer } = await import("node:net");
+  const delayed = await new Promise<{ port: number; close: () => void }>((resolve) => {
+    const srv = createServer((sock) => {
+      setTimeout(() => {
+        try {
+          sock.write('INFO {"server_id":"s10","tls_required":true,"version":"2"}\r\n');
+        } catch { /* client gone */ }
+      }, 1_500);
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      resolve({ port, close: () => srv.close() });
+    });
+  });
+  const slowServer = `nats://127.0.0.1:${delayed.port}`;
+  recordMesh({
+    space: "s10-slow",
+    server: slowServer,
+    root: "/tmp/s10-slow",
+    mode: "open",
+    tlsRequired: true,
+    origin: "up",
+    ts: new Date(0).toISOString(),
+  });
+  const slowT: MeshTarget = {
+    ...T,
+    space: "s10-slow",
+    server: slowServer,
+    root: "/tmp/s10-slow",
+    mode: "open",
+    tlsRequired: true,
+    source: "registry",
+    origin: "up",
+  };
+  const t0 = Date.now();
+  const slowR = await preflightTarget(slowT);
+  const elapsed = Date.now() - t0;
+  check(
+    "S10 delayed-INFO: preflightTarget → tls-trust, prune:false (confirm path, not 1s miss)",
+    !slowR.ok && slowR.kind === "tls-trust" && slowR.prune === false,
+    slowR,
+  );
+  check(
+    "S10 delayed-INFO: took >1s (second confirm read engaged)",
+    elapsed >= 1_400,
+    { elapsed },
+  );
+  check(
+    "S10 delayed-INFO: registry entry still present (caller would not prune)",
+    loadMeshes().some((m) => m.space === "s10-slow"),
+    loadMeshes(),
+  );
+  delayed.close();
+}
+
 rmSync(home, { recursive: true, force: true });
 console.log(`\npreflight (workspace) smoke: ${pass} checks passed`);
 process.exit(0);
