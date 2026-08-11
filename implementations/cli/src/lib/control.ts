@@ -19,7 +19,7 @@ import {
 import { connect } from "@nats-io/transport-node";
 import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth, soleSpaceOf } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, resolveTargetOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectUserControlOrExit, resolveTargetOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
@@ -51,21 +51,32 @@ export async function resolveControlTarget(
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
-  // USER MODE: the control call connects with the operator's bearer (actor `cli`). Ledger scope is
-  // the grant (`spawn` / `admin`); there is no static instrument mint. `connectOrExit` refuses
-  // `control-caller-*` on a user mesh (those profiles carry freeze rows the bearer does not hold),
-  // so translate here — this is the explicit user-mode control path, not a silent substitute.
-  // The preflight probe STAYS (classified failure + 8s bound); see prior notes on why.
-  let role = profile;
-  if (!withSpace.creds && (profile === "control-caller-privileged" || profile === "control-caller-admin")) {
-    try {
-      const target = await resolveTargetOrExit({ server: withSpace.server, space: withSpace.space });
-      if (target.mode === "user") role = "agent"; // any non-instrument; userConnectOrExit ignores it for minting
-    } catch {
-      // Raw / unresolved targets fall through; connectOrExit handles them.
+  // USER MODE: ledger-scoped bearer is the control surface; there is no instrument mint.
+  // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
+  // bearer does not hold). Route through {@link connectUserControlOrExit}, which takes NO role —
+  // a dummy Profile would be meaningless today and wrong the day the user path starts consulting
+  // it. Declared translation at this layer (the one that knows), not a silent substitute inside
+  // connectOrExit.
+  //
+  // Cost: the target is resolved here for the mode check and again inside the connect helper.
+  // Accepted for this slice so mode choice stays where it is knowable. The two reads are not
+  // atomic; a mesh that flips mode between them is an operator action mid-command.
+  //
+  // `resolveTargetOrExit` EXITS on a WorkspaceTargetError (never returns). Any other throw
+  // propagates — there is no bare catch. Raw `--creds` skips the peek (static/raw path below).
+  if (!withSpace.creds) {
+    const target = await resolveTargetOrExit({ server: withSpace.server, space: withSpace.space });
+    if (target.mode === "user") {
+      const conn = await connectUserControlOrExit(withSpace);
+      return {
+        space: conn.space,
+        server: conn.server,
+        auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+      };
     }
   }
-  const conn = await connectOrExit(withSpace, role);
+  // Static / open / raw-creds: mint the requested instrument (or bare open connect).
+  const conn = await connectOrExit(withSpace, profile);
   return {
     space: conn.space,
     server: conn.server,

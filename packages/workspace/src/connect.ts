@@ -283,11 +283,46 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
   };
 }
 
+/**
+ * Connect as the logged-in user on a user-auth mesh. **No profile/role argument** — there is no
+ * instrument mint on this path; ledger scope is the grant and `epCaller` comes from the bearer
+ * principal. Prefer this over `connectOrExit(..., someRole)` whenever the caller already knows
+ * (or has just learned) the mesh is user-mode: a dummy role is a value that is meaningless today
+ * and wrong the day this path starts consulting it.
+ *
+ * If this function is ever changed to accept or consult a {@link Profile}, every caller is wrong.
+ */
+export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Connection> {
+  if (flags.creds) {
+    console.error(
+      c.red(
+        "✗ connectUserControlOrExit is the user-mode control path - it does not take --creds (that is the static/raw instrument path via connectOrExit)",
+      ),
+    );
+    process.exit(1);
+  }
+  const target = await resolveTargetOrExit({ server: flags.server, space: flags.space });
+  if (target.mode !== "user") {
+    console.error(
+      c.red(
+        `✗ connectUserControlOrExit requires a user-auth mesh (resolved mode is "${target.mode}") - use connectOrExit with an instrument profile on static/open meshes`,
+      ),
+    );
+    process.exit(1);
+  }
+  return userConnectOrExit(target);
+}
+
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
  *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper only
- *  colours and exits (the workstation-layer contract). */
+ *  colours and exits (the workstation-layer contract).
+ *
+ *  Takes a resolved target only — never a Profile. Callers that know the mesh is user-mode must
+ *  enter via {@link connectUserControlOrExit} (no role) or the user branch of {@link connectOrExit}
+ *  (which refuses control-caller-* instruments). If a Profile is ever threaded into this function,
+ *  the call sites that invented dummy roles are the defect. */
 async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
   const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
   let provider: AuthProvider;
