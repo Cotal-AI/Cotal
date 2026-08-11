@@ -542,10 +542,20 @@ async function main(): Promise<void> {
         } else {
           // `status` is intentionally informational and exits 0 for resolver failures. Its security
           // claim is the rendered verdict: the substituted listener must be UNREACHABLE, never ok.
+          // BOTH surfaces matter: Selected Mesh (connection line) AND Recorded Meshes (list row).
+          // A fix that reds only the selected line while the list still prints green `reachable`
+          // via a bare TCP/INFO probe is the FAIL1 residual that greened a substitute in one
+          // section while redding another — operators read the list first.
           assert.match(result.out, /connection\s+.*unreachable/,
             `GATE FAILED (status): did not report the substituted plaintext broker unreachable:\n${result.out}`);
+          assert.match(result.out, /\bdown\b/,
+            `GATE FAILED (status Recorded Meshes): list did not mark the TLS-required mesh down ` +
+            `under a plaintext substitute (still greening via bare isReachable):\n${result.out}`);
+          assert.doesNotMatch(result.out, /\breachable\b/,
+            `GATE FAILED (status Recorded Meshes): still printed green "reachable" for a ` +
+            `tlsRequired mesh against a plaintext substitute:\n${result.out}`);
         }
-        assert.match(result.out, /tls|TLS|no mesh running|stale registry/,
+        assert.match(result.out, /tls|TLS|no mesh running|stale registry|unreachable|down/,
           `${command} refused, but for none of the transport/reachability reasons — assert on the ` +
           `REASON, or this passes for any startup failure:\n${result.out}`);
         assert.doesNotMatch(result.out, /connection\s+ok/,

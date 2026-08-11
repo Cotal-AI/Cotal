@@ -68,25 +68,32 @@ membership feed connect the same way. Numerous helpers pass `tls: false` explici
 sites in `streams.ts`, `channels.ts`, `down.ts`, `spaces.ts`, `evict.ts`, and `up.ts`'s own setup
 connects.
 
-*Resolves the decision and then drops it.* The mesh manager and the web dashboard are worse than
-the above, because the answer is available at the call and is discarded:
-`ensureControlPlane` holds the broker's transport and forwards `--tls` to the delivery daemon, but
-`startManagerDetached`'s options type has no `tls` field, so the value is dropped at that boundary
-and the manager is launched without it. `cotal web` resolves a `Connection` that carries `tls`, then
-constructs its `CotalEndpoint` without passing it. `cotal status` likewise probes with no transport
-and prints no TLS indicator, so a TLS mesh is indistinguishable from a plaintext one in its output.
+*Resolves the decision and then drops it (partially closed).* `cotal web` now passes
+`tls: conn.tls` into its endpoint. `cotal status` carries `target.tlsRequired` on the Selected Mesh
+preflight, the open/auth live snapshot, the user-mode connection probe and user live snapshot, and
+the Recorded Meshes liveness check — a mesh recorded `tlsRequired: true` is not greened by a bare
+TCP/INFO probe against a plaintext substitute. What still drops the decision: the mesh manager
+(`startManagerDetached`'s options type has no `tls` field, so `ensureControlPlane` forwards `--tls`
+to the delivery daemon and then launches the manager without it), plus the never-had-a-path sites
+above.
 
 **Do not read the above as exhaustive.** It is the set found by an adversarial pass, not by an
-enumeration of every dial in the tree, and the honest statement is that client-side strictness landed
-for the `cotal up` path, the recorded mesh record, and the delivery daemon — and nowhere else yet.
+enumeration of every dial in the tree. Client-side strictness landed for: `cotal up` (every route
+to a listener), the recorded mesh record (`MeshEntry.tlsRequired`), CLI-resolved connections that
+go through `resolveMeshTarget` / `endpointAuth`, `cotal status`, `cotal web`, and the delivery
+daemon's three dials. It has not landed for the manager process, the user-auth service, the
+membership feed, `waitForDeliveryLease`, or the helper sites listed above.
 
 The delivery daemon is strict on all three of its dials, including the every-two-seconds reachability
 poll that re-presents its standing credential for the life of the process.
 
-**Also not included:** the `cotals://` handout from `up`, first enablement being restart-only (a
-reload leaves established plaintext sessions alive), a rotation command, and `tls://` as a *server*
-scheme enforcing anything (it is cosmetic at the client: nats.js connects plaintext to `tls://host`
-with empty options, and only the explicit `tls` option refuses).
+**Also not included:** the `cotals://` handout from `up`; a rotation command; and `tls://` as a
+*server* scheme enforcing anything (it is cosmetic at the client: nats.js connects plaintext to
+`tls://host` with empty options, and only the explicit `tls` option refuses). **Changing transport
+on a live broker is restart-only by construction:** passing `--tls-cert/--tls-key` (or dropping
+them) against an already-running mesh is refused — `cotal down`, then `cotal up` with the desired
+flags. A reload of `nats-server` is not offered, because it would leave established plaintext
+sessions alive.
 
 Operators using a private CA need `NODE_EXTRA_CA_CERTS`, because `EndpointOptions.tls` is a boolean
 and cannot carry a CA file. The private-key permission check is POSIX-only.
