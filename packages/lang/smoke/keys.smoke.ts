@@ -10,7 +10,8 @@
  * These tests deliberately allocate keys in adversarial interleavings, because the interpreter
  * will produce them once branches contain awaits.
  */
-import { KeyScope, branchKeys, digest, stepKeyString } from "../src/keys.js";
+import {
+  requestId, KeyScope, branchKeys, digest, stepKeyString } from "../src/keys.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -172,6 +173,42 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
     "an absent field and an explicit null are different inputs",
     digest({ a: 1 }) !== digest({ a: 1, b: null }),
   );
+}
+
+// ---- the request identity ----------------------------------------------------------------------
+
+/**
+ * `requestId` is what a handler submits under, so it has two jobs that pull in opposite directions:
+ * it must DISCRIMINATE (two runs, two attempts) and it must REPRODUCE (a resume derives the same
+ * id it first used, or recovery reissues under an identity the far side never saw).
+ *
+ * The encoding is not cosmetic. An endpoint id token is `[A-Za-z0-9_-]{1,64}`; the `sha256:<hex>`
+ * form this first carried is 71 characters and contains a colon, so it was never a legal id and a
+ * handler could not have used it at all. That is asserted here against the real shape rather than
+ * left to a reader to notice.
+ */
+{
+  const k = (name: string, occurrence = 0) =>
+    ({ scope: [], kind: "turn" as const, name, occurrence });
+
+  const a = requestId("run-a", k("build"), "h");
+  const b = requestId("run-b", k("build"), "h");
+  ok("two runs at the same step derive different ids", a !== b, { a, b });
+
+  const t0 = requestId("run-a", k("gate"), "h", 0);
+  const t1 = requestId("run-a", k("gate"), "h", 1);
+  ok("two attempts at one step derive different ids", t0 !== t1, { t0, t1 });
+
+  ok("the same inputs reproduce the same id", requestId("run-a", k("build"), "h") === a);
+  ok("a different step is a different id", requestId("run-a", k("other"), "h") !== a);
+  ok("a different input hash is a different id", requestId("run-a", k("build"), "h2") !== a);
+
+  // The endpoint's own grammar, restated here rather than imported: this package is pure and does
+  // not depend on core, so the constraint is pinned as a literal and named as borrowed.
+  const ID = /^[A-Za-z0-9_-]{1,64}$/;
+  ok("the id is a legal endpoint id token", ID.test(a), a);
+  ok("and carries no dot, which a dot-separated subject would split on", !a.includes("."));
+  ok("the digest form it replaced would NOT be legal", !ID.test(`sha256:${"a".repeat(64)}`));
 }
 
 console.log(`keys.smoke: ${pass} checks passed`);

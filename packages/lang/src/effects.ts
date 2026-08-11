@@ -154,6 +154,14 @@ export interface EffectContext {
   readonly key: StepKey;
   readonly signal: CancelSignal;
   /**
+   * `base64url(sha256(runId, stepKey, inputHash, attempt))`, on the pending entry BEFORE this
+   * handler was called. SUBMIT UNDER IT, idempotently: a resumed run reissues the same id and the
+   * far side recognises it rather than creating a second goal. This is the identity that makes an
+   * effect recoverable; {@link EffectContext.bind} carries facts the handler LEARNS and is never
+   * what recovery keys on, because a crash before the handler learned them leaves none.
+   */
+  readonly requestId: string;
+  /**
    * Present when a previous attempt at this step started but never settled, carrying whatever it
    * passed to {@link EffectContext.bind}. The handler must RE-BIND to that resource and await its
    * terminal, not issue a fresh action: the goal already exists, the checkpoint token is already

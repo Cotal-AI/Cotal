@@ -17,7 +17,7 @@
 
 import { validate } from "./grammar.js";
 import { LangError, LangErrors } from "./errors.js";
-import { KeyScope, digest, scopePathString, stepKeyString, type ScopeKind } from "./keys.js";
+import { KeyScope, digest, requestId, scopePathString, stepKeyString, type ScopeKind } from "./keys.js";
 import { Journal, RunClock, type EntryError } from "./journal.js";
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
 import { parseDuration } from "./duration.js";
@@ -327,13 +327,18 @@ class Interpreter {
     }
 
     const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
+    const reqId = requestId(this.options.runId, key, inputHash);
     if (verdict.verdict === "miss") {
-      this.journal.begin(key, inputHash, this.options.handler.now());
+      this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
     }
 
     const ctx: EffectContext = {
       key,
       signal: frame.signal,
+      // Derived from the run, the step, the inputs and the attempt, and written on the pending
+      // entry by `begin` above BEFORE the handler runs. A handler submits under it idempotently,
+      // so a resumed run reissues the same id rather than creating a second goal.
+      requestId: reqId,
       ...(resume !== undefined ? { resume } : {}),
       bind: async (external) => {
         this.journal.bind(key, external);

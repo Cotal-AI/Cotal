@@ -43,6 +43,26 @@ export interface StepKey {
  *  contract artifacts elsewhere in the repo. */
 export const DIGEST_PREFIX = "sha256:" as const;
 
+/**
+ * The identity a handler submits under, written on the pending entry BEFORE the handler runs.
+ *
+ * Four components, each load-bearing rather than defensive. `runId`, because two runs reaching the
+ * same step with the same inputs would otherwise derive the same id and collide at a caller-scoped
+ * idempotency boundary. `attempt`, because escalation mints twice under one entry, so the second
+ * mint needs a second identity that is still derivable before it happens. The step key and input
+ * hash are what make it the identity of THIS step's THIS call.
+ *
+ * base64url, not the `sha256:<hex>` form this carried first: an endpoint id token is
+ * `[A-Za-z0-9_-]{1,64}`, and that form is 71 characters with a colon in it, so it was never a
+ * legal id. This is 43 characters in exactly that alphabet, with no `.` to confuse the
+ * dot-separated subject a goal id rides.
+ */
+export function requestId(runId: string, key: StepKey, inputHash: string, attempt = 0): string {
+  return createHash("sha256")
+    .update(canonicalize([runId, stepKeyString(key), inputHash, attempt]), "utf8")
+    .digest("base64url");
+}
+
 export function digest(value: unknown): string {
   return DIGEST_PREFIX + createHash("sha256").update(canonicalize(value), "utf8").digest("hex");
 }

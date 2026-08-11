@@ -35,6 +35,12 @@ export interface JournalEntry {
   readonly name: string;
   readonly occurrence: number;
   readonly inputHash: string;
+  /**
+   * The identity the handler submits under, written HERE at `begin` rather than reported back
+   * after the fact. Recovery reissues under it; `external` is what the handler learned and may be
+   * absent entirely if the crash came first.
+   */
+  readonly requestId?: string;
   readonly state: EntryState;
   readonly status?: EntryStatus;
   readonly result?: unknown;
@@ -127,7 +133,7 @@ export class Journal {
   }
 
   /** Append the `pending` half: the effect is about to be performed. */
-  begin(key: StepKey, inputHash: string, startedAt: number): JournalEntry {
+  begin(key: StepKey, inputHash: string, startedAt: number, requestId?: string): JournalEntry {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry: JournalEntry = {
@@ -139,6 +145,7 @@ export class Journal {
       name: key.name,
       occurrence: key.occurrence,
       inputHash,
+      ...(requestId !== undefined ? { requestId } : {}),
       state: "pending",
       startedAt,
     };
