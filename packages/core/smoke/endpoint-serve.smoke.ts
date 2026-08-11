@@ -223,9 +223,32 @@ throws("a cluster document declaring describe refuses (reserved, never a cluster
 throws("a duplicate command declaration refuses to parse",
   () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x"), cmd("x")] }));
 
-// ── unreadable registry (stubbed KV: the enumeration boundary itself fails, before any jsm read) ──
-await rejects("an UNREADABLE registry is failed-precondition, never an empty success",
-  () => freezeExpectedSet({} as never, { keys: () => { throw new Error("permissions violation"); } } as never, SPACE, "manager"), "failed-precondition");
+// ── unreadable vs empty registry: the enumeration boundary, RE-POINTED at STREAM.INFO ──
+// The old fixture stubbed `kv.keys`, which the consumer-free enumeration no longer calls. Measured:
+// with that stub removed entirely the cell still passed (disarmed run, 133/0, this cell silent) — it
+// was green on an empty `{}` jsm throwing a TypeError, not on any permissions failure.
+//
+// And the CODE ALONE CANNOT DISCRIMINATE HERE, which is the hazard the substitution introduces: an
+// unreadable registry and an EMPTY one are both `failed-precondition`. Under `kv.keys` a refusal
+// threw; under STREAM.INFO a refused read and a registry with no matching subjects differ only in
+// which throw fires. Collapsing them reports "no managers" as an empty success, and an empty registry
+// is never an empty success (SPEC 13.5). So both arms pin their MESSAGE, and a third asserts the two
+// messages actually differ — the discriminator has to be absent from one side to discriminate at all.
+const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: string }> => {
+  try { await freezeExpectedSet(jsmStub as never, {} as never, SPACE, "manager"); return { message: "NO THROW" }; }
+  catch (e) { return { code: (e as EpEnvelopeError).code, message: (e as Error).message }; }
+};
+{
+  const refused = await freezeErr({ streams: { info: () => { throw new Error("permissions violation"); } } });
+  c("a REFUSED registry read is failed-precondition and says UNREADABLE (never an empty success)",
+    refused.code === "failed-precondition" && /is unreadable/.test(refused.message), refused);
+  const empty = await freezeErr({ streams: { info: () => ({ state: { subjects: {} } }) } });
+  c("an EMPTY-but-readable registry is failed-precondition and says NO LIVE INSTANCES (a distinct event)",
+    empty.code === "failed-precondition" && /no live registered instances/.test(empty.message), empty);
+  c("refused and empty are NOT collapsed: different messages",
+    refused.message !== empty.message && /is unreadable/.test(refused.message) && !/is unreadable/.test(empty.message),
+    { refused: refused.message.slice(0, 70), empty: empty.message.slice(0, 70) });
+}
 
 // ── live broker ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
