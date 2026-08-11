@@ -1,13 +1,14 @@
 /**
- * Mediated channel-history read (Track D, D3, PHASE 1) — RED FIRST.
+ * Mediated channel-history read (Track D, D3, PHASE 1, SLICE 1) — RED FIRST.
  *
- * NOT a capability gap. An observer can already page history today — measured, not assumed: an
- * `observer`-profile connection with no `lifecycleUid` returns messages from `channelHistory`. It
- * does so by holding **raw consumer-create on the chat stream**, which is exactly what SPEC's
- * "Mediated reads (normative)" rule refuses an untrusted holder: no raw consumer / `DIRECT.GET` /
- * `STREAM.MSG.GET`; those reads come from the trusted reader onto the caller's own confined rail.
+ * NOT a capability gap. A read-only connection can already page history today — measured, not
+ * assumed: an `observer`-profile connection with no `lifecycleUid` returns messages from
+ * `channelHistory`. It does so by holding **raw consumer-create on the chat stream**, which is
+ * exactly what SPEC's "Mediated reads (normative)" rule refuses an untrusted holder: no raw
+ * consumer / `DIRECT.GET` / `STREAM.MSG.GET`; those reads come from the trusted reader onto the
+ * caller's own confined rail.
  *
- * So `read-history` is a PRIVILEGE REDUCTION that aligns the code with a normative rule, served by
+ * So `readHistory` is a PRIVILEGE REDUCTION that aligns the code with a normative rule, served by
  * the delivery daemon on the rail it already owns (`ctl.delivery.<owner>.<actor>`, beside
  * `durableJoin`/`listMemberships`). The caller never names itself: `serveControl` fail-closes unless
  * the payload sender matches the broker-authenticated subject.
@@ -16,10 +17,19 @@
  * from the observer profile is Phase 2, held and brokered separately, because the dashboard reads
  * history through that grant today.
  *
- * The property that distinguishes this from the consumer path, and the reason it is worth shipping:
+ * **SLICE 1 IS CURSORLESS.** Newest-N plus a `complete` flag, matching `channelHistory`'s existing
+ * shape so the two production callers are a drop-in migration. Cursors are slice 2 (scale), and the
+ * property that justifies the feature does not need them — see below. An earlier revision of this
+ * file asserted cursor-from-START paging (`items[0] === "scrollback line 1"` for `limit: 2`); that
+ * was the wrong shape twice over, since newest-N returns the LAST two, and it is now asserted as
+ * newest-N.
+ *
+ * THE PROPERTY THAT DISTINGUISHES THIS FROM THE CONSUMER PATH, and the reason it is worth shipping:
  * a consumer pins its authorization at CREATE time, so a revoked ACL keeps serving the open
- * consumer. The mediator re-reads the ACL PER PAGE, so a revocation stops the very next page. That
- * is directly observable, and it is what this asserts.
+ * consumer. The mediator re-reads the ACL PER CALL, so a revocation stops the very next read. That
+ * is directly observable, it survives the loss of cursors intact, and it is the check in this file
+ * that must never be relaxed — without it slice 1 ships a verb with no advantage over the raw
+ * consumer path it exists to replace.
  *
  * Run: pnpm smoke:read-history:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -76,7 +86,7 @@ try {
   const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops"], allowPublish: ["ops"], subscribe: ["ops"], lifecycleUid: uidP });
   poster = new CotalEndpoint({ space, servers: SERVERS, creds: pCreds, channels: ["ops"], consume: false, lifecycleUid: uidP, watchPresence: false, registerPresence: false, card: { id: pId.id, name: "poster", kind: "agent" } });
   poster.on("error", () => {}); await poster.start();
-  for (let i = 1; i <= 4; i++) await poster.multicast(`scrollback line ${i}`, { channel: "ops" });
+  for (let i = 1; i <= 6; i++) await poster.multicast(`scrollback line ${i}`, { channel: "ops" });
   await wait(400);
 
   // The CALLER: an ordinary provisioned agent whose ACL admits `ops` and not `secret`. It reads
@@ -87,32 +97,42 @@ try {
   reader = new CotalEndpoint({ space, servers: SERVERS, creds: rCreds, channels: [], consume: false, lifecycleUid: uidR, watchPresence: false, registerPresence: false, card: { id: rId.id, name: "reader", kind: "agent" } });
   reader.on("error", () => {}); await reader.start();
 
-  // 1. It serves a caller inside its ACL, and pages.
+  // 1. It serves a caller inside its ACL, NEWEST-N — the same shape `channelHistory` returns, so the
+  // production callers migrate without re-reading their own rendering order.
   const p1 = await reader.readHistory("ops", { limit: 2 });
-  check("read-history serves an in-ACL caller", (p1.items?.length ?? 0) === 2, p1);
-  check("...with the message bodies", p1.items?.[0]?.text === "scrollback line 1", p1.items?.map((i) => i.text));
-  check("...and hands back a cursor when more remains", !p1.complete && typeof p1.nextCursor === "string", p1);
+  check("readHistory serves an in-ACL caller", (p1.items?.length ?? 0) === 2, p1);
+  check("...the NEWEST n, oldest-first within the page", p1.items?.map((i) => i.text).join("|") === "scrollback line 5|scrollback line 6", p1.items?.map((i) => i.text));
 
-  const p2 = await reader.readHistory("ops", { limit: 2, cursor: p1.nextCursor });
-  check("the cursor continues rather than restarting", p2.items?.[0]?.text === "scrollback line 3", p2.items?.map((i) => i.text));
+  // 2. THE TRUNCATION SIGNAL IS HONEST. "there is older history behind this page" and "this is the
+  // whole conversation" are different answers, and a UI that cannot tell them apart renders the
+  // first as start-of-history. That is the cursorless form of the loud-truncation requirement.
+  check("...and says it is NOT complete while older history remains", p1.complete === false, p1);
 
-  // 2. A channel outside the ACL is refused, and SAYS so — an empty page reads as "no history".
+  const whole = await reader.readHistory("ops", { limit: 50 });
+  check("a read that reaches the start of retained history says complete", whole.complete === true, whole);
+  check("...and carries the whole backlog, oldest-first", whole.items?.length === 6 && whole.items?.[0]?.text === "scrollback line 1", whole.items?.map((i) => i.text));
+
+  // 3. A channel outside the ACL is refused, and SAYS so. An empty page would read as "no history",
+  // which is the one answer a refusal must never be confusable with.
   let aclErr = "";
-  try { await reader.readHistory("secret", { limit: 10 }); }
+  let aclLeak: unknown;
+  try { aclLeak = await reader.readHistory("secret", { limit: 10 }); }
   catch (e) { aclErr = (e as Error).message; }
-  check("read-history refuses a channel outside the caller's ACL", aclErr !== "", { aclErr });
+  check("readHistory refuses a channel outside the caller's ACL", aclErr !== "", { aclLeak });
   check("...loudly, not as an empty page", /acl|not permitted|refus|denied/i.test(aclErr), { aclErr });
 
-  // 3. THE PROPERTY THAT JUSTIFIES THE FEATURE: authorization is re-read PER PAGE. A consumer pins
-  // its ACL at create time and keeps serving after a revocation; the mediator must not.
+  // 4. THE PROPERTY THAT JUSTIFIES THE FEATURE, and the one check here that must never be relaxed:
+  // authorization is re-read PER CALL. A consumer pins its ACL at create time and keeps serving after
+  // a revocation; the mediator must stop on the very next read. Fully testable without cursors.
   const p3 = await reader.readHistory("ops", { limit: 1 });
-  check("a page is served while the ACL still admits the channel", (p3.items?.length ?? 0) === 1, p3);
-  await mgr.commitAcl(rId.id, uidR, []); // revoke mid-scroll
+  check("a read is served while the ACL still admits the channel", (p3.items?.length ?? 0) === 1, p3);
+  await mgr.commitAcl(rId.id, uidR, []); // revoke between reads
   await wait(300);
   let revokedErr = "";
-  try { await reader.readHistory("ops", { limit: 1, cursor: p3.nextCursor }); }
+  let revokedLeak: unknown;
+  try { revokedLeak = await reader.readHistory("ops", { limit: 1 }); }
   catch (e) { revokedErr = (e as Error).message; }
-  check("a revoked ACL stops the very NEXT page (re-read per page, not pinned at create)", revokedErr !== "", { revokedErr });
+  check("a revoked ACL stops the very NEXT read (re-read per call, not pinned at create)", revokedErr !== "", { revokedLeak });
 } finally {
   await reader?.stop().catch(() => {});
   await poster?.stop().catch(() => {});
