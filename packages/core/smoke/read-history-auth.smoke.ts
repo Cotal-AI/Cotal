@@ -40,9 +40,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid,
-  serverConfig, newIdentity, setupSpaceStreams, seedChannelRegistry,
+  serverConfig, newIdentity, setupSpaceStreams, seedChannelRegistry, principalKey, DEV_OWNER,
+  type CotalMessage,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+
+/** A message's text lives in `parts`, not a `text` field. Asserting on `m.text` compares
+ *  `undefined === undefined` for the empty case and silently passes a page that carries nothing. */
+const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -101,7 +106,7 @@ try {
   // production callers migrate without re-reading their own rendering order.
   const p1 = await reader.readHistory("ops", { limit: 2 });
   check("readHistory serves an in-ACL caller", (p1.items?.length ?? 0) === 2, p1);
-  check("...the NEWEST n, oldest-first within the page", p1.items?.map((i) => i.text).join("|") === "scrollback line 5|scrollback line 6", p1.items?.map((i) => i.text));
+  check("...the NEWEST n, oldest-first within the page", p1.items?.map(textOf).join("|") === "scrollback line 5|scrollback line 6", p1.items?.map(textOf));
 
   // 2. THE TRUNCATION SIGNAL IS HONEST. "there is older history behind this page" and "this is the
   // whole conversation" are different answers, and a UI that cannot tell them apart renders the
@@ -110,7 +115,7 @@ try {
 
   const whole = await reader.readHistory("ops", { limit: 50 });
   check("a read that reaches the start of retained history says complete", whole.complete === true, whole);
-  check("...and carries the whole backlog, oldest-first", whole.items?.length === 6 && whole.items?.[0]?.text === "scrollback line 1", whole.items?.map((i) => i.text));
+  check("...and carries the whole backlog, oldest-first", whole.items?.length === 6 && textOf(whole.items[0]) === "scrollback line 1", whole.items?.map(textOf));
 
   // 3. A channel outside the ACL is refused, and SAYS so. An empty page would read as "no history",
   // which is the one answer a refusal must never be confusable with.
@@ -126,7 +131,12 @@ try {
   // a revocation; the mediator must stop on the very next read. Fully testable without cursors.
   const p3 = await reader.readHistory("ops", { limit: 1 });
   check("a read is served while the ACL still admits the channel", (p3.items?.length ?? 0) === 1, p3);
-  await mgr.commitAcl(rId.id, uidR, []); // revoke between reads
+  // Revoke on the SAME key provisioning wrote and the mediator reads: the ACL registry is keyed by the
+  // PRINCIPAL (`<owner>.<actor>`), not by the raw nkey. Revoking under `rId.id` writes a row nothing
+  // resolves, the original permissive row survives, and the read below succeeds — which reads exactly
+  // like the mediator failing to re-check. A revocation that does not revoke turns the one check this
+  // file exists for into a check of nothing.
+  await mgr.commitAcl(principalKey(DEV_OWNER, rId.id).key, uidR, []);
   await wait(300);
   let revokedErr = "";
   let revokedLeak: unknown;

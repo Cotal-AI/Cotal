@@ -1961,6 +1961,15 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // chat (the fan-out consumes the whole stream), so a stream-wide CHAT consumer grant is no
     // escalation. The catch-up ephemeral names (`cu_<owner>_<gen>`) are dynamic, so they can't be
     // name-pinned; CHAT-wide is correct here.
+    //
+    // BOTH forms, and the bare one is not redundant: a create carrying `filter_subjects` cannot encode
+    // its filter in the subject, so the client publishes to the BARE `…CREATE.<CHAT>` while a named
+    // consumer goes to the `.>` form. The mediated history read (`readHistory`) builds exactly that
+    // multi-filter ephemeral, and with only the `.>` grant it fails with a Permissions Violation on the
+    // bare subject — measured, not predicted. The observer profile already carries both for the same
+    // reason. Grants the daemon nothing new in substance: it may already create any named consumer on
+    // this stream and already reads all of it.
+    `$JS.API.CONSUMER.CREATE.${CHAT}`,
     `$JS.API.CONSUMER.CREATE.${CHAT}.>`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${CHAT}.>`,
     `$JS.API.CONSUMER.INFO.${CHAT}.>`,
