@@ -25,9 +25,10 @@ export type PreflightFailure =
   | "creds-rejected"
   | "open-wants-auth"
   | "stale-auth"
-  /** Broker is up (INFO greets) but a TLS-required probe could not complete the handshake —
-   *  typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune signal: the mesh is live
-   *  and the repair is client trust, not re-registration. */
+  /** A TLS-required NATS listener still greets (INFO.tls_required) but the TLS probe could not
+   *  complete the handshake — typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune
+   *  signal: INFO is unauthenticated shape evidence, not peer identity; conservatively keep the
+   *  record and repair client trust rather than re-register. */
   | "tls-trust";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
@@ -110,8 +111,9 @@ export async function preflightTarget(
   // Discriminator must be stronger than bare liveness. A *different* broker on the recorded port
   // (the classic plaintext-substitute case this file's own comment documents) also answers INFO —
   // bare `isReachable` alone would mis-label that as tls-trust and keep a stale record. Only an
-  // INFO that still advertises `tls_required: true` is the TLS mesh the record describes; anything
-  // else falls through to the normal unreachable/prune path.
+  // INFO that still advertises `tls_required: true` is shape evidence consistent with the record
+  // (a TLS-required NATS listener, not a plaintext substitute). INFO is unauthenticated and is NOT
+  // peer identity. Anything else falls through to the normal unreachable/prune path.
   //
   // CONFIRM BEFORE CONDEMNING applies here too: a single 1s INFO read on a slow/jittery link would
   // miss a live TLS greeting and fall through to prune — recreating the S10 data-loss under load.
@@ -129,8 +131,8 @@ export async function preflightTarget(
 }
 
 /** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing
- *  usable answered. Used to tell "TLS mesh still there, client cannot verify" from "something else
- *  is on this port" without performing a TLS handshake. */
+ *  usable answered. Used to distinguish a TLS-required NATS listener from a plaintext substitute
+ *  without a TLS handshake. It does NOT establish mesh identity — INFO is unauthenticated. */
 async function readNatsInfoGreeting(
   server: string,
   timeoutMs = 1_000,

@@ -101,12 +101,16 @@ check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
   const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1" });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
-// TLS-TRUST: live broker, failed TLS handshake (private CA / missing NODE_EXTRA_CA_CERTS).
-// Copy must name the repair and MUST NOT claim the registry entry was removed.
-check("tls-trust preflight copy names NODE_EXTRA_CA_CERTS and keeps the entry", (() => {
+// TLS-TRUST: live TLS-required NATS listener, failed TLS handshake (private CA / missing CA).
+// Copy must name the repair, admit INFO is unauthenticated (not identity), and MUST NOT claim removal.
+check("tls-trust preflight copy names NODE_EXTRA_CA_CERTS, NATS listener, unauthenticated INFO, conservatively kept", (() => {
   const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth", tlsRequired: true } as never;
   const msg = renderWorkspaceError({ kind: "preflight", failure: "tls-trust", target: t, pruned: false });
-  return msg.includes("NODE_EXTRA_CA_CERTS") && msg.includes("kept") && !msg.includes("removed");
+  return msg.includes("NODE_EXTRA_CA_CERTS")
+    && msg.includes("TLS-required NATS listener")
+    && msg.includes("unauthenticated")
+    && msg.includes("conservatively kept")
+    && !msg.includes("removed");
 })());
 
 // The invariant, exhaustively: a non-registry source is NEVER pruned — whatever the reason/auth.

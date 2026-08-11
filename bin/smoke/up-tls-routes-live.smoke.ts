@@ -881,6 +881,57 @@ async function main(): Promise<void> {
     cotal(["down"], home, cwd);
   });
 
+  // ── N: S10 — NO-CA CONNECT MUST NOT PRUNE A LIVE tlsRequired REGISTRY ENTRY. ───────────────────
+  //    preflightTarget probes with {tls:true}; cert failure used to classify unreachable+prune and
+  //    delete a healthy record when NODE_EXTRA_CA_CERTS was missing. Guard: INFO.tls_required keeps
+  //    the entry as tls-trust. Mirror: plaintext-on-port still reports unreachable (not tls-trust).
+  await route("s10-no-ca-keeps-registry", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    homes.push({ home, port, cwd });
+    const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(up.status, 0, `TLS mesh must start:\n${up.out}`);
+
+    // Strip CA for the preflighted command (cotal send → connectOrExit → preflightTarget).
+    const send = cotal(["send", "dm", "nobody", "probe"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+    assert.match(send.out, /NODE_EXTRA_CA_CERTS|tls-trust|conservatively kept|TLS-required NATS listener/,
+      `GATE FAILED (S10): no-CA send must name trust repair / tls-trust, not silent success:\n${send.out}`);
+    assert.doesNotMatch(send.out, /stale registry entry - removed/,
+      `GATE FAILED (S10): no-CA send pruned the registry:\n${send.out}`);
+
+    const meshes = cotal(["meshes"], home, cwd);
+    assert.match(meshes.out, /tls-required|main/,
+      `GATE FAILED (S10): registry entry gone after no-CA connect:\n${meshes.out}`);
+
+    // Mirror hazard: replace TLS listener with plaintext on the same port; status must not say tls-trust.
+    cotal(["down"], home, cwd);
+    // Re-up then kill only nats, leave registry — same shape as web+status cell.
+    const up2 = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
+      "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
+    assert.equal(up2.status, 0, `re-up for mirror:\n${up2.out}`);
+    const pidPath = join(cwd, ".cotal", "nats.pid");
+    const natsPid = Number(readFileSync(pidPath, "utf8").trim());
+    try { process.kill(natsPid, "SIGTERM"); } catch { /* */ }
+    await new Promise((r) => setTimeout(r, 400));
+    const plain = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", join(cwd, "plain-js")], {
+      stdio: "ignore", detached: true,
+    });
+    plain.unref?.();
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      const st = cotal(["status"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+      assert.match(st.out, /connection\s+.*unreachable/,
+        `GATE FAILED (S10 mirror): plaintext-on-port must be unreachable, not tls-trust:\n${st.out}`);
+      assert.doesNotMatch(st.out, /tls-trust/,
+        `GATE FAILED (S10 mirror): plaintext substitute classified tls-trust:\n${st.out}`);
+    } finally {
+      try { process.kill(plain.pid!, "SIGTERM"); } catch { /* */ }
+      cotal(["down"], home, cwd);
+    }
+    console.log("  ✓ S10: no-CA keeps tlsRequired registry; plaintext-on-port is unreachable not tls-trust");
+  });
+
   // The per-route table is the artifact a mutation proof reads. Printed always, pass or fail.
   console.log("  ── route outcomes ──");
   for (const o of outcomes) {
@@ -891,11 +942,11 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 14)
-    throw new Error(`HARNESS: expected 14 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 15)
+    throw new Error(`HARNESS: expected 15 routes, recorded ${outcomes.length} — a route did not run at all`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/14 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
-  console.log("✓ up-tls-routes: 14/14 routes encrypt or refuse; admission proved on each, one variable apart");
+    throw new Error(`${failed.length}/15 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+  console.log("✓ up-tls-routes: 15/15 routes encrypt or refuse; admission proved on each, one variable apart");
 }
 
 try {

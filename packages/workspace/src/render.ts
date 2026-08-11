@@ -84,8 +84,9 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
     case "stale-auth":
       return `✗ credentials for "${t.space}" have EXPIRED - this mesh enforces bounded credential lifetimes; run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`;
     case "tls-trust":
-      // Broker greets (INFO); the TLS-required probe could not complete. Never claims removal.
-      return `✗ mesh "${t.space}" at ${t.server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, or fix the trust store; the mesh is up and its registry entry was kept`;
+      // INFO advertised tls_required (shape evidence only — unauthenticated). Never claims removal
+      // or peer identity; conservatively keep the record and point at the trust-store repair.
+      return `✗ mesh "${t.space}" at ${t.server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, or fix the trust store; a TLS-required NATS listener still greets there (INFO is unauthenticated — not mesh identity) so the registry entry was conservatively kept`;
   }
 }
 

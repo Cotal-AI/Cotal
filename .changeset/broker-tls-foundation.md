@@ -128,10 +128,13 @@ and cannot carry a CA file. The private-key permission check is POSIX-only.
 `{tls:true}`; certificate verification failure was classified as `unreachable` (prune:true), so
 `cotal send dm …` (and any other preflighted command) deleted a healthy mesh record on a recoverable
 trust error — durable state destroyed because the operator forgot `NODE_EXTRA_CA_CERTS`. Fix: when
-the recorded target requires TLS and the TLS probe fails as unreachable, confirm the broker still
-answers plaintext INFO; if it does, classify as `tls-trust` with **prune:false** and tell the
-operator to fix the trust store. Live-checked: registry entry survives; message names
-`NODE_EXTRA_CA_CERTS` and does not claim removal.
+the recorded target requires TLS and the TLS probe fails as unreachable, confirm plaintext INFO
+still advertises `tls_required: true` (with a second, longer read before condemning); if it does,
+classify as `tls-trust` with **prune:false**. That proves a TLS-required NATS listener is present —
+INFO is unauthenticated and is not mesh identity — so the record is conservatively kept and the
+operator is told to fix the trust store (`NODE_EXTRA_CA_CERTS`). A plaintext substitute on the same
+port does not advertise `tls_required` and still follows the normal unreachable/prune path.
+Live-checked both ways.
 
 **Named follow-ups (not fixed here):**
 - Defence-in-depth only: pass `mesh.tlsRequired ? {tls:true}:{}` at `down.ts:418`/`:585` and thread
