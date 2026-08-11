@@ -1406,10 +1406,15 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "pri
 function scatterFreezeReadRows(space: string): string[] {
   const REC = recordsBucket(space);
   return [
-    // `kv.keys("svc.<e>.*.spec")` rides an ordered ephemeral consumer over the records bucket.
-    `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,
-    `$JS.API.CONSUMER.INFO.KV_${REC}.>`,
-    `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,
+    // The `svc.<e>.*.spec` enumeration is a `STREAM.INFO` carrying a `subjects_filter` — ONE
+    // read-only metadata verb. It replaced a `kv.keys()` that rode an ordered ephemeral consumer and
+    // therefore needed CONSUMER.CREATE/INFO/DELETE on this bucket: three consumer-lifecycle verbs to
+    // list keys, on a credential that only ever wanted to read them.
+    //
+    // MEASURED, not assumed: with the enumeration converted and this row absent, the static/operator
+    // `cotal ps` is refused on `$JS.API.STREAM.INFO.KV_<records>` — a path that works today. The
+    // conversion and this row land TOGETHER or the operator path regresses.
+    `$JS.API.STREAM.INFO.KV_${REC}`,
     // The per-slot spec/status reads (`freezeExpectedSet` + the registration reconcile) are
     // leader-served `STREAM.MSG.GET` — stream-scoped (NAMED RESIDUAL above), plus the subject-pinned
     // keyed Direct Get form for any direct-aware read path (scoped to the `svc.` registry prefix).
