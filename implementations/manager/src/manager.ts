@@ -499,6 +499,12 @@ export interface SpawnHooks {
    *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
    *  so a terminal-commit failure never disrupts the (already-replied) spawn. */
   onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<void> | void;
+  /** Fires when this spawn ends with its goal's terminal owned by ANOTHER path — today only a
+   *  despawn/stop that lands inside the readiness window, whose own handler commits `cancel`.
+   *  It commits nothing; it only claims the terminal so the post-accept fallback does not
+   *  manufacture a `failed` from the non-ok reply and race the real `cancel`. Without it, a
+   *  deliberate stop mid-launch reports the agent as having died on launch. */
+  onTerminalDeferred?: () => void;
 }
 
 /** The spawn-as-action acceptance (P2 item 2 floor): the ALLOCATED agent identity (name + the
@@ -3100,7 +3106,7 @@ export class Manager {
       // Deliberately stopped mid-launch: reaped by onExit, and the despawn/stop path owns the
       // goal terminal. Return BEFORE the failed/uncertain arms so this emits no competing
       // outcome and does not re-arm an exit watcher on an agent already gone.
-      if (!readiness.ok && readiness.deliberate) return { ok: false, error: readiness.detail };
+      if (!readiness.ok && readiness.deliberate) { hooks?.onTerminalDeferred?.(); return { ok: false, error: readiness.detail }; }
       if (!readiness.ok && !readiness.uncertain) { await hooks?.onOutcome?.({ kind: "failed", data: { error: readiness.detail } }); return { ok: false, error: readiness.detail }; } // failed → already reaped
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
@@ -4593,6 +4599,10 @@ export class Manager {
       },
       onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
       onOutcome,
+      // Claim the terminal WITHOUT committing one: the despawn/stop that ended this launch owns
+      // it and commits `cancel`. This only stops the non-ok reply below from manufacturing a
+      // `failed` that would race that `cancel` (first-terminal-fact-wins).
+      onTerminalDeferred: () => { terminalEntered = true; },
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
