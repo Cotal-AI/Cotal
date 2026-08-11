@@ -11,6 +11,7 @@
  * nothing re-ran, rather than an assertion that it did not.
  */
 import { run, resume, RunDivergence } from "../src/interpret.js";
+import { requestId } from "../src/keys.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal } from "../src/journal.js";
 import { EffectError } from "../src/effects.js";
@@ -485,15 +486,24 @@ const c = await checkpoint("gate", "Approve?", { timeout: "1m", onExpiry: "escal
 log(c.status);
 `;
   const logs: unknown[] = [];
-  const r = await run(ESCALATE, {
-    runId: "r-15",
-    onLog: (l) => logs.push(l.values[0]),
-    handler: new SimHandler({
+  // Capture the id the HANDLER was actually given at each mint. Asserting on the recorded chain
+  // alone is not enough: the chain is written from the derivation, so both mints could receive the
+  // SAME identity and the record would still show two different strings. What matters is what
+  // arrived at the far side, which is the thing a resumed run has to reproduce.
+  const seen: string[] = [];
+  const sim = new SimHandler({
       // First mint expires, the escalated one is answered.
       checkpoints: { gate: [{ status: "expired", by: "sim" }, { status: "resolved", value: true, by: "david" }] },
       clock: { start: 0 },
-    }),
   });
+  const inner = sim.checkpoint.bind(sim);
+  (sim as unknown as { checkpoint: unknown }).checkpoint = async (req: never, ctx: { requestId: string }) => {
+    seen.push(ctx.requestId);
+    return inner(req, ctx as never);
+  };
+  const r = await run(ESCALATE, { runId: "r-15", onLog: (l) => logs.push(l.values[0]), handler: sim });
+
+  ok("the two mints were issued under DIFFERENT identities", seen.length === 2 && seen[0] !== seen[1], seen);
 
   const cps = r.journal.entries().filter((e) => e.kind === "checkpoint");
   ok("escalation stays inside ONE journal entry", cps.length === 1, cps.length);
@@ -508,6 +518,18 @@ log(c.status);
     attempts.map((a) => a.requestId),
   );
   ok("the program sees the escalated answer", logs[0] === "resolved", logs);
+
+  // THE LINE I FLAGGED AS WEAKEST, now asserted rather than believed. Attempt 1's identity is
+  // derived from the checkpoint's input projection; if that projection ever drifts from the value
+  // the entry is actually keyed by, the id stops being a function of its step and recovery would
+  // reissue under something the far side never saw. Nothing else in the suite would notice.
+  const entryHash = cps[0]?.inputHash;
+  const derivedFromEntry = requestId("r-15", { scope: [], kind: "checkpoint", name: "gate", occurrence: 0 }, entryHash ?? "", 1);
+  ok(
+    "attempt 1's id is derived from the entry's OWN inputHash",
+    derivedFromEntry === attempts[1]?.requestId,
+    { derivedFromEntry, recorded: attempts[1]?.requestId, entryHash },
+  );
 }
 
 console.log(`interpret.smoke: ${pass} checks passed`);
