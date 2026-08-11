@@ -45,7 +45,9 @@ const SCRIPT = {
 
 // ---- 1) the report answers the questions a dry run exists to answer -----------------------------
 
+const realStart = Date.now();
 const report = await dryRun(PROGRAM, SCRIPT);
+const realMs = Date.now() - realStart;
 
 {
   ok("it lists the agents that would be spawned", report.agents.length === 2, report.agents.map((a) => a.persona));
@@ -67,7 +69,8 @@ const report = await dryRun(PROGRAM, SCRIPT);
   // Instant sleeps are the point of simulation, but the elapsed time must still be REPORTED, or a
   // program that waits two hours reads as free. 2h sleep plus turns at the 5m default.
   ok("a two hour sleep costs two hours of simulated time", report.elapsedMs >= 7_200_000, report.elapsedMs);
-  ok("and the whole run took less than a second of real time", true);
+  // This asserted the literal `true` and measured nothing. Wall time is the claim, so take it.
+  ok("and the whole run took under a second of REAL time", realMs < 1_000, realMs);
   ok("the rendered report states the duration in human units", renderReport(report).includes("2.2h of simulated time"), renderReport(report).split("\n")[0]);
 }
 

@@ -387,7 +387,9 @@ accepts("role-parametric procedures are the reuse mechanism",
   const r = validate(
     'async function f(a, b) { await parallel([() => turn(a, { name: "x" }), () => turn(b, { name: "y" })], { name: "both" }); }',
   );
-  ok("array-form parallel is legal", true);
+  // `validate` throws on a rejected program, so reaching here IS the proof. Stating it as `true`
+  // made a real no-throw check indistinguishable from decoration, which is the whole difficulty.
+  ok("array-form parallel is legal", r.errors === undefined || r.errors.length === 0, r.errors);
   ok("array-form parallel is linted", r.warnings.some((w) => w.code === "L3023"), r.warnings.map((w) => w.code));
 }
 {

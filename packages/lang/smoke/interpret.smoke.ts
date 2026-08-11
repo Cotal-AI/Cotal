@@ -96,8 +96,12 @@ let firstJournal: Journal;
   // An EMPTY script: the simulator refuses every unscripted effect, so reaching the end proves
   // that nothing was re-performed. This is the claim the whole durability design rests on.
   const replayed = new Journal({ run: "r-1", entries: firstJournal.entries() });
-  const r = await resume(PROGRAM, replayed, { runId: "r-1", handler: new SimHandler({}) });
-  ok("a resumed run completes without performing a single effect", true);
+  const empty = new SimHandler({});
+  const r = await resume(PROGRAM, replayed, { runId: "r-1", handler: empty });
+  // The proof was real and IMPLICIT: an empty script refuses every unscripted effect, so reaching
+  // this line meant nothing re-ran. Written as `true` it was indistinguishable from decoration, so
+  // it now counts what the handler actually did rather than relying on the absence of a throw.
+  ok("a resumed run performs ZERO effects", empty.performed().length === 0, empty.performed());
   ok(
     "and the journal is unchanged: no new entries, no re-runs",
     JSON.stringify(keysOf(r.journal)) === JSON.stringify(keysOf(firstJournal)),
@@ -192,8 +196,9 @@ const out = await parallel({
 
   // The same emptiness proof, now for a concurrent program: replay must touch no handler.
   const again = new Journal({ run: "r-4", entries: r.journal.entries() });
-  await resume(CONCURRENT, again, { runId: "r-4", handler: new SimHandler({}) });
-  ok("a concurrent run replays with no effects performed", true);
+  const emptyC = new SimHandler({});
+  await resume(CONCURRENT, again, { runId: "r-4", handler: emptyC });
+  ok("a concurrent run replays performing ZERO effects", emptyC.performed().length === 0, emptyC.performed());
 }
 
 // ---- 5) fanOut keys by item, not by index -------------------------------------------------------------
