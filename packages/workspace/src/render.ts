@@ -83,6 +83,9 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
       return `✗ broker at ${t.server} requires auth, but this mesh is open (no trust material) - use \`--space <name>\` for an auth mesh, or run \`cotal up\` here without \`--open\``;
     case "stale-auth":
       return `✗ credentials for "${t.space}" have EXPIRED - this mesh enforces bounded credential lifetimes; run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`;
+    case "tls-trust":
+      // Broker greets (INFO); the TLS-required probe could not complete. Never claims removal.
+      return `✗ mesh "${t.space}" at ${t.server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, or fix the trust store; the mesh is up and its registry entry was kept`;
   }
 }
 

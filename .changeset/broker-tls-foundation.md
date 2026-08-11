@@ -122,3 +122,20 @@ sessions alive.
 
 Operators using a private CA need `NODE_EXTRA_CA_CERTS`, because `EndpointOptions.tls` is a boolean
 and cannot carry a CA file. The private-key permission check is POSIX-only.
+
+**S10 (fixed in this change):** a `tlsRequired` registry entry used to be **pruned** when a
+`connectOrExit` / `preflightOrExit` path ran without a trusted CA. `preflightTarget` probes with
+`{tls:true}`; certificate verification failure was classified as `unreachable` (prune:true), so
+`cotal send dm …` (and any other preflighted command) deleted a healthy mesh record on a recoverable
+trust error — durable state destroyed because the operator forgot `NODE_EXTRA_CA_CERTS`. Fix: when
+the recorded target requires TLS and the TLS probe fails as unreachable, confirm the broker still
+answers plaintext INFO; if it does, classify as `tls-trust` with **prune:false** and tell the
+operator to fix the trust store. Live-checked: registry entry survives; message names
+`NODE_EXTRA_CA_CERTS` and does not claim removal.
+
+**Named follow-ups (not fixed here):**
+- Defence-in-depth only: pass `mesh.tlsRequired ? {tls:true}:{}` at `down.ts:418`/`:585` and thread
+  transport into `:651`/`:691` (measurement showed bare INFO already enters the preserve-state
+  quiescence gate when the CA is trusted).
+- Bare `cotal down` pidfile-trust: hiding manager/delivery pidfiles while those processes still run
+  lets bare down stop the broker and report success (pre-existing; filed separately).

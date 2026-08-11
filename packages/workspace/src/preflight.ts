@@ -23,7 +23,11 @@ export type PreflightFailure =
   | "registry-open-now-auth"
   | "creds-rejected"
   | "open-wants-auth"
-  | "stale-auth";
+  | "stale-auth"
+  /** Broker is up (INFO greets) but a TLS-required probe could not complete the handshake —
+   *  typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune signal: the mesh is live
+   *  and the repair is client trust, not re-registration. */
+  | "tls-trust";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -94,6 +98,22 @@ export async function preflightTarget(
   // So a first failure only makes it a candidate; re-probe with a budget that fits a real network.
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return { ok: true };
+
+  // TLS-REQUIRED + "unreachable" is often NOT a dead broker. `probeConnect` maps every non-auth
+  // failure (including certificate verification) to `unreachable`. Against a private-CA mesh
+  // without `NODE_EXTRA_CA_CERTS`, the TLS handshake fails while the broker is live and still
+  // greets with plaintext INFO. Classifying that as unreachable + prune DELETES a healthy
+  // tlsRequired registry entry — durable state destroyed on a recoverable trust error. This branch
+  // is what introduced tlsRequired meshes, so the mis-prune is in scope.
+  //
+  // Same class as stale-auth: confirm the broker is still answering INFO; if it is, the failure is
+  // client trust / transport config, never a stale-entry signal. Bare `isReachable` is the INFO
+  // probe (not a TLS connect), so it stays true when only the CA is missing.
+  if (target.tlsRequired && probe.reason === "unreachable") {
+    if (await isReachable(target.server) || await isReachable(target.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS }))
+      return { ok: false, kind: "tls-trust", prune: false };
+  }
+
   const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));
   return { ok: false, kind, prune };
 }
