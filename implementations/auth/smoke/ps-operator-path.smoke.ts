@@ -1,17 +1,21 @@
 /**
- * THE STATIC CONTROL ARM the supervisor pre-registered for the `ps` regression.
+ * THE OPERATOR `ps` PATH WORKS: `cotal up` (static auth, no `--user-auth`, no IdP, no device login,
+ * so the CLI presents a locally-minted operator credential) then `cotal ps --space`.
  *
- *   BEFORE the fix   static PASS   user-mode FAIL     <- isolates the CREDENTIAL PATH
- *   AFTER  the fix   static PASS   user-mode FAIL on a DIFFERENT denied subject
+ * A RED HERE IS A REAL DEFECT. It began life as the control arm of a BEFORE/AFTER pair, where a
+ * static failure meant "the fixture never armed, grade the pair void". **That reading does not
+ * transfer and would be actively harmful now** — as a gated suite its job is the opposite: it says
+ * the shipped operator path is broken. The `cotal up` cell below distinguishes the two, and it is
+ * checked FIRST for exactly that reason: `up` red means the fixture; `up` green with `ps` red means
+ * the product.
  *
- * The rule that makes this a control rather than a second claim: **if the static arm FAILS, this run
- * is VOID, not a wider defect.** A static failure means the fixture never armed — `cotal up`, the
- * spawn, or the broker did not come up — and it says nothing about the credential path. Grade it void
- * and report that, rather than reading two reds as "everything is broken".
+ * WHY IT IS GATED. It caught a real regression in its first outing, from a change two people had
+ * agreed looked safe: converting the freeze enumeration from `kv.keys()` to a `STREAM.INFO`
+ * `subjects_filter` without adding the matching `$JS.API.STREAM.INFO.KV_<records>` row to
+ * `scatterFreezeReadRows`. The symptom surfaces hundreds of lines from the cause, as a NATS
+ * permissions violation on a records-bucket subject, which is why it cost a night to find once.
  *
- * Same shape as the user-mode arm minus the user-mode: `cotal up` with no `--user-auth`, no IdP, no
- * device login, so the CLI presents a locally-minted operator credential instead of a user bearer.
- * Then the same `cotal ps --space` whose output the down-manifest suite discards.
+ * Mutation-proved: delete that grant row and this suite goes red.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -44,8 +48,8 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<{ status: number | 
 try {
   console.log("1) up (STATIC auth — no --user-auth, no IdP, no device login)");
   const up = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
-  check("CONTROL: `cotal up` exits 0 (else the fixture never armed and this run is VOID)", up.status === 0, up.out.slice(-700));
-  if (up.status !== 0) { console.log("\n  => VOID: no mesh, so the ps result below would say nothing about credentials.\n"); process.exit(1); }
+  check("`cotal up` exits 0 — checked FIRST so a fixture failure is distinguishable from a product one", up.status === 0, up.out.slice(-700));
+  if (up.status !== 0) { console.log("\n  => FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised.\n"); process.exit(1); }
 
   console.log("\n2) cotal ps --space, under the STATIC credential");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
@@ -54,13 +58,15 @@ try {
   console.log(ps.out.split("\n").map((l) => `   | ${l}`).join("\n"));
   console.log(`   ===== end =====\n`);
 
-  check("STATIC ARM: `cotal ps` exits 0 (the pre-registered control — a FAIL here VOIDS the pair)", ps.status === 0, ps.status);
+  check("the OPERATOR `cotal ps` exits 0 (a RED here is a real defect: the shipped operator path is broken)", ps.status === 0, ps.status);
   console.log(ps.status === 0
-    ? "   => control holds: static works, so a user-mode failure isolates to the CREDENTIAL PATH."
-    : "   => VOID: the control failed. This is a fixture problem, NOT a wider defect. Do not read the pair.");
-  console.log(`\nPS STATIC ARM ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+    ? "   => the operator path works."
+    : "   => OPERATOR PATH BROKEN. The mesh came up (checked above), so this is the product, not the fixture.\n" +
+      "      Most likely a records-bucket read the operator instrument no longer holds — read the denied\n" +
+      "      subject above and compare it against scatterFreezeReadRows in packages/core/src/provision.ts.");
+  console.log(`\nPS OPERATOR PATH ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } catch (e) {
-  console.error("static arm threw:", e);
+  console.error("ps-operator-path threw:", e);
   process.exitCode = 1;
 } finally {
   await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
