@@ -13,3 +13,5 @@
 - **Static / open:** class scatter unchanged (freeze + per-instance attribution, unreachable labeled).
 
 `connectOrExit` now refuses a `control-caller-*` instrument request on a user-mode mesh (those profiles are static-only); `resolveControlTarget` translates to the user bearer path explicitly. `deployer` is unchanged (real `userViewAuth` elevation). Docs state the user-mode completeness bound. Gated: `smoke:ps-operator-path` (static + dead-manager honesty) and `smoke:ps-user-mode` (user path + dead-manager non-zero).
+
+**Known limitation.** This fix's correctness relies on the ep tier boundary asserted at `user-spawn.smoke.ts` B1e (a spawn-scope bearer's `ps` is broker-dropped). That suite is **not** in the `smoke:ci` chain, so the invariant is unprotected by CI. Gating it is out of scope here and is tracked separately.
