@@ -112,8 +112,14 @@ export async function preflightTarget(
   // bare `isReachable` alone would mis-label that as tls-trust and keep a stale record. Only an
   // INFO that still advertises `tls_required: true` is the TLS mesh the record describes; anything
   // else falls through to the normal unreachable/prune path.
+  //
+  // CONFIRM BEFORE CONDEMNING applies here too: a single 1s INFO read on a slow/jittery link would
+  // miss a live TLS greeting and fall through to prune — recreating the S10 data-loss under load.
+  // First miss only makes it a candidate; a second, longer read must also miss before we prune.
   if (target.tlsRequired && probe.reason === "unreachable") {
-    const info = await readNatsInfoGreeting(target.server);
+    const info =
+      (await readNatsInfoGreeting(target.server)) ??
+      (await readNatsInfoGreeting(target.server, PRUNE_CONFIRM_TIMEOUT_MS));
     if (info?.tls_required === true)
       return { ok: false, kind: "tls-trust", prune: false };
   }
