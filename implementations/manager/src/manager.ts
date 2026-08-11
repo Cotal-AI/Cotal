@@ -3097,6 +3097,10 @@ export class Manager {
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
       // launched".
       const readiness = await this.awaitReadiness(managed);
+      // Deliberately stopped mid-launch: reaped by onExit, and the despawn/stop path owns the
+      // goal terminal. Return BEFORE the failed/uncertain arms so this emits no competing
+      // outcome and does not re-arm an exit watcher on an agent already gone.
+      if (!readiness.ok && readiness.deliberate) return { ok: false, error: readiness.detail };
       if (!readiness.ok && !readiness.uncertain) { await hooks?.onOutcome?.({ kind: "failed", data: { error: readiness.detail } }); return { ok: false, error: readiness.detail }; } // failed → already reaped
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
@@ -3567,7 +3571,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -3595,7 +3599,7 @@ export class Manager {
       let done = false;
       let timer: ReturnType<typeof setTimeout>;
       let unsubExit = (): void => {};
-      const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; detail: string }): void => {
+      const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
@@ -3642,7 +3646,16 @@ export class Manager {
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
           // caller the agent died on launch when in fact an operator cancelled it. The process
           // teardown above still runs — only the goal's OUTCOME is left to the path that caused it.
-          if (deliberate) return;
+          // A deliberate stop still has to SETTLE this promise. `clearTimeout` above already
+          // removed the only other resolver, so returning here leaves it pending forever and the
+          // spawn's lifecycle ticket is never released — which permanently wedges every drain
+          // (preparePreservation, and through it a preserving `down`). Settle it as its own
+          // variant: not `failed` and not `uncertain`, so the caller emits NO terminal and the
+          // despawn path keeps sole ownership of this goal's `cancel`.
+          if (deliberate) {
+            finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
+            return;
+          }
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
         })();
       };
