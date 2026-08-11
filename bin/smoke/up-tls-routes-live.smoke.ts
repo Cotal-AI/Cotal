@@ -38,7 +38,11 @@
  *    elsewhere. It carries its own discriminator — the same credential admitted over TLS and refused
  *    in the clear — so the two questions stay separable rather than collapsing into one boolean.
  *
- * COTAL_HOME is sandboxed and every broker started here is reaped in the `finally`.
+ * Sandbox: each cell gets its own `COTAL_HOME` **and** a temp project `cwd` with its own `.cotal/`.
+ * `COTAL_HOME` alone only relocates the mesh registry; broker policy, the NATS store, and pidfiles
+ * follow `findCotalRoot` from cwd. A probe that sets only `COTAL_HOME` and runs `cotal up` from a
+ * tree whose walked root is the operator home can still write live operator config — do not copy
+ * that pattern. Every broker started here is reaped in the `finally`.
  * Needs `nats-server` and `openssl` on PATH. Run: pnpm smoke:up-tls:live  (BUILD FIRST — the CLI
  * subprocess runs built dist, so an unbuilt edit to `packages/core` is invisible to it.)
  */

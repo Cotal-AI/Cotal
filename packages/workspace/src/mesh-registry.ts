@@ -110,11 +110,19 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}) };
 }
 
-/** The cotal machine-home dir, overridable via `COTAL_HOME` so tests sandbox it and never touch the
- *  real one. POSIX: `~/.cotal`. Windows: `%LOCALAPPDATA%\Cotal` — the platform's place for per-user
- *  app state (a dotdir in the profile root is a Unix idiom; `%LOCALAPPDATA%` is already a per-user
- *  private dir, so secrets under it start owner-only). The single source of that path for the
- *  registry, the current pointer, and the onboard marker. */
+/** The cotal machine-home dir, overridable via `COTAL_HOME`.
+ *
+ *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
+ *  pointer, and the onboard marker resolve under this directory. POSIX default `~/.cotal`; Windows
+ *  `%LOCALAPPDATA%\Cotal`.
+ *
+ *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
+ *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
+ *  resolve via {@link findCotalRoot} (walk up from cwd for a `.cotal/`). Setting only `COTAL_HOME`
+ *  does not redirect those paths. A test or probe that sets `COTAL_HOME` and runs a real
+ *  `cotal up` from a tree whose walked root is the operator home can still write live operator
+ *  config. Sandbox the project root too (temp dir with its own `.cotal/`, and run the CLI with
+ *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
 export function homeCotalDir(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
   if (process.platform === "win32" && process.env.LOCALAPPDATA)

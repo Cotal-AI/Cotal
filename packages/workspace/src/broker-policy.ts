@@ -41,7 +41,9 @@ export class BrokerPolicyError extends Error {
   }
 }
 
-/** `<root>/.cotal/broker-policy.json` — a sibling of `auth/`, `run/`, `nats/` and `agents/`. */
+/** `<root>/.cotal/broker-policy.json` — a sibling of `auth/`, `run/`, `nats/` and `agents/`.
+ *  `root` is the project root from {@link findCotalRoot}, not {@link homeCotalDir}: `COTAL_HOME`
+ *  does not move this file. */
 export function brokerPolicyPath(root: string): string {
   return join(root, ".cotal", "broker-policy.json");
 }
