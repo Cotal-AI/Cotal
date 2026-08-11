@@ -2,13 +2,14 @@
  * Control-plane authz smoke (P2a/P5) — the transport boundary, verified at runtime.
  *
  * Spins up its OWN JWT-auth nats-server and proves nats-server — not a handler — enforces the
- * three-tier admin / privileged / self-service control-subject split:
- *   - non-capable agent: publish to ctl.self.<id> ALLOWED; ctl.manager.<id> + ctl.admin.<id> DENIED
- *   - spawn-capable agent (capabilities:["spawn"]): ctl.manager.<id> ALLOWED; ctl.admin.<id> DENIED
- * Admin is manager-profile-only — no agent cred, capable or not, may reach it (default-deny by
- * omission), so purge + cross-agent ops can't be published by a compromised peer at all.
- * A denied publish rejects the request with an Authorization Violation; an allowed publish with
- * no manager running rejects with "No Responders" / timeout — the error type tells them apart.
+ * capability→command boundary on the v0.4 ep rails (the manager `ctl` tiers are DELETED, 1d):
+ *   - non-capable agent: publish ep `spawn` request DENIED (holds only the Appendix-B baseline)
+ *   - spawn-capable agent (capabilities:["spawn"]): ep `spawn` ALLOWED; any-mode `despawn` DENIED
+ * The admin instrument set (any-mode despawn/attach + the manager.admin family) is minted only into
+ * operator instrument creds — no agent cred, capable or not, holds it (default-deny by omission).
+ * A denied publish rejects with an Authorization Violation; an allowed publish with no manager
+ * running rejects with "No Responders" / timeout — the error type tells them apart. The full ep
+ * grant matrix is manager-split-auth's job; this proves the boundary is broker-enforced.
  *
  * Run: pnpm smoke:control-auth
  */
@@ -27,16 +28,14 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
-  controlServiceSubject,
   chatSubject,
   unicastSubject,
   anycastSubject,
   presenceBucket,
   principalKey,
   DEV_OWNER,
-  CONTROL_PRIVILEGED,
-  CONTROL_SELF_SERVICE,
-  CONTROL_ADMIN,
+  epRequestSubject,
+  BASELINE_LIFECYCLE_ENDPOINT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -110,25 +109,28 @@ try {
   // durable pre-create (we only need the creds' publish allow-list, which is what nats-server
   // enforces).
   const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
-  const plainId = newIdentity();
-  const plainCreds = await provisionAgent(noop, auth, plainId, { subscribe: ["general"], allowPublish: ["general"], lifecycleUid: mintLifecycleUid() });
-  const capId = newIdentity();
-  const capCreds = await provisionAgent(noop, auth, capId, { subscribe: ["general"], allowPublish: ["general"], capabilities: ["spawn"], lifecycleUid: mintLifecycleUid() });
+  const plainId = newIdentity(), plainUid = mintLifecycleUid();
+  const plainCreds = await provisionAgent(noop, auth, plainId, { subscribe: ["general"], allowPublish: ["general"], lifecycleUid: plainUid });
+  const capId = newIdentity(), capUid = mintLifecycleUid();
+  const capCreds = await provisionAgent(noop, auth, capId, { subscribe: ["general"], allowPublish: ["general"], capabilities: ["spawn"], lifecycleUid: capUid });
 
-  const plainSelf = controlServiceSubject(space, CONTROL_SELF_SERVICE, DEV_OWNER, plainId.id);
-  const plainPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, plainId.id);
-  const plainAdmin = controlServiceSubject(space, CONTROL_ADMIN, DEV_OWNER, plainId.id);
-  const capPriv = controlServiceSubject(space, CONTROL_PRIVILEGED, DEV_OWNER, capId.id);
-  const capAdmin = controlServiceSubject(space, CONTROL_ADMIN, DEV_OWNER, capId.id);
+  // The v0.4 ep REQUEST subjects a caller publishes to. `spawn` is untargeted (class rail `ep.one`);
+  // a self-mode `stop` is the Appendix-B baseline; an any-mode `despawn` is the admin instrument set.
+  const N = "n".repeat(24);
+  const ep = (actor: string, uid: string, command: string, target?: Parameters<typeof epRequestSubject>[1]["target"]) =>
+    epRequestSubject(space, { route: { mode: "one" }, endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, caller: { owner: DEV_OWNER, actor, uid }, nonce: N, ...(target ? { target } : {}) });
+  const plainSpawn = ep(plainId.id, plainUid, "spawn");
+  const plainSelfStop = ep(plainId.id, plainUid, "stop", { mode: "self" });
+  const capSpawn = ep(capId.id, capUid, "spawn");
+  const capAnyDespawn = ep(capId.id, capUid, "despawn", { mode: "any", tOwner: DEV_OWNER });
 
-  console.log("non-capable agent:");
-  check("publish ctl.self.<id> ALLOWED", await tryPublish(plainCreds, plainSelf, plainId.id) === "allowed");
-  check("publish ctl.manager.<id> DENIED by nats-server", await tryPublish(plainCreds, plainPriv, plainId.id) === "denied");
-  check("publish ctl.admin.<id> DENIED by nats-server", await tryPublish(plainCreds, plainAdmin, plainId.id) === "denied");
+  console.log("non-capable agent (v0.4 ep rails):");
+  check("publish ep self-mode `stop` ALLOWED (Appendix-B baseline)", await tryPublish(plainCreds, plainSelfStop, plainId.id) === "allowed");
+  check("publish ep `spawn` DENIED by nats-server (no spawn capability)", await tryPublish(plainCreds, plainSpawn, plainId.id) === "denied");
 
   console.log("spawn-capable agent (capabilities:[spawn]):");
-  check("publish ctl.manager.<id> ALLOWED", await tryPublish(capCreds, capPriv, capId.id) === "allowed");
-  check("publish ctl.admin.<id> DENIED by nats-server", await tryPublish(capCreds, capAdmin, capId.id) === "denied");
+  check("publish ep `spawn` ALLOWED", await tryPublish(capCreds, capSpawn, capId.id) === "allowed");
+  check("publish ep any-mode `despawn` DENIED by nats-server (admin instrument only)", await tryPublish(capCreds, capAnyDespawn, capId.id) === "denied");
 
   // closure (i) GATE — the scoped `operator` (which replaced the allow-all `manager` for posting) can
   // post AS ITSELF but can NEVER forge a message attributable to another actor. `tryPublish` reports

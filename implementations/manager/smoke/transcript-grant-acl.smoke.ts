@@ -74,6 +74,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   off: () => {},
   // A real presence record carries the incarnation's lifecycleUid (SPEC 13.1/§6); the manager's
   // readiness fence requires it to equal the minted uid, so the fake roster must carry it too.
+  waitForPresenceSnapshot: async () => {},
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 
@@ -94,7 +95,8 @@ try {
   {
     const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-mirror", transcript: true });
     check("spawn with transcript succeeds", reply.ok === true, reply);
-    const pub = pubAcl(join(credsDir, "mirrorbot.creds"));
+    const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+    const pub = pubAcl(join(credsDir, `mirrorbot.${uid}.creds`));
     check("auth-mode grant includes the connector's transcript channel (tr-mirrorbot)", pub.some((s) => s.includes(".tr-mirrorbot")), pub);
     check("the granted channel is the connector's transcriptChannel, no drift", pub.some((s) => s.includes(`.${tr("mirrorbot")}`)), pub);
   }
@@ -103,7 +105,8 @@ try {
   {
     const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-mirror" }); // auto-numbered → mirrorbot-2
     check("spawn without transcript succeeds", reply.ok === true && reply.data?.name === "mirrorbot-2", reply);
-    const pub = pubAcl(join(credsDir, "mirrorbot-2.creds"));
+    const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+    const pub = pubAcl(join(credsDir, `mirrorbot-2.${uid}.creds`));
     // Check the CHANNEL segment (after `.chat.<id>.`), not the whole subject — else the space name
     // itself (here `tr-grant-…`) would false-match `.tr-`.
     check("no transcript channel granted when transcript is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes(".tr-")), pub);

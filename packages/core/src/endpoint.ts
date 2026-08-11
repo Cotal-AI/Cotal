@@ -17,6 +17,10 @@ import {
 } from "@nats-io/transport-node";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
+import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
+import { EpEnvelopeError } from "./endpoint-envelope.js";
+import type { EpCaller } from "./endpoint-subjects.js";
+import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
@@ -83,7 +87,6 @@ import {
   chatHistDurable,
   chatSubject,
   controlServiceSubject,
-  CONTROL_SELF_SERVICE,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   dmStream,
@@ -99,6 +102,7 @@ import {
   leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
+  managerLeaseKey,
   chatWildcard,
   assertValidChannel,
   channelInAllow,
@@ -402,6 +406,15 @@ export class CotalEndpoint extends EventEmitter {
   private readonly actor: string;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
+  /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
+   *  `failed-precondition` currency refusal (the described incarnation was superseded). */
+  private readonly resolvedServices = new Map<string, ResolvedService>();
+
+  /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
+   *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
+  get principal(): { owner: string; actor: string } {
+    return { owner: this.owner, actor: this.actor };
+  }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
    *  ⇒ loud refusal naming the operation (the hard cut of SPEC §13.1 — no alias-keyed fallback). */
@@ -1287,6 +1300,57 @@ export class CotalEndpoint extends EventEmitter {
     return m.json<ControlReply>();
   }
 
+  /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. The
+   *  owner/actor principal is mode-correct by construction (static: DEV_OWNER + the connection
+   *  identity; user mode: the bearer's callout-derived pair — 1c.2c), and the lifecycle UID is the
+   *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
+   *  lifecycle-proof refuses a divergent uid before any publish). */
+  private serviceCaller(): EpCaller {
+    return { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+  }
+
+  /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
+   *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
+   *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
+   *  resolve is describe-bound currency: when a DIFFERENT instance answers a later invoke
+   *  (`failed-precondition`, a restart/supersede), the cache is dropped and resolved ONCE more
+   *  against the current incarnation. Errors from the responder come back structurally on the
+   *  attributed reply (`reply.ok === false`); transport/validation refusals throw
+   *  {@link EpEnvelopeError}. */
+  async invokeService(
+    endpoint: string,
+    command: string,
+    args?: Record<string, unknown>,
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+  ): Promise<EpAttributedReply> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const nc = this.nc;
+    const caller = this.serviceCaller();
+    const resolve = async (): Promise<ResolvedService> => {
+      const cached = this.resolvedServices.get(endpoint);
+      if (cached) return cached;
+      const svc = await resolveService(nc, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000 });
+      this.resolvedServices.set(endpoint, svc);
+      return svc;
+    };
+    const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
+    const doInvoke = async (): Promise<EpAttributedReply> => {
+      try {
+        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+      } catch (e) {
+        if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
+        // The describe-bound incarnation is gone (restart/supersede) — re-resolve once, then invoke
+        // against the CURRENT one; a second failure is the real state and throws.
+        this.resolvedServices.delete(endpoint);
+        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+      }
+    };
+    // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
+    // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
+    if (!opts.follow) return doInvoke();
+    return submitAndFollowGoal(nc, this.space, endpoint, caller, opts.deadlineMs ?? 10_000, doInvoke);
+  }
+
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
    *  reply. Unlike {@link requestControl}, the reply rides a subject UNDER `ctl.delivery.<id>.>` (not the
    *  per-id `_INBOX`), so the scoped delivery cred can answer without broad inbox-publish — see
@@ -2097,38 +2161,86 @@ export class CotalEndpoint extends EventEmitter {
   private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
     return new TextEncoder().encode(JSON.stringify(info));
   }
-  /** Acquire the singleton manager lease via ATOMIC CAS create. THROWS if a live lease exists (a loud
-   *  refusal-to-start, never a retry) so two managers never split control. A crashed holder's lease
-   *  auto-expires (bucket TTL). Returns the lease revision (for renew). */
+  /** Acquire THIS logical instance's liveness lease via ATOMIC CAS create on its own per-instance key
+   *  ({@link managerLeaseKey}). THROWS only if that SAME instance id already holds a live key (a same-root
+   *  concurrent double-start, or a restart racing the crashed predecessor's not-yet-expired key) — a loud
+   *  refusal, never a retry. A DIFFERENT instance (second workspace root ⇒ different id) creates its OWN
+   *  key and coexists (P2 item 3 demotion). A crashed holder's key auto-expires (bucket TTL). Returns the
+   *  lease revision (for renew). */
   async acquireManagerLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
-    return (await this.managerLeaseRegistry()).create(MANAGER_LEASE_KEY, this.encodeManagerLease({ ...info, since: Date.now() }));
+    return (await this.managerLeaseRegistry()).create(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }));
   }
-  /** Renew the held lease (CAS update against `revision`) before the bucket TTL expires it. Throws if the
-   *  revision moved (lost the lease). Returns the new revision. */
+  /** Renew THIS instance's held key (CAS update against `revision`) before the bucket TTL expires it.
+   *  Throws if the revision moved (lost the lease). Returns the new revision. */
   async renewManagerLease(info: Omit<ManagerLeaseInfo, "since">, revision: number): Promise<number> {
-    return (await this.managerLeaseRegistry()).update(MANAGER_LEASE_KEY, this.encodeManagerLease({ ...info, since: Date.now() }), revision);
+    return (await this.managerLeaseRegistry()).update(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }), revision);
   }
-  /** Release the held lease on clean shutdown so a replacement manager acquires immediately. CAS-guarded
-   *  by `revision`: if we already LOST the lease (renew gap / another manager took over) the stored
-   *  revision has moved, the conditional delete no-ops, and we never delete the replacement's live lease. */
-  async releaseManagerLease(revision?: number): Promise<void> {
+  /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
+   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, the conditional delete
+   *  no-ops. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
+  async releaseManagerLease(instanceId: string, revision?: number): Promise<void> {
     try {
       const kv = await this.managerLeaseRegistry();
-      if (revision === undefined) await kv.delete(MANAGER_LEASE_KEY);
-      else await kv.delete(MANAGER_LEASE_KEY, { previousSeq: revision });
+      if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
+      else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
     } catch { /* not ours / already gone */ }
   }
-  /** Read the live manager lease, or undefined if none (bucket absent / key deleted/expired). Open-only —
-   *  never creates the bucket, so a probe that finds no manager leaves none behind. */
+  /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
+   *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
+   *  manager here". Open-only — never creates the bucket, so a probe that finds no manager leaves none
+   *  behind. (Instance-precise enumeration for the class scatter comes from the registration records KV
+   *  in 3b-4, not this liveness bucket.)
+   *
+   *  MULTI-INSTANCE EXACT, and it has to be read that way rather than as a point get. Several managers
+   *  may hold one space, each renewing its own `lease.<instanceId>`. A single `last_by_subj` over
+   *  `lease.*` returns the newest message under the wildcard REGARDLESS OF KEY — so a stopping peer's
+   *  DEL tombstone, being newest, answered "no manager here" while a sibling was alive and renewing.
+   *  Only an explicit `kv.delete` writes that tombstone: a manager whose lease TTL-expires is removed by
+   *  limits and leaves nothing behind, so the poisoning case was the ORDINARY one (stop a manager
+   *  cleanly, then `spawn -f`), not the crash. Enumerating live entries collapses to the greatest
+   *  revision PER KEY and drops keys whose final state is a marker, so a peer's DEL can only retire that
+   *  peer's own key and can never mask a live one. */
   async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
     if (!this.nc) return undefined;
     try {
-      const kv = await new Kvm(this.nc).open(managerBucket(this.space));
-      const e = await kv.get(MANAGER_LEASE_KEY);
-      if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-      return e.json<ManagerLeaseInfo>();
-    } catch {
-      return undefined;
+      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
+      const stream = `KV_${managerBucket(this.space)}`;
+      const prefix = `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.`;
+      // STREAM.INFO to learn WHICH instance keys exist, then one point-get per key. NOT a bucket
+      // scan: `liveKvEntries` binds a push consumer, and this principal's grant on this bucket is
+      // STREAM.INFO + STREAM.MSG.GET + the `lease.*` publish only (`provision.ts`, supervisor). A
+      // consumer here is a permissions violation for the very callers this probe serves, and no
+      // open-mesh test can see that, because an open mesh has no permissions to violate.
+      const info = await jsm.streams.info(stream, { subjects_filter: `${prefix}*` });
+      let newest: { data: Uint8Array; seq: number } | undefined;
+      for (const subject of Object.keys(info.state.subjects ?? {})) {
+        // `last_by_subj` is CORRECT PER KEY and wrong across keys. Scoped to one instance's subject
+        // it returns that instance's latest state, so a DEL here retires only its own key. The
+        // defect was asking one wildcard for the newest message in the whole subtree, where a
+        // stopping peer's tombstone outranks a live sibling's older PUT.
+        const m = await jsm.streams.getMessage(stream, { last_by_subj: subject }).catch(() => null);
+        if (m === null) continue; // key vanished between INFO and GET: it is not a live holder
+        const op = m.header?.get("KV-Operation");
+        if (op === "DEL" || op === "PURGE" || m.data.length === 0) continue;
+        if (newest === undefined || m.seq > newest.seq) newest = { data: m.data, seq: m.seq };
+      }
+      if (newest === undefined) return undefined;
+      return JSON.parse(new TextDecoder().decode(newest.data)) as ManagerLeaseInfo;
+    } catch (e) {
+      // ABSENCE MUST BE PROVEN, NOT INFERRED FROM A FAILED READ. Exactly two outcomes mean "genuinely
+      // no manager": 10037, no message on the subtree, and a missing bucket — this probe is open-only
+      // and on an authed mesh nothing creates it until a manager first takes a lease, so a space that
+      // has never run one has no stream to read. Every OTHER failure (a JetStream hiccup, a request
+      // timeout, a permissions refusal, or `liveKvEntries` refusing a pass that died mid-delivery) used
+      // to return undefined here as well, and every caller reads undefined as "the space is empty": the
+      // CLI's `spawn -f` reuse stands a SECOND manager up against a live one and `waitLeaseGone` reports
+      // the space free. A read that failed is not evidence of absence, so refuse loudly rather than
+      // degrade (AGENTS.md: no fallbacks). This is the wider of the two doors the point-get fix closes:
+      // it needs only a transient error, where the tombstone path needed a peer to stop.
+      const code = (e as { code?: unknown }).code;
+      if (code === 10037) return undefined;
+      if (code === 404 || /stream not found/i.test((e as Error)?.message ?? "")) return undefined;
+      throw e;
     }
   }
 

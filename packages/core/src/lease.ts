@@ -26,16 +26,23 @@ export interface DeliveryLeaseInfo {
   ready: boolean;
 }
 
-/** A manager singleton-lease record: who holds the space + how it was launched. `runtime`/`root` let
- *  `spawn -f` fail LOUD on a mismatch instead of silently reusing a wrong-runtime / foreign-checkout
- *  manager (no fallbacks); `pid` is a diagnostics + targeted-stop hint. Acquired by an ATOMIC CAS
- *  create — a second manager's create THROWS, a loud refusal-to-bind. */
+/** A manager per-instance LIVENESS-lease record: which logical instance is live + how it was launched.
+ *  `runtime`/`root` let `spawn -f` fail LOUD on a mismatch instead of silently reusing a wrong-runtime /
+ *  foreign-checkout manager (no fallbacks); `pid` is a diagnostics + targeted-stop hint. Keyed per
+ *  {@link ManagerLeaseInfo.instanceId} ({@link import("./subjects.js").managerLeaseKey}) — P2 item 3
+ *  demoted the per-space singleton to per-instance liveness, so a second manager's create no longer
+ *  THROWS (distinct instance id ⇒ distinct key ⇒ both acquire). Losing the key stops THAT instance only. */
 export interface ManagerLeaseInfo {
   /** The manager endpoint id — `principalKey(owner, actor).key` dot-form (the endpoint card's
    *  id), so it is DIRECTLY comparable to a control subject's `<owner>.<actor>` attribution:
    *  the auth service's retirement rail (#29 piece 3) leader-reads this row and requires
-   *  holder == the subject-attributed requester principal, fresh per request. */
+   *  holder == the subject-attributed requester principal, fresh per request. On an auth mesh every
+   *  instance of one space shares this holder (same owner+actor principal); {@link instanceId} is what
+   *  distinguishes them. */
   holder: string;
+  /** The live LOGICAL manager instance id (persisted per workspace root, advanced-epoch on restart).
+   *  The KEY discriminator: two managers in one space share `holder` but have distinct `instanceId`. */
+  instanceId: string;
   runtime: string;  // pty | tmux | cmux
   root: string;     // resolved workspaceRoot (same-checkout check)
   pid: number;      // OS pid

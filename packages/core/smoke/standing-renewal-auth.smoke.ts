@@ -134,7 +134,7 @@ try {
     const unbounded = new CotalEndpoint({
       space, servers: SERVERS,
       // teardown has NO matrix default TTL → an unbounded cred, which a renewal source must refuse.
-      creds: () => mintCreds(auth, sup, "teardown"),
+      creds: () => mintCreds(auth, sup, "teardown", { lifecycleUid: mintLifecycleUid() }),
       card: { id: sup.id, name: "unbounded", kind: "endpoint" },
       consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
     });

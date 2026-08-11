@@ -15,11 +15,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, headers } from "@nats-io/transport-node";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, RetentionPolicy, StorageType } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError,
-  createEndpointStreams, epcSubject,
+  createEndpointStreams, ensureContractStore, epcSubject, epcStreamName,
   contractArtifactDigestHex, contractRefToHex, contractArtifactCanonicalBytes, assertCanonicalArtifactBytes,
   contractStoreContext, publishContractArtifact, fetchContractArtifact,
   buildContractClosureManifest, publishContractClosureManifest, fetchContractClosure,
@@ -116,6 +116,124 @@ try {
     await js.publish(epcSubject(SPACE, nonCanonHex), nonCanon, { headers: h2 });
     await rejects("NONCANONICAL bytes at their own digest subject STILL fail the read (canonical form is the second proof)",
       () => fetchContractArtifact(ctx, nonCanonHex), "internal");
+  }
+
+  // ── APPEND-SHADOW DEFENSE (the panel blocker, live-confirmed): a grant-holder must not be able
+  //    to shadow a published artifact by raw-appending a second message to its digest subject. ──
+  {
+    // (A) BROKER-ENFORCED per-subject immutability (ensureContractStore's stream shape): a raw
+    //     append to an OCCUPIED digest subject is REJECTED regardless of the create-only header.
+    const honest = artifact({ shadow: "honest-A" });
+    const dHex = contractArtifactDigestHex(honest);
+    const put = await publishContractArtifact(ctx, honest);
+    c("the honest artifact publishes (create-only winner at its digest subject)", put.won && put.digestHex === dHex);
+    let appendCode: unknown;
+    try { await js.publish(epcSubject(SPACE, dHex), enc("SHADOW-GARBAGE")); } // NO create-only header — the non-cooperative publisher
+    catch (e) { appendCode = (e as { code?: unknown }).code ?? (e as Error).message; }
+    c("a RAW append (no create-only header) to an occupied digest subject is BROKER-REJECTED (max-msgs-per-subject, err 10077)", appendCode === 10077, appendCode);
+    const stillHonest = await fetchContractArtifact(ctx, dHex);
+    c("the honest artifact is unshadowed — fetch still returns it", stillHonest !== undefined && dec(stillHonest) === '{"shadow":"honest-A"}', stillHonest && dec(stillHonest));
+  }
+  {
+    // (B) VERSION-AGNOSTIC read fallback: on a broker/stream that LACKS the per-subject cap (a
+    //     pre-hardening legacy EPC stream), a raw append SUCCEEDS and last_by_subj returns the
+    //     shadow — but fetchContractArtifact prefers the create-only WINNER (first-by-subject) and
+    //     still returns the honest artifact. Simulated with a manually-created un-hardened stream.
+    const SPACE_B = "epstoreshadow";
+    await jsm.streams.add({
+      name: epcStreamName(SPACE_B), subjects: [`cotal.${SPACE_B}.epc.>`],
+      retention: RetentionPolicy.Limits, storage: StorageType.File, allow_direct: true, deny_delete: true, deny_purge: true,
+      // DELIBERATELY no max_msgs_per_subject/discard — the legacy shape the read must defend against.
+    });
+    const ctxB = await contractStoreContext(nc, SPACE_B);
+    const honestB = artifact({ shadow: "honest-B" });
+    const dHexB = contractArtifactDigestHex(honestB);
+    await publishContractArtifact(ctxB, honestB); // create-only winner, seq 1
+    const hb = headers(); // a raw append WITHOUT the create-only header — succeeds on the un-hardened stream
+    const appended = await js.publish(epcSubject(SPACE_B, dHexB), enc("SHADOW-GARBAGE"), { headers: hb }).then((r) => r.seq).catch(() => 0);
+    c("on an UN-HARDENED stream the raw append SUCCEEDS (seq 2) — the shadow is present", appended === 2, appended);
+    const last = await jsm.direct.getMessage(epcStreamName(SPACE_B), { last_by_subj: epcSubject(SPACE_B, dHexB) });
+    c("last_by_subj now returns the SHADOW garbage (the DoS the read must defeat)", dec(last.data) === "SHADOW-GARBAGE");
+    const recovered = await fetchContractArtifact(ctxB, dHexB);
+    c("fetchContractArtifact still returns the HONEST artifact (create-only-winner fallback defeats the shadow)", recovered !== undefined && dec(recovered) === '{"shadow":"honest-B"}', recovered && dec(recovered));
+    // and a subject where BOTH the winner and the shadow are garbage stays loud (genuinely corrupt).
+    const garbHex = "e".repeat(64);
+    await js.publish(epcSubject(SPACE_B, garbHex), enc("first-garbage"), { headers: (() => { const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0"); return h; })() });
+    await js.publish(epcSubject(SPACE_B, garbHex), enc("second-garbage"));
+    await rejects("a subject whose winner AND shadow both fail verify stays loud (no honest artifact to recover)",
+      () => fetchContractArtifact(ctxB, garbHex), "internal");
+  }
+  {
+    // (C) UPGRADE PATH: ensureContractStore hardens a pre-existing un-hardened stream in place,
+    //     leaving already-published artifacts intact, and a raw append is rejected afterward.
+    const SPACE_C = "epstoreupgrade";
+    await jsm.streams.add({
+      name: epcStreamName(SPACE_C), subjects: [`cotal.${SPACE_C}.epc.>`],
+      retention: RetentionPolicy.Limits, storage: StorageType.File, allow_direct: true, deny_delete: true, deny_purge: true,
+    });
+    const ctxC = await contractStoreContext(nc, SPACE_C);
+    const preExisting = artifact({ upgrade: "pre-existing" });
+    const dHexC = contractArtifactDigestHex(preExisting);
+    await publishContractArtifact(ctxC, preExisting);
+    await ensureContractStore(jsm, SPACE_C); // the upgrade: adds the per-subject immutability flags
+    const cfgC = (await jsm.streams.info(epcStreamName(SPACE_C))).config as { max_msgs_per_subject?: number; discard?: string; discard_new_per_subject?: boolean };
+    c("ensureContractStore UPGRADES an un-hardened stream to per-subject immutability", cfgC.max_msgs_per_subject === 1 && cfgC.discard === "new" && cfgC.discard_new_per_subject === true, cfgC);
+    const survived = await fetchContractArtifact(ctxC, dHexC);
+    c("the pre-existing artifact SURVIVED the upgrade", survived !== undefined && dec(survived) === '{"upgrade":"pre-existing"}', survived && dec(survived));
+    let upCode: unknown;
+    try { await js.publish(epcSubject(SPACE_C, dHexC), enc("post-upgrade-shadow")); }
+    catch (e) { upCode = (e as { code?: unknown }).code; }
+    c("after the upgrade a raw append is broker-rejected", upCode === 10077, upCode);
+  }
+  {
+    // (D) THE CONFIG-A FOOTGUN is never silently adopted: a stream created with
+    //     max_msgs_per_subject:1 + the DEFAULT discard:old (which would DELETE the honest artifact
+    //     on an append) is CORRECTED to config B by ensureContractStore, not accepted.
+    const SPACE_D = "epstorefootgun";
+    await jsm.streams.add({
+      name: epcStreamName(SPACE_D), subjects: [`cotal.${SPACE_D}.epc.>`],
+      retention: RetentionPolicy.Limits, storage: StorageType.File, allow_direct: true, deny_delete: true, deny_purge: true,
+      max_msgs_per_subject: 1, // config A: mmps:1 but DEFAULT discard:old — the footgun
+    });
+    const preA = (await jsm.streams.info(epcStreamName(SPACE_D))).config as { discard?: string };
+    c("the footgun stream starts at config A (discard:old)", preA.discard === "old", preA.discard);
+    await ensureContractStore(jsm, SPACE_D);
+    const postA = (await jsm.streams.info(epcStreamName(SPACE_D))).config as { max_msgs_per_subject?: number; discard?: string; discard_new_per_subject?: boolean };
+    c("ensureContractStore CORRECTS config A -> config B (discard:new + discard_new_per_subject), never silently adopts the delete-footgun",
+      postA.max_msgs_per_subject === 1 && postA.discard === "new" && postA.discard_new_per_subject === true, postA);
+    // and it now rejects the append (the footgun's delete-on-append is gone).
+    const ctxD = await contractStoreContext(nc, SPACE_D);
+    const vD = artifact({ footgun: "V" });
+    const dHexD = contractArtifactDigestHex(vD);
+    await publishContractArtifact(ctxD, vD);
+    let footCode: unknown;
+    try { await js.publish(epcSubject(SPACE_D, dHexD), enc("append-would-have-deleted-V-under-config-A")); }
+    catch (e) { footCode = (e as { code?: unknown }).code; }
+    c("post-correction the append is REJECTED (config A would have deleted V; config B rejects)", footCode === 10077, footCode);
+    const vStill = await fetchContractArtifact(ctxD, dHexD);
+    c("V survives (never deleted) after the corrected store rejects the append", vStill !== undefined && dec(vStill) === '{"footgun":"V"}', vStill && dec(vStill));
+  }
+  {
+    // (E) UPGRADE of an ALREADY-SHADOWED legacy store REFUSES LOUD, never trim-cements (critic
+    //     upgrade-trim residual): config-B's per-subject trim would keep the newest (the shadow)
+    //     and delete the honest winner, so ensureContractStore fails loud on such a store instead.
+    const SPACE_E = "epstoreshadowup";
+    await jsm.streams.add({
+      name: epcStreamName(SPACE_E), subjects: [`cotal.${SPACE_E}.epc.>`],
+      retention: RetentionPolicy.Limits, storage: StorageType.File, allow_direct: true, deny_delete: true, deny_purge: true,
+      // legacy shape: no per-subject cap - a shadow can exist.
+    });
+    const ctxE = await contractStoreContext(nc, SPACE_E);
+    const vE = artifact({ shadowedUpgrade: "honest" });
+    const dHexE = contractArtifactDigestHex(vE);
+    await publishContractArtifact(ctxE, vE); // V @ seq 1
+    await js.publish(epcSubject(SPACE_E, dHexE), enc("PRE-EXISTING-SHADOW")); // shadow @ seq 2 (legacy store allows it)
+    await rejects("ensureContractStore REFUSES LOUD to upgrade an already-shadowed legacy store (would trim-cement the shadow)",
+      () => ensureContractStore(jsm, SPACE_E));
+    // the honest winner is still there (nothing was trimmed - the upgrade refused before touching it),
+    // recoverable by the read fallback until the operator reprovisions.
+    const vStillE = await fetchContractArtifact(ctxE, dHexE);
+    c("the honest artifact is NOT trimmed (the refusal ran BEFORE any config change)", vStillE !== undefined && dec(vStillE) === '{"shadowedUpgrade":"honest"}', vStillE && dec(vStillE));
   }
 
   // ── the closure manifest: contract identity is the MANIFEST digest ──

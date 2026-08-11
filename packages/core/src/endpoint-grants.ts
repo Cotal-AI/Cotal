@@ -10,6 +10,7 @@
  * the service registry machinery.
  */
 import { spacePrefix } from "./subjects.js";
+import { epcStreamName } from "./endpoint-binding.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpTarget,
@@ -90,25 +91,32 @@ export function epGoalProgressGrantRow(space: string, endpoint: string, caller: 
 }
 
 /** All caller-side rows for a capability set: request-publish (+ optional journal) into
- *  `pub.allow`, the reply rail into `sub.allow`. This is the STANDING rollup (`permissionsFor`
- *  mints long-lived credentials from it), so a `handle`-mode capability is refused here:
- *  handle rows are redemption-minted only (§13.2/§13.6), built by the redemption path through
- *  {@link epRequestGrantRows} directly. Deliberately NOT included: `epe` event
- *  subtrees beyond the per-goal row — read grants are minted per read capability by the
- *  granting authority (Appendix B), not implied by an invoke capability. */
+ *  `pub.allow`, the reply rail (+ the per-goal progress read for GOAL-BEARING capabilities) into
+ *  `sub.allow`. This is the STANDING rollup (`permissionsFor` mints long-lived credentials from
+ *  it), so a `handle`-mode capability is refused here: handle rows are redemption-minted only
+ *  (§13.2/§13.6), built by the redemption path through {@link epRequestGrantRows} directly.
+ *  A goal-bearing capability ({@link GOAL_BEARING_COMMANDS}: spawn/launch) adds ONE per-endpoint
+ *  {@link epGoalProgressGrantRow} — the caller may follow its OWN goal to terminal (P2 item 2, Q1);
+ *  it is the one read an invoke implies, because the subject pins the caller's own triple. Still
+ *  NOT included: any OTHER `epe` subtree — those are minted per read capability by the granting
+ *  authority (Appendix B), not implied by an invoke. */
 export function epCallerGrantRows(
   space: string,
   caps: EpCapability[],
   caller: EpCaller,
 ): { pub: string[]; sub: string[] } {
   const pub: string[] = [];
+  const progressEndpoints: string[] = [];
   for (const cap of caps) {
     if (cap.target?.mode === "handle")
       throw new Error(`a "handle"-mode capability on "${cap.endpoint}.${cap.command}" is redemption-minted only (SPEC 13.2), never a standing capability`);
     pub.push(...epRequestGrantRows(space, cap, caller));
     if (cap.journal) pub.push(epJournalGrantRow(space, cap, caller));
+    if (GOAL_BEARING_SET.has(cap.command) && !progressEndpoints.includes(cap.endpoint)) progressEndpoints.push(cap.endpoint);
   }
-  return { pub, sub: caps.length ? [epCallerReplyGrantRow(space, caller)] : [] };
+  const sub = caps.length ? [epCallerReplyGrantRow(space, caller)] : [];
+  for (const e of progressEndpoints) sub.push(epGoalProgressGrantRow(space, e, caller));
+  return { pub, sub };
 }
 
 // ---- the Appendix-B BASELINE capability set (SPEC Appendix B "Agent", §13.9 agent row) ------------
@@ -145,6 +153,31 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const)
  *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
+/** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
+ *  persona write (`define-persona`, caller-scoped by the pinned triple) and per-agent status read
+ *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`). These
+ *  ride the v0.3 privileged tier today; minting them with `spawn` keeps that tier's surface 1:1. */
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"] as const);
+
+// ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
+/** The manager endpoint's read commands (`manager.read` class). */
+export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models"] as const);
+/** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
+ *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
+ *  NEVER an agent/spawn profile (the ratified 1c pin). */
+export const MANAGER_ADMIN_COMMANDS = Object.freeze([
+  "purge", "launch",
+  "resume-preserved", "commit-resume", "finalize-resume",
+  "prepare-preservation", "commit-preservation", "abort-preservation",
+] as const);
+
+/** The ACTION commands (§13.6): submitting one accepts a GOAL, so the caller may follow its OWN
+ *  goal progress (P2 item 2). `spawn` (create) and `launch` (manifest) both serve as actions on
+ *  the manager endpoint since 2a; a caller holding one of these capabilities is granted the
+ *  per-goal live-progress read for that endpoint ({@link epGoalProgressGrantRow}), the one read an
+ *  invoke DOES imply because it is bounded to the caller's OWN goal subtree. */
+export const GOAL_BEARING_COMMANDS = Object.freeze(["spawn", "launch"] as const);
+const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 
 // PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
 // never the live exports, so the minted surface survives even a hypothetical defeat of the
@@ -153,6 +186,9 @@ const DELIVERY_COMMANDS_SNAP = Object.freeze([...BASELINE_DELIVERY_COMMANDS]);
 const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS]);
 const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
+const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
+const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
+const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
 
 /** `describe` on ALL endpoints (Appendix B / §13.9 "describe by default"): the ONE
  *  subject-wildcard request form in the caller grammar,
@@ -187,15 +223,71 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
       endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
       target: { mode: "owner", tOwner: callerOwner } as EpTarget,
     })),
+    ...SPAWN_SERVICE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
   ];
+}
+
+/** An operator INSTRUMENT's capability set (the 1c grant-migration table's admin row), per the
+ *  instrument's v0.3 control tier - the SAME mint sites that grant a `ctl.<tier>` row today
+ *  (`control-caller-*` / `deployer`) consume this for the ep rails; no new minting authority.
+ *
+ *  `privileged` (the ps/start instrument): the manager reads + untargeted `spawn` +
+ *  `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
+ *
+ *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
+ *  (tOwner `"*"`) and the `manager.admin` command family. The 1c admin-reach decision: operator
+ *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
+ *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the
+ *  `control-caller-admin`/`deployer`/`teardown` instruments AND an agent credential explicitly
+ *  granted the `admin` capability (which by design mirrors the full admin instrument set - its
+ *  ctl-tier equivalent already held `ctl.<admin>`, so this is parity, not a new escalation). An
+ *  ordinary agent, incl. the `spawn` capability, never carries it. So the broker grant is the tier boundary exactly as
+ *  `ctl.<admin>` is today, and the responder maps mode `any` to its admin authorization path. */
+export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): EpCapability[] {
+  const caps: EpCapability[] = [
+    ...MANAGER_READ_SNAP.map((command) => ({
+      endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+      // `ps` is the CLASS-SCATTER read (P2 item 3, `cotal ps` default): the instrument publishes it
+      // on the `all` scatter rail to gather every instance's rows in a multi-manager space. The
+      // other reads stay `one`-only (anycast, or `inst` when a resolve pins `--on`).
+      ...(command === "ps" ? { routes: ["one", "all"] as ("one" | "all")[] } : {}),
+    })),
+    ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+  ];
+  if (tier === "admin") {
+    caps.push(
+      ...SPAWN_OWNER_SNAP.map((command) => ({
+        endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+        target: { mode: "any", tOwner: "*" } as EpTarget,
+      })),
+      ...MANAGER_ADMIN_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    );
+  }
+  return caps;
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability
  *  rollup into `pub.allow`, and the caller's reply rail into `sub.allow` — ALWAYS present (the
- *  baseline implies the reply read even when no per-capability rows are minted). */
+ *  baseline implies the reply read even when no per-capability rows are minted). The §13.7
+ *  contract-store FETCH (the Direct Get API on the EPC stream) rides the baseline too: describe
+ *  answers digests, and a caller that may describe may fetch-verify-compile the schemas those
+ *  digests name (content-addressed public artifacts — a digest is the read capability; the
+ *  per-caller authorization surface is the describe VIEW, never the schema bytes). */
 export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: string[]; sub: string[] } {
   const base = epCallerGrantRows(space, baselineCallerCapabilities(), caller);
-  return { pub: [epDescribeAllGrantRow(space, caller), ...base.pub], sub: [epCallerReplyGrantRow(space, caller)] };
+  return {
+    pub: [
+      epDescribeAllGrantRow(space, caller),
+      // ONE subject-scoped Direct Get row (the `DIRECT.GET.<stream>.<subject>` form the client's
+      // last_by_subj read rides), pinned to the epc subject space — never the bare/stream-wide
+      // form. The D32 matrix audit exempts exactly this row shape from the untrusted-profile
+      // control-surface prohibition (the store is public content-addressed artifacts).
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      ...base.pub,
+    ],
+    sub: [epCallerReplyGrantRow(space, caller)],
+  };
 }
 
 /** One registered command's serve-subscribe rows (§13.9 "Serve subscribe"), per registered

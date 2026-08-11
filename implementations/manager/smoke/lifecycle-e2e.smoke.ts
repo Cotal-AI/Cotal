@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -84,7 +84,9 @@ const localPrincipal = (id: string) => principalKey(DEV_OWNER, id).key;
 const uidOf = (name: string): string =>
   (mgr as unknown as { agents: Map<string, { lifecycleUid?: string }> }).agents.get(name)?.lifecycleUid ?? "";
 const aclPresent = (id: string, uid: string) => inspect(async (_j, nc) => (await readAcl(await openAclRegistry(nc, space), localPrincipal(id), uid)) !== undefined);
-const credsFile = (name: string) => join(authDir(workspaceRoot), "creds", `${name}.creds`);
+// Lifecycle-keyed (`<name>.<uid>.creds`): the manager's spawn files the incarnation's cred under
+// its uid, never the bare name (that's the standing-cred namespace).
+const credsFile = (name: string, uid: string) => join(authDir(workspaceRoot), "creds", `${name}.${uid}.creds`);
 /** Poll until `f()` matches `want`, up to `ms`. */
 async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promise<boolean> {
   const end = Date.now() + ms;
@@ -97,7 +99,7 @@ async function footprint(id: string, uid: string, name: string): Promise<{ dm: b
     dm: await consumerExists(DM, dmDurable(DEV_OWNER, id, uid)),
     dlv: await consumerExists(DLV, dlvDurable(DEV_OWNER, id, uid)),
     acl: await aclPresent(id, uid),
-    creds: existsSync(credsFile(name)),
+    creds: existsSync(credsFile(name, uid)),
   };
 }
 
@@ -177,11 +179,15 @@ try {
   // 2 — DEPROVISION on despawn (real): the footprint is torn down.
   console.log("2. despawn → footprint deprovisioned:");
   const callerId = (mgr as unknown as { ep: { ref: () => { id: string } } }).ep.ref().id;
+  // NOTE ON REACH: this is a private cast onto the handler, so no ep contract is applied — this
+  // suite proves lifecycle TRANSITIONS and the broker footprint, never door admission. Nothing
+  // here would catch a contract/handler disagreement (see manifest-launch.smoke.ts's header for
+  // the escape that shape produced). The door-level suites are manager-service-ops/-invoke.
   (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, admin: boolean) => unknown }).opStop({ name: "w1", graceful: false }, callerId, true);
   check("dm_local- durable gone after despawn", await until(() => consumerExists(DM, dmDurable(DEV_OWNER, id1, uid1)), false), await footprint(id1, uid1, "w1"));
   check("dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)), false));
   check("read-ACL row gone after despawn", await until(() => aclPresent(id1, uid1), false));
-  check("creds file gone after despawn", await until(async () => existsSync(credsFile("w1")), false));
+  check("creds file gone after despawn", await until(async () => existsSync(credsFile("w1", uid1)), false));
 
   // 3 — FAILED launch: process exits on arrival → {ok:false} + footprint rolled back.
   console.log("3. die-on-arrival → failed + footprint rolled back:");
@@ -191,7 +197,9 @@ try {
   // The die connector still provisioned before it exited; that footprint must be torn down. Its id isn't
   // returned on failure, so assert via the ACL registry being empty of any non-w2 owner after a beat.
   await wait(2500);
-  check("bad1 creds file not left behind", !existsSync(credsFile("bad1")));
+  // The failed spawn's uid never came back, so sweep by prefix: no `bad1.<uid>.creds` (nor any
+  // other `bad1.`-based secret) may remain.
+  check("bad1 creds file not left behind", !readdirSync(join(authDir(workspaceRoot), "creds")).some((f) => f.startsWith("bad1.")));
 
   // 3b — UNCERTAIN: a process that runs but never joins presence → neither started nor failed within the
   // backstop → {ok:false} uncertain, and the agent is KEPT (not deprovisioned; it may still be booting).

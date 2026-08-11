@@ -17,7 +17,7 @@ import { launchFlags } from "@cotal-ai/workspace";
 import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
 import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
-import type { CotalEndpoint, ControlReply, ControlRequestInit } from "@cotal-ai/core";
+import type { CotalEndpoint } from "@cotal-ai/core";
 
 // cotalToolSpecs is capability-gated: cotal_spawn only renders for a spawn-capable agent.
 process.env.COTAL_SPACE ||= "parity";
@@ -84,15 +84,19 @@ assert.ok(
   `connector SPAWN_TIMEOUT_MS (${SPAWN_TIMEOUT_MS}) must outlive the manager's readiness wait (${READINESS_TIMEOUT_MS})`,
 );
 // …and the manifest `launch` client actually PASSES that window (fake ep, no NATS) — `launch`
-// funnels into the same startAgent readiness wait as `start`, so the 5s op default kills it too.
+// funnels into the same startAgent readiness wait as `start`, so the 10s invoke default kills it
+// too. launchAgent rides the v0.4 ep door (1c.2b), so the fake intercepts invokeService.
 let launchTimeout: number | undefined;
+let launchCommand: string | undefined;
 const fakeEp = {
-  requestControl: (_t: string, _r: ControlRequestInit, ms?: number): Promise<ControlReply> => {
-    launchTimeout = ms;
-    return Promise.resolve({ ok: true });
+  invokeService: (_ep: string, command: string, _args?: Record<string, unknown>, opts?: { deadlineMs?: number }) => {
+    launchCommand = command;
+    launchTimeout = opts?.deadlineMs;
+    return Promise.resolve({ reply: { ok: true } });
   },
 } as unknown as CotalEndpoint;
 await launchAgent(fakeEp, "run", "agent");
+assert.equal(launchCommand, "launch", "launchAgent must invoke the manager's launch command");
 assert.equal(launchTimeout, START_TIMEOUT_MS, "launchAgent must send the launch op with START_TIMEOUT_MS");
 
 console.log(`✓ launch-parity smoke passed (${launchFlags.length} grammar flags · ${toolParams.length} MCP params · readiness window ${READINESS_TIMEOUT_MS}ms < clients ${START_TIMEOUT_MS}/${SPAWN_TIMEOUT_MS}ms)`);

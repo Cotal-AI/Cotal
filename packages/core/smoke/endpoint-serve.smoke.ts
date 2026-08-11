@@ -40,6 +40,18 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 
+/** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
+ *
+ *  `c()` prints NOTHING on a pass. A cell's name appears in the output **if and only if it FAILED**.
+ *  So an empty grep for a cell name is the SUCCESS signal here, which is backwards from every other
+ *  instrument: normally an empty result means the pattern missed or the thing is absent. Someone
+ *  auditing a run by grepping for a cell name — without reading this line — misreads every run they
+ *  do, and half the misreadings are the reassuring direction.
+ *
+ *  So: to check ONE cell, grep its name and expect NOTHING when it passes. Never read the suite's
+ *  exit code as evidence about a single cell — any other cell failing gives you a red total while
+ *  the cell you care about quietly still passes, and still-passing is exactly what a vacuous cell
+ *  does. The aggregate cannot show you one vacuous cell; only that cell's absence-or-presence can. */
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown, code?: string) => {
@@ -67,8 +79,12 @@ const argsContract = compileContract({ root: { type: "object", properties: { nam
 const outContract = compileContract({ root: { type: "object", properties: { which: { type: "string" } }, required: ["which"], additionalProperties: false } });
 const voidContract = compileContract({ root: VOID_SCHEMA });
 // A REAL compiled output contract that is legitimately slow on a large payload: 8 pattern
-// properties x 400k items decisively exceeds the fixed 10ms §13.8 budget (measured ~112ms),
+// properties x 400k items decisively exceeds the fixed 10ms §13.8 budget (measured 112-150ms),
 // so the over-budget path is proven WITHOUT forging a compiled contract (forgery refuses).
+// It is also ~125MB serialized, well over any broker's max_payload. That was incidental while the
+// budget still REFUSED an over-budget output before encoding it; now that the budget only reports,
+// this payload reaches the publish, and the pair of properties is what makes it a real test of
+// what a responder does with a valid reply it cannot send.
 const slowProps: Record<string, unknown> = {};
 for (let i = 0; i < 8; i++) slowProps[`f${i}`] = { type: "string", pattern: "^[a-z][a-z0-9-]{1,128}$" };
 const slowContract = compileContract({ root: { type: "array", items: { type: "object", required: Object.keys(slowProps), additionalProperties: false, properties: slowProps } } });
@@ -219,9 +235,32 @@ throws("a cluster document declaring describe refuses (reserved, never a cluster
 throws("a duplicate command declaration refuses to parse",
   () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x"), cmd("x")] }));
 
-// ── unreadable registry (stubbed KV: the enumeration boundary itself fails, before any jsm read) ──
-await rejects("an UNREADABLE registry is failed-precondition, never an empty success",
-  () => freezeExpectedSet({} as never, { keys: () => { throw new Error("permissions violation"); } } as never, SPACE, "manager"), "failed-precondition");
+// ── unreadable vs empty registry: the enumeration boundary, RE-POINTED at STREAM.INFO ──
+// The old fixture stubbed `kv.keys`, which the consumer-free enumeration no longer calls. Measured:
+// with that stub removed entirely the cell still passed (disarmed run, 133/0, this cell silent) — it
+// was green on an empty `{}` jsm throwing a TypeError, not on any permissions failure.
+//
+// And the CODE ALONE CANNOT DISCRIMINATE HERE, which is the hazard the substitution introduces: an
+// unreadable registry and an EMPTY one are both `failed-precondition`. Under `kv.keys` a refusal
+// threw; under STREAM.INFO a refused read and a registry with no matching subjects differ only in
+// which throw fires. Collapsing them reports "no managers" as an empty success, and an empty registry
+// is never an empty success (SPEC 13.5). So both arms pin their MESSAGE, and a third asserts the two
+// messages actually differ — the discriminator has to be absent from one side to discriminate at all.
+const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: string }> => {
+  try { await freezeExpectedSet(jsmStub as never, SPACE, "manager"); return { message: "NO THROW" }; }
+  catch (e) { return { code: (e as EpEnvelopeError).code, message: (e as Error).message }; }
+};
+{
+  const refused = await freezeErr({ streams: { info: () => { throw new Error("permissions violation"); } } });
+  c("a REFUSED registry read is failed-precondition and says UNREADABLE (never an empty success)",
+    refused.code === "failed-precondition" && /is unreadable/.test(refused.message), refused);
+  const empty = await freezeErr({ streams: { info: () => ({ state: { subjects: {} } }) } });
+  c("an EMPTY-but-readable registry is failed-precondition and says NO LIVE INSTANCES (a distinct event)",
+    empty.code === "failed-precondition" && /no live registered instances/.test(empty.message), empty);
+  c("refused and empty are NOT collapsed: different messages",
+    refused.message !== empty.message && /is unreadable/.test(refused.message) && !/is unreadable/.test(empty.message),
+    { refused: refused.message.slice(0, 70), empty: empty.message.slice(0, 70) });
+}
 
 // ── live broker ──
 const PORT = 20000 + Math.floor(Math.random() * 40000);
@@ -244,6 +283,12 @@ try {
   const regA2 = await reg(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
   c("re-registration ADVANCES registrationRevision (scatter churn detection, SPEC 13.5)",
     regA2.registrationRevision > regA.registrationRevision);
+  // P2 item 3 (SPEC 13.6 item 7): a re-registration of the SAME instanceId is a restarted/superseded
+  // incarnation — the gate's processEpoch ADVANCES so the successor fences the predecessor's epoch
+  // (the empty-family stub here is exactly the open-mesh path: nothing to evict, the advance still
+  // rides the completing reopen).
+  c("re-registration ADVANCES the gate processEpoch (a restarted incarnation fences the predecessor's epoch)",
+    gateStates.get(`manager/${IID_A}`)!.processEpoch === 1);
   await rejects("a registration whose authenticated caller is not the descriptor owner refuses (impersonation)",
     () => reg(kv, { spec, instanceId: IID_A, registrant: { owner: "u_abc" }, authority }), "permission-denied");
   await rejects("a registration under an unauthorized claimed owner refuses",
@@ -279,8 +324,10 @@ try {
 
   // ---- the hardened freeze ----
   const regB = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
+  c("a FIRST registration of a fresh instanceId keeps epoch 0 (a never-restarted single manager)",
+    gateStates.get(`manager/${IID_B}`)!.processEpoch === 0);
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regB.registrationRevision } });
-  const frozen = await freezeExpectedSet(jsm, kv, SPACE, "manager");
+  const frozen = await freezeExpectedSet(jsm, SPACE, "manager");
   c("the frozen expected set carries (instanceId, registrationRevision, epoch) per live instance",
     frozen.length === 2
     && frozen.some((f) => f.instanceId === IID_A && f.registrationRevision === regA2.registrationRevision && f.epoch === 3)
@@ -289,18 +336,20 @@ try {
   // advances) while its status still observes the old revision — freezing (new rev, old epoch)
   // would combine a registration with liveness it never had.
   const regB2 = await reg(kv, { spec, instanceId: IID_B, registrant: asOp, authority });
+  c("each restart advances the gate epoch monotonically (B: first 0 -> restart 1)",
+    gateStates.get(`manager/${IID_B}`)!.processEpoch === 1);
   c("a stale projection (status behind the CURRENT registration) leaves the frozen set",
     regB2.registrationRevision > regB.registrationRevision
-    && (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
+    && (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_EXITED, observedSpecRevision: regB2.registrationRevision } });
-  c("an exited instance leaves the frozen set", (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
+  c("an exited instance leaves the frozen set", (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
   await rejects("an empty registry is failed-precondition, never an empty scatter success",
-    () => freezeExpectedSet(jsm, kv, SPACE, "ghost"), "failed-precondition");
+    () => freezeExpectedSet(jsm, SPACE, "ghost"), "failed-precondition");
   // Malformed mediated-writer state fails LOUD (§13.9), never enters the set.
   await kv.put(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]), new TextEncoder().encode(JSON.stringify({ attackerControlled: true, owner: "u_evil" })));
   await kv.put(`svc.manager.${T_UID}.status`, new TextEncoder().encode(JSON.stringify({ epoch: 1, state: SERVICE_READY, observedSpecRevision: 1 })));
   await rejects("a malformed registered spec fails LOUD at the freeze, never enters the set",
-    () => freezeExpectedSet(jsm, kv, SPACE, "manager"), "internal");
+    () => freezeExpectedSet(jsm, SPACE, "manager"), "internal");
   await kv.purge(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]));
   await kv.purge(`svc.manager.${T_UID}.status`);
 
@@ -570,10 +619,28 @@ try {
   const r3d = await send(oneSubj("cyclic"), req({ op: { endpoint: "manager", command: "cyclic", inputDigest: D_IN, outputDigest: D_OUT } }));
   c("a non-serializable reply is replaced by a structured internal error, never dropped",
     r3d !== undefined && r3d.reply.ok === false && r3d.reply.error?.code === "internal");
-  const r3e = await send(oneSubj("slow"), req({ op: { endpoint: "manager", command: "slow", inputDigest: D_IN, outputDigest: D_SLOW } }));
-  c("an over-budget OUTPUT validation is structured internal (the §13.8 budget is symmetric, on a REAL compiled contract)",
-    r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "internal" && /budget/.test(r3e.reply.error?.message ?? ""),
-    JSON.stringify(r3e?.reply));
+  // Tee console.error: the demoted budget's ONLY observable is its report, and asserting the reply
+  // alone would pass just as well if the validation had never been over budget. Tee rather than
+  // swallow, so the serve side's diagnostics still reach the log.
+  const budgetReports: string[] = [];
+  const realError = console.error;
+  console.error = (...a: unknown[]) => { const line = a.map(String).join(" "); budgetReports.push(line); realError(line); };
+  let r3e: Awaited<ReturnType<typeof send>>;
+  try { r3e = await send(oneSubj("slow"), req({ op: { endpoint: "manager", command: "slow", inputDigest: D_IN, outputDigest: D_SLOW } })); }
+  finally { console.error = realError; }
+  // This leg used to assert the §13.8 budget refused an over-budget OUTPUT as `internal`. The
+  // budget now REPORTS on the request path, so that throw is gone — and removing it exposed a hole
+  // it had been masking. This payload is schema-VALID and ~125MB serialized, so the serve path now
+  // reaches the publish, the broker refuses it over `max_payload`, and the throw escaped into the
+  // subscription callback's swallowed rejection: the caller got NO REPLY AT ALL and sat until its
+  // own deadline. Executed, not reasoned — `r3e` came back `undefined`. endpoint-serve.ts now
+  // answers `resource-exhausted` instead, so what this leg pins is the invariant the file already
+  // claimed for non-serializable replies: a responder never leaves a caller with silence.
+  c("an over-budget OUTPUT validation is REPORTED, not refused (the §13.8 demotion)",
+    budgetReports.some((l) => /output validation took ~\d+ms/.test(l)), `reports: ${budgetReports.length}`);
+  c("a reply too large to publish is answered `resource-exhausted`, never silently dropped",
+    r3e !== undefined && r3e.reply.ok === false && r3e.reply.error?.code === "resource-exhausted",
+    r3e === undefined ? "NO REPLY - the caller was left with silence" : JSON.stringify(r3e.reply).slice(0, 220));
 
   // §13.7 canonical void: absent OR explicit null args both validate on a void-input command
   const pingOp = { endpoint: "manager", command: "ping", inputDigest: D_VOID, outputDigest: D_OUT };
@@ -877,18 +944,28 @@ try {
       () => epochOf("z".repeat(26)), "failed-precondition");
 
     // scatter: freeze -> gather -> production reconcile, one call
-    const s1 = await epScatterService(nc, jsm, kv, SPACE, opC("status"), { deadlineMs: 4000 });
+    const s1 = await epScatterService(nc, jsm, SPACE, opC("status"), { deadlineMs: 4000 });
     c("epScatterService freezes from the LIVE registry and completes over both instances",
       s1.complete === true && s1.replies.size === 2 && s1.churn.length === 0 && s1.missing.length === 0 && s1.invalid.length === 0,
       JSON.stringify({ complete: s1.complete, replies: s1.replies.size, churn: s1.churn, missing: s1.missing, invalid: s1.invalid }));
     // distsys BLOCKING 2: the FREEZE is charged against the ONE deadline. A stalled enumeration is
     // deadline-exceeded within the budget, never a scatter that silently overruns it.
+    // RE-POINTED for the consumer-free enumeration: the freeze stalls on STREAM.INFO now, not on
+    // `kv.keys`. Stalling a call the code no longer makes left this cell reporting "no throw" — the
+    // fixture aimed at a deleted call site, which is the exact class this suite exists to catch.
+    // ONLY `streams.info` stalls: the per-slot leader reads use other jsm methods and must stay
+    // live, or this would prove "a stalled everything" rather than "a stalled enumeration".
+    // Mutation-proved: pass `info` through to the real jsm and this cell reports "no throw".
+    const stalledJsm = Object.create(jsm) as typeof jsm;
+    (stalledJsm as unknown as { streams: unknown }).streams = Object.assign(Object.create(jsm.streams as object), {
+      info: () => new Promise(() => { /* never settles */ }),
+    });
     await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
-      () => epScatterService(nc, jsm, { keys: () => new Promise(() => { /* never settles */ }) } as never, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
+      () => epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)
-    const frozen1 = await freezeExpectedSet(jsm, kv, SPACE, EPC);
+    const frozen1 = await freezeExpectedSet(jsm, SPACE, EPC);
     const regCB2 = await reg(kv, { spec: { endpoint: EPC, owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 } }, instanceId: IID_B, registrant: asOp, authority });
     const s2 = await epScatter(nc, SPACE, opC("status"), { deadlineMs: 4000, expected: frozen1, reconcileRegistration: registrationReconciler(jsm, SPACE, EPC, frozen1) });
     c("a mid-scatter re-registration is `registration` churn through the PRODUCTION reconciler (counted reply dropped)",
@@ -899,7 +976,7 @@ try {
     // a REAL mid-scatter deregistration: the explicit registered:false verdict — a departure
     // does NOT invalidate the reply the departed instance already gave (§13.5)
     await writeServiceStatus(kv, { endpoint: EPC, instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regCB2.registrationRevision } });
-    const frozen2 = await freezeExpectedSet(jsm, kv, SPACE, EPC);
+    const frozen2 = await freezeExpectedSet(jsm, SPACE, EPC);
     c("(setup) the re-converged freeze holds both instances again", frozen2.length === 2);
     await kv.delete(recordSpecKey(RECORD_KINDS.svc, [EPC, IID_B]));
     await kv.delete(recordStatusKey(RECORD_KINDS.svc, [EPC, IID_B]));

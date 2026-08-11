@@ -32,7 +32,7 @@ import {
   canonicalizerGrants, canonicalizerWorkGrants, activatorGrants, activatorContext, readPoolOccupancy,
   effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
-  commitPrincipalGrants, contractPublisherGrants,
+  commitPrincipalGrants, goalWriterGrants, contractPublisherGrants,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS,
@@ -213,7 +213,7 @@ c("the baseline/spawn command vocabularies are frozen",
 throws("pushing a command into the baseline vocabulary throws (no post-import grant widening)",
   () => (BASELINE_SELF_LIFECYCLE_COMMANDS as unknown as string[]).push("attach"));
 c("the minted baseline/spawn surfaces are unchanged after the attempted push (private snapshots)",
-  baselineCallerCapabilities().length === 4 && spawnCallerCapabilities("u_abc").length === 3);
+  baselineCallerCapabilities().length === 4 && spawnCallerCapabilities("u_abc").length === 5);
 c("CREDENTIAL_LIFETIMES and every policy are frozen",
   Object.isFrozen(CREDENTIAL_LIFETIMES) && Object.values(CREDENTIAL_LIFETIMES).every((p) => Object.isFrozen(p)));
 throws("nulling a one-shot TTL throws (a non-expiring provisioner credential cannot be minted in)",
@@ -271,7 +271,7 @@ c("a reader bind grant is INFO/MSG.NEXT/ACK on the reader's own stream, never cr
   readerBindGrants(recordsKvStreamName(SPACE), recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: recSubtree })).length === 3);
 // ── D14: the commit principal + contract publisher (§13.9 matrix rows, exact strings) ──
 const CONN = "ibxsmoke0123456789";
-c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
   (() => {
     const g = commitPrincipalGrants(SPACE, "manager", CONN);
     return JSON.stringify(g.publish) === JSON.stringify([
@@ -288,6 +288,34 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
       "$JS.API.INFO",
     ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
+  })());
+c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, the must-5 reconcile-index write, and the must-5 own-gate read — nothing else",
+  (() => {
+    const g = goalWriterGrants(SPACE, "manager", CONN);
+    return JSON.stringify(g.publish) === JSON.stringify([
+      "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
+      "$KV.cotal_records_epbind.goalidx.manager.>",
+      "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
+      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+      "cotal.epbind.epf.manager.eff.>",
+      "cotal.epbind.epf.manager.receipt.>",
+      "cotal.epbind.epf.manager.wrk.>",
+      "cotal.epbind.epf.manager.cp.>",
+      "$KV.cotal_records_epbind.goal.manager.>",
+      "$KV.cotal_records_epbind.cp.manager.>",
+      "$KV.cotal_records_epbind.lease.manager.>",
+      "$JS.API.STREAM.MSG.GET.EPF_epbind",
+      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
+      "$JS.API.INFO",
+    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+      // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
+      && g.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind"
+      // must-5: the reconcile-index write is key-pinned to THIS endpoint's index subtree, and the
+      // own-gate read is the auth store's leader MSG.GET (the goal-writer holds NO records CONSUMER
+      // authority — the boot sweep enumerates the index over the provisioner, never this connection)
+      && g.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>")
+      && g.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind")
+      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER."));
   })());
 c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",
   (() => {

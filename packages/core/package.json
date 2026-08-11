@@ -31,6 +31,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./session-browser": {
+      "types": "./dist/session-browser.d.ts",
+      "import": "./dist/session-browser.js"
     }
   },
   "scripts": {

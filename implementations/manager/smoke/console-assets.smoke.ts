@@ -10,8 +10,9 @@ function check(label: string, cond: boolean): void {
   if (!cond) failures++;
 }
 
-/** `token` undefined sends the upgrade with NO credential — the endpoint must refuse it before it
- *  ever looks at the (deliberately malformed) agent name. */
+/** P2 item 6 deleted the `ws://.../attach/` terminal transport, so the face is HTTP-only and answers
+ *  EVERY upgrade with a clean 400 rather than leaving a stray socket hanging. `token` is still varied
+ *  here to prove the refusal is decided on the request's own shape, not on the credential. */
 function malformedUpgrade(url: string, token?: string): Promise<string> {
   const { hostname, port } = new URL(url);
   return new Promise((resolve, reject) => {
@@ -45,10 +46,10 @@ check("manager build emits dist/console/index.html", existsSync(index));
 // A known token, so the smoke can present the credential the endpoint now requires on every route.
 const TOKEN = "c".repeat(64);
 const endpoint = new AttachEndpoint(
-  () => undefined,
   () => [],
   () => [],
   0,
+  undefined, // no session establisher: this smoke only exercises the static shell + the token gate
   "127.0.0.1",
   TOKEN,
 );
@@ -62,14 +63,12 @@ try {
   check("built manager console serves HTML", (res.headers.get("content-type") ?? "").includes("text/html"));
   await res.text();
 
-  // Credentialed but malformed: the name still fails to decode, so the request is a 400.
+  // There is no WebSocket transport on this face any more (the terminal rides the mesh session), so
+  // an upgrade is refused with a clean 400 — credentialed or not, and whatever the path says.
   const badUpgrade = await malformedUpgrade(base, TOKEN);
-  check("malformed attach upgrade returns 400", badUpgrade.includes("400 Bad Request"));
-  // A malformed name is a bad REQUEST, decided on the request's own syntax before any credential is
-  // consulted — so it is a 400 with or without one, and neither answer leaks the other's outcome.
-  // (The uncredentialed-401 path, on a well-formed name, is covered exhaustively by smoke:attach-auth.)
+  check("a websocket upgrade returns 400 (HTTP-only face)", badUpgrade.includes("400 Bad Request"));
   const anonUpgrade = await malformedUpgrade(base);
-  check("a malformed name is 400 even uncredentialed (syntax before credential)", anonUpgrade.includes("400 Bad Request"));
+  check("...and the same 400 uncredentialed, so neither answer leaks the other's outcome", anonUpgrade.includes("400 Bad Request"));
   check(
     "endpoint survives malformed attach upgrade",
     (await fetch(new URL(`agents?t=${TOKEN}`, base))).status === 200,

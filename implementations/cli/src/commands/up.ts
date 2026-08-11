@@ -18,10 +18,11 @@ import { join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
-  CONTROL_ADMIN,
   createSpaceAuth,
   serverConfig,
   mintCreds,
+  mintLifecycleUid,
+  DEV_OWNER,
   mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   newIdentity,
@@ -798,6 +799,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       attachHost: effectiveAttachHost,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
+      wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
     });
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -864,10 +866,15 @@ async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): 
   const auth = await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root));
   if (!auth) throw new Error("same-principal resume requires the existing space trust material");
   const identity = newIdentity();
+  // The instrument's ep caller triple (1c.2b): the admin instrument's rows are lifecycle-keyed,
+  // and the triple rides back so the resume/preservation calls take askManager's ep path.
+  const uid = mintLifecycleUid();
   return {
     creds: await mintCreds(auth, identity, "control-caller-admin", {
+      lifecycleUid: uid,
       expiresAt: Math.floor((Date.now() + 30 * 60 * 1000) / 1000),
     }),
+    epCaller: { owner: DEV_OWNER, actor: identity.id, uid },
   };
 }
 
@@ -1242,7 +1249,7 @@ async function completeResumeActivation(
   const auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
-    const ready = await askManager(pending.space, server, "ps", undefined, auth, CONTROL_ADMIN, 2_000);
+    const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
     if (!ready.error?.startsWith("no manager reachable")) break;
     if (Date.now() >= readinessDeadline) {
       markPendingResumeDegraded(attemptId, ready.error);
@@ -1261,7 +1268,7 @@ async function completeResumeActivation(
         : pending.inventory as Record<string, unknown>,
     },
     auth,
-    CONTROL_ADMIN,
+    "any",
     10 * 60 * 1000,
   );
   if (!resumed.ok) {
@@ -1295,7 +1302,7 @@ async function completeResumeActivation(
       "commitResume",
       { attemptId },
       auth,
-      CONTROL_ADMIN,
+      "any",
       40_000,
     );
     if (!committed.ok) {
@@ -1329,7 +1336,7 @@ async function completeResumeActivation(
       "commitResume",
       { attemptId },
       auth,
-      CONTROL_ADMIN,
+      "any",
       40_000,
     );
     // A surviving manager that already finalized legitimately answers {state:"active"} with the
@@ -1350,7 +1357,7 @@ async function completeResumeActivation(
     "finalizeResume",
     { attemptId, durableCommitToken: managerCommit.durableCommitToken },
     auth,
-    CONTROL_ADMIN,
+    "any",
     40_000,
   );
   if (!finalized.ok)
@@ -1571,7 +1578,7 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
 async function startDeliveryWithBroker(
   space: string,
   server: string,
-  mgr?: { runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string },
+  mgr?: { runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number },
 ): Promise<boolean> {
   try {
     await ensureControlPlane({ space, server, ...mgr });
@@ -1702,6 +1709,7 @@ export async function startMeshDetached(
     attachHost: effectiveAttachHost,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
+    wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
   });
   return {
     server,
@@ -1964,7 +1972,7 @@ async function authSetup(
   space: string,
   host: string = "127.0.0.1",
   user?: { idpUrl?: string },
-): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
+): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space);
@@ -1997,13 +2005,17 @@ async function authSetup(
     }
   }
   const port = Number(new URL(server).port) || 4222;
+  // P2 item 6: allocate the broker's loopback WebSocket listener port — the console page becomes a
+  // mesh §13.6 session client over it (a NEW same-host attack surface, localhost-bound, no TLS). The
+  // manager's establisher builds its wsUrl from this; threaded to `supervise --ws-port`.
+  const wsPort = await freePort(host);
   const confPath = resolve(dir, "server.conf");
-  writeFileSync(confPath, serverConfig(auth, [auth], { port, storeDir, host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  writeFileSync(confPath, serverConfig(auth, [auth], { port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds, ...(prepared ? { prepared, stateDir } : {}) };
+  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}) };
 }
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph

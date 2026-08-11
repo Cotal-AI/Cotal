@@ -65,6 +65,7 @@ const groups = [
     label: 'Concepts',
     files: [
       'docs/architecture.md',
+      'docs/control-surface.md',
       'docs/spaces.md',
       'docs/transport.md',
       'docs/presence-and-delivery.md',

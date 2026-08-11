@@ -2,7 +2,7 @@
 // the CLI `Command` registry, which is argv/process-exit shaped). The catalog drives both execution
 // and the palette's autocomplete. Write commands publish over the mesh via the observer endpoint;
 // they are gated on `canWrite` (open mode, or a privileged --creds).
-import { CONTROL_PRIVILEGED, resolvePeer, AmbiguousPeerError, type CotalEndpoint } from "@cotal-ai/core";
+import { resolvePeer, AmbiguousPeerError, type CotalEndpoint } from "@cotal-ai/core";
 import type { MeshSnapshot } from "../view/mesh-view.js";
 import { mentionsIn } from "../lib/mentions.js";
 
@@ -115,9 +115,9 @@ export const COMMANDS: ConsoleCommand[] = [
     summary: "list manager-spawned agents",
     run: async (ctx) => {
       try {
-        const r = await ctx.ep.requestControl(CONTROL_PRIVILEGED, { op: "ps" });
-        if (!r.ok) return ctx.notify("ps: " + (r.error ?? "failed"));
-        const list = (r.data as { name: string }[]) ?? [];
+        const r = await ctx.ep.invokeService("manager", "ps");
+        if (r.reply.ok !== true) return ctx.notify("ps: " + (r.reply.error?.message ?? r.reply.error?.code ?? "failed"));
+        const list = (r.reply.data as { name: string }[]) ?? [];
         ctx.notify(list.length ? "agents: " + list.map((a) => a.name).join(", ") : "no managed agents");
       } catch (e) {
         ctx.notify("ps: " + (e as Error).message);
