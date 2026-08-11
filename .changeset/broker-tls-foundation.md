@@ -76,11 +76,22 @@ prose list) are:
 | `implementations/cli/src/commands/down.ts` | 651, 691 | `assertControlPlaneQuiesced` / `readPresenceWithoutConsumer` — **only** on `down --preserve-state`, not bare `cotal down` |
 
 Bare `cotal down` does **not** hit those two `down.ts` sites: it stops via pidfiles
-(`stopLocalProcess`) and never opens a broker wire. Live-checked: `up --detach --open --tls-cert/--tls-key`
-then bare `down` (with `NODE_EXTRA_CA_CERTS` stripped on the down step) stops manager, delivery, and
-nats-server and leaves the port `ECONNREFUSED`. `down --preserve-state` and the restore/resume prove
-paths above remain incomplete client fence (auto-upgrade + private-CA/`NODE_EXTRA_CA_CERTS`
-dependent; no own TLS requirement against a forged INFO) — follow-up, not a bare-teardown break.
+(`stopLocalProcess`) and never opens a broker wire. Live-checked twice: `up --detach --open
+--tls-cert/--tls-key` then bare `down` (with `NODE_EXTRA_CA_CERTS` stripped on the down step) stops
+manager, delivery, and nats-server and leaves the port `ECONNREFUSED`. There is no silently-skipped
+safety gate on ordinary teardown.
+
+`down --preserve-state` is the only path that calls `assertControlPlaneQuiesced` (via
+`isReachable(mesh.server)` at `down.ts:585`, then the `tls: false` connects at :651/:691). Bare
+`isReachable(server)` is a plaintext INFO probe (`tcpInfoProbe`): on this branch's STARTTLS TLS it
+still returns **true** (INFO precedes the upgrade), so the quiescence gate is **entered**, not
+skipped, when the client trusts the CA. **Narrow residual (do not fix in this branch):**
+`down --preserve-state` **and** a CA the client does not trust — then a stricter `{tls:true}` probe
+would fail, the INFO probe still says up, and the subsequent authenticated connect without a trusted
+CA fails or the cut proceeds without a completed wire-truth lease proof depending on the failure
+mode. Same family as the private-CA diagnosis gap (S7); incomplete client fence, not an ordinary-path
+break. Flagless sites mostly **work** via auto-upgrade and are **unfenced** (no own requirement
+against a forged INFO), not "broken teardown."
 
 *Resolves the decision and then drops it (partially closed).* `cotal web` now passes
 `tls: conn.tls` into its endpoint. `cotal status` carries `target.tlsRequired` on the Selected Mesh
