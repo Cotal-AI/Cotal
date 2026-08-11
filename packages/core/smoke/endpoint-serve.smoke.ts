@@ -915,8 +915,18 @@ try {
       JSON.stringify({ complete: s1.complete, replies: s1.replies.size, churn: s1.churn, missing: s1.missing, invalid: s1.invalid }));
     // distsys BLOCKING 2: the FREEZE is charged against the ONE deadline. A stalled enumeration is
     // deadline-exceeded within the budget, never a scatter that silently overruns it.
+    // RE-POINTED for the consumer-free enumeration: the freeze stalls on STREAM.INFO now, not on
+    // `kv.keys`. Stalling a call the code no longer makes left this cell reporting "no throw" — the
+    // fixture aimed at a deleted call site, which is the exact class this suite exists to catch.
+    // ONLY `streams.info` stalls: the per-slot leader reads use other jsm methods and must stay
+    // live, or this would prove "a stalled everything" rather than "a stalled enumeration".
+    // Mutation-proved: pass `info` through to the real jsm and this cell reports "no throw".
+    const stalledJsm = Object.create(jsm) as typeof jsm;
+    (stalledJsm as unknown as { streams: unknown }).streams = Object.assign(Object.create(jsm.streams as object), {
+      info: () => new Promise(() => { /* never settles */ }),
+    });
     await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
-      () => epScatterService(nc, jsm, { keys: () => new Promise(() => { /* never settles */ }) } as never, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
+      () => epScatterService(nc, stalledJsm, kv, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)
