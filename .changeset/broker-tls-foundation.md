@@ -62,11 +62,25 @@ this feature exists.
 
 Two distinct cases, and the second is worse:
 
-*Never had a TLS path.* `waitForDeliveryLease` (`packages/core/src/lease.ts`) builds its own
-`connect` options rather than going through `standaloneConnectOpts`. The user-auth service and the
-membership feed connect the same way. Numerous helpers pass `tls: false` explicitly or omit it:
-sites in `streams.ts`, `channels.ts`, `down.ts`, `spaces.ts`, `evict.ts`, and `up.ts`'s own setup
-connects.
+*Never had a TLS path / passes `tls: false` explicitly.* `waitForDeliveryLease`
+(`packages/core/src/lease.ts`) builds its own `connect` options rather than going through
+`standaloneConnectOpts`. The user-auth service and the membership feed connect the same way.
+The **enumerated** `standaloneConnectOpts({ … tls: false })` sites at this tip (twelve, not a
+prose list) are:
+
+| File | Lines | Role |
+|------|-------|------|
+| `packages/core/src/channels.ts` | 166, 192, 217, 238 | channel-registry helpers |
+| `packages/core/src/streams.ts` | 322, 369, 398, 439 | stream/history helpers |
+| `implementations/cli/src/commands/up.ts` | 1155, 1234 | `provePreparedRestoreListener` / `proveOrdinaryResumeListener` authenticated JetStream proof (restore + ordinary-resume adopt only — not bare `up` / bare `down`) |
+| `implementations/cli/src/commands/down.ts` | 651, 691 | `assertControlPlaneQuiesced` / `readPresenceWithoutConsumer` — **only** on `down --preserve-state`, not bare `cotal down` |
+
+Bare `cotal down` does **not** hit those two `down.ts` sites: it stops via pidfiles
+(`stopLocalProcess`) and never opens a broker wire. Live-checked: `up --detach --open --tls-cert/--tls-key`
+then bare `down` (with `NODE_EXTRA_CA_CERTS` stripped on the down step) stops manager, delivery, and
+nats-server and leaves the port `ECONNREFUSED`. `down --preserve-state` and the restore/resume prove
+paths above remain incomplete client fence (auto-upgrade + private-CA/`NODE_EXTRA_CA_CERTS`
+dependent; no own TLS requirement against a forged INFO) — follow-up, not a bare-teardown break.
 
 *Resolves the decision and then drops it (partially closed).* `cotal web` now passes
 `tls: conn.tls` into its endpoint. `cotal status` carries `target.tlsRequired` on the Selected Mesh
@@ -77,12 +91,12 @@ TCP/INFO probe against a plaintext substitute. What still drops the decision: th
 to the delivery daemon and then launches the manager without it), plus the never-had-a-path sites
 above.
 
-**Do not read the above as exhaustive.** It is the set found by an adversarial pass, not by an
-enumeration of every dial in the tree. Client-side strictness landed for: `cotal up` (every route
-to a listener), the recorded mesh record (`MeshEntry.tlsRequired`), CLI-resolved connections that
-go through `resolveMeshTarget` / `endpointAuth`, `cotal status`, `cotal web`, and the delivery
-daemon's three dials. It has not landed for the manager process, the user-auth service, the
-membership feed, `waitForDeliveryLease`, or the helper sites listed above.
+Client-side strictness landed for: `cotal up` (every route to a listener), the recorded mesh record
+(`MeshEntry.tlsRequired`), CLI-resolved connections that go through `resolveMeshTarget` /
+`endpointAuth`, `cotal status`, `cotal web`, and the delivery daemon's three dials. It has not
+landed for the manager process, the user-auth service, the membership feed, `waitForDeliveryLease`,
+or the twelve helper sites tabulated above. That table is the residual enumeration; do not collapse
+it back to prose.
 
 The delivery daemon is strict on all three of its dials, including the every-two-seconds reachability
 poll that re-presents its standing credential for the life of the process.
