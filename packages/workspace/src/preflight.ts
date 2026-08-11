@@ -1,3 +1,4 @@
+import { createConnection } from "node:net";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { loadMeshes, pruneMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
@@ -102,20 +103,73 @@ export async function preflightTarget(
   // TLS-REQUIRED + "unreachable" is often NOT a dead broker. `probeConnect` maps every non-auth
   // failure (including certificate verification) to `unreachable`. Against a private-CA mesh
   // without `NODE_EXTRA_CA_CERTS`, the TLS handshake fails while the broker is live and still
-  // greets with plaintext INFO. Classifying that as unreachable + prune DELETES a healthy
-  // tlsRequired registry entry — durable state destroyed on a recoverable trust error. This branch
-  // is what introduced tlsRequired meshes, so the mis-prune is in scope.
+  // greets with plaintext INFO advertising `tls_required`. Classifying that as unreachable + prune
+  // DELETES a healthy tlsRequired registry entry — durable state destroyed on a recoverable trust
+  // error. This branch introduced tlsRequired meshes, so the mis-prune is in scope.
   //
-  // Same class as stale-auth: confirm the broker is still answering INFO; if it is, the failure is
-  // client trust / transport config, never a stale-entry signal. Bare `isReachable` is the INFO
-  // probe (not a TLS connect), so it stays true when only the CA is missing.
+  // Discriminator must be stronger than bare liveness. A *different* broker on the recorded port
+  // (the classic plaintext-substitute case this file's own comment documents) also answers INFO —
+  // bare `isReachable` alone would mis-label that as tls-trust and keep a stale record. Only an
+  // INFO that still advertises `tls_required: true` is the TLS mesh the record describes; anything
+  // else falls through to the normal unreachable/prune path.
   if (target.tlsRequired && probe.reason === "unreachable") {
-    if (await isReachable(target.server) || await isReachable(target.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS }))
+    const info = await readNatsInfoGreeting(target.server);
+    if (info?.tls_required === true)
       return { ok: false, kind: "tls-trust", prune: false };
   }
 
   const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));
   return { ok: false, kind, prune };
+}
+
+/** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing
+ *  usable answered. Used to tell "TLS mesh still there, client cannot verify" from "something else
+ *  is on this port" without performing a TLS handshake. */
+async function readNatsInfoGreeting(
+  server: string,
+  timeoutMs = 1_000,
+): Promise<{ tls_required?: boolean } | null> {
+  let host: string;
+  let port: number;
+  try {
+    const u = new URL(server.includes("://") ? server : `nats://${server}`);
+    host = u.hostname;
+    port = u.port ? Number(u.port) : 4222;
+    if (!host || !Number.isFinite(port)) return null;
+  } catch {
+    return null;
+  }
+  return new Promise((resolve) => {
+    const sock = createConnection({ host, port });
+    let buf = "";
+    let done = false;
+    const finish = (v: { tls_required?: boolean } | null) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch { /* */ }
+      resolve(v);
+    };
+    sock.setTimeout(timeoutMs, () => finish(null));
+    sock.on("error", () => finish(null));
+    sock.on("close", () => finish(null));
+    sock.on("data", (chunk: Buffer) => {
+      buf += chunk.toString("utf8");
+      const nl = buf.indexOf("\r\n");
+      if (nl < 0) {
+        if (buf.length > 4096) finish(null);
+        return;
+      }
+      const line = buf.slice(0, nl);
+      const brace = line.indexOf("{");
+      if (!/^INFO\b/.test(line) || brace < 0) return finish(null);
+      try {
+        const j = JSON.parse(line.slice(brace)) as { tls_required?: boolean };
+        finish(j);
+      } catch {
+        finish(null);
+      }
+    });
+  });
 }
 
 /**
