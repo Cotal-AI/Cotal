@@ -75,7 +75,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
   await seedChannelRegistry({
     servers: SERVERS, space, creds: mgrCreds,
-    file: { defaults: { replay: true }, channels: { ops: { replay: true }, secret: { replay: true }, bulk: { replay: true }, "ops.private": { replay: true }, bulk2: { replay: true } } },
+    file: { defaults: { replay: true }, channels: { ops: { replay: true }, secret: { replay: true }, bulk: { replay: true }, "ops.private": { replay: true }, bulk2: { replay: true }, many: { replay: true } } },
   });
 
   mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
@@ -88,21 +88,23 @@ try {
   // Backlog worth reading back.
   const pId = newIdentity();
   const uidP = mintLifecycleUid();
-  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops", "bulk"], allowPublish: ["ops", "bulk"], subscribe: ["ops", "bulk"], lifecycleUid: uidP });
-  poster = new CotalEndpoint({ space, servers: SERVERS, creds: pCreds, channels: ["ops", "bulk"], consume: false, lifecycleUid: uidP, watchPresence: false, registerPresence: false, card: { id: pId.id, name: "poster", kind: "agent" } });
+  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["ops", "bulk", "many"], allowPublish: ["ops", "bulk", "many"], subscribe: ["ops", "bulk", "many"], lifecycleUid: uidP });
+  poster = new CotalEndpoint({ space, servers: SERVERS, creds: pCreds, channels: ["ops", "bulk", "many"], consume: false, lifecycleUid: uidP, watchPresence: false, registerPresence: false, card: { id: pId.id, name: "poster", kind: "agent" } });
   poster.on("error", () => {}); await poster.start();
   for (let i = 1; i <= 6; i++) await poster.multicast(`scrollback line ${i}`, { channel: "ops" });
   // A backlog whose full page CANNOT fit one NATS message: 20 x ~60 KB is over the 1 MB default
   // max_payload, so a count-only bound would build a reply the broker refuses to carry.
   const fat = "x".repeat(60_000);
   for (let i = 1; i <= 20; i++) await poster.multicast(`fat ${i} ${fat}`, { channel: "bulk" });
+  // More than the server-side ceiling, so the ceiling can be OBSERVED rather than trusted.
+  for (let i = 1; i <= 250; i++) await poster.multicast(`many ${i}`, { channel: "many" });
   await wait(600);
 
   // The CALLER: an ordinary provisioned agent whose ACL admits `ops` and not `secret`. It reads
   // through the mediator, so the interesting facts are about authorization, not about reachability.
   const rId = newIdentity();
   const uidR = mintLifecycleUid();
-  const rCreds = await provisionAgent(mgr, auth, rId, { allowSubscribe: ["ops", "bulk", "bulk2"], subscribe: ["ops", "bulk", "bulk2"], lifecycleUid: uidR });
+  const rCreds = await provisionAgent(mgr, auth, rId, { allowSubscribe: ["ops", "bulk", "bulk2", "many"], subscribe: ["ops", "bulk", "bulk2", "many"], lifecycleUid: uidR });
   reader = new CotalEndpoint({ space, servers: SERVERS, creds: rCreds, channels: [], consume: false, lifecycleUid: uidR, watchPresence: false, registerPresence: false, card: { id: rId.id, name: "reader", kind: "agent" } });
   reader.on("error", () => {}); await reader.start();
 
@@ -171,6 +173,29 @@ try {
   const empty = await reader.readHistory("bulk2", { limit: 10 }).catch((e: Error) => e);
   check("a channel with no history returns an empty COMPLETE page, not an error",
     !(empty instanceof Error) && empty.items.length === 0 && empty.complete === true, empty);
+
+  // THE CEILING IS OBSERVED, NOT TRUSTED. A bound that is documented but never exercised is not a
+  // bound — the pooled reader is privileged, so an unenforced ceiling means one request can pull a
+  // channel's whole retained set through it. `many` holds 250; asking for 500 must yield 200.
+  const capped = await reader.readHistory("many", { limit: 500 });
+  check("a limit above the server ceiling is CLAMPED to it, not honoured", capped.items.length === 200, { got: capped.items.length });
+  check("...and a clamped page is reported incomplete", capped.complete === false, capped.complete);
+  check("...still the newest, so clamping does not silently page from the start",
+    textOf(capped.items[capped.items.length - 1]) === "many 250", textOf(capped.items[capped.items.length - 1]));
+
+  // A limit the caller got WRONG is refused loudly rather than quietly becoming the default. Silently
+  // substituting 100 for `0` hands back a page the caller never asked for and cannot detect.
+  for (const bad of [0, -1, 1.5, Number.NaN] as number[]) {
+    let e = "";
+    try { await reader.readHistory("ops", { limit: bad }); } catch (err) { e = (err as Error).message; }
+    check(`limit ${String(bad)} is refused, not defaulted`, /limit must be a positive integer/.test(e), { bad, e });
+  }
+  let strErr = "";
+  try { await reader.readHistory("ops", { limit: "10" as unknown as number }); } catch (e) { strErr = (e as Error).message; }
+  check("a numeric STRING limit is refused (no coercion)", /limit must be a positive integer/.test(strErr), { strErr });
+
+  const dflt = await reader.readHistory("ops");
+  check("an omitted limit serves the default page", dflt.items.length === 6 && dflt.complete === true, { n: dflt.items.length });
 
   // 5. THE PROPERTY THAT JUSTIFIES THE FEATURE, and the one check here that must never be relaxed:
   // authorization is re-read PER CALL. A consumer pins its ACL at create time and keeps serving after
