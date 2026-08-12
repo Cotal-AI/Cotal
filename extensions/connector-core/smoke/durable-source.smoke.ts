@@ -7,16 +7,23 @@
  * truncated object that looks valid and gets published as if it were what the agent did. The rule
  * is: consume only up to the last newline, and advance the cursor only that far.
  *
- * MUTATION LEDGER — predicted before the run:
+ * MUTATION LEDGER — predicted, then CORRECTED from what actually died. Both runs are recorded
+ * because one prediction was wrong in an instructive way.
+ *
  *   M1  consume the whole chunk instead of stopping at the last newline
- *       -> MUST kill "a half-written trailing line is NOT consumed" and
- *          "the fragment is delivered once the writer completes it" (it would already be gone)
- *   M2  advance the cursor to file size rather than past consumed bytes
- *       -> MUST kill "the fragment is delivered once the writer completes it"
- *   M3  skip unparseable complete lines instead of throwing
- *       -> MUST kill "an unparseable COMPLETE line fails loud"
- *   M4  start a fresh adopt at 0 instead of at the current end
- *       -> MUST kill "a fresh adopt does not rebroadcast existing history"
+ *       predicted 2, ACTUAL 3: "a half-written trailing line is NOT consumed", "the fragment is
+ *       delivered once the writer completes it", plus the harness's own unexpected-throw guard
+ *       (the truncated JSON throws where the real code would not). Correct on all three.
+ *
+ *   M4  start a fresh adopt at 0 instead of the current end
+ *       predicted 2, ACTUAL 1: only "a fresh adopt does not rebroadcast existing history".
+ *       "the adopt cursor is the current end" SURVIVED — reading from 0 still advances the cursor
+ *       to the end of the last complete line, i.e. the same value. **That cell does not
+ *       discriminate this mutation**, and saying so is more useful than quietly counting it.
+ *
+ * The suite converts an unexpected throw into a cell failure rather than aborting. A run that dies
+ * on the first surprise cannot report WHICH cells a mutation killed, and an illegible kill set is
+ * indistinguishable from no mutation testing.
  *
  * Run: pnpm smoke:durable-source
  */
