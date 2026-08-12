@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch, preserveScratch } from "../../../bin/smoke/_scratch.js";
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
@@ -240,6 +240,8 @@ try {
     // failed to stop. Deleting them turns a recoverable orphan into an anonymous one.
     if (upAttempted && !meshStopped) {
       process.exitCode = 1;
+      // Claim it out of the exit sweep: the evidence is the whole point of keeping it.
+      preserveScratch(scratch);
       console.error(
         `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
           + `needed to find and stop whatever is still running.`,

@@ -56,6 +56,20 @@ function physical(p: string): string {
   }
 }
 
+/** Scratches this process owns and will sweep at exit unless a caller explicitly claims one. */
+const owned = new Map<string, () => void>();
+
+/**
+ * Take a scratch out of the exit sweep, because the caller has decided to KEEP it.
+ *
+ * The one legitimate reason: a mesh was started and not confirmed stopped, so the scratch's `.cotal`
+ * holds the only pidfiles that can find it. Deleting those turns a recoverable orphan into an
+ * anonymous one, which is worse than the leak.
+ */
+export function preserveScratch(scratch: string): void {
+  owned.delete(scratch);
+}
+
 /** One `findCotalRoot`-shaped walk from `start` up to `/`. */
 function walkUp(start: string): string | null {
   let dir = start;
@@ -148,6 +162,21 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
     process.env.TMPDIR = scratch;
     process.env.TMP = scratch;
     process.env.TEMP = scratch;
+    // OWNERSHIP FROM THE MOMENT IT EXISTS, not from the moment the suite reaches its `try`.
+    //
+    // Every caller does fallible work between this return and its own try/finally — minting dirs,
+    // picking ports, spawning children — and a throw in that window used to escape with the scratch
+    // on disk. Measured on a real entry point: forcing the second `mkdtempSync` to EIO left
+    // `cotal-smoke-*` behind, because the failure preceded the `try` by forty lines. Fixing that per
+    // suite is what produced this finding: the transaction was added to ONE file and the class
+    // declared closed while three more callers kept the same gap.
+    //
+    // Since the fixture anchors a `.cotal` inside the scratch, a leaked one is a capture hazard for
+    // whatever runs under that temp base next — the exact poison this helper exists to remove.
+    // `exit` handlers must be synchronous, which `rmSync` is.
+    const sweep = () => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* best effort at exit */ } };
+    owned.set(scratch, sweep);
+    process.once("exit", () => { if (owned.has(scratch)) sweep(); });
     return scratch;
   }
   throw new Error(

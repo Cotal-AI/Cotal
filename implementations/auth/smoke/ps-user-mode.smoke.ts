@@ -31,7 +31,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch, preserveScratch } from "../../../bin/smoke/_scratch.js";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
 // `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
@@ -377,6 +377,8 @@ try {
     // an anonymous one.
     if (upAttempted && !meshStopped) {
       process.exitCode = 1;
+      // Claim it out of the exit sweep: the evidence is the whole point of keeping it.
+      preserveScratch(scratch);
       console.error(
         `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
           + `needed to find and stop whatever is still running.`,
