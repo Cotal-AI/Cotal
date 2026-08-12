@@ -7,7 +7,6 @@ import {
   newIdentity,
   rotateSystemAccount,
   writeSecretFileAtomic,
-  type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
@@ -33,12 +32,18 @@ import { workspaceSecretStore } from "./secret-store-fs.js";
  * operator surface is `cotal up --rotate-sys` (the one command that already renders that config and
  * boots the broker + daemons from it) rather than a standalone verb that would leave the mesh in a
  * half-rotated state.
+ *
+ * WORKSTATION ONLY, deliberately: unlike `renewal.ts`, nothing here takes a {@link SecretStore}. The
+ * $SYS pair lives on the raw FS with no store seam, and the multi-tenant guard below reads the FS
+ * account records, which an injected store could neither supply nor be enumerated for. See
+ * {@link rotateSystemCreds}.
  */
 
 /** The two $SYS credential files, by the same key↔filename convention `renewal.ts` uses. They stay on
- *  the raw FS (not the {@link SecretStore} seam) because they are not a renewable-into-a-store kind:
- *  a hosted composition rotating them needs the broker-config rewrite too, so the pair moves together
- *  or not at all. Named here so the rotation writer and `cotal clean`'s removal list cannot drift. */
+ *  the raw FS, with no secret-store seam: renewing them means rewriting the broker config too, so the
+ *  pair and the trust record move together or not at all, which is not something a store can hold half
+ *  of. Named here so the rotation writer, the staleness check and `cotal clean`'s removal list cannot
+ *  drift apart. */
 export const SYSTEM_CREDS_FILES = ["membership-observer.creds", "connection-evictor.creds"] as const;
 
 export interface SystemRotationResult {
@@ -72,16 +77,24 @@ export interface SystemRotationResult {
  * THROWS rather than degrading: a stripped signer (no operator seed) cannot rotate, and a caller that
  * ignored the throw would boot a broker whose config still carries the retired system account.
  */
-export async function rotateSystemCreds(root: string, expectedSpace: string, store?: SecretStore): Promise<SystemRotationResult> {
+export async function rotateSystemCreds(root: string, expectedSpace: string): Promise<SystemRotationResult> {
   // A rotation is BROKER-wide, not space-wide, however it is spelled: the system account lives in
   // the shared broker record and the re-issued operator JWT names the successor for every space
   // under it, while the two $SYS cred files are per-ROOT (one pair, its observer permissions pinned
   // to ONE data account). So on a multi-tenant root, "rotate space A" would retire space B's system
   // account and leave no cred that can observe B. Same guard, same reason, as `cotal down`,
-  // `cotal backup`, `cotal clean` and `cotal up --restore` — placed HERE, not at the CLI flag, so a
-  // hosted caller of this export cannot reach the unscoped blast radius either.
+  // `cotal backup`, `cotal clean` and `cotal up --restore`.
+  //
+  // The guard reads the FS account records, and that is exactly why this function takes NO
+  // SecretStore. `SecretStore` cannot enumerate, so an injected multi-tenant store paired with an
+  // empty local root would sail past this check and retire the system account for every tenant in
+  // it — a guard that looks broker-wide while enforcing nothing. Taking the store away makes the
+  // mismatch impossible to express rather than merely refused at runtime, and it costs nothing real:
+  // the $SYS pair is FS-only anyway (a hosted composition has nowhere in the store to put it), so
+  // this operation was never store-composable to begin with. If store enumeration ever exists, this
+  // becomes a real hosted seam; until then it is a workstation operation and says so.
   assertSingleSpaceBroker(authDir(root), "a system-account rotation (`cotal up --rotate-sys`)");
-  const s = store ?? workspaceSecretStore(root);
+  const s = workspaceSecretStore(root);
   const auth = await getSpaceAuth(s, expectedSpace);
   if (!auth)
     throw new Error(`rotateSystemCreds: no trust record for space "${expectedSpace}" - there is no system account to rotate`);

@@ -27,8 +27,11 @@ whether that comes from `--open` or from `broker.auth: false` in a manifest; `--
 unfinished restore or resume attempt on the root, including one a bare `cotal up` would recover,
 since those paths can adopt a live listener and return without booting a broker; and a root hosting
 more than one space, because the system account lives in the shared broker record and the rotation is
-therefore broker-wide. `rotateSystemCreds` is exported from `@cotal-ai/workspace` for hosted
-compositions and carries the multi-tenant guard itself rather than at the CLI flag.
+therefore broker-wide. `rotateSystemCreds` is exported from `@cotal-ai/workspace` and carries the
+multi-tenant guard itself rather than at the CLI flag. It is deliberately a workstation operation and
+takes no `SecretStore`: the `$SYS` pair has no store seam to be written through, and because a
+`SecretStore` cannot be enumerated, accepting one would mean a broker-wide guard that reads a local
+filesystem while enforcing nothing for the tenants actually at risk.
 
 A rotation requires every broker for the root to be STOPPED, and that is now proven rather than
 inferred from the address being asked for: a live `nats.pid`, an unreadable one, or any recorded mesh

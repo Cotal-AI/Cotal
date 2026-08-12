@@ -189,7 +189,9 @@ try {
   // A second tenant under the SAME broker operator. The rotation retires the system account for
   // BOTH, and this root holds one $SYS cred pair pinned to one data account — so it must refuse
   // rather than silently leave the neighbour unobservable. Guarded in the workspace export, not at
-  // the CLI flag, so a hosted caller hits it too.
+  // the CLI flag, so every caller hits it. (The guard reads the FS account records; that is why the
+  // export takes no SecretStore — an injected store cannot be enumerated, so it could not be
+  // guarded, only appear to be.)
   const multiRoot = mkdtempSync(join(tmpdir(), "cotal-sysrot-multi-"));
   mkdirSync(join(multiRoot, ".cotal", "auth"), { recursive: true });
   const multiStore = workspaceSecretStore(multiRoot);

@@ -2066,7 +2066,7 @@ async function authSetup(
     await assertRootBrokerStopped(cotalRoot());
     // Fails loud: a caller that swallowed this would boot the broker on the RETIRED system account
     // while `doctor auth` reported the rotation as done.
-    const rot = await rotateSystemCreds(cotalRoot(), space, store);
+    const rot = await rotateSystemCreds(cotalRoot(), space);
     auth = rot.auth; // the config below MUST be rendered from the successor, never the pre-rotation copy
     console.log(
       c.green(`✓ rotated the system account for "${space}"`) +
