@@ -149,10 +149,15 @@ try {
   }
 
   // B4 — Number() coerced non-canonical cursors; " " became 0 and replayed all history.
-  for (const bad of [" ", "1e0", "01", "+1", "", "x:y:1"]) {
-    let refused = false;
-    try { await src.read(bad); } catch { refused = true; }
-    c(`B4: non-canonical cursor ${JSON.stringify(bad)} is refused`, refused);
+  // The refusal must be a CURSOR refusal, not any throw. Against the old Number()-coercing code
+  // "1e0"/"01"/"+1" all became valid offsets and then threw for an incidental reason (an
+  // unparseable line at that offset) — which a bare "did it throw?" cell would have scored as a
+  // pass. Asserting the message names the cursor is what makes these discriminate.
+  for (const bad of [" ", "1e0", "01", "+1", "", "x:y:1", "1:2", "1:2:3:4"]) {
+    let msg = "";
+    try { await src.read(bad); } catch (e) { msg = (e as Error).message; }
+    c(`B4: non-canonical cursor ${JSON.stringify(bad)} is refused AS a malformed cursor`,
+      /malformed cursor/.test(msg), msg || "did not throw");
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
