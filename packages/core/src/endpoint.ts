@@ -2144,7 +2144,11 @@ export class CotalEndpoint extends EventEmitter {
     await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
   }
 
-  /** Raise the mint-time ACL ceiling. Provision/remint only — see {@link reissueAcl}. */
+  /**
+   * Raise the mint-time ACL ceiling. Provision/remint only — see {@link reissueAcl}.
+   * Process discipline: call only in the same act that bakes `allowSubscribe` into the JWT; the
+   * write is not crypto-bound to credential bytes.
+   */
   async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
     await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
   }

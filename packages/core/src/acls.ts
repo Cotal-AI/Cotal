@@ -147,10 +147,17 @@ async function enumerateLiveAclRows(
 /**
  * Raise the mint-time history ceiling (`issuedAllowSubscribe`) to match `allowSubscribe`.
  *
- * CALL PATH: only {@link provisionAgent} (and tests of that path). This is the same act as baking
- * the list into the JWT. Ordinary registry writers use {@link commitAcl}, which cannot raise the
- * ceiling — a boolean flag on commitAcl would let any DurableProvisioner holder re-open the
- * ACL-authority hole by passing `{ reissue: true }`. Separate function = separate call path.
+ * CALL PATH: only {@link provisionAgent} (and tests of that path). Ordinary registry writers use
+ * {@link commitAcl}, which cannot raise the ceiling — a boolean flag on commitAcl would let any
+ * DurableProvisioner holder re-open the ACL-authority hole. Separate function = separate call path.
+ *
+ * PROCESS DISCIPLINE, NOT CRYPTO BINDING: this write does not verify that a broader JWT was minted.
+ * A caller who can reach `reissueAcl` can raise the ceiling while leaving the live credential
+ * narrow, and mediated history will then serve channels `channelHistory` still broker-denies.
+ * That is accepted residual: whoever holds the provisioner can already mint arbitrary JWTs. The
+ * obligation is that `reissueAcl` may ONLY ride the same act that bakes `allowSubscribe` into the
+ * user JWT (provision/remint). Do not call it from revoke, repair, or any path that does not also
+ * remint. Docs must not claim the ceiling is bound to credential bytes.
  */
 export async function reissueAcl(
   kv: KV,
