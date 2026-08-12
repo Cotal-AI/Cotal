@@ -474,7 +474,18 @@ try {
   await nc.close();
 } finally {
   broker.kill("SIGKILL");
-  await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
+  // Settle on every path the broker can take, including ALREADY-EXITED. Attaching once("exit")
+  // only after kill races: under load the child can fully exit before the listener is armed, the
+  // promise never settles, and tsx exits 13 with "Detected unsettled top-level await" after every
+  // assertion has already passed (reproduced: forced already-exited path → exit 13 + same warning).
+  await new Promise<void>((resolve) => {
+    if (broker.exitCode !== null || broker.signalCode !== null) return resolve();
+    const done = () => resolve();
+    broker.once("exit", done);
+    broker.once("error", done);
+    // Re-check after arming: exit may have fired between the null test and once().
+    if (broker.exitCode !== null || broker.signalCode !== null) resolve();
+  });
   rmSync(sd, { recursive: true, force: true });
 }
 
