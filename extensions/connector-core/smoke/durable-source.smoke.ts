@@ -30,6 +30,14 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); }
 };
 
+/** Read, converting an UNEXPECTED throw into a cell failure instead of crashing the suite.
+ *  A run that aborts on the first surprise cannot report which cells a mutation killed, and an
+ *  illegible kill set is the same as no mutation testing at all. */
+const readOr = async <T>(src: JsonlFileSource<T>, cursor: string | undefined, what: string) => {
+  try { return await src.read(cursor); }
+  catch (e) { c(`${what} (unexpected throw)`, false, String(e)); return { records: [] as T[], cursor: cursor ?? "0" }; }
+};
+
 const dir = mkdtempSync(join(tmpdir(), "durable-source-"));
 const path = join(dir, "session.jsonl");
 
@@ -37,28 +45,28 @@ try {
   // ── a fresh adopt starts at the END: an existing session is not rebroadcast ──
   writeFileSync(path, '{"i":1}\n{"i":2}\n');
   const src = new JsonlFileSource<{ i: number }>(path);
-  const adopt = await src.read(undefined);
+  const adopt = await readOr(src, undefined, "fresh adopt");
   c("a fresh adopt does not rebroadcast existing history", adopt.records.length === 0, adopt.records);
   c("the adopt cursor is the current end", adopt.cursor === "16", adopt.cursor);
 
   // ── new complete records are read forward ──
   appendFileSync(path, '{"i":3}\n{"i":4}\n');
-  const r1 = await src.read(adopt.cursor);
+  const r1 = await readOr(src, adopt.cursor, "read forward");
   c("new complete records are read forward from the cursor", r1.records.length === 2 && r1.records[1].i === 4, r1.records);
 
   // ── nothing new: no records, cursor unmoved ──
-  const r2 = await src.read(r1.cursor);
+  const r2 = await readOr(src, r1.cursor, "unchanged read");
   c("an unchanged file yields no records and does not move the cursor", r2.records.length === 0 && r2.cursor === r1.cursor, r2);
 
   // ── THE CASE: a half-written line must not be consumed ──
   appendFileSync(path, '{"i":5}\n{"i":6'); // no trailing newline: the writer is mid-line
-  const r3 = await src.read(r2.cursor);
+  const r3 = await readOr(src, r2.cursor, "partial-line read");
   c("a half-written trailing line is NOT consumed", r3.records.length === 1 && r3.records[0].i === 5, r3.records);
   c("the cursor stops at the last complete line", Number(r3.cursor) < 16 + 16 + 8 + 6, r3.cursor);
 
   // ── and it arrives once the writer finishes it ──
   appendFileSync(path, '}\n');
-  const r4 = await src.read(r3.cursor);
+  const r4 = await readOr(src, r3.cursor, "completed-fragment read");
   c("the fragment is delivered once the writer completes it", r4.records.length === 1 && r4.records[0].i === 6, r4.records);
 
   // ── a complete but unparseable line is LOUD, never silently skipped ──
