@@ -249,9 +249,26 @@ writeFileSync(
       herdr.ensureServer("cotal-herdr-fake"), /failed to start.*Operation not permitted/);
   } finally {
     process.env.PATH = realPath;
-    rmSync(fakeDir, { recursive: true, force: true });
   }
   ok("dead server child is detected early, not waited out", Date.now() - started < 3_000);
+}
+
+// No-`ps` path (Windows, ps-less containers): a failed `ps` proves NOTHING, so a dead child
+// must never be misread as dead early — ensureServer waits out the bounded window and still
+// fails loud with the captured stderr. PATH holds ONLY the fake bin dir: `herdr` resolves,
+// `ps` cannot (the fake script's `#!/bin/sh` shebang is PATH-independent).
+{
+  const realPath = process.env.PATH;
+  process.env.PATH = fakeDir;
+  const started = Date.now();
+  try {
+    throws("without ps, a dead start still fails loud with the server's stderr", () =>
+      herdr.ensureServer("cotal-herdr-fake2"), /did not come up.*Operation not permitted/);
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeDir, { recursive: true, force: true });
+  }
+  ok("without ps, death is never assumed — the full window is waited out", Date.now() - started >= 4_500);
 }
 
 console.log("\n── session isolation ───────────────────────────");

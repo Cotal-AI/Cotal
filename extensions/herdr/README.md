@@ -43,6 +43,9 @@ Same shape (native-watch, no PTY streaming; a shared per-space session), but pan
 Herdr session whose server also tracks agent status natively, and the runtime is pane-based
 rather than window-based. Requires the `herdr` binary on PATH (`brew install`/see herdr.dev);
 `available()` only checks the binary — the per-space session server is provisioned on demand.
+A failed server start is detected early via POSIX `ps` where present; without it (Windows, a
+ps-less container) death is never assumed — the same failure surfaces at the bounded startup
+window, with the server's own stderr either way.
 
 See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

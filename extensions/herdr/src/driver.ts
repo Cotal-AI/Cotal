@@ -133,21 +133,30 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Whether the spawned server child is dead. The provisioning wait blocks the event loop, so
- *  Node cannot reap the child yet and a dead child lingers as a zombie — which `kill(pid, 0)`
- *  still counts as alive. `ps`'s state column sees through that synchronously. */
+/** Whether the spawned server child is PROVABLY dead. The provisioning wait blocks the event
+ *  loop, so Node cannot reap the child yet and a dead child lingers as a zombie — which
+ *  `kill(pid, 0)` still counts as alive; `ps`'s state column sees through that synchronously.
+ *  Death is only ever proven by `ps` actually running: a nonzero `ps` exit (it ran, the pid
+ *  does not exist) or a zombie/empty state. A `ps` that cannot run at all (Windows, a ps-less
+ *  container) proves nothing and reads as "still alive" — early-death detection is a POSIX
+ *  fast path; everywhere else the bounded startup window still fails loud with the captured
+ *  stderr, never a false "dead" for a healthy starting child. */
 function childDead(pid: number | undefined): boolean {
   if (pid === undefined) return true; // spawn itself failed (error event is pending)
+  let state: string;
   try {
-    const state = execFileSync("ps", ["-o", "state=", "-p", String(pid)], {
+    state = execFileSync("ps", ["-o", "state=", "-p", String(pid)], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: PROBE_MS,
     }).trim();
-    return state === "" || state.startsWith("Z");
-  } catch {
-    return true; // ps errors for a nonexistent pid
+  } catch (err) {
+    // exitCode set → ps ran and found no such pid: proof of death. Anything else (ENOENT,
+    // spawn failure, timeout) means ps itself failed: no proof, treat as alive.
+    const status = (err as { status?: unknown }).status;
+    return typeof status === "number" && status !== 0;
   }
+  return state === "" || state.startsWith("Z");
 }
 
 /** Ensure the named session's headless server is up, starting one when absent (the herdr
