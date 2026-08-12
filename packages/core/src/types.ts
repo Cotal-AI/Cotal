@@ -198,6 +198,16 @@ export interface MembershipRecord {
 export interface AclRecord {
   /** The owner's current read ACL — the channels/patterns it may read (its `allowSubscribe`). */
   allowSubscribe: string[];
+  /**
+   * Ceiling from the last credential issue for this lifecycle. Written on create and on
+   * `reissueAcl` (provision/remint); a plain `commitAcl` cannot raise it. Mediated history
+   * authorizes against `allowSubscribe ∩ issuedAllowSubscribe` so a registry widen without a remint
+   * cannot grant reads the effective broker credential does not (SPEC §9.6). The ceiling is process-
+   * bound to remint (callers must only reissue alongside baking the list into the JWT), not crypto-
+   * bound to credential bytes. Absent on pre-ceiling rows — readers treat missing as equal to
+   * `allowSubscribe` (legacy).
+   */
+  issuedAllowSubscribe?: string[];
   /** Bumped each write; stale-write guard companion to the KV revision CAS. */
   revision: number;
   /** Epoch ms of the last write (diagnostics only). */

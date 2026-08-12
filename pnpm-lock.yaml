@@ -502,6 +502,15 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
+  packages/lang:
+    dependencies:
+      acorn:
+        specifier: ^8.15.0
+        version: 8.18.0
+      json-canonicalize:
+        specifier: ^2.0.0
+        version: 2.0.0
+
   packages/workspace:
     dependencies:
       '@cotal-ai/core':
@@ -1502,6 +1511,11 @@ packages:
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
+
+  acorn@8.18.0:
+    resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
 
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
@@ -3723,6 +3737,8 @@ snapshots:
     dependencies:
       mime-types: 3.0.2
       negotiator: 1.0.0
+
+  acorn@8.18.0: {}
 
   agent-base@7.1.4: {}
 

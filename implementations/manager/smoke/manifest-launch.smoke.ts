@@ -110,6 +110,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   provisionDmInbox: async () => {},
   provisionDlvInbox: async () => {},
   commitAcl: async () => {},
+  reissueAcl: async () => {},
   provisionTaskQueue: async () => {},
   // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent joined.
   on: () => {},

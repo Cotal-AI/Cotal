@@ -50,7 +50,7 @@ const eq = (a: string[] = [], b: string[]) => a.length === b.length && [...a].so
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
-const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+const noop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
 // Dev/static principal for an agent nkey: owner=DEV_OWNER ("local"), actor=the nkey. The feed keys BOTH
 // arms by this dot-form — the live arm from the CONNZ `principal:` tag, the durable arm from the members
 // registry — so seeds + lookups here use it (mirrors plane3-auth). A raw nkey would fork one agent in two.
