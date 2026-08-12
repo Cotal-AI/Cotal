@@ -54,6 +54,7 @@ import {
   loadMeshes,
   MEMBERSHIP_RW_CREDS_KEY,
   recordMesh,
+  meshesForRoot,
   removeMesh,
   rotateSystemCreds,
   setCurrent,
@@ -2051,6 +2052,18 @@ async function authSetup(
     // report a rotation that did not happen.
     if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
   } else if (rotateSys) {
+    // A rotation needs every broker for THIS ROOT stopped, and it must be PROVEN, not inferred from
+    // the requested address. The already-running refusal earlier in `up` fires only when a registry
+    // row identifies this root's mesh at the URL being asked for. Lose that row — deleted, pruned,
+    // or a broker started out of band from this root's own `server.conf` — and a bare
+    // `cotal up --rotate-sys` finds the default port busy, quietly picks a FREE one, and rotates:
+    // the old process keeps serving the retired config from memory while a second nats-server comes
+    // up on the successor against THE SAME JetStream store. That is store corruption, not the
+    // degraded-membership residual, and it needs no exotic ghost process to reach.
+    //
+    // So prove it here, at the one point every rotation path converges on, and fail CLOSED: an
+    // ambiguous answer refuses exactly like a live one.
+    await assertRootBrokerStopped(cotalRoot());
     // Fails loud: a caller that swallowed this would boot the broker on the RETIRED system account
     // while `doctor auth` reported the rotation as done.
     const rot = await rotateSystemCreds(cotalRoot(), space, store);
@@ -2078,14 +2091,19 @@ async function authSetup(
   // FILES can see (they agree with each other; they just disagree with the record). This is the one
   // place holding both, on the one path that renders the config, so it is where the split is caught.
   //
-  // WARN, not refuse. These creds power the membership graph and live eviction, both of which already
-  // degrade fail-soft; refusing the boot would turn a degraded feed into a dead mesh and take every
-  // agent down with it. The point is that the operator cannot MISS it, not that the mesh stops.
-  for (const stale of staleSystemCreds(cotalRoot(), auth.sys.pub))
-    console.error(
-      c.red(`! ${stale.file} is signed by a RETIRED system account`) +
-        c.dim(` (${stale.iss ? `${stale.iss.slice(0, 12)}…` : "unreadable"}; this space's is ${auth.sys.pub.slice(0, 12)}…)`) +
-        c.dim(" - an interrupted rotation left it behind the trust record. The broker will deny it, so membership + live eviction stay down until: `cotal down` then `cotal up --rotate-sys`"),
+  // REFUSE, do not warn. A warning is what the `--detach` path turns into an unread log line under a
+  // green "✓ running in the background", which is the false success this whole change exists to
+  // remove. And what stays broken is not only the display feed: live connection EVICTION rides the
+  // same pair, so booting here would silently downgrade revocation to deny-new for the life of the
+  // mesh. The repo's posture is to throw rather than degrade, and the recovery is one command that
+  // this message names.
+  const stale = staleSystemCreds(cotalRoot(), auth.sys.pub);
+  if (stale.length)
+    throw new Error(
+      `${stale.map((x) => `${x.file} (signed by ${x.iss ? `${x.iss.slice(0, 12)}…` : "an unreadable issuer"})`).join(", ")} ` +
+        `${stale.length === 1 ? "is" : "are"} not signed by this space's system account (${auth.sys.pub.slice(0, 12)}…) - ` +
+        "an interrupted rotation left the $SYS creds behind the trust record, so the broker would deny them and live eviction + the membership feed would stay down. " +
+        "Re-run the rotation to land a complete generation: `cotal up --rotate-sys`",
     );
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && hasUserAuthState(cotalRoot(), space)) {
@@ -2118,6 +2136,53 @@ async function authSetup(
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
   return { confPath, creds, ...(prepared ? { prepared, stateDir } : {}) };
+}
+
+/**
+ * Prove no broker for THIS ROOT is still running, or refuse. The rotation's guarantee is that the
+ * retired system account stops being honored, and that guarantee is only as good as "every process
+ * serving this root's config is gone": a survivor keeps honoring the retired account from memory,
+ * and — because it shares this root's JetStream store — a second broker started on the successor
+ * would write the same store underneath it.
+ *
+ * Two independent proofs, because either alone has a blind spot. The PID FILE catches a broker this
+ * root started whose registry row was lost, which is the reachable-port-with-no-`held` bypass. The
+ * REGISTRY sweep catches a broker recorded for this root at some OTHER address, which no probe of
+ * the requested URL would ever contact. Both fail CLOSED: an unreadable pid file is refused exactly
+ * like a live one, since "cannot tell" and "still running" have the same consequence here.
+ *
+ * Not a general `up` guard — an ordinary boot adopting or replacing a listener is a supported flow
+ * with its own claim machinery. This is specifically the precondition for retiring an authority.
+ */
+async function assertRootBrokerStopped(root: string): Promise<void> {
+  const pidPath = join(root, ".cotal", "nats.pid");
+  if (existsSync(pidPath)) {
+    let raw: string;
+    try {
+      raw = readFileSync(pidPath, "utf8").trim();
+    } catch (e) {
+      throw new Error(`--rotate-sys: ${pidPath} exists but cannot be read (${(e as Error).message}) - refusing to rotate while a broker for this root may still be running; \`cotal down\` first`);
+    }
+    const pid = Number(raw);
+    if (!Number.isInteger(pid) || pid <= 0)
+      throw new Error(`--rotate-sys: ${pidPath} does not hold a pid (${JSON.stringify(raw)}) - refusing to rotate while a broker for this root may still be running; \`cotal down\` first`);
+    let live: boolean;
+    try {
+      process.kill(pid, 0); // signal 0 is a liveness probe, it signals nothing
+      live = true;
+    } catch (e) {
+      // EPERM means the process EXISTS and is not ours to signal — alive for this purpose.
+      live = (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+    if (live)
+      throw new Error(`--rotate-sys: this root's broker is still running (pid ${pid}) - it would keep serving the retired system account, and a second broker would share its JetStream store. Stop it first: \`cotal down\``);
+  }
+  // A broker recorded for this root at ANY address, still answering. The rotate refusal earlier in
+  // `up` only sees the URL this invocation asked for; this sees the ones it did not.
+  for (const m of meshesForRoot(root)) {
+    if (await isReachable(m.server))
+      throw new Error(`--rotate-sys: mesh "${m.space}" for this root is still reachable at ${m.server} - stop it first (\`cotal down\`), then rotate`);
+  }
 }
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph

@@ -258,7 +258,8 @@ credential's identity as its card id.
   `connection-evictor` are signed by the system-account seed, which is never persisted, so no
   running process re-signs them: they carry a 30-day expiry and are renewed by issuing a new
   system account (`cotal down` then `cotal up --rotate-sys`), which leaves the data account,
-  every agent cred and the store untouched. Past that horizon the mesh keeps delivering, but the
+  every agent cred and the store untouched but does invalidate earlier full backups (they bind to
+  the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the
   membership feed and live eviction stop; `cotal doctor auth` and the manager warn from the 75%
   point onward.
 - **Static agent creds are long-lived; the machinery's are not.** One-shot command creds

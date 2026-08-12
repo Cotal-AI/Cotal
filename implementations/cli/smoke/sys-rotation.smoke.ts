@@ -65,6 +65,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SPACE = "sysrot";
 const root = mkdtempSync(join(tmpdir(), "cotal-sysrot-"));
+// Sandbox the machine home BEFORE anything reads it. `assertRootBrokerStopped` sweeps the mesh
+// registry, and `up` consults it for the port-in-use decision, so without this the smoke would read
+// (and reason about) the developer's or runner's real meshes.
+process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "cotal-sysrot-home-"));
 const cotal = (f: string) => join(root, ".cotal", f);
 const obsPath = cotal(SYSTEM_CREDS_FILES[0]);
 const evPath = cotal(SYSTEM_CREDS_FILES[1]);
@@ -314,6 +318,62 @@ try {
   check("an unreadable $SYS cred is reported stale with no issuer", corrupt.length === 1 && corrupt[0].iss === undefined, corrupt);
   writeFileSync(evPath, goodEv, { mode: 0o600 });
 
+  console.log("\n5c) an interrupted rotation makes the next boot REFUSE, not warn");
+  await stopBroker(); // the guards below are pre-boot; a live listener would trip the port check first
+  // The record-only crash state, driven through the surface an operator actually reaches. Warning
+  // here would become an unread log line under `--detach`'s green success, and what stays broken is
+  // not only the graph: live eviction rides the same pair, so a boot would silently downgrade
+  // revocation to deny-new for the life of the mesh.
+  writeFileSync(obsPath, livePreObserver, { mode: 0o600 });
+  writeFileSync(evPath, oldEv, { mode: 0o600 });
+  let bootRefusal = "";
+  process.chdir(root);
+  try {
+    await up({ values: { space: SPACE, server: SERVERS, detach: true }, positionals: [], raw: [] });
+  } catch (e) {
+    bootRefusal = (e as Error).message;
+  } finally {
+    process.chdir(origCwd);
+  }
+  check("a plain `up` REFUSES on a record-ahead-of-creds split", bootRefusal.includes("not signed by this space's system account"), bootRefusal);
+  check("the boot refusal names both stale files", bootRefusal.includes(SYSTEM_CREDS_FILES[0]) && bootRefusal.includes(SYSTEM_CREDS_FILES[1]), bootRefusal);
+  check("the boot refusal names the rotation as the repair", bootRefusal.includes("up --rotate-sys"), bootRefusal);
+  writeFileSync(obsPath, goodObs, { mode: 0o600 });
+  writeFileSync(evPath, goodEv, { mode: 0o600 });
+
+  console.log("\n5d) a live broker for THIS ROOT blocks rotation, registry row or not");
+  // The bypass: with no registry row, a bare `up --rotate-sys` finds the port busy, picks a FREE one
+  // and rotates — leaving the old broker on the retired config and a second one on the successor,
+  // both over the same JetStream store. The pid file is the proof the registry cannot supply.
+  const genBeforeLive = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
+  writeFileSync(join(root, ".cotal", "nats.pid"), String(process.pid)); // alive by construction
+  let liveRefusal = "";
+  process.chdir(root);
+  try {
+    await up({ values: { space: SPACE, "rotate-sys": true, detach: true }, positionals: [], raw: [] });
+  } catch (e) {
+    liveRefusal = (e as Error).message;
+  } finally {
+    process.chdir(origCwd);
+  }
+  check("a live root broker refuses the rotation even with NO registry row", liveRefusal.includes("still running") && liveRefusal.includes("cotal down"), liveRefusal);
+  check("the live-broker refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeLive);
+
+  // Fail CLOSED: an unreadable pid is refused exactly like a live one.
+  writeFileSync(join(root, ".cotal", "nats.pid"), "not-a-pid");
+  let ambiguous = "";
+  process.chdir(root);
+  try {
+    await up({ values: { space: SPACE, "rotate-sys": true, detach: true }, positionals: [], raw: [] });
+  } catch (e) {
+    ambiguous = (e as Error).message;
+  } finally {
+    process.chdir(origCwd);
+  }
+  check("an unreadable pid file refuses too (fail closed, not assume stopped)", ambiguous.includes("does not hold a pid"), ambiguous);
+  check("the ambiguous refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeLive);
+  rmSync(join(root, ".cotal", "nats.pid"), { force: true });
+
   console.log("\n6) a TORN rotation is caught by both readers, not reported healthy");
   // Simulate the crash grok described: the record committed, the observer landed, the evictor did
   // not. Both files parse and neither is near expiry, so ONLY an issuer comparison can see it.
@@ -342,6 +402,12 @@ try {
   writeFileSync(evPath, evAfter, { mode: 0o600 }); // restore the complete generation
 } finally {
   await stopBroker();
+  // A regressed guard would let one of the `up` calls above actually spawn a DETACHED broker, which
+  // outlives this process. Never leave one behind, whatever the checks said.
+  try {
+    const strayPid = Number(readFileSync(join(root, ".cotal", "nats.pid"), "utf8").trim());
+    if (Number.isInteger(strayPid) && strayPid > 0 && strayPid !== process.pid) process.kill(strayPid, "SIGTERM");
+  } catch { /* no pidfile, unreadable, or already gone */ }
   process.chdir(origCwd);
   rmSync(root, { recursive: true, force: true });
 }

@@ -165,10 +165,12 @@ never persisted, so they are renewed by issuing a **new system account** under t
 operator and minting fresh creds against it. A plain re-`up` does **not** do this: it reuses the
 existing trust record, and its `$SYS` creds along with it.
 
-The rotation is safe to run on a real space. The data account, the account signing key, every agent
-credential minted from it, and the JetStream store are all untouched; what dies is the retired system
-account, and with it any out-of-band copy of the old `$SYS` creds, on every broker that loads the
-rotated config. It needs the broker to restart on the rewritten config, so it runs as part of a boot:
+The rotation is safe to run on a real space, with one operational cost. The data account, the account
+signing key, every agent credential minted from it, and the JetStream store are all untouched; what
+dies is the retired system account, and with it any out-of-band copy of the old `$SYS` creds, on every
+broker that loads the rotated config. The cost is that **earlier full backups stop being restorable**
+(see below), so this is not a no-consequence operation. It needs the broker to restart on the rewritten
+config, so it runs as part of a boot:
 
 ```bash
 cotal down
@@ -336,7 +338,9 @@ resumes only the exact recorded source store and runtime; a contradicting `--sto
 `--runtime` fails in preflight. Authenticated restores validate the complete
 space trust bundle before staging, including nkeys, seed matches, JWTs, signers, and space binding;
 full restores commit to the validated operator, system-account, data-account, and active-signer root
-chain in addition to the static/user authority fingerprint. The composed commitment is revalidated
+chain in addition to the static/user authority fingerprint. Because the system account is part of that
+commitment, a [`cotal up --rotate-sys`](#up) makes every full artifact taken before it unrestorable
+against this root: take a fresh full backup after each rotation. The composed commitment is revalidated
 immediately before store mutation and never includes secret seeds. Restore never creates fresh auth.
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
