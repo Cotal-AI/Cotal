@@ -209,12 +209,20 @@ try {
 } catch (e) {
   // A listening server keeps the process alive past the throw, and `finally` is not reachable from
   // out here — so both the server and the scratch are this handler's responsibility.
-  // Reported, not swallowed. This is the last catch in the file that could hide something, and a
-  // close that fails leaves a listening server holding the process open — the reader needs to know
-  // that happened even though the scratch removal below must still run.
-  try { idpSrv?.close(); } catch (ce) { console.error(`  ! IdP close failed during setup cleanup: ${(ce as Error).message}`); }
+  // `Server.close()` reports through its CALLBACK, not by throwing — a `try/catch` around it sees
+  // nothing, so the previous "reporting" version was still blind and the message below still
+  // asserted a close it had not observed. Await the callback and say what actually happened.
+  // `ERR_SERVER_NOT_RUNNING` is the benign case: the failure came before `listen`, so there was
+  // never a server to close.
+  let closed = "not created";
+  if (idpSrv) {
+    const err = await new Promise<NodeJS.ErrnoException | undefined>((r) => idpSrv!.close((x) => r(x ?? undefined)));
+    closed = !err ? "closed"
+      : err.code === "ERR_SERVER_NOT_RUNNING" ? "never listened"
+      : `CLOSE FAILED (${err.code ?? err.message}) — a listening server may still hold this process open`;
+  }
   rmSync(scratch, { recursive: true, force: true });
-  throw new Error(`fixture setup failed (scratch removed, IdP closed): ${(e as Error).message}`, { cause: e });
+  throw new Error(`fixture setup failed (scratch removed, IdP: ${closed}): ${(e as Error).message}`, { cause: e });
 }
 async function approve(userCode: string): Promise<void> {
   await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
