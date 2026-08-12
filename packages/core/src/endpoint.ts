@@ -20,6 +20,7 @@ import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
+import { assertIdToken } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { assertValidName } from "./resolve.js";
@@ -1174,6 +1175,85 @@ export class CotalEndpoint extends EventEmitter {
     };
     await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
     return msg;
+  }
+
+  /** The broker's live `max_payload`, so a caller can size a message BEFORE building it.
+   *
+   *  Exposed because the connection is private and callers outside core (a connector assembling a
+   *  batched payload) otherwise have no way to learn the ceiling except by failing a publish.
+   *  Throws rather than guessing a default: a wrong ceiling is worse than none, because it splits
+   *  either too eagerly or too late and both look like working code. */
+  get maxPayload(): number {
+    const max = this.nc?.info?.max_payload;
+    if (typeof max !== "number" || !Number.isFinite(max) || max <= 0)
+      throw new Error(`${this.notLiveMsg()} - max_payload is only known while connected`);
+    return max;
+  }
+
+  /**
+   * Multicast with an OPTIMISTIC-CONCURRENCY expectation and a caller-chosen dedup id, returning
+   * the `PubAck` fields instead of discarding them. The serialized-append primitive: two writers
+   * racing one subject cannot interleave, because the loser's expectation no longer holds.
+   *
+   * **Why a separate method rather than options on {@link multicast}.** `multicast` mints a fresh
+   * `id` per call and drops the ack; both are right for ordinary chat and both are fatal to a
+   * caller that must retry an append idempotently. Keeping them apart means no existing caller
+   * changes behaviour, and the stricter validation below applies only where a caller opted in.
+   *
+   * - `id` becomes the JetStream `Nats-Msg-Id`, so the SAME id may be republished on retry and the
+   *   server dedups it within the stream's duplicate window. It is validated rather than trusted:
+   *   it lands in a wire header, and the dedup cache is **stream-wide**, so a caller-supplied id is
+   *   both an injection surface and a way to suppress another publisher's message.
+   * - `expectedLastSubjectSeq` is the sequence this publisher believes is the subject's tip; `0`
+   *   means "the subject must be empty". A mismatch throws, and the throw stays classifiable by the
+   *   already-public {@link isCasLoss} — the error is deliberately **not wrapped**, since wrapping
+   *   would hide the `err_code` that classification reads.
+   *
+   * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
+   *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
+   */
+  async multicastExpecting(opts: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    expectedLastSubjectSeq: number;
+    mentions?: string[];
+    replyTo?: string;
+    contextId?: string;
+  }): Promise<{ message: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!isConcreteChannel(opts.channel))
+      throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    // Reuse the existing id grammar rather than mint a second one: [A-Za-z0-9_-]{1,64} admits a
+    // UUID and rejects every character that could break a wire header (CR, LF, space, colon).
+    assertIdToken(opts.id, "publish id");
+    const expected = opts.expectedLastSubjectSeq;
+    if (!Number.isSafeInteger(expected) || expected < 0)
+      throw new Error(
+        `expectedLastSubjectSeq must be a non-negative safe integer, got ${JSON.stringify(expected)}`,
+      );
+    if (!Array.isArray(opts.parts) || opts.parts.length === 0)
+      throw new Error("multicastExpecting requires at least one part");
+
+    const message: CotalMessage = {
+      id: opts.id,
+      ts: Date.now(),
+      space: this.space,
+      from: this.ref(),
+      channel: opts.channel,
+      mentions: normalizeMentions(opts.mentions),
+      parts: opts.parts,
+      replyTo: opts.replyTo,
+      contextId: opts.contextId,
+    };
+    // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
+    // the ack, and publishMsg deliberately does neither.
+    const ack = await this.js.publish(
+      chatSubject(this.space, this.owner, this.actor, opts.channel),
+      JSON.stringify(message),
+      { msgID: opts.id, expect: { lastSubjectSequence: expected } },
+    );
+    return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
   /** Unicast: direct message to one specific instance. */
