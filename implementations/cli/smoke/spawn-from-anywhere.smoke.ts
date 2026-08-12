@@ -22,6 +22,7 @@ process.env.COTAL_HOME = home;
 const { probeConnect, createSpaceAuth } = await import("@cotal-ai/core");
 const {
   authDir,
+  findCotalRoot,
   clearCurrent,
   isWorkspaceTargetError,
   loadMeshes,
@@ -61,6 +62,21 @@ const entry = (space: string, root: string, server = SERVER) =>
   ({ space, server, root, mode: "open" as const, ts: "2026-06-22T00:00:00.000Z" });
 
 try {
+  // PRECONDITION, stated because this suite cannot enforce it. It calls itself hermetic and is —
+  // for COTAL_HOME. But `findCotalRoot` walks to `/` with no boundary, so ANY `.cotal` in an
+  // ANCESTOR of `tmpdir()` captures `neutral`: resolution takes the local-project branch and
+  // returns a `local-space` target rather than throwing, and the 0-mesh assertion below fails as
+  // a bare "Missing expected exception" that names neither the cause nor the cure. Observed for
+  // real: a machine with `/tmp/.cotal` fails every run while the identical tree passes under a tmp
+  // root with clean ancestry. Fail here instead, naming the directory and the fix.
+  const neutralRoot = findCotalRoot(neutral);
+  assert.equal(
+    neutralRoot,
+    neutral,
+    `this smoke needs a tmp dir with NO .cotal ancestor, but found one at ${join(neutralRoot, ".cotal")} `
+      + `(tmpdir is ${tmpdir()}). Point TMPDIR at a directory whose ancestors hold no .cotal, or remove that one.`,
+  );
+
   // 0 meshes → a bare resolve fails with one sentence, not a crash.
   assert.throws(() => resolveMeshTarget(neutral), /no mesh running/);
   check("0 meshes: resolve throws 'no mesh running'", true);
