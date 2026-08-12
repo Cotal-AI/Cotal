@@ -46,6 +46,7 @@ import {
   credRowKey, srcgateKey, stageIntentKey,
   type EvictPrincipal, type ReconcileSessionPair,
 } from "../src/credential-ledger.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -68,7 +69,7 @@ const EVICT_OPTS = { maxWaitMs: 1500, settleMs: 200, maxVerifyRounds: 3 } as con
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-credledger-"));
 // A conf broker with a REAL system account (CONNZ + KICK live) and an APP account holding the
 // trusted-auth user plus two victim users whose usernames are principal NAME-forms — CONNZ

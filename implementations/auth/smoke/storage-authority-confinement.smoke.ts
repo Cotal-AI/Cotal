@@ -42,6 +42,7 @@ import {
   RECORD_KINDS, poolDurable, effectsDurable, canonDurable,
   type EpCapability,
 } from "@cotal-ai/core";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -89,7 +90,7 @@ const serveRows = {
 const cap: EpCapability = { endpoint: EP, command: "spawn", target: { mode: "owner", tOwner: "u_abc" }, journal: true };
 const callerRows = epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID });
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-stauth-"));
 writeFileSync(join(sd, "server.conf"), [
   `port: ${PORT}`,

@@ -33,6 +33,7 @@ import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-regis
 import { registryStores } from "../src/lifecycle-registry.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import type { CommitValue } from "../src/admission-mediator.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -71,7 +72,7 @@ const CALLER = { owner: "local", actor: "caller", uid: "u".repeat(26) };
 const mkReq = (cc: { owner: string; actor: string; uid: string }): MediatedRequest =>
   mediatedRequestFromSubject(`cotal.${SPACE}.epj.${EP}.admit.${cc.owner}.${cc.actor}.${cc.uid}`);
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-medsmoke-"));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}

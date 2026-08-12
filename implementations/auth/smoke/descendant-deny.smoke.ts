@@ -33,8 +33,9 @@ import {
 } from "../src/credential-ledger.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { ROOT_CREDENTIAL_TTL_MS } from "../src/root-credential.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));

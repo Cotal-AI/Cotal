@@ -47,6 +47,7 @@ import {
   type EpServeLedgerRow,
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -70,7 +71,7 @@ const mkServeRow = (credentialId: string): EpServeLedgerRow => ({
   generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0,
 });
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epservegate-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

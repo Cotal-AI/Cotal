@@ -33,6 +33,7 @@ import { settlementForIntent } from "../src/retirement-barrier.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { jetstream } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -44,7 +45,7 @@ const reaches = async (nc: NatsConnection, subject: string, body?: Uint8Array): 
   catch { return "denied"; }
 };
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `rclean-${randomUUID().slice(0, 8)}`;
 const EP = "jobsrv", EP2 = "mgrjob", POOL_A = "pa", POOL_B = "pb";
