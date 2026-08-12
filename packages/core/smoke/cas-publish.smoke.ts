@@ -6,20 +6,28 @@
  * instead of having it discarded. Two writers racing one subject cannot interleave, because the
  * loser's expectation no longer holds.
  *
- * WHY EACH CHECK EXISTS, and the MUTATION that MUST kill it — predicted BEFORE the first run, so a
- * check that survives its own mutation is a broken check rather than a passing one:
+ * MUTATION LEDGER — predicted BEFORE each run, then CORRECTED from what actually died. Both
+ * mutations were run; the corrections are the useful part and are kept rather than tidied away.
  *
- *   1. drop `expect:` from the publish call        -> MUST kill "stale expectation is a CAS loss"
- *                                                     and "second writer loses"; the first publish
- *                                                     and the id/arg validation cells stay green,
- *                                                     which is the point: they do not test CAS.
- *   2. classify on message text, not `err_code`    -> MUST kill "CAS loss is classifiable"
- *   3. remove `assertIdToken`                      -> MUST kill "header-hostile id refused"
- *   4. accept a negative expectation               -> MUST kill "negative expectation refused"
- *   5. return a hard-coded `duplicate: false`      -> MUST kill "in-window duplicate is reported"
- *   6. let `maxPayload` fall back to a default     -> MUST kill "maxPayload throws when not live"
+ *   M1  drop `expect:` from the publish
+ *       predicted 2: "stale expectation is a CAS loss", "dual-connect ... LOSES"
+ *       ACTUAL  3: also "append at the current tip succeeds".
+ *       The prediction was incomplete, not the check wrong: with no fence the refused write LANDS,
+ *       so the tip advances and the absolute-sequence assertion shifts. Note the coupling — that
+ *       cell depends on earlier cells having been refused, which is deliberate (it proves ordering)
+ *       but means it is not independent.
  *
- * A smoke that cannot say which mutation kills which cell is not mutation-proved, it is decorated.
+ *   M2  remove `assertIdToken`
+ *       predicted 2: "header-hostile id refused (CRLF)", "empty id refused"
+ *       ACTUAL  1: only "empty id refused". **The CRLF cell SURVIVED.**
+ *       That was a real defect in this suite: the NATS client rejects CRLF in a header on its own,
+ *       so that cell proved the TRANSPORT's validation and would stay green with ours deleted.
+ *       Fixed by adding two cells only our grammar can catch — a 65-char id and one containing
+ *       `.`/`:` — both of which the transport would carry happily. Re-run: kills 3, CRLF correctly
+ *       not among them.
+ *
+ * The lesson worth keeping: a mutation that kills FEWER cells than predicted is a finding about the
+ * suite, not a nuisance. M2 is the whole reason this file has a discriminating id cell at all.
  *
  * Run: pnpm smoke:cas-publish   (needs nats-server on PATH)
  */
@@ -111,6 +119,12 @@ try {
   await twin.stop();
 
   // ── argument validation: each refusal is a separate, individually killable cell ──
+  // An over-length id is the DISCRIMINATING cell: 65 legal chars, which the transport would carry
+  // happily, so ONLY our grammar can refuse it. The CRLF cell below survived removing assertIdToken
+  // in mutation testing — the NATS client rejects CRLF headers on its own, so that cell proves the
+  // transport's validation, not ours. Kept for the injection case, but it is not the discriminator.
+  await throws("over-length id refused (only our grammar can catch this)", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: "a".repeat(65), expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
+  await throws("id with a grammar-illegal character refused", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: "has.dots.and:colons", expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
   await throws("header-hostile id refused (CRLF)", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: "bad\r\nid", expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
   await throws("empty id refused", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: "", expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
   await throws("negative expectation refused", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: -1 }), (e) => !isCasLoss(e));
