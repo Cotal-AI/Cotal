@@ -5,19 +5,52 @@
  * `cotal web` (target-resolved) claimed `<mesh-root>/.cotal/web.pid` but `cotal down web` only
  * looked under the folder it ran in and reported "Nothing running for web".
  *
- * Hermetic (no broker): COTAL_HOME is sandboxed, meshes are recorded straight into the registry,
- * and the dashboard is a real SIGTERM-able child whose pid sits in the mesh root's web.pid.
- * Run: pnpm smoke:down-target
+ * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
+ * into the registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh
+ * root's web.pid. Run: pnpm smoke:down-target
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-// Sandbox the machine-home BEFORE touching the registry — homeCotalDir() reads COTAL_HOME per call,
-// so the real ~/.cotal is never touched.
-const home = mkdtempSync(join(tmpdir(), "cotal-home-"));
+// Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
+// so a `.cotal` above the temp base (observed: `/tmp/.cotal` on GHA; a home-dir `.cotal` when the
+// scratch sat under the monorepo) captures every "neutral" dir. Pick a base with no `.cotal`
+// ancestor, point TMPDIR at a scratch under it.
+function hasCotalAncestor(start: string): boolean {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(join(dir, ".cotal"))) return true;
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+function makeScratch(): string {
+  const bases = [process.env.RUNNER_TEMP, process.env.TMPDIR, tmpdir(), "/var/tmp"].filter(
+    (b): b is string => typeof b === "string" && b.length > 0,
+  );
+  const tried: string[] = [];
+  for (const base of bases) {
+    if (hasCotalAncestor(base)) {
+      tried.push(`${base} (has .cotal ancestor)`);
+      continue;
+    }
+    try {
+      return mkdtempSync(join(base, "cotal-smoke-"));
+    } catch (e) {
+      tried.push(`${base} (${(e as Error).message})`);
+    }
+  }
+  throw new Error(`no temp base free of a .cotal ancestor; tried: ${tried.join("; ")}`);
+}
+const scratch = makeScratch();
+process.env.TMPDIR = scratch;
+process.env.TMP = scratch;
+process.env.TEMP = scratch;
+const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
 
 const { registry } = await import("@cotal-ai/core");
@@ -55,24 +88,13 @@ const run = (positionals: string[], values: Record<string, string | boolean> = {
 const entry = (space: string, root: string) =>
   ({ space, server: "nats://127.0.0.1:4222", root, mode: "open" as const, ts: "2026-07-27T00:00:00.000Z" });
 
-const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree, not a mesh root
+const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
 const prevCwd = process.cwd();
 const meshA = meshWithDashboard("meshA");
 const meshB = meshWithDashboard("meshB");
 
 try {
-  // PRECONDITION this suite cannot sandbox. COTAL_HOME is isolated, but `findCotalRoot` walks to
-  // `/` with no boundary, so ANY `.cotal` in an ANCESTOR of `tmpdir()` makes `neutral` resolve as
-  // a local project and the not-a-mesh-root cells stop testing what they name. Measured: this file
-  // fails on a machine whose tmp parent holds a `.cotal` and passes 11/11 under clean ancestry, at
-  // the same commit. Name the directory rather than failing later and opaquely.
-  const neutralRoot = findCotalRoot(neutral);
-  assert.equal(
-    neutralRoot,
-    neutral,
-    `this smoke needs a tmp dir with NO .cotal ancestor, but found one at ${join(neutralRoot, ".cotal")} `
-      + `(tmpdir is ${tmpdir()}). Point TMPDIR at a directory whose ancestors hold no .cotal, or remove that one.`,
-  );
+  check("scratch has no .cotal ancestor", findCotalRoot(neutral) === neutral, findCotalRoot(neutral));
 
   // The real web descriptor must declare target rooting, and down must see it on the surface.
   check('web descriptor declares rootedAt: "target"', webProcess.rootedAt === "target");
@@ -123,9 +145,7 @@ try {
     if (m.child.pid && alive(m.child.pid)) {
       try { process.kill(m.child.pid, "SIGKILL"); } catch { /* gone */ }
     }
-    rmSync(m.root, { recursive: true, force: true });
   }
-  rmSync(neutral, { recursive: true, force: true });
-  rmSync(home, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
 }
 process.exit(0);
