@@ -41,16 +41,13 @@ import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } fro
 // clean, which is why it stayed green locally. Measured: exit 0 + "(no managed agents)" under a
 // poisoned base, 5/5 under a clean one, at the same commit.
 const scratch = makeScratch("cotal-psuser-");
-const home = mkdtempSync(join(scratch, "home-"));
-process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(scratch, "root-"));
-// ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS. `findCotalRoot` stops at the first `.cotal`
-// starting from the directory itself, so owning one here makes every later resolution from this
-// root land on this root - during `up`, during `ps`, and during `down` - no matter what appears
-// above it in between. Ownership then does not depend on the timing of any check, which is the
-// only way to close a race against a child that re-resolves cwd for itself.
-mkdirSync(join(root, ".cotal"), { recursive: true });
-const { establishIdpSession } = await import("../src/index.js");
+// Assigned inside the ONE setup transaction below. Everything between `makeScratch` and the main
+// body is fallible, and guarding it a line at a time is how the first attempt at this left the
+// cookie read, the auth construction and the port pick outside the guard while a comment claimed
+// otherwise. One transaction or none.
+let home!: string;
+let root!: string;
+let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
 
 // Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
 // have launched detached processes, and those are exactly the ones whose pidfiles must survive.
@@ -64,8 +61,7 @@ const check = (n: string, v: boolean, x?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const PORT = await pickFreePort();
-const SERVER = `nats://127.0.0.1:${PORT}`;
+let SERVER!: string;
 const SPACE = `psuser-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
@@ -155,53 +151,68 @@ function mustHaveRun(r: Run, what: string): void {
 }
 
 /**
- * Everything fallible from here to the main `try` runs under this guard.
+ * ONE SETUP TRANSACTION. Everything between `makeScratch` and the main body happens in here, and a
+ * throw anywhere in it removes the scratch and closes the IdP before rethrowing.
  *
- * The IdP listen and the Better Auth signup can both throw, and they happen BEFORE the main
- * try/finally — so a failure there used to escape with the scratch still on disk. That leak matters
- * more since the anchor landed: the scratch now contains a `.cotal` of its own, so what gets left
- * behind is not an empty directory but a live capture hazard for whatever runs under that temp base
- * next. This suite exists to stop exactly that, and was creating it on its own error path.
+ * Guarding this a step at a time does not work, and the previous attempt is the proof: it wrapped
+ * the listen and the signup, left the cookie read, the auth construction and the port pick outside,
+ * and carried a comment claiming everything fallible was covered. A forced null `set-cookie` then
+ * threw past it, stranding the scratch AND leaving the IdP listening so the process survived to the
+ * harness's 120s kill. The unit that needs to be atomic is the whole setup, not each fallible line.
+ *
+ * The stakes are higher than tidiness since the anchor landed: a leaked scratch owns a `.cotal`, so
+ * what gets left behind is a live capture hazard for whatever runs under that temp base next — the
+ * exact poison this suite exists to detect, manufactured on its own error path.
  */
-async function setupOrClean<T>(what: string, fn: () => Promise<T> | T): Promise<T> {
-  try {
-    return await fn();
-  } catch (e) {
-    // Close the IdP too: `finally` is not reachable from out here, and a listening server would keep
-    // the process alive after the throw.
-    try { idpSrv.close(); } catch { /* not listening yet */ }
-    rmSync(scratch, { recursive: true, force: true });
-    throw new Error(`fixture setup failed at ${what} (scratch removed): ${(e as Error).message}`, { cause: e });
-  }
-}
-
 let handler: ReturnType<typeof toNodeHandler> | undefined;
-const idpSrv = createServer((req, res) => handler!(req, res));
-await setupOrClean("IdP listen", () => new Promise<void>((r, rej) => { idpSrv.once("error", rej); idpSrv.listen(0, "127.0.0.1", r); }));
-const origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
-const base = `${origin}/api/auth`;
-const ba = betterAuth({
-  baseURL: origin,
-  secret: "repro-only-better-auth-secret-0123456789",
-  database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }),
-  emailAndPassword: { enabled: true },
-  plugins: [
-    jwt({ jwt: { issuer: origin, audience: origin } }),
-    deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id) => id === CLIENT_ID }),
-    bearer(),
-  ],
-});
-handler = toNodeHandler(ba);
-// Same guard: a signup failure here would otherwise strand the anchored scratch. Closing the IdP is
-// on the FAILURE path only — the device login below needs it alive on the success path, and the
-// main `finally` owns it from there.
-const signup = await setupOrClean("IdP signup", () =>
-  ba.api.signUpEmail({
+let idpSrv: ReturnType<typeof createServer> | undefined;
+let base!: string;
+let origin!: string;
+let cookie!: string;
+let ba!: ReturnType<typeof betterAuth>;
+try {
+  home = mkdtempSync(join(scratch, "home-"));
+  process.env.COTAL_HOME = home;
+  root = mkdtempSync(join(scratch, "root-"));
+  // ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS. `findCotalRoot` stops at the first `.cotal`
+  // starting from the directory itself, so owning one here makes every later resolution from this
+  // root land on this root - during `up`, during `ps`, and during `down` - no matter what appears
+  // above it in between. Ownership then does not depend on the timing of any check, which is the
+  // only way to close a race against a child that re-resolves cwd for itself.
+  mkdirSync(join(root, ".cotal"), { recursive: true });
+  ({ establishIdpSession } = await import("../src/index.js"));
+  SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
+
+  idpSrv = createServer((req, res) => handler!(req, res));
+  await new Promise<void>((r, rej) => { idpSrv!.once("error", rej); idpSrv!.listen(0, "127.0.0.1", r); });
+  origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
+  base = `${origin}/api/auth`;
+  ba = betterAuth({
+    baseURL: origin,
+    secret: "repro-only-better-auth-secret-0123456789",
+    database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }),
+    emailAndPassword: { enabled: true },
+    plugins: [
+      jwt({ jwt: { issuer: origin, audience: origin } }),
+      deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id) => id === CLIENT_ID }),
+      bearer(),
+    ],
+  });
+  handler = toNodeHandler(ba);
+  const signup = await ba.api.signUpEmail({
     body: { email: "human@example.test", password: "correct-horse-battery", name: "Human 42" },
     returnHeaders: true,
-  }),
-);
-const cookie = signup.headers.get("set-cookie")!.split(";")[0];
+  });
+  const setCookie = signup.headers.get("set-cookie");
+  if (!setCookie) throw new Error("IdP signup returned no set-cookie header");
+  cookie = setCookie.split(";")[0];
+} catch (e) {
+  // A listening server keeps the process alive past the throw, and `finally` is not reachable from
+  // out here — so both the server and the scratch are this handler's responsibility.
+  try { idpSrv?.close(); } catch { /* never listened */ }
+  rmSync(scratch, { recursive: true, force: true });
+  throw new Error(`fixture setup failed (scratch removed, IdP closed): ${(e as Error).message}`, { cause: e });
+}
 async function approve(userCode: string): Promise<void> {
   await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
   const res = await fetch(`${base}/device/approve`, {
@@ -328,7 +339,7 @@ try {
     if (down.status !== 0) throw new Error(`\`cotal down\` exited ${down.status}: ${down.out.slice(-300)}`);
     meshStopped = true;
   });
-  await step("close the IdP", () => idpSrv.close());
+  await step("close the IdP", () => idpSrv?.close());
   await step("remove the scratch", () => {
     // Only once nothing is left to find. The scratch's `.cotal` holds the pidfiles that are the only
     // way to locate a mesh this suite failed to stop; deleting them turns a recoverable orphan into
