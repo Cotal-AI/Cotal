@@ -165,6 +165,13 @@ try {
   // "nothing here" on an ordinary run - it would have let CI delete the load-bearing anchor and stay
   // green. Assert the thing itself; keep the resolution cell beside it as the consequence.
   check("the fixture root OWNS its .cotal (the anchor exists)", existsSync(join(root, ".cotal")), root);
+  // FATAL HERE, before any product command. A failed `check` alone only increments the tally and
+  // lets `up` run UNANCHORED — the precise state whose race this anchor exists to remove. The suite
+  // would still exit red, but only after starting a mesh that could root anywhere.
+  if (!existsSync(join(root, ".cotal"))) {
+    process.exitCode = 1;
+    throw new Error(`FIXTURE FAILURE: the anchor ${join(root, ".cotal")} is missing, so no product command below can be trusted to root here.`);
+  }
   const captor = foreignRootFor(root);
   check("...and therefore outranks any ancestor", captor === null, captor);
   if (captor) { process.exitCode = 1; throw new Error(`anchor missing: ${root} resolves to ${captor}`); }
