@@ -35,23 +35,26 @@ try {
 } catch (e) { cleanScratch(e); }
 process.env.COTAL_HOME = home;
 
-const { probeConnect, createSpaceAuth } = await import("@cotal-ai/core");
-const {
-  authDir,
-  findCotalRoot,
-  clearCurrent,
-  isWorkspaceTargetError,
-  loadMeshes,
-  meshesDir,
-  recordMesh,
-  removeMesh,
-  resolveMeshTarget,
-  saveSpaceAuth,
-  setCurrent,
-} = await import("@cotal-ai/workspace");
-const { spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js");
-const { listPersonas } = await import("../src/lib/personas.js");
-const { pruneStaleMeshes } = await import("../src/lib/meshes.js");
+let probeConnect!: any, createSpaceAuth!: any, authDir!: any, findCotalRoot!: any, clearCurrent!: any, isWorkspaceTargetError!: any, loadMeshes!: any, meshesDir!: any, recordMesh!: any, removeMesh!: any, resolveMeshTarget!: any, saveSpaceAuth!: any, setCurrent!: any, spawnComplete!: any, spawnPersonaRef!: any, listPersonas!: any, pruneStaleMeshes!: any;
+try {
+  ({ probeConnect, createSpaceAuth } = await import("@cotal-ai/core"));
+  ({
+    authDir,
+    findCotalRoot,
+    clearCurrent,
+    isWorkspaceTargetError,
+    loadMeshes,
+    meshesDir,
+    recordMesh,
+    removeMesh,
+    resolveMeshTarget,
+    saveSpaceAuth,
+    setCurrent,
+  } = await import("@cotal-ai/workspace"));
+  ({ spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
+  ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
+} catch (e) { cleanScratch(e); }
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {

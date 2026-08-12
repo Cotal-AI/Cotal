@@ -15,18 +15,35 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
+import { probeLiveness } from "../src/lib/pid.js";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
 // scratch sat under the monorepo) captures every "neutral" dir.
 const scratch = makeScratch();
-const home = mkdtempSync(join(scratch, "home-"));
-process.env.COTAL_HOME = home;
-
-const { registry } = await import("@cotal-ai/core");
-const { cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
-const { down } = await import("../src/commands/down.js");
-const { webProcess } = await import("../../web/src/web.js");
+// SETUP TRANSACTION covering the WHOLE post-scratch window: the home mkdtemp and every dynamic
+// import. An import failure here used to exit with the scratch on disk just as a failed mkdtemp did.
+const cleanScratch = (e: unknown): never => {
+  rmSync(scratch, { recursive: true, force: true });
+  throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
+};
+let home!: string;
+let registry!: typeof import("@cotal-ai/core").registry;
+let cacheLocalProcess!: typeof import("@cotal-ai/workspace").cacheLocalProcess;
+let extensionLocalProcesses!: typeof import("@cotal-ai/workspace").extensionLocalProcesses;
+let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
+let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
+let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
+let down!: typeof import("../src/commands/down.js").down;
+let webProcess!: typeof import("../../web/src/web.js").webProcess;
+try {
+  home = mkdtempSync(join(scratch, "home-"));
+  process.env.COTAL_HOME = home;
+  ({ registry } = await import("@cotal-ai/core"));
+  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
+  ({ down } = await import("../src/commands/down.js"));
+  ({ webProcess } = await import("../../web/src/web.js"));
+} catch (e) { cleanScratch(e); }
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -35,10 +52,15 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const alive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; }
-  catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
-};
+// Only ESRCH proves death. The previous two-state form mapped ANY other errno - EPERM, EIO,
+// unknown - to "dead", which let cleanup skip a live child and then delete its pid evidence.
+const alive = (pid: number): boolean => probeLiveness(pid) !== "dead";
+
+// OWNERSHIP IS PUBLISHED AT THE SPAWN, not by a `return` that may never happen. Every child goes in
+// here the instant it exists, so a throw between the spawn and the return still leaves `finally` a
+// reference to something alive. The caller cannot own a resource whose creating function threw
+// before returning; only the spawner can.
+const spawnedChildren: ChildProcess[] = [];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A registered mesh root with a live "dashboard" child recorded in its web.pid. */
@@ -46,23 +68,16 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
   const root = mkdtempSync(join(tmpdir(), `cotal-${label}-`));
   mkdirSync(join(root, ".cotal"), { recursive: true });
   const child = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
+  spawnedChildren.push(child);   // <- before ANY fallible work below
   child.unref();
   // TRANSACTIONAL FROM THE SPAWN, because ownership cannot be published by a `return` that never
   // happens. Moving the call inside the caller's `try` was not enough: a throw between the spawn and
   // the return — the pidfile write — leaves the assignment undefined, so the caller's `finally` has
   // no record to clean and the child survives with PPID 1. Measured exactly that way: PID alive,
   // reparented, and its pid evidence gone.
-  try {
-    const pidPath = join(root, ".cotal", "web.pid");
-    writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
-    return { root, child, pidPath };
-  } catch (e) {
-    if (child.pid) {
-      try { process.kill(child.pid, "SIGKILL"); }
-      catch (ke) { console.error(`  ! ${label}: spawned ${child.pid} then failed, and could not kill it: ${(ke as Error).message}`); }
-    }
-    throw e;
-  }
+  const pidPath = join(root, ".cotal", "web.pid");
+  writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+  return { root, child, pidPath };
 }
 
 const run = (positionals: string[], values: Record<string, string | boolean> = {}) =>
@@ -135,8 +150,9 @@ try {
   // Only the ones that were actually created — a throw partway through leaves the rest undefined,
   // and `finally` has to cope with a half-built fixture rather than assume a complete one.
   let stranded = 0;
-  for (const m of [meshA, meshB]) {
-    if (!m?.child.pid) continue;
+  for (const child of spawnedChildren) {
+    const m = { child };
+    if (!m.child.pid) continue;
     if (!alive(m.child.pid)) continue;
     try {
       process.kill(m.child.pid, "SIGKILL");
@@ -154,4 +170,4 @@ try {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
-process.exit(0);
+// No `process.exit(0)`: it overrode the exitCode a stranded child sets, turning a leak green.
