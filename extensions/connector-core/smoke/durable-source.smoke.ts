@@ -56,8 +56,9 @@ try {
   // ONE cell asserting both halves: the separate cursor row did not discriminate M4 (reading from 0
   // still lands the cursor on the same value), so it read as coverage without being any
   // (fmae-rev-test F2). Folded rather than kept as a green tick that proves nothing.
-  c("a fresh adopt reads nothing and starts at the current end",
-    adopt.records.length === 0 && adopt.cursor === String(Buffer.byteLength('{"i":1}\n{"i":2}\n')),
+  const off = (cur: string) => Number(cur.split(":")[2]);
+  c("a fresh adopt reads nothing and starts at the last COMPLETE boundary",
+    adopt.records.length === 0 && off(adopt.cursor) === Buffer.byteLength('{"i":1}\n{"i":2}\n'),
     adopt);
 
   // ── new complete records are read forward ──
@@ -77,7 +78,7 @@ try {
   // a wrong stop one byte either side would have gone unnoticed (fmae-rev-test F1). The expected
   // value is computed from the fixture bytes so it stays true if the fixture changes.
   const expectedStop = Buffer.byteLength('{"i":1}\n{"i":2}\n{"i":3}\n{"i":4}\n{"i":5}\n');
-  c("the cursor stops EXACTLY at the end of the last complete line", r3.cursor === String(expectedStop), { got: r3.cursor, want: expectedStop });
+  c("the cursor stops EXACTLY at the end of the last complete line", off(r3.cursor) === expectedStop, { got: r3.cursor, want: expectedStop });
 
   // ── and it arrives once the writer finishes it ──
   appendFileSync(path, '}\n');
@@ -93,13 +94,66 @@ try {
   // ── truncation/replacement is loud too: neither re-adopting nor re-sending is safe to guess ──
   writeFileSync(path, '{"i":1}\n');
   let truncThrew = false;
-  try { await src.read("9999"); } catch { truncThrew = true; }
+  try { await src.read(adopt.cursor.replace(/:\d+$/, ":9999")); } catch { truncThrew = true; }
   c("a cursor past the end (truncated or replaced file) fails loud", truncThrew);
 
   // ── a malformed cursor is refused rather than coerced ──
   let badCursor = false;
   try { await src.read("-1"); } catch { badCursor = true; }
   c("a malformed cursor is refused", badCursor);
+
+  // ══ fmae-rev-sec, four CONFIRMED defects. Each cell reproduces the reviewer's own repro. ══
+
+  // B1 — adopting INSIDE an unfinished line made the next read parse only the record's SUFFIX.
+  //      The adopt path had the exact bug the read path exists to prevent.
+  {
+    const d = mkdtempSync(join(tmpdir(), "ds-b1-"));
+    const f = join(d, "s.jsonl");
+    writeFileSync(f, '{"i":1');                       // writer is mid-record
+    const s1 = new JsonlFileSource<{ i: number }>(f);
+    const a = await readOr(s1, undefined, "B1 adopt");
+    appendFileSync(f, '2}\n');                        // completes it: the real record is {"i":12}
+    const r = await readOr(s1, a.cursor, "B1 read");
+    c("B1: adopting mid-record does not emit the record's suffix",
+      r.records.length === 1 && r.records[0].i === 12, r.records);
+    rmSync(d, { recursive: true, force: true });
+  }
+
+  // B2 — malformed UTF-8 was substituted with U+FFFD, so corrupted data PARSED and would publish.
+  {
+    const d = mkdtempSync(join(tmpdir(), "ds-b2-"));
+    const f = join(d, "s.jsonl");
+    writeFileSync(f, '{"a":1}\n');
+    const s2 = new JsonlFileSource(f);
+    const a = await readOr(s2, undefined, "B2 adopt");
+    appendFileSync(f, Buffer.concat([Buffer.from('{"s":"'), Buffer.from([0xff]), Buffer.from('"}\n')]));
+    let rejected = false;
+    try { await s2.read(a.cursor); } catch { rejected = true; }
+    c("B2: invalid UTF-8 is REJECTED, never silently rewritten to U+FFFD", rejected);
+    rmSync(d, { recursive: true, force: true });
+  }
+
+  // B3 — a same-size-or-larger REPLACEMENT was read as an ordinary append.
+  {
+    const d = mkdtempSync(join(tmpdir(), "ds-b3-"));
+    const f = join(d, "s.jsonl");
+    writeFileSync(f, '{"a":1}\n');
+    const s3 = new JsonlFileSource(f);
+    const a = await readOr(s3, undefined, "B3 adopt");
+    rmSync(f, { force: true });
+    writeFileSync(f, '{"b":1}\n{"b":2}\n');           // unrelated file, LARGER than the cursor
+    let detected = false;
+    try { await s3.read(a.cursor); } catch { detected = true; }
+    c("B3: a larger replacement file is DETECTED, not read as an append", detected);
+    rmSync(d, { recursive: true, force: true });
+  }
+
+  // B4 — Number() coerced non-canonical cursors; " " became 0 and replayed all history.
+  for (const bad of [" ", "1e0", "01", "+1", "", "x:y:1"]) {
+    let refused = false;
+    try { await src.read(bad); } catch { refused = true; }
+    c(`B4: non-canonical cursor ${JSON.stringify(bad)} is refused`, refused);
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
