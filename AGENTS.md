@@ -100,13 +100,16 @@ plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
 - `**@cotal-ai/orca**` (`extensions/orca`): the Orca integration: a driver over the public Orca
 CLI plus a self-registering `orca` Runtime provider.
+- `**@cotal-ai/herdr**` (`extensions/herdr`): the Herdr integration: a driver over the herdr CLI
+plus a self-registering `herdr` Runtime provider that spawns agents into panes of a dedicated
+Herdr session (they survive the manager's terminal going away).
 - `**@cotal-ai/cli**` (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,
 `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
 - `**@cotal-ai/manager**` (`implementations/manager`): the agent supervisor: spawns and manages
-nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, and `orca` via extensions), with `start`/`stop`/`ps`/`attach` and
+nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `start`/`stop`/`ps`/`attach` and
 a WebSocket attach endpoint.
 - `**@cotal-ai/delivery**` (`implementations/delivery`): the server-side Plane-3 delivery daemon
 — the durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped,
