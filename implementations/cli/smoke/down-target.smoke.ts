@@ -150,24 +150,34 @@ try {
   // Only the ones that were actually created — a throw partway through leaves the rest undefined,
   // and `finally` has to cope with a half-built fixture rather than assume a complete one.
   let stranded = 0;
+  const survivors: number[] = [];
   for (const child of spawnedChildren) {
-    const m = { child };
-    if (!m.child.pid) continue;
-    if (!alive(m.child.pid)) continue;
+    if (!child.pid) continue;
+    if (!alive(child.pid)) continue;
     try {
-      process.kill(m.child.pid, "SIGKILL");
+      process.kill(child.pid, "SIGKILL");
     } catch (e) {
       stranded++;
-      console.error(`  ! could not kill dashboard child ${m.child.pid} (${(e as Error).message}) — it is still running`);
+      survivors.push(child.pid);
+      console.error(`  ! could not kill dashboard child ${child.pid} (${(e as Error).message})`);
     }
   }
-  // The scratch goes ONLY if nothing of ours is still alive in it. Its `.cotal/web.pid` is the sole
-  // record that could identify a survivor, and deleting that makes a recoverable orphan anonymous.
+  // EVIDENCE MUST EXIST, not merely be preserved. On partial construction the pidfile write is
+  // exactly what threw, so "the scratch holds the pidfiles" was false in the one case that needs
+  // them. Write the survivors down where they can be found, and if even that fails, put the PIDs on
+  // stderr — an operator can act on a printed PID, but not on a claim that a file exists.
   if (stranded > 0) {
     process.exitCode = 1;
-    console.error(`  ! PRESERVING ${scratch}: ${stranded} child(ren) still alive; its web.pid files are the only way to find them.`);
+    const record = join(scratch, "STRANDED-PIDS.txt");
+    try {
+      writeFileSync(record, survivors.join("\n") + "\n", { mode: 0o600 });
+      console.error(`  ! PRESERVING ${scratch}: ${stranded} child(ren) still alive; PIDs recorded in ${record}`);
+    } catch (e) {
+      console.error(`  ! ${stranded} child(ren) still alive and the record could not be written (${(e as Error).message}). PIDs: ${survivors.join(", ")}`);
+    }
   } else {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
+
 // No `process.exit(0)`: it overrode the exitCode a stranded child sets, turning a leak green.

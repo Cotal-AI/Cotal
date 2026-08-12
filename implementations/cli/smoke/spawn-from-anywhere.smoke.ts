@@ -35,7 +35,25 @@ try {
 } catch (e) { cleanScratch(e); }
 process.env.COTAL_HOME = home;
 
-let probeConnect!: any, createSpaceAuth!: any, authDir!: any, findCotalRoot!: any, clearCurrent!: any, isWorkspaceTargetError!: any, loadMeshes!: any, meshesDir!: any, recordMesh!: any, removeMesh!: any, resolveMeshTarget!: any, saveSpaceAuth!: any, setCurrent!: any, spawnComplete!: any, spawnPersonaRef!: any, listPersonas!: any, pruneStaleMeshes!: any;
+// Typed against the modules they come from — `any` here would have bought cleanup by giving up
+// the compile-time checking this smoke exists to exercise.
+let probeConnect!: typeof import("@cotal-ai/core").probeConnect;
+let createSpaceAuth!: typeof import("@cotal-ai/core").createSpaceAuth;
+let authDir!: typeof import("@cotal-ai/workspace").authDir;
+let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
+let clearCurrent!: typeof import("@cotal-ai/workspace").clearCurrent;
+let isWorkspaceTargetError!: typeof import("@cotal-ai/workspace").isWorkspaceTargetError;
+let loadMeshes!: typeof import("@cotal-ai/workspace").loadMeshes;
+let meshesDir!: typeof import("@cotal-ai/workspace").meshesDir;
+let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
+let removeMesh!: typeof import("@cotal-ai/workspace").removeMesh;
+let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
+let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
+let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
+let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
+let spawnPersonaRef!: typeof import("../src/commands/spawn.js").spawnPersonaRef;
+let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
+let pruneStaleMeshes!: typeof import("../src/lib/meshes.js").pruneStaleMeshes;
 try {
   ({ probeConnect, createSpaceAuth } = await import("@cotal-ai/core"));
   ({
