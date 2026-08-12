@@ -7,8 +7,9 @@ import * as herdr from "./src/driver.js";
 import { HerdrRuntime, herdrRuntimeProvider, privateLauncher } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function countLauncherDirs(): number {
   return readdirSync(tmpdir()).filter((entry) => entry.startsWith("cotal-herdr-")).length;
@@ -196,9 +197,12 @@ ok("the original agent is untouched by the failed duplicate", dupA.status() === 
 dupA.stop({ graceful: false });
 await dupA.waitForExit!();
 
-// herdr silently substitutes $HOME for a missing cwd — the runtime must refuse instead.
+// herdr silently substitutes $HOME for a bad cwd — the runtime must refuse instead, and a
+// regular file is just as bad (the launcher would die invisibly at chdir).
 throws("spawn refuses a nonexistent cwd (herdr would silently use $HOME)", () =>
-  runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/definitely/not/a/dir"), /does not exist/);
+  runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/definitely/not/a/dir"), /is not a directory/);
+throws("spawn refuses a regular file as cwd", () =>
+  runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/etc/hosts"), /is not a directory/);
 ok("no pane was created for the refused cwd", herdr.agentInfo(SESSION, "bad-cwd-agent") === undefined);
 
 console.log("\n── launcher hygiene ────────────────────────────");
@@ -210,12 +214,52 @@ ok("privateLauncher script contains the secret body (read from the file, not arg
 execFileSync(process.execPath, [launcher.script], { stdio: "ignore" });
 ok("launcher removes its own directory after loading", !existsSync(launcher.dir));
 
+console.log("\n── error classification ────────────────────────");
+
+// The gone-terminal idempotency exception is exactly one structured code; every other
+// not-found (or unstructured error) must propagate.
+ok("isAgentGone accepts agent_not_found", herdr.isAgentGone(new herdr.HerdrCliError("agent_not_found", "x")));
+ok("isAgentGone rejects workspace_not_found", !herdr.isAgentGone(new herdr.HerdrCliError("workspace_not_found", "x")));
+ok("isAgentGone rejects session_not_found", !herdr.isAgentGone(new herdr.HerdrCliError("session_not_found", "x")));
+ok("isAgentGone rejects pane_not_found (agent get never returns it for a terminal target)",
+  !herdr.isAgentGone(new herdr.HerdrCliError("pane_not_found", "x")));
+ok("isAgentGone rejects unstructured errors", !herdr.isAgentGone(new Error("agent_not_found")));
+
+console.log("\n── server provisioning failure ─────────────────");
+
+// Deterministic ensureServer failure: a fake `herdr` on PATH whose `server` subcommand dies
+// with a diagnostic on stderr. ensureServer must detect the dead child (not wait out the full
+// window) and surface the server's own words.
+const fakeDir = mkdtempSync(join(tmpdir(), "cotal-herdr-fakebin-"));
+writeFileSync(
+  join(fakeDir, "herdr"),
+  `#!/bin/sh\n` +
+    `[ "$1" = "--version" ] && { echo "herdr 0.0.0-fake"; exit 0; }\n` +
+    `[ "$3" = "status" ] && { echo "status: not running"; exit 0; }\n` +
+    `[ "$3" = "server" ] && { echo "fake: Operation not permitted" >&2; exit 1; }\n` +
+    `exit 1\n`,
+  { mode: 0o755 },
+);
+{
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeDir}:${realPath}`;
+  const started = Date.now();
+  try {
+    throws("ensureServer surfaces the dead server's stderr", () =>
+      herdr.ensureServer("cotal-herdr-fake"), /failed to start.*Operation not permitted/);
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeDir, { recursive: true, force: true });
+  }
+  ok("dead server child is detected early, not waited out", Date.now() - started < 3_000);
+}
+
 console.log("\n── session isolation ───────────────────────────");
 
-// Every driver call is scoped by --session: the same terminal id is unknown to a different
-// (serverless) session, and state fails toward "exited" only because that session has no server.
-ok("a different session cannot see this session's panes",
-  herdr.terminalState(`${SESSION}-other`, "term_nonexistent") === "exited");
+// Every driver call is scoped by --session: a different session has no server behind its
+// socket, so it can neither see this session's panes nor prove anything — it fails closed.
+throws("a serverless session cannot prove terminal state (fails closed)", () =>
+  herdr.terminalState(`${SESSION}-other`, "term_nonexistent"), /couldn't prove/);
 ok("agent listing is scoped to the session",
   (herdr.run(SESSION, ["agent", "list"]).agents as unknown[]).length === 0);
 

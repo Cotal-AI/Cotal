@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -56,6 +56,14 @@ export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher 
   return { argv: [process.execPath, script], dir, script };
 }
 
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function cleanupLauncher(launcher: PrivateLauncher): void {
   try {
     rmSync(launcher.dir, { recursive: true, force: true });
@@ -83,9 +91,10 @@ export class HerdrRuntime implements Runtime {
       throw new Error(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!herdr.available())
       throw new Error("herdr runtime: herdr is not available - is herdr installed and on PATH?");
-    // herdr silently substitutes $HOME for a missing --cwd; validate here so a bad workspace
-    // fails loud at spawn instead of the agent starting somewhere else entirely.
-    if (!existsSync(cwd)) throw new Error(`herdr runtime: cwd ${JSON.stringify(cwd)} does not exist`);
+    // herdr silently substitutes $HOME for a bad --cwd; validate here so a bad workspace
+    // fails loud at spawn instead of the agent starting somewhere else entirely (a non-directory
+    // would otherwise die later, invisibly, at the launcher's chdir).
+    if (!isDirectory(cwd)) throw new Error(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
     herdr.ensureServer(this.session);
 
     const launcher = privateLauncher(spec, cwd);
@@ -131,7 +140,15 @@ export class HerdrRuntime implements Runtime {
     return {
       name,
       kind: "herdr",
-      status: () => herdr.terminalState(session, terminalId),
+      // terminalState throws on any failed inventory (fail closed); for the status probe that
+      // uncertainty must read as "running" — preserving, like tmux — never as a false exit.
+      status: () => {
+        try {
+          return herdr.terminalState(session, terminalId);
+        } catch {
+          return "running";
+        }
+      },
       stop: (opts) => {
         if (opts?.graceful === false) {
           try {
