@@ -1191,28 +1191,6 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * Multicast with an OPTIMISTIC-CONCURRENCY expectation and a caller-chosen dedup id, returning
-   * the `PubAck` fields instead of discarding them. The serialized-append primitive: two writers
-   * racing one subject cannot interleave, because the loser's expectation no longer holds.
-   *
-   * **Why a separate method rather than options on {@link multicast}.** `multicast` mints a fresh
-   * `id` per call and drops the ack; both are right for ordinary chat and both are fatal to a
-   * caller that must retry an append idempotently. Keeping them apart means no existing caller
-   * changes behaviour, and the stricter validation below applies only where a caller opted in.
-   *
-   * - `id` becomes the JetStream `Nats-Msg-Id`, so the SAME id may be republished on retry and the
-   *   server dedups it within the stream's duplicate window. It is validated rather than trusted:
-   *   it lands in a wire header, and the dedup cache is **stream-wide**, so a caller-supplied id is
-   *   both an injection surface and a way to suppress another publisher's message.
-   * - `expectedLastSubjectSeq` is the sequence this publisher believes is the subject's tip; `0`
-   *   means "the subject must be empty". A mismatch throws, and the throw stays classifiable by the
-   *   already-public {@link isCasLoss} — the error is deliberately **not wrapped**, since wrapping
-   *   would hide the `err_code` that classification reads.
-   *
-   * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
-   *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
-   */
-  /**
    * Verify the PRECONDITION {@link multicastExpecting} depends on: that the chat stream evaluates
    * the subject expectation BEFORE the `Nats-Msg-Id` dedup cache. **Throws if it cannot be
    * guaranteed.** Call once at startup, before any serialized append.
@@ -1257,6 +1235,28 @@ export class CotalEndpoint extends EventEmitter {
       );
   }
 
+  /**
+   * Multicast with an OPTIMISTIC-CONCURRENCY expectation and a caller-chosen dedup id, returning
+   * the `PubAck` fields instead of discarding them. The serialized-append primitive: two writers
+   * racing one subject cannot interleave, because the loser's expectation no longer holds.
+   *
+   * **Why a separate method rather than options on {@link multicast}.** `multicast` mints a fresh
+   * `id` per call and drops the ack; both are right for ordinary chat and both are fatal to a
+   * caller that must retry an append idempotently. Keeping them apart means no existing caller
+   * changes behaviour, and the stricter validation below applies only where a caller opted in.
+   *
+   * - `id` becomes the JetStream `Nats-Msg-Id`, so the SAME id may be republished on retry and the
+   *   server dedups it within the stream's duplicate window. It is validated rather than trusted:
+   *   it lands in a wire header, and the dedup cache is **stream-wide**, so a caller-supplied id is
+   *   both an injection surface and a way to suppress another publisher's message.
+   * - `expectedLastSubjectSeq` is the sequence this publisher believes is the subject's tip; `0`
+   *   means "the subject must be empty". A mismatch throws, and the throw stays classifiable by the
+   *   already-public {@link isCasLoss} — the error is deliberately **not wrapped**, since wrapping
+   *   would hide the `err_code` that classification reads.
+   *
+   * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
+   *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
+   */
   async multicastExpecting(opts: {
     channel: string;
     parts: Part[];

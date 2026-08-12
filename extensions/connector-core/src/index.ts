@@ -2,6 +2,7 @@ export * from "./config.js";
 export * from "./agent.js";
 export * from "./runtime.js";
 export * from "./launch.js";
+export * from "./durable-source.js";
 export * from "./tool-specs.js";
 export * from "./orientation.js";
 export * from "./docs.js";
