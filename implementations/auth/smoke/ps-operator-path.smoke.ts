@@ -78,8 +78,12 @@ function mustHaveRun(r: Run, what: string): void {
     : r.status === null ? "ended with neither an exit code nor a signal"
     : null;
   if (why === null) return;
-  console.log(`\n  => FIXTURE FAILURE, not a product defect: ${what} ${why}, which fakes the pass shape.\n`);
-  process.exit(1);
+  // THROW, never `process.exit`. `finally` does not run after `process.exit`, and this suite's
+  // `finally` is what stops the detached mesh and removes the temp root. A fail-loud path that
+  // leaks a live broker and a poisoned scratch is not fail-loud, it is fail-loud-and-dirty — and
+  // the leaked `.cotal` is the exact hazard the rest of this file exists to prevent.
+  process.exitCode = 1;
+  throw new Error(`FIXTURE FAILURE, not a product defect: ${what} ${why}, which fakes the pass shape.`);
 }
 
 try {
@@ -88,10 +92,12 @@ try {
   // grade a mesh that is not this fixture's.
   const captor = cotalRootCaptor(root);
   check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
-  if (captor) { console.log("\n  => FIXTURE FAILURE, not a product defect: the temp root is captured.\n"); process.exit(1); }
+  if (captor) { process.exitCode = 1; throw new Error(`FIXTURE FAILURE, not a product defect: the temp root is captured by ${captor}.`); }
   const up = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
   check("`cotal up` exits 0 — checked FIRST so a fixture failure is distinguishable from a product one", up.status === 0, up.out.slice(-700));
-  if (up.status !== 0) { console.log("\n  => FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised.\n"); process.exit(1); }
+  // Also a throw, not an exit: a PARTIALLY started mesh is the case most in need of the teardown
+  // that `finally` performs, and `process.exit` here would strand exactly that.
+  if (up.status !== 0) { process.exitCode = 1; throw new Error("FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised."); }
 
   console.log("\n2) cotal ps --space, under the STATIC credential");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
