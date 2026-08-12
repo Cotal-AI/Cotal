@@ -782,4 +782,51 @@ log(c.status);
   ok("and it still addresses the escalation target", reqs[1]?.to === "david", reqs[1]);
 }
 
+// ---- 19) the other half of recovery: RE-BIND, do not re-issue ----------------------------------
+
+/**
+ * `requestId` is what a resumed run submits under; `external` is what the previous attempt LEARNED
+ * and wrote down before awaiting a terminal. The handler is required to re-bind to that resource
+ * rather than create a second one, and nothing in this suite had ever checked that the interpreter
+ * hands it over — the id half was tested twice and the resource half not at all. A `resume` that
+ * silently arrived as `undefined` would look exactly like a first attempt, which is the duplicate
+ * side effect the whole mechanism exists to prevent.
+ *
+ * Checked here rather than assumed, because this entry now carries two identity fields instead of
+ * one and `external` rides beside them.
+ */
+{
+  const P = `await turn(await spawn("a", { name: "a" }), { name: "go" });\n`;
+  const script = { turns: { go: { status: "done" as const, at: 0 } } };
+  const live = await run(P, { runId: "r-19", handler: new SimHandler(script) });
+
+  // The crash: the turn bound a real resource and never settled.
+  const entries = live.journal.entries().map((e) =>
+    e.kind === "turn"
+      ? { ...e, state: "pending" as const, status: undefined, result: undefined, endedAt: undefined,
+          requestId: "REQ-19", external: { simGoal: "goal-42" } }
+      : e,
+  );
+
+  let sawResume: unknown;
+  let sawId: string | undefined;
+  let sawAttempt: unknown;
+  const sim = new SimHandler(script);
+  const innerTurn = sim.turn.bind(sim);
+  (sim as unknown as { turn: unknown }).turn = async (req: never, ctx: { requestId: string; attempt: number; resume?: unknown }) => {
+    sawResume = ctx.resume;
+    sawId = ctx.requestId;
+    sawAttempt = ctx.attempt;
+    return innerTurn(req, ctx as never);
+  };
+  await run(P, { runId: "r-19", handler: sim, journal: new Journal({ run: "r-19", entries }) });
+
+  ok("a recovered effect is handed the resource the crashed attempt bound", JSON.stringify(sawResume) === JSON.stringify({ simGoal: "goal-42" }), sawResume);
+  ok("alongside the recorded identity to submit under", sawId === "REQ-19", sawId);
+  // An entry written before the index existed is attempt 0, which is what it is for every effect
+  // that cannot hop. Reading `undefined` here would make `ctx.attempt > 0` throw off a NaN compare
+  // rather than take the ordinary path.
+  ok("and an entry with no recorded index recovers as attempt 0", sawAttempt === 0, sawAttempt);
+}
+
 console.log(`interpret.smoke: ${pass} checks passed`);
