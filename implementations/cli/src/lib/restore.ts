@@ -13,9 +13,8 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { Objm } from "@nats-io/obj";
 import {
   canonicalBackupStreamConfig,
   consumerConfigFromCheckpoint,
@@ -38,8 +37,7 @@ import {
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
   type PersistentConsumerCheckpoint,
-  artifactBucket,
-  ARTIFACT_STORE_MAX_BYTES,
+  ensureArtifactStore,
 } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock,
@@ -530,8 +528,10 @@ async function createOmittedInfrastructure(
     // ignores it: the assertion below covers `excluded` too, so a restored space must come back
     // with an EMPTY store rather than none. Excluding a stream and forgetting to recreate it is the
     // failure that only appears at restore - the one moment nobody is watching for a new defect.
-    // Objm, not Kvm: an object store's config surface is its own.
-    await new Objm(jetstream(nc)).create(artifactBucket(space), { max_bytes: ARTIFACT_STORE_MAX_BYTES });
+    // Create-or-verify (not a bare create): a restore target that already holds a drifted store must
+    // refuse rather than adopt it, which matters more here than at setup - a restore is exactly when
+    // an operator is least able to tell an inherited config from a fresh one.
+    await ensureArtifactStore(nc, space);
     for (const stream of [...create, ...excluded]) await jsm.streams.info(stream);
     // The normal listener is exposed only over a complete space: assert the exact stream inventory
     // (restored + created + excluded transient) before the coordinator may write commit intent.

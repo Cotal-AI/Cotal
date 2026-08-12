@@ -20,8 +20,9 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
+import { Objm } from "@nats-io/obj";
 import {
   isReachable,
   setupSpaceStreams,
@@ -77,8 +78,12 @@ try {
   // store's own five-list membership instead of being weakened to accommodate someone else's hole.
   // Reported to the control-surface owners; when they are enumerated, DELETE THESE TWO LINES and the
   // assertions below tighten automatically.
-  const KNOWN_UNENUMERATED = [`KV_cotal_auth_${SPACE}`, `KV_cotal_records_${SPACE}`];
-  const minusKnown = (names: string[]) => names.filter((n) => !KNOWN_UNENUMERATED.includes(n));
+  // Matched by PREFIX, not by exact name: the gap is per-space, so every space this suite creates
+  // leaks its own pair. Naming only the first space's would have quietly re-reddened the moment a
+  // second space appeared — which is exactly what happened when the drift case was added.
+  const isUnenumeratedAuthority = (n: string) =>
+    n.startsWith("KV_cotal_auth_") || n.startsWith("KV_cotal_records_");
+  const minusKnown = (names: string[]) => names.filter((n) => !isUnenumeratedAuthority(n));
 
   const after = await live();
   check("space setup creates the artifact object store", after.includes(OBJ), after);
@@ -112,6 +117,26 @@ try {
 
   await nc.close();
 
+  // DRIFT. `Objm.create` is create-if-MISSING: measured, creating at max_bytes 1024 and then calling
+  // create again with 4096 leaves the stream at 1024 — it neither updates nor refuses. Since
+  // setupSpaceStreams is idempotent and re-runs on every `cotal up`, a bare create would adopt a
+  // pre-existing or hand-widened store FOREVER while the code read as if it enforced a cap. An
+  // unenforced cap is not a smaller cap, it is no cap: account disk is provisioned unlimited.
+  //
+  // The cells above cannot see this — they only ever exercise FRESH creation, which is exactly why
+  // this one exists. A suite that only tests the path it built is a guard that cannot fire.
+  const drifted = `${SPACE}drift`;
+  const dnc = await connect({ servers });
+  await new Objm(jetstream(dnc)).create(artifactBucket(drifted), { max_bytes: 1024 });
+  await dnc.close();
+  let refused = "";
+  try { await setupSpaceStreams({ servers, space: drifted }); refused = "ADOPTED IT"; }
+  catch (e) { refused = (e as Error).message; }
+  check("setup REFUSES a pre-existing store whose cap has drifted", refused.includes("has drifted"), refused);
+  check("the refusal names the actual and expected caps", refused.includes("1024") &&
+    refused.includes(String(ARTIFACT_STORE_MAX_BYTES)), refused);
+  await deleteSpace({ servers, space: drifted });
+
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();
   check("teardown removes the object store", !gone.includes(OBJ), gone);
@@ -119,8 +144,8 @@ try {
     minusKnown(gone).length === 0, gone);
   // Stated rather than asserted: this suite EXPECTS the leak below until it is fixed elsewhere. If
   // this line ever prints nothing, the gap closed and KNOWN_UNENUMERATED should go.
-  if (KNOWN_UNENUMERATED.some((n) => gone.includes(n)))
-    console.log("  ! pre-existing leak, not this slice:", gone.filter((n) => KNOWN_UNENUMERATED.includes(n)).join(", "));
+  if (gone.some(isUnenumeratedAuthority))
+    console.log("  ! pre-existing leak (Cotal #356), not this slice:", gone.filter(isUnenumeratedAuthority).join(", "));
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });

@@ -7,12 +7,13 @@ import {
   type JetStreamManager,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { connect, credsAuthenticator, tokenAuthenticator, nanos } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
   spacePrefix,
   artifactBucket,
+  objectStoreStream,
   chatStream,
   chatSubject,
   chatWildcard,
@@ -295,6 +296,43 @@ export function fanoutDurableConfig(
 
 /** Connect with the given (privileged) creds, create the space's streams, and disconnect.
  *  Used by `cotal up` to pre-create streams once at setup. */
+/**
+ * Create the space's artifact Object Store, or VERIFY an existing one — never silently adopt it.
+ *
+ * `Objm.create(bucket, { max_bytes })` is create-if-MISSING. Measured on nats-server 2.14.4 with
+ * `@nats-io/obj` 3.4.0: creating at `max_bytes: 1024`, then calling create again with `4096`, leaves
+ * the stream at **1024** — it neither updates the config nor refuses. A bare `create()` with no
+ * options does the same.
+ *
+ * That makes create-alone actively dangerous here, because {@link setupSpaceStreams} is idempotent
+ * and re-runs on every `cotal up`. A store that predates this cap, or that an operator widened by
+ * hand, would be adopted forever: the code would look like it enforces a 4 GiB ceiling while the
+ * broker enforced whatever was there first, and nothing would ever say so. The cap is the ONLY thing
+ * bounding artifact storage (account disk is provisioned unlimited), so an unenforced cap is not a
+ * smaller cap — it is no cap.
+ *
+ * So: create, then read the config back and refuse loudly on drift. Same create-or-verify discipline
+ * `ensureAuthorityStores` already uses, and the same reason: an idempotent setup path must either
+ * converge the resource or report that it cannot.
+ */
+export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
+  const bucket = artifactBucket(space);
+  const stream = objectStoreStream(bucket);
+  await new Objm(jetstream(nc)).create(bucket, { max_bytes: ARTIFACT_STORE_MAX_BYTES });
+  const { config } = await (await jetstreamManager(nc)).streams.info(stream);
+  const drift: string[] = [];
+  if (config.max_bytes !== ARTIFACT_STORE_MAX_BYTES)
+    drift.push(`max_bytes is ${config.max_bytes}, expected ${ARTIFACT_STORE_MAX_BYTES}`);
+  // `discard: new` is what makes a full store REFUSE a put instead of evicting a live artifact whose
+  // reference is already published. Drift here is silent data loss, not a capacity difference.
+  if (String(config.discard) !== "new") drift.push(`discard is ${config.discard}, expected new`);
+  if (drift.length)
+    throw new Error(
+      `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +
+      `bounds are not the ones this space enforces (delete it, or reconcile it deliberately)`,
+    );
+}
+
 export async function setupSpaceStreams(opts: {
   servers: string;
   space: string;
@@ -339,12 +377,8 @@ export async function setupSpaceStreams(opts: {
     // drift fails loud.
     await ensureAuthorityStores(jsm, kvm, opts.space);
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
-    // Pre-created here for the same reason as every bucket above - agents hold no STREAM.CREATE -
-    // and with an EXPLICIT max_bytes, which is the whole point. A fresh Object Store ships
-    // `max_bytes: -1`, and the space account provisions `disk_storage: -1`, so "quotas ride the
-    // account limit" would ride nothing: an artifact flood is unbounded and starves every other
-    // stream sharing the disk. Idempotent.
-    await new Objm(jetstream(nc)).create(artifactBucket(opts.space), { max_bytes: ARTIFACT_STORE_MAX_BYTES });
+    // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
+    await ensureArtifactStore(nc, opts.space);
   } finally {
     await nc.drain();
   }
