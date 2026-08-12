@@ -107,6 +107,13 @@ try {
   const preObserver = await mintMembershipObserverCreds(auth, newIdentity(), { expiresAt: deadAt });
   writeFileSync(obsPath, preObserver, { mode: 0o600 });
   writeFileSync(evPath, await mintConnectionEvictorCreds(auth, newIdentity(), { expiresAt: deadAt }), { mode: 0o600 });
+  // A HEALTHY pre-rotation observer. The on-disk pair above is deliberately EXPIRED (stage 1 needs
+  // that state), but an expired cred proves nothing about retirement: the broker refuses it on exp
+  // alone, so asserting its rejection after the rotation would pass even against a broker that still
+  // trusted the old system account, and even against a rotator that never changed `system_account`.
+  // Retirement is only shown by a cred the PRE-rotation broker ACCEPTS and the POST-rotation broker
+  // refuses, with nothing but the loaded config differing between the two connects.
+  const livePreObserver = await mintMembershipObserverCreds(auth, newIdentity());
   // Creds from BEFORE the rotation, one per standing class the success copy claims survives. The
   // claim is "every agent credential and both daemon creds"; proving it with a single agent cred
   // would leave the broader sentence asserted rather than shown.
@@ -136,6 +143,14 @@ try {
   check("an expired $SYS cred is reported as a problem", out.includes("EXPIRED") && out.includes(SYSTEM_CREDS_FILES[0]), out);
   check("its repair names `up --rotate-sys`", out.includes("up --rotate-sys"), out);
   check("its repair is NOT the no-op bare re-`up`", !/then a fresh `?\w* ?up`? regenerates/.test(out), out);
+
+  console.log("\n1b) baseline: the PRE-rotation broker ACCEPTS the pre-rotation $SYS cred");
+  mkdirSync(storeDir, { recursive: true });
+  writeFileSync(confPath, serverConfig(auth, [auth], { storeDir, port: PORT }));
+  await startBroker();
+  check("a healthy pre-rotation observer is ACCEPTED before the rotation", await accepts(livePreObserver));
+  check("the already-expired observer is refused even HERE (so its later refusal proves nothing)", !(await accepts(preObserver)));
+  await stopBroker();
 
   console.log("\n2) rotateSystemCreds: advances the authority, preserves the space");
   const before = await getSpaceAuth(store, SPACE);
@@ -210,6 +225,25 @@ try {
     comboRefusal,
   );
 
+  console.log("\n4e) a maintenance RE-ENTRY refuses, where the explicit --restore guard cannot see");
+  // The `--restore` refusal only sees the explicit flag. A restore/resume re-entry arrives with
+  // `restore` cleared and an `__*Attempt` set, and those paths can adopt a live listener and RETURN
+  // before `authSetup` — accepting the flag and rotating nothing. Both re-entry keys are checked.
+  for (const key of ["__restoreAttempt", "__ordinaryResumeAttempt"]) {
+    let reentry = "";
+    const genBefore = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
+    process.chdir(root);
+    try {
+      await up({ values: { "rotate-sys": true, [key]: "attempt-1" }, positionals: [], raw: [] });
+    } catch (e) {
+      reentry = (e as Error).message;
+    } finally {
+      process.chdir(origCwd);
+    }
+    check(`\`up --rotate-sys\` refuses on a ${key} re-entry`, reentry.includes("--rotate-sys") && reentry.includes("re-entry"), reentry);
+    check(`the ${key} refusal advanced no generation`, ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBefore);
+  }
+
   console.log("\n4d) a MANIFEST-open mesh refuses too, not just the --open flag");
   // The flag-level guard cannot see this: openness comes from `broker.auth: false` inside the file,
   // which `upManifest` derives after entry. Left unguarded, `up -f open.yaml --rotate-sys` boots an
@@ -232,14 +266,19 @@ try {
   check("`up -f <open manifest> --rotate-sys` refuses", manifestRefusal.includes("--rotate-sys") && manifestRefusal.includes("broker.auth: false"), manifestRefusal);
   check("the manifest refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeManifest);
 
-  console.log("\n5) live broker on the ROTATED config");
-  mkdirSync(storeDir, { recursive: true });
+  console.log("\n5) live broker on the ROTATED config — the same cred, config the only variable");
   writeFileSync(confPath, serverConfig(rot.auth, [rot.auth], { storeDir, port: PORT }));
   await startBroker();
-  check("the broker came up on the rotated config", await isReachable(SERVERS));
-  check("the ROTATED observer is accepted", await accepts(obsAfter));
+  // Bind "came up on the ROTATED config" to IDENTITY, not to a TCP probe: `isReachable` with no
+  // creds proves only that something is listening, which any broker on this port satisfies.
+  const conf = readFileSync(confPath, "utf8");
+  check("the rendered config names the SUCCESSOR system account", conf.includes(`system_account: ${after?.sys.pub}`), after?.sys.pub);
+  check("the rendered config does not name the RETIRED one", !conf.includes(String(before?.sys.pub)));
+  check("the ROTATED observer is accepted (so the broker really loaded the successor)", await accepts(obsAfter));
   check("the ROTATED evictor is accepted", await accepts(evAfter));
-  check("the PRE-rotation observer is REJECTED (the old authority is really retired)", !(await accepts(preObserver)));
+  // THE retirement check: the SAME healthy cred that connected in stage 1b, now refused. Nothing
+  // about the credential changed between the two connects — only the config the broker loaded.
+  check("the healthy PRE-rotation observer is now REJECTED (retirement, not expiry)", !(await accepts(livePreObserver)));
   for (const [label, creds] of preRotation)
     check(`a ${label} cred minted BEFORE the rotation still connects (the survival claim, per class)`, await accepts(creds));
 

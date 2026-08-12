@@ -22,11 +22,13 @@ operator, mints both `$SYS` creds against it, and renders the broker config from
 so the broker it starts is the one that trusts them. The data account, the account signing key,
 every agent credential minted from it and the JetStream store are untouched; what dies is the
 retired system account, on every broker that loads the rotated config. It is refused wherever the
-on-disk material and the broker could end up on different generations: a running mesh, `--restore`,
-a root hosting more than one space (the system account lives in the shared broker record, so a
-rotation is broker-wide), and an open mesh, whether that comes from `--open` or from
-`broker.auth: false` in a manifest. `rotateSystemCreds` is exported from `@cotal-ai/workspace` for
-hosted compositions and carries the multi-tenant guard itself rather than at the CLI flag.
+on-disk material and the broker could end up on different generations: a running mesh; an open mesh,
+whether that comes from `--open` or from `broker.auth: false` in a manifest; `--restore`; an
+unfinished restore or resume attempt on the root, including one a bare `cotal up` would recover,
+since those paths can adopt a live listener and return without booting a broker; and a root hosting
+more than one space, because the system account lives in the shared broker record and the rotation is
+therefore broker-wide. `rotateSystemCreds` is exported from `@cotal-ai/workspace` for hosted
+compositions and carries the multi-tenant guard itself rather than at the CLI flag.
 
 Two consequences the tooling now states rather than leaving to be discovered. The retirement is
 config-load-bound, so a stale broker still running the previous config keeps honouring the old creds

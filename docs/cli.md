@@ -176,14 +176,19 @@ cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
 cotal doctor auth                  # both $SYS creds healthy again, 30 days out
 ```
 
-Four things refuse it, all for the same reason (the on-disk material and the broker it runs on must
-never end up on different generations): a live mesh, because the running broker would keep serving
-the retired account; `--restore`, because reinstating a trust root and superseding it in one command
-leaves no way to say which authority the mesh came up on; a root that hosts more than one space,
-because the system account lives in the shared broker record and a rotation would retire every
-tenant's, while the root holds one `$SYS` cred pair pinned to one data account; and an open mesh,
-whether that comes from `--open` or from `broker.auth: false` in a manifest, which has no system
-account at all.
+A rotation is a stopped, fresh boot, and anything that is not one refuses it, all for the same reason
+(the on-disk material and the broker it runs on must never end up on different generations):
+
+- a live mesh, because the running broker would keep serving the retired account;
+- an open mesh, whether that comes from `--open` or from `broker.auth: false` in a manifest, which
+  has no system account at all;
+- `--restore`, because reinstating a trust root and superseding it in one command leaves no way to
+  say which authority the mesh came up on;
+- an unfinished restore or resume attempt on this root, including one `cotal up` would recover on
+  its own, because those paths can adopt a live listener and return without booting a broker;
+- a root that hosts more than one space, because the system account lives in the shared broker
+  record and a rotation would retire every tenant's, while the root holds one `$SYS` cred pair
+  pinned to one data account.
 
 Two things to know before you run it:
 

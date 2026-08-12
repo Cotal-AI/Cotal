@@ -217,8 +217,22 @@ export async function up(args: ParsedArgs): Promise<void> {
   }
   if (values["restore-only"] || values["accept-missing-source"])
     throw new Error("--restore-only and --accept-missing-source require --restore <dir>");
+  // MAINTENANCE RE-ENTRY. `--restore` is refused with `--rotate-sys` above, but that guard only sees
+  // the EXPLICIT flag: a restore/resume re-entry arrives with `restore` cleared and an `__*Attempt`
+  // set, and an auto-recovered journal reaches the same place with no restore flag ever typed. Both
+  // re-entries then hit adopt-the-live-listener paths that RETURN before `authSetup` — so the flag
+  // would be accepted, nothing would rotate, and the command would exit 0. That is the silent
+  // success this whole change exists to remove, so it is refused here, before any attempt state is
+  // read. A rotation is a stopped, fresh boot; a half-finished maintenance attempt is neither.
+  if (values["rotate-sys"] && (values.__restoreAttempt || values.__ordinaryResumeAttempt))
+    throw new Error("--rotate-sys cannot run during a restore/resume re-entry - finish or roll back the maintenance attempt, then `cotal down` and `cotal up --rotate-sys`");
   if (!values.__restoreAttempt && !values.__ordinaryResumeAttempt && !values.file) {
     const root = cotalRoot();
+    // Same refusal for the AUTO-recovered journal, raised before the recovery is prepared and
+    // re-entered, so the operator reads one clear error instead of one thrown from inside a nested
+    // `up` that has already begun adopting a maintenance attempt.
+    if (values["rotate-sys"] && readMaintenanceJournal(root))
+      throw new Error("--rotate-sys is refused while this root has a maintenance attempt to recover - finish or roll back that attempt (`cotal up` alone recovers it), then `cotal down` and `cotal up --rotate-sys`");
     const lock = acquireMaintenanceLock(root);
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;
