@@ -476,8 +476,15 @@ try {
     automatic: agent.inboxCount("automatic"),
   });
   // Surface all of it into an in-flight batch whose handoff is guaranteed to fail...
+  const oldestId = agent.peekInbox("all").find((i) => i.text.includes(oldest))!.id;
   const inFlightHandoff = fireHookViaRealRelay({ hook_event_name: "UserPromptSubmit" }, { starveStdout: true });
-  await sleep(400); // ...and, while it is in flight, push one more message through the capacity valve
+  // ...and push one more message through the capacity valve WHILE IT IS IN FLIGHT — which this must
+  // WAIT for, not guess at. A fixed sleep here made the cell a race: the handoff runs through a real
+  // relay process, and on a slower machine the hold was not yet taken when the overflow landed, so
+  // the valve acked an id no batch had claimed. That is the bounded-loss design working correctly on
+  // an unlooked-at backlog, and the cell then failed for a condition it had never established.
+  // Measured on Linux: eviction 133ms BEFORE the hold. Wait for the property this cell is named for.
+  await waitFor("the oldest message to be held in flight", () => agent.isInFlight(oldestId), 15_000);
   await dmOtto("dm-seven-overflow: arrives mid-handoff and evicts the oldest");
   const starvedBig = await inFlightHandoff;
   check("the in-flight handoff failed, as this check requires", starvedBig.stdout.length === 0, {

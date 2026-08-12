@@ -3376,7 +3376,14 @@ export class Manager {
 
       let connector: Connector;
       try {
-        connector = registry.resolve<Connector>("connector", entry.launch.connector);
+        // The SAME resolver the spawn path uses. A bare `registry.resolve` here made preserve→resume
+        // fail for EVERY retained agent on the published binary: the resuming manager is a fresh
+        // process whose registry is empty (its supervise child runs with the connector seed
+        // skipped), so nothing is registered until something materializes it from the ext manifest.
+        // That is precisely what `resolveConnector` does and what every spawn path already calls.
+        // Resolving bare meant a preserved mesh could never come back — first-party connectors
+        // included, since the asymmetry is about materialization, not about which connector it is.
+        connector = await this.resolveConnector(entry.launch.connector);
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
