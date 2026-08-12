@@ -71,7 +71,7 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "agents", "worker.md"),
   `---\nname: worker\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n`,
 );
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
@@ -129,7 +129,7 @@ try {
 
   // Count the §13.1 credential family: a minted per-session SERVING credential lands here, so an
   // unchanged count is positive evidence that the refusal minted nothing.
-  const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } }) }), maxReconnectAttempts: 0 });
+  const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } }) , tls: false }), maxReconnectAttempts: 0 });
   conns.push(execNc);
   const authKv = await new Kvm(execNc).open(epAuthBucket(space));
   const familySize = async (): Promise<number> => {

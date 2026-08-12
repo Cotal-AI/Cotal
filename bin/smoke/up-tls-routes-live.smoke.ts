@@ -92,19 +92,15 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
     "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "good.pem"),
     "-days", "2", "-extfile", join(pki, "good.ext")]);
 
-  // EXPIRED. Note the form: `openssl req -x509 -days -1` is REJECTED outright ("Non-positive number"),
-  // while `openssl x509 -req -days -1` is accepted and backdates `notBefore` to match. Only the
-  // signing form can produce an already-expired certificate, so this one is CA-signed even though
-  // nothing ever verifies its chain.
-  //
-  // Worth stating plainly: `tls-serve`'s `mintCert` carries a comment saying negative days are "how
-  // the expiry case is built", and that suite never calls it with a negative value. The expiry case
-  // did not exist. This is the first execution of it.
+  // EXPIRED. OpenSSL 3.6+ rejects `-days -1` ("end date before start date"). Absolute
+  // `-not_before`/`-not_after` produce an already-expired cert on every OpenSSL 3.x we care about,
+  // and on LibreSSL the same flags are accepted. CA-signed even though nothing verifies its chain.
   sh("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "expired.key"),
     "-out", join(pki, "expired.csr"), "-subj", "/CN=expired"]);
   sh("openssl", ["x509", "-req", "-in", join(pki, "expired.csr"), "-CA", join(pki, "ca.pem"),
     "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "expired.pem"),
-    "-days", "-1", "-extfile", join(pki, "good.ext")]);
+    "-not_before", "20200101000000Z", "-not_after", "20200102000000Z",
+    "-extfile", join(pki, "good.ext")]);
   sh("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "other.key"),
     "-out", join(pki, "other.pem"), "-days", "2", "-subj", "/CN=other",
     "-addext", "subjectAltName=DNS:not-this-host.example"]);

@@ -36,7 +36,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-wsduplex-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: brokerPort, storeDir: join(dir, "js"), host: "127.0.0.1", wsPort, wsHost: "127.0.0.1" }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: brokerPort, storeDir: join(dir, "js"), host: "127.0.0.1", wsPort, wsHost: "127.0.0.1" }));
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "echo1.md"), "---\nname: echo1\nagent: echo\nrole: worker\n---\n");
 // A portable line-echo pty. `process.execPath` needs no PATH resolution and `launchEnv()` is the OS
 // allow-list a real connector supplies — a ConPTY child inherits nothing but `spec.env`, and on

@@ -184,7 +184,7 @@ const validMaterial = validateTlsMaterial(
 try {
 const plainPort = await freePort(), plainStore = join(dir, "plain-js"), plainConf = join(dir, "plain.conf");
 mkdirSync(plainStore, { recursive: true });
-writeFileSync(plainConf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: plainPort, storeDir: plainStore, transport: { kind: "plaintext" } }));
+writeFileSync(plainConf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: plainPort, storeDir: plainStore }));
 const plain = await startBroker("plain", plainConf);
 {
   let up = false;

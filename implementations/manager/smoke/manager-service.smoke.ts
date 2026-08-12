@@ -67,7 +67,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsvc-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
@@ -95,7 +95,7 @@ try {
   const inspCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", {
     endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid },
   });
-  const inspNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: inspCreds }), maxReconnectAttempts: 0 });
+  const inspNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: inspCreds, tls: false }), maxReconnectAttempts: 0 });
   const kvm = new Kvm(inspNc);
   const authKv = await kvm.open(epAuthBucket(space));
   const recKv = await kvm.open(recordsBucket(space));
@@ -138,7 +138,7 @@ try {
   // key keeps the probe harmless even if it were (wrongly) admitted.
   {
     const supCreds = await mintCreds(auth, newIdentity(), "supervisor");
-    const supNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: supCreds }), maxReconnectAttempts: 0 });
+    const supNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: supCreds, tls: false }), maxReconnectAttempts: 0 });
     let denied = false;
     try {
       await supNc.request(`$KV.${epAuthBucket(space)}.${epgateKey(MANAGER_ENDPOINT, "z".repeat(26))}`, enc.encode("{}"), { timeout: 1500 });
@@ -155,7 +155,7 @@ try {
     lifecycleUid: callerUid,
     endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }],
   });
-  const callerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
+  const callerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
   // checklist 6: the `one`-rail currency reader is the GATE's processEpoch (the service epoch
   // authority), read fresh per reply — never a bare call.
   const serviceEpochReader = async () => (await readGate()).processEpoch;

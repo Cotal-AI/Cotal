@@ -72,7 +72,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-sibfence-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
@@ -102,7 +102,7 @@ try {
   const BARRIER_OP = mintLifecycleUid(); // the barrier's opId is a §13.1 lifecycle token
 
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } });
-  const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds }), maxReconnectAttempts: 0 });
+  const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
   conns.push(execNc);
   const authKv = await new Kvm(execNc).open(epAuthBucket(space));
 
