@@ -137,6 +137,29 @@ try {
     refused.includes(String(ARTIFACT_STORE_MAX_BYTES)), refused);
   await deleteSpace({ servers, space: drifted });
 
+  // WRONG BINDING, RIGHT NUMBERS. The sharper version of the same hole: a stream under the object
+  // store's NAME with the correct cap and the correct discard, but bound to other subjects, is not
+  // an object store — artifact puts can never land on it. A cap-only verify adopts it and setup
+  // reports SUCCESS. This cell exists because the drift cells above would pass while it happened.
+  const hijack = `${SPACE}bind`;
+  const hnc = await connect({ servers });
+  await (await jetstreamManager(hnc)).streams.add({
+    name: objectStoreStream(artifactBucket(hijack)),
+    subjects: ["foreign.capture.>"],
+    max_bytes: ARTIFACT_STORE_MAX_BYTES,   // deliberately CORRECT
+    discard: "new" as never,               // deliberately CORRECT
+    storage: "file" as never,
+  });
+  await hnc.close();
+  let bindRefusal = "";
+  try { await setupSpaceStreams({ servers, space: hijack }); bindRefusal = "ADOPTED A NON-STORE"; }
+  catch (e) { bindRefusal = (e as Error).message; }
+  check("setup REFUSES a same-name stream bound to foreign subjects", bindRefusal.includes("has drifted"),
+    bindRefusal);
+  check("the refusal names the subjects, not just the cap", bindRefusal.includes("foreign.capture"),
+    bindRefusal);
+  await deleteSpace({ servers, space: hijack });
+
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();
   check("teardown removes the object store", !gone.includes(OBJ), gone);

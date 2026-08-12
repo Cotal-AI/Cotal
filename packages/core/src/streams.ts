@@ -321,11 +321,28 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   await new Objm(jetstream(nc)).create(bucket, { max_bytes: ARTIFACT_STORE_MAX_BYTES });
   const { config } = await (await jetstreamManager(nc)).streams.info(stream);
   const drift: string[] = [];
+  // SUBJECTS FIRST, because they decide whether this is an object store AT ALL. A stream created
+  // under the right name with the right cap and the right discard, but bound to other subjects, is
+  // adopted by a cap-only check while artifact puts can never land - and setup reports success.
+  // (Measured: a stream named OBJ_<bucket> over `foreign.capture.>` survived setup untouched.)
+  const want = [`$O.${bucket}.C.>`, `$O.${bucket}.M.>`];
+  if (JSON.stringify(config.subjects ?? []) !== JSON.stringify(want))
+    drift.push(`subjects are ${JSON.stringify(config.subjects ?? [])}, expected ${JSON.stringify(want)}`);
+  // A MIRROR or SOURCE under this name makes the space's artifact store a view of someone else's
+  // stream. Nothing about the cap would look wrong; the bytes would simply not be the space's own.
+  if (config.mirror) drift.push("it is a MIRROR of another stream");
+  if (config.sources?.length) drift.push(`it SOURCES ${config.sources.length} other stream(s)`);
   if (config.max_bytes !== ARTIFACT_STORE_MAX_BYTES)
     drift.push(`max_bytes is ${config.max_bytes}, expected ${ARTIFACT_STORE_MAX_BYTES}`);
   // `discard: new` is what makes a full store REFUSE a put instead of evicting a live artifact whose
   // reference is already published. Drift here is silent data loss, not a capacity difference.
   if (String(config.discard) !== "new") drift.push(`discard is ${config.discard}, expected new`);
+  // File storage: memory-backed artifacts vanish on a broker restart while every published reference
+  // survives, which turns a restart into a wave of unresolvable references.
+  if (String(config.storage) !== "file") drift.push(`storage is ${config.storage}, expected file`);
+  // Limits retention: any interest/work-queue retention DELETES messages once consumed, so a fetch
+  // would destroy the artifact it just read.
+  if (String(config.retention) !== "limits") drift.push(`retention is ${config.retention}, expected limits`);
   if (drift.length)
     throw new Error(
       `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +
