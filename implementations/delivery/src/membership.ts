@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { inspectCredHealth, startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
+import { credsClaims, inspectCredHealth, startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, MEMBERSHIP_RW_CREDS_KEY, workspaceSecretStore } from "@cotal-ai/workspace";
 
 /**
@@ -57,6 +57,26 @@ export async function startMembership(opts: { space: string; server: string }, s
   // costs nothing and turns the daemon's one loud line into the actual diagnosis — the difference
   // between an operator finding this in minutes and finding it in a support thread.
   const obsCreds = readFileSync(obsPath, "utf8");
+  // A TORN rotation is the other way this cred goes broker-dead without a byte of its own changing:
+  // `rotateSystemCreds` commits the trust record, then writes both $SYS creds, so a crash between the
+  // two leaves one file on the retired system account. The broker answers the same bare
+  // "Authorization Violation" either way. The daemon cannot ask the trust record which account is
+  // current — it deliberately never loads the signer — but it does not need to: the pair is written
+  // by one rotation, so two DIFFERENT issuers prove one of them is stale, with no signer read at all.
+  // (`doctor auth`, which legitimately holds the record, checks each file against it directly.)
+  const evPath = join(dir, "connection-evictor.creds");
+  if (existsSync(evPath)) {
+    let obsIss: string | undefined, evIss: string | undefined;
+    try {
+      obsIss = credsClaims(obsCreds).iss;
+      evIss = credsClaims(readFileSync(evPath, "utf8")).iss;
+    } catch { /* an unreadable file is the health check's case just below */ }
+    if (obsIss !== undefined && evIss !== undefined && obsIss !== evIss) {
+      const down = `the two $SYS creds are signed by DIFFERENT system accounts (observer ${obsIss.slice(0, 12)}…, evictor ${evIss.slice(0, 12)}…) - a system-account rotation did not finish, so one of them is broker-dead: re-run \`cotal down\` then \`cotal up --rotate-sys\` to land a complete generation`;
+      console.error(`! membership: ${down} — graph membership degraded, delivery unaffected`);
+      return { down };
+    }
+  }
   const obs = inspectCredHealth(obsCreds);
   if (obs.state === "expired" || obs.state === "unreadable") {
     const down =

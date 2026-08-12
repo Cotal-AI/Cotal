@@ -5,11 +5,11 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   rotateSystemAccount,
-  writeSecretFile,
+  writeSecretFileAtomic,
   type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
+import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
@@ -67,6 +67,14 @@ export interface SystemRotationResult {
  * ignored the throw would boot a broker whose config still carries the retired system account.
  */
 export async function rotateSystemCreds(root: string, expectedSpace: string, store?: SecretStore): Promise<SystemRotationResult> {
+  // A rotation is BROKER-wide, not space-wide, however it is spelled: the system account lives in
+  // the shared broker record and the re-issued operator JWT names the successor for every space
+  // under it, while the two $SYS cred files are per-ROOT (one pair, its observer permissions pinned
+  // to ONE data account). So on a multi-tenant root, "rotate space A" would retire space B's system
+  // account and leave no cred that can observe B. Same guard, same reason, as `cotal down`,
+  // `cotal backup`, `cotal clean` and `cotal up --restore` — placed HERE, not at the CLI flag, so a
+  // hosted caller of this export cannot reach the unscoped blast radius either.
+  assertSingleSpaceBroker(authDir(root), "a system-account rotation (`cotal up --rotate-sys`)");
   const s = store ?? workspaceSecretStore(root);
   const auth = await getSpaceAuth(s, expectedSpace);
   if (!auth)
@@ -81,10 +89,17 @@ export async function rotateSystemCreds(root: string, expectedSpace: string, sto
   const observer = await mintMembershipObserverCreds(rotated, newIdentity());
   const evictor = await mintConnectionEvictorCreds(rotated, newIdentity());
 
-  // Commit the trust record FIRST (the generation guard lives here), then the creds it authorizes.
+  // Commit the trust record FIRST — the generation guard lives in this call, and it is what makes the
+  // successor real. Only then the creds that record authorizes.
   await putSpaceAuth(s, rotated);
-  writeSecretFile(join(root, ".cotal", SYSTEM_CREDS_FILES[0]), observer);
-  writeSecretFile(join(root, ".cotal", SYSTEM_CREDS_FILES[1]), evictor);
+  // ATOMIC per file, so a half-written file can never be read as a valid half-generation. Atomicity
+  // is per file, NOT across the pair: a crash between the two still leaves the evictor signed by the
+  // retired account. That torn state is detectable and is detected — `cotal doctor auth` compares
+  // each file's issuer against the persisted record, and the delivery daemon (which never loads the
+  // signer, so it cannot read that record) compares the two files against EACH OTHER, since one
+  // rotation writes both. Re-running the rotation heals it by landing a complete generation.
+  writeSecretFileAtomic(join(root, ".cotal", SYSTEM_CREDS_FILES[0]), observer);
+  writeSecretFileAtomic(join(root, ".cotal", SYSTEM_CREDS_FILES[1]), evictor);
 
   return { gen: rotated.gen ?? 0, auth: rotated, expiresAt: credsClaims(observer).exp };
 }

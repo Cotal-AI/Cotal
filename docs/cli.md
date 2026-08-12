@@ -176,8 +176,31 @@ cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
 cotal doctor auth                  # both $SYS creds healthy again, 30 days out
 ```
 
-Running it against a live mesh is refused (the running broker would keep serving the retired
-account). While those creds are expired the mesh keeps delivering messages, but the
+Four things refuse it, all for the same reason (the on-disk material and the broker it runs on must
+never end up on different generations): a live mesh, because the running broker would keep serving
+the retired account; `--restore`, because reinstating a trust root and superseding it in one command
+leaves no way to say which authority the mesh came up on; a root that hosts more than one space,
+because the system account lives in the shared broker record and a rotation would retire every
+tenant's, while the root holds one `$SYS` cred pair pinned to one data account; and an open mesh,
+whether that comes from `--open` or from `broker.auth: false` in a manifest, which has no system
+account at all.
+
+Two things to know before you run it:
+
+- **The retirement is config-load-bound.** Old `$SYS` creds are refused by any broker that loads the
+  rotated config. A stale `nats-server` still running the *previous* config in memory would keep
+  honouring them, so stop every broker for this root first.
+- **It invalidates earlier full backups.** A full artifact binds to the trust chain it was taken
+  against, and that commitment covers the operator JWT and the system account. Every full backup
+  taken before a rotation refuses to restore afterwards, so take a fresh `cotal backup` once the
+  rotated mesh is up. `cotal up --restore` names this case when the data account still matches.
+
+If a rotation is interrupted between committing the trust record and writing both creds, the split
+is detected rather than silent: `cotal doctor auth` compares each `$SYS` cred's issuer against the
+persisted record, and the delivery daemon compares the two creds against each other. Re-running the
+rotation heals it.
+
+While those creds are expired the mesh keeps delivering messages, but the
 [membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`
 and the manager's log both name the credential and this repair.
 

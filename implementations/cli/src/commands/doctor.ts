@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   credentialLifetime,
+  credsClaims,
   inspectCredHealth,
   type CredHealth,
   type CredentialKind,
@@ -77,7 +78,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   const signerPath = existsSync(acctPath) ? acctPath : join(authDir(root), "auth.json");
   console.log(`  space ${auth.space}${userMode ? " · user-auth" : ""} · signer ${c.green("present")} (${signerPath})`);
 
-  let reports = inventory(root);
+  let reports = inventory(root, auth.sys.pub);
   let problems = reports.filter((r) => r.problem);
 
   // --fix: the one safe local repair — re-sign the remintable daemon files (same nkeys), exactly
@@ -101,7 +102,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
       : undefined;
     writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption });
     for (const r of results.filter((x) => !x.ok && !x.skipped)) console.error(c.red(`  ✗ ${r.file}: ${r.error}`));
-    reports = inventory(root);
+    reports = inventory(root, auth.sys.pub);
     problems = reports.filter((r) => r.problem);
   }
 
@@ -136,7 +137,7 @@ function isRemintable(kind: CredentialKind): boolean {
 /** Inspect every managed credential file for this folder. Missing files are noted (with how they
  *  get provisioned) but only EXISTING-but-bad material is a problem — process presence is `cotal
  *  status`'s job; this surface owns credential health. */
-function inventory(root: string): CredReport[] {
+function inventory(root: string, sysPub?: string): CredReport[] {
   const cotal = (f: string) => join(root, ".cotal", f);
   const fixed: Array<{ label: string; kind: CredentialKind; path: string }> = [
     { label: "delivery.creds", kind: "delivery", path: cotal("delivery.creds") },
@@ -144,7 +145,7 @@ function inventory(root: string): CredReport[] {
     { label: "membership-observer.creds", kind: "membership-observer", path: cotal("membership-observer.creds") },
     { label: "connection-evictor.creds", kind: "connection-evictor", path: cotal("connection-evictor.creds") },
   ];
-  const reports = fixed.map((f) => report(f.label, f.kind, f.path));
+  const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub));
   const agentDir = join(authDir(root), "creds");
   if (existsSync(agentDir)) {
     for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
@@ -154,9 +155,10 @@ function inventory(root: string): CredReport[] {
   return reports;
 }
 
-function report(label: string, kind: CredentialKind, path: string): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
   if (!existsSync(path)) return { label, kind, path };
-  const health = inspectCredHealth(readFileSync(path, "utf8"));
+  const creds = readFileSync(path, "utf8");
+  const health = inspectCredHealth(creds);
   const r: CredReport = { label, kind, path, health };
   const policy = credentialLifetime(kind);
   const standing = policy.class === "standing-renewable" || policy.class === "rotation-renewed";
@@ -168,6 +170,23 @@ function report(label: string, kind: CredentialKind, path: string): CredReport {
         // branch that CREATES the trust record, so re-upping an existing space reuses the same
         // expired files and reports success. The rotation must be asked for.
       : `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+  // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads —
+  // i.e. the one in this root's trust record. Expiry alone cannot see a RETIRED issuer: a rotation
+  // that committed the record and then died before rewriting both files leaves a file that is
+  // structurally valid and years from expiry, yet broker-dead. Without this the doctor reported
+  // `auth: healthy` over exactly that split, which is the false green this whole surface exists to
+  // prevent. Checked before the health switch so it wins over a merely-healthy verdict.
+  if (sysPub && (kind === "membership-observer" || kind === "connection-evictor") && health.state !== "unreadable") {
+    let iss: string | undefined;
+    try {
+      iss = credsClaims(creds).iss;
+    } catch { /* an unreadable JWT is the health switch's case, not this one */ }
+    if (iss !== undefined && iss !== sysPub) {
+      r.problem = `signed by a RETIRED system account (${iss.slice(0, 12)}…, but this root's is ${sysPub.slice(0, 12)}…) - the broker denies it`;
+      r.repair = repair;
+      return r;
+    }
+  }
   switch (health.state) {
     case "unreadable":
       r.problem = `unreadable credential file (${health.error})`;

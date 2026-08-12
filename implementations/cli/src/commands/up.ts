@@ -181,6 +181,13 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
+    // A restore REINSTATES a trust root from an artifact; a rotation SUPERSEDES the one on disk.
+    // Together they would restore a system account and retire it in the same command, leaving the
+    // operator unable to say which authority the mesh actually came up on — and the artifact's own
+    // $SYS creds overwritten by the rotation before anyone verified the restore. Restore, verify,
+    // then rotate as its own deliberate step.
+    if (values["rotate-sys"])
+      throw new Error("--restore cannot be combined with --rotate-sys - restore the space and verify it first, then rotate: `cotal down` then `cotal up --rotate-sys`");
     // A restore rewrites the shared store and the trust root under it, from an artifact that names
     // one space (see `cotal backup`) - it cannot leave the root's other tenants standing.
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal up --restore");
@@ -1468,6 +1475,13 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: opts.idp ?? m.broker?.idp } : undefined; // flag > manifest
   const runtime = m.runtime ?? "pty";
+  // The open-mesh refusal must be RE-STATED here, not only against the CLI `--open` flag: on this
+  // path openness comes from the MANIFEST (`broker.auth: false`), which the flag-level guard cannot
+  // see. Without it, `cotal up -f open.yaml --rotate-sys` boots an open broker, exits 0 and rotates
+  // nothing — a rotation ask answered with silent success, the exact failure class this change
+  // exists to remove. Before the dry-run print and before anything boots.
+  if (opts.rotateSys && open)
+    throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
 
   if (opts.dryRun) {
     console.log(renderUpPlan(eff, server));
@@ -1662,6 +1676,11 @@ export async function startMeshDetached(
 ): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean; delivery: boolean; manager: boolean }> {
   const server = opts.server ?? DEFAULT_SERVER;
   const useAuth = !opts.open;
+  // Belt on the one boot that both renders the broker config and can be reached by any caller: an
+  // open boot skips `authSetup` entirely, so a `rotateSys` arriving here would be dropped in silence
+  // rather than refused. Callers guard this too; this is the seam that cannot be bypassed.
+  if (opts.rotateSys && !useAuth)
+    throw new Error("startMeshDetached: --rotate-sys is for auth meshes; an open mesh has no system account or $SYS credentials to rotate");
   const space = opts.space ?? resolveSpace(process.cwd());
   ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
   refuseOpenOverUserState(Boolean(opts.open), space);
@@ -2025,7 +2044,18 @@ async function authSetup(
       c.green(`✓ rotated the system account for "${space}"`) +
         c.dim(` (generation ${rot.gen}) - re-minted ${SYSTEM_CREDS_FILES.join(" + ")}${rot.expiresAt ? `, valid to ${new Date(rot.expiresAt * 1000).toISOString().slice(0, 10)}` : ""}`),
     );
-    console.log(c.dim("  the data account, every agent cred and the JetStream store are untouched; any out-of-band copy of the OLD $SYS creds is now dead."));
+    // Say exactly what is true. The retirement is CONFIG-LOAD-BOUND: an old cred dies against any
+    // broker that loads the successor config, which is every broker started from this root from here
+    // on — but a stale nats-server still holding the pre-rotation config in memory would keep
+    // honoring it, so "now dead" without that qualifier oversells the guarantee.
+    console.log(c.dim("  the data account, every agent cred and the JetStream store are untouched. The OLD $SYS creds are refused by any broker that loads this config; a stale broker still running the previous config would still honor them, so stop those first."));
+    // A full backup binds to the trust chain it was taken against — `rootChainCommitment` hashes the
+    // operator JWT and the system account, both of which just changed — so `cotal up --restore`
+    // refuses every full artifact taken before this moment. That is correct (it is a different trust
+    // root), but it is only obvious to someone who has read the fingerprint code, and rotation is
+    // now a routine 30-day act rather than a once-per-space event. Say it at the moment it becomes
+    // true, not in a doc the operator reads after the restore has already failed.
+    console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && hasUserAuthState(cotalRoot(), space)) {

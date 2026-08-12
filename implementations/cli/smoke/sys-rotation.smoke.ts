@@ -31,6 +31,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
+  composeSpaceAuth,
+  createSpaceAccountAuth,
   createSpaceAuth,
   credsClaims,
   inspectCredHealth,
@@ -44,6 +46,7 @@ import {
 } from "@cotal-ai/core";
 import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
+import { up } from "../src/commands/up.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let pass = 0,
@@ -104,8 +107,16 @@ try {
   const preObserver = await mintMembershipObserverCreds(auth, newIdentity(), { expiresAt: deadAt });
   writeFileSync(obsPath, preObserver, { mode: 0o600 });
   writeFileSync(evPath, await mintConnectionEvictorCreds(auth, newIdentity(), { expiresAt: deadAt }), { mode: 0o600 });
-  // An agent cred from BEFORE the rotation: the thing an operator is afraid of losing.
+  // Creds from BEFORE the rotation, one per standing class the success copy claims survives. The
+  // claim is "every agent credential and both daemon creds"; proving it with a single agent cred
+  // would leave the broader sentence asserted rather than shown.
   const agentCreds = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
+  const preRotation: Array<[string, string]> = [
+    ["agent", agentCreds],
+    ["delivery", await mintCreds(auth, newIdentity(), "delivery")],
+    ["membership-rw", await mintCreds(auth, newIdentity(), "membership-rw")],
+    ["supervisor", await mintCreds(auth, newIdentity(), "supervisor")],
+  ];
 
   console.log("\n1) the repair copy names the rotation, not a bare `up`");
   const origLog = console.log, origErr = console.error;
@@ -155,6 +166,72 @@ try {
   }
   check("rotating an unknown space throws", refusal.includes("no trust record"), refusal);
 
+  console.log("\n4b) the blast radius is broker-wide, so a multi-tenant root refuses");
+  // A second tenant under the SAME broker operator. The rotation retires the system account for
+  // BOTH, and this root holds one $SYS cred pair pinned to one data account — so it must refuse
+  // rather than silently leave the neighbour unobservable. Guarded in the workspace export, not at
+  // the CLI flag, so a hosted caller hits it too.
+  const multiRoot = mkdtempSync(join(tmpdir(), "cotal-sysrot-multi-"));
+  mkdirSync(join(multiRoot, ".cotal", "auth"), { recursive: true });
+  const multiStore = workspaceSecretStore(multiRoot);
+  const tenantA = await createSpaceAuth("tenant-a");
+  await putSpaceAuth(multiStore, tenantA);
+  await putSpaceAuth(multiStore, composeSpaceAuth(tenantA, await createSpaceAccountAuth(tenantA, "tenant-b")));
+  const obsBefore = await mintMembershipObserverCreds(tenantA, newIdentity());
+  writeFileSync(join(multiRoot, ".cotal", SYSTEM_CREDS_FILES[0]), obsBefore, { mode: 0o600 });
+  let multiRefusal = "";
+  try {
+    await rotateSystemCreds(multiRoot, "tenant-a");
+  } catch (e) {
+    multiRefusal = (e as Error).message;
+  }
+  check("rotating a 2-tenant root refuses and names both spaces", multiRefusal.includes("broker-wide") && multiRefusal.includes("tenant-b"), multiRefusal);
+  check("the refusal left the existing $SYS cred untouched", readFileSync(join(multiRoot, ".cotal", SYSTEM_CREDS_FILES[0]), "utf8") === obsBefore);
+  const multiGen = (await getSpaceAuth(multiStore, "tenant-a"))?.gen ?? 0;
+  check("the refusal did NOT advance the broker generation", multiGen === 0, multiGen);
+  rmSync(multiRoot, { recursive: true, force: true });
+
+  console.log("\n4c) --restore and --rotate-sys are refused together");
+  // A restore reinstates a trust root; a rotation supersedes one. Together the operator cannot say
+  // which authority the mesh came up on, and the artifact's own $SYS creds would be overwritten
+  // before anyone verified the restore.
+  let comboRefusal = "";
+  process.chdir(root);
+  try {
+    await up({ values: { restore: "/nonexistent-backup", "rotate-sys": true }, positionals: [], raw: [] });
+  } catch (e) {
+    comboRefusal = (e as Error).message;
+  } finally {
+    process.chdir(origCwd);
+  }
+  check(
+    "`up --restore --rotate-sys` refuses BEFORE touching the restore",
+    comboRefusal.includes("--rotate-sys") && !comboRefusal.includes("nonexistent-backup"),
+    comboRefusal,
+  );
+
+  console.log("\n4d) a MANIFEST-open mesh refuses too, not just the --open flag");
+  // The flag-level guard cannot see this: openness comes from `broker.auth: false` inside the file,
+  // which `upManifest` derives after entry. Left unguarded, `up -f open.yaml --rotate-sys` boots an
+  // open broker and exits 0 having rotated nothing — the silent-success class this change removes.
+  // `--dry-run` still reaches the guard (it sits before the plan print), so this mutates nothing.
+  writeFileSync(
+    join(root, "open.yaml"),
+    `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker: { servers: "nats://127.0.0.1:${PORT}", auth: false }\nchannels:\n  general: { description: Open coordination. }\n`,
+  );
+  let manifestRefusal = "";
+  const genBeforeManifest = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
+  process.chdir(root);
+  try {
+    await up({ values: { file: join(root, "open.yaml"), "rotate-sys": true, "dry-run": true }, positionals: [], raw: [] });
+  } catch (e) {
+    manifestRefusal = (e as Error).message;
+  } finally {
+    process.chdir(origCwd);
+  }
+  check("`up -f <open manifest> --rotate-sys` refuses", manifestRefusal.includes("--rotate-sys") && manifestRefusal.includes("broker.auth: false"), manifestRefusal);
+  check("the manifest refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeManifest);
+
   console.log("\n5) live broker on the ROTATED config");
   mkdirSync(storeDir, { recursive: true });
   writeFileSync(confPath, serverConfig(rot.auth, [rot.auth], { storeDir, port: PORT }));
@@ -163,7 +240,35 @@ try {
   check("the ROTATED observer is accepted", await accepts(obsAfter));
   check("the ROTATED evictor is accepted", await accepts(evAfter));
   check("the PRE-rotation observer is REJECTED (the old authority is really retired)", !(await accepts(preObserver)));
-  check("a data-account cred minted BEFORE the rotation still connects (agents survive)", await accepts(agentCreds));
+  for (const [label, creds] of preRotation)
+    check(`a ${label} cred minted BEFORE the rotation still connects (the survival claim, per class)`, await accepts(creds));
+
+  console.log("\n6) a TORN rotation is caught by both readers, not reported healthy");
+  // Simulate the crash grok described: the record committed, the observer landed, the evictor did
+  // not. Both files parse and neither is near expiry, so ONLY an issuer comparison can see it.
+  writeFileSync(evPath, await mintConnectionEvictorCreds(rot.auth, newIdentity()), { mode: 0o600 }); // healthy, current
+  const tornEvictor = preObserver; // an old-authority file that is still structurally valid
+  writeFileSync(evPath, tornEvictor, { mode: 0o600 });
+  const tornLines: string[] = [];
+  console.log = (...a: unknown[]) => { tornLines.push(a.join(" ")); };
+  console.error = (...a: unknown[]) => { tornLines.push(a.join(" ")); };
+  process.chdir(root);
+  let tornCode: number | undefined;
+  try {
+    await doctor({ values: {}, positionals: ["auth"], raw: [] });
+    tornCode = process.exitCode as number | undefined;
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+    process.chdir(origCwd);
+    process.exitCode = 0;
+  }
+  const tornOut = tornLines.join("\n").replace(/\[[0-9;]*m/g, "");
+  check("doctor does NOT report a torn $SYS pair as healthy", !tornOut.includes("auth: healthy"), tornOut);
+  check("doctor names the RETIRED system account as the cause", tornOut.includes("RETIRED system account"), tornOut);
+  check("doctor exits non-zero on a torn pair", tornCode === 1, tornCode);
+  check("the torn-pair repair is still the rotation", tornOut.includes("up --rotate-sys"), tornOut);
+  writeFileSync(evPath, evAfter, { mode: 0o600 }); // restore the complete generation
 } finally {
   await stopBroker();
   process.chdir(origCwd);
