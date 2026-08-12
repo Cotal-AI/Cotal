@@ -50,6 +50,16 @@ export function cotalRootCaptor(start: string): string | null {
  * then `/var/tmp`. A captured base is SKIPPED, not used with a warning — using it is the defect.
  * If every candidate is captured this THROWS, naming each base and why: a suite that cannot be
  * hermetic must fail loudly at its first line, not run and grade.
+ *
+ * KNOWN LIMIT — base DEPTH, not ancestry. Because this repoints `TMPDIR`, anything that later opens
+ * a unix domain socket under it inherits the chosen path, and `sun_path` caps a socket path at 104
+ * bytes on macOS (108 on Linux). A deeply nested base therefore kills the child launcher rather
+ * than the suite: `tsx` dies `listen EINVAL … <base>/tsx-<uid>/<pid>.pipe` before the suite body
+ * runs at all. Measured: 129 bytes under a nested per-tool temp fails; the ordinary
+ * `/var/folders/<…>/T/cotal-*` (~87) and `/var/tmp/cotal-*` are fine, as is CI's `RUNNER_TEMP`.
+ * Selection is deliberately NOT sorted by length — `RUNNER_TEMP` is preferred because CI cleans it
+ * between jobs, and trading that for a shorter path would trade a real guarantee for a rare one.
+ * If you see `listen EINVAL` from a suite that uses this helper, it is path LENGTH, not capture.
  */
 export function makeScratch(prefix = "cotal-smoke-"): string {
   const bases = [process.env.RUNNER_TEMP, process.env.TMPDIR, tmpdir(), "/var/tmp"].filter(
