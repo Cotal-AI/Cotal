@@ -652,12 +652,9 @@ export interface DurableProvisioner {
    *  its runtime durable-joins (it holds no in-memory ledger). Replaces the old manager-written boot
    *  membership: boot durable membership is now the agent SELF-JOINING its durable channels via the
    *  daemon's `ctl.delivery` op at connect. */
-  commitAcl(
-    principal: string,
-    lifecycleUid: string,
-    allowSubscribe: string[],
-    opts?: { reissue?: boolean },
-  ): Promise<void>;
+  commitAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
+  /** Raise the mint-time ceiling. Only the provisioning path that also remints the JWT. */
+  reissueAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
   provisionTaskQueue(role: string): Promise<void>;
 }
 
@@ -749,11 +746,10 @@ export async function provisionAgentDurables(
   // live-only launcher, e.g. `cotal spawn --live-only`) opts out of the ACL row → the daemon never
   // authorizes a durable backstop for it, so it stays live-only.
   // ACL is keyed by the lifecycle-scoped dot-form <owner>.<actor>.<uid> (per-incarnation read authority).
-  // reissue:true — this is the credential bake. The registry ceiling must rise with the JWT or a
-  // later plain commitAcl could not be told apart from a remint, and mediated history would either
-  // refuse a legitimate broaden or accept a registry-only widen (SPEC §9.6).
+  // reissueAcl — the credential bake. Separate from commitAcl so an ordinary registry writer cannot
+  // raise the history ceiling by passing a flag (SPEC §9.6 / ACL-authority panel).
   if (opts.durableMembership !== false) {
-    await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe, { reissue: true });
+    await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
   }
   if (opts.role) await provisioner.provisionTaskQueue(opts.role);
   return allowSubscribe;

@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
-import { isReachable, openAclRegistry, readAcl, commitAcl, deleteAcl, aclKey } from "../src/index.js";
+import { isReachable, openAclRegistry, readAcl, commitAcl, reissueAcl, deleteAcl, aclKey } from "../src/index.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -43,7 +43,7 @@ try {
   // ── the ordinary paths still hold ──
   const created = await commitAcl(kv, "local.owner1", U1, ["general"]);
   c("fresh create", created.revision === 1 && (await readAcl(kv, "local.owner1", U1))?.record.allowSubscribe[0] === "general");
-  const updated = await commitAcl(kv, "local.owner1", U1, ["general", "review"], { reissue: true });
+  const updated = await reissueAcl(kv, "local.owner1", U1, ["general", "review"]);
   c("update bumps revision", updated.revision === 2 && (await readAcl(kv, "local.owner1", U1))?.record.revision === 2);
   await deleteAcl(kv, "local.owner1", U1);
   c("delete purges", (await readAcl(kv, "local.owner1", U1)) === undefined);
@@ -63,7 +63,7 @@ try {
   const healed = await commitAcl(kv, "local.garbled", UG, ["general"]);
   c("commitAcl OVERWRITES the garbled row instead of wedging",
     healed.revision === 1 && (await readAcl(kv, "local.garbled", UG))?.record.allowSubscribe[0] === "general");
-  const healedAgain = await commitAcl(kv, "local.garbled", UG, ["general", "review"], { reissue: true });
+  const healedAgain = await reissueAcl(kv, "local.garbled", UG, ["general", "review"]);
   c("subsequent update proceeds normally", healedAgain.revision === 2);
 
   // ── exhausted retries carry the underlying cause (fake KV; every write path fails) ──

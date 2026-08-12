@@ -70,7 +70,7 @@ import {
   durableEligible,
   StaleMembershipWrite,
 } from "./members.js";
-import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord } from "./acls.js";
+import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
 import {
   openChannelRegistry,
@@ -2140,13 +2140,13 @@ export class CotalEndpoint extends EventEmitter {
    *  delivery daemon can re-authorize the agent's durable entries and validate its runtime
    *  durable-joins without holding any in-memory ledger. Written ATOMICALLY ({@link writeAclRecord}),
    *  so a present record is always complete (`[]` = known no-read, never a half-write). */
-  async commitAcl(
-    targetId: string,
-    lifecycleUid: string,
-    allowSubscribe: string[],
-    opts?: { reissue?: boolean },
-  ): Promise<void> {
-    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe, opts);
+  async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
+    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+  }
+
+  /** Raise the mint-time ACL ceiling. Provision/remint only — see {@link reissueAcl}. */
+  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
+    await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
   }
 
   /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
@@ -2635,8 +2635,7 @@ export class CotalEndpoint extends EventEmitter {
    *  authorizes against `allowSubscribe ∩ issuedAllowSubscribe` — the live row (so revocation via
    *  plain commitAcl still stops the next read) intersected with the mint-time ceiling (so a
    *  registry widen without a remint cannot grant what the JWT does not). Raising the ceiling is
-   *  `commitAcl(..., { reissue: true })`, which is what provision does when it bakes the list into
-   *  the JWT.
+   *  {@link reissueAcl}, which is what provision does when it bakes the list into the JWT.
    *
    *  The caller arrives as an alias (the control subject carries owner+actor, never a uid) and is the
    *  AUTHENTICATED subject sender — `serveControl` has already fail-closed on any payload that names a
@@ -2662,7 +2661,7 @@ export class CotalEndpoint extends EventEmitter {
     // capability wearing a privilege-reduction label (panel BLOCKING at 914fd7b0). History therefore
     // requires the channel in BOTH the live row AND the mint-time ceiling (`issuedAllowSubscribe`).
     // Revocation still works: narrowing allowSubscribe stops the next read. Raising the ceiling
-    // requires reissue (provision/remint), which is the same act that bakes the list into the JWT.
+    // requires reissueAcl (provision/remint), which is the same act that bakes the list into the JWT.
     let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; lifecycleUid: string } | undefined;
     try { acl = await this.aclForAlias(caller); }
     catch (e) { return { ok: false, error: (e as Error).message }; }

@@ -317,7 +317,7 @@ try {
     // reissue, mediated admits secret. This is the legitimate broaden path — without it the
     // ceiling would be a one-way ratchet that could never follow a real remint.
     {
-      await mgr.commitAcl(principalKey(DEV_OWNER, sId.id).key, uidS, ["ops", "secret"], { reissue: true });
+      await mgr.reissueAcl(principalKey(DEV_OWNER, sId.id).key, uidS, ["ops", "secret"]);
       await wait(300);
       const after = new CotalEndpoint({
         space, servers: SERVERS, creds: sCreds, channels: ["ops"], consume: false, lifecycleUid: uidS,
