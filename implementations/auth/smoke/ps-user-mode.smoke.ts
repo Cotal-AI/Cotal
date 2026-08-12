@@ -184,7 +184,21 @@ try {
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
 
   idpSrv = createServer((req, res) => handler!(req, res));
-  await new Promise<void>((r, rej) => { idpSrv!.once("error", rej); idpSrv!.listen(0, "127.0.0.1", r); });
+  // The listen-failure listener is REMOVED on success. Left installed, it outlives the Promise it
+  // belongs to: a later server error then invokes an already-settled reject, which is a no-op, so
+  // the error is silently consumed and the run continues on a broken IdP. That is worse than having
+  // no handler at all, since an unhandled `error` on an EventEmitter at least throws.
+  await new Promise<void>((r, rej) => {
+    const onListenError = (e: Error) => rej(e);
+    idpSrv!.once("error", onListenError);
+    idpSrv!.listen(0, "127.0.0.1", () => { idpSrv!.off("error", onListenError); r(); });
+  });
+  // From here the server is live for the rest of the run, so errors get a PERSISTENT handler that
+  // reds the suite rather than either crashing it mid-fixture (losing teardown) or vanishing.
+  idpSrv.on("error", (e) => {
+    process.exitCode = 1;
+    console.error(`  ! IdP server error after listen: ${e.message} — the suite's verdict below cannot be trusted`);
+  });
   origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
   base = `${origin}/api/auth`;
   ba = betterAuth({
