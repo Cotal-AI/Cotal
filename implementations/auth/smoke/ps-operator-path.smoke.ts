@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch, scratchCaptor } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
@@ -90,7 +90,7 @@ try {
   console.log("1) up (STATIC auth — no --user-auth, no IdP, no device login)");
   // Checked before `up`, because a captured root does not make `up` fail — it makes every later cell
   // grade a mesh that is not this fixture's.
-  const captor = cotalRootCaptor(root);
+  const captor = foreignRootFor(root);
   check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
   if (captor) { process.exitCode = 1; throw new Error(`FIXTURE FAILURE, not a product defect: the temp root is captured by ${captor}.`); }
   const up = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
@@ -145,7 +145,7 @@ try {
   // Same guard as the user-mode sibling: `cotal down` re-resolves from cwd, so under a captured
   // root it signals the ANCESTOR's processes — pids this fixture never started. A teardown that
   // reaches outside its own fixture is worse than no teardown.
-  const teardownCaptor = scratchCaptor(root);
+  const teardownCaptor = foreignRootFor(root);
   if (teardownCaptor === null) {
     await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
   } else {

@@ -31,7 +31,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch, scratchCaptor } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
 // `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
@@ -151,7 +151,7 @@ try {
   console.log("1) up --user-auth");
   // Checked FIRST and fatal: with the root captured, `up` still exits 0 and every cell below still
   // "runs" — against a mesh that is not where this suite thinks it is.
-  const captor = cotalRootCaptor(root);
+  const captor = foreignRootFor(root);
   check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
   if (captor) { process.exitCode = 1; throw new Error(`fixture root captured by ${captor}`); }
   const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
@@ -205,7 +205,7 @@ try {
   // where the suite has already concluded something is wrong. Cleanup must not be the most
   // dangerous thing the suite does. Skip the CLI teardown when the root is captured and say so
   // loudly, naming what may be left behind; `scratch` is our own mkdtemp either way.
-  const teardownCaptor = scratchCaptor(root);
+  const teardownCaptor = foreignRootFor(root);
   if (teardownCaptor === null) {
     await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
   } else {

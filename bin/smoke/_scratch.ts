@@ -120,34 +120,38 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
 }
 
 /**
- * Witness that nothing ABOVE `dir` captures it — i.e. that `findCotalRoot(dir)` is still `dir`.
- * Call it AFTER the fixture is built, not only at setup: a `.cotal` can appear above the scratch
- * mid-run (a concurrent `cotal` command, or the suite's own child rooting somewhere unexpected),
- * and the failure that causes looks like a product defect.
+ * The root `findCotalRoot` would actually pick for `dir` when that is NOT `dir` itself — a FOREIGN
+ * root capturing the fixture. Null when `dir` roots itself, or when nothing above it roots anything.
  *
- * Ancestors ONLY. By this point `dir` normally has a `.cotal` of its own — that is `cotal up`
- * working, and it is what makes `dir` the mesh root. Treating it as a capture would red every
- * correct run, which is what the first version of this function did.
- */
-/**
- * The `.cotal` ABOVE `dir` that would capture it, or null when `dir` still roots itself.
+ * NEAREST WINS, which is the whole subtlety. `findCotalRoot` walks up and stops at the FIRST
+ * `.cotal`, starting at `dir`. So once `cotal up` has created `root/.cotal`, an ancestor `.cotal`
+ * cannot capture the fixture any more — the fixture outranks it. A predicate that asks "is there
+ * any `.cotal` above me" answers yes and is WRONG after that point: it would call a healthy fixture
+ * captured, and a teardown gated on it would skip a legitimate `cotal down` and leak the mesh.
+ * Before `up`, with no `root/.cotal` yet, the two questions coincide — which is exactly why asking
+ * the wrong one looked correct.
  *
- * The predicate form of {@link assertScratchHeld}, for callers that must DECIDE rather than die —
- * teardown above all. `cotal down` re-resolves its root from cwd, so running it under a captured
- * root aims it at the ancestor's `.cotal` and it will signal pids the fixture never started. A
- * cleanup step is exactly the wrong place to throw, and exactly the wrong place to guess.
+ * The predicate form, for callers that must DECIDE rather than die — teardown above all: `cotal
+ * down` re-resolves from cwd, so under a genuinely foreign root it signals pids the fixture never
+ * started. A cleanup step is the wrong place to throw and the wrong place to guess.
  */
-export function scratchCaptor(dir: string): string | null {
-  return cotalRootCaptor(dirname(physical(dir)));
+export function foreignRootFor(dir: string): string | null {
+  const lex = resolve(dir);
+  const phys = physical(dir);
+  for (const start of phys === lex ? [lex] : [lex, phys]) {
+    const winner = walkUp(start);
+    if (winner !== null && winner !== start) return winner;
+  }
+  return null;
 }
 
 export function assertScratchHeld(dir: string, what = "scratch"): void {
   const self = physical(dir);
-  const captor = scratchCaptor(self);
-  if (captor) {
+  const foreign = foreignRootFor(self);
+  if (foreign) {
     throw new Error(
-      `${what} (${self}) is captured by ${join(captor, ".cotal")}: findCotalRoot resolves anything ` +
-        `under it to ${captor}, so this suite's fixture is not where it thinks it is. Remove that ` +
+      `${what} (${self}) resolves to ${foreign} via ${join(foreign, ".cotal")}: findCotalRoot picks ` +
+        `that root instead, so this suite's fixture is not where it thinks it is. Remove that ` +
         `.cotal or point TMPDIR somewhere with no .cotal above it.`,
     );
   }
@@ -168,7 +172,7 @@ export function assertScratchHeld(dir: string, what = "scratch"): void {
 export async function killManagerAtRoot(root: string): Promise<number> {
   const pidFile = join(root, ".cotal", "manager.pid");
   if (!existsSync(pidFile)) {
-    const captor = cotalRootCaptor(dirname(root));
+    const captor = foreignRootFor(root);
     throw new Error(
       `no manager pid at ${pidFile}, so the manager was NOT killed and anything asserted after ` +
         `this point grades a live mesh` +
