@@ -192,7 +192,7 @@ try {
   check("variant support is declared", codexConnector.supportsModelVariant === true);
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));
-  check("transcript channel convention shared", codexConnector.eventChannel?.("My Agent") === "tr-my-agent");
+  check("event channel convention shared", codexConnector.eventChannel?.("My Agent") === "events.my-agent");
 
   console.log(`\nCODEX ARGS SMOKE PASSED ✅  (${pass} checks)`);
 } finally {

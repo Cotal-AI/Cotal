@@ -9,11 +9,13 @@
  * operator upgraded, with their agents already stopped. This is the upgrade path, not a nicety.
  *
  * MUTATION LEDGER — predicted before the run:
- *   M1  delete `renameLegacyTranscriptKey` from the preprocess
- *       -> MUST kill "legacy transcript document still parses"
- *       -> MUST NOT kill the new-document or missing-flag cells (they never touch the legacy key)
- *   M2  make the helper OR the two values instead of preferring `events`
- *       -> MUST kill "both keys present: events wins, never OR-ed"
+ *   M1  neuter the preprocess (identity function)
+ *       -> kills 2, CONFIRMED: the legacy document AND the both-keys document, because with no
+ *          rename the `transcript` key is simply unrecognized by the strictObject in both.
+ *       -> does NOT touch the new-document, missing-flag, or unknown-key cells.
+ *   M2  OR the two values instead of preferring `events`
+ *       -> kills 1, CONFIRMED: "both keys present: events wins, never OR-ed" — and ONLY that,
+ *          which is what makes it a precedence test rather than a parse test.
  *
  * Run: pnpm smoke:resume-legacy-key
  */

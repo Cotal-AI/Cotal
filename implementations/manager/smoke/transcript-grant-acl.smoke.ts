@@ -97,7 +97,7 @@ try {
     check("spawn with events succeeds", reply.ok === true, reply);
     const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
     const pub = pubAcl(join(credsDir, `mirrorbot.${uid}.creds`));
-    check("auth-mode grant includes the connector's event channel (events.mirrorbot)", pub.some((s) => s.includes(".events.mirrorbot")), pub);
+    check("auth-mode grant is EXACTLY what the connector's eventChannel returns, no drift", pub.some((s) => s.endsWith(`.${tr("mirrorbot")}`)), pub);
     check("the granted channel is the connector's eventChannel, no drift", pub.some((s) => s.includes(`.${tr("mirrorbot")}`)), pub);
   }
 
@@ -109,7 +109,7 @@ try {
     const pub = pubAcl(join(credsDir, `mirrorbot-2.${uid}.creds`));
     // Check the CHANNEL segment (after `.chat.<id>.`), not the whole subject — else the space name
     // itself (here `tr-grant-…`) would false-match `.tr-`.
-    check("no event channel granted when events is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes(".events.")), pub);
+    check("no event channel granted when events is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes(tr("mirrorbot"))), pub);
   }
 
   // 3 — transcript ON + a connector that does NOT mirror: fail loud, never a silently-skipped grant.
