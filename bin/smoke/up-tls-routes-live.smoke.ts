@@ -92,15 +92,21 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
     "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "good.pem"),
     "-days", "2", "-extfile", join(pki, "good.ext")]);
 
-  // EXPIRED. OpenSSL 3.6+ rejects `-days -1` ("end date before start date"). Absolute
-  // `-not_before`/`-not_after` produce an already-expired cert on every OpenSSL 3.x we care about,
-  // and on LibreSSL the same flags are accepted. CA-signed even though nothing verifies its chain.
+  // EXPIRED. OpenSSL 3.4+ accepts absolute `-not_before`/`-not_after`; 3.0.x does not (and 3.6+
+  // rejects `-days -1`). Try absolute dates first, fall back to `-days -1` which yields an
+  // already-expired leaf on 3.0.x. CA-signed even though nothing verifies its chain.
   sh("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "expired.key"),
     "-out", join(pki, "expired.csr"), "-subj", "/CN=expired"]);
-  sh("openssl", ["x509", "-req", "-in", join(pki, "expired.csr"), "-CA", join(pki, "ca.pem"),
-    "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "expired.pem"),
-    "-not_before", "20200101000000Z", "-not_after", "20200102000000Z",
-    "-extfile", join(pki, "good.ext")]);
+  try {
+    sh("openssl", ["x509", "-req", "-in", join(pki, "expired.csr"), "-CA", join(pki, "ca.pem"),
+      "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "expired.pem"),
+      "-not_before", "20200101000000Z", "-not_after", "20200102000000Z",
+      "-extfile", join(pki, "good.ext")]);
+  } catch {
+    sh("openssl", ["x509", "-req", "-in", join(pki, "expired.csr"), "-CA", join(pki, "ca.pem"),
+      "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "expired.pem"),
+      "-days", "-1", "-extfile", join(pki, "good.ext")]);
+  }
   sh("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "other.key"),
     "-out", join(pki, "other.pem"), "-days", "2", "-subj", "/CN=other",
     "-addext", "subjectAltName=DNS:not-this-host.example"]);
