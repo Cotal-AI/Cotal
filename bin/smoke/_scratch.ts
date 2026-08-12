@@ -25,18 +25,34 @@
  * sandbox is what makes the suite pass, but the assertion is what keeps it honest if the sandbox
  * ever stops working.
  */
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parsePid, probeLiveness } from "../../implementations/cli/src/lib/pid.js";
 
-/** The physical path, symlinks resolved. Falls back to the lexical form for a path that does not
- *  exist yet (a candidate base we are about to reject anyway). */
+/**
+ * The physical path, symlinks resolved.
+ *
+ * FAILS CLOSED. `ENOENT` is the one honest fallback: a candidate base that does not exist yet has no
+ * physical form, and its lexical form is all there is to check. Every other errno — `EACCES`, `EIO`,
+ * `ELOOP` — means we could not PROVE the physical ancestry, and answering with the lexical path
+ * there is a silent downgrade that reopens the exact symlink bypass this function exists to close.
+ * Measured: an injected `EIO` on an existing symlink whose physical parent held a `.cotal` made
+ * {@link cotalRootCaptor} return null, i.e. "clean", for a genuinely captured path.
+ *
+ * A guard that cannot establish its property must say so rather than substitute a weaker one it can.
+ */
 function physical(p: string): string {
   try {
     return realpathSync.native(p);
-  } catch {
-    return resolve(p);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return resolve(p);
+    throw new Error(
+      `cannot canonicalize ${p} (${code ?? (e as Error).message}) — refusing to fall back to the lexical ` +
+        `path, which cannot see a physical .cotal ancestor`,
+      { cause: e },
+    );
   }
 }
 
@@ -94,19 +110,39 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
   );
   const tried: string[] = [];
   for (const base of bases) {
-    const captor = cotalRootCaptor(base);
+    // A base whose ancestry cannot be PROVEN is unusable, not clean: `cotalRootCaptor` now throws
+    // rather than downgrading to a lexical answer, and "I could not check" must reject the
+    // candidate, never accept it.
+    let captor: string | null;
+    try {
+      captor = cotalRootCaptor(base);
+    } catch (e) {
+      tried.push(`${base} (ancestry unprovable: ${(e as Error).message})`);
+      continue;
+    }
     if (captor) {
       tried.push(`${base} (captured by ${join(captor, ".cotal")})`);
       continue;
     }
     let scratch: string;
+    // Made and canonicalized as two steps, so a canonicalization failure can REMOVE the directory it
+    // just created. Collapsing them leaks a scratch on every rejected base — and since the fixture
+    // anchors a `.cotal` inside it, a leaked scratch is a capture hazard rather than clutter.
+    let made: string;
+    try {
+      made = mkdtempSync(join(base, prefix));
+    } catch (e) {
+      tried.push(`${base} (${(e as Error).message})`);
+      continue;
+    }
     try {
       // Canonical, not lexical. A spawned child's `process.cwd()` is physical on POSIX, so handing
       // out a symlinked path guarantees the suite and the product disagree about where the fixture
       // is. Resolve it once, here, and every later comparison is against the same string.
-      scratch = realpathSync.native(mkdtempSync(join(base, prefix)));
+      scratch = realpathSync.native(made);
     } catch (e) {
-      tried.push(`${base} (${(e as Error).message})`);
+      rmSync(made, { recursive: true, force: true });
+      tried.push(`${base} (created but not canonicalizable, removed: ${(e as Error).message})`);
       continue;
     }
     process.env.TMPDIR = scratch;
