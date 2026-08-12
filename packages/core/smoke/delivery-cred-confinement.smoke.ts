@@ -201,7 +201,7 @@ try {
 
   // ---- an ordinary agent cred ----
   const { provisionAgent } = await import("../src/index.js");
-  const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+  const noop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const a = newIdentity();
   const aCreds = await provisionAgent(noop, auth, a, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: mintLifecycleUid() });
 

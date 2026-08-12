@@ -70,7 +70,7 @@ import {
   durableEligible,
   StaleMembershipWrite,
 } from "./members.js";
-import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord } from "./acls.js";
+import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
 import {
   openChannelRegistry,
@@ -252,6 +252,43 @@ const READER_MAX_REDELIVERIES = 10;
 /** A value or a promise of it — the Plane-3 `aclFor` reads the durable ACL registry FRESH per entry
  *  (async), so the reader/fan-out call sites await it. */
 type MaybePromise<T> = T | Promise<T>;
+
+/** Page size for the mediated history read when the caller names none — matches `channelHistory`'s
+ *  own default, since the mediated read exists to be a drop-in for it. */
+const READ_HISTORY_DEFAULT_LIMIT = 100;
+/** Hard server-side ceiling on one mediated page. The caller PROPOSES a limit and the mediator
+ *  decides: the reader is pooled and privileged, so an unbounded caller-chosen limit would let one
+ *  request pull a channel's whole retained set through it. Clamped, not refused — a UI asking for
+ *  more than a page should get a page, and `complete: false` already tells it more remains. */
+const READ_HISTORY_MAX_LIMIT = 200;
+
+/** One page of a mediated history read: the newest `limit` messages, oldest-first WITHIN the page.
+ *
+ *  `complete` is the honest-truncation signal and the reason this is not just `CotalMessage[]`:
+ *  `true` means the page reaches the start of the channel's RETAINED history (nothing older is on
+ *  the stream to read), `false` means older messages exist behind it. A caller that cannot tell
+ *  those apart renders "there is more" as "this is the beginning of the conversation". It says
+ *  nothing about messages already aged out by retention — no reader can see those. */
+export type HistoryPage = { items: CotalMessage[]; complete: boolean };
+
+/** The NEWEST prefix-from-the-end of `items` whose serialized size fits `budget` bytes, order
+ *  preserved. Returns `[]` when not even the newest single message fits — the caller must refuse
+ *  loudly there rather than serve an empty page, which would read as "no history".
+ *
+ *  Measured in ENCODED bytes, not `string.length`: a page of multi-byte text would otherwise be
+ *  undercounted and still overflow the broker. Same discipline as `assertFactFits`. */
+export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMessage[] {
+  const enc = new TextEncoder();
+  let used = 2; // the enclosing `[]`
+  let first = items.length; // index of the oldest kept item
+  for (let i = items.length - 1; i >= 0; i--) {
+    const size = enc.encode(JSON.stringify(items[i])).length + 1; // + the `,` separator
+    if (used + size > budget) break;
+    used += size;
+    first = i;
+  }
+  return first === items.length ? [] : items.slice(first);
+}
 
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
@@ -1725,6 +1762,45 @@ export class CotalEndpoint extends EventEmitter {
     );
   }
 
+  /** Read a channel's recent history THROUGH THE DELIVERY DAEMON instead of through a consumer this
+   *  connection creates itself — the mediated read of SPEC's "Mediated reads (normative)" rule (no raw
+   *  consumer / `DIRECT.GET` / `STREAM.MSG.GET` for an untrusted holder; the trusted reader serves it
+   *  onto the caller's own confined rail). `items` is shape-identical to what {@link channelHistory}
+   *  returns — the same `CotalMessage[]`, the same newest-N selection, the same oldest-first order
+   *  within the page — so a caller migrates by reading `.items` and nothing else changes. The return
+   *  is WRAPPED rather than bare precisely because of `complete`: a bare array cannot say whether
+   *  older history remains behind it.
+   *
+   *  **Why this exists when `channelHistory` already works:** authorization. A consumer pins its
+   *  authorization at CREATE time, so a caller whose read ACL is revoked mid-scroll keeps being served
+   *  by the consumer it already holds. The mediator re-reads authorization on EVERY call (live
+   *  registry row ∩ mint-time ceiling — SPEC §9.6), so a revocation stops the very next read and a
+   *  registry-only widen cannot exceed the effective credential. That is the whole point of the verb;
+   *  a mediator that cached the ACL would be a rename of the path it replaces.
+   *
+   *  **The caller never names itself.** The daemon takes the principal from the broker-authenticated
+   *  request subject ({@link serveControl} fail-closes when the payload `from` disagrees), so there is
+   *  no caller-supplied identity to forge.
+   *
+   *  A channel outside the caller's read ACL THROWS. It must never come back as an empty page: "you
+   *  may not read this" and "there is nothing here" are different answers and only one is safe to
+   *  render as an empty conversation.
+   *
+   *  Chat channels only — DM history is deliberately not served here (it is god-view-only today, a
+   *  different authorization model, and one handler with two authz paths is the wrong shape on the
+   *  surface where a mistake exposes private messages). */
+  async readHistory(channel: string, opts?: { limit?: number }): Promise<HistoryPage> {
+    const reply = await this.requestDelivery("readHistory", { channel, limit: opts?.limit });
+    if (!reply.ok) throw new Error(reply.error ?? "readHistory failed");
+    const data = reply.data as { items?: unknown; complete?: unknown } | undefined;
+    // Validate rather than coerce. A malformed reply must not be massaged into a plausible page:
+    // defaulting `complete` would invent the very signal a caller uses to decide whether it is
+    // looking at the start of a conversation.
+    if (!Array.isArray(data?.items) || typeof data?.complete !== "boolean")
+      throw new Error("readHistory: the delivery daemon returned a malformed page (expected { items, complete })");
+    return { items: data.items as CotalMessage[], complete: data.complete };
+  }
+
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. God-view only:
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
    *  skips for them — only an `admin`-profile cred can read it. */
@@ -2068,6 +2144,15 @@ export class CotalEndpoint extends EventEmitter {
     await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
   }
 
+  /**
+   * Raise the mint-time ACL ceiling. Provision/remint only — see {@link reissueAcl}.
+   * Process discipline: call only in the same act that bakes `allowSubscribe` into the JWT; the
+   * write is not crypto-bound to credential bytes.
+   */
+  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
+    await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+  }
+
   /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
    *  (`allowSubscribe`) from the durable registry (exact key `<owner>.<actor>.<uid>`), or `undefined`
    *  if no record (an unknown lifecycle — the reader DEFERS, never drops). A present `[]` (known
@@ -2080,9 +2165,18 @@ export class CotalEndpoint extends EventEmitter {
    *  authz seam for callers that arrive with alias identity only (a `ctl.delivery` durable-join).
    *  THROWS {@link AmbiguousAclAlias} on two live rows — first-match would let a stale lifecycle
    *  authorize the successor (SPEC 13.1: at most one live lifecycle per alias). */
-  async aclForAlias(principal: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined> {
+  async aclForAlias(principal: string): Promise<{
+    allowSubscribe: string[];
+    issuedAllowSubscribe: string[];
+    lifecycleUid: string;
+  } | undefined> {
     const row = await readAclForAlias(await this.aclRegistry(), principal);
-    return row === undefined ? undefined : { allowSubscribe: row.record.allowSubscribe, lifecycleUid: row.lifecycleUid };
+    if (row === undefined) return undefined;
+    const allow = row.record.allowSubscribe;
+    // Legacy rows predate the ceiling field: treat missing as equal to allowSubscribe so behaviour
+    // matches what that row already exposed. New rows always carry an explicit ceiling.
+    const issued = row.record.issuedAllowSubscribe ?? allow;
+    return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
   }
 
   /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
@@ -2458,6 +2552,7 @@ export class CotalEndpoint extends EventEmitter {
     const args = req.args ?? {};
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
+    if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
     if (req.op === "listMemberships") {
       if (typeof args.lifecycleUid !== "string")
         return { ok: false, error: "listMemberships: the caller's lifecycleUid is required (membership rows are lifecycle-keyed, SPEC 13.1)" };
@@ -2527,6 +2622,106 @@ export class CotalEndpoint extends EventEmitter {
     try { await this.durableLeaveFor(caller, channel, uid, args.generation); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     return { ok: true, data: { channel } };
+  }
+
+  /** Serve one MEDIATED HISTORY READ (`readHistory`, the client side is {@link readHistory}). The daemon
+   *  holds the consumer so the caller does not have to: this is a privilege reduction, not a new
+   *  capability, and it is the shape SPEC's "Mediated reads (normative)" rule asks for.
+   *
+   *  THE ONE INVARIANT THIS METHOD EXISTS FOR: authorization is read FRESH on every call and never
+   *  cached across calls. A consumer pins its authorization when it is created, so a revoked caller
+   *  keeps being served by a consumer it already holds; re-reading here is what makes a revocation
+   *  stop the very NEXT read. Cache this and the verb loses its only advantage over the raw consumer
+   *  path.
+   *
+   *  AUTHORITY (SPEC §9.6): "current read ACL" is the effective broker-accepted credential. The
+   *  durable registry is a live mirror of that credential, not a second grant source. History
+   *  authorizes against `allowSubscribe ∩ issuedAllowSubscribe` — the live row (so revocation via
+   *  plain commitAcl still stops the next read) intersected with the mint-time ceiling (so a
+   *  registry widen without a remint cannot grant what the JWT does not). Raising the ceiling is
+   *  {@link reissueAcl}, which is what provision does when it bakes the list into the JWT.
+   *
+   *  The caller arrives as an alias (the control subject carries owner+actor, never a uid) and is the
+   *  AUTHENTICATED subject sender — `serveControl` has already fail-closed on any payload that names a
+   *  different principal, so `caller` cannot be self-asserted. */
+  private async deliveryReadHistory(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
+    const channel = this.checkDurableChannelArg(args, "readHistory");
+    if (typeof channel !== "string") return channel; // a ControlReply error
+
+    // The caller PROPOSES a limit; the mediator decides. Reject a nonsense limit loudly rather than
+    // silently substituting a default — a caller asking for -1 has a bug and should hear about it.
+    const asked = args.limit === undefined ? READ_HISTORY_DEFAULT_LIMIT : args.limit;
+    if (typeof asked !== "number" || !Number.isInteger(asked) || asked < 1)
+      return { ok: false, error: `readHistory: limit must be a positive integer (got ${JSON.stringify(args.limit)})` };
+    const limit = Math.min(asked, READ_HISTORY_MAX_LIMIT);
+
+    // FRESH per call — see the method doc. Same registry, same alias resolution, and the same loud
+    // refusal on two live rows that `durableJoin` uses: a stale lifecycle must never authorize its
+    // successor's read.
+    //
+    // SPEC §9.6: "current read ACL" is the effective broker-accepted credential. The registry row is
+    // a live mirror and can be rewritten by plain commitAcl without a remint. Authorizing history
+    // from the row ALONE let a widen grant reads channelHistory still broker-denies — a new
+    // capability wearing a privilege-reduction label (panel BLOCKING at 914fd7b0). History therefore
+    // requires the channel in BOTH the live row AND the mint-time ceiling (`issuedAllowSubscribe`).
+    // Revocation still works: narrowing allowSubscribe stops the next read. Raising the ceiling
+    // requires reissueAcl (provision/remint), which is the same act that bakes the list into the JWT.
+    let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; lifecycleUid: string } | undefined;
+    try { acl = await this.aclForAlias(caller); }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
+    if (acl === undefined)
+      return { ok: false, error: `readHistory: no read ACL on record for ${caller} - not permitted` };
+    const inLive = channelInAllow(acl.allowSubscribe, channel);
+    const inIssued = channelInAllow(acl.issuedAllowSubscribe, channel);
+    if (!inLive || !inIssued) {
+      // Name the live list in the error — that is what operators edit and what revocation clears.
+      // A ceiling miss (registry widened past the credential) is the same refusal shape as a live
+      // miss so a caller cannot probe which half failed.
+      return {
+        ok: false,
+        error: `readHistory: channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}] - refused`,
+      };
+    }
+
+    // One message MORE than the page is the completeness probe: if the backlog hands back limit+1,
+    // something older exists behind the page and `complete` is false. Cheaper and more honest than a
+    // separate count, which could race the page it describes.
+    let page: CotalMessage[];
+    try { page = await this.channelHistory(channel, { limit: limit + 1 }); }
+    catch (e) {
+      // Surface the read failure. `streamHistory` deliberately raises rather than returning empty on a
+      // denial or a cut-short window, and that distinction must survive the rail: an error here would
+      // otherwise reach the caller as an empty page and render as "no history".
+      return { ok: false, error: `readHistory: ${(e as Error).message}` };
+    }
+    const reachedStart = page.length <= limit;
+    const wanted = reachedStart ? page : page.slice(-limit);
+
+    // A page that cannot be SENT is not a page. The reply rides one NATS message, so `limit` alone is
+    // the wrong bound: 200 large messages serialize past `max_payload`, `m.respond` throws inside
+    // `serveControl`'s swallow, and the caller sees a bare request timeout it cannot tell apart from a
+    // dead daemon. Measured, not predicted: 200 x ~6 KB timed out at 5s with the message "timeout".
+    //
+    // So bound by BYTES too, keeping the NEWEST that fit — which needs no new vocabulary, because
+    // `complete: false` already means "older history remains behind this page". Trimming here is the
+    // documented truncation signal doing its job, not a silent degradation.
+    const fitted = fitHistoryPage(wanted, this.payloadBudget());
+    // `wanted.length > 0` is load-bearing, not defensive: an EMPTY channel also fits nothing, and
+    // without this guard a channel nobody has posted to was refused with "the newest message exceeds
+    // the payload budget" — a confident, entirely wrong explanation for a legitimately empty result.
+    // Genuine emptiness is `{ items: [], complete: true }`; only a message too large to ever send is
+    // the error.
+    if (wanted.length > 0 && fitted.length === 0)
+      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.payloadBudget()} bytes) - refused loudly rather than served as an empty page` };
+    return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
+  }
+
+  /** Bytes a control reply may occupy: the broker's `max_payload` less headroom for the `ControlReply`
+   *  envelope wrapped around the items. Read from the live server info rather than assumed, since an
+   *  operator can raise or lower it. */
+  private payloadBudget(): number {
+    const max = this.nc?.info?.max_payload ?? 1_048_576;
+    return Math.max(1, Math.floor(max * 0.9));
   }
 
   /** (Re)bind the Plane-3 fan-out writer + trusted reader. Idempotent — the durables resume from their

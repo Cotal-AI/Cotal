@@ -14,7 +14,7 @@
  * record (a genuinely-unknown owner — the reader DEFERS, never drops).
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey } from "./subjects.js";
+import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey, patternInAllow } from "./subjects.js";
 import type { AclRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
 
@@ -144,13 +144,75 @@ async function enumerateLiveAclRows(
  * effect: writing the same `allowSubscribe` is harmless. Use `allowSubscribe: []` to revoke all reads
  * (the reader then DROPS the owner's entries) — distinct from {@link deleteAcl}, which removes the row.
  */
-export async function commitAcl(kv: KV, owner: string, lifecycleUid: string, allowSubscribe: string[]): Promise<AclRecord> {
+/**
+ * Raise the mint-time history ceiling (`issuedAllowSubscribe`) to match `allowSubscribe`.
+ *
+ * CALL PATH: only {@link provisionAgent} (and tests of that path). Ordinary registry writers use
+ * {@link commitAcl}, which cannot raise the ceiling — a boolean flag on commitAcl would let any
+ * DurableProvisioner holder re-open the ACL-authority hole. Separate function = separate call path.
+ *
+ * PROCESS DISCIPLINE, NOT CRYPTO BINDING: this write does not verify that a broader JWT was minted.
+ * A caller who can reach `reissueAcl` can raise the ceiling while leaving the live credential
+ * narrow, and mediated history will then serve channels `channelHistory` still broker-denies.
+ * That is accepted residual: whoever holds the provisioner can already mint arbitrary JWTs. The
+ * obligation is that `reissueAcl` may ONLY ride the same act that bakes `allowSubscribe` into the
+ * user JWT (provision/remint). Do not call it from revoke, repair, or any path that does not also
+ * remint. Docs must not claim the ceiling is bound to credential bytes.
+ */
+export async function reissueAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+): Promise<AclRecord> {
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: true });
+}
+
+/**
+ * Write the live read ACL. Never raises the mint-time ceiling: create sets ceiling = allow;
+ * updates that exceed the ceiling throw. For a legitimate broaden that also remints the JWT, use
+ * {@link reissueAcl} from the provisioning path only.
+ */
+export async function commitAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+): Promise<AclRecord> {
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: false });
+}
+
+async function writeAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+  opts: { reissue: boolean },
+): Promise<AclRecord> {
   const key = aclKey(owner, lifecycleUid);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     const cur = await readAcl(kv, owner, lifecycleUid);
+    // Ceiling is writable ONLY by create and by reissueAcl (provision/remint). Plain commitAcl
+    // MUST NOT raise it. Legacy rows missing the field treat their then-current allowSubscribe
+    // as the ceiling.
+    let issued: string[];
+    if (opts.reissue || !cur) {
+      issued = [...allowSubscribe];
+    } else {
+      issued = [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
+      const excess = allowSubscribe.filter((a) => !patternInAllow(issued, a));
+      if (excess.length > 0) {
+        throw new Error(
+          `commitAcl: cannot raise ACL above mint-time ceiling without reissue ` +
+            `(entries [${excess.join(", ")}] not within ceiling [${issued.join(", ")}]); ` +
+            `use reissueAcl from the provisioning path that also remints the JWT`,
+        );
+      }
+    }
     const next: AclRecord = {
       allowSubscribe: [...allowSubscribe],
+      issuedAllowSubscribe: issued,
       revision: (cur?.record.revision ?? 0) + 1,
       updatedAt: Date.now(),
     };

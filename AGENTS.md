@@ -100,7 +100,7 @@ plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
 - `**@cotal-ai/orca**` (`extensions/orca`): the Orca integration: a driver over the public Orca
 CLI plus a self-registering `orca` Runtime provider.
-- `**@cotal-ai/cli**` (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,
+- `**@cotal-ai/cli**` (`implementations/cli`): the mesh CLI: `up`, `join`, `console`,
 `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
