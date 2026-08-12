@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeScratch } from "../../../bin/smoke/_scratch.js";
+import { makeScratch, preserveScratch } from "../../../bin/smoke/_scratch.js";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
@@ -58,12 +58,20 @@ const run = (positionals: string[], values: Record<string, string | boolean> = {
 const entry = (space: string, root: string) =>
   ({ space, server: "nats://127.0.0.1:4222", root, mode: "open" as const, ts: "2026-07-27T00:00:00.000Z" });
 
-const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
 const prevCwd = process.cwd();
-const meshA = meshWithDashboard("meshA");
-const meshB = meshWithDashboard("meshB");
+// Declared here, CREATED inside the try. Spawning detached children before the try meant a throw in
+// between — the second mkdtemp, the neutral dir, the second mesh — exited with them still running
+// and no `finally` to reach them. An exit-time scratch sweep is NOT a fix for that: it deletes
+// `.cotal/web.pid`, which is the only thing that could have identified the orphan, turning a
+// recoverable leak into an anonymous one. Cleanup has to own the children, not just their directory.
+let neutral: string | undefined;
+let meshA: { root: string; child: ChildProcess; pidPath: string } | undefined;
+let meshB: { root: string; child: ChildProcess; pidPath: string } | undefined;
 
 try {
+  neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
+  meshA = meshWithDashboard("meshA");
+  meshB = meshWithDashboard("meshB");
   check("scratch has no .cotal ancestor", findCotalRoot(neutral) === neutral, findCotalRoot(neutral));
 
   // The real web descriptor must declare target rooting, and down must see it on the surface.
@@ -111,11 +119,27 @@ try {
   console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {
   process.chdir(prevCwd);
+  // Only the ones that were actually created — a throw partway through leaves the rest undefined,
+  // and `finally` has to cope with a half-built fixture rather than assume a complete one.
+  let stranded = 0;
   for (const m of [meshA, meshB]) {
-    if (m.child.pid && alive(m.child.pid)) {
-      try { process.kill(m.child.pid, "SIGKILL"); } catch { /* gone */ }
+    if (!m?.child.pid) continue;
+    if (!alive(m.child.pid)) continue;
+    try {
+      process.kill(m.child.pid, "SIGKILL");
+    } catch (e) {
+      stranded++;
+      console.error(`  ! could not kill dashboard child ${m.child.pid} (${(e as Error).message}) — it is still running`);
     }
   }
-  rmSync(scratch, { recursive: true, force: true });
+  // The scratch goes ONLY if nothing of ours is still alive in it. Its `.cotal/web.pid` is the sole
+  // record that could identify a survivor, and deleting that makes a recoverable orphan anonymous.
+  if (stranded > 0) {
+    process.exitCode = 1;
+    preserveScratch(scratch);
+    console.error(`  ! PRESERVING ${scratch}: ${stranded} child(ren) still alive; its web.pid files are the only way to find them.`);
+  } else {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 process.exit(0);
