@@ -70,6 +70,12 @@ try {
   ep.on("error", () => {});
   await ep.start();
 
+  // ── [P5] the expectation-ordering precondition holds on a standalone R1 stream ──
+  //    The R3 REFUSAL case cannot be built on one node; it lives in cas-preflight-cluster.smoke.ts.
+  let semanticsOk = true;
+  try { await ep.assertExpectationSemantics(); } catch { semanticsOk = false; }
+  c("assertExpectationSemantics resolves on a canonical R1 chat stream", semanticsOk);
+
   // ── maxPayload is live and sane ──
   const mp = ep.maxPayload;
   c("maxPayload is a positive number while live", typeof mp === "number" && mp > 0, mp);

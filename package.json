@@ -285,7 +285,8 @@
     "smoke:ps-operator-path": "tsx implementations/auth/smoke/ps-operator-path.smoke.ts",
     "smoke:ps-user-mode": "tsx implementations/auth/smoke/ps-user-mode.smoke.ts",
     "smoke:cas-publish": "tsx packages/core/smoke/cas-publish.smoke.ts",
-    "smoke:resume-legacy-key": "tsx implementations/manager/smoke/resume-legacy-key.smoke.ts"
+    "smoke:resume-legacy-key": "tsx implementations/manager/smoke/resume-legacy-key.smoke.ts",
+    "smoke:cas-preflight-cluster": "tsx packages/core/smoke/cas-preflight-cluster.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

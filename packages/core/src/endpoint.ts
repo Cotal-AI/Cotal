@@ -1212,6 +1212,51 @@ export class CotalEndpoint extends EventEmitter {
    * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
    *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
    */
+  /**
+   * Verify the PRECONDITION {@link multicastExpecting} depends on: that the chat stream evaluates
+   * the subject expectation BEFORE the `Nats-Msg-Id` dedup cache. **Throws if it cannot be
+   * guaranteed.** Call once at startup, before any serialized append.
+   *
+   * **The ordering is a property of the stream's REPLICATION FACTOR, not of the deployment.**
+   * Measured on `nats-server 2.14.4`: a standalone R1 stream **and an R1 stream hosted inside a
+   * real 3-node cluster** both refuse a stale expectation with a CAS error; only an **R3** stream
+   * evaluates dedup first and answers a retry with `duplicate: true` instead. So "single node vs
+   * clustered" is the wrong axis, and a check written against cluster size would pass on exactly
+   * the deployment that breaks.
+   *
+   * Every stream Cotal creates is `num_replicas: 1` — `createSpaceStreams` builds them from the
+   * same `canonicalBackupStreamConfig` the restore path uses, so the property holds by
+   * construction today. **This exists because "by construction" is an observation until something
+   * checks it**: nothing in the wire contract reserves the replica factor, and a stream created or
+   * restored by other means could differ. A caller that appends under a stale assumption here does
+   * not fail loudly — it silently accepts a retry as success and drops a message.
+   *
+   * @throws if the stream is unreadable (no `STREAM.INFO` grant, or absent) or reports more than
+   *   one replica. Never degrades to a warning: the whole point is that the failure it prevents is
+   *   silent.
+   */
+  async assertExpectationSemantics(): Promise<void> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    const stream = chatStream(this.space);
+    let replicas: number | undefined;
+    try {
+      replicas = (await this.jsm.streams.info(stream)).config.num_replicas;
+    } catch (e) {
+      throw new Error(
+        `cannot verify expectation semantics: stream "${stream}" info unavailable (${(e as Error).message}). ` +
+          `Serialized appends are refused rather than run on an unverified stream.`,
+      );
+    }
+    // `undefined` is NOT treated as 1. A server that does not report the field is a server whose
+    // ordering we have not established, which is the case this check exists for.
+    if (replicas !== 1)
+      throw new Error(
+        `stream "${stream}" reports num_replicas=${String(replicas)}; serialized appends require 1. ` +
+          `On a replicated stream the dedup cache is consulted before the subject expectation, so a ` +
+          `retry returns a duplicate ack instead of a conflict and a lost message reads as success.`,
+      );
+  }
+
   async multicastExpecting(opts: {
     channel: string;
     parts: Part[];
