@@ -7,6 +7,17 @@
  *
  * Spawn-only refusal is asserted in user-spawn.smoke.ts B1e (ungated); not duplicated here.
  * Gated: a RED here is C or the user-mode connect path broken.
+ *
+ * STEP 3 IS DELIBERATELY STRICTER THAN ITS SIBLING, and the difference is not an oversight.
+ * `ps-operator-path.smoke.ts` accepts exit 0 for a dead manager as long as the output says
+ * "unreachable"; this suite demands a non-zero exit. Different rails, different observable
+ * vocabularies: a class scatter can attribute a specific instance and label it unreachable, while
+ * `ep.one` has no such label to print — it either got its one answer or it did not. Asking the
+ * user-mode path for the operator path's wording would be asking for a sentence it cannot say.
+ *
+ * The strictness only ever errs toward RED, and only if user-mode ps deliberately moves to a
+ * label-and-exit-0 shape. That is a product decision to be made on its own evidence; a red here
+ * demanding a human look at it is then the correct behaviour, not a defect in this file.
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
