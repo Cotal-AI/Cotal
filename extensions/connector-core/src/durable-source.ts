@@ -16,6 +16,7 @@
  * hands it back — it never parses it.
  */
 
+import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
@@ -68,12 +69,32 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    * `"01"`, `"+1"`. A cursor is persisted state handed back to us later, so a non-canonical one
    * means something upstream is wrong, not something to guess at.
    */
-  private static parseCursor(cursor: string): { dev: string; ino: string; offset: number } {
-    const m = /^(\d+):(\d+):(0|[1-9]\d*)$/.exec(cursor);
-    if (!m) throw new Error(`JsonlFileSource: malformed cursor ${JSON.stringify(cursor)} (want <dev>:<ino>:<offset>)`);
+  private static parseCursor(cursor: string): { dev: string; ino: string; offset: number; seal: string } {
+    const m = /^(\d+):(\d+):(0|[1-9]\d*):([0-9a-f]{16})$/.exec(cursor);
+    if (!m) throw new Error(`JsonlFileSource: malformed cursor ${JSON.stringify(cursor)} (want <dev>:<ino>:<offset>:<seal>)`);
     const offset = Number(m[3]);
     if (!Number.isSafeInteger(offset)) throw new Error(`JsonlFileSource: cursor offset out of range in ${JSON.stringify(cursor)}`);
-    return { dev: m[1], ino: m[2], offset };
+    return { dev: m[1], ino: m[2], offset, seal: m[4] };
+  }
+
+  /**
+   * A seal over the bytes immediately BEFORE the cursor — the exact invariant a resumable offset
+   * needs: *the bytes I already consumed are still the bytes at that position.*
+   *
+   * `dev`/`ino` catch unlink-and-recreate, but **not an in-place rewrite** (`writeFileSync` with no
+   * unlink keeps the inode), and that case resumes at a byte offset inside a different document and
+   * emits fragments of it as records (`fmae-rev-eng`, CONFIRMED). Size cannot catch it either when
+   * the replacement is larger.
+   *
+   * Note what this deliberately does NOT flag: a rewrite that reproduces the same preceding bytes.
+   * There the consumed prefix is genuinely unchanged, so resuming is correct — the seal states an
+   * invariant rather than guessing at intent.
+   */
+  private static async sealAt(fh: FileHandle, offset: number): Promise<string> {
+    const span = Math.min(offset, 512);
+    const buf = Buffer.allocUnsafe(span);
+    if (span > 0) await fh.read(buf, 0, span, offset - span);
+    return createHash("sha256").update(buf.subarray(0, span)).digest("hex").slice(0, 16);
   }
 
   /** Offset just past the last COMPLETE line at or before `limit` — a safe boundary to resume at. */
@@ -99,7 +120,8 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       const st = await fh.stat();
       const size = st.size;
       const dev = String(st.dev), ino = String(st.ino);
-      const here = (offset: number): string => `${dev}:${ino}:${offset}`;
+      const here = async (offset: number): Promise<string> =>
+        `${dev}:${ino}:${offset}:${await JsonlFileSource.sealAt(fh, offset)}`;
 
       // A fresh adopt starts at the last COMPLETE record boundary, NEVER at the physical end.
       // Adopting mid-line makes the next read parse only the SUFFIX of a record the writer was
@@ -107,7 +129,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // emits `2}` while the real record is `{"i":12}`. That is the truncated-record corruption the
       // partial-line rule exists to prevent, reached through the adopt path instead of the read one.
       if (cursor === undefined)
-        return { records: [], cursor: here(await JsonlFileSource.lastCompleteBoundary(fh, size)) };
+        return { records: [], cursor: await here(await JsonlFileSource.lastCompleteBoundary(fh, size)) };
 
       const from = JsonlFileSource.parseCursor(cursor);
 
@@ -124,7 +146,17 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         throw new Error(
           `JsonlFileSource: cursor offset ${from.offset} is past end ${size} for ${this.path} — the file was truncated`,
         );
-      if (from.offset === size) return { records: [], cursor: here(from.offset) };
+      // The consumed prefix must still be the bytes we consumed. dev/ino catch unlink-and-recreate;
+      // this catches an IN-PLACE rewrite, which keeps the inode and which size cannot see when the
+      // replacement is larger.
+      const seal = await JsonlFileSource.sealAt(fh, from.offset);
+      if (seal !== from.seal)
+        throw new Error(
+          `JsonlFileSource: the bytes before offset ${from.offset} in ${this.path} have changed ` +
+            `(seal ${from.seal} -> ${seal}) — the file was rewritten in place, not appended to`,
+        );
+
+      if (from.offset === size) return { records: [], cursor: await here(from.offset) };
 
       const len = size - from.offset;
       const buf = Buffer.allocUnsafe(len);
@@ -133,7 +165,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
 
       // Consume only up to the last newline; anything after it is a line still being written.
       const lastNl = chunk.lastIndexOf(0x0a);
-      if (lastNl === -1) return { records: [], cursor: here(from.offset) };
+      if (lastNl === -1) return { records: [], cursor: await here(from.offset) };
 
       // FATAL decode. `Buffer.toString("utf8")` substitutes U+FFFD for invalid bytes, so a
       // malformed byte inside an otherwise valid JSON string survives `JSON.parse` as CHANGED DATA
@@ -159,7 +191,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
           );
         }
       }
-      return { records, cursor: here(from.offset + lastNl + 1) };
+      return { records, cursor: await here(from.offset + lastNl + 1) };
     } finally {
       await fh.close();
     }

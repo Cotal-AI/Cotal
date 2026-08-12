@@ -144,7 +144,39 @@ try {
     writeFileSync(f, '{"b":1}\n{"b":2}\n');           // unrelated file, LARGER than the cursor
     let detected = false;
     try { await s3.read(a.cursor); } catch { detected = true; }
-    c("B3: a larger replacement file is DETECTED, not read as an append", detected);
+    c("B3a: unlink+recreate (new inode) is DETECTED", detected);
+    rmSync(d, { recursive: true, force: true });
+  }
+
+  // B3b — IN-PLACE rewrite: same inode, so dev/ino cannot see it, and a LARGER rewrite is
+  //       invisible to a size check too. fmae-rev-eng CONFIRMED the residual after the B3a fix:
+  //       `writeFileSync` without unlink still resumed at the old offset inside a new document and
+  //       emitted `{c:3}` as a record. My B3a smoke used rmSync+writeFileSync — the variant my own
+  //       fix handled — which is the same fixture blindness that hid B1.
+  {
+    const d = mkdtempSync(join(tmpdir(), "ds-b3b-"));
+    const f = join(d, "s.jsonl");
+    writeFileSync(f, '{"a":1}\n');
+    const s3b = new JsonlFileSource(f);
+    const a = await readOr(s3b, undefined, "B3b adopt");
+    writeFileSync(f, '{"b":2}\n{"c":3}\n');          // IN PLACE: no unlink, same inode, LARGER
+    let msg = "";
+    try { await s3b.read(a.cursor); } catch (e) { msg = (e as Error).message; }
+    c("B3b: an IN-PLACE larger rewrite is DETECTED (same inode, bigger file)", /rewritten in place/.test(msg), msg || "did not throw");
+    rmSync(d, { recursive: true, force: true });
+  }
+
+  // B3c — the seal states an invariant, not a guess: a rewrite reproducing the SAME consumed
+  //       prefix is not an error, because the bytes we already read are genuinely unchanged.
+  {
+    const d = mkdtempSync(join(tmpdir(), "ds-b3c-"));
+    const f = join(d, "s.jsonl");
+    writeFileSync(f, '{"a":1}\n');
+    const s3c = new JsonlFileSource<{ z?: number }>(f);
+    const a = await readOr(s3c, undefined, "B3c adopt");
+    writeFileSync(f, '{"a":1}\n{"z":9}\n');           // same prefix, then genuinely new content
+    const r = await readOr(s3c, a.cursor, "B3c read");
+    c("B3c: a rewrite preserving the consumed prefix is NOT an error", r.records.length === 1 && r.records[0].z === 9, r.records);
     rmSync(d, { recursive: true, force: true });
   }
 
