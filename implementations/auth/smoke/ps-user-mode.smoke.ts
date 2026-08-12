@@ -105,7 +105,13 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
     child.on("error", (e) => done({ status: null, out, timedOut, signal: null, launchError: e.message }));
     child.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr!.on("data", (d: Buffer) => { out += d.toString(); });
-    child.on("exit", (status, signal) => done({ status, out, timedOut, signal }));
+    // `close`, NOT `exit`. `exit` fires when the direct child dies; the stdio pipes it handed to
+    // DETACHED descendants stay open and keep writing after that, and `cotal` commands spawn
+    // detached components as a matter of course. Settling on `exit` therefore captures a prefix of
+    // the output and grades it as the whole: measured, `exit` gave `out: ""` at 26ms where `close`
+    // gave `out: "STREAM.INFO"` at 550ms on the same run. Every assertion below that reads output
+    // CONTENT — the empty-success cell most of all — would be judging text that had not arrived.
+    child.on("close", (status, signal) => done({ status, out, timedOut, signal }));
   });
 }
 
@@ -164,11 +170,14 @@ try {
   // anchor at all under the clean ancestry makeScratch builds, so it cannot tell "anchored" from
   // "nothing here" on an ordinary run - it would have let CI delete the load-bearing anchor and stay
   // green. Assert the thing itself; keep the resolution cell beside it as the consequence.
-  check("the fixture root OWNS its .cotal (the anchor exists)", existsSync(join(root, ".cotal")), root);
+  // Read ONCE, so the graded cell and the fatal branch cannot report different things about the
+  // same instant.
+  const anchored = existsSync(join(root, ".cotal"));
+  check("the fixture root OWNS its .cotal (the anchor exists)", anchored, root);
   // FATAL HERE, before any product command. A failed `check` alone only increments the tally and
   // lets `up` run UNANCHORED — the precise state whose race this anchor exists to remove. The suite
   // would still exit red, but only after starting a mesh that could root anywhere.
-  if (!existsSync(join(root, ".cotal"))) {
+  if (!anchored) {
     process.exitCode = 1;
     throw new Error(`FIXTURE FAILURE: the anchor ${join(root, ".cotal")} is missing, so no product command below can be trusted to root here.`);
   }
