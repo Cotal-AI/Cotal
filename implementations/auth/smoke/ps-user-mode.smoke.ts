@@ -200,22 +200,27 @@ try {
   console.error("ps-user-mode threw:", e);
   process.exitCode = 1;
 } finally {
-  // `cotal down` re-resolves its root from cwd, so under a captured root it aims at the ANCESTOR's
+  // Every teardown step runs INDEPENDENTLY. A throw anywhere in a finalizer aborts the rest of it,
+  // so one bad line leaves a live broker and a scratch behind — a teardown that fails OPEN, which is
+  // worse than one that never ran, because the suite still reports its verdict. Measured for real:
+  // an unwired identifier in this block once aborted cleanup mid-flight and stranded a nats-server.
+  const step = async (label: string, fn: () => unknown | Promise<unknown>): Promise<void> => {
+    try { await fn(); } catch (e) { console.error(`  ! teardown step "${label}" failed: ${(e as Error).message} — continuing`); }
+  };
+  // `cotal down` re-resolves its root from cwd, so under a FOREIGN root it aims at that root's
   // `.cotal` and signals pids this fixture never started — another lane's manager, on the one path
   // where the suite has already concluded something is wrong. Cleanup must not be the most
-  // dangerous thing the suite does. Skip the CLI teardown when the root is captured and say so
-  // loudly, naming what may be left behind; `scratch` is our own mkdtemp either way.
-  const teardownCaptor = foreignRootFor(root);
-  if (teardownCaptor === null) {
-    await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
-  } else {
+  // dangerous thing the suite does.
+  await step("stop the mesh", async () => {
+    const foreign = foreignRootFor(root);
+    if (foreign === null) { await cotal(["down"], 60_000); return; }
     console.error(
-      `  ! SKIPPING \`cotal down\`: the fixture root is captured by ${join(teardownCaptor, ".cotal")}, so down would `
-        + `resolve THAT root and signal processes this suite did not start. Any mesh this run began is under the `
-        + `captor and must be stopped by hand.`,
+      `  ! SKIPPING \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT `
+        + `root and signal processes this suite did not start. Any mesh this run began is under it and must be `
+        + `stopped by hand.`,
     );
-  }
-  idpSrv.close();
-  rmSync(scratch, { recursive: true, force: true }); // home and root both live under it
+  });
+  await step("close the IdP", () => idpSrv.close());
+  await step("remove the scratch", () => rmSync(scratch, { recursive: true, force: true })); // home and root live under it
 }
 if (fail) process.exitCode = 1;

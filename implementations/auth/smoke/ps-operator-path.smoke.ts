@@ -142,18 +142,22 @@ try {
   console.error("ps-operator-path threw:", e);
   process.exitCode = 1;
 } finally {
-  // Same guard as the user-mode sibling: `cotal down` re-resolves from cwd, so under a captured
-  // root it signals the ANCESTOR's processes — pids this fixture never started. A teardown that
-  // reaches outside its own fixture is worse than no teardown.
-  const teardownCaptor = foreignRootFor(root);
-  if (teardownCaptor === null) {
-    await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
-  } else {
+  // Steps run INDEPENDENTLY: a throw anywhere in a finalizer aborts the rest, stranding a live
+  // broker and a scratch while the suite still prints its verdict — teardown failing OPEN.
+  const step = async (label: string, fn: () => unknown | Promise<unknown>): Promise<void> => {
+    try { await fn(); } catch (e) { console.error(`  ! teardown step "${label}" failed: ${(e as Error).message} — continuing`); }
+  };
+  // Same guard as the user-mode sibling: `cotal down` re-resolves from cwd, so under a FOREIGN root
+  // it signals that root's processes — pids this fixture never started. A teardown that reaches
+  // outside its own fixture is worse than no teardown.
+  await step("stop the mesh", async () => {
+    const foreign = foreignRootFor(root);
+    if (foreign === null) { await cotal(["down"], 60_000); return; }
     console.error(
-      `  ! SKIPPING \`cotal down\`: the fixture root is captured by ${join(teardownCaptor, ".cotal")}, so down would `
-        + `resolve THAT root and signal processes this suite did not start. Stop any mesh under the captor by hand.`,
+      `  ! SKIPPING \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT root `
+        + `and signal processes this suite did not start. Stop any mesh under it by hand.`,
     );
-  }
-  rmSync(scratch, { recursive: true, force: true }); // home and root both live under it
+  });
+  await step("remove the scratch", () => rmSync(scratch, { recursive: true, force: true })); // home and root live under it
 }
 if (fail) process.exitCode = 1;
