@@ -370,7 +370,10 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
 export async function reachableOrExit(server: string, auth: RawAuth = {}): Promise<void> {
   const probe = await probeConnect(server, auth);
   if (probe.ok) return;
-  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server })));
+  // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
+  // of this: it is transport, not identity, and a TLS-only connection presents no credential.
+  const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
+  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth })));
   process.exit(1);
 }
 

@@ -98,9 +98,24 @@ check("stale-auth preflight copy names `cotal doctor auth` (the repair surface)"
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
 check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
-  const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1" });
+  const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1", hasAuth: true });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
+
+// `auth-required` on the RAW probe splits the same way the registry path splits it. Both cells are
+// load-bearing in one direction each: collapsing them back tells a caller who sent nothing that its
+// credentials were refused, and the reverse tells a caller holding a bad cred to go get one.
+const rawAuthRequired = (hasAuth: boolean) =>
+  renderWorkspaceError({ kind: "reachable", reason: "auth-required", server: "nats://x:1", hasAuth });
+check("raw auth-required WITH creds says they were rejected", (() => {
+  const msg = rawAuthRequired(true);
+  return msg.includes("credentials rejected") && !msg.includes("no credentials were supplied");
+})());
+check("raw auth-required WITHOUT creds says none were supplied, and does not claim rejection", (() => {
+  const msg = rawAuthRequired(false);
+  return msg.includes("no credentials were supplied") && msg.includes("--creds") && !msg.includes("credentials rejected");
+})());
+check("the two raw auth-required sentences actually differ", rawAuthRequired(true) !== rawAuthRequired(false));
 
 // The invariant, exhaustively: a non-registry source is NEVER pruned — whatever the reason/auth.
 for (const s of NON_REGISTRY)

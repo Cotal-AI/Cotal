@@ -10,7 +10,7 @@ import {
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, accountInventory, authDir, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, preflightTarget, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, type LocalProcess, type LocalProcessContext, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -215,7 +215,11 @@ async function printTarget(
   } catch (e) {
     if (isWorkspaceTargetError(e)) {
       row("target", c.red(e.code));
-      row("hint", `${cmd} up --detach`);
+      // The canonical renderer names the ACTUAL repair per code (`cotal meshes rm`, `--space
+      // <name>`, `cotal up --user-auth`, …). The fixed `up --detach` hint that used to sit here was
+      // right for at most one of the seven codes and pointed the other six at a command that does
+      // not fix them — worse than no hint, because it reads as a diagnosis.
+      row("hint", renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, ""));
       return;
     }
     throw e;
