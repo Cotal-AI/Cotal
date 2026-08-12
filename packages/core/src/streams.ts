@@ -343,6 +343,15 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // Limits retention: any interest/work-queue retention DELETES messages once consumed, so a fetch
   // would destroy the artifact it just read.
   if (String(config.retention) !== "limits") drift.push(`retention is ${config.retention}, expected limits`);
+  // Rollup headers: WRITE-CRITICAL, and measured rather than assumed. With `allow_rollup_hdrs:false`
+  // on an otherwise canonical store, `put` fails outright with "rollup not permitted" - the object
+  // store uses a rollup to replace an object's metadata. So a store drifted here accepts setup and
+  // then rejects every artifact, which is the worst shape: green provisioning, broken feature.
+  //
+  // `allow_direct` is deliberately NOT checked. Measured on the same probe: with it false, put and
+  // get both still succeed, because this client's info path uses STREAM.MSG.GET rather than
+  // DIRECT.GET. Asserting it would refuse a store that works.
+  if (config.allow_rollup_hdrs !== true) drift.push("allow_rollup_hdrs is false, expected true (put fails without it)");
   if (drift.length)
     throw new Error(
       `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +

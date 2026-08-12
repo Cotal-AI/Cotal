@@ -160,6 +160,37 @@ try {
     bindRefusal);
   await deleteSpace({ servers, space: hijack });
 
+  // WRONG FLAGS, RIGHT EVERYTHING ELSE — and the cell proves the CONSEQUENCE, not just the config
+  // difference. A store with canonical subjects, cap, discard, storage and retention but
+  // `allow_rollup_hdrs:false` accepts provisioning and then rejects every put, because the object
+  // store replaces an object's metadata with a rollup. Green provisioning, broken feature.
+  const flags = `${SPACE}flags`;
+  const fnc = await connect({ servers });
+  const fjsm = await jetstreamManager(fnc);
+  const fb = artifactBucket(flags);
+  await fjsm.streams.add({
+    name: objectStoreStream(fb), subjects: [`$O.${fb}.C.>`, `$O.${fb}.M.>`],
+    max_bytes: ARTIFACT_STORE_MAX_BYTES, discard: "new" as never, storage: "file" as never,
+    retention: "limits" as never, allow_rollup_hdrs: false,
+  });
+  // First: prove the drift actually breaks writes, so the assertion below guards a real failure
+  // rather than a cosmetic field difference.
+  let putErr = "";
+  try {
+    const os = await new Objm(jetstream(fnc)).create(fb);
+    await os.put({ name: "probe" }, ReadableStream.from([new Uint8Array([1, 2, 3])]));
+  } catch (e) { putErr = (e as Error).message; }
+  await fnc.close();
+  check("a rollup-denied store REJECTS every put (the consequence being guarded)",
+    putErr.includes("rollup not permitted"), putErr || "put unexpectedly succeeded");
+
+  let flagRefusal = "";
+  try { await setupSpaceStreams({ servers, space: flags }); flagRefusal = "ADOPTED A WRITE-BROKEN STORE"; }
+  catch (e) { flagRefusal = (e as Error).message; }
+  check("setup REFUSES a store that would reject every put", flagRefusal.includes("allow_rollup_hdrs"),
+    flagRefusal);
+  await deleteSpace({ servers, space: flags });
+
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();
   check("teardown removes the object store", !gone.includes(OBJ), gone);
