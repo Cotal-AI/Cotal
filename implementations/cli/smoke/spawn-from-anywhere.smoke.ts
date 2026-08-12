@@ -1,8 +1,8 @@
 /**
  * `cotal spawn` from any directory — the mesh registry + resolver + offline completion + the
- * connect preflight's stale-detection. Hermetic (no broker needed): COTAL_HOME is sandboxed to a
- * temp dir, "meshes" are recorded straight into the registry, and reachability is probed against a
- * closed port. Run: pnpm smoke:spawn-from-anywhere
+ * connect preflight's stale-detection. Hermetic (no broker needed): COTAL_HOME and the temp root
+ * are sandboxed, "meshes" are recorded straight into the registry, and reachability is probed
+ * against a closed port. Run: pnpm smoke:spawn-from-anywhere
  *
  * Covers every `resolveMeshTarget` source branch (0 / 1 / N+current / --space / local-project),
  * that completion lists the RESOLVED mesh's personas (not the cwd's) without opening the network,
@@ -10,13 +10,49 @@
  * and is pruned.
  */
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-// Sandbox the machine-home BEFORE touching the registry — homeCotalDir() reads COTAL_HOME per call,
-// so the real ~/.cotal is never touched.
-const home = mkdtempSync(join(tmpdir(), "cotal-home-"));
+// Isolate BOTH the machine-home AND the temp root before anything else. `findCotalRoot` walks to
+// `/` with no boundary, so a `.cotal` above the temp base (observed: `/tmp/.cotal` on GHA;
+// `/Users/<you>/.cotal` when the suite's scratch sat under the home directory) captures every
+// "neutral" dir and the 0-mesh cell resolves as a local project instead of throwing. Pick a temp
+// base with NO `.cotal` ancestor, point TMPDIR at a scratch under it, tear it down in `finally`.
+function hasCotalAncestor(start: string): boolean {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(join(dir, ".cotal"))) return true;
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+function makeScratch(): string {
+  // Prefer the CI runner temp (never /tmp on GHA), then the process temp, then /var/tmp. Skip any
+  // base that already has a `.cotal` above it — that is the whole defect this sandbox exists to dodge.
+  const bases = [process.env.RUNNER_TEMP, process.env.TMPDIR, tmpdir(), "/var/tmp"].filter(
+    (b): b is string => typeof b === "string" && b.length > 0,
+  );
+  const tried: string[] = [];
+  for (const base of bases) {
+    if (hasCotalAncestor(base)) {
+      tried.push(`${base} (has .cotal ancestor)`);
+      continue;
+    }
+    try {
+      return mkdtempSync(join(base, "cotal-smoke-"));
+    } catch (e) {
+      tried.push(`${base} (${(e as Error).message})`);
+    }
+  }
+  throw new Error(`no temp base free of a .cotal ancestor; tried: ${tried.join("; ")}`);
+}
+const scratch = makeScratch();
+process.env.TMPDIR = scratch;
+process.env.TMP = scratch;
+process.env.TEMP = scratch;
+const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
 
 const { probeConnect, createSpaceAuth } = await import("@cotal-ai/core");
@@ -55,27 +91,16 @@ function project(label: string, personas: string[]): string {
 
 const projA = project("projA", ["reviewer", "researcher"]);
 const projB = project("projB", ["builder"]);
-const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree
+const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
 const SERVER = "nats://127.0.0.1:4222";
 const DEAD = "nats://127.0.0.1:1"; // nothing listens here
 const entry = (space: string, root: string, server = SERVER) =>
   ({ space, server, root, mode: "open" as const, ts: "2026-06-22T00:00:00.000Z" });
 
 try {
-  // PRECONDITION, stated because this suite cannot enforce it. It calls itself hermetic and is —
-  // for COTAL_HOME. But `findCotalRoot` walks to `/` with no boundary, so ANY `.cotal` in an
-  // ANCESTOR of `tmpdir()` captures `neutral`: resolution takes the local-project branch and
-  // returns a `local-space` target rather than throwing, and the 0-mesh assertion below fails as
-  // a bare "Missing expected exception" that names neither the cause nor the cure. Observed for
-  // real: a machine with `/tmp/.cotal` fails every run while the identical tree passes under a tmp
-  // root with clean ancestry. Fail here instead, naming the directory and the fix.
-  const neutralRoot = findCotalRoot(neutral);
-  assert.equal(
-    neutralRoot,
-    neutral,
-    `this smoke needs a tmp dir with NO .cotal ancestor, but found one at ${join(neutralRoot, ".cotal")} `
-      + `(tmpdir is ${tmpdir()}). Point TMPDIR at a directory whose ancestors hold no .cotal, or remove that one.`,
-  );
+  // The sandbox is the fix; this check is the witness that it held (not a precondition operators
+  // have to satisfy). A poisoned os.tmpdir() must not reach here.
+  check("scratch has no .cotal ancestor", findCotalRoot(neutral) === neutral, findCotalRoot(neutral));
 
   // 0 meshes → a bare resolve fails with one sentence, not a crash.
   assert.throws(() => resolveMeshTarget(neutral), /no mesh running/);
@@ -253,6 +278,6 @@ try {
 
   console.log(`\nspawn-from-anywhere smoke: ${pass} checks passed`);
 } finally {
-  for (const d of [home, projA, projB, neutral]) rmSync(d, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
 }
 process.exit(0);
