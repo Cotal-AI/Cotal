@@ -33,7 +33,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
-      "store-dir:string", "user-auth:boolean",
+      "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
   },
@@ -122,7 +122,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   ps: { flags: [...TARGET, "on:string"], positionals: false },
   attach: { flags: [...TARGET, "name:string"], positionals: false },
   deliver: {
-    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string"],
+    // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
+    // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
+    // long ago and the SERVER half did not, which is this whole feature in one line.
+    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean"],
     positionals: false,
   },
   "feedback-intake": {

@@ -195,7 +195,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
     sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
     expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
   });
-  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
+  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
   try {
     await attachClient(meshSessionTransport(nc, grant));

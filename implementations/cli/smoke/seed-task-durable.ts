@@ -8,7 +8,7 @@ if (!root || !server || !space || !role) throw new Error("usage: seed-task-durab
 const auth = loadSoleSpaceAuth(authDir(root));
 if (!auth) throw new Error(`missing SpaceAuth under ${root}`);
 const creds = await mintCreds(auth, newIdentity(), "provisioner");
-const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds }) });
+const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
 try {
   await (await jetstreamManager(nc)).consumers.add(taskStream(space), taskDurableConfig(space, role));
 } finally {

@@ -1,3 +1,4 @@
+import { createConnection } from "node:net";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { loadMeshes, pruneMesh } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
@@ -23,7 +24,12 @@ export type PreflightFailure =
   | "registry-open-now-auth"
   | "creds-rejected"
   | "open-wants-auth"
-  | "stale-auth";
+  | "stale-auth"
+  /** A TLS-required NATS listener still greets (INFO.tls_required) but the TLS probe could not
+   *  complete the handshake — typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune
+   *  signal: INFO is unauthenticated shape evidence, not peer identity; conservatively keep the
+   *  record and repair client trust rather than re-register. */
+  | "tls-trust";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -70,7 +76,18 @@ export async function preflightTarget(
     throw new Error("preflightTarget: a user-mode target cannot be credless-probed - the caller owns the user connect (see preflightOrExit's user branch)");
   const creds =
     probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "probe") : undefined);
-  const auth = creds ? { creds } : {};
+  // THE RECORDED TLS REQUIREMENT IS PART OF THE PROBE, not decoration on the record.
+  //
+  // Without it this probe connects to ANY broker on the recorded address, including a plaintext one
+  // substituted for the TLS broker the record describes — and reports `ok`. Two independent testers
+  // drove exactly that: record a TLS mesh, kill its broker, start a plaintext `nats-server` on the
+  // same port, and `cotal status` returned rc=0 and "connection ok".
+  //
+  // That is worse than a missing feature. A tool that is silent about a substitution is a gap; one
+  // that AFFIRMATIVELY REPORTS HEALTHY is a hazard, because the operator's rational response to a
+  // green check is to stop looking. The recorded requirement is the only thing that can tell those
+  // two brokers apart, since the plaintext one answers perfectly well.
+  const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
   if (probe.ok) return { ok: true };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
@@ -83,8 +100,84 @@ export async function preflightTarget(
   // So a first failure only makes it a candidate; re-probe with a budget that fits a real network.
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return { ok: true };
+
+  // TLS-REQUIRED + "unreachable" is often NOT a dead broker. `probeConnect` maps every non-auth
+  // failure (including certificate verification) to `unreachable`. Against a private-CA mesh
+  // without `NODE_EXTRA_CA_CERTS`, the TLS handshake fails while the broker is live and still
+  // greets with plaintext INFO advertising `tls_required`. Classifying that as unreachable + prune
+  // DELETES a healthy tlsRequired registry entry — durable state destroyed on a recoverable trust
+  // error. This branch introduced tlsRequired meshes, so the mis-prune is in scope.
+  //
+  // Discriminator must be stronger than bare liveness. A *different* broker on the recorded port
+  // (the classic plaintext-substitute case this file's own comment documents) also answers INFO —
+  // bare `isReachable` alone would mis-label that as tls-trust and keep a stale record. Only an
+  // INFO that still advertises `tls_required: true` is shape evidence consistent with the record
+  // (a TLS-required NATS listener, not a plaintext substitute). INFO is unauthenticated and is NOT
+  // peer identity. Anything else falls through to the normal unreachable/prune path.
+  //
+  // CONFIRM BEFORE CONDEMNING applies here too: a single 1s INFO read on a slow/jittery link would
+  // miss a live TLS greeting and fall through to prune — recreating the S10 data-loss under load.
+  // First miss only makes it a candidate; a second, longer read must also miss before we prune.
+  if (target.tlsRequired && probe.reason === "unreachable") {
+    const info =
+      (await readNatsInfoGreeting(target.server)) ??
+      (await readNatsInfoGreeting(target.server, PRUNE_CONFIRM_TIMEOUT_MS));
+    if (info?.tls_required === true)
+      return { ok: false, kind: "tls-trust", prune: false };
+  }
+
   const { prune, kind } = classifyPreflightFailure(target.source, probe.reason, Boolean(target.auth));
   return { ok: false, kind, prune };
+}
+
+/** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing
+ *  usable answered. Used to distinguish a TLS-required NATS listener from a plaintext substitute
+ *  without a TLS handshake. It does NOT establish mesh identity — INFO is unauthenticated. */
+async function readNatsInfoGreeting(
+  server: string,
+  timeoutMs = 1_000,
+): Promise<{ tls_required?: boolean } | null> {
+  let host: string;
+  let port: number;
+  try {
+    const u = new URL(server.includes("://") ? server : `nats://${server}`);
+    host = u.hostname;
+    port = u.port ? Number(u.port) : 4222;
+    if (!host || !Number.isFinite(port)) return null;
+  } catch {
+    return null;
+  }
+  return new Promise((resolve) => {
+    const sock = createConnection({ host, port });
+    let buf = "";
+    let done = false;
+    const finish = (v: { tls_required?: boolean } | null) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch { /* */ }
+      resolve(v);
+    };
+    sock.setTimeout(timeoutMs, () => finish(null));
+    sock.on("error", () => finish(null));
+    sock.on("close", () => finish(null));
+    sock.on("data", (chunk: Buffer) => {
+      buf += chunk.toString("utf8");
+      const nl = buf.indexOf("\r\n");
+      if (nl < 0) {
+        if (buf.length > 4096) finish(null);
+        return;
+      }
+      const line = buf.slice(0, nl);
+      const brace = line.indexOf("{");
+      if (!/^INFO\b/.test(line) || brace < 0) return finish(null);
+      try {
+        const j = JSON.parse(line.slice(brace)) as { tls_required?: boolean };
+        finish(j);
+      } catch {
+        finish(null);
+      }
+    });
+  });
 }
 
 /**

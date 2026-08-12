@@ -27,7 +27,7 @@ import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./co
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
  *  static mint produced one ({@link askManager}'s ep-rail path rides it). */
-export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller };
+export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller; tls?: boolean };
 
 /** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
  *  only ones the mode peek in {@link resolveControlTarget} may absorb. **Every other code is
@@ -179,7 +179,7 @@ async function askManagerEp(
   // mesh (no credential system; the broker enforces nothing).
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds } : {}),
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -305,7 +305,7 @@ async function askManagerScatterEp(
   const caller = auth.epCaller!;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds } : {}),
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
   });
   try {

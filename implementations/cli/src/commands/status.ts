@@ -189,13 +189,17 @@ async function printRegistry(): Promise<void> {
   await Promise.all(
     meshes.map(async (m) => {
       const mark = m.space === current ? c.green("*") : " ";
-      const live = await isReachable(m.server);
+      // Honour the recorded transport. A bare TCP/INFO probe green-lights a plaintext broker that
+      // has substituted for a TLS-required mesh — the FAIL1 attack — so a monitoring list that only
+      // asks "is anything listening" cannot report on the one property the record claims.
+      const live = await isReachable(m.server, m.tlsRequired ? { tls: true } : {});
       // A `down` record means two different things, and the repair differs: a mesh this machine
       // started can be re-`up`ed here, one registered by hand runs somewhere this machine doesn't
       // control (and, unlike the others, its record is never swept away for it).
       const origin = m.origin === "manual" ? c.dim("  registered") : "";
+      const transport = m.tlsRequired ? "  tls-required" : "";
       console.log(
-        `  ${mark} ${m.space.padEnd(pad)}  ${live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}  ${m.server}  ${m.root}`)}${origin}`,
+        `  ${mark} ${m.space.padEnd(pad)}  ${live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}${transport}  ${m.server}  ${m.root}`)}${origin}`,
       );
     }),
   );
@@ -228,6 +232,7 @@ async function printTarget(
   row("space", target.space);
   row("server", target.server);
   row("mode", target.mode);
+  if (target.tlsRequired) row("transport", "tls-required");
   if (target.userAuth) row("idp", target.userAuth.idp.url);
   row("source", target.source);
   row("root", target.root);
@@ -236,7 +241,9 @@ async function printTarget(
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
     // introspection — the login cache + the locally-readable ledger — plus, only when this
     // machine holds a signed-in AND granted login, a real user-mode connect for the snapshot.
-    const live = await isReachable(target.server);
+    // Same transport discipline as the open/auth path below: a recorded TLS requirement must
+    // not collapse to a bare reachability probe (that green-lights a plaintext substitute).
+    const live = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
     row("connection", live ? c.green("reachable") : c.red("unreachable"));
     const stateDir = userAuthStateDir(target.root, target.space);
     let st: UserAuthStatus | undefined;
@@ -285,6 +292,11 @@ async function liveSnapshot(target: ReturnType<typeof resolveMeshTarget>): Promi
   const ep = new CotalEndpoint({
     space: target.space,
     servers: target.server,
+    // The recorded requirement, for the same reason as the preflight probe above it: a monitoring
+    // command that connects to whatever answers on the address cannot report on the one property
+    // this feature provides, and reporting "ok" against a substituted plaintext broker is worse
+    // than reporting nothing.
+    tls: target.tlsRequired,
     creds,
     channels: [],
     consume: false,
@@ -309,6 +321,9 @@ async function userLiveSnapshot(target: ReturnType<typeof resolveMeshTarget>, st
   const ep = new CotalEndpoint({
     space: target.space,
     servers: target.server,
+    // Same reason as liveSnapshot: the recorded requirement is the primary fence against a
+    // forged INFO, and a monitoring snapshot that auto-upgrades cannot report on it.
+    tls: target.tlsRequired,
     bearer,
     sentinelCreds,
     channels: [],

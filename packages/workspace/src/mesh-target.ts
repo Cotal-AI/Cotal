@@ -29,6 +29,11 @@ export interface MeshTarget {
   /** The mesh's auth mode — `user` is its OWN connect path (login + bearer), a hard branch:
    *  it never static-mints from `auth` and never connects credlessly like `open`. */
   mode: MeshEntry["mode"];
+  /** Whether connections to this mesh must REQUIRE TLS, carried through from the mesh record's
+   *  `tlsRequired`. Non-optional so the resolver cannot forget it: an omitted TLS requirement is
+   *  the dangerous default, because a client with none still connects to a TLS broker and looks
+   *  fine, while remaining downgradeable by a forged plaintext INFO. */
+  tlsRequired: boolean;
   /** Trust material, for a STATIC-auth mesh only — undefined for open AND for user mode (a
    *  user-mode root may still hold `auth.json` on disk; deliberately not loaded here so no caller
    *  can drift into minting static creds for a user-auth space). */
@@ -230,6 +235,7 @@ function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["sourc
     server,
     space: m.space,
     mode: m.mode,
+    tlsRequired: m.tlsRequired === true,
     auth,
     ...(userAuth ? { userAuth } : {}),
     ...(m.origin ? { origin: m.origin } : {}),
@@ -268,7 +274,8 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
       `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
       { space: userSpace, root },
     );
-  return { root, server, space, mode: auth ? "auth" : "open", auth, personaRoot: personaDir(root), source };
+  // No mesh record on this path, so there is no recorded TLS decision to honour.
+  return { root, server, space, mode: auth ? "auth" : "open", tlsRequired: false, auth, personaRoot: personaDir(root), source };
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on

@@ -172,7 +172,7 @@ async function readState(alias: string, actor: string, uid: string): Promise<{
   const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
     lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias },
   });
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kvm = new Kvm(nc);
     const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
@@ -192,7 +192,7 @@ async function readState(alias: string, actor: string, uid: string): Promise<{
 
 async function readSlotOnly(alias: string): Promise<StaticManagedSlotRow | undefined> {
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kvm = new Kvm(nc);
     const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(recordsBucket(space)));
@@ -296,7 +296,7 @@ try {
     const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
       lifecycleExecutor: { owner: DEV_OWNER, actor: orphanId.id, lifecycleUid: orphanUid, alias: "orphan" },
     });
-    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
@@ -323,7 +323,7 @@ try {
     const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
       lifecycleExecutor: { owner: DEV_OWNER, actor: resOrphanId.id, lifecycleUid: resOrphanUid, alias: "resorphan" },
     });
-    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));

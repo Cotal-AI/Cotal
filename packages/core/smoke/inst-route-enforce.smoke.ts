@@ -58,7 +58,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-instenf-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); });
 
@@ -66,7 +66,7 @@ process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmS
  *  of the two arms and must never be counted as either. */
 type Verdict = "allowed" | "denied" | string;
 async function publishAs(creds: string, subject: string, assertPort: boolean): Promise<Verdict> {
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     if (assertPort && nc.info?.port !== PORT)
       return `void: fixture reached port ${nc.info?.port}, not its own ${PORT}`;

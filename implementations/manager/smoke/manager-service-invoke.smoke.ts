@@ -65,7 +65,7 @@ const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 for (const n of ["w1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const envFor = (o: LaunchOpts): Record<string, string> => ({
@@ -100,7 +100,7 @@ try {
       { endpoint: MANAGER_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: DEV_OWNER } },
     ],
   });
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });

@@ -57,7 +57,7 @@ const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-barpl-"));
 const dir = join(tmp, "state");
 mkdirSync(dir, { recursive: true });
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");

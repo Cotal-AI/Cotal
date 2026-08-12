@@ -3790,7 +3790,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
       lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(this.space));
@@ -3812,7 +3812,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
       endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
@@ -3874,7 +3874,7 @@ export class Manager {
     {
       // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
-      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds }), maxReconnectAttempts: 0 });
+      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       try {
         // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
         // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
@@ -4313,7 +4313,7 @@ export class Manager {
       open: async (cred) => {
         // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
         // without its own credential is exactly the standing-writer shape this design removes.
-        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds }) : {};
+        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
         return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
       },
       revoke: async (credentialId) => {
@@ -4354,7 +4354,7 @@ export class Manager {
     try {
       let entries: { ref: GoalRef; iid: string }[] = [];
       const nc = this.auth
-        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner") }), maxReconnectAttempts: 0 })
+        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
         : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
       try {
         const kvm = new Kvm(nc);
@@ -4799,7 +4799,7 @@ export class Manager {
     if (!this.auth) return;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     const slotRows: StaticManagedSlotRow[] = [];
     try {
       const jsm = await jetstreamManager(nc);
