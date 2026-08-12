@@ -12,6 +12,8 @@ import {
   parseSubject, chatStream, dmStream, taskStream, inboxStream, dlvStream,
   presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket,
   deliveryBucket, managerBucket,
+  artifactBucket,
+  objectStoreStream,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 
@@ -124,6 +126,11 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
       `KV_${membershipBucket(opts.space)}`,
       `KV_${deliveryBucket(opts.space)}`,
       `KV_${managerBucket(opts.space)}`,
+      // The artifact Object Store's backing stream. It must be named HERE and not swept by
+      // prefix: `$O.<bucket>.>` lives outside the `cotal.<space>.>` grammar, so a subject-based
+      // sweep of the space never sees it. Teardown is the sole STREAM.DELETE holder, so a stream
+      // missing from this list is not merely un-deleted - nothing in the system can ever reap it.
+      objectStoreStream(artifactBucket(opts.space)),
     ];
     for (const s of streams) await jsm.streams.delete(s).catch(() => {});
   } finally {

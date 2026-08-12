@@ -1,4 +1,5 @@
 import {
+  jetstream,
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
@@ -8,8 +9,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator, tokenAuthenticator, nanos } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
+import { Objm } from "@nats-io/obj";
 import {
   spacePrefix,
+  artifactBucket,
   chatStream,
   chatSubject,
   chatWildcard,
@@ -89,6 +92,20 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
  *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
  *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
 export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Bucket-level `max_bytes` cap on the per-space artifact Object Store (`cotal_artifacts_<space>`).
+ *
+ *  THIS NUMBER IS THE ONLY THING BOUNDING ARTIFACT STORAGE, so it is a decision rather than a
+ *  default. A fresh Object Store bucket ships `max_bytes: -1`, and the space account is provisioned
+ *  `disk_storage: -1`, so nothing above it says no: without this cap an artifact flood grows until
+ *  the disk does, starving the chat/DM/delivery streams that share it.
+ *
+ *  4 GiB is roughly sixteen artifacts at the 256 MiB per-artifact ceiling, which is generous for the
+ *  transfer use case (screenshots, reports, build outputs) and small enough that filling it is a
+ *  visible event rather than a silent disk exhaustion. `discard: new` on the bucket means hitting it
+ *  REFUSES the write rather than evicting older artifacts — the loud failure, not the silent one
+ *  where a reference published yesterday quietly stops resolving. */
+export const ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export interface ClearSpaceHistoryResult {
   chat: number;
@@ -321,6 +338,13 @@ export async function setupSpaceStreams(opts: {
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
     await ensureAuthorityStores(jsm, kvm, opts.space);
+    // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
+    // Pre-created here for the same reason as every bucket above - agents hold no STREAM.CREATE -
+    // and with an EXPLICIT max_bytes, which is the whole point. A fresh Object Store ships
+    // `max_bytes: -1`, and the space account provisions `disk_storage: -1`, so "quotas ride the
+    // account limit" would ride nothing: an artifact flood is unbounded and starves every other
+    // stream sharing the disk. Idempotent.
+    await new Objm(jetstream(nc)).create(artifactBucket(opts.space), { max_bytes: ARTIFACT_STORE_MAX_BYTES });
   } finally {
     await nc.drain();
   }
