@@ -55,7 +55,9 @@ import {
   MEMBERSHIP_RW_CREDS_KEY,
   recordMesh,
   removeMesh,
+  rotateSystemCreds,
   setCurrent,
+  SYSTEM_CREDS_FILES,
   userAuthStateDir,
   workspaceSecretStore,
   type MeshEntry,
@@ -146,6 +148,7 @@ export const upFlags: FlagSpec[] = [
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
+  { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
@@ -171,7 +174,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
-    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean;
+    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };
@@ -410,6 +413,11 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
+  // An open mesh has no operator, no system account, and no $SYS creds — there is nothing to rotate,
+  // so the request is a misunderstanding to name, never a silent no-op that reports success.
+  if (values["rotate-sys"] && values.open) {
+    throw new Error("--rotate-sys is for auth meshes: an open mesh (--open) has no system account or $SYS credentials to rotate");
+  }
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
@@ -425,6 +433,7 @@ export async function up(args: ParsedArgs): Promise<void> {
         open: values.open,
         userAuth: wantUser,
         idp: values.idp,
+        rotateSys: values["rotate-sys"],
       });
       return;
     }
@@ -440,6 +449,7 @@ export async function up(args: ParsedArgs): Promise<void> {
         open: values.open,
         userAuth: wantUser,
         idp: values.idp,
+        rotateSys: values["rotate-sys"],
       });
     } finally {
       releaseMaintenanceLock(lock);
@@ -518,6 +528,18 @@ export async function up(args: ParsedArgs): Promise<void> {
         console.error(
           c.red(
             `✗ mesh "${held.space}" is already running at ${server} with ${label} - a running broker can't change auth mode; \`cotal down\` it first, then \`cotal up ${wantUser ? "--user-auth" : "--open"}\``,
+          ),
+        );
+        process.exit(1);
+      }
+      // A rotation retires the system account this LIVE broker was started on, and only a broker
+      // (re)started from the rewritten config carries the successor. Rotating under a running mesh
+      // would leave the record and the creds a generation ahead of the broker — every $SYS client
+      // denied, with `doctor auth` reporting freshly-minted creds. Refuse with the two-step recipe.
+      if (values["rotate-sys"]) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't rotate its system account (it would keep serving the retired one); \`cotal down\` it first, then \`cotal up --rotate-sys\``,
           ),
         );
         process.exit(1);
@@ -610,6 +632,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       space: values.space,
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
+      rotateSys: values["rotate-sys"],
       channels: values.channels,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
       // default itself, and what it records must distinguish "the operator asked for this address"
@@ -669,7 +692,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   mkdirSync(storeDir, { recursive: true });
   await claimSpace(space, server, cotalRoot());
   const seedFile = loadChannelsFile(values.channels);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, values["rotate-sys"]) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   const natsArgs = [
@@ -1476,6 +1499,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (userAuth) {
     try {
       mkdirSync(cotalPath("nats"), { recursive: true });
+      // NO `rotateSys` here on purpose: this is an owner-derivation pre-resolve that runs BEFORE the
+      // real boot, and the boot below carries the flag. Rotating in both would burn two generations
+      // per `up -f --rotate-sys` and retire the account the first pass just minted creds against.
       const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth);
       owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
     } catch (e) {
@@ -1500,7 +1526,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   try {
     // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
     // manifest actually declared is an exposure decision worth persisting.
-    ({ pid, controlPlane, authService } = await startMeshDetached({ server, space: m.space, open, userAuth, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath }));
+    ({ pid, controlPlane, authService } = await startMeshDetached({ server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -1539,6 +1565,9 @@ interface UpManifestFlags {
   open?: boolean;
   userAuth?: boolean;
   idp?: string;
+  /** `--rotate-sys` on the manifest path: the same class-3 renewal, carried to the ONE boot that
+   *  renders the broker config (`startMeshDetached`), never to the owner-derivation pre-resolve. */
+  rotateSys?: boolean;
 }
 
 /** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
@@ -1592,6 +1621,10 @@ export interface DetachOpts {
   open?: boolean;
   /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
   userAuth?: { idpUrl?: string };
+  /** Rotate the space's system account before rendering the broker config, re-minting the two $SYS
+   *  creds against the successor. Only this boot (and the foreground one) may set it: rotation is
+   *  complete only when the broker it starts is the one carrying the rewritten config. */
+  rotateSys?: boolean;
   channels?: string;
   host?: string;
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
@@ -1637,7 +1670,7 @@ export async function startMeshDetached(
   await claimSpace(space, server, cotalRoot());
   const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, opts.rotateSys) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const args = [
     ...(setup ? ["-c", setup.confPath] : ["-js", "-sd", storeDir, "-p", String(port), "-a", host]),
@@ -1957,13 +1990,20 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
  *  SPACE-SCOPED state dir (`.cotal/auth/<space>/` — the multi-space-ready layout; nothing user-auth
  *  lives flat) and preload its extra account(s) into the broker config. The inverse is fail-closed:
  *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
- *  config without the callout account would silently break every sentinel connect. */
+ *  config without the callout account would silently break every sentinel connect.
+ *
+ *  `rotateSys` (`cotal up --rotate-sys`) is the class-3 renewal for an EXISTING space: rotate the
+ *  system account, re-mint `membership-observer.creds` + `connection-evictor.creds` against the
+ *  successor, and render the config from the ROTATED record so the broker this `up` starts is the one
+ *  that trusts them. It belongs here because this is the single site that both owns the trust record
+ *  and renders `server.conf`; anywhere else would publish creds the live broker cannot honor. */
 async function authSetup(
   storeDir: string,
   server: string,
   space: string,
   host: string = "127.0.0.1",
   user?: { idpUrl?: string },
+  rotateSys = false,
 ): Promise<{ confPath: string; creds: string; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
@@ -1972,6 +2012,20 @@ async function authSetup(
     auth = await createSpaceAuth(space);
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
     await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
+    // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
+    // the ASK is already satisfied — say so rather than rotating a one-second-old account, and never
+    // report a rotation that did not happen.
+    if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
+  } else if (rotateSys) {
+    // Fails loud: a caller that swallowed this would boot the broker on the RETIRED system account
+    // while `doctor auth` reported the rotation as done.
+    const rot = await rotateSystemCreds(cotalRoot(), space, store);
+    auth = rot.auth; // the config below MUST be rendered from the successor, never the pre-rotation copy
+    console.log(
+      c.green(`✓ rotated the system account for "${space}"`) +
+        c.dim(` (generation ${rot.gen}) - re-minted ${SYSTEM_CREDS_FILES.join(" + ")}${rot.expiresAt ? `, valid to ${new Date(rot.expiresAt * 1000).toISOString().slice(0, 10)}` : ""}`),
+    );
+    console.log(c.dim("  the data account, every agent cred and the JetStream store are untouched; any out-of-band copy of the OLD $SYS creds is now dead."));
   }
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && hasUserAuthState(cotalRoot(), space)) {
@@ -2033,9 +2087,9 @@ async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<
     // deny-new-only (durable reauth) — surfaced loudly by the removal path, never silent.
     const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
     mkSecretDir(cotalPath()); // harden .cotal/ before the creds land (born under a private ACL, no race)
-    writeSecretFile(cotalPath("membership-observer.creds"), observer);
+    writeSecretFile(cotalPath(SYSTEM_CREDS_FILES[0]), observer);
     await workspaceSecretStore(root).put(MEMBERSHIP_RW_CREDS_KEY, rw); // migrated kind: through the seam (0600 FS put)
-    writeSecretFile(cotalPath("connection-evictor.creds"), evictor);
+    writeSecretFile(cotalPath(SYSTEM_CREDS_FILES[1]), evictor);
     writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
   } catch (e) {
     console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));

@@ -164,7 +164,10 @@ function report(label: string, kind: CredentialKind, path: string): CredReport {
     ? `${displayCmd()} doctor auth --fix   (or start the mesh's manager - it is the renewal owner and re-signs + reloads these every half-TTL)`
     : kind === "agent"
       ? `respawn the agent (\`${displayCmd()} spawn\`) - its old cred is dead by design`
-      : `system-account rotation: \`${displayCmd()} down\` then a fresh \`${displayCmd()} up\` regenerates the $SYS material`;
+        // The $SYS pair. A plain `down` + `up` does NOT touch these: `up` mints them only on the
+        // branch that CREATES the trust record, so re-upping an existing space reuses the same
+        // expired files and reports success. The rotation must be asked for.
+      : `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
   switch (health.state) {
     case "unreadable":
       r.problem = `unreadable credential file (${health.error})`;

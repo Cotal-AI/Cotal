@@ -144,6 +144,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
+| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
@@ -157,6 +158,28 @@ auth callout plus the loopback token exchange); it is torn down with `cotal down
 re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
 contradict each other and are refused loudly; a running broker cannot change auth mode
 without a `cotal down` first. See [identity & auth](identity-and-auth.md).
+
+`--rotate-sys` renews the two `$SYS` credentials (`membership-observer`, `connection-evictor`).
+They carry a 30-day expiry and nothing re-signs them in place, because the system-account seed is
+never persisted, so they are renewed by issuing a **new system account** under the same broker
+operator and minting fresh creds against it. A plain re-`up` does **not** do this: it reuses the
+existing trust record, and its `$SYS` creds along with it.
+
+The rotation is safe to run on a real space. The data account, the account signing key, every agent
+credential minted from it, and the JetStream store are all untouched; what dies is the retired system
+account and any out-of-band copy of the old `$SYS` creds. It needs the broker to restart on the
+rewritten config, so it runs as part of a boot:
+
+```bash
+cotal down
+cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
+cotal doctor auth                  # both $SYS creds healthy again, 30 days out
+```
+
+Running it against a live mesh is refused (the running broker would keep serving the retired
+account). While those creds are expired the mesh keeps delivering messages, but the
+[membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`
+and the manager's log both name the credential and this repair.
 
 ## down
 
