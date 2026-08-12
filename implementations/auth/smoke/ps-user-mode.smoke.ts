@@ -45,6 +45,10 @@ const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
 const root = mkdtempSync(join(scratch, "root-"));
 const { establishIdpSession } = await import("../src/index.js");
+
+// Did a mesh ever start? Decides whether an unstopped fixture is an orphan worth preserving
+// evidence for, or simply nothing.
+let meshStarted = false;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
 let pass = 0, fail = 0;
@@ -157,6 +161,7 @@ try {
   const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
   check("up exits 0", up.status === 0, up.out.slice(-600));
   if (up.status !== 0) { process.exitCode = 1; throw new Error("fixture"); }
+  meshStarted = true;
   await wait(3000);
 
   console.log("2) device login + admin grant");
@@ -204,23 +209,50 @@ try {
   // so one bad line leaves a live broker and a scratch behind — a teardown that fails OPEN, which is
   // worse than one that never ran, because the suite still reports its verdict. Measured for real:
   // an unwired identifier in this block once aborted cleanup mid-flight and stranded a nats-server.
+  // A failing step is RED, not a log line. Cleanup that quietly declines and still lets the suite
+  // exit 0 is the same false-green class as everything else on this branch, just moved to the end.
   const step = async (label: string, fn: () => unknown | Promise<unknown>): Promise<void> => {
-    try { await fn(); } catch (e) { console.error(`  ! teardown step "${label}" failed: ${(e as Error).message} — continuing`); }
+    try {
+      await fn();
+    } catch (e) {
+      process.exitCode = 1;
+      console.error(`  ! teardown step "${label}" FAILED: ${(e as Error).message}`);
+    }
   };
   // `cotal down` re-resolves its root from cwd, so under a FOREIGN root it aims at that root's
   // `.cotal` and signals pids this fixture never started — another lane's manager, on the one path
   // where the suite has already concluded something is wrong. Cleanup must not be the most
   // dangerous thing the suite does.
+  let meshStopped = false;
   await step("stop the mesh", async () => {
     const foreign = foreignRootFor(root);
-    if (foreign === null) { await cotal(["down"], 60_000); return; }
-    console.error(
-      `  ! SKIPPING \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT `
-        + `root and signal processes this suite did not start. Any mesh this run began is under it and must be `
-        + `stopped by hand.`,
-    );
+    if (foreign !== null) {
+      throw new Error(
+        `refusing \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT root `
+          + `and signal processes this suite did not start. Any mesh this run began is under it and must be stopped by hand.`,
+      );
+    }
+    const down = await cotal(["down"], 60_000);
+    // The same standard the graded cells get: `cotal()` resolves for a timeout, a signal death and a
+    // launch failure alike, so an unchecked `await` treats every one of those as a successful stop.
+    mustHaveRun(down, "`cotal down`");
+    if (down.status !== 0) throw new Error(`\`cotal down\` exited ${down.status}: ${down.out.slice(-300)}`);
+    meshStopped = true;
   });
   await step("close the IdP", () => idpSrv.close());
-  await step("remove the scratch", () => rmSync(scratch, { recursive: true, force: true })); // home and root live under it
+  await step("remove the scratch", () => {
+    // Only once nothing is left to find. The scratch's `.cotal` holds the pidfiles that are the only
+    // way to locate a mesh this suite failed to stop; deleting them turns a recoverable orphan into
+    // an anonymous one.
+    if (meshStarted && !meshStopped) {
+      process.exitCode = 1;
+      console.error(
+        `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
+          + `needed to find and stop whatever is still running.`,
+      );
+      return;
+    }
+    rmSync(scratch, { recursive: true, force: true }); // home and root live under it
+  });
 }
 if (fail) process.exitCode = 1;

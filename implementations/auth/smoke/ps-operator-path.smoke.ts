@@ -36,6 +36,10 @@ const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `psstatic-${Math.floor(Math.random() * 1e6)}`;
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 
+// Did a mesh ever start? Decides whether an unstopped fixture is an orphan worth preserving
+// evidence for, or simply nothing.
+let meshStarted = false;
+
 let pass = 0, fail = 0;
 const check = (n: string, v: boolean, x?: unknown) => { v ? (pass++, console.log(`  ✓ ${n}`)) : (fail++, console.log(`  ✗ FAIL: ${n}`, x ?? "")); };
 
@@ -98,6 +102,7 @@ try {
   // Also a throw, not an exit: a PARTIALLY started mesh is the case most in need of the teardown
   // that `finally` performs, and `process.exit` here would strand exactly that.
   if (up.status !== 0) { process.exitCode = 1; throw new Error("FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised."); }
+  meshStarted = true;
 
   console.log("\n2) cotal ps --space, under the STATIC credential");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
@@ -144,20 +149,47 @@ try {
 } finally {
   // Steps run INDEPENDENTLY: a throw anywhere in a finalizer aborts the rest, stranding a live
   // broker and a scratch while the suite still prints its verdict — teardown failing OPEN.
+  // A failing step is RED, not a log line: cleanup that declines and still exits 0 is the same
+  // false-green class as the rest of this branch, moved to the end of the run.
   const step = async (label: string, fn: () => unknown | Promise<unknown>): Promise<void> => {
-    try { await fn(); } catch (e) { console.error(`  ! teardown step "${label}" failed: ${(e as Error).message} — continuing`); }
+    try {
+      await fn();
+    } catch (e) {
+      process.exitCode = 1;
+      console.error(`  ! teardown step "${label}" FAILED: ${(e as Error).message}`);
+    }
   };
   // Same guard as the user-mode sibling: `cotal down` re-resolves from cwd, so under a FOREIGN root
   // it signals that root's processes — pids this fixture never started. A teardown that reaches
   // outside its own fixture is worse than no teardown.
+  let meshStopped = false;
   await step("stop the mesh", async () => {
     const foreign = foreignRootFor(root);
-    if (foreign === null) { await cotal(["down"], 60_000); return; }
-    console.error(
-      `  ! SKIPPING \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT root `
-        + `and signal processes this suite did not start. Stop any mesh under it by hand.`,
-    );
+    if (foreign !== null) {
+      throw new Error(
+        `refusing \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT root `
+          + `and signal processes this suite did not start. Stop any mesh under it by hand.`,
+      );
+    }
+    const down = await cotal(["down"], 60_000);
+    // `cotal()` resolves for a timeout, a signal death and a launch failure alike, so an unchecked
+    // `await` would read every one of those as a successful stop.
+    mustHaveRun(down, "`cotal down`");
+    if (down.status !== 0) throw new Error(`\`cotal down\` exited ${down.status}: ${down.out.slice(-300)}`);
+    meshStopped = true;
   });
-  await step("remove the scratch", () => rmSync(scratch, { recursive: true, force: true })); // home and root live under it
+  await step("remove the scratch", () => {
+    // The scratch's `.cotal` holds the pidfiles that are the only way to find a mesh this suite
+    // failed to stop. Deleting them turns a recoverable orphan into an anonymous one.
+    if (meshStarted && !meshStopped) {
+      process.exitCode = 1;
+      console.error(
+        `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
+          + `needed to find and stop whatever is still running.`,
+      );
+      return;
+    }
+    rmSync(scratch, { recursive: true, force: true }); // home and root live under it
+  });
 }
 if (fail) process.exitCode = 1;
