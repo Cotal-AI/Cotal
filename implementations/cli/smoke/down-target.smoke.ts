@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeScratch, preserveScratch } from "../../../bin/smoke/_scratch.js";
+import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
@@ -47,9 +47,22 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
   mkdirSync(join(root, ".cotal"), { recursive: true });
   const child = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
   child.unref();
-  const pidPath = join(root, ".cotal", "web.pid");
-  writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
-  return { root, child, pidPath };
+  // TRANSACTIONAL FROM THE SPAWN, because ownership cannot be published by a `return` that never
+  // happens. Moving the call inside the caller's `try` was not enough: a throw between the spawn and
+  // the return — the pidfile write — leaves the assignment undefined, so the caller's `finally` has
+  // no record to clean and the child survives with PPID 1. Measured exactly that way: PID alive,
+  // reparented, and its pid evidence gone.
+  try {
+    const pidPath = join(root, ".cotal", "web.pid");
+    writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+    return { root, child, pidPath };
+  } catch (e) {
+    if (child.pid) {
+      try { process.kill(child.pid, "SIGKILL"); }
+      catch (ke) { console.error(`  ! ${label}: spawned ${child.pid} then failed, and could not kill it: ${(ke as Error).message}`); }
+    }
+    throw e;
+  }
 }
 
 const run = (positionals: string[], values: Record<string, string | boolean> = {}) =>
@@ -136,7 +149,6 @@ try {
   // record that could identify a survivor, and deleting that makes a recoverable orphan anonymous.
   if (stranded > 0) {
     process.exitCode = 1;
-    preserveScratch(scratch);
     console.error(`  ! PRESERVING ${scratch}: ${stranded} child(ren) still alive; its web.pid files are the only way to find them.`);
   } else {
     rmSync(scratch, { recursive: true, force: true });

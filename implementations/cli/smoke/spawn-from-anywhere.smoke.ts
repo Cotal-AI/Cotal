@@ -20,7 +20,19 @@ import { makeScratch } from "../../../bin/smoke/_scratch.js";
 // `/Users/<you>/.cotal` when the suite's scratch sat under the home directory) captures every
 // "neutral" dir and the 0-mesh cell resolves as a local project instead of throwing.
 const scratch = makeScratch();
-const home = mkdtempSync(join(scratch, "home-"));
+// SETUP TRANSACTION. Everything from here to the main body is fallible — a second mkdtemp, the
+// dynamic imports, the project fixtures — and a throw in that window used to exit with the scratch
+// still on disk (measured: forcing the second `mkdtempSync` to EIO left `cotal-smoke-*` behind).
+// Guarding it per statement is what left three sibling suites exposed after the first attempt, so
+// this is one transaction covering the whole window.
+const cleanScratch = (e: unknown): never => {
+  rmSync(scratch, { recursive: true, force: true });
+  throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
+};
+let home!: string;
+try {
+  home = mkdtempSync(join(scratch, "home-"));
+} catch (e) { cleanScratch(e); }
 process.env.COTAL_HOME = home;
 
 const { probeConnect, createSpaceAuth } = await import("@cotal-ai/core");
@@ -57,9 +69,13 @@ function project(label: string, personas: string[]): string {
   return root;
 }
 
-const projA = project("projA", ["reviewer", "researcher"]);
-const projB = project("projB", ["builder"]);
-const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
+// Same transaction: these mint more directories under the scratch and each can throw.
+let projA!: string, projB!: string, neutral!: string;
+try {
+  projA = project("projA", ["reviewer", "researcher"]);
+  projB = project("projB", ["builder"]);
+  neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
+} catch (e) { cleanScratch(e); }
 const SERVER = "nats://127.0.0.1:4222";
 const DEAD = "nats://127.0.0.1:1"; // nothing listens here
 const entry = (space: string, root: string, server = SERVER) =>

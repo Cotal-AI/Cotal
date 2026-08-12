@@ -21,24 +21,29 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch, preserveScratch } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
 // ancestor and step 3's kill silently does nothing. This suite is gated — a red here is read as the
 // shipped operator path being broken — so it must never be able to red for a fixture reason.
 const scratch = makeScratch("cotal-psstatic-");
-const home = mkdtempSync(join(scratch, "home-"));
-process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(scratch, "root-"));
-// ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS. `findCotalRoot` stops at the first `.cotal`
-// starting from the directory itself, so owning one here makes every later resolution from this
-// root land on this root - during `up`, during `ps`, and during `down` - no matter what appears
-// above it in between. Ownership then does not depend on the timing of any check, which is the
-// only way to close a race against a child that re-resolves cwd for itself.
-mkdirSync(join(root, ".cotal"), { recursive: true });
-const PORT = await pickFreePort();
-const SERVER = `nats://127.0.0.1:${PORT}`;
+// SETUP TRANSACTION: every line from here to the main body can throw, and a throw used to exit
+// with the scratch — including its anchored `.cotal` — still on disk.
+const cleanScratch = (e: unknown): never => {
+  rmSync(scratch, { recursive: true, force: true });
+  throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
+};
+let home!: string, root!: string, SERVER!: string;
+try {
+  home = mkdtempSync(join(scratch, "home-"));
+  process.env.COTAL_HOME = home;
+  root = mkdtempSync(join(scratch, "root-"));
+  // ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS: `findCotalRoot` stops at the first `.cotal`
+  // from the directory itself, so owning one here pins every later resolution to this root.
+  mkdirSync(join(root, ".cotal"), { recursive: true });
+  SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
+} catch (e) { cleanScratch(e); }
 const SPACE = `psstatic-${Math.floor(Math.random() * 1e6)}`;
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 
@@ -240,8 +245,6 @@ try {
     // failed to stop. Deleting them turns a recoverable orphan into an anonymous one.
     if (upAttempted && !meshStopped) {
       process.exitCode = 1;
-      // Claim it out of the exit sweep: the evidence is the whole point of keeping it.
-      preserveScratch(scratch);
       console.error(
         `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
           + `needed to find and stop whatever is still running.`,
