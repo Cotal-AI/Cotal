@@ -352,6 +352,16 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // get both still succeed, because this client's info path uses STREAM.MSG.GET rather than
   // DIRECT.GET. Asserting it would refuse a store that works.
   if (config.allow_rollup_hdrs !== true) drift.push("allow_rollup_hdrs is false, expected true (put fails without it)");
+  // max_age: SILENT DATA LOSS, measured. With max_age 1s on an otherwise canonical store, a put
+  // succeeds and the object is GONE 1.8s later (stream messages back to 0) - while every reference
+  // already published to a channel survives forever. That is the dangling-reference wave this design
+  // refuses everywhere else, arriving from a config field rather than from GC.
+  if (config.max_age !== 0) drift.push(`max_age is ${config.max_age}, expected 0 (a non-zero age silently deletes stored artifacts)`);
+  // sealed: cheap to check, and the mechanism is NOT the one it is usually described by. Measured:
+  // the broker REFUSES to create a sealed stream at all ("stream configuration for create can not be
+  // sealed"), so a sealed store cannot arrive through the create path - only by a later update. That
+  // narrows it to a deliberate operator action, which is exactly the drift worth naming.
+  if (config.sealed === true) drift.push("the stream is SEALED (writes permanently refused)");
   if (drift.length)
     throw new Error(
       `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +

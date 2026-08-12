@@ -191,6 +191,30 @@ try {
     flagRefusal);
   await deleteSpace({ servers, space: flags });
 
+  // max_age: the consequence again rather than the field. A put SUCCEEDS and the bytes are gone
+  // moments later, while every reference already published survives - a dangling-reference wave
+  // arriving from a config field instead of from GC.
+  const aged = `${SPACE}aged`;
+  const anc = await connect({ servers });
+  const ab = artifactBucket(aged);
+  await (await jetstreamManager(anc)).streams.add({
+    name: objectStoreStream(ab), subjects: [`$O.${ab}.C.>`, `$O.${ab}.M.>`],
+    max_bytes: ARTIFACT_STORE_MAX_BYTES, discard: "new" as never, storage: "file" as never,
+    retention: "limits" as never, allow_rollup_hdrs: true, max_age: 1_000_000_000,
+  });
+  const aos = await new Objm(jetstream(anc)).create(ab);
+  await aos.put({ name: "vanishing" }, ReadableStream.from([new Uint8Array([1, 2, 3])]));
+  await wait(1800);
+  const aged_state = (await (await jetstreamManager(anc)).streams.info(objectStoreStream(ab))).state.messages;
+  await anc.close();
+  check("an aged store silently DROPS a stored artifact (the consequence being guarded)",
+    aged_state === 0, `messages still ${aged_state}`);
+  let ageRefusal = "";
+  try { await setupSpaceStreams({ servers, space: aged }); ageRefusal = "ADOPTED A LOSSY STORE"; }
+  catch (e) { ageRefusal = (e as Error).message; }
+  check("setup REFUSES a store that expires artifacts", ageRefusal.includes("max_age"), ageRefusal);
+  await deleteSpace({ servers, space: aged });
+
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();
   check("teardown removes the object store", !gone.includes(OBJ), gone);
