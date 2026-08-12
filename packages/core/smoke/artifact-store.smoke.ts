@@ -33,9 +33,10 @@ import {
   validateSpaceBackupInventory,
   ARTIFACT_STORE_MAX_BYTES,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "artstore";
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-artstore-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 const servers = `nats://127.0.0.1:${PORT}`;
