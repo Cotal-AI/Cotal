@@ -83,12 +83,19 @@ const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", 
  * So carry all four routes and let {@link mustHaveRun} insist on the only gradeable outcome —
  * the child exited by itself, with a real numeric code.
  */
+// How long to keep draining inherited stdio after the direct child exits. Long enough for the tail
+// a detached component flushes (measured ~450ms), short enough that a long-lived one cannot hang
+// the suite. Exceeding it is reported, never absorbed.
+const DRAIN_MS = 2_000;
+
 type Run = {
   status: number | null;
   out: string;
   timedOut: boolean;
   signal: NodeJS.Signals | null;
   launchError?: string;
+  /** Descendants held the inherited pipes past the drain bound: `out` is a PREFIX, not the whole. */
+  stdioTimedOut?: boolean;
 };
 function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
@@ -98,20 +105,34 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
     let out = "";
     let timedOut = false;
     let settled = false;
-    const t = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    let exited = false;
+    let status: number | null = null;
+    let signal: NodeJS.Signals | null = null;
+    let drain: NodeJS.Timeout | undefined;
     // One settle path. A launch error otherwise leaves this Promise pending until the timer, and the
     // failure then wears the wrong label — "timed out" for something that never started.
-    const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(t); res(r); };
+    const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(cmd); clearTimeout(drain); res(r); };
+    // Descendants still hold our pipe ends. Stop waiting, drop them, and SAY the output is partial
+    // rather than grading a prefix silently.
+    const giveUpOnStdio = () => { child.stdout?.destroy(); child.stderr?.destroy(); done({ status, out, timedOut, signal, stdioTimedOut: true }); };
+    const cmd = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+      // A kill cannot close pipes an already-exited child handed to a detached descendant, so the
+      // command timeout has to be able to settle by itself or this wrapper hangs forever.
+      if (exited) giveUpOnStdio(); else drain = setTimeout(giveUpOnStdio, DRAIN_MS);
+    }, timeoutMs);
     child.on("error", (e) => done({ status: null, out, timedOut, signal: null, launchError: e.message }));
     child.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr!.on("data", (d: Buffer) => { out += d.toString(); });
-    // `close`, NOT `exit`. `exit` fires when the direct child dies; the stdio pipes it handed to
-    // DETACHED descendants stay open and keep writing after that, and `cotal` commands spawn
-    // detached components as a matter of course. Settling on `exit` therefore captures a prefix of
-    // the output and grades it as the whole: measured, `exit` gave `out: ""` at 26ms where `close`
-    // gave `out: "STREAM.INFO"` at 550ms on the same run. Every assertion below that reads output
-    // CONTENT — the empty-success cell most of all — would be judging text that had not arrived.
-    child.on("close", (status, signal) => done({ status, out, timedOut, signal }));
+    // TWO PHASE. `exit` gives the direct child's outcome; `close` gives the COMPLETE output, because
+    // pipes handed to DETACHED descendants keep carrying text after the child dies (measured:
+    // `out: ""` at exit 26ms, `out: "STREAM.INFO"` at close 453ms) and every cell below that reads
+    // output content would otherwise judge text that had not arrived. But waiting only for `close`
+    // hangs whenever a long-lived detached component holds the pipe — which `cotal` creates on
+    // purpose. So: record the outcome at `exit`, keep draining, and bound that drain.
+    child.on("exit", (s, sg) => { exited = true; status = s; signal = sg; drain = setTimeout(giveUpOnStdio, DRAIN_MS); });
+    child.on("close", (s, sg) => done({ status: s ?? status, out, timedOut, signal: sg ?? signal }));
   });
 }
 
@@ -122,6 +143,7 @@ function mustHaveRun(r: Run, what: string): void {
     r.launchError ? `never launched (${r.launchError})`
     : r.timedOut ? "was SIGKILLed by this suite's timeout"
     : r.signal ? `was killed by ${r.signal} from outside this suite`
+    : r.stdioTimedOut ? "left its output incomplete (detached descendants held the pipes past the drain bound)"
     : r.status === null ? "ended with neither an exit code nor a signal"
     : null;
   if (why === null) return;
