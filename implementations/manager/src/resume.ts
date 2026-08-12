@@ -50,12 +50,38 @@ const source = z.discriminatedUnion("kind", [
   }),
 ]);
 
+/**
+ * Accept a `launch` block written by a PRE-RENAME binary, which spelled the events flag
+ * `transcript`.
+ *
+ * **Required, not nice-to-have.** `cotal down --preserve` writes this document to disk and
+ * `cotal up` replays it, so documents carrying `transcript` are on real machines right now. The
+ * schema below is a `strictObject`, meaning an unknown key is a REJECTION rather than an ignored
+ * field — a bare rename would make every preserved inventory unreplayable the moment an operator
+ * upgraded, and the failure would surface at `cotal up` with the agents already stopped.
+ *
+ * Deliberately NOT a version bump. The version literal gates a real downgrade barrier (an older
+ * binary must refuse a NEWER document) and this change does not need one: the two spellings carry
+ * identical meaning, which is the case a tolerant read exists for.
+ *
+ * Precedence is explicit rather than merged: if BOTH keys are present the document contradicts
+ * itself, so `events` wins and `transcript` is dropped. Never OR-ed — two disagreeing values would
+ * silently resolve to the permissive one.
+ */
+function renameLegacyTranscriptKey(v: unknown): unknown {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+  const o = v as Record<string, unknown>;
+  if (!("transcript" in o)) return v;
+  const { transcript, ...rest } = o;
+  return "events" in rest ? rest : { ...rest, events: transcript };
+}
+
 const agent = z.strictObject({
   space: label,
   name: label,
   role: label.optional(),
   identity,
-  launch: z.strictObject({
+  launch: z.preprocess(renameLegacyTranscriptKey, z.strictObject({
     connector: label,
     runtime: label,
     cwd: path,
@@ -66,11 +92,11 @@ const agent = z.strictObject({
     allowSubscribe: stringList,
     allowPublish: stringList.optional(),
     capabilities: z.array(z.string().min(1).max(256)).max(64).optional(),
-    transcript: z.boolean(),
+    events: z.boolean(),
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
-  }),
+  })),
   dependencies: z.array(path).max(16),
   spawner: z.string().min(1).max(256),
   authorityParent: z.string().min(1).max(256).optional(),

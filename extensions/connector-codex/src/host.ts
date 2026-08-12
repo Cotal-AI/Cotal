@@ -53,7 +53,7 @@ import {
   formatInjection,
   fmtFrom,
   startControlServer,
-  transcriptChannel,
+  eventChannel,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   type InboxItem,
@@ -333,10 +333,10 @@ export async function runCodexHost(): Promise<void> {
     }
   };
 
-  // Transcript mirror → `tr-<name>`, opt-in via COTAL_TRANSCRIPT (the connector sets it for
+  // Transcript mirror → `tr-<name>`, opt-in via COTAL_EVENTS (the connector sets it for
   // `--transcript` spawns; the manager grants pub rights on the same channel).
-  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? "")
-    ? createTranscriptMirror(agent, transcriptChannel(config.name))
+  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")
+    ? createTranscriptMirror(agent, eventChannel(config.name))
     : undefined;
 
   // ---- the turn loop -------------------------------------------------------

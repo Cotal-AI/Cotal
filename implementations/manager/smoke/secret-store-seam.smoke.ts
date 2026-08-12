@@ -153,7 +153,7 @@ try {
       launch: {
         connector: "smoke-ss", runtime: "fake", cwd: process.cwd(),
         source: { kind: "persona" as const, ref: "worker", configPath: join(workspaceRoot, ".cotal", "agents", "worker.md"), configSha256: "" },
-        allowSubscribe: ["general"], transcript: false,
+        allowSubscribe: ["general"], events: false,
       },
       dependencies: [], spawner: "smoke", startedAt: new Date().toISOString(),
     };

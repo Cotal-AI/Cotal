@@ -1,6 +1,6 @@
 /**
  * OpenCode transcript-mirror smoke (no test runner) — spins up its OWN nats-server, boots the plugin
- * with COTAL_TRANSCRIPT=1, fires real opencode bus events at its `event` hook, and asserts the
+ * with COTAL_EVENTS=1, fires real opencode bus events at its `event` hook, and asserts the
  * event-driven mirror publishes the agent's OWN assistant output to `tr-<name>` — end to end over a
  * real mesh (a separate CotalEndpoint subscribes to the transcript channel and reads what lands).
  *
@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import type { CotalMessage, Delivery } from "@cotal-ai/core";
-import { transcriptChannel } from "@cotal-ai/connector-core";
+import { eventChannel } from "@cotal-ai/connector-core";
 import { cotal } from "../src/plugin.js";
 
 async function freePort(): Promise<number> {
@@ -38,7 +38,7 @@ const servers = `nats://127.0.0.1:${PORT}`;
 const space = "octr";
 const SID = "ses_tr";
 const NAME = "Otto";
-const CHAN = transcriptChannel(NAME); // "tr-otto" — the shared connector-core convention
+const CHAN = eventChannel(NAME); // "tr-otto" — the shared connector-core convention
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-octr-"));
@@ -77,7 +77,7 @@ Object.assign(process.env, {
   COTAL_SPACE: space,
   COTAL_SERVERS: servers,
   COTAL_ROLE: "generalist",
-  COTAL_TRANSCRIPT: "1", // arm the mirror
+  COTAL_EVENTS: "1", // arm the mirror
   COTAL_OPENCODE_SERVER_URL: `http://127.0.0.1:${ocPort}`,
   OPENCODE_SERVER_USERNAME: "opencode",
   OPENCODE_SERVER_PASSWORD: "test-secret",

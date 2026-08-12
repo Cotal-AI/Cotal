@@ -196,7 +196,7 @@ try {
     };
     const fields = {
       agent: "e2e-stub", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
-      launchOptions: { flag: "v", n: 2 }, resume: "sess-1", transcript: true, cwd: "/tmp/x", prompt: "hello",
+      launchOptions: { flag: "v", n: 2 }, resume: "sess-1", events: true, cwd: "/tmp/x", prompt: "hello",
       subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
     };
     const rEp = await A.call("spawn", { name: "wp1", ...fields });

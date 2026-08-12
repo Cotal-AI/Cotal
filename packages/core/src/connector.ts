@@ -70,11 +70,16 @@ export interface LaunchOpts {
    *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
    *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
   resume?: string;
-  /** Mirror this session's transcript to the connector's per-agent transcript channel (see
-   *  {@link Connector.transcriptChannel}) so peers/observers can read what the agent actually did
-   *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
-   *  flag on `cotal spawn` / `cotal start`. */
-  transcript?: boolean;
+  /** Publish this session's activity as structured events on the connector's per-agent event
+   *  channel (see {@link Connector.eventChannel}), so peers and observers can read what the agent
+   *  actually did (sets `COTAL_EVENTS`). Defaults to OFF; set `true` to opt in — surfaced as the
+   *  `--events` flag on `cotal spawn` / `cotal start`.
+   *
+   *  **Replaces the former `transcript` boolean and its glyph-line mirror.** The old name described
+   *  the *rendering* (a transcript of text lines); this one describes the *contract* (structured
+   *  events with real per-event timestamps and tool boundaries). The rename is deliberate rather
+   *  than cosmetic: a consumer of the old mirror could only ever get strings back. */
+  events?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
    *  secret refs intact. A connector renders them into its own host format; the default is none
@@ -155,15 +160,15 @@ export interface Connector extends Extension {
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
-  /** The channel this connector publishes an agent's transcript mirror to (see
-   *  {@link LaunchOpts.transcript}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
-   *  actually mirror (Claude Code, OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
-   *  naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not
-   *  core. The manager calls it to grant the agent publish rights on its transcript channel at provision
+  /** The channel this connector publishes an agent's structured events to (see
+   *  {@link LaunchOpts.events}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
+   *  actually emit (Claude Code, OpenCode, Codex) implement it; one that doesn't (e.g. Hermes) omits it.
+   *  The naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension,
+   *  not core. The manager calls it to grant the agent publish rights on its event channel at provision
    *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
-   *  one source and can't drift. If `transcript` is requested for a connector that lacks this, the
+   *  one source and can't drift. If `events` is requested for a connector that lacks this, the
    *  manager fails loud rather than silently skipping the grant. */
-  transcriptChannel?(name: string): string;
+  eventChannel?(name: string): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager checks each is on PATH before spawning and fails with a clear error naming the

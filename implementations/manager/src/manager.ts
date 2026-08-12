@@ -287,7 +287,7 @@ export interface ManagerResumeAgent {
     allowSubscribe: string[];
     allowPublish?: string[];
     capabilities?: string[];
-    transcript: boolean;
+    events: boolean;
     shareTools?: string;
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -375,9 +375,9 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
-  /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
-   *  `--transcript` flag) opts in. */
-  transcript?: boolean;
+  /** Publish the session's structured events to `events.<name>`. Defaults to off; `true` (the
+   *  `--events` flag) opts in. */
+  events?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
@@ -414,7 +414,7 @@ interface ManagedLaunch {
   allowSubscribe: string[];
   allowPublish?: string[];
   capabilities?: string[];
-  transcript: boolean;
+  events: boolean;
   shareTools?: string;
   forkSource?: string;
   unresolvedLaunchOptionKeys?: string[];
@@ -1368,7 +1368,7 @@ export class Manager {
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         capabilities: a.launch.capabilities,
-        transcript: a.launch.transcript,
+        events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
@@ -2496,7 +2496,7 @@ export class Manager {
         variant: args.variant ? String(args.variant) : undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
-        transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
+        events: typeof args.events === "boolean" ? args.events : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
         prompt: args.prompt ? String(args.prompt) : undefined,
         subscribe,
@@ -2849,20 +2849,20 @@ export class Manager {
       name = this.uniqueName(identityName);
     }
     this.reserved.add(name);
-    // Transcript mirroring (opt-in: `--transcript` / COTAL_TRANSCRIPT_DEFAULT=1) → grant the agent pub
+    // Transcript mirroring (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1) → grant the agent pub
     // on its OWN transcript channel; auth-mode publish is default-deny, so without the grant the mirror's
     // publish is rejected. Ask the resolved connector for the channel — the SAME one it publishes to, so
     // the grant and the publish can't drift, and the literal stays out of core. Uses the spawned `name`
     // (post-uniqueName) so the grant matches the actual identity. Mirroring is OPTIONAL per connector
     // (like prompt): if it's requested for a connector that doesn't mirror, fail loud — never silently
     // skip the grant (that would surface later as a confusing auth-mode publish rejection).
-    const transcript = opts.transcript ?? process.env.COTAL_TRANSCRIPT_DEFAULT === "1";
-    if (transcript) {
-      if (!connector.transcriptChannel) {
+    const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
+    if (events) {
+      if (!connector.eventChannel) {
         this.reserved.delete(name); // release the just-reserved name on this fail-fast path
-        return { ok: false, error: `connector "${connector.name}" does not support transcript mirroring, but transcript was requested` };
+        return { ok: false, error: `connector "${connector.name}" does not support event publishing, but --events was requested` };
       }
-      allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
+      allowPublish = [...(allowPublish ?? []), connector.eventChannel(name)];
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
@@ -3029,7 +3029,7 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         capabilities,
-        transcript,
+        events,
         mcpServers,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
@@ -3071,7 +3071,7 @@ export class Manager {
           allowSubscribe,
           allowPublish,
           capabilities,
-          transcript,
+          events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
@@ -3454,7 +3454,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          transcript: entry.launch.transcript,
+          events: entry.launch.events,
           mcpServers,
           workspaceRoot: this.workspaceRoot,
         });
@@ -3519,7 +3519,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          transcript: entry.launch.transcript,
+          events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
         },

@@ -21,9 +21,9 @@ import {
   MESH_FIRST_STEER,
 } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
-import { TranscriptMirror, transcriptChannel } from "./transcript.js";
+import { TranscriptMirror, eventChannel } from "./transcript.js";
 
-/** Mirrors this session's transcript to `tr-<name>` — set in main() iff COTAL_TRANSCRIPT
+/** Mirrors this session's transcript to `tr-<name>` — set in main() iff COTAL_EVENTS
  *  is on (buildLaunch sets it for managed sessions; personal sessions never mirror). */
 let mirror: TranscriptMirror | undefined;
 
@@ -45,8 +45,8 @@ async function main(): Promise<void> {
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks tool serving
 
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? ""))
-    mirror = new TranscriptMirror(agent, transcriptChannel(config.name));
+  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? ""))
+    mirror = new TranscriptMirror(agent, eventChannel(config.name));
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. Path + token come from the launch env (buildLaunch set them, and the hooks

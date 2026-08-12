@@ -1,10 +1,10 @@
 /**
  * Auth-mode transcript-grant smoke — proves the manager grants an agent publish rights on its OWN
- * transcript channel (whatever the resolved connector's `transcriptChannel(name)` returns) when
+ * transcript channel (whatever the resolved connector's `eventChannel(name)` returns) when
  * transcript mirroring is enabled, scopes the grant to exactly that channel, and FAILS LOUD when
  * transcript is requested for a connector that doesn't mirror. This catches manager-grant ↔
  * connector-publish-channel drift at the cred/ACL layer — which typecheck can't, since the manager now
- * sources the channel through the optional `Connector.transcriptChannel` contract method.
+ * sources the channel through the optional `Connector.eventChannel` contract method.
  *
  * Broker-backed: closure (i) provisions each spawn through a short-lived EPHEMERAL provisioner
  * connection (residual-2 — the DM/DLV consumer-create surface lives only for the spawn window, never as
@@ -82,8 +82,8 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
 // the connector returns, so a mirroring connector hands back this and a non-mirroring one omits the method.
 const tr = (n: string): string => `tr-${n.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
 const base = { kind: "connector" as const, requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: "true", args: [], env: {} }) };
-registry.register({ ...base, name: "smoke-mirror", transcriptChannel: tr } satisfies Connector);
-registry.register({ ...base, name: "smoke-nomirror" } satisfies Connector); // no transcriptChannel → doesn't mirror
+registry.register({ ...base, name: "smoke-mirror", eventChannel: tr } satisfies Connector);
+registry.register({ ...base, name: "smoke-nomirror" } satisfies Connector); // no eventChannel → doesn't mirror
 
 const credsDir = join(workspaceRoot, ".cotal", "auth", "creds");
 
@@ -93,29 +93,29 @@ try {
 
   // 1 — transcript ON + a mirroring connector: the agent is granted pub on its OWN tr-<name>.
   {
-    const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-mirror", transcript: true });
-    check("spawn with transcript succeeds", reply.ok === true, reply);
+    const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-mirror", events: true });
+    check("spawn with events succeeds", reply.ok === true, reply);
     const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
     const pub = pubAcl(join(credsDir, `mirrorbot.${uid}.creds`));
-    check("auth-mode grant includes the connector's transcript channel (tr-mirrorbot)", pub.some((s) => s.includes(".tr-mirrorbot")), pub);
-    check("the granted channel is the connector's transcriptChannel, no drift", pub.some((s) => s.includes(`.${tr("mirrorbot")}`)), pub);
+    check("auth-mode grant includes the connector's event channel (events.mirrorbot)", pub.some((s) => s.includes(".events.mirrorbot")), pub);
+    check("the granted channel is the connector's eventChannel, no drift", pub.some((s) => s.includes(`.${tr("mirrorbot")}`)), pub);
   }
 
   // 2 — transcript OFF: no transcript channel is granted (only the persona's own post ACL).
   {
     const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-mirror" }); // auto-numbered → mirrorbot-2
-    check("spawn without transcript succeeds", reply.ok === true && reply.data?.name === "mirrorbot-2", reply);
+    check("spawn without events succeeds", reply.ok === true && reply.data?.name === "mirrorbot-2", reply);
     const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
     const pub = pubAcl(join(credsDir, `mirrorbot-2.${uid}.creds`));
     // Check the CHANNEL segment (after `.chat.<id>.`), not the whole subject — else the space name
     // itself (here `tr-grant-…`) would false-match `.tr-`.
-    check("no transcript channel granted when transcript is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes(".tr-")), pub);
+    check("no event channel granted when events is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes(".events.")), pub);
   }
 
   // 3 — transcript ON + a connector that does NOT mirror: fail loud, never a silently-skipped grant.
   {
-    const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-nomirror", transcript: true });
-    check("transcript on a non-mirroring connector fails loud", reply.ok === false && /does not support transcript mirroring/.test(reply.error ?? ""), reply);
+    const reply = await mgr.startAgent({ name: "mirror-bot", agent: "smoke-nomirror", events: true });
+    check("events on a non-emitting connector fails loud", reply.ok === false && /does not support event publishing/.test(reply.error ?? ""), reply);
   }
 } finally {
   await stopBroker();

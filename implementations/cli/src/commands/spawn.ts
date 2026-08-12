@@ -223,7 +223,7 @@ const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(
 async function spawnDetached(
   values: FlagValues<typeof spawnFlags>,
   positionals: string[],
-  transcript: boolean | undefined,
+  events: boolean | undefined,
   launchOptions: Record<string, string> | undefined,
 ): Promise<void> {
   // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
@@ -255,8 +255,8 @@ async function spawnDetached(
     subscribe: splitFlag(values.subscribe),
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
-    // Tri-state: true (--transcript), false (--no-transcript, explicit), absent → manager default.
-    transcript,
+    // Tri-state: true (--events), false (--no-events, explicit), absent → manager default.
+    events,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
@@ -310,16 +310,16 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error((e as Error).message);
     process.exit(1);
   }
-  // Transcript mirroring to `tr-<name>` is OFF by default. Tri-state: true (--transcript),
-  // false (--no-transcript, explicit), undefined (absent). Foreground treats absent as off;
+  // Transcript mirroring to `tr-<name>` is OFF by default. Tri-state: true (--events),
+  // false (--no-events, explicit), undefined (absent). Foreground treats absent as off;
   // detached forwards the tri-state so absent defers to the manager's default.
-  const transcript = values.transcript ? true : values["no-transcript"] ? false : undefined;
+  const events = values.events ? true : values["no-events"] ? false : undefined;
 
   // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
   // request and override the file exactly as the foreground path does.
   if (values.detach) {
-    return spawnDetached(values, positionals, transcript, cliLaunchOptions);
+    return spawnDetached(values, positionals, events, cliLaunchOptions);
   }
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
@@ -539,7 +539,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
       resume: values.resume,
-      transcript,
+      events,
       mcpServers,
     });
 

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, mcpServerEnvKeys, eventChannel, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -31,7 +31,7 @@ const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  eventChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
@@ -64,8 +64,8 @@ export const claudeConnector: Connector = {
     };
     // A session can mirror its own transcript to `tr-<name>` so peers can read what the
     // agent actually did — OFF by default (transcripts are verbose and may carry sensitive
-    // content); `--transcript` (opts.transcript === true) opts in. Personal sessions never mirror.
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1";
+    // content); `--events` (opts.events === true) opts in. Personal sessions never mirror.
+    if (opts.events === true) env.COTAL_EVENTS = "1";
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

@@ -44,7 +44,7 @@ try {
   check("codex data root defaults to the launch dir", base.env?.COTAL_CODEX_HOME === process.cwd());
   check("env allow-list: unrelated operator env is NOT forwarded", base.env?.SUPER_SECRET_LEAK_CANARY === undefined);
   check("env allow-list: the provider key IS forwarded by name", base.env?.OPENAI_API_KEY === "sk-test-canary");
-  check("no transcript by default", base.env?.COTAL_TRANSCRIPT === undefined);
+  check("no transcript by default", base.env?.COTAL_EVENTS === undefined);
 
   // Workspace root pins the data root.
   const rooted = codexConnector.buildLaunch({ space: "s", name: "n", workspaceRoot: dir });
@@ -117,7 +117,7 @@ try {
     id: "UAID",
     lifecycleUid: "lc-1",
     servers: "nats://x:1",
-    transcript: true,
+    events: true,
     prompt: "greet the operator",
   });
   check(
@@ -126,7 +126,7 @@ try {
       full.env?.COTAL_ID === "UAID" &&
       full.env?.COTAL_LIFECYCLE_UID === "lc-1" &&
       full.env?.COTAL_SERVERS === "nats://x:1" &&
-      full.env?.COTAL_TRANSCRIPT === "1" &&
+      full.env?.COTAL_EVENTS === "1" &&
       full.env?.COTAL_CODEX_PROMPT === "greet the operator",
   );
 
@@ -192,7 +192,7 @@ try {
   check("variant support is declared", codexConnector.supportsModelVariant === true);
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));
-  check("transcript channel convention shared", codexConnector.transcriptChannel?.("My Agent") === "tr-my-agent");
+  check("transcript channel convention shared", codexConnector.eventChannel?.("My Agent") === "tr-my-agent");
 
   console.log(`\nCODEX ARGS SMOKE PASSED ✅  (${pass} checks)`);
 } finally {

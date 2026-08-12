@@ -4,7 +4,7 @@
  * peers and observer agents can read what the agent is ACTUALLY doing, not only what
  * it chooses to narrate.
  *
- * Off unless the launch sets COTAL_TRANSCRIPT (the connector's buildLaunch sets it for
+ * Off unless the launch sets COTAL_EVENTS (the connector's buildLaunch sets it for
  * managed sessions; a personal session never mirrors). Flushes ride the lifecycle hooks:
  * read the JSONL from the last offset, condense each entry to its observable surface
  * (assistant text in full, tool calls as one-liners, tool results truncated, thinking
@@ -21,7 +21,7 @@ const MAX_CHUNK = 6000; // chars per published message; batches split on entry b
 
 // The `tr-<name>` convention now lives in connector-core (shared with the manager + opencode
 // connector). Re-exported here so existing imports (mcp.ts, index.ts) keep resolving.
-export { transcriptChannel } from "@cotal-ai/connector-core";
+export { eventChannel } from "@cotal-ai/connector-core";
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;

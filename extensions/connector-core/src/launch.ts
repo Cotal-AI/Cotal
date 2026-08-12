@@ -192,14 +192,25 @@ export function userAuthEnv(opts: {
   };
 }
 
-/** The per-agent transcript-mirror channel: `tr-<name>`, the name lowercased and reduced to
- *  subject-safe characters. The SINGLE source of this connector convention — connectors publish here
- *  (their plugin/runtime path AND their `Connector.transcriptChannel` method both call this), and the
- *  manager grants pub on it through that contract method. It lives in the connector layer, NOT core:
- *  transcript mirroring is a connector feature, not the normative wire standard. Sanitizer kept exact
- *  (illegal runs collapse to a single `-`) — changing it would rename every live transcript channel. */
-export function transcriptChannel(name: string): string {
-  return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+/** The per-agent EVENT channel: `events.<name>`, the name lowercased and reduced to subject-safe
+ *  characters. The SINGLE source of this connector convention — connectors publish here (their
+ *  plugin/runtime path AND their `Connector.eventChannel` method both call this), and the manager
+ *  grants pub on it through that contract method. It lives in the connector layer, NOT core: an
+ *  agent event stream is a connector feature, not the normative wire standard.
+ *
+ *  **Replaces `eventChannel()` and the `tr-<name>` convention outright** — abolished means
+ *  replaced, not both running. The prefix moves from a glyph-line mirror to a namespace that can hold
+ *  per-session sub-channels (`events.<name>.<session>`), which the flat old name could not: every
+ *  session shared one channel and therefore one retention budget.
+ *
+ *  **A grant on `events.<name>` does NOT cover `events.<name>.<session>`** — `patternCovers` is false
+ *  in both directions between `a` and `a.>`, so a caller needing both must mint BOTH patterns. That
+ *  is the manager's job, and it is why this returns the BASE channel only.
+ *
+ *  Sanitizer kept exact (illegal runs collapse to a single `-`), so a name that mapped to one channel
+ *  under the old prefix maps to one channel under the new one. */
+export function eventChannel(name: string): string {
+  return `events.${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
 }
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /

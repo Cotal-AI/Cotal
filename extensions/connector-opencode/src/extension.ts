@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, eventChannel, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -105,7 +105,7 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
 export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  eventChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["opencode"],
   supportsModelVariant: true,
   listModels: listOpenCodeModels,
@@ -147,7 +147,7 @@ export const opencodeConnector: Connector = {
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the plugin's transcript mirror (parity with Claude)
+    if (opts.events === true) env.COTAL_EVENTS = "1"; // gate the plugin's transcript mirror (parity with Claude)
     // Where serve.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
     // workspace root so a per-agent launch cwd (which the manager can point at any repo) doesn't
     // drop `.cotal/opencode/<name>` into the target tree. Standalone `cotal spawn` has no manager
