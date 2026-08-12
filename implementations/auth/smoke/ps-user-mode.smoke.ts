@@ -154,9 +154,30 @@ function mustHaveRun(r: Run, what: string): void {
   );
 }
 
+/**
+ * Everything fallible from here to the main `try` runs under this guard.
+ *
+ * The IdP listen and the Better Auth signup can both throw, and they happen BEFORE the main
+ * try/finally — so a failure there used to escape with the scratch still on disk. That leak matters
+ * more since the anchor landed: the scratch now contains a `.cotal` of its own, so what gets left
+ * behind is not an empty directory but a live capture hazard for whatever runs under that temp base
+ * next. This suite exists to stop exactly that, and was creating it on its own error path.
+ */
+async function setupOrClean<T>(what: string, fn: () => Promise<T> | T): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    // Close the IdP too: `finally` is not reachable from out here, and a listening server would keep
+    // the process alive after the throw.
+    try { idpSrv.close(); } catch { /* not listening yet */ }
+    rmSync(scratch, { recursive: true, force: true });
+    throw new Error(`fixture setup failed at ${what} (scratch removed): ${(e as Error).message}`, { cause: e });
+  }
+}
+
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 const idpSrv = createServer((req, res) => handler!(req, res));
-await new Promise<void>((r) => idpSrv.listen(0, "127.0.0.1", r));
+await setupOrClean("IdP listen", () => new Promise<void>((r, rej) => { idpSrv.once("error", rej); idpSrv.listen(0, "127.0.0.1", r); }));
 const origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
 const ba = betterAuth({
@@ -171,10 +192,15 @@ const ba = betterAuth({
   ],
 });
 handler = toNodeHandler(ba);
-const signup = await ba.api.signUpEmail({
-  body: { email: "human@example.test", password: "correct-horse-battery", name: "Human 42" },
-  returnHeaders: true,
-});
+// Same guard: a signup failure here would otherwise strand the anchored scratch. Closing the IdP is
+// on the FAILURE path only — the device login below needs it alive on the success path, and the
+// main `finally` owns it from there.
+const signup = await setupOrClean("IdP signup", () =>
+  ba.api.signUpEmail({
+    body: { email: "human@example.test", password: "correct-horse-battery", name: "Human 42" },
+    returnHeaders: true,
+  }),
+);
 const cookie = signup.headers.get("set-cookie")!.split(";")[0];
 async function approve(userCode: string): Promise<void> {
   await fetch(`${base}/device?user_code=${encodeURIComponent(userCode)}`, { headers: { cookie, origin } });
