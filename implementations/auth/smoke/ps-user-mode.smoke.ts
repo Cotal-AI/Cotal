@@ -209,7 +209,10 @@ try {
 } catch (e) {
   // A listening server keeps the process alive past the throw, and `finally` is not reachable from
   // out here — so both the server and the scratch are this handler's responsibility.
-  try { idpSrv?.close(); } catch { /* never listened */ }
+  // Reported, not swallowed. This is the last catch in the file that could hide something, and a
+  // close that fails leaves a listening server holding the process open — the reader needs to know
+  // that happened even though the scratch removal below must still run.
+  try { idpSrv?.close(); } catch (ce) { console.error(`  ! IdP close failed during setup cleanup: ${(ce as Error).message}`); }
   rmSync(scratch, { recursive: true, force: true });
   throw new Error(`fixture setup failed (scratch removed, IdP closed): ${(e as Error).message}`, { cause: e });
 }
