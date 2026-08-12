@@ -129,9 +129,21 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
  * working, and it is what makes `dir` the mesh root. Treating it as a capture would red every
  * correct run, which is what the first version of this function did.
  */
+/**
+ * The `.cotal` ABOVE `dir` that would capture it, or null when `dir` still roots itself.
+ *
+ * The predicate form of {@link assertScratchHeld}, for callers that must DECIDE rather than die —
+ * teardown above all. `cotal down` re-resolves its root from cwd, so running it under a captured
+ * root aims it at the ancestor's `.cotal` and it will signal pids the fixture never started. A
+ * cleanup step is exactly the wrong place to throw, and exactly the wrong place to guess.
+ */
+export function scratchCaptor(dir: string): string | null {
+  return cotalRootCaptor(dirname(physical(dir)));
+}
+
 export function assertScratchHeld(dir: string, what = "scratch"): void {
   const self = physical(dir);
-  const captor = cotalRootCaptor(dirname(self));
+  const captor = scratchCaptor(self);
   if (captor) {
     throw new Error(
       `${what} (${self}) is captured by ${join(captor, ".cotal")}: findCotalRoot resolves anything ` +

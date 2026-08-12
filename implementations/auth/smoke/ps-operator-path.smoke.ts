@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch, scratchCaptor } from "../../../bin/smoke/_scratch.js";
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
@@ -142,7 +142,18 @@ try {
   console.error("ps-operator-path threw:", e);
   process.exitCode = 1;
 } finally {
-  await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
+  // Same guard as the user-mode sibling: `cotal down` re-resolves from cwd, so under a captured
+  // root it signals the ANCESTOR's processes — pids this fixture never started. A teardown that
+  // reaches outside its own fixture is worse than no teardown.
+  const teardownCaptor = scratchCaptor(root);
+  if (teardownCaptor === null) {
+    await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
+  } else {
+    console.error(
+      `  ! SKIPPING \`cotal down\`: the fixture root is captured by ${join(teardownCaptor, ".cotal")}, so down would `
+        + `resolve THAT root and signal processes this suite did not start. Stop any mesh under the captor by hand.`,
+    );
+  }
   rmSync(scratch, { recursive: true, force: true }); // home and root both live under it
 }
 if (fail) process.exitCode = 1;

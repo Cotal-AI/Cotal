@@ -31,7 +31,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
-import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
+import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch, scratchCaptor } from "../../../bin/smoke/_scratch.js";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
 // `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
@@ -200,7 +200,21 @@ try {
   console.error("ps-user-mode threw:", e);
   process.exitCode = 1;
 } finally {
-  await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
+  // `cotal down` re-resolves its root from cwd, so under a captured root it aims at the ANCESTOR's
+  // `.cotal` and signals pids this fixture never started — another lane's manager, on the one path
+  // where the suite has already concluded something is wrong. Cleanup must not be the most
+  // dangerous thing the suite does. Skip the CLI teardown when the root is captured and say so
+  // loudly, naming what may be left behind; `scratch` is our own mkdtemp either way.
+  const teardownCaptor = scratchCaptor(root);
+  if (teardownCaptor === null) {
+    await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
+  } else {
+    console.error(
+      `  ! SKIPPING \`cotal down\`: the fixture root is captured by ${join(teardownCaptor, ".cotal")}, so down would `
+        + `resolve THAT root and signal processes this suite did not start. Any mesh this run began is under the `
+        + `captor and must be stopped by hand.`,
+    );
+  }
   idpSrv.close();
   rmSync(scratch, { recursive: true, force: true }); // home and root both live under it
 }
