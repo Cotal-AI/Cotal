@@ -167,8 +167,8 @@ existing trust record, and its `$SYS` creds along with it.
 
 The rotation is safe to run on a real space. The data account, the account signing key, every agent
 credential minted from it, and the JetStream store are all untouched; what dies is the retired system
-account and any out-of-band copy of the old `$SYS` creds. It needs the broker to restart on the
-rewritten config, so it runs as part of a boot:
+account, and with it any out-of-band copy of the old `$SYS` creds, on every broker that loads the
+rotated config. It needs the broker to restart on the rewritten config, so it runs as part of a boot:
 
 ```bash
 cotal down
@@ -200,10 +200,12 @@ Two things to know before you run it:
   taken before a rotation refuses to restore afterwards, so take a fresh `cotal backup` once the
   rotated mesh is up. `cotal up --restore` names this case when the data account still matches.
 
-If a rotation is interrupted between committing the trust record and writing both creds, the split
-is detected rather than silent: `cotal doctor auth` compares each `$SYS` cred's issuer against the
-persisted record, and the delivery daemon compares the two creds against each other. Re-running the
-rotation heals it.
+The commit is not atomic (a trust-record write plus two credential writes), so an interrupted
+rotation leaves the record ahead of the creds. That split is detected rather than silent: every
+`cotal up` on an auth mesh, and every `cotal doctor auth`, compares each `$SYS` cred's issuer against
+the persisted record and names the retired account. `up` warns rather than refusing, because these
+creds power the membership graph and live eviction, both of which degrade fail-soft; the mesh is not
+worth taking down over them. Re-running the rotation heals it, at the cost of one generation.
 
 While those creds are expired the mesh keeps delivering messages, but the
 [membership feed](delivery-daemon.md) and live connection eviction stay down; `cotal doctor auth`

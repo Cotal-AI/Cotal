@@ -57,6 +57,7 @@ import {
   removeMesh,
   rotateSystemCreds,
   setCurrent,
+  staleSystemCreds,
   SYSTEM_CREDS_FILES,
   userAuthStateDir,
   workspaceSecretStore,
@@ -2071,6 +2072,21 @@ async function authSetup(
     // true, not in a doc the operator reads after the restore has already failed.
     console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
   }
+  // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
+  // A rotation that committed the trust record and then died leaves them stale, unexpired, and
+  // broker-dead — and, crash-before-either-write, stale in a way that no comparison between the two
+  // FILES can see (they agree with each other; they just disagree with the record). This is the one
+  // place holding both, on the one path that renders the config, so it is where the split is caught.
+  //
+  // WARN, not refuse. These creds power the membership graph and live eviction, both of which already
+  // degrade fail-soft; refusing the boot would turn a degraded feed into a dead mesh and take every
+  // agent down with it. The point is that the operator cannot MISS it, not that the mesh stops.
+  for (const stale of staleSystemCreds(cotalRoot(), auth.sys.pub))
+    console.error(
+      c.red(`! ${stale.file} is signed by a RETIRED system account`) +
+        c.dim(` (${stale.iss ? `${stale.iss.slice(0, 12)}…` : "unreadable"}; this space's is ${auth.sys.pub.slice(0, 12)}…)`) +
+        c.dim(" - an interrupted rotation left it behind the trust record. The broker will deny it, so membership + live eviction stay down until: `cotal down` then `cotal up --rotate-sys`"),
+    );
   const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
   if (!user && hasUserAuthState(cotalRoot(), space)) {
     throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);

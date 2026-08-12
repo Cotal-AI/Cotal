@@ -2,7 +2,6 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   credentialLifetime,
-  credsClaims,
   inspectCredHealth,
   type CredHealth,
   type CredentialKind,
@@ -18,6 +17,8 @@ import {
   readRenewalRecord,
   remintDaemonCreds,
   spaceAccountPath,
+  staleSystemCreds,
+  type StaleSystemCred,
   workspaceSecretStore,
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
@@ -145,7 +146,10 @@ function inventory(root: string, sysPub?: string): CredReport[] {
     { label: "membership-observer.creds", kind: "membership-observer", path: cotal("membership-observer.creds") },
     { label: "connection-evictor.creds", kind: "connection-evictor", path: cotal("connection-evictor.creds") },
   ];
-  const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub));
+  // Ask the staleness question ONCE, through the same helper the boot path uses, so `doctor auth`
+  // and `cotal up` can never disagree about which $SYS creds the trust record authorizes.
+  const stale = new Map(sysPub ? staleSystemCreds(root, sysPub).map((x) => [x.file, x] as const) : []);
+  const reports = fixed.map((f) => report(f.label, f.kind, f.path, sysPub, stale.get(f.label)));
   const agentDir = join(authDir(root), "creds");
   if (existsSync(agentDir)) {
     for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
@@ -155,7 +159,7 @@ function inventory(root: string, sysPub?: string): CredReport[] {
   return reports;
 }
 
-function report(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred): CredReport {
   if (!existsSync(path)) return { label, kind, path };
   const creds = readFileSync(path, "utf8");
   const health = inspectCredHealth(creds);
@@ -172,20 +176,15 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       : `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
   // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads —
   // i.e. the one in this root's trust record. Expiry alone cannot see a RETIRED issuer: a rotation
-  // that committed the record and then died before rewriting both files leaves a file that is
-  // structurally valid and years from expiry, yet broker-dead. Without this the doctor reported
-  // `auth: healthy` over exactly that split, which is the false green this whole surface exists to
-  // prevent. Checked before the health switch so it wins over a merely-healthy verdict.
-  if (sysPub && (kind === "membership-observer" || kind === "connection-evictor") && health.state !== "unreadable") {
-    let iss: string | undefined;
-    try {
-      iss = credsClaims(creds).iss;
-    } catch { /* an unreadable JWT is the health switch's case, not this one */ }
-    if (iss !== undefined && iss !== sysPub) {
-      r.problem = `signed by a RETIRED system account (${iss.slice(0, 12)}…, but this root's is ${sysPub.slice(0, 12)}…) - the broker denies it`;
-      r.repair = repair;
-      return r;
-    }
+  // that committed the record and then died leaves a file that is structurally valid and years from
+  // expiry, yet broker-dead. Without this the doctor reported `auth: healthy` over exactly that
+  // split, which is the false green this whole surface exists to prevent. Answered by the SAME
+  // helper the boot path uses, so the two surfaces cannot drift on what "stale" means. Checked
+  // before the health switch, so it wins over a merely-healthy verdict.
+  if (stale && sysPub) {
+    r.problem = `signed by a RETIRED system account (${stale.iss ? `${stale.iss.slice(0, 12)}…` : "unreadable"}, but this root's is ${sysPub.slice(0, 12)}…) - the broker denies it`;
+    r.repair = repair;
+    return r;
   }
   switch (health.state) {
     case "unreadable":

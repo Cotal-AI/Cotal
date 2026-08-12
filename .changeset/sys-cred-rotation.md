@@ -35,10 +35,13 @@ config-load-bound, so a stale broker still running the previous config keeps hon
 until it is stopped. And a full backup binds to the trust chain it was taken against, which includes
 the operator JWT and the system account, so every full artifact taken before a rotation refuses to
 restore afterwards: the rotation says so as it happens, and `cotal up --restore` names the drift when
-the data account still matches. A rotation interrupted between committing the trust record and
-writing both creds leaves a detected split rather than a silent one: `cotal doctor auth` compares
-each `$SYS` cred's issuer against the persisted record, and the delivery daemon, which never loads
-the signer, compares the two creds against each other.
+the data account still matches. The commit is a trust-record write plus two credential writes, so an
+interrupted rotation leaves the record ahead of the creds; that split is detected rather than
+silent. One shared check compares each `$SYS` cred's issuer against the persisted record, and it
+runs on every auth-mesh boot as well as in `cotal doctor auth`, so the state cannot pass unremarked
+by a mesh that simply never runs the doctor. The boot warns rather than refusing, since these creds
+power only the membership graph and live eviction, both fail-soft. The delivery daemon, which never
+loads the signer and so cannot read the record, compares the two creds against each other instead.
 
 Diagnosis now names the cause instead of the symptom. An expired observer cred used to surface as a
 bare "Authorization Violation" in the delivery log and, one layer up, as a `membership-rw` adoption

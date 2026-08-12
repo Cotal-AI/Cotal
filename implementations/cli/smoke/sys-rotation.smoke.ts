@@ -44,7 +44,7 @@ import {
   newIdentity,
   serverConfig,
 } from "@cotal-ai/core";
-import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
+import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, staleSystemCreds, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 import { up } from "../src/commands/up.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -281,6 +281,38 @@ try {
   check("the healthy PRE-rotation observer is now REJECTED (retirement, not expiry)", !(await accepts(livePreObserver)));
   for (const [label, creds] of preRotation)
     check(`a ${label} cred minted BEFORE the rotation still connects (the survival claim, per class)`, await accepts(creds));
+
+  console.log("\n5b) fault injection: every crash state of the non-atomic commit is detected");
+  // The commit is a record put plus two cred writes, so a crash leaves the record AHEAD of the creds
+  // in one of two shapes. Both are structurally valid and nowhere near expiry, so ONLY a comparison
+  // against the persisted record can see either. Staged directly on disk, which is exactly what the
+  // crash leaves behind.
+  const liveSys = (await getSpaceAuth(store, SPACE))!.sys.pub;
+  const goodObs = readFileSync(obsPath, "utf8");
+  const goodEv = readFileSync(evPath, "utf8");
+  const oldEv = await mintConnectionEvictorCreds(auth, newIdentity()); // healthy, RETIRED issuer
+
+  // (a) crash BEFORE either write: both creds stale, and mutually CONSISTENT — the case a
+  //     file-vs-file comparison cannot see, which is why the record is the oracle.
+  writeFileSync(obsPath, livePreObserver, { mode: 0o600 });
+  writeFileSync(evPath, oldEv, { mode: 0o600 });
+  const bothStale = staleSystemCreds(root, liveSys);
+  check("record-only crash: BOTH creds reported stale", bothStale.length === 2, bothStale.map((x) => x.file));
+  check("record-only crash: they agree with EACH OTHER (so a pair check would miss it)", credsClaims(livePreObserver).iss === credsClaims(oldEv).iss);
+
+  // (b) crash BETWEEN the two writes: observer current, evictor retired.
+  writeFileSync(obsPath, goodObs, { mode: 0o600 });
+  const oneStale = staleSystemCreds(root, liveSys);
+  check("one-file crash: exactly the un-written cred is reported stale", oneStale.length === 1 && oneStale[0].file === SYSTEM_CREDS_FILES[1], oneStale);
+
+  // (c) the complete generation: nothing stale.
+  writeFileSync(evPath, goodEv, { mode: 0o600 });
+  check("a complete generation reports nothing stale", staleSystemCreds(root, liveSys).length === 0);
+  // (d) an unreadable file cannot be shown to match, so it is not assumed to.
+  writeFileSync(evPath, "not a creds file", { mode: 0o600 });
+  const corrupt = staleSystemCreds(root, liveSys);
+  check("an unreadable $SYS cred is reported stale with no issuer", corrupt.length === 1 && corrupt[0].iss === undefined, corrupt);
+  writeFileSync(evPath, goodEv, { mode: 0o600 });
 
   console.log("\n6) a TORN rotation is caught by both readers, not reported healthy");
   // Simulate the crash grok described: the record committed, the observer landed, the evictor did

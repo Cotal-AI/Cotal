@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsClaims,
@@ -56,12 +57,17 @@ export interface SystemRotationResult {
  * guard `remintDaemonCreds` runs: rotating with a foreign space's operator would re-issue an operator
  * JWT this broker does not trust and strand every account under it.
  *
- * Ordering is the safety property. Everything fallible and in-memory (the rotation, both mints)
- * happens BEFORE anything is persisted; then the trust record commits (where `putSpaceAuth`'s
- * generation guard refuses a stale or non-successor write); then the creds land. A cred file is
- * therefore never overwritten for a system account the record does not already carry — the inverse
- * order could leave the last-good creds clobbered by creds for an authority the broker will never
- * load, which is precisely the availability loss `remintDaemonCreds` guards on its own class.
+ * Ordering is the safety property, and it is a DIRECTIONAL one, not atomicity. All MINTING (the
+ * rotation and both creds) happens in memory before anything is persisted, so a mint failure changes
+ * nothing on disk. Then the trust record commits, where `putSpaceAuth`'s generation guard refuses a
+ * stale or non-successor write. Then the creds land. What this buys is a single failure direction: a
+ * cred file is never overwritten for a system account the record does not already carry, because the
+ * inverse order could clobber the last-good creds with creds for an authority the broker will never
+ * load — the availability loss `remintDaemonCreds` guards on its own class.
+ *
+ * It does NOT make the persistence atomic. `putSpaceAuth` is two puts and the creds are two more, so
+ * a crash leaves the record AHEAD of the creds. That state is detected rather than prevented (see
+ * {@link staleSystemCreds}) and is repaired by re-running the rotation.
  *
  * THROWS rather than degrading: a stripped signer (no operator seed) cannot rotate, and a caller that
  * ignored the throw would boot a broker whose config still carries the retired system account.
@@ -91,15 +97,62 @@ export async function rotateSystemCreds(root: string, expectedSpace: string, sto
 
   // Commit the trust record FIRST — the generation guard lives in this call, and it is what makes the
   // successor real. Only then the creds that record authorizes.
+  //
+  // This is NOT one atomic act, and the code must not pretend otherwise: `putSpaceAuth` is itself two
+  // puts, and the two cred writes are two more. A crash anywhere in this sequence leaves the record
+  // AHEAD of the creds — both files stale (crash before either write) or one stale (crash between
+  // them). The window is not closed here; it is DETECTED, by {@link staleSystemCreds}, which every
+  // boot and every `doctor auth` runs against the persisted record. It cannot be repaired in place
+  // either: the successor's signing seed is gone the moment it is persisted, so the only repair is
+  // another rotation, which is idempotent and costs one generation. A durable rotation journal would
+  // close the window instead of reporting it; that is deliberately not built for a display-only feed
+  // plus an eviction rail whose recovery is one re-run.
+  //
+  // Each file is still written atomically, so no reader can ever see a half-written credential.
   await putSpaceAuth(s, rotated);
-  // ATOMIC per file, so a half-written file can never be read as a valid half-generation. Atomicity
-  // is per file, NOT across the pair: a crash between the two still leaves the evictor signed by the
-  // retired account. That torn state is detectable and is detected — `cotal doctor auth` compares
-  // each file's issuer against the persisted record, and the delivery daemon (which never loads the
-  // signer, so it cannot read that record) compares the two files against EACH OTHER, since one
-  // rotation writes both. Re-running the rotation heals it by landing a complete generation.
   writeSecretFileAtomic(join(root, ".cotal", SYSTEM_CREDS_FILES[0]), observer);
   writeSecretFileAtomic(join(root, ".cotal", SYSTEM_CREDS_FILES[1]), evictor);
 
   return { gen: rotated.gen ?? 0, auth: rotated, expiresAt: credsClaims(observer).exp };
+}
+
+/** A $SYS credential file on disk that the persisted trust record does NOT authorize. */
+export interface StaleSystemCred {
+  file: string;
+  /** The retired system account that signed it; absent when the file could not be parsed. */
+  iss?: string;
+}
+
+/**
+ * The $SYS cred files whose issuer is not `sysPub` — the ONE staleness question, asked in one place
+ * so every surface answers it identically.
+ *
+ * This exists because expiry cannot see the failure. A rotation that committed the trust record and
+ * then died leaves credential files that parse, are nowhere near their expiry, and are refused by the
+ * broker, because the account that signed them no longer exists as far as the successor config is
+ * concerned. Comparing the two files to each other is not enough either: a crash BEFORE either write
+ * leaves them stale but mutually consistent. Only the persisted record settles it, which is why this
+ * takes `sysPub` and why the callers are the two surfaces that hold it — the boot path, which warns
+ * before it renders a config the files cannot serve, and `cotal doctor auth`, which must never call
+ * this state healthy. The delivery daemon is deliberately NOT a caller: it never loads the signer.
+ *
+ * Absent files are not stale (an unprovisioned space is a different, separately reported state), and
+ * an unreadable file is reported with no `iss` rather than throwing — a diagnosis surface must not
+ * crash on the corruption it exists to describe.
+ */
+export function staleSystemCreds(root: string, sysPub: string): StaleSystemCred[] {
+  const stale: StaleSystemCred[] = [];
+  for (const file of SYSTEM_CREDS_FILES) {
+    const path = join(root, ".cotal", file);
+    if (!existsSync(path)) continue;
+    let iss: string | undefined;
+    try {
+      iss = credsClaims(readFileSync(path, "utf8")).iss;
+    } catch {
+      stale.push({ file }); // unreadable: cannot be shown to match, so it is not assumed to
+      continue;
+    }
+    if (iss !== sysPub) stale.push({ file, iss });
+  }
+  return stale;
 }
