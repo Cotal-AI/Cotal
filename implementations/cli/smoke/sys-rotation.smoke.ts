@@ -101,6 +101,35 @@ async function accepts(creds: string): Promise<boolean> {
   }
 }
 
+const IDLE_PORT = await pickFreePort(); // nothing ever listens here — keeps `up`'s port-in-use branch out of the way
+
+/** Drive `up` and capture how it refused. Several of these refusals `process.exit(1)` rather than
+ *  throw, and the default address would otherwise reach whatever broker happens to run on 4222, so
+ *  the harness traps the exit and pins an idle server unless the case supplies its own. */
+async function runUp(values: Record<string, unknown>): Promise<string> {
+  const lines: string[] = [];
+  const realExit = process.exit;
+  const realErr = console.error;
+  const realLog = console.log;
+  console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
+  console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
+  (process as unknown as { exit: (code?: number) => never }).exit = ((code?: number) => {
+    throw new Error(`process.exit(${code})`);
+  }) as never;
+  process.chdir(root);
+  try {
+    await up({ values: { server: `nats://127.0.0.1:${IDLE_PORT}`, ...values }, positionals: [], raw: [] });
+    return "";
+  } catch (e) {
+    return `${(e as Error).message} ${lines.join(" ")}`.replace(/\[[0-9;]*m/g, "");
+  } finally {
+    console.error = realErr;
+    console.log = realLog;
+    (process as unknown as { exit: typeof realExit }).exit = realExit;
+    process.chdir(origCwd);
+  }
+}
+
 const origCwd = process.cwd();
 try {
   // ── stage the #338 state: a provisioned space whose $SYS creds are already dead ────────────────
@@ -216,15 +245,7 @@ try {
   // A restore reinstates a trust root; a rotation supersedes one. Together the operator cannot say
   // which authority the mesh came up on, and the artifact's own $SYS creds would be overwritten
   // before anyone verified the restore.
-  let comboRefusal = "";
-  process.chdir(root);
-  try {
-    await up({ values: { restore: "/nonexistent-backup", "rotate-sys": true }, positionals: [], raw: [] });
-  } catch (e) {
-    comboRefusal = (e as Error).message;
-  } finally {
-    process.chdir(origCwd);
-  }
+  const comboRefusal = await runUp({ restore: "/nonexistent-backup", "rotate-sys": true });
   check(
     "`up --restore --rotate-sys` refuses BEFORE touching the restore",
     comboRefusal.includes("--rotate-sys") && !comboRefusal.includes("nonexistent-backup"),
@@ -236,16 +257,8 @@ try {
   // `restore` cleared and an `__*Attempt` set, and those paths can adopt a live listener and RETURN
   // before `authSetup` — accepting the flag and rotating nothing. Both re-entry keys are checked.
   for (const key of ["__restoreAttempt", "__ordinaryResumeAttempt"]) {
-    let reentry = "";
     const genBefore = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
-    process.chdir(root);
-    try {
-      await up({ values: { "rotate-sys": true, [key]: "attempt-1" }, positionals: [], raw: [] });
-    } catch (e) {
-      reentry = (e as Error).message;
-    } finally {
-      process.chdir(origCwd);
-    }
+    const reentry = await runUp({ "rotate-sys": true, [key]: "attempt-1" });
     check(`\`up --rotate-sys\` refuses on a ${key} re-entry`, reentry.includes("--rotate-sys") && reentry.includes("re-entry"), reentry);
     check(`the ${key} refusal advanced no generation`, ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBefore);
   }
@@ -259,16 +272,8 @@ try {
     join(root, "open.yaml"),
     `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker: { servers: "nats://127.0.0.1:${PORT}", auth: false }\nchannels:\n  general: { description: Open coordination. }\n`,
   );
-  let manifestRefusal = "";
   const genBeforeManifest = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
-  process.chdir(root);
-  try {
-    await up({ values: { file: join(root, "open.yaml"), "rotate-sys": true, "dry-run": true }, positionals: [], raw: [] });
-  } catch (e) {
-    manifestRefusal = (e as Error).message;
-  } finally {
-    process.chdir(origCwd);
-  }
+  const manifestRefusal = await runUp({ file: join(root, "open.yaml"), "rotate-sys": true, "dry-run": true });
   check("`up -f <open manifest> --rotate-sys` refuses", manifestRefusal.includes("--rotate-sys") && manifestRefusal.includes("broker.auth: false"), manifestRefusal);
   check("the manifest refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeManifest);
 
@@ -328,15 +333,7 @@ try {
   // revocation to deny-new for the life of the mesh.
   writeFileSync(obsPath, livePreObserver, { mode: 0o600 });
   writeFileSync(evPath, oldEv, { mode: 0o600 });
-  let bootRefusal = "";
-  process.chdir(root);
-  try {
-    await up({ values: { space: SPACE, server: SERVERS, detach: true }, positionals: [], raw: [] });
-  } catch (e) {
-    bootRefusal = (e as Error).message;
-  } finally {
-    process.chdir(origCwd);
-  }
+  const bootRefusal = await runUp({ space: SPACE, detach: true });
   check("a plain `up` REFUSES on a record-ahead-of-creds split", bootRefusal.includes("not signed by this space's system account"), bootRefusal);
   check("the boot refusal names both stale files", bootRefusal.includes(SYSTEM_CREDS_FILES[0]) && bootRefusal.includes(SYSTEM_CREDS_FILES[1]), bootRefusal);
   check("the boot refusal names the rotation as the repair", bootRefusal.includes("up --rotate-sys"), bootRefusal);
@@ -349,32 +346,29 @@ try {
   // both over the same JetStream store. The pid file is the proof the registry cannot supply.
   const genBeforeLive = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
   writeFileSync(join(root, ".cotal", "nats.pid"), String(process.pid)); // alive by construction
-  let liveRefusal = "";
-  process.chdir(root);
-  try {
-    await up({ values: { space: SPACE, "rotate-sys": true, detach: true }, positionals: [], raw: [] });
-  } catch (e) {
-    liveRefusal = (e as Error).message;
-  } finally {
-    process.chdir(origCwd);
-  }
+  const liveRefusal = await runUp({ space: SPACE, "rotate-sys": true, detach: true });
   check("a live root broker refuses the rotation even with NO registry row", liveRefusal.includes("still running") && liveRefusal.includes("cotal down"), liveRefusal);
   check("the live-broker refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeLive);
 
   // Fail CLOSED: an unreadable pid is refused exactly like a live one.
   writeFileSync(join(root, ".cotal", "nats.pid"), "not-a-pid");
-  let ambiguous = "";
-  process.chdir(root);
-  try {
-    await up({ values: { space: SPACE, "rotate-sys": true, detach: true }, positionals: [], raw: [] });
-  } catch (e) {
-    ambiguous = (e as Error).message;
-  } finally {
-    process.chdir(origCwd);
-  }
+  const ambiguous = await runUp({ space: SPACE, "rotate-sys": true, detach: true });
   check("an unreadable pid file refuses too (fail closed, not assume stopped)", ambiguous.includes("does not hold a pid"), ambiguous);
   check("the ambiguous refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeLive);
   rmSync(join(root, ".cotal", "nats.pid"), { force: true });
+
+  console.log("\n5e) an UNIDENTIFIED listener refuses the rotation instead of free-porting past it");
+  // The out-of-band case: `nats-server -c <root>/.cotal/auth/server.conf` started by hand writes no
+  // pidfile and no registry row, so both ownership records are empty and the rotation would step
+  // around it onto a free port — retiring the account that broker is still serving and opening its
+  // JetStream store a second time. Only the fact that SOMETHING unidentified is answering can catch
+  // it, so that has to refuse rather than relocate.
+  await startBroker(); // stands in for the hand-started broker: reachable, unrecorded
+  const genBeforeOob = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
+  const oobClean = await runUp({ space: SPACE, "rotate-sys": true, detach: true, server: SERVERS });
+  check("an unidentified live listener refuses the rotation", oobClean.includes("process.exit(1)") && oobClean.includes("will not start on another port"), oobClean.slice(0, 400));
+  check("the unidentified-listener refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeOob);
+  await stopBroker();
 
   console.log("\n6) a TORN rotation is caught by both readers, not reported healthy");
   // Simulate the crash grok described: the record committed, the observer landed, the evictor did

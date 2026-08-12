@@ -33,11 +33,15 @@ takes no `SecretStore`: the `$SYS` pair has no store seam to be written through,
 `SecretStore` cannot be enumerated, accepting one would mean a broker-wide guard that reads a local
 filesystem while enforcing nothing for the tenants actually at risk.
 
-A rotation requires every broker for the root to be STOPPED, and that is now proven rather than
-inferred from the address being asked for: a live `nats.pid`, an unreadable one, or any recorded mesh
-for this root still answering all refuse. Without that proof a lost registry row was enough to bypass
-the running-mesh refusal entirely — `up` would find the port busy, pick a free one, rotate, and leave
-the old broker serving the retired config while a second one ran against the same JetStream store.
+A rotation requires every broker for the root to be stopped, and three checks now say so: this root's
+recorded mesh at the requested address, anything unidentified answering there (which refuses instead
+of relocating to a free port), and the root's own ownership records — a live or unreadable `nats.pid`,
+or any recorded mesh for this root still reachable. Without them a lost registry row, or a
+`nats-server` started by hand against this root's `server.conf`, was enough to bypass the running-mesh
+refusal: `up` found the port busy, picked a free one, rotated, and left the old broker serving the
+retired config while a second one ran against the same JetStream store. These are Cotal's ownership
+records rather than a scan of the process table, and the docs say so: a hand-started broker on a
+different port writes none of them and is the named residual.
 
 Two consequences the tooling now states rather than leaving to be discovered. The retirement is
 config-load-bound, so a stale broker still running the previous config keeps honouring the old creds

@@ -196,7 +196,11 @@ Two things to know before you run it:
 
 - **The retirement is config-load-bound.** Old `$SYS` creds are refused by any broker that loads the
   rotated config. A stale `nats-server` still running the *previous* config in memory would keep
-  honouring them, so stop every broker for this root first.
+  honouring them, so stop every broker for this root first. `--rotate-sys` refuses if this root's
+  mesh is recorded as running, if anything unidentified is answering at the address it was given, or
+  if the root's pid file names a live (or unreadable) process. Those are Cotal's own ownership
+  records, not a scan of the process table: a `nats-server` you started by hand against this root's
+  `server.conf` on some other port writes none of them and will not be seen. Do not run one.
 - **It invalidates earlier full backups.** A full artifact binds to the trust chain it was taken
   against, and that commitment covers the operator JWT and the system account. Every full backup
   taken before a rotation refuses to restore afterwards, so take a fresh `cotal backup` once the

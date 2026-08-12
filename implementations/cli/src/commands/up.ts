@@ -633,6 +633,20 @@ export async function up(args: ParsedArgs): Promise<void> {
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
+    // Reaching here with `--rotate-sys` means something IS answering at the requested address and it
+    // is not this root's recorded mesh (that case was refused above). The ordinary response is to pick
+    // a free port and carry on, which for a rotation is the wrong instinct: the unidentified listener
+    // may be a `nats-server -c <root>/.cotal/auth/server.conf` started by hand, holding THIS root's
+    // config and JetStream store while writing neither a pidfile nor a registry row. Rotating around
+    // it retires the account it is still serving and opens its store a second time. Nothing available
+    // here can identify it — that is what unidentified means — so refuse instead of stepping past it.
+    if (values["rotate-sys"]) {
+      console.error(
+        c.red(`✗ ${server} is answering and it is not this root's recorded mesh (${who})`) +
+          c.dim(" - `--rotate-sys` will not start on another port around an unidentified broker: it may be serving this root's own server.conf and JetStream store. Stop whatever is listening there (`cotal down` if it was started here), then rotate."),
+      );
+      process.exit(1);
+    }
     if (values.server === undefined && (!held || held.root !== root)) {
       const next = await serverWithFreePort(server, host);
       console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
@@ -2052,17 +2066,13 @@ async function authSetup(
     // report a rotation that did not happen.
     if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
   } else if (rotateSys) {
-    // A rotation needs every broker for THIS ROOT stopped, and it must be PROVEN, not inferred from
-    // the requested address. The already-running refusal earlier in `up` fires only when a registry
-    // row identifies this root's mesh at the URL being asked for. Lose that row — deleted, pruned,
-    // or a broker started out of band from this root's own `server.conf` — and a bare
-    // `cotal up --rotate-sys` finds the default port busy, quietly picks a FREE one, and rotates:
-    // the old process keeps serving the retired config from memory while a second nats-server comes
-    // up on the successor against THE SAME JetStream store. That is store corruption, not the
-    // degraded-membership residual, and it needs no exotic ghost process to reach.
-    //
-    // So prove it here, at the one point every rotation path converges on, and fail CLOSED: an
-    // ambiguous answer refuses exactly like a live one.
+    // Third and last of the stopped-broker checks, at the one point every rotation path converges on.
+    // The other two live in `up`'s reachable-listener branch: this root's recorded mesh at the
+    // requested address, and any UNIDENTIFIED listener there (which refuses rather than free-porting
+    // around a broker that may be serving this root's own server.conf and store). This one reads the
+    // root's ownership records for a broker at an address nobody probed. It reports what those
+    // records say, not what the process table says — see its own comment for the residual — and fails
+    // CLOSED, so an ambiguous record refuses exactly like a live one.
     await assertRootBrokerStopped(cotalRoot());
     // Fails loud: a caller that swallowed this would boot the broker on the RETIRED system account
     // while `doctor auth` reported the rotation as done.
@@ -2139,20 +2149,28 @@ async function authSetup(
 }
 
 /**
- * Prove no broker for THIS ROOT is still running, or refuse. The rotation's guarantee is that the
- * retired system account stops being honored, and that guarantee is only as good as "every process
- * serving this root's config is gone": a survivor keeps honoring the retired account from memory,
- * and — because it shares this root's JetStream store — a second broker started on the successor
- * would write the same store underneath it.
+ * Refuse the rotation if this root's own bookkeeping still shows a broker running. This is a
+ * BEST-EFFORT check over Cotal-managed ownership records, NOT a proof that no process is serving this
+ * root, and the difference matters: a survivor keeps honoring the retired account from memory, and a
+ * second broker on the successor opens that survivor's JetStream store underneath it.
  *
- * Two independent proofs, because either alone has a blind spot. The PID FILE catches a broker this
- * root started whose registry row was lost, which is the reachable-port-with-no-`held` bypass. The
- * REGISTRY sweep catches a broker recorded for this root at some OTHER address, which no probe of
- * the requested URL would ever contact. Both fail CLOSED: an unreadable pid file is refused exactly
- * like a live one, since "cannot tell" and "still running" have the same consequence here.
+ * Two records, because either alone has a blind spot. The PID FILE catches a broker this root started
+ * whose registry row was lost. The REGISTRY sweep catches one recorded for this root at some OTHER
+ * address, which no probe of the requested URL would reach. Both fail CLOSED: an unreadable or
+ * malformed pid file refuses exactly like a live one, since "cannot tell" and "still running" have
+ * the same consequence.
  *
- * Not a general `up` guard — an ordinary boot adopting or replacing a listener is a supported flow
- * with its own claim machinery. This is specifically the precondition for retiring an authority.
+ * WHAT IT CANNOT SEE, stated because an earlier version of this comment claimed otherwise: both
+ * records are mutable, and neither is written by a broker started outside `cotal up`. Delete both
+ * while the process lives, or run `nats-server -c <root>/.cotal/auth/server.conf` by hand, and this
+ * returns success having probed nothing. The requested address is covered separately (an unidentified
+ * listener there refuses the rotation rather than moving to a free port), which leaves a hand-started
+ * broker on a DIFFERENT port as the honest residual. Closing that needs something a survivor holds
+ * and cannot delete, an exclusive store lock, which does not exist today; until it does, do not run
+ * `nats-server` against this root's config outside `cotal up`.
+ *
+ * Not a general `up` guard: an ordinary boot adopting or replacing a listener is a supported flow with
+ * its own claim machinery. This is specifically the precondition for retiring an authority.
  */
 async function assertRootBrokerStopped(root: string): Promise<void> {
   const pidPath = join(root, ".cotal", "nats.pid");
