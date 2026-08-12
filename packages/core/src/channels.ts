@@ -12,6 +12,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
 import { standaloneConnectOpts } from "./streams.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
+import { liveKvEntries } from "./kv-scan.js";
 
 /** The declarative channel-config file read at `cotal up` to seed the registry. */
 export interface ChannelRegistryFile {
@@ -244,16 +245,18 @@ export async function readChannelRegistry(opts: {
     const channels: Record<string, ChannelConfig> = {};
     let defaults: ChannelDefaults | undefined;
     try {
-      for await (const key of await kv.keys()) {
-        if (key === CHANNEL_DEFAULTS_KEY) {
-          defaults = await readChannelDefaults(kv);
+      // ONE pass: this was a `keys()` scan plus a per-key `get()`, so one round trip per channel.
+      for (const e of await liveKvEntries(kv)) {
+        if (e.key === CHANNEL_DEFAULTS_KEY) {
+          try { defaults = e.json<ChannelDefaults>(); } catch { /* garbled defaults — treat as unset */ }
           continue;
         }
-        const cfg = await readChannelConfig(kv, key);
+        let cfg: ChannelConfig | undefined;
+        try { cfg = e.json<ChannelConfig>(); } catch { /* skip undecodable */ }
         // Channel tokens such as `__proto__` are valid. Define an own data property instead of
         // invoking Object.prototype setters, while preserving the reader's normal-object shape.
         if (cfg)
-          Object.defineProperty(channels, key, {
+          Object.defineProperty(channels, e.key, {
             value: cfg,
             enumerable: true,
             configurable: true,

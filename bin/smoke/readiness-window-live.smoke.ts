@@ -40,7 +40,7 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-readiness-home-"));
 process.env.COTAL_HOME = home;
 
-const { probeConnect, registry, CotalEndpoint, CONTROL_ADMIN } = await import("@cotal-ai/core");
+const { probeConnect, registry, CotalEndpoint } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { launchAgent, START_TIMEOUT_MS } = await import("@cotal-ai/cli");
 const { MeshAgent, SPAWN_TIMEOUT_MS } = await import("@cotal-ai/connector-core");
@@ -162,10 +162,23 @@ try {
     ok("...and reports the spawned identity", (reply.data as { name?: string })?.name === "slowlaunch", reply.data);
   }
 
-  // Tear the spawned keepalives down through the manager (they don't exit on broker loss).
+  // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
+  // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
   for (const name of ["slowpoke", "slowlaunch"]) {
-    const stop = await ep.requestControl(CONTROL_ADMIN, { op: "stop", args: { name, graceful: false } });
-    ok(`stop ${name} ok`, stop.ok === true, stop);
+    const info = await ep.invokeService("manager", "inspect", { name });
+    ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
+    const row = info.reply.data as { id: string; lifecycleUid: string };
+    // A static/open row's `id` is the bare actor under the caller's own owner; a user-mode row's
+    // is the composite `owner.actor` — split only when the dot is there (the CLI's exact guard).
+    const dot = row.id.indexOf(".");
+    const [tOwner, tActor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [ep.principal.owner, row.id];
+    // Operator reach: this one-shot client is NOT the spawner, so owner-mode's spawner-bound
+    // privileged semantics refuse it — the instrument rides ANY-mode (the CLI's non-bearer
+    // `reach: "any"` shape; on an open mesh the serve side admits it as the old single-trusted-host).
+    const stop = await ep.invokeService("manager", "despawn", { graceful: false }, {
+      target: { mode: "any", owner: tOwner, actor: tActor, lifecycleUid: row.lifecycleUid },
+    });
+    ok(`stop ${name} ok`, stop.reply.ok === true, stop.reply);
   }
 
   console.log(`\nreadiness-window live e2e: ${pass} checks passed`);

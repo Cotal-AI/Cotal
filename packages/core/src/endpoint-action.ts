@@ -41,8 +41,8 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { epfSubject, assertIdToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader } from "./endpoint-records.js";
+import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
@@ -166,7 +166,18 @@ export function goalRefOf(request: ParsedEpRequest, goalId: string): GoalRef {
   return { endpoint: request.endpoint, caller: { owner: c.owner, actor: c.actor, uid: c.uid }, goalId: assertIdToken(goalId, "goalId") };
 }
 
-/** The goal's terminal-result fact subject (`epf.<e>.goal.<triple>.<goalId>.result`, §13.2). */
+/** The goal's terminal-result fact subject — the ONE subject SPEC:1394 reserves,
+ *  `epf.<e>.goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`, with NO epoch token.
+ *
+ *  An earlier revision epoch-scoped this (`…result.<execEpoch>`) to fence a live-superseded
+ *  committer by giving each executor epoch its own create-only subject. That was non-conformant
+ *  AND wrong: the window it addressed is "commit the fact, then die before the projection", where
+ *  the pre-restart fact is the LEGITIMATE outcome, not a corpse's guess. Scoping by epoch hid that
+ *  winner from every post-restart reader, let the successor commit a SECOND contradictory terminal
+ *  at the new epoch, and surfaced the wrong one to callers (executed repro: a real `succeeded`
+ *  read back as `uncertain`). One goal has one terminal, on one subject, first-fact-wins globally.
+ *  The fence against a superseded committer is the §13.1 takeover barrier, which revokes and
+ *  cluster-verify-evicts the family BEFORE it advances the process epoch. */
 export function goalResultSubject(space: string, ref: GoalRef): string {
   return epfSubject(space, ref.endpoint, ["goal", ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId, "result"]);
 }
@@ -330,6 +341,14 @@ export interface GoalSpecValue {
   command: string;
   caller: { id: string; lifecycleUid: string };
   target?: { owner: string; actor: string; lifecycleUid: string; mappingRevision: number };
+  /** The ACCEPTING incarnation's process epoch (§13.1), recorded at acceptance. Paired with the
+   *  terminal fact's {@link GoalResultFact.committer} epoch, it is what makes a terminal
+   *  ATTRIBUTABLE: `committed == accepted` is the executor answering for its OWN work and stays
+   *  valid FOREVER however far the current epoch advances (this is what keeps the legitimate
+   *  pre-restart winner readable — the property HIGH-1 lost); `committed > accepted` is a
+   *  successor settling inherited work; `committed < accepted` cannot happen and is refused as
+   *  garbled. Present exactly when the endpoint commits under an epoch at all. */
+  acceptedEpoch?: number;
   /** The accepted submission's request id — the goal's ADDRESS for its durable acceptance fact
    *  (`epf.<e>.dec.<triple>.<id>`), written at acceptance when it is known. The raw submission
    *  (EPJ) is age-evicted, so receipt reconstruction after a crash reads the acceptance THROUGH
@@ -353,7 +372,9 @@ function parseSpec(raw: unknown, key: string, ref: GoalRef): GoalSpecValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal spec ${key} is not an object; garbled mediated record state never authorizes (SPEC 13.4)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "requestId", "guard", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
+  assertClosedKeys(o, ["v", "goalId", "fingerprint", "command", "caller", "target", "acceptedEpoch", "requestId", "guard", "sourceSeq", "acceptedAt", "readinessDeadlineMs"], `goal spec ${key}`);
+  if (o.acceptedEpoch !== undefined && (typeof o.acceptedEpoch !== "number" || !Number.isSafeInteger(o.acceptedEpoch) || o.acceptedEpoch < 0))
+    throw new EpEnvelopeError("internal", `goal spec ${key} acceptedEpoch is not an unsigned integer; garbled state never authorizes (SPEC 13.1/13.6)`);
   if (o.guard !== undefined && (typeof o.guard !== "string" || o.guard.length === 0))
     throw new EpEnvelopeError("internal", `goal spec ${key} carries a malformed guard binding; garbled state never authorizes (SPEC 13.4/13.6)`);
   if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0 || typeof o.command !== "string")
@@ -647,30 +668,38 @@ export async function transitionGoal(
 /** Project the WINNING terminal fact onto the status — the ONLY path a status reaches a terminal
  *  state, and the crash reconciler for a commit that fenced the fact but died before projecting.
  *  Cross-checks the fact's fingerprint against the persisted spec (a terminal fact whose
- *  fingerprint disagrees with the accepted goal is a garbled authority chain). */
+ *  fingerprint disagrees with the accepted goal is a garbled authority chain). One goal has ONE
+ *  terminal subject (SPEC:1394), so the projection follows the one committed fact — there is no
+ *  epoch to resolve and no per-epoch variant of "the winner". */
 export async function projectGoalTerminal(ctx: ActionContext, ref: GoalRef): Promise<GoalStatusValue> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
-  const fact = await readGoalResult(ctx, snap);
-  if (fact === undefined)
-    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no terminal fact; only a committed result projects a terminal status (SPEC 13.6)`);
   const spec = await readGoalSpec(ctx, snap);
   if (spec === undefined)
     throw new EpEnvelopeError("internal", `goal "${snap.goalId}" has a terminal fact but no accepted spec; garbled state never authorizes (SPEC 13.4)`);
+  const subject = goalResultSubject(ctx.space, snap);
+  const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
+  const fact = raw === undefined ? undefined : parseGoalResultFact(raw, subject, snap);
+  if (fact === undefined)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no terminal fact; only a committed result projects a terminal status (SPEC 13.6)`);
   if (fact.fingerprint !== spec.value.fingerprint)
     throw new EpEnvelopeError("internal", `goal "${snap.goalId}"'s terminal fact fingerprint disagrees with its accepted spec; a projection never follows a garbled fact (SPEC 13.6)`);
+  assertTerminalAttribution(fact, spec.value, snap.goalId);
   const key = recordStatusKey(RECORD_KINDS.goal, goalQualifiers(snap));
+  const terminal = (state: GoalState, observedSpecRevision: number): GoalStatusValue =>
+    assertStatusValue({ state, observedSpecRevision });
   for (let pass = 0; pass < 2; pass++) {
     const current = await readGoalStatus(ctx, snap);
     if (current === undefined) {
-      const created: GoalStatusValue = assertStatusValue({ state: fact.state, observedSpecRevision: spec.revision });
+      const created = terminal(fact.state, spec.revision);
       try { await createRecordEntry(ctx.kv, key, created); return created; }
       catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
     }
+    // The same terminal is already projected: converge.
     if (current.value.state === fact.state) return current.value;
     if (GOAL_TERMINAL_STATES.includes(current.value.state))
       throw new EpEnvelopeError("internal", `goal "${snap.goalId}" status is terminal ${current.value.state} but the winning fact is ${fact.state}; a projection never contradicts the journal (SPEC 13.6)`);
-    const next: GoalStatusValue = assertStatusValue({ state: fact.state, observedSpecRevision: current.value.observedSpecRevision });
+    const next = terminal(fact.state, current.value.observedSpecRevision);
     try { await updateRecordEntry(ctx.kv, key, next, current.revision); return next; }
     catch (e) { if (e instanceof EpEnvelopeError && e.code === "conflict") continue; throw e; }
   }
@@ -689,6 +718,14 @@ export interface GoalResultFact {
   state: GoalOutcomeState;
   outcomeDigest: string;
   data?: unknown;
+  /** WHO committed this terminal, and under which process epoch. The fact records its own
+   *  authorship so a reader can tell the accepting executor's own answer from a successor's
+   *  settle of inherited work; without it a terminal is anonymous and neither case is
+   *  distinguishable from the other. Judged against the goal spec's `acceptedEpoch`, never
+   *  against the CURRENT epoch — comparing to current is precisely what hid the legitimate
+   *  pre-restart winner, because a corpse's fact and a real pre-restart winner's fact are
+   *  byte-identical to a reader looking only at "is this epoch stale". */
+  committer?: { instanceId: string; epoch: number };
   ts: number;
 }
 
@@ -719,12 +756,56 @@ export function goalTombstone(fact: GoalResultFact): GoalResultFact {
   return { v: 1, goalId: fact.goalId, fingerprint: fact.fingerprint, state: fact.state, outcomeDigest: fact.outcomeDigest, data: { evicted: true }, ts: fact.ts };
 }
 
+/** Judge a parsed terminal against the ACCEPTED goal (the §13.6 attribution rule). The comparison
+ *  is against the goal's OWN accepted epoch, never the current one:
+ *   - `committed == accepted` — the accepting executor answering for its own work. Valid FOREVER,
+ *     however far the current epoch has advanced since. This is the invariant HIGH-1 lost.
+ *   - `committed > accepted`  — a successor settling work it inherited. Valid.
+ *   - `committed < accepted`  — no incarnation can commit under an epoch older than the one that
+ *     accepted the goal; the journal is garbled and it refuses loud.
+ *  A goal accepted with no epoch context takes no committer, and vice versa: a half-attributed
+ *  pair is a wiring confusion, not a silent pass.
+ *
+ *  WHAT THIS IS NOT: it is not a write fence against a LIVE superseded committer. A corpse
+ *  committing the terminal of a goal IT accepted stamps `committed == accepted` and is accepted
+ *  here, exactly as the real executor would be. Create-only CAS conditions on subject ABSENCE and
+ *  cannot express "only if my epoch is still current", so the write fence is the §13.1 barrier.
+ *
+ *  AND THE BARRIER'S WINDOW IS WIDER THAN "BYTES IN FLIGHT", which an earlier revision of this
+ *  comment claimed. A gate FREEZE neither kills the predecessor's connection nor advances the
+ *  epoch, and the currency belt compares `processEpoch` alone, so a deposed manager's belt STILL
+ *  PASSES from barrier start through PHASE 1-2 until the reopen. Revoking an `epcred` row marks a
+ *  ledger row; it does not re-check a live JWT mid-publish on an already-open connection. What
+ *  durably kills that publisher is the CLUSTER-VERIFIED EVICTION in PHASE 2, not the revoke. So
+ *  the window in which a deposed manager can still INITIATE a new terminal publish runs from
+ *  barrier start until eviction is verified — not merely the bytes already on the wire. On an OPEN
+ *  mesh no credential family exists, so that eviction is vacuous and there is no durable fence at
+ *  all; the belt there is cooperative only. */
+function assertTerminalAttribution(fact: GoalResultFact, spec: GoalSpecValue, goalId: string): void {
+  const accepted = spec.acceptedEpoch;
+  const committed = fact.committer?.epoch;
+  if (accepted === undefined && committed === undefined) return;
+  if (accepted === undefined || committed === undefined)
+    throw new EpEnvelopeError("internal", `goal "${goalId}" has ${accepted === undefined ? "no accepted epoch but a committer-stamped terminal" : "an accepted epoch but an unattributed terminal"}; a half-attributed terminal never authorizes (SPEC 13.6)`);
+  if (committed < accepted)
+    throw new EpEnvelopeError("internal", `goal "${goalId}" carries a terminal committed under epoch ${committed} but was accepted under ${accepted}; no incarnation commits under an epoch older than the one that accepted the goal - the journal is garbled (SPEC 13.1/13.6)`);
+}
+
 /** Closed validation, IDENTITY-BOUND to the ref, with the tombstone digest RE-VERIFIED. */
 export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef): GoalResultFact {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `goal result fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
   const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "state", "outcomeDigest", "data", "ts"], `goal result fact on ${subject}`);
+  assertClosedKeys(o, ["v", "goalId", "fingerprint", "state", "outcomeDigest", "data", "committer", "ts"], `goal result fact on ${subject}`);
+  if (o.committer !== undefined) {
+    const cm = o.committer as Record<string, unknown>;
+    if (cm === null || typeof cm !== "object" || Array.isArray(cm))
+      throw new EpEnvelopeError("internal", `goal result fact on ${subject} committer is not an object; garbled state never authorizes (SPEC 13.6)`);
+    assertClosedKeys(cm, ["instanceId", "epoch"], `goal result fact on ${subject} committer`);
+    if (typeof cm.instanceId !== "string" || cm.instanceId.length === 0
+      || typeof cm.epoch !== "number" || !Number.isSafeInteger(cm.epoch) || cm.epoch < 0)
+      throw new EpEnvelopeError("internal", `goal result fact on ${subject} carries a malformed committer; garbled state never authorizes (SPEC 13.6)`);
+  }
   if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0
     || typeof o.state !== "string" || !(GOAL_TERMINAL_STATES as readonly string[]).includes(o.state)
     || typeof o.outcomeDigest !== "string" || o.outcomeDigest.length === 0
@@ -737,7 +818,9 @@ export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef)
   return o as unknown as GoalResultFact;
 }
 
-/** Read the goal's cached terminal outcome (`undefined` = not terminal yet). */
+/** Read the goal's cached terminal outcome (`undefined` = not terminal yet). ONE goal, ONE
+ *  terminal subject (SPEC:1394), read exactly (never a wildcard `last_by_subj` — the append-shadow
+ *  lesson): a committed terminal is surfaced to every reader, in every incarnation, forever. */
 export async function readGoalResult(ctx: ActionContext, ref: GoalRef): Promise<GoalResultFact | undefined> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);
@@ -751,21 +834,31 @@ export async function readGoalResult(ctx: ActionContext, ref: GoalRef): Promise<
  *  fingerprint FROM the spec, projects the winner, and proves a lost-CAS winner's fingerprint
  *  agrees with the spec. */
 async function commitTerminalFact(
-  ctx: ActionContext, snap: GoalRef, spec: GoalSpecValue, state: GoalOutcomeState, data: unknown, now: number,
+  ctx: ActionContext, snap: GoalRef, spec: GoalSpecValue, state: GoalOutcomeState, data: unknown, now: number, committer: { instanceId: string; epoch: number } | undefined,
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
   const snapshotData: unknown = data === undefined ? undefined : JSON.parse(canonicalJson(data));
   const fact: GoalResultFact = {
     v: 1, goalId: snap.goalId, fingerprint: spec.fingerprint, state,
     outcomeDigest: contractDigest(snapshotData === undefined ? null : snapshotData),
-    ...(snapshotData !== undefined ? { data: snapshotData } : {}), ts: now,
+    ...(snapshotData !== undefined ? { data: snapshotData } : {}),
+    ...(committer !== undefined ? { committer } : {}), ts: now,
   };
+  // ONE terminal subject per goal (SPEC:1394). First fact wins GLOBALLY: a late or superseded
+  // committer loses the create-only CAS and reads the winner, rather than winning a private
+  // per-epoch subject of its own that hides the real outcome from everyone else.
   const subject = goalResultSubject(ctx.space, snap);
   const res = await publishCreateOnly(ctx.js, subject, new TextEncoder().encode(JSON.stringify(fact)));
-  const winner = res.won ? fact : await readGoalResult(ctx, snap);
+  let winner: GoalResultFact | undefined;
+  if (res.won) winner = fact;
+  else {
+    const raw = await readLastFact(ctx.jsm, epfStreamName(ctx.space), subject);
+    winner = raw === undefined ? undefined : parseGoalResultFact(raw, subject, snap);
+  }
   if (winner === undefined)
     throw new EpEnvelopeError("internal", `the goal terminal CAS for ${subject} was lost but no winning fact is readable (SPEC 13.4)`);
   if (winner.fingerprint !== spec.fingerprint)
     throw new EpEnvelopeError("internal", `the recorded terminal for goal "${snap.goalId}" carries fingerprint ${JSON.stringify(winner.fingerprint)}, not the accepted spec's ${spec.fingerprint}; a foreign-fingerprint winner is never adopted (SPEC 13.4/13.6)`);
+  assertTerminalAttribution(winner, spec, snap.goalId);
   const status = await projectGoalTerminal(ctx, snap);
   return { won: res.won, fact: winner, status };
 }
@@ -942,7 +1035,7 @@ export type GoalCommitCause =
  *  {@link reconcileReceiptEmission} is the durable backstop that converges it. */
 export async function commitGoalResult(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number; receipts?: ReceiptEmissionWiring } & GoalCommitCause,
+  args: { ref: GoalRef; now: number; receipts?: ReceiptEmissionWiring; committer?: { instanceId: string; epoch: number } } & GoalCommitCause,
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue; receiptEmission?: ReceiptEmissionResult | { outcome: "failed"; error: EpEnvelopeError } }> {
   assertCtx(ctx);
   // ENTRY SNAPSHOT (single-read): ref, clock, cause, wiring, and every per-cause field detach
@@ -951,6 +1044,10 @@ export async function commitGoalResult(
   const now = assertSafeInt(args.now, "now");
   const receipts = args.receipts;
   if (receipts !== undefined) assertEmissionWiring(ctx, receipts);
+  const committerIn = args.committer;
+  const committer = committerIn === undefined ? undefined : { instanceId: String(committerIn.instanceId), epoch: committerIn.epoch };
+  if (committer !== undefined && (committer.instanceId.length === 0 || !Number.isSafeInteger(committer.epoch) || committer.epoch < 0))
+    throw new EpEnvelopeError("failed-precondition", `a terminal committer is an instanceId plus an unsigned epoch; got ${JSON.stringify(args.committer)} (SPEC 13.6)`);
   const cause = args.cause;
   const dataRaw = (args as { data?: unknown }).data;
   let data: unknown;
@@ -1003,6 +1100,15 @@ export async function commitGoalResult(
   const spec = await readGoalSpecLeader(ctx, snap);
   if (spec === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" has no accepted spec; a terminal commits only for an accepted goal (SPEC 13.6)`);
+  // Attribution is REQUIRED exactly when the goal was accepted under an epoch, and refused when it
+  // was not: an unattributed terminal on an epoch-bearing goal is the anonymous-fact state this
+  // rule exists to end, and a committer on a goal with no epoch context is a wiring confusion.
+  if ((spec.value.acceptedEpoch !== undefined) !== (committer !== undefined))
+    throw new EpEnvelopeError("failed-precondition", spec.value.acceptedEpoch !== undefined
+      ? `goal "${snap.goalId}" was accepted under epoch ${spec.value.acceptedEpoch}; its terminal MUST carry the committing instance and epoch (SPEC 13.6)`
+      : `goal "${snap.goalId}" was accepted with no epoch context; a terminal committer here is a wiring confusion (SPEC 13.6)`);
+  if (committer !== undefined && committer.epoch < spec.value.acceptedEpoch!)
+    throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" was accepted under epoch ${spec.value.acceptedEpoch} but the committer presents ${committer.epoch}; no incarnation commits under an epoch older than the one that accepted the goal (SPEC 13.1/13.6)`);
 
   // The post-commit emission tail every cause routes through: the terminal is already committed
   // and immutable when this runs, so a runtime emission failure SURFACES on the result instead
@@ -1021,13 +1127,13 @@ export async function commitGoalResult(
     // Currency immediately before the terminal CAS — the check is paired with the commit it
     // fences, never a stale earlier read (SPEC 13.6 item 7).
     await assertExecutorCurrency(spec.value, snap.goalId, plan.executor, plan.resolver, plan.budget);
-    return finish(await commitTerminalFact(ctx, snap, spec.value, plan.state, data, now));
+    return finish(await commitTerminalFact(ctx, snap, spec.value, plan.state, data, now, committer));
   }
   if (plan.cause === "cancel") {
     const status = await readGoalStatus(ctx, snap);
     if (status === undefined || status.value.state !== "cancelling")
       throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not \`cancelling\` (state ${status?.value.state ?? "unknown"}); a cancel terminal follows a requested cancel, never a naked assertion (SPEC 13.6)`);
-    return finish(await commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now));
+    return finish(await commitTerminalFact(ctx, snap, spec.value, "cancelled", data, now, committer));
   }
   if (plan.cause === "deny") {
     if (plan.denial.kind === "hold-expired") {
@@ -1046,14 +1152,14 @@ export async function commitGoalResult(
       if (settle === undefined || settle.settle !== "expired")
         throw new EpEnvelopeError("failed-precondition", `checkpoint "${plan.denial.token}" has no RECORDED expired settlement (${settle === undefined ? "still live" : `settled ${settle.settle}`}); a live or resumed hold never denies (SPEC 13.6)`);
     }
-    return finish(await commitTerminalFact(ctx, snap, spec.value, "failed", data, now));
+    return finish(await commitTerminalFact(ctx, snap, spec.value, "failed", data, now, committer));
   }
   // readiness
   if (spec.value.readinessDeadlineMs === undefined)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" declares no readiness deadline; an unbounded goal is never settled uncertain (SPEC 13.6)`);
   if (now < spec.value.acceptedAt + spec.value.readinessDeadlineMs)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not past its readiness deadline (acceptedAt ${spec.value.acceptedAt} + ${spec.value.readinessDeadlineMs}ms > now ${now}); an early uncertain settle would steal a still-possible success (SPEC 13.6)`);
-  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now));
+  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now, committer));
 }
 
 // ---- cancel (§13.6 item 4) --------------------------------------------------------------------
@@ -1116,9 +1222,136 @@ export async function requestGoalCancel(
  *  required). A racing late success that committed first wins and this returns the winner. */
 export async function settleGoalUncertain(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number },
+  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number } },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness" });
+  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(args.committer !== undefined ? { committer: args.committer } : {}) });
+}
+
+// ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------
+
+/** One reconcile-index entry: a pointer to a goal ref plus the ACCEPTING executor's instanceId —
+ *  the coordinates a SUCCESSOR incarnation needs to find + settle an orphaned in-flight goal it
+ *  never held in memory. `iid` is the accepting incarnation's instanceId: a single-manager
+ *  successor (a fresh instanceId) reconciles every entry, but it is the hook a multi-instance
+ *  sweep filters on (never settle a goal a still-LIVE sibling instance owns — a filter-only add,
+ *  no schema change). The acceptance clock is NOT duplicated here (it lives in the goal spec the
+ *  sweep reads); for one (endpoint, iid) a concurrent same-goalId retry writes the byte-IDENTICAL
+ *  entry (create-only idempotent). */
+export interface GoalIndexEntry {
+  v: 1; endpoint: string; owner: string; actor: string; uid: string; goalId: string; iid: string;
+  /** THE ACCEPTANCE FLOOR (H2). The identity the accepting incarnation ALLOCATED for this goal,
+   *  written here because this entry is the only durable record that exists BEFORE the acceptance
+   *  is acked — the goal spec does not carry it and the terminal fact does not exist yet. Without
+   *  it, a concurrent same-goalId attempt that loses the bind has nothing truthful to serve while
+   *  the winner is still in flight, and the honest answers are only "here is what the winner
+   *  allocated" or a refusal. OPTIONAL for read compatibility with entries written before this
+   *  field existed; absent means the floor was never persisted and a reader must refuse rather
+   *  than invent one. */
+  allocated?: { name: string; actor: string; uid: string };
+}
+
+function goalIndexKey(ref: GoalRef): string {
+  return recordAtomicKey(RECORD_KINDS.goalidx, [ref.endpoint, ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId]);
+}
+
+function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string }): GoalIndexEntry {
+  // Refuse a hollow floor AT THE WRITE, not only when someone reads it back: an entry naming an
+  // empty identity is the exact defect this field exists to end, and letting it land would just
+  // move the failure to whichever unlucky retry reads it.
+  if (allocated !== undefined && !(["name", "actor", "uid"] as const).every((k) => typeof allocated[k] === "string" && allocated[k].length > 0))
+    throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an empty component; a hollow identity is never recorded (SPEC 13.6)`);
+  return {
+    v: 1, endpoint: ref.endpoint, owner: ref.caller.owner, actor: ref.caller.actor, uid: ref.caller.uid, goalId: ref.goalId, iid,
+    ...(allocated !== undefined ? { allocated: { name: allocated.name, actor: allocated.actor, uid: allocated.uid } } : {}),
+  };
+}
+
+function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new EpEnvelopeError("internal", `goal-index entry ${key} is not an object; garbled reconcile state never authorizes (SPEC 13.6)`);
+  const o = raw as Record<string, unknown>;
+  assertClosedKeys(o, ["v", "endpoint", "owner", "actor", "uid", "goalId", "iid", "allocated"], `goal-index entry ${key}`);
+  if (o.v !== 1 || typeof o.endpoint !== "string" || typeof o.owner !== "string" || typeof o.actor !== "string"
+    || typeof o.uid !== "string" || typeof o.goalId !== "string" || typeof o.iid !== "string")
+    throw new EpEnvelopeError("internal", `goal-index entry ${key} is malformed; garbled reconcile state never authorizes (SPEC 13.6)`);
+  if (o.allocated !== undefined) {
+    const a = o.allocated as Record<string, unknown>;
+    if (a === null || typeof a !== "object" || Array.isArray(a))
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} carries a malformed acceptance floor; garbled reconcile state never authorizes (SPEC 13.6)`);
+    assertClosedKeys(a, ["name", "actor", "uid"], `goal-index entry ${key} allocated`);
+    // A floor with an EMPTY component is the hollow acceptance this field exists to end: it would
+    // read as a real identity and name nothing. Refuse it as garbled rather than serve it.
+    if (!["name", "actor", "uid"].every((k) => typeof a[k] === "string" && (a[k] as string).length > 0))
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} carries an acceptance floor with an empty component; a hollow identity never authorizes (SPEC 13.6)`);
+  }
+  return o as unknown as GoalIndexEntry;
+}
+
+/** Record an accepted goal in the endpoint's reconcile index, CREATE-ONLY and BEFORE the bind
+ *  (must-5 Q-B): the atomicity is `index-CAS-before-bind`, so recoverability is clean either side
+ *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
+ *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
+ *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
+ *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
+export async function recordGoalIndex(
+  ctx: ActionContext, ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string },
+): Promise<{ recorded: true } | { recorded: false; existing: GoalIndexEntry }> {
+  assertCtx(ctx);
+  const snap = snapshotRef(ref);
+  const key = goalIndexKey(snap);
+  try {
+    await createRecordEntry(ctx.kv, key, goalIndexEntryOf(snap, iid, allocated));
+    return { recorded: true };
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
+    // A non-PUT marker is corruption, never reusable absence.
+    const existing = await ctx.kv.get(key);
+    if (!existing || existing.operation !== "PUT")
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent/deleted; reconcile the store (SPEC 13.6)`);
+    const entry = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(existing.value)), key);
+    // H2: the loss is only an IDEMPOTENT RETRY when the winner is the same incarnation. A FOREIGN
+    // `iid` means another instance accepted this goalId, which this function must not silently
+    // absorb: the caller was proceeding on the belief that the index points at ITS acceptance, and
+    // it does not. Report the winner instead of deciding — who may be served, and whether a foreign
+    // winner is answerable at all, is the endpoint's policy, not the substrate's.
+    return { recorded: false, existing: entry };
+  }
+}
+
+/** Delete an index entry once its goal is terminal (or after a sweep settles it): a terminal goal
+ *  is never reconciled again. Idempotent — an absent entry is a no-op. */
+export async function clearGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<void> {
+  assertCtx(ctx);
+  await ctx.kv.delete(goalIndexKey(snapshotRef(ref)));
+}
+
+/** Read ONE reconcile-index entry over the goal-writer's own bonded KV — the durable answer to
+ *  "who accepted this goalId, and what identity did they allocate for it", available from the
+ *  moment of acceptance rather than only once a terminal exists. Absent means no incarnation ever
+ *  durably accepted it. */
+export async function readGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<GoalIndexEntry | undefined> {
+  assertCtx(ctx);
+  const key = goalIndexKey(snapshotRef(ref));
+  const e = await ctx.kv.get(key);
+  if (!e || e.operation !== "PUT") return undefined;
+  return parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
+}
+
+/** Enumerate the endpoint's in-flight reconcile index over a RAW records KV: a successor's boot
+ *  sweep opens it with the PROVISIONER credential (records CONSUMER.CREATE), never the goal-writer
+ *  (which holds no enumeration grant), and settles each unterminal goal so an accepted goal is
+ *  never dropped across a manager restart. Returns each recorded GoalRef + the accepting `iid` (the
+ *  hook a multi-instance sweep filters on so it never settles a live sibling's goal). */
+export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: GoalRef; iid: string }[]> {
+  const filter = `${RECORD_KINDS.goalidx.kind}.${endpointToken(endpoint)}.>`;
+  const out: { ref: GoalRef; iid: string }[] = [];
+  for await (const key of await kv.keys(filter)) {
+    const e = await kv.get(key);
+    if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
+    const v = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(e.value)), key);
+    out.push({ ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId }, iid: v.iid });
+  }
+  return out;
 }
 
 // ---- goalId reuse (§13.6 item 5) ---------------------------------------------------------------

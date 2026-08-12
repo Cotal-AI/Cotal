@@ -38,6 +38,7 @@ import {
   deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
+import { ensureAuthorityStores } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
@@ -314,6 +315,12 @@ export async function setupSpaceStreams(opts: {
     // Config matches `managerLeaseRegistry()`'s create-first exactly, so that path stays idempotent until
     // the supervisor profile drops bucket-create. Idempotent.
     await kvm.create(managerBucket(opts.space), { ttl: MANAGER_LEASE_TTL_MS });
+    // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
+    // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
+    // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
+    // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
+    // drift fails loud.
+    await ensureAuthorityStores(jsm, kvm, opts.space);
   } finally {
     await nc.drain();
   }

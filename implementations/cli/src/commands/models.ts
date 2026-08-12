@@ -1,4 +1,4 @@
-import { CONTROL_PRIVILEGED, type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
+import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { extensionNames } from "../ext-loader.js";
@@ -22,7 +22,7 @@ export function modelsComplete(argv: string[]): CompletionResult {
 export async function models(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof modelsFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
-  const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.auth, CONTROL_PRIVILEGED);
+  const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.auth, "owner");
   failIfNotOk(reply);
   const rows = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];
   for (const row of rows) renderCatalog(row);

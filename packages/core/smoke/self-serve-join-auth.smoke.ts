@@ -32,13 +32,11 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
-  channelInAllow,
   openMembersRegistry,
   commitMember,
   readMember,
   principalKey,
   DEV_OWNER,
-  CONTROL_SELF_SERVICE,
   type Delivery,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -99,8 +97,8 @@ try {
   // connection can do all four jobs:
   //   prov   (provisioner) — setupSpaceStreams + provisionAgent (pre-create DM/DLV/TASK durables + commitAcl)
   //   poster (operator)    — posts chat (multicast), as itself
-  //   sup    (supervisor)  — serves the CONTROL_SELF_SERVICE tier (durableJoin/Leave/listMemberships), Phase 2
-  //   dlv    (delivery)    — Plane-3 host + members/ACL reads (channelMembers); created in Phase 2 below
+  //   sup    (supervisor)  — an idle supervisor endpoint (holds no serve since 1d deleted the ctl rail)
+  //   dlv    (delivery)    — Plane-3 host: serves durableJoin/Leave/listMemberships on ctl.delivery + members/ACL reads (channelMembers); created in Phase 2 below
   const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   const mkEndpoint = (name: string, creds: string) =>
@@ -236,10 +234,10 @@ try {
   const acls: Record<string, string[]> = { [pkey(aId.id)]: ["general", "ops", "review.>"] };
   // Membership rows are lifecycle-keyed (SPEC §13.1): the mediated join/leave carry the caller's uid.
   const uids: Record<string, string> = { [pkey(aId.id)]: uidA };
-  // Phase 2 Plane-3 host = a scoped `delivery` cred (`dlv`), NOT the deleted allow-all manager. The
-  // supervisor cred (`sup`) serves the CONTROL_SELF_SERVICE tier below (its only job — no chat publish,
-  // no members read), but the durableJoin/Leave/ownerMemberships ops the handler mediates run on the
-  // delivery host `dlv` (which writes members + hosts the per-member reader + answers channelMembers).
+  // Phase 2 Plane-3 host = a scoped `delivery` cred (`dlv`), NOT the deleted allow-all manager. `dlv`
+  // both hosts the per-member reader + answers channelMembers AND (since 1d) serves the
+  // durableJoin/Leave/ownerMemberships control ops directly on ctl.delivery (startPlane3's serve
+  // loop, ACL-checked via the callback), which joinChannel/leaveChannel/listMemberships target.
   const dlvId = newIdentity();
   const dlv = new CotalEndpoint({
     space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
@@ -248,23 +246,12 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
+  // 1d: the delivery daemon serves the durableJoin/Leave/listMemberships ops on `ctl.delivery`
+  // directly — startPlane3 arms that serve loop with this ACL callback (the SAME source the reader
+  // re-auths against), which joinChannel/leaveChannel/listMemberships already target. (The old
+  // `sup.serveControl(CONTROL_SELF_SERVICE)` mediation stub duplicated this real handler on a rail
+  // the manager no longer owns; removed with the ctl tier.)
   await dlv.startPlane3((id) => acls[id]);
-  sup.serveControl(CONTROL_SELF_SERVICE, async (req) => {
-    const acl = acls[req.from.id];
-    const args = req.args as { channel?: unknown; generation?: unknown };
-    const ch = typeof args?.channel === "string" ? args.channel : "";
-    if (req.op === "listMemberships") return { ok: true, data: { memberships: await dlv.ownerMemberships(req.from.id, uids[req.from.id]) } };
-    if (req.op === "durableJoin") {
-      if (!ch || !acl || !channelInAllow(acl, ch)) return { ok: false, error: `not in ACL: ${ch}` };
-      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, uids[req.from.id]) };
-    }
-    if (req.op === "durableLeave") {
-      if (typeof args?.generation !== "number") return { ok: false, error: "durableLeave: a finite generation is required (fail-closed)" };
-      await dlv.durableLeaveFor(req.from.id, ch, uids[req.from.id], args.generation);
-      return { ok: true, data: { channel: ch } };
-    }
-    return { ok: false, error: `unknown op: ${req.op}` };
-  });
   await wait(200);
 
   got.length = 0;

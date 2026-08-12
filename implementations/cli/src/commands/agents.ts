@@ -1,8 +1,9 @@
-import { CONTROL_ADMIN, CONTROL_PRIVILEGED, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
+import { connect } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
-import { attachClient, detachKey } from "../lib/attach-client.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
+import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -16,7 +17,7 @@ const nameFlag = (what: string) =>
   ({ name: "name", type: "string", value: "<n>", description: what }) as const;
 
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)")] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" }] as const satisfies readonly FlagSpec[];
 export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)")] as const satisfies readonly FlagSpec[];
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
@@ -35,17 +36,16 @@ export async function stop(args: ParsedArgs): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
-  // STATIC mesh: operator stop is a cross-agent op — the admin tier with the scoped
-  // `control-caller-admin` cred (holding ONLY the admin-subject publish; that cred IS the
-  // cross-agent authority, the manager honors any named target on it).
-  // USER mesh: ONE deterministic path — the op rides the operator's own bearer on the SPAWN
-  // (privileged) tier, and the MANAGER authorizes: agents under your own owner pass with scope
-  // "spawn" (owner-domain), another owner's agent needs "admin" on your ledger row. No
-  // client-side try-admin-then-privileged fallback; sending on ctl.admin would die at the
-  // broker for every spawn-scoped operator before the manager could decide anything.
+  // STATIC mesh: operator stop is a cross-agent op — the `control-caller-admin` instrument holds
+  // the any-mode despawn row, so `reach: "any"` names any target (the broker grant IS the
+  // authority).
+  // USER mesh: ONE deterministic path — the op rides the operator's own bearer with `reach:
+  // "owner"` (its own-domain despawn row), and the MANAGER authorizes: agents under your own
+  // owner pass with scope "spawn", another owner's agent needs "admin" on your ledger row (the
+  // handler's fresh any-mode authorization). No client-side try-admin-then-owner fallback.
   const t = await resolveControlTarget(v, "control-caller-admin");
-  const tier = t.auth.bearer ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, tier);
+  const reach = t.auth.bearer ? "owner" : "any";
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach);
   failIfNotOk(reply);
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
@@ -53,47 +53,117 @@ export async function stop(args: ParsedArgs): Promise<void> {
   console.log(c.dim(`✓ stopped ${v.name}${t.auth.bearer ? " - its actor grant is revoked; a respawn re-grants automatically" : ""}`));
 }
 
+type AgentRow = {
+  name: string;
+  role?: string;
+  agent: string;
+  mode: string;
+  mesh: string;
+  authHealth?: string;
+  authReason?: string;
+};
+
+/** Render one managed-agent row (status + optional auth-health line), indented for the per-manager
+ *  grouping a class scatter prints. */
+function printAgentRow(r: AgentRow, indent = ""): void {
+  const status =
+    r.mesh === "absent"
+      ? c.yellow("starting…")
+      : r.mesh === "offline"
+        ? c.dim("offline")
+        : r.mesh === "working"
+          ? c.green("working")
+          : r.mesh === "waiting"
+            ? c.yellow("waiting")
+            : c.cyan(r.mesh);
+  // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
+  // triages "definitely broken" before "might be".
+  const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
+  console.log(
+    `${indent}${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
+      r.agent + " · " + r.mode,
+    )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
+  );
+  // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
+  // operator-exact sentence, verbatim (it already names the repair).
+  if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
-  const reply = await askManager(t.space, t.server, "ps", undefined, t.auth);
-  failIfNotOk(reply);
-  const rows =
-    (reply.data as Array<{
-      name: string;
-      role?: string;
-      agent: string;
-      mode: string;
-      mesh: string;
-      authHealth?: string;
-      authReason?: string;
-    }>) ?? [];
-  if (!rows.length) {
-    console.log(c.dim("(no managed agents)"));
+  // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
+  // single-manager view. Same path for both modes (no freeze; no scatter).
+  if (v.on) {
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
+    failIfNotOk(reply);
+    const rows = (reply.data as AgentRow[]) ?? [];
+    if (!rows.length) {
+      console.log(c.dim("(no managed agents)"));
+      return;
+    }
+    for (const r of rows) printAgentRow(r);
     return;
   }
-  for (const r of rows) {
-    const status =
-      r.mesh === "absent"
-        ? c.yellow("starting…")
-        : r.mesh === "offline"
-          ? c.dim("offline")
-          : r.mesh === "working"
-            ? c.green("working")
-            : r.mesh === "waiting"
-              ? c.yellow("waiting")
-              : c.cyan(r.mesh);
-    // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
-    // triages "definitely broken" before "might be".
-    const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
-    console.log(
-      `${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
-        r.agent + " · " + r.mode,
-      )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
-    );
-    // The detached agent's ONLY operator window into a failing bearer refresh: the provider
-    // command's operator-exact sentence, verbatim (it already names the repair).
-    if (r.authHealth && r.authReason) console.log(authColor(`    ${r.authReason}`));
+
+  // Mode chosen UP FRONT from the connection shape. Never try-scatter-catch-degrade: a silent
+  // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole
+  // night in miniature.
+  //
+  // USER MODE (bearer present): `ep.one` to one manager. The ledger-scoped bearer holds
+  // `ep.one.manager.ps` when scope includes `admin` (measured); it does NOT hold the freeze
+  // STREAM.INFO row, so a class scatter would die on a permissions violation that reads as
+  // "no manager". The manager answers from its in-memory roster with an owner filter — no
+  // privileged records read. Multi-manager completeness is not claimed (see docs/cli.md).
+  //
+  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds
+  // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
+  // unreachable (pin 3).
+  if (t.auth.bearer) {
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner");
+    failIfNotOk(reply);
+    const rows = (reply.data as AgentRow[]) ?? [];
+    if (!rows.length) {
+      console.log(c.dim("(no managed agents)"));
+      return;
+    }
+    for (const r of rows) printAgentRow(r);
+    return;
+  }
+
+  const scatter = await scatterManager(t.space, t.server, "ps", t.auth);
+  if (!scatter.ok) {
+    console.error(c.red(`✗ ${scatter.error}`));
+    process.exit(1);
+  }
+  // Stable ordering: reachable instances first, then by instance id.
+  const instances = [...scatter.instances].sort(
+    (a, b) => Number(b.reachable) - Number(a.reachable) || a.instanceId.localeCompare(b.instanceId),
+  );
+  // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
+  if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
+    const rows = (instances[0].data as AgentRow[]) ?? [];
+    if (!rows.length) {
+      console.log(c.dim("(no managed agents)"));
+      return;
+    }
+    for (const r of rows) printAgentRow(r);
+    return;
+  }
+  // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
+  for (const inst of instances) {
+    const label = `manager ${inst.instanceId.slice(0, 8)}`;
+    if (!inst.reachable) {
+      console.log(`${c.bold(label)}  ${c.red("unreachable")}`);
+      continue;
+    }
+    if (inst.error) {
+      console.log(`${c.bold(label)}  ${c.red(inst.error)}`);
+      continue;
+    }
+    const rows = (inst.data as AgentRow[]) ?? [];
+    console.log(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
+    for (const r of rows) printAgentRow(r, "  ");
   }
 }
 
@@ -103,42 +173,35 @@ export async function attach(args: ParsedArgs): Promise<void> {
     console.error(c.red("--name is required"));
     process.exit(1);
   }
-  // Same tier routing as stop: static mesh → admin tier on the scoped `control-caller-admin`
-  // cred; user mesh → the operator's own bearer on the SPAWN tier, with the manager deciding
-  // (own owner-domain passes with "spawn", cross-owner needs ledger "admin").
+  // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
+  // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
+  // passes with "spawn", cross-owner needs ledger "admin").
   const t = await resolveControlTarget(v, "control-caller-admin");
-  const tier = t.auth.bearer ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, tier);
+  const reach = t.auth.bearer ? "owner" : "any";
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach);
   failIfNotOk(reply);
-  const { ws } = reply.data as { ws: string };
+  // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
+  // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
+  // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
+  // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
+  const { grant } = reply.data as { grant: SessionGrant };
+  const auth = loadSpaceAuth(authDir(findCotalRoot()), t.space);
+  if (!auth) {
+    console.error(c.red("mesh attach needs the local space seed (static auth mesh); user-mode session redemption is the #29 callout follow-up, not wired yet"));
+    process.exit(1);
+  }
+  const id = newIdentity();
+  const creds = await mintCreds(auth, id, "session-caller", {
+    sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+    expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+  });
+  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
-  await attachClient(dialableAttachUrl(ws, t.server));
+  try {
+    await attachClient(meshSessionTransport(nc, grant));
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
 
-/** Hosts that only ever mean "this machine", so a manager advertising one has told us nothing about
- *  where IT is. */
-const SELF_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"]);
-
-/**
- * The attach URL to actually dial.
- *
- * The manager advertises the host it was told to bind, but it cannot always name an address the
- * CLIENT can reach: bound to a wildcard it has no single dialable name and falls back to loopback,
- * and loopback means *this* machine, which for a remote manager is the wrong box entirely (the
- * original ECONNREFUSED). The client, though, does know one address that provably works — the
- * broker address its own control connection just used to ask this question. So when the manager
- * advertises a self-only host and we reached the mesh somewhere else, dial there instead. Port,
- * path, and the capability token are preserved untouched.
- *
- * A manager that named a real host is left alone: it may legitimately sit somewhere other than its
- * broker, and it knows its own address better than we do.
- */
-export function dialableAttachUrl(ws: string, server: string): string {
-  const u = new URL(ws);
-  if (!SELF_HOSTS.has(u.hostname)) return ws;
-  const brokerHost = new URL(server.split(",")[0].trim()).hostname;
-  if (!brokerHost || SELF_HOSTS.has(brokerHost)) return ws;
-  u.hostname = brokerHost;
-  return u.toString();
-}

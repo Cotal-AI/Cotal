@@ -56,6 +56,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   send: { flags: [...TARGET], positionals: true },
   endpoints: { flags: [...TARGET], positionals: false },
+  // The generic v0.4 service surface (P2 item 1, 1c.2b): describe an endpoint's registered
+  // command set off the wire; invoke one command by name with JSON args.
+  describe: { flags: [...TARGET], positionals: true },
+  invoke: {
+    flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
+    positionals: true,
+  },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
   // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
@@ -65,7 +72,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
       "file:string:f", "live-only:boolean", "model:string", "name:string", "no-transcript:boolean",
-      "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
+      "on:string", "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
       "server:string", "share-tools:string", "space:string", "subscribe:string",
       "transcript:boolean", "variant:string",
     ],
@@ -104,7 +111,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
+    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
@@ -112,7 +119,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string"], positionals: false },
-  ps: { flags: [...TARGET], positionals: false },
+  ps: { flags: [...TARGET, "on:string"], positionals: false },
   attach: { flags: [...TARGET, "name:string"], positionals: false },
   deliver: {
     flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string"],

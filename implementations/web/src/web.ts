@@ -240,11 +240,22 @@ export async function web(args: ParsedArgs): Promise<void> {
       // Backfill the all-activity feed: merge recent channel history with DM history (the live
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged
       // ({mode, msg}) to match the live feed so DMs render as DMs.
+      //
+      // NOT OPTIMISED, DELIBERATELY. An earlier version fetched an even share per channel and
+      // topped up only channels that saturated their share, to avoid moving (channels + 1) times
+      // what it displays. That is WRONG for a global top-N: saturation counts messages, not
+      // recency. With ten channels, limit 200 and a share of 40, if every channel holds at least 40
+      // messages the top-up never fires, so a channel owning the globally newest 200 contributes
+      // only its newest 40 and 160 genuinely-newer messages are dropped for 160 older ones.
+      //
+      // A correct cheap version needs an iterative timestamp-aware top-up: compute the provisional
+      // cutoff (the ts of the limit-th newest in the union) and re-fetch only channels whose oldest
+      // fetched message is still at or above it, until none can extend above the cutoff. That is
+      // worth doing, with a test encoding the counterexample above, and it is not this change.
+      // Correctness first: fetch a full page per channel and merge.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
       const chans = await ep.listChannels();
-      const chat = (
-        await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit })))
-      )
+      const chat = (await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit }))))
         .flat()
         .map((msg) => ({ mode: "chat" as const, msg }));
       const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));

@@ -5,7 +5,7 @@
  * enforces the token-specific invariants (derived owner, `act.scope` as the single capability authority)
  * and resolves the agent's channel ACL server-side, then hands core a `MintPrincipal`.
  */
-import { permissionsFor, assertDerivedOwnerToken, CONTROL_PRIVILEGED, type MintPrincipal, type MintOpts } from "@cotal-ai/core";
+import { permissionsFor, assertDerivedOwnerToken, type MintPrincipal, type MintOpts } from "@cotal-ai/core";
 import { VIEW_REQUIRED_SCOPE } from "./token.js";
 import type { ValidatedUserToken } from "./token.js";
 
@@ -80,10 +80,13 @@ export function calloutPermissions(
       return permissionsFor(
         t.act.view,
         t.space,
-        principal,
-        // The user-mode deployer's control calls ride the PRIVILEGED tier: the manager's
-        // owner-equality launch authorization governs, never the admin-tier bypass.
-        t.act.view === "deployer" ? { controlTier: CONTROL_PRIVILEGED } : {},
+        // The bearer's ledger lifecycle claim rides the principal: an operator INSTRUMENT view
+        // (deployer / control-caller-*) mints lifecycle-keyed ep caller rows (1c.2b) and refuses
+        // to mint without one - the claim was already asserted present + row-current above.
+        { ...principal, lifecycleUid: t.act.lifecycleUid },
+        // The user-mode deployer's ep rows carry the PRIVILEGED instrument set: the manager's
+        // owner-equality launch authorization governs, never the admin any-mode reach.
+        t.act.view === "deployer" ? { controlTier: "privileged" as const } : {},
       );
     }
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed

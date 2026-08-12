@@ -25,6 +25,7 @@ import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
 import { endpoints } from "./commands/endpoints.js";
+import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } from "./commands/describe.js";
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
 
@@ -388,6 +389,28 @@ const baseCommands: Command[] = [
     summary: "list every endpoint in the live presence roster, including the manager",
     flags: [...targetFlags],
     run: endpoints,
+  },
+  {
+    kind: "command",
+    name: "describe",
+    group: "Observe",
+    summary: "resolve a registered v0.4 service's command surface off the wire (describe + the contract store)",
+    usage: "describe <endpoint>  [--space <s>] [--server <url>]",
+    positionals: "<endpoint>",
+    flags: describeFlags,
+    run: describeCmd,
+    complete: describeComplete,
+  },
+  {
+    kind: "command",
+    name: "invoke",
+    group: "Observe",
+    summary: "invoke one v0.4 service command by name with JSON args (schemas fetched, never hand-imported)",
+    usage: "invoke <endpoint> <command>  [--args '<json>'] [--name <agent> | --self] [--admin]",
+    positionals: "<endpoint> <command>",
+    flags: invokeFlags,
+    run: invokeCmd,
+    complete: describeComplete,
   },
   {
     kind: "command",

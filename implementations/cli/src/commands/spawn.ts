@@ -29,7 +29,6 @@ import {
   type LaunchSpec,
   type ParsedArgs,
   type SpaceAuth,
-  CONTROL_PRIVILEGED,
 } from "@cotal-ai/core";
 import {
   agentActorTokenKey,
@@ -201,6 +200,7 @@ export const spawnFlags = [
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
+  { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast" },
 ] as const satisfies readonly FlagSpec[];
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -259,7 +259,8 @@ async function spawnDetached(
     transcript,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
-  }, t.auth, CONTROL_PRIVILEGED, START_TIMEOUT_MS);
+    // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
+  }, t.auth, "owner", START_TIMEOUT_MS, values.on);
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(

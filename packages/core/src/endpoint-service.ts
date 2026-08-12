@@ -421,8 +421,10 @@ export async function registerServiceInstance(
 
   // The gate is frozen; every exit below reopens it (token-pinned, at the original coordinate) or
   // deliberately leaves it FROZEN for reconciliation. The successor the completing reopen targets.
-  const successorAt = (registrationRevision: number): EpGateSuccessor => ({
-    generation: obs.generation + 1, processEpoch: obs.processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
+  // `processEpoch` defaults to the frozen gate's epoch (an ABORT reopens the UNCHANGED coordinate);
+  // only the completing PHASE-4 reopen of a RE-registration advances it (P2 item 3, below).
+  const successorAt = (registrationRevision: number, processEpoch: number = obs.processEpoch): EpGateSuccessor => ({
+    generation: obs.generation + 1, processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
   });
 
   // PHASE 1 — authorize UNDER the frozen gate, then ownership stability. Both are authority /
@@ -560,8 +562,15 @@ export async function registerServiceInstance(
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
   // may reopen; a lost CAS means a reconciler/newer barrier superseded us → leave frozen.
+  // P2 item 3 (SPEC 13.6 item 7): a RE-registration (a prior spec existed at PHASE 1) is a
+  // restarted/superseded incarnation of the SAME instanceId — advance the processEpoch so the
+  // successor FENCES the predecessor's epoch (old-epoch serve/settle is refused, the (i) fence
+  // bites on a real restart). A FIRST registration keeps the provisioned epoch (0), so a single
+  // never-restarted instance stays at epoch 0. The advance rides THIS completing reopen only; the
+  // old family was already revoked + verify-evicted in PHASE 2, so no old-epoch authority survives.
+  const isReRegistration = current !== undefined && current !== null && current.operation === "PUT";
   try {
-    if (!(await args.barrier.reopen(token, successorAt(newRev))))
+    if (!(await args.barrier.reopen(token, successorAt(newRev, isReRegistration ? obs.processEpoch + 1 : obs.processEpoch))))
       throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
@@ -708,16 +717,32 @@ export interface FrozenInstance {
  *  is `failed-precondition`, never an empty success (§13.5); a MALFORMED registry record fails
  *  loud (`internal`, §13.9: readers fail loud on invalid mediated-writer state). The read grant
  *  this runs under is a §13.9 matrix row. */
-export async function freezeExpectedSet(jsm: JetStreamManager, kv: KV, space: string, endpoint: string): Promise<FrozenInstance[]> {
+export async function freezeExpectedSet(jsm: JetStreamManager, space: string, endpoint: string): Promise<FrozenInstance[]> {
   const e = endpointToken(endpoint);
   const frozen: FrozenInstance[] = [];
   const instanceIds: string[] = [];
   try {
-    // Enumeration is a bounded-lag `kv.keys` LIST (which instances exist): a just-registered
-    // instance missed here simply is not frozen this round (it falls to the gather/reconcile), so
-    // the list read need not be leader-served — but each frozen slot's coordinate reads below ARE.
-    const iter = await kv.keys(`svc.${e}.*.spec`);
-    for await (const key of iter) instanceIds.push(key.split(".")[2]);
+    // Enumeration is a bounded-lag LIST (which instances exist): a just-registered instance missed
+    // here simply is not frozen this round (it falls to the gather/reconcile), so the list read need
+    // not be leader-served — but each frozen slot's coordinate reads below ARE.
+    //
+    // It reads `STREAM.INFO` with a `subjects_filter` rather than `kv.keys()`. Both enumerate the
+    // same subjects; `kv.keys()` rides an ORDERED EPHEMERAL CONSUMER, so every caller of this
+    // function needs CONSUMER.CREATE/INFO/DELETE on the bucket — three consumer-lifecycle verbs to
+    // list keys. `subjects_filter` is the native JetStream feature for exactly this and needs one
+    // read-only metadata verb instead. The bucket name is derived from `space` (same derivation
+    // `scatterFreezeReadRows` uses for the grant); there is no KV handle parameter because nothing
+    // here opens one — per-slot reads are leader-served `STREAM.MSG.GET` via `jsm`.
+    //
+    // `state.subjects` counts messages per subject, so a key whose latest write is a DELETE marker
+    // still appears where `kv.keys()` would omit it. That is already handled and always was — the
+    // per-slot read below reports a tombstone as `{ deleted: true }` and the loop skips it as "gone
+    // since the enumeration list", which is the same tolerance a bounded-lag list needs anyway.
+    const REC = recordsBucket(space);
+    const prefix = `$KV.${REC}.`;
+    const info = await jsm.streams.info(`KV_${REC}`, { subjects_filter: `${prefix}svc.${e}.*.spec` });
+    for (const subject of Object.keys(info.state.subjects ?? {}))
+      instanceIds.push(subject.slice(prefix.length).split(".")[2]);
   } catch (err) {
     const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
     (wrapped as Error & { cause?: unknown }).cause = err;
