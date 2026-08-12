@@ -350,7 +350,13 @@ try {
     if (down.status !== 0) throw new Error(`\`cotal down\` exited ${down.status}: ${down.out.slice(-300)}`);
     meshStopped = true;
   });
-  await step("close the IdP", () => idpSrv?.close());
+  // Same callback shape as the setup handler: `close()` never throws, so `step` would have graded
+  // this successful no matter what happened. Reject on a real error so the step goes red; treat
+  // ERR_SERVER_NOT_RUNNING as benign, since it only means the server was already down.
+  await step("close the IdP", () => new Promise<void>((res, rej) => {
+    if (!idpSrv) return res();
+    idpSrv.close((err) => (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? rej(err) : res()));
+  }));
   await step("remove the scratch", () => {
     // Only once nothing is left to find. The scratch's `.cotal` holds the pidfiles that are the only
     // way to locate a mesh this suite failed to stop; deleting them turns a recoverable orphan into
