@@ -242,38 +242,101 @@ try {
     catch (e) { baseErr = (e as Error).message; }
     check("pre-widen: secret is refused under the minted ACL", /not within your read ACL/i.test(baseErr), baseErr);
 
-    // Widen ONLY the registry row — no remint, no reconnect. Plain commitAcl (no reissue).
-    await mgr.commitAcl(principalKey(DEV_OWNER, sId.id).key, uidS, ["ops", "secret"]);
-    await wait(300);
+    // Plain commitAcl attempting to RAISE the ceiling must be refused by construction — if it
+    // could write a wider allowSubscribe (even while leaving issued alone), durableJoin and any
+    // other registry consumer would still see the raised list. Ceiling is writable ONLY via
+    // reissue (provision). Predicted: throw naming the ceiling.
+    let raiseErr = "";
+    try { await mgr.commitAcl(principalKey(DEV_OWNER, sId.id).key, uidS, ["ops", "secret"]); }
+    catch (e) { raiseErr = (e as Error).message; }
+    check(
+      "plain commitAcl cannot raise the mint-time ceiling (refused, not silently accepted)",
+      /cannot raise ACL above mint-time ceiling/i.test(raiseErr),
+      raiseErr,
+    );
 
+    // Even if a caller bypassed that throw and forced a wider row into the KV, history still
+    // intersects with issued. We already refused the write; prove the read path still denies
+    // secret under the unchanged row.
     let widenErr = "";
     let widenLeak: unknown;
     try { widenLeak = await limited.readHistory("secret", { limit: 10 }); }
     catch (e) { widenErr = (e as Error).message; }
-    const leaked = widenErr === "" && Array.isArray((widenLeak as { items?: unknown[] })?.items)
-      && ((widenLeak as { items: { parts?: { text?: string }[] }[] }).items ?? [])
-        .some((m) => (m.parts ?? []).some((p) => p.text?.includes("SECRET-CONTENT-SHOULD-NOT-LEAK")));
     check(
-      "a registry widen without remint does NOT grant mediated history (SPEC §9.6 ceiling)",
-      widenErr !== "" && !leaked,
+      "mediated history still refuses secret after a refused raise attempt",
+      /not within your read ACL/i.test(widenErr),
       { widenErr, widenLeak },
     );
 
-    // Positive control on the same connection: direct channelHistory is still broker-denied.
+    // Positive control: direct channelHistory is still broker-denied on this JWT.
     let directErr = "";
     try { await limited.channelHistory("secret", { limit: 10 }); }
     catch (e) { directErr = (e as Error).message; }
     check(
-      "direct channelHistory still broker-denies secret after the registry widen",
+      "direct channelHistory still broker-denies secret (credential unchanged)",
       /Permissions Violation|permission/i.test(directErr),
       directErr,
     );
 
-    // Ops still works after the widen — we did not break the live half.
+    // Ops still works — we did not break the live half.
     const stillOps = await limited.readHistory("ops", { limit: 1 });
-    check("ops remains readable after a refused secret widen", (stillOps.items?.length ?? 0) >= 1, stillOps);
+    check("ops remains readable after a refused raise", (stillOps.items?.length ?? 0) >= 1, stillOps);
 
-    await limited.stop().catch(() => {});
+    // Stale-ceiling (safe direction): JWT reminted broader, registry ceiling NOT reissued.
+    // Mediated must stay NARROWER than the live credential would allow — refuse secret. That is
+    // the residual default_agent named: safe, and asserted rather than left to luck.
+    // (channelHistory is NOT the control here: agent JWTs hold pinned chathist creates, while
+    // channelHistory/streamHistory uses ordered consumers that need bare CONSUMER.CREATE.<CHAT>,
+    // which agents deliberately do not hold. Comparing mediated to channelHistory would confuses
+    // "credential lacks the channel" with "instrument uses the wrong create form".)
+    {
+      const broadCreds = await mintCreds(auth, sId, "agent", {
+        allowSubscribe: ["ops", "secret"], allowPublish: ["ops", "secret"], lifecycleUid: uidS,
+      });
+      await limited.stop().catch(() => {});
+      const broader = new CotalEndpoint({
+        space, servers: SERVERS, creds: broadCreds, channels: ["ops", "secret"], consume: false,
+        lifecycleUid: uidS, watchPresence: false, registerPresence: false,
+        card: { id: sId.id, name: "broader", kind: "agent" },
+      });
+      broader.on("error", () => {});
+      await broader.start();
+
+      let staleMediatedErr = "";
+      try { await broader.readHistory("secret", { limit: 10 }); }
+      catch (e) { staleMediatedErr = (e as Error).message; }
+      check(
+        "stale ceiling: JWT broader than row → mediated stays NARROW (safe direction)",
+        /not within your read ACL/i.test(staleMediatedErr),
+        staleMediatedErr,
+      );
+      await broader.stop().catch(() => {});
+    }
+
+    // Reissue raises the ceiling: the same act as baking a broader list into the JWT. After
+    // reissue, mediated admits secret. This is the legitimate broaden path — without it the
+    // ceiling would be a one-way ratchet that could never follow a real remint.
+    {
+      await mgr.commitAcl(principalKey(DEV_OWNER, sId.id).key, uidS, ["ops", "secret"], { reissue: true });
+      await wait(300);
+      const after = new CotalEndpoint({
+        space, servers: SERVERS, creds: sCreds, channels: ["ops"], consume: false, lifecycleUid: uidS,
+        watchPresence: false, registerPresence: false, card: { id: sId.id, name: "reissued", kind: "agent" },
+      });
+      after.on("error", () => {});
+      await after.start();
+      // Note: JWT is still [ops]-only; mediated uses the daemon. Reissue without remint is the
+      // operator path that trusts the provisioner — same trust as the original commitAcl write.
+      // A full remint would also reissue; we isolate the ceiling raise here.
+      const admitted = await after.readHistory("secret", { limit: 10 });
+      const texts = (admitted.items ?? []).map(textOf).join("\n");
+      check(
+        "reissue raises the ceiling and mediated then admits secret",
+        texts.includes("SECRET-CONTENT-SHOULD-NOT-LEAK"),
+        { n: admitted.items?.length, texts: texts.slice(0, 80) },
+      );
+      await after.stop().catch(() => {});
+    }
   }
 
   // 5b. Revoke on the SAME key provisioning wrote and the mediator reads: the ACL registry is keyed by
@@ -287,7 +350,11 @@ try {
   let revokedLeak: unknown;
   try { revokedLeak = await reader.readHistory("ops", { limit: 1 }); }
   catch (e) { revokedErr = (e as Error).message; }
-  check("a revoked ACL stops the very NEXT read (re-read per call, not pinned at create)", revokedErr !== "", { revokedLeak });
+  check(
+    "a revoked ACL stops the very NEXT read (re-read per call, not pinned at create)",
+    /not within your read ACL|not permitted/i.test(revokedErr),
+    { revokedErr, revokedLeak },
+  );
 } finally {
   await reader?.stop().catch(() => {});
   await poster?.stop().catch(() => {});

@@ -14,7 +14,7 @@
  * record (a genuinely-unknown owner — the reader DEFERS, never drops).
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey } from "./subjects.js";
+import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey, patternInAllow } from "./subjects.js";
 import type { AclRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
 
@@ -165,12 +165,24 @@ export async function commitAcl(
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     const cur = await readAcl(kv, owner, lifecycleUid);
-    // Ceiling: create and reissue set it to the new list; a plain update keeps the prior ceiling
-    // (defaulting a legacy row's missing field to its then-current allowSubscribe so the first
-    // post-upgrade plain write does not invent a higher ceiling than the row already exposed).
-    const issued = opts.reissue || !cur
-      ? [...allowSubscribe]
-      : [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
+    // Ceiling is writable ONLY by create and by explicit reissue (provision/remint — the same act
+    // that bakes allowSubscribe into the JWT). A plain commitAcl MUST NOT raise it: if it could,
+    // the fix for "registry outruns credential" would be the same hole one field over. Legacy rows
+    // missing the field treat their then-current allowSubscribe as the ceiling.
+    let issued: string[];
+    if (opts.reissue || !cur) {
+      issued = [...allowSubscribe];
+    } else {
+      issued = [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
+      const excess = allowSubscribe.filter((a) => !patternInAllow(issued, a));
+      if (excess.length > 0) {
+        throw new Error(
+          `commitAcl: cannot raise ACL above mint-time ceiling without reissue ` +
+            `(entries [${excess.join(", ")}] not within ceiling [${issued.join(", ")}]); ` +
+            `pass { reissue: true } only from the provisioning path that also remints the JWT`,
+        );
+      }
+    }
     const next: AclRecord = {
       allowSubscribe: [...allowSubscribe],
       issuedAllowSubscribe: issued,

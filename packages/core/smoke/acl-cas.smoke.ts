@@ -43,12 +43,19 @@ try {
   // ── the ordinary paths still hold ──
   const created = await commitAcl(kv, "local.owner1", U1, ["general"]);
   c("fresh create", created.revision === 1 && (await readAcl(kv, "local.owner1", U1))?.record.allowSubscribe[0] === "general");
-  const updated = await commitAcl(kv, "local.owner1", U1, ["general", "review"]);
+  const updated = await commitAcl(kv, "local.owner1", U1, ["general", "review"], { reissue: true });
   c("update bumps revision", updated.revision === 2 && (await readAcl(kv, "local.owner1", U1))?.record.revision === 2);
   await deleteAcl(kv, "local.owner1", U1);
   c("delete purges", (await readAcl(kv, "local.owner1", U1)) === undefined);
   const recreated = await commitAcl(kv, "local.owner1", U1, ["general"]);
   c("recreate after purge", recreated.revision === 1);
+  // Plain raise above the mint ceiling is refused — the ceiling is reissue-only.
+  let raiseBlocked = false;
+  try { await commitAcl(kv, "local.owner1", U1, ["general", "secret"]); }
+  catch (e) { raiseBlocked = /cannot raise ACL above mint-time ceiling/i.test((e as Error).message); }
+  c("plain commitAcl cannot raise above mint ceiling", raiseBlocked);
+  const still = await readAcl(kv, "local.owner1", U1);
+  c("refused raise left the row unchanged", !!still && still.record.allowSubscribe.length === 1 && still.record.allowSubscribe[0] === "general");
 
   // ── the garbled-row wedge (regression; red before the CAS-overwrite fix) ──
   await kv.put(aclKey("local.garbled", UG), new TextEncoder().encode("this-is-not-json"));
@@ -56,7 +63,7 @@ try {
   const healed = await commitAcl(kv, "local.garbled", UG, ["general"]);
   c("commitAcl OVERWRITES the garbled row instead of wedging",
     healed.revision === 1 && (await readAcl(kv, "local.garbled", UG))?.record.allowSubscribe[0] === "general");
-  const healedAgain = await commitAcl(kv, "local.garbled", UG, ["general", "review"]);
+  const healedAgain = await commitAcl(kv, "local.garbled", UG, ["general", "review"], { reissue: true });
   c("subsequent update proceeds normally", healedAgain.revision === 2);
 
   // ── exhausted retries carry the underlying cause (fake KV; every write path fails) ──
