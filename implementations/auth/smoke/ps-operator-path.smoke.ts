@@ -19,13 +19,18 @@
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
+import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 
-const home = mkdtempSync(join(tmpdir(), "cotal-psstatic-home-"));
+// Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
+// `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
+// ancestor and step 3's kill silently does nothing. This suite is gated — a red here is read as the
+// shipped operator path being broken — so it must never be able to red for a fixture reason.
+const scratch = makeScratch("cotal-psstatic-");
+const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-psstatic-root-"));
+const root = mkdtempSync(join(scratch, "root-"));
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `psstatic-${Math.floor(Math.random() * 1e6)}`;
@@ -47,6 +52,11 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<{ status: number | 
 
 try {
   console.log("1) up (STATIC auth — no --user-auth, no IdP, no device login)");
+  // Checked before `up`, because a captured root does not make `up` fail — it makes every later cell
+  // grade a mesh that is not this fixture's.
+  const captor = cotalRootCaptor(root);
+  check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
+  if (captor) { console.log("\n  => FIXTURE FAILURE, not a product defect: the temp root is captured.\n"); process.exit(1); }
   const up = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
   check("`cotal up` exits 0 — checked FIRST so a fixture failure is distinguishable from a product one", up.status === 0, up.out.slice(-700));
   if (up.status !== 0) { console.log("\n  => FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised.\n"); process.exit(1); }
@@ -68,12 +78,11 @@ try {
   // Completeness honesty: with the manager dead, ps must not print a bare empty list that reads
   // as "no agents". Scatter labels the instance unreachable; a total failure exits non-zero.
   console.log("\n3) manager stopped — ps must not claim a completeness it lacks");
-  const { readFileSync, existsSync } = await import("node:fs");
-  const pidFile = join(root, ".cotal", "manager.pid");
-  if (existsSync(pidFile)) {
-    try { process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL"); } catch { /* already gone */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  assertScratchHeld(root, "fixture root");
+  // Fatal, not conditional: a skipped kill leaves the manager ALIVE, and a live manager's honest
+  // "(no managed agents)" trips `claimsEmptySuccess` below — a fixture failure wearing the costume
+  // of the product defect this suite exists to catch.
+  console.log(`   killed manager pid ${await killManagerAtRoot(root)} — the cell below grades a DEAD mesh`);
   const psDead = await cotal(["ps", "--space", SPACE], 20_000);
   console.log(`   dead-manager ps exit=${psDead.status}`);
   console.log(psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
@@ -93,7 +102,6 @@ try {
   process.exitCode = 1;
 } finally {
   await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
-  rmSync(home, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true }); // home and root both live under it
 }
 if (fail) process.exitCode = 1;

@@ -11,8 +11,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -21,10 +20,19 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
+import { assertScratchHeld, cotalRootCaptor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 
-const home = mkdtempSync(join(tmpdir(), "cotal-psuser-home-"));
+// Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
+// `.cotal` above `tmpdir()` makes `cotal up` write `manager.pid` into that ancestor. Step 4 then
+// finds no pid, skips its kill, and grades a LIVE manager's honest "(no managed agents)" as the
+// empty-success defect it is meant to catch. On Linux/CI `os.tmpdir()` is `/tmp`, so a stray
+// `/tmp/.cotal` there hits this suite every time; on macOS the temp root is `/var/folders/…` and is
+// clean, which is why it stayed green locally. Measured: exit 0 + "(no managed agents)" under a
+// poisoned base, 5/5 under a clean one, at the same commit.
+const scratch = makeScratch("cotal-psuser-");
+const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-psuser-root-"));
+const root = mkdtempSync(join(scratch, "root-"));
 const { establishIdpSession } = await import("../src/index.js");
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
@@ -88,6 +96,11 @@ async function approve(userCode: string): Promise<void> {
 
 try {
   console.log("1) up --user-auth");
+  // Checked FIRST and fatal: with the root captured, `up` still exits 0 and every cell below still
+  // "runs" — against a mesh that is not where this suite thinks it is.
+  const captor = cotalRootCaptor(root);
+  check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
+  if (captor) { process.exitCode = 1; throw new Error(`fixture root captured by ${captor}`); }
   const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
   check("up exits 0", up.status === 0, up.out.slice(-600));
   if (up.status !== 0) { process.exitCode = 1; throw new Error("fixture"); }
@@ -109,11 +122,15 @@ try {
     !/STREAM\.INFO/.test(ps.out), ps.out.slice(-200));
 
   console.log("4) kill manager — ps must fail loud, not empty-success");
-  const pidFile = join(root, ".cotal", "manager.pid");
-  if (existsSync(pidFile)) {
-    try { process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL"); } catch { /* gone */ }
-    await wait(500);
-  }
+  // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness
+  // it here so that shows up as itself and not as the cell below.
+  assertScratchHeld(root, "fixture root");
+  // Fatal, not conditional. `if (existsSync(pid)) kill()` cannot distinguish "manager dead" from
+  // "manager never found" — and under a captured root it is always the second, which is precisely
+  // how a live manager came to be graded as a bare empty success.
+  // Not a check(): it cannot fail here (the helper throws), and a cell that cannot fail only
+  // inflates the pass count. Log the pid so the transcript shows WHICH process died.
+  console.log(`   killed manager pid ${await killManagerAtRoot(root)} — the cell below grades a DEAD mesh`);
   const psDead = await cotal(["ps", "--space", SPACE], 20_000);
   console.log(`   dead exit=${psDead.status}\n` + psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
   const emptySuccess =
@@ -130,7 +147,6 @@ try {
 } finally {
   await cotal(["down"], 60_000).catch(() => ({ status: 1, out: "" }));
   idpSrv.close();
-  rmSync(home, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true }); // home and root both live under it
 }
 if (fail) process.exitCode = 1;

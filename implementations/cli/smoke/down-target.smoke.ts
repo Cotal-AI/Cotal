@@ -13,43 +13,13 @@ import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
+import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
-// so a `.cotal` above the temp base (observed: `/tmp/.cotal` on GHA; a home-dir `.cotal` when the
-// scratch sat under the monorepo) captures every "neutral" dir. Pick a base with no `.cotal`
-// ancestor, point TMPDIR at a scratch under it.
-function hasCotalAncestor(start: string): boolean {
-  let dir = resolve(start);
-  for (;;) {
-    if (existsSync(join(dir, ".cotal"))) return true;
-    const parent = dirname(dir);
-    if (parent === dir) return false;
-    dir = parent;
-  }
-}
-function makeScratch(): string {
-  const bases = [process.env.RUNNER_TEMP, process.env.TMPDIR, tmpdir(), "/var/tmp"].filter(
-    (b): b is string => typeof b === "string" && b.length > 0,
-  );
-  const tried: string[] = [];
-  for (const base of bases) {
-    if (hasCotalAncestor(base)) {
-      tried.push(`${base} (has .cotal ancestor)`);
-      continue;
-    }
-    try {
-      return mkdtempSync(join(base, "cotal-smoke-"));
-    } catch (e) {
-      tried.push(`${base} (${(e as Error).message})`);
-    }
-  }
-  throw new Error(`no temp base free of a .cotal ancestor; tried: ${tried.join("; ")}`);
-}
+// so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
+// scratch sat under the monorepo) captures every "neutral" dir.
 const scratch = makeScratch();
-process.env.TMPDIR = scratch;
-process.env.TMP = scratch;
-process.env.TEMP = scratch;
 const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
 
