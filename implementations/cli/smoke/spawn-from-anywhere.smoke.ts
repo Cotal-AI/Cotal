@@ -20,11 +20,11 @@ import { makeScratch } from "../../../bin/smoke/_scratch.js";
 // `/Users/<you>/.cotal` when the suite's scratch sat under the home directory) captures every
 // "neutral" dir and the 0-mesh cell resolves as a local project instead of throwing.
 const scratch = makeScratch();
-// SETUP TRANSACTION. Everything from here to the main body is fallible — a second mkdtemp, the
-// dynamic imports, the project fixtures — and a throw in that window used to exit with the scratch
-// still on disk (measured: forcing the second `mkdtempSync` to EIO left `cotal-smoke-*` behind).
-// Guarding it per statement is what left three sibling suites exposed after the first attempt, so
-// this is one transaction covering the whole window.
+// SETUP OWNERSHIP, in THREE guarded windows — home, the dynamic imports, the project fixtures.
+// Not one transaction: an earlier version of this comment said so and the code never did, which is
+// the false-claim class this branch keeps tripping over. What matters is coverage, and every one of
+// the three removes the scratch on failure, so no window can exit with it on disk. Measured: the
+// 2nd `mkdtempSync` at EIO and a thrown first dynamic import both leave nothing behind.
 const cleanScratch = (e: unknown): never => {
   rmSync(scratch, { recursive: true, force: true });
   throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
@@ -285,4 +285,5 @@ try {
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
-process.exit(0);
+// No `process.exit(0)`: it overrides any non-zero exitCode a cleanup path sets, so a leak or a
+// failed teardown would report green. Let the process exit on its own code.
