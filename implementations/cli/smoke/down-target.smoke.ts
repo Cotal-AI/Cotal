@@ -21,7 +21,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-home-"));
 process.env.COTAL_HOME = home;
 
 const { registry } = await import("@cotal-ai/core");
-const { cacheLocalProcess, extensionLocalProcesses, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { down } = await import("../src/commands/down.js");
 const { webProcess } = await import("../../web/src/web.js");
 
@@ -61,6 +61,19 @@ const meshA = meshWithDashboard("meshA");
 const meshB = meshWithDashboard("meshB");
 
 try {
+  // PRECONDITION this suite cannot sandbox. COTAL_HOME is isolated, but `findCotalRoot` walks to
+  // `/` with no boundary, so ANY `.cotal` in an ANCESTOR of `tmpdir()` makes `neutral` resolve as
+  // a local project and the not-a-mesh-root cells stop testing what they name. Measured: this file
+  // fails on a machine whose tmp parent holds a `.cotal` and passes 11/11 under clean ancestry, at
+  // the same commit. Name the directory rather than failing later and opaquely.
+  const neutralRoot = findCotalRoot(neutral);
+  assert.equal(
+    neutralRoot,
+    neutral,
+    `this smoke needs a tmp dir with NO .cotal ancestor, but found one at ${join(neutralRoot, ".cotal")} `
+      + `(tmpdir is ${tmpdir()}). Point TMPDIR at a directory whose ancestors hold no .cotal, or remove that one.`,
+  );
+
   // The real web descriptor must declare target rooting, and down must see it on the surface.
   check('web descriptor declares rootedAt: "target"', webProcess.rootedAt === "target");
   // The installed path never imports package code: the descriptor rides the extensions manifest as
