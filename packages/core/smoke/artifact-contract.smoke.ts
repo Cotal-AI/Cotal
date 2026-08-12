@@ -60,6 +60,11 @@ const osForm = (bytes: Uint8Array): string =>
     if (stored !== "SHA-256=" + h.copy().digest("base64url")) reB64UrlFail++;
     if (fromObjectStoreDigest(stored) === `sha256:${h.digest("hex")}`) decodeOk++;
   }
+  // BE HONEST ABOUT WHAT THESE TWO CELLS ARE. They measure Node and the store's spelling, not this
+  // repo's code: no mutation of `fromObjectStoreDigest` can redden them. They are a recorded
+  // measurement kept executable so it cannot rot, and the reason the third cell exists. Only the
+  // third one guards the implementation.
+  //
   // Not an exact 1490: the `+`/`/` collision rate is random per run. The point is that it is a
   // LARGE fraction, not a rare edge — a re-encoding comparison is broken for most artifacts, not
   // for an exotic few. Empirically ~74%; the bound is deliberately loose and still decisive.
@@ -139,9 +144,16 @@ check("accepts a 0-byte size", isArtifactPart({ ...good, size: 0 }));
 
 {
   // Before `partsToText` existed, three surfaces stringified a non-text part's `data` field. An
-  // artifact part has none, so it rendered as the literal string "undefined" in the agent's inbox.
+  // artifact part has none.
+  //
+  // THE OBVIOUS ASSERTION HERE IS VACUOUS, and a mutation run is what proved it: checking that the
+  // output does not contain "undefined" passes even with the artifact arm deleted, because
+  // `JSON.stringify(undefined)` returns `undefined` and `Array.prototype.join` renders that as an
+  // EMPTY STRING. So the failure mode is not a visible "undefined" — it is the part vanishing
+  // without trace, which is worse and which that assertion cannot see. Assert on presence instead.
+  const alone = partsToText([good]);
+  check("renders an artifact part at all (it does not silently vanish)", alone.length > 0, JSON.stringify(alone));
   const rendered = partsToText([{ kind: "text", text: "see:" }, good]);
-  check("renders an artifact part legibly, not as \"undefined\"", !rendered.includes("undefined"), rendered);
   check("the rendering carries the digest (the only actionable handle)", rendered.includes(good.digest), rendered);
   check("the rendering carries the name and size", rendered.includes("r.html") && rendered.includes("12 bytes"), rendered);
 }
