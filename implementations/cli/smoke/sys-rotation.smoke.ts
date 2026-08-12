@@ -25,7 +25,7 @@
  *
  * Run: pnpm smoke:sys-rotation   (needs nats-server on PATH)
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,6 +128,64 @@ async function runUp(values: Record<string, unknown>): Promise<string> {
     (process as unknown as { exit: typeof realExit }).exit = realExit;
     process.chdir(origCwd);
   }
+}
+
+/** Detached meshes this suite started and must tear down, whatever happens to the checks. `up
+ *  --detach` leaves THREE processes: the broker (argv carries the root's `server.conf`) and a
+ *  delivery daemon + manager, which the CLI re-execs from argv[1] with only `--space`/`--server` —
+ *  so the root path alone does not match them and the server URL is what identifies them. */
+const detachedMeshes: Array<{ root: string; server: string }> = [];
+function stopDetached(): void {
+  for (const { root: r, server: srv } of detachedMeshes) {
+    // Match on the COMMAND LINE, not the pid files: `cotalRoot()` pins to the first root this
+    // process resolved, so a detached broker started for a later temp root can write its pidfile
+    // somewhere else entirely, and reading `<r>/.cotal/nats.pid` then silently cleans up nothing.
+    // The config path is unambiguous and is on the process's own argv.
+    try {
+      const ps = execFileSync("ps", ["-eo", "pid,command"], { encoding: "utf8" });
+      for (const line of ps.split("\n")) {
+        if (!line.includes(r) && !line.includes(srv)) continue;
+        const pid = Number(line.trim().split(/\s+/)[0]);
+        if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+          try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+        }
+      }
+    } catch { /* no ps (Windows): the pid files below are the fallback */ }
+    for (const f of ["nats.pid", "manager.pid", "delivery.pid"]) {
+      try {
+        const pid = Number(readFileSync(join(r, ".cotal", f), "utf8").trim());
+        if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) process.kill(pid, "SIGKILL");
+      } catch { /* not started, or already gone */ }
+    }
+    rmSync(r, { recursive: true, force: true });
+  }
+}
+
+/** Last-resort sweep: kill anything this suite started that is still alive.
+ *
+ *  It starts several brokers and one detached control plane, and a SIGTERM to a JetStream server is
+ *  not always prompt — especially once the temp store has been removed underneath it. Everything this
+ *  suite spawns is identifiable from its own argv: a broker names one of this suite's temp roots, and
+ *  the CLI re-execs its daemons from argv[1], which is this file. Both patterns are specific to this
+ *  suite, so the sweep cannot reach another lane's broker on the same machine. Without it a failed run
+ *  strands real processes, which is how this file once left ~200 of them behind. */
+function sweepSuiteProcesses(): void {
+  try {
+    const ps = execFileSync("ps", ["-eo", "pid,command"], { encoding: "utf8" });
+    for (const line of ps.split("\n")) {
+      // Two patterns, both specific to this suite. A BROKER names one of its temp roots. A detached
+      // DAEMON names no root at all — the CLI re-execs it from argv[1], so its command line is this
+      // file plus the subcommand — which is why the subcommand has to be part of the match: this
+      // file's name ALONE also matches the tsx/pnpm wrappers running the suite, and killing those
+      // kills the run itself (observed, twice).
+      const isBroker = line.includes("cotal-sysrot-");
+      const isDaemon = line.includes("sys-rotation.smoke.ts") && / (deliver|supervise)\b/.test(line);
+      if (!isBroker && !isDaemon) continue;
+      const pid = Number(line.trim().split(/\s+/)[0]);
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  } catch { /* no ps (Windows): the per-handle stops above are what we have */ }
 }
 
 const origCwd = process.cwd();
@@ -396,8 +454,83 @@ try {
   check("doctor exits non-zero on a torn pair", tornCode === 1, tornCode);
   check("the torn-pair repair is still the rotation", tornOut.includes("up --rotate-sys"), tornOut);
   writeFileSync(evPath, evAfter, { mode: 0o600 }); // restore the complete generation
+  console.log("\n7) the SUCCESS path, through the real CLI, not the helper");
+  // Everything above drives `up --rotate-sys` into a refusal, and proves the happy path through
+  // `rotateSystemCreds` plus a hand-rendered config. That leaves the composition root untested:
+  // delete the `rotateSys` forwarding at either boot call site, drop `auth = rot.auth` in
+  // `authSetup`, or render `server.conf` from the pre-rotation bundle, and every check above still
+  // passes. So boot one for real, on its own stopped root, and assert what the operator gets.
+  const liveRoot = mkdtempSync(join(tmpdir(), "cotal-sysrot-live-"));
+  mkdirSync(join(liveRoot, ".cotal", "auth"), { recursive: true });
+  const liveStore = workspaceSecretStore(liveRoot);
+  const liveAuth = await createSpaceAuth(SPACE);
+  await putSpaceAuth(liveStore, liveAuth);
+  // A HEALTHY pre-rotation pair: the rotation must supersede WORKING creds, not merely replace dead
+  // ones, or "the broker loaded the successor" could be satisfied by the old pair having expired.
+  const livePreObs = await mintMembershipObserverCreds(liveAuth, newIdentity());
+  writeFileSync(join(liveRoot, ".cotal", SYSTEM_CREDS_FILES[0]), livePreObs, { mode: 0o600 });
+  writeFileSync(join(liveRoot, ".cotal", SYSTEM_CREDS_FILES[1]), await mintConnectionEvictorCreds(liveAuth, newIdentity()), { mode: 0o600 });
+  const liveAgent = await mintCreds(liveAuth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
+
+  const LIVE_PORT = await pickFreePort();
+  const liveServers = `nats://127.0.0.1:${LIVE_PORT}`;
+  // Register the root for teardown BEFORE anything can throw: this stage starts a real detached
+  // broker + control plane, and a failure between here and the cleanup below would otherwise strand
+  // them. (It did, repeatedly, while this suite was being mutation-tested.)
+  detachedMeshes.push({ root: liveRoot, server: liveServers });
+  const bootFailure = await (async () => {
+    const realExit = process.exit;
+    (process as unknown as { exit: (code?: number) => never }).exit = ((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never;
+    process.chdir(liveRoot);
+    try {
+      await up({ values: { space: SPACE, server: liveServers, "rotate-sys": true, detach: true }, positionals: [], raw: [] });
+      return "";
+    } catch (e) {
+      return (e as Error).message;
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      process.chdir(origCwd);
+    }
+  })();
+  check("`up --rotate-sys --detach` succeeds on a stopped provisioned root", bootFailure === "", bootFailure);
+
+  const liveAfter = await getSpaceAuth(liveStore, SPACE);
+  check("the CLI boot advanced the system-account generation", (liveAfter?.gen ?? 0) === 1, liveAfter?.gen);
+  const liveConf = readFileSync(join(liveRoot, ".cotal", "auth", "server.conf"), "utf8");
+  // The property only this stage can see: the config the CLI actually WROTE names the successor. A
+  // boot that rotated the record but rendered from the pre-rotation bundle fails right here.
+  check("the config the CLI rendered names the SUCCESSOR system account", liveConf.includes(`system_account: ${liveAfter?.sys.pub}`), liveAfter?.sys.pub);
+  check("the config the CLI rendered does not name the retired one", !liveConf.includes(String(liveAuth.sys.pub)));
+
+  const liveConnect = async (creds: string): Promise<boolean> => {
+    try {
+      const nc = await connect({ servers: liveServers, timeout: 3000, reconnect: false, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+      await nc.close();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // `up --detach` returns once the listener answers, which is earlier than "ready to authenticate a
+  // fresh credential" on a loaded machine. Retry the POSITIVE assertion only, and bound it: if the
+  // rotation were broken this cred would never be accepted, so waiting cannot manufacture a pass —
+  // it only stops the boot's timing from being mistaken for a rotation defect.
+  const rotatedObs = readFileSync(join(liveRoot, ".cotal", SYSTEM_CREDS_FILES[0]), "utf8");
+  let rotatedAccepted = false;
+  for (let i = 0; i < 25 && !rotatedAccepted; i++) {
+    rotatedAccepted = await liveConnect(rotatedObs);
+    if (!rotatedAccepted) await wait(200);
+  }
+  check("the broker the CLI started accepts the ROTATED observer", rotatedAccepted);
+  check("it REJECTS the healthy pre-rotation observer (retirement through the real path)", !(await liveConnect(livePreObs)));
+  check("an agent cred minted before the CLI rotation still connects", await liveConnect(liveAgent));
+
 } finally {
+  stopDetached();
   await stopBroker();
+  sweepSuiteProcesses();
   // A regressed guard would let one of the `up` calls above actually spawn a DETACHED broker, which
   // outlives this process. Never leave one behind, whatever the checks said.
   try {
