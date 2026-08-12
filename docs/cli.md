@@ -49,6 +49,7 @@ runtimes ship this way.
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
+| Messaging & watching | [`describe` / `invoke`](#describe-invoke) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry |
 | Messaging & watching | [`history`](#history) | Clear retained message history |
@@ -427,8 +428,10 @@ target mesh's `.cotal/agents/`; the launch flags override the file. Foreground r
 attached to your terminal; `--detach` hands the launch to the running manager. Both modes get the
 durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a foreground
 spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
-the agent's creds and broker footprint, like a manager despawn. See
-[Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
+the agent's creds and broker footprint, like a manager despawn. A `--detach` spawn is an
+**action**: the manager accepts it and returns the allocated identity at once, then the launch
+follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
+See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
 [manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
 
 ## models
@@ -457,10 +460,31 @@ Lists the mesh presence roster: agents, the manager, and any other protocol endp
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
 it is not limited to child processes owned by the manager.
 
+## describe, invoke
+
+```bash
+cotal describe <endpoint>                                        [--space <s>]
+cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
+cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
+```
+
+The generic v0.4 service surface. `describe` resolves a registered endpoint's command set off the
+wire - the reserved `describe` command answers the registered contract digests, the schemas are
+fetched from the space's content-addressed contract store, recompiled, and verified against those
+digests - and prints each command with its capability class and targeting shape. `invoke` calls one
+command by name: `--args` is a JSON object validated against the fetched input schema *before*
+publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal via
+`ps`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
+the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
+endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
+auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
+rides their bearer; cross-agent reach needs the `admin` scope). An open mesh has no service
+registry.
+
 ## ps, stop, attach
 
 ```bash
-cotal ps [--space <s>]
+cotal ps [--on <instance>] [--space <s>]
 cotal stop --name <n> [--space <s>]
 cotal attach --name <n> [--space <s>]
 ```
@@ -469,16 +493,34 @@ cotal attach --name <n> [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
+| `--on <instance>` | class scatter | `ps`: pin to one manager instance id (multi-manager space) |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
-renders each managed agent's last credential-refresh outcome, fail-closed. `attach` streams and
-drives an agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
-[`COTAL_DETACH_KEY`](config.md)). `stop` and `attach` need a running manager to talk to. On a
-static mesh they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent
-under your owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger
-row ([identity & auth](identity-and-auth.md)). Launch detached agents with
-[`spawn --detach`](#spawn).
+renders each managed agent's last credential-refresh outcome, fail-closed.
+
+**Mode split (chosen up front, never try-scatter-then-degrade):**
+
+- **Static / open mesh.** Bare `ps` is a **class scatter**: it freezes the live manager class from
+  the records registry, merges every registered instance's agents grouped and attributed per
+  instance, and a non-answering instance is shown `unreachable` (never silently omitted).
+  `--on <instance>` pins the read to one exact instance id instead.
+- **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
+  read against the manager's in-memory roster, owner-filtered). It does **not** report other
+  manager instances, and it cannot tell you that one is down — an unreachable manager is absent
+  from the list, not flagged. Completeness across a multi-manager user-auth space is not claimed.
+  A manager that does not answer fails the command outright (exit non-zero), rather than printing
+  an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
+  reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
+
+`attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
+(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). It does so over a one-use, holder-bound
+mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
+`127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
+drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
+they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent under your
+owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
+([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
 
 `attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind

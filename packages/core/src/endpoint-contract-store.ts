@@ -75,7 +75,10 @@ export async function contractStoreContext(nc: NatsConnection, space: string): P
   if (typeof space !== "string" || space.length === 0)
     throw new EpEnvelopeError("failed-precondition", "a contract-store context needs a space");
   const js = jetstream(nc);
-  const jsm = await jetstreamManager(nc);
+  // checkAPI:false - the manager construction otherwise probes `$JS.API.INFO`, a grant the
+  // minimal fetch-only callers (operator instruments: Direct Get + publish rows only) do not and
+  // should not hold; every real read/publish below still fails loud on its own denial.
+  const jsm = await jetstreamManager(nc, { checkAPI: false });
   const ctx: ContractStoreContext = Object.freeze({ space });
   STORE_RESOURCES.set(ctx, { js, jsm });
   return ctx;
@@ -158,7 +161,12 @@ export async function publishContractArtifact(
     return { digestHex, won: true };
   } catch (e) {
     const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    // A publish to an ALREADY-OCCUPIED digest subject loses idempotently: the create-only header
+    // mismatch (10071/10164) OR — under the store's per-subject-immutability shape
+    // (ensureContractStore: max_msgs_per_subject:1 + discard-new) — the broker's per-subject reject
+    // (10077), which fires when a second publish reaches an occupied subject. All three mean "this
+    // digest is already published"; anything else is a real infra error.
+    if (code !== 10071 && code !== 10164 && code !== 10077) throw e;
     // The subject is the digest: a prior write with this address holds these bytes (verified
     // on fetch). The loss is idempotent; an unreadable prior write is loud.
     const prior = await fetchContractArtifact(ctx, digestHex);
@@ -168,33 +176,72 @@ export async function publishContractArtifact(
   }
 }
 
+/** Prove one fetched message IS the artifact for `digestHex` at `subject`: within the document
+ *  bound, recomputes its digest, and strict canonical JSON. `undefined` (never a throw) when it
+ *  does not verify — the caller decides whether a miss is fatal or a fallback. */
+function verifyStored(data: Uint8Array, digestHex: string, subject: string): Uint8Array | undefined {
+  if (data.length > CONTRACT_ARTIFACT_MAX_BYTES) return undefined; // an oversize plant never serves (distsys 8dcad72 M2)
+  if (contractArtifactDigestHex(data) !== digestHex) return undefined;
+  try { assertCanonicalArtifactBytes(data, `the artifact at ${subject}`); } catch { return undefined; }
+  return data;
+}
+
 /** Fetch one artifact by digest (`undefined` = not published). VERIFY-ON-READ is unconditional
  *  and TWO-PROOF: the fetched bytes must recompute the digest AND be strict canonical JSON —
- *  content addressing is the tamper boundary and a garbled store never serves (§13.7). */
+ *  content addressing is the tamper boundary (§13.7).
+ *
+ *  APPEND-SHADOW DEFENSE (critic, live-confirmed): the `epc.*` publish grant is a raw JS publish;
+ *  the create-only fence is a publisher-SET header (`Nats-Expected-Last-Subject-Sequence: 0`) the
+ *  grant cannot compel, so a non-cooperative grant-holder can APPEND garbage at an
+ *  already-published digest subject. `last_by_subj` would then return that shadow and a fail-closed
+ *  read would make the honest artifact permanently unfetchable (a total, operator-recovery-only
+ *  DoS once ep is the sole contract path). The subject IS the content digest and honest
+ *  publication is create-only, so the FIRST message at the subject is the unique verifying
+ *  artifact and every shadow is a strictly later append. The read therefore verifies `last_by_subj`
+ *  (the O(1) fast path, correct whenever nobody shadowed) and, on a verify-miss, FALLS BACK to the
+ *  create-only winner (`next_by_subj` from the stream start) and verifies THAT — so a shadow-append
+ *  is defeated by the reader, never relying on publisher cooperation. Only when NEITHER the last nor
+ *  the first message verifies is the store genuinely corrupt (fail loud). Pre-emptive garbage
+ *  BEFORE the honest publish is the already-loud case: the honest create-only publish then loses at
+ *  registration, so there is no honest artifact to recover.
+ *
+ *  GRANT NOTE (critic completeness item): the fallback issues `next_by_subj`, which rides the bare
+ *  `$JS.API.DIRECT.GET.<stream>` form — the executor publisher holds it, the ordinary agent baseline
+ *  does NOT (it holds only the subject-scoped `last_by_subj`, per the D32 read-grant bound). Sound
+ *  because {@link ensureContractStore} fails loud unless the store is config-B immutable, so the
+ *  manager never serves a store where an agent's `last_by_subj` could return a shadow — the fallback
+ *  never triggers on the agent path. Widening the agent grant to the bare form is unnecessary (and
+ *  would relax the D32 bound for no gain). */
 export async function fetchContractArtifact(
   ctx: ContractStoreContext,
   digestHex: string,
 ): Promise<Uint8Array | undefined> {
   const { jsm } = resources(ctx);
+  const stream = epcStreamName(ctx.space);
   const subject = epcSubject(ctx.space, digestHex); // validates the token
-  let stored;
-  try {
-    stored = await jsm.direct.getMessage(epcStreamName(ctx.space), { last_by_subj: subject });
-  } catch (e) {
-    if ((e as { code?: unknown })?.code === 10037) return undefined; // the ONLY "genuinely absent" result
-    throw new EpEnvelopeError("unavailable", `the contract-store read for ${digestHex} failed (a failed observation is never absence, SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
-  }
-  if (stored === null) return undefined;
-  // The 256 KiB document bound is enforced on EVERY consuming read, not just publication (distsys
-  // 8dcad72 M2): a directly-planted oversize artifact (bypassing publishContractArtifact) must
-  // never be served, and the closure walk (which reads through here) inherits the per-document cap.
-  if (stored.data.length > CONTRACT_ARTIFACT_MAX_BYTES)
-    throw new EpEnvelopeError("internal", `the artifact at ${subject} is ${stored.data.length} bytes, above the ${CONTRACT_ARTIFACT_MAX_BYTES} document bound; a store that admitted an oversize artifact never serves it (SPEC 13.7)`);
-  if (contractArtifactDigestHex(stored.data) !== digestHex)
-    throw new EpEnvelopeError("internal", `the artifact at ${subject} does not recompute its digest; verify-on-read is the tamper boundary and fails loud (SPEC 13.7)`);
-  try { assertCanonicalArtifactBytes(stored.data, `the artifact at ${subject}`); }
-  catch { throw new EpEnvelopeError("internal", `the artifact at ${subject} is not strict canonical JSON; a garbled store never serves (SPEC 13.7)`); }
-  return stored.data;
+  const read = async (req: { last_by_subj: string } | { seq: number; next_by_subj: string }): Promise<Uint8Array | "absent"> => {
+    try {
+      const stored = await jsm.direct.getMessage(stream, req);
+      return stored === null ? "absent" : stored.data;
+    } catch (e) {
+      if ((e as { code?: unknown })?.code === 10037) return "absent"; // the ONLY "genuinely absent" result
+      throw new EpEnvelopeError("unavailable", `the contract-store read for ${digestHex} failed (a failed observation is never absence, SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
+    }
+  };
+  // Fast path: the last message at the subject. Verifies whenever nobody shadowed (the common case).
+  const last = await read({ last_by_subj: subject });
+  if (last === "absent") return undefined;
+  const okLast = verifyStored(last, digestHex, subject);
+  if (okLast !== undefined) return okLast;
+  // Shadow suspected: fall back to the create-only WINNER (the first message at the subject) — a
+  // valid artifact was published create-only, so it is first; anything after it is an append.
+  const first = await read({ seq: 0, next_by_subj: subject });
+  if (first === "absent") return undefined;
+  const okFirst = verifyStored(first, digestHex, subject);
+  if (okFirst !== undefined) return okFirst;
+  // Neither the last nor the create-only winner verifies: the store is genuinely corrupt for this
+  // subject (no honest artifact was ever published, or the first message is itself garbage).
+  throw new EpEnvelopeError("internal", `no message at ${subject} recomputes its digest as strict canonical JSON (checked both the last and the create-only winner); verify-on-read is the tamper boundary and a store with no verifying artifact never serves (SPEC 13.7)`);
 }
 
 // ---- the closure manifest (§13.7 "Two digests, never conflated") ------------------------------

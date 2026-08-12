@@ -11,9 +11,9 @@ import { createHash } from "node:crypto";
 import {
   EP_ERROR_CODES, isEpErrorCode, EpEnvelopeError,
   parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
-  checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, authDigest,
+  checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
-  compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST,
+  compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -167,6 +167,74 @@ const voidValidate = compileContractSchema({ root: VOID_SCHEMA });
 c("absent args validate against the void schema as null", assertArgsValid(voidValidate, undefined) === null);
 rejects("present args against the void schema are bad-request", "bad-request",
   () => assertArgsValid(voidValidate, { any: 1 }));
+
+// The §13.8 validation budget on the REQUEST path is REPORTED, not enforced. No available
+// instrument can justify refusing a caller on it: elapsed counts the machine (this budget refused
+// an 82ms cold-JIT validation of a small, schema-VALID object during a gate run), and process CPU
+// counts V8's JIT threads and any sibling Worker (16.4ms process CPU against 0.18ms on the
+// measuring thread). A false positive here tells a legitimate caller its valid arguments are
+// malformed. Enforcement stays at REGISTRATION and is asserted in schema-profile.smoke.
+//
+// These legs use a REACHABLE request shape on purpose. An earlier version passed a root ARRAY
+// through `as unknown as Record`, which proved a helper branch rather than a request property:
+// §13.3 says `args` is an object and `parseEndpointRequest` rejects arrays long before this
+// boundary. A test that reaches past a contract via a cast proves nothing about traffic that must
+// cross it — the defect this repo documents in manifest-launch.smoke.ts, committed here inside the
+// very fix that was correcting it. The payload is now an OBJECT carrying the heavy array, no cast.
+const heavySchemaRoot = {
+  type: "object",
+  properties: { rows: { type: "array", items: { type: "object", properties: { s: { type: "string", pattern: "^[a-z]{1,12}-[0-9]{1,6}$" } }, required: ["s"], additionalProperties: false } } },
+  required: ["rows"],
+  additionalProperties: false,
+};
+// Once the budget is REPORTED rather than enforced, its only observable is the line on stderr.
+// "It did not throw" cannot tell a reported over-budget validation apart from one that was never
+// over budget at all, so a leg written that way passes vacuously — and measurement says it does:
+// at 300k rows this payload costs 8ms of process CPU against the 10ms budget on a quiet box, i.e.
+// UNDER it, and the earlier 20ms reading only appeared because sixty preceding assertions had
+// already loaded the process. Both legs below therefore REQUIRE the report, and the size is taken
+// from the measured curve (300k=8ms, 600k=15ms, 1M=21ms, 2M=41ms; linear, no cliff), which puts
+// this at ~2x budget on the fastest host we run on and only further over on a slower one.
+{
+  const ROWS = 1_000_000;
+  const heavySchema = compileContractSchema({ root: heavySchemaRoot });
+  const heavy = { rows: Array.from({ length: ROWS }, (_, i) => ({ s: `item-${i % 999999}` })) };
+
+  const reports: string[] = [];
+  const realError = console.error;
+  console.error = (...a: unknown[]) => { reports.push(a.map(String).join(" ")); };
+  let argsRows = -1, outThrew = "";
+  let freshOut: ReturnType<typeof compileContractSchema>;
+  try {
+    argsRows = (assertArgsValid(heavySchema, heavy) as typeof heavy).rows.length;
+    // A FRESH validator for the output side, per the review note. It is not what makes this leg
+    // live (a fresh compile still validates warm DATA ~25% cheaper), so the report is the guard.
+    freshOut = compileContractSchema({ root: heavySchemaRoot });
+    try { assertOutputValid(freshOut, heavy); } catch (e) { outThrew = (e as Error).message; }
+  } finally { console.error = realError; }
+
+  const budgetOf = (what: string): number => {
+    const line = reports.find((r) => r.includes(`${what} validation took`));
+    return line ? Number(/took ~(\d+)ms/.exec(line)?.[1] ?? -1) : -1;
+  };
+  const argsMs = budgetOf("args"), outMs = budgetOf("output");
+  // Print the margin. A leg that stops being over budget must FAIL here, not quietly stop testing.
+  console.log(`  (§13.8 budget ${SCHEMA_PROFILE.validateBudgetMs}ms; ${ROWS} rows measured args=${argsMs}ms output=${outMs}ms process CPU, ` +
+    `${(argsMs / SCHEMA_PROFILE.validateBudgetMs).toFixed(1)}x / ${(outMs / SCHEMA_PROFILE.validateBudgetMs).toFixed(1)}x)`);
+
+  c("the ARGS payload really did go over the §13.8 budget, so the leg below is not vacuous",
+    argsMs > SCHEMA_PROFILE.validateBudgetMs, `args reported ${argsMs}ms`);
+  c("an over-budget ARGS validation is REPORTED and still returns the args", argsRows === ROWS, `rows=${argsRows}`);
+  c("...and that payload was schema-valid, so nothing was refused for the other reason", heavySchema(heavy) === true);
+  c("the OUTPUT payload really did go over the §13.8 budget too", outMs > SCHEMA_PROFILE.validateBudgetMs, `output reported ${outMs}ms`);
+  c("an over-budget OUTPUT validation is reported, never `internal`", outThrew === "", outThrew);
+
+  // The SCHEMA's own verdict is untouched by the demotion — only the budget stopped refusing.
+  rejects("an invalid payload is still the invocation-time bad-request", "bad-request",
+    () => assertArgsValid(heavySchema, { rows: [{ s: "NOT-A-MATCH" }] }));
+  rejects("an invalid output is still `internal`", "internal",
+    () => assertOutputValid(freshOut!, { rows: [{ s: "NOT-A-MATCH" }] }));
+}
 
 console.log(`\nENDPOINT ENVELOPE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 if (fail > 0) process.exit(1);

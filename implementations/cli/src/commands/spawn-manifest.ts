@@ -23,8 +23,6 @@ import {
   newIdentity,
   readChannelRegistry,
   seedChannelRegistry,
-  CONTROL_ADMIN,
-  CONTROL_PRIVILEGED,
   type ControlReply,
   type MembershipSnapshot,
   type Presence,
@@ -36,7 +34,7 @@ import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, channelsSeed, genRunId, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
-import { buildLedger, hashManifestSource, listLedgers, writeLedger, type LedgerAgent } from "../lib/manifest/ledger.js";
+import { buildLedger, buildLedgerAgentRow, hashManifestSource, listLedgers, writeLedger, type LedgerAgent } from "../lib/manifest/ledger.js";
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "../lib/manifest/spawn-plan.js";
 import { connectProbe, launchAgent, settleRoster, waitLeaseGone, waitManagerReady } from "../lib/manifest/live.js";
 import { renderInherited, renderSpawnPlan, renderSpawnSummary, renderWarnings } from "../lib/manifest/render.js";
@@ -89,7 +87,6 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   // operator-grade (a "channel-writer" view, scope "admin", below).
   const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "deployer");
   const user = connection.bearer ? await userViewAuthOrExit(connection, "deployer") : undefined;
-  const tier = user ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
 
   const root = cotalRoot();
   // Deploy-home invariant (UX): the ledger and any locally-minted creds live under THIS checkout's
@@ -135,6 +132,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     space,
     server: connection.server,
     creds: connection.creds,
+    lifecycleUid: user ? user.lifecycleUid : connection.epCaller?.uid,
     user: user ? { source: user.source, sentinelCreds: user.sentinelCreds, owner: user.owner, actor: user.actor } : undefined,
   });
   try {
@@ -176,7 +174,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     // backend before seeding channels or writing launch state, so a missing app cannot strand an
     // unledgered partial deploy.
     const held = agentPlan.willCreate.length ? await ep.readManagerLease() : undefined;
-    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS, tier));
+    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS));
     if (heldReady && held) {
       // A manager in another checkout (or on another host) is fine — the deploy goes REMOTE below,
       // pushing the resolved spec over the control plane. Only a runtime mismatch is unresolvable.
@@ -221,7 +219,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // another way — two managers queue-split every control op).
       const launchHeld = await ep.readManagerLease();
       const launchReady = launchHeld
-        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS, tier))
+        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS))
         : false;
       // A manifest deploy can be the thing that stands a manager up, and it never carries a `--host`
       // of its own — so it reads the mesh's recorded exposure, or it would quietly replace a
@@ -244,7 +242,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
       // `held` snapshot, which can turn over during the probe / a concurrent start — TOCTOU). Fail LOUD if
       // a foreign-checkout or wrong-runtime manager won the space before we launch into it.
-      if (!(await waitManagerReady(ep, undefined, tier))) {
+      if (!(await waitManagerReady(ep))) {
         console.error(c.red("✗ manager did not become ready for control - see .cotal/manager.log"));
         process.exit(1);
       }
@@ -270,14 +268,20 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         console.log(c.dim(`  ~ remote manager serves "${space}" (root ${live.root}) - pushing the launch spec over the control plane`));
       }
       for (const e of agentPlan.willCreate) {
-        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, tier, remote ? spec : undefined);
+        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, remote ? spec : undefined);
         if (!reply.ok) {
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
           continue;
         }
-        const d = reply.data as { name: string; id: string; requested: string; hash: string };
-        agents.push({ requested: d.requested, name: d.name, id: d.id, hash: d.hash });
-        launchedNow.push(d.name);
+        // `requested`/`hash` come from the PLAN, not the reply: they are this caller's own inputs,
+        // and the launch acceptance floor deliberately does not carry them (P2 item 2 ruling 3).
+        // The reply supplies only the SPAWNED identity — including the incarnation uid, so `down -f`
+        // derives the lifecycle-keyed cred path this spawn materialized (a pre-split manager's reply
+        // carries none → legacy name-keyed path). Parsed, not cast: a row that the reader would
+        // refuse now fails HERE, naming the field, instead of at teardown.
+        const d = (reply.data ?? {}) as { name?: unknown; id?: unknown; lifecycleUid?: unknown };
+        agents.push(buildLedgerAgentRow({ requested: e.agent.name, hash: e.hash }, d));
+        launchedNow.push(String(d.name));
         console.log(c.green(`✓ launched ${d.name}`) + c.dim(` (${e.agent.agentType})`));
       }
     }

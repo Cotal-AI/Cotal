@@ -33,7 +33,7 @@ import {
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
-  createSpaceAuth, mintCreds, newIdentity,
+  createSpaceAuth, mintCreds, newIdentity, permissionsFor, DEV_OWNER,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -48,6 +48,7 @@ let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 
 const S = "d32m", EP = "manager", EPJ = "jobsrv", CONN = "ibxconn0123456789";
+const SC_SID = "sessfixture0123456789ab"; // P2 item 6: a fixed session id for the session-caller fixture row
 const UID = "u".repeat(26);
 const cap: EpCapability = { endpoint: EP, command: "spawn", target: { mode: "owner", tOwner: "u_abc" }, journal: true };
 
@@ -186,6 +187,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.epj.manager.spawn.owner.u_abc.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu",
   ], subscribe: [
     "cotal.d32m.ep.reply.*.*.*.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu.*",
+    // P2 item 2 (2b): a GOAL-BEARING cap (spawn) grants the caller's OWN per-goal progress read
+    // (epGoalProgressGrantRow) so it can follow its spawn to the terminal — caller-triple-pinned.
+    "cotal.d32m.epe.manager.*.*.goal.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu.>",
   ] },
   "serve-rows": { publish: [
     "cotal.d32m.ep.reply.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.*.*.*",
@@ -310,6 +314,40 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   "drain-canceller": { publish: [
     `cotal.d32m.epf.jobsrv.eff.local.worker.${"u".repeat(26)}.acc001`,
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // P2 item 6: the per-session console/CLI CALLER cred — RAILS-ONLY for ONE §13.6 session. It pubs
+  // the session's `in` rail and subs its `out` rail + its own reply inbox, and NOTHING else (no KV,
+  // no JS-API, no store — so no subject-blind ledger read; the sessionId+epoch pin the exact pair).
+  "session-caller": { publish: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.in`,
+  ], subscribe: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.out`,
+    "_INBOX_ibxconn0123456789.>",
+  ] },
+  // P2 item 6: the manager's per-session SERVING credential — the EXACT mirror of `session-caller`
+  // with the rail directions swapped, for ONE session. It replaces a STANDING writer that held
+  // `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch, against
+  // SPEC 13.9:2526 ("no standing EPS grant exists on either side"). No KV and no JS-API at all: the
+  // serving side drives bytes, and the ledger belongs to the standing credential below.
+  "session-serving": { publish: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.out`,
+  ], subscribe: [
+    `cotal.d32m.eps.manager.${SC_SID}.3.in`,
+    "_INBOX_ibxconn0123456789.>",
+  ] },
+  // P2 item 6: the manager's SESSION LEDGER — the DEDICATED sessions-bucket rows and NOTHING else,
+  // with NO session rail of any shape. Standing, because SPEC 13.6 makes it the durable revocation
+  // authority that must survive the serving endpoint; splitting it from the rails on that lifetime
+  // boundary is what removes the wildcard. The dedicated bucket makes its bucket-blind
+  // STREAM.MSG.GET expose ONLY `session.>` rows (never the auth bucket's creds/gates) — the §13.9
+  // subject-blindness structural fix.
+  "session-ledger": { publish: [
+    `$KV.cotal_sessions_d32m.session.*`,
+    `$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m`,
+    `$JS.API.STREAM.INFO.KV_cotal_sessions_d32m`,
+    `$JS.API.INFO`,
+  ], subscribe: [
+    "_INBOX_ibxconn0123456789.>",
+  ] },
 };
 
 // ---- 1. regenerate every builder and pin against the fixture ----------------------------------
@@ -354,6 +392,14 @@ put("retirement-executor", retirementExecutorClientGrants(S, EPJ, ["pa", "pb"], 
 put("drain-applier", drainApplierGrants(S, `goal.${EPJ}.local.worker.${UID}.g00001.spec`, CONN));
 put("drain-reconciler", drainReconcilerGrants(S, `cotal.${S}.epw.${EPJ}.pa.local.worker.${UID}.acc001`, CONN));
 put("drain-canceller", drainCancellerGrants(S, `cotal.${S}.epf.${EPJ}.eff.local.worker.${UID}.acc001`, CONN));
+{
+  const scPerms = permissionsFor("session-caller", S, { owner: "u_abc", actor: "cli", connId: CONN }, { sessionCaller: { endpoint: EP, sessionId: SC_SID, epoch: 3 } }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  put("session-caller", { publish: scPerms.pub.allow, subscribe: scPerms.sub.allow });
+  const ssPerms = permissionsFor("session-serving", S, { owner: "u_abc", actor: "cli", connId: CONN }, { sessionServing: { endpoint: EP, sessionId: SC_SID, epoch: 3 } }) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  put("session-serving", { publish: ssPerms.pub.allow, subscribe: ssPerms.sub.allow });
+  const slPerms = permissionsFor("session-ledger", S, { owner: "u_abc", actor: "cli", connId: CONN }, {}) as { pub: { allow: string[] }; sub: { allow: string[] } };
+  put("session-ledger", { publish: slPerms.pub.allow, subscribe: slPerms.sub.allow });
+}
 
 for (const name of Object.keys(FIXTURE)) {
   c(`fixture pin: ${name}`, JSON.stringify(gen[name]) === JSON.stringify(FIXTURE[name]), gen[name]);
@@ -454,6 +500,11 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     // The full production executor client (#29 piece 2): the settlement EPF read plus the
     // leader-served records-lease read its own code path performs. NO EPW (dead grant removed, b8803b2).
     "retirement-executor:EPF_d32m", "retirement-executor:KV_cotal_records_d32m",
+    // P2 item 6: the session LEDGER reads its rows over a bucket-blind STREAM.MSG.GET — but ONLY on
+    // the DEDICATED sessions bucket. It holds NO MSG.GET on KV_cotal_auth (creds/gates) or
+    // KV_cotal_records: the dedicated bucket is the §13.9 subject-blindness structural fix. The
+    // per-session SERVING credential holds no store read at all, so it is absent from this list.
+    "session-ledger:KV_cotal_sessions_d32m",
   ]);
   c("the STREAM.MSG.GET holder set equals the enumerated trusted list exactly",
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());
@@ -517,10 +568,18 @@ const untrusted: Record<string, { pub: string[]; sub: string[] }> = {
   observer: decode(await mintCreds(auth, newIdentity(), "observer", { principal: { owner: "u_abc", actor: "obs" } })),
   admin: decode(await mintCreds(auth, newIdentity(), "admin", { principal: { owner: "u_abc", actor: "adm" } })),
 };
+// The ONE deliberate untrusted-profile read on a control-surface stream (P2 item 1, 1c): the
+// §13.7 CONTRACT store fetch, EXACTLY the epc-subject-scoped Direct Get row the agent baseline
+// mints. Safe by the store's construction — content-addressed public artifacts (schemas /
+// manifests / cluster documents; no secrets, no authority rows), create-only with
+// deny_delete/deny_purge, verify-on-read as the tamper boundary — and by the row's shape: the
+// subject-scoped form reads epc subjects only, never another stream's bodies. Any OTHER read
+// verb, any broader Direct Get form, and every non-EPC stream stay prohibited below.
+const EPC_FETCH_ROW = `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`;
 for (const [profile, rows] of Object.entries(untrusted)) {
   const reach = [...rows.pub, ...rows.sub].filter((r) =>
-    CS_STREAM.test(r) && /(CONSUMER\.CREATE|CONSUMER\.MSG\.NEXT|DIRECT\.GET|STREAM\.MSG\.GET)/.test(r));
-  c(`${profile}: no CONSUMER.CREATE/MSG.NEXT/DIRECT.GET/STREAM.MSG.GET on any control-surface stream`, reach.length === 0, reach);
+    r !== EPC_FETCH_ROW && CS_STREAM.test(r) && /(CONSUMER\.CREATE|CONSUMER\.MSG\.NEXT|DIRECT\.GET|STREAM\.MSG\.GET)/.test(r));
+  c(`${profile}: no CONSUMER.CREATE/MSG.NEXT/DIRECT.GET/STREAM.MSG.GET on any control-surface stream (sole exemption: the epc-subject-scoped store fetch)`, reach.length === 0, reach);
   const kvWrites = rows.pub.filter((r) => r.startsWith("$KV.cotal_records_d32m") || r.startsWith("$KV.cotal_auth_d32m"));
   c(`${profile}: no records/auth KV write rows`, kvWrites.length === 0, kvWrites);
 }
@@ -548,15 +607,30 @@ console.log("4. the auth-admin rail profiles (piece 3)");
     && req.sub.length === 2 && req.sub[0] === `cotal.${S}.ctl.auth-admin.local.mgr0.reply.>` && req.sub[1]!.startsWith("_INBOX_"),
     req);
   const listener = authAdminListenerGrants(S, CONN);
-  c("the auth-admin listener grant is EXACTLY REPLY-ONLY publish + $JS.API.INFO + the ONE lease read + inbox (no bare request subject → no self-forge)",
+  c("the auth-admin listener grant is EXACTLY REPLY-ONLY publish + $JS.API.INFO + the ONE serve-gate read + inbox (no bare request subject → no self-forge)",
     JSON.stringify(listener) === JSON.stringify({
-      publish: [`cotal.${S}.ctl.auth-admin.*.*.reply.>`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_manager_${S}`],
+      publish: [`cotal.${S}.ctl.auth-admin.*.*.reply.>`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_auth_${S}`],
       subscribe: [`cotal.${S}.ctl.auth-admin.*.*`, `_INBOX_${CONN}.>`],
     }), listener);
   c("the listener publish CANNOT reach a bare request subject (self-forge closed): no grant matches ctl.auth-admin.<owner>.<actor> without a .reply. segment",
     !listener.publish.some((r) => /\.ctl\.auth-admin\.(\*|>)/.test(r) && !r.includes(".reply.")));
   c("the listener holds NO consumer authority and NO KV write anywhere",
     listener.publish.every((r) => !r.includes("CONSUMER.") && !r.startsWith("$KV.")));
+}
+
+// ---- 5. the endpoint-evictor profile (P2 item 3, slice 3a): scoped delivery-admin, pinned EXACTLY -
+console.log("5. the endpoint-evictor profile (P2 item 3): a re-registration's verify-evict caller");
+{
+  const evId = newIdentity();
+  const ev = decode(await mintCreds(auth, evId, "endpoint-evictor", {}));
+  const rail = `cotal.${S}.ctl.delivery-admin.${DEV_OWNER}.${evId.id}`;
+  c("the endpoint-evictor mint is EXACTLY its OWN delivery-admin request + $JS.API.INFO, own reply + inbox (no lease/presence/store/consumer/KV/executing right)",
+    JSON.stringify(ev.pub) === JSON.stringify([rail, "$JS.API.INFO"])
+    && ev.sub.length === 2 && ev.sub[0] === `${rail}.reply.>` && ev.sub[1]!.startsWith("_INBOX_"),
+    ev);
+  c("the endpoint-evictor is NARROWER than supervisor: NO lease, presence, chat/inst/svc, consumer, or KV write anywhere",
+    ev.pub.every((r) => r === rail || r === "$JS.API.INFO")
+    && !ev.pub.some((r) => r.includes("CONSUMER.") || r.startsWith("$KV.") || r.includes(".chat.") || r.includes(".inst.") || r.includes(".svc.") || r.toUpperCase().includes("LEASE") || r.includes(".presence.")));
 }
 
 console.log(fail === 0 ? `\nD32 MATRIX AUDIT OK ✅  (${ok} passed, ${fail} failed)` : `\nD32 MATRIX AUDIT FAILED ❌  (${ok} passed, ${fail} failed)`);

@@ -66,10 +66,14 @@ export async function machineStatus(): Promise<MachineStatus> {
   } catch {
     nats = "missing";
   }
+  // ONE `claude plugin list` for both plugin answers. This used to spawn the Claude CLI TWICE —
+  // once for the JSON listing and once for a plain-text grep — two full process startups for data a
+  // single listing already contains.
+  const plugins = claudePluginList();
   return {
     nats,
-    claudePlugin: claudePluginInstalled(),
-    claudeSkills: claudeSkillsState(),
+    claudePlugin: claudePluginInstalled(plugins),
+    claudeSkills: claudeSkillsState(plugins),
     agents: {
       claude: onPath("claude"),
       opencode: onPath("opencode"),
@@ -83,18 +87,9 @@ export async function machineStatus(): Promise<MachineStatus> {
  *  the SAME health predicate the post-install verify enforces (id/scope/enabled/errors/version), so
  *  status can never bless a plugin the installer would have rejected. `unknown` when Claude isn't on PATH
  *  or can't be queried. */
-function claudeSkillsState(): MachineStatus["claudeSkills"] {
-  if (!onPath("claude")) return "unknown";
-  const r = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
-  if (r.status !== 0) return "unknown";
-  let entries: unknown;
-  try {
-    entries = JSON.parse(r.stdout ?? "[]");
-  } catch {
-    return "unknown";
-  }
-  if (!Array.isArray(entries)) return "unknown";
-  const match = (entries as Array<Record<string, unknown>>).find((e) => e.id === "cotal-skills@cotal-mesh" && e.scope === "user");
+function claudeSkillsState(entries: PluginEntry[] | undefined): MachineStatus["claudeSkills"] {
+  if (entries === undefined) return "unknown";
+  const match = entries.find((e) => e.id === "cotal-skills@cotal-mesh" && e.scope === "user");
   if (!match || match.enabled === false) return "missing";
   const errs = (match.errors ?? match.error) as unknown;
   if (Array.isArray(errs) ? errs.length > 0 : Boolean(errs)) return "broken"; // present but failed to load: never "current"
@@ -122,8 +117,23 @@ export function onPath(bin: string): boolean {
   return false;
 }
 
-function claudePluginInstalled(): boolean {
-  if (!onPath("claude")) return false;
-  const r = spawnSync("claude", ["plugin", "list"], { encoding: "utf8" });
-  return r.status === 0 && /cotal@cotal-mesh/.test(`${r.stdout ?? ""}${r.stderr ?? ""}`);
+function claudePluginInstalled(entries: PluginEntry[] | undefined): boolean {
+  return entries?.some((e) => e.id === "cotal@cotal-mesh") ?? false;
+}
+
+/** One installed-plugin entry, as `claude plugin list --json` reports it. */
+type PluginEntry = Record<string, unknown>;
+
+/** The installed Claude Code plugins, or undefined when Claude is not on PATH or cannot be queried
+ *  (both of which every caller renders as "unknown" rather than "absent"). ONE spawn, shared. */
+function claudePluginList(): PluginEntry[] | undefined {
+  if (!onPath("claude")) return undefined;
+  const r = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
+  if (r.status !== 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(r.stdout ?? "[]");
+    return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
+  } catch {
+    return undefined;
+  }
 }

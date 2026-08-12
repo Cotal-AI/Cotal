@@ -20,8 +20,9 @@ const credsStore = () => workspaceSecretStore(findCotalRoot());
 /** `tls` is the broker's transport decision, propagated to the daemon's argv. It is not optional
  *  information the daemon can do without: it cannot derive the transport itself (see the note at
  *  the argv site), and omitting it leaves a standing-credential daemon connecting
- *  plaintext-capable to a TLS broker while looking entirely healthy. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string };
+ *  plaintext-capable to a TLS broker while looking entirely healthy.
+ *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number };
 
 function alive(pid: number): boolean {
   try {

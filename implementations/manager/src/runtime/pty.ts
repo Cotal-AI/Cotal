@@ -165,6 +165,11 @@ export class PtyRuntime implements Runtime {
           return () => dataSubs.delete(fn);
         },
         onExit: (fn) => {
+          // Already exited (a session attaching over a just-dead pty): fire on the next tick so the
+          // bridge surfaces a `process-exit` end frame instead of a silent zombie. proc.onExit fired
+          // ONCE before this listener existed, so a late subscriber would otherwise never hear it
+          // (waitForExit carries the same already-dead guard).
+          if (!alive) { queueMicrotask(fn); return () => {}; }
           exitSubs.add(fn);
           return () => exitSubs.delete(fn);
         },
@@ -172,9 +177,14 @@ export class PtyRuntime implements Runtime {
           if (alive) proc.write(data);
         },
         resize: (c, r) => {
+          // node-pty REJECTS a non-positive dimension (throws), and a console fitting BEFORE its pane
+          // is laid out can send a 0. Guard BOTH the mirror and the pty resize so a degenerate geometry
+          // is a safe no-op — never a throw that would propagate into and wedge the serving frame
+          // handler (the live-e2e "zombie session" class).
+          if (c <= 0 || r <= 0) return;
           cols = c;
           rows = r;
-          if (c > 0 && r > 0) term.resize(c, r); // keep the mirror in step so snapshots reconstruct at size
+          term.resize(c, r); // keep the mirror in step so snapshots reconstruct at size
           if (alive) proc.resize(c, r);
         },
       }),

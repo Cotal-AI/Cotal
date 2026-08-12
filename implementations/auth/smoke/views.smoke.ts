@@ -24,10 +24,7 @@
 import { SignJWT, decodeJwt, generateKeyPair, exportJWK } from "jose";
 import type { CryptoKey } from "jose";
 import {
-  CONTROL_ADMIN,
-  CONTROL_PRIVILEGED,
   chatStream,
-  controlServiceSubject,
   spacePrefix, mintLifecycleUid } from "@cotal-ai/core";
 // One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
 const smokeUid = mintLifecycleUid();
@@ -168,11 +165,15 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
   check("channel-purger view holds the filtered CHAT purge grant", (purger.pub?.allow ?? []).includes(`$JS.API.STREAM.PURGE.${chatStream(SPACE)}`), purger.pub);
 }
 {
+  // 1d: the deployer view carries the v0.4 ep PRIVILEGED instrument rows (the manager `ctl` tiers
+  // are deleted). Its grant includes an ep `spawn` request row (privileged set) but NEVER the
+  // any-mode `despawn` row (the admin instrument set — the owner-equality bypass it must not get).
   const dep = forView(tok("deployer", ["spawn"]), CONN) as Perms;
-  const priv = controlServiceSubject(SPACE, CONTROL_PRIVILEGED, OWNER, "cli");
-  const adm = controlServiceSubject(SPACE, CONTROL_ADMIN, OWNER, "cli");
-  check("deployer view control grant is the PRIVILEGED tier", (dep.pub?.allow ?? []).includes(priv), dep.pub);
-  check("…and NEVER the admin tier (no owner-equality bypass)", !(dep.pub?.allow ?? []).includes(adm));
+  const pub = dep.pub?.allow ?? [];
+  check("deployer view control grant carries the PRIVILEGED ep set (an ep `spawn` request row)",
+    pub.some((s) => s.includes(".ep.one.manager.spawn.")), dep.pub);
+  check("…and NEVER the admin ep set (no any-mode `despawn` row → no owner-equality bypass)",
+    !pub.some((s) => s.includes(".despawn.any.")), dep.pub);
 }
 for (const [view, caps] of [
   ["admin", ["spawn", "role:default"]],

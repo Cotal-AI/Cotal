@@ -12,6 +12,7 @@
 import {
   AckPolicy,
   DeliverPolicy,
+  DiscardPolicy,
   RetentionPolicy,
   StorageType,
   type ConsumerConfig,
@@ -67,6 +68,18 @@ export function epAuthBucket(space: string): string {
   return `cotal_auth_${token(space)}`;
 }
 
+/** The per-space SESSION ledger store (P2 item 6, §13.6): the `session.<id>` rows the manager's
+ *  session plane CASes over. DEDICATED — split out of the auth bucket deliberately. KV reads are
+ *  subject-BLIND (a `STREAM.MSG.GET` on a bucket serves any key, the campaign's known vector class),
+ *  so co-locating session rows with credentials + gates would let the standing session-ledger cred read
+ *  the whole control plane. A dedicated bucket makes that blind read STRUCTURALLY confined to session
+ *  rows and nothing else. `allow_direct=false` for the SAME reason the auth bucket carries it: every
+ *  ledger fence is a leader-served revision-pinned CAS (the one-use `createIssuing`, the finalize +
+ *  terminal updates), and Direct Get's follower/mirror reads would defeat read-your-writes (§13.1). */
+export function sessionsBucket(space: string): string {
+  return `cotal_sessions_${token(space)}`;
+}
+
 // ---- §13.12 retention knobs (documented defaults, overridable per space policy) ----
 
 /** EPJ duplicate window: the server MINIMUM (100 ms), set explicitly. A `0` is not accepted
@@ -114,11 +127,14 @@ export interface EndpointStreamOptions {
 
 /**
  * Create (idempotently) the §13.12 per-space control-surface resources: the seven JetStream
- * streams, the work-pool WorkQueue, and the two KV buckets. Privileged — runs at space setup.
- * `jsm.streams.add`/`kvm.create` are idempotent for an identical config and FAIL LOUD on a
- * config delta, which is wanted: a drifted resource is an operator error, never silently adopted.
+ * streams, the work-pool WorkQueue, and the KV buckets (records + auth + the §13.6 session ledger).
+ * Privileged — runs at space setup. `jsm.streams.add`/`kvm.create` are idempotent for an identical
+ * config and FAIL LOUD on a config delta, which is wanted: a drifted resource is an operator error,
+ * never silently adopted.
  *
- * Sessions (`eps`) are deliberately absent: core-only, never captured (§13.12).
+ * The session byte SUBJECTS (`eps`) are deliberately absent: core-only, never captured (§13.12).
+ * Only the durable `session.<id>` ledger rows are captured — in their own dedicated bucket
+ * ({@link createSessionsStore}), never the auth bucket.
  */
 export async function createEndpointStreams(
   jsm: JetStreamManager,
@@ -197,24 +213,109 @@ export async function createEndpointStreams(
     storage: StorageType.File,
     allow_direct: false,
   });
-  // EPC — content-addressed contract artifacts: one immutable message per digest subject,
-  // create-only mediated publication, NO age eviction (artifacts are permanent). allow_direct:
-  // the subject-scoped last-by-subject read IS the fetch path. Permanence is BROKER-ENFORCED,
-  // not just configured-by-omission: deny_delete/deny_purge reject the message-delete and purge
-  // APIs even from a stream-API-holding principal, so a digest subject cannot be emptied and
-  // re-created through them. Per §13.12 the flags alone are NOT the whole claim: permanence is
-  // their COMBINATION with the retention floor (no age eviction, no teardown), verify-on-read
-  // pinning WHAT a subject carries, and stream management held by no profile.
-  await jsm.streams.add({
-    name: epcStreamName(space),
-    subjects: [`${p}.epc.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_direct: true,
-    deny_delete: true,
-    deny_purge: true,
-  });
+  await ensureContractStore(jsm, space);
   await ensureAuthorityStores(jsm, kvm, space);
+  // P2 item 6: the DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
+  // uncaptured (above), but the `session.<id>` ledger rows are a captured authority KV — kept in
+  // their own bucket so the manager's standing session-ledger cred's bucket-blind STREAM.MSG.GET reads
+  // ONLY session rows (the §13.9 subject-blindness structural fix). Provisioned here so every mesh
+  // that ensures the endpoint streams (auth + open both run this at the manager's boot) has it.
+  await createSessionsStore(jsm, kvm, space);
+}
+
+/**
+ * Ensure the per-space CONTRACT store (EPC) exists with its normative shape (§13.7/§13.12) —
+ * content-addressed artifacts, one immutable message per digest subject, create-only mediated
+ * publication, NO age eviction (artifacts are permanent). allow_direct: the subject-scoped
+ * last-by-subject read IS the fetch path.
+ *
+ * PER-SUBJECT IMMUTABILITY is BROKER-ENFORCED, not left to publisher cooperation (the append-shadow
+ * blocker, live-confirmed by the panel). The create-only fence `Nats-Expected-Last-Subject-Sequence:
+ * 0` is a publisher-SET header the `epc.*` publish grant cannot compel, so a non-cooperative
+ * grant-holder could APPEND a second message to an already-published digest subject; `last_by_subj`
+ * would then return that shadow and a fail-closed read would make the honest artifact permanently
+ * unfetchable (deny_delete/deny_purge block recovery — an operator-reprovision-only DoS, and at
+ * §13.11's ep-only cut the SOLE contract path). The store closes this at the SOURCE:
+ * `max_msgs_per_subject: 1` + `discard: new` + `discard_new_per_subject: true` makes a second
+ * publish to an occupied digest subject BROKER-REJECTED (err 10077) regardless of headers, so a
+ * digest subject holds exactly one message forever. `deny_delete`/`deny_purge` then keep that one
+ * message from being removed. (The read path additionally defends itself version-agnostically —
+ * {@link fetchContractArtifact} prefers the create-only winner over any shadow — so a broker or a
+ * legacy stream that lacked the per-subject cap is still safe.)
+ *
+ * Create-or-verify-AND-harden, safe at every authority-daemon boot (the {@link
+ * ensureAuthorityStores} discipline): a fresh space gets the store created with the full shape; a
+ * CLEAN pre-existing store (incl. a pre-hardening one from an earlier release, OR the config-A
+ * footgun `max_msgs_per_subject:1` + `discard:old` that would DELETE the honest artifact) is UPDATED
+ * to the three config-B flags (idempotent, like the records store's rollup/deny update) and then
+ * VERIFIED - a shape that cannot be brought to config B FAILS LOUD, never silently adopted.
+ *
+ * The config-B upgrade ENFORCES per-subject immutability GOING FORWARD; it does NOT heal a shadow
+ * that predates it. Applying `max_msgs_per_subject:1` trims each subject to its newest message, so a
+ * legacy store that ALREADY holds a shadow (some digest subject with >1 message) would have the
+ * honest create-only winner trimmed away and the shadow cemented. Rather than silently cement it,
+ * the upgrade REFUSES LOUD on such a store (`messages > num_subjects`), so the operator reprovisions
+ * a clean store. This is a narrow guard: a fresh deploy is born at config B and never reaches it.
+ *
+ * FAIL-LOUD IS THE AGENT'S DEFENSE (critic completeness item): because this verify refuses to serve
+ * unless all three config-B flags are present, the manager NEVER serves an un-hardened EPC store —
+ * so a shadow-append cannot exist on any store an agent reads. That is why the ordinary agent
+ * baseline needs only the subject-scoped `last_by_subj` read (never the bare `next_by_subj` the
+ * shadow fallback uses): on every store the manager actually serves, `last_by_subj` always verifies
+ * and the fallback never triggers. The {@link fetchContractArtifact} create-only-winner fallback is
+ * defense-in-depth for the publisher path (the executor, which holds `next_by_subj`) and for a
+ * hypothetical un-hardened store the manager would refuse to serve anyway. On the pinned broker
+ * floor (nats-server >= 2.12, well past the 2.9 that added `discard_new_per_subject`) config B always
+ * lands; an older broker that ignores the flag is caught here and the daemon fails to start.
+ */
+export async function ensureContractStore(jsm: JetStreamManager, space: string): Promise<void> {
+  const name = epcStreamName(space);
+  const subject = `${spacePrefix(space)}.epc.>`;
+  const hardening = { max_msgs_per_subject: 1, discard: DiscardPolicy.New, discard_new_per_subject: true } as const;
+  if (await jsm.streams.info(name).catch(() => undefined) === undefined) {
+    await jsm.streams.add({
+      name,
+      subjects: [subject],
+      retention: RetentionPolicy.Limits,
+      storage: StorageType.File,
+      allow_direct: true,
+      deny_delete: true,
+      deny_purge: true,
+      ...hardening,
+    });
+  } else {
+    // Upgrade path: an EPC stream from a pre-hardening release lacks the per-subject cap. Add it
+    // idempotently (a live update of max_msgs_per_subject + discard settings is allowed and, tested,
+    // leaves a CLEAN store's artifacts intact). A stream that WON'T take the update surfaces at the
+    // verify below.
+    const info = await jsm.streams.info(name);
+    const cur = info.config;
+    if (cur.max_msgs_per_subject !== 1 || cur.discard !== DiscardPolicy.New || cur.discard_new_per_subject !== true) {
+      // HEAL-OR-FAIL, never cement (critic upgrade-trim residual): applying max_msgs_per_subject:1
+      // TRIMS each subject to its NEWEST message. On a CLEAN legacy store (create-only, ≤1 message
+      // per subject) that trims nothing. But if a legacy store ALREADY holds a shadow (a raw append
+      // left a subject with >1 message, from before this hardening existed), the trim would keep the
+      // NEWEST (the shadow) and DELETE the honest create-only winner - cementing the shadow
+      // permanently. `messages > num_subjects` is exactly "some subject has more than one message",
+      // so refuse the upgrade LOUD there: the operator reprovisions a clean store rather than the
+      // daemon silently trim-cementing a pre-existing shadow. (Fresh deploys are born at config B and
+      // never reach this; the check only guards a legacy store that was shadowed before its first
+      // config-B boot.)
+      const { messages, num_subjects } = info.state;
+      if (messages > 0 && (num_subjects === undefined || messages > num_subjects))
+        throw new Error(`the contract store ${name} is a pre-hardening stream that cannot be proven clean (${messages} messages across ${String(num_subjects)} subjects) - a subject holding more than one message means a shadow-append predates this immutability upgrade, and applying the per-subject cap would TRIM to the newest (shadow) message and delete the honest artifact; reprovision a clean store rather than cement the shadow (SPEC 13.7/13.12)`);
+      await jsm.streams.update(name, { ...cur, ...hardening });
+    }
+  }
+  const cfg = (await jsm.streams.info(name)).config as StreamConfig & { discard_new_per_subject?: boolean };
+  if (cfg.allow_direct !== true || cfg.deny_delete !== true || cfg.deny_purge !== true)
+    throw new Error(`the contract store ${name} has a drifted shape (allow_direct=${String(cfg.allow_direct)}, deny_delete=${String(cfg.deny_delete)}, deny_purge=${String(cfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  if (cfg.max_msgs_per_subject !== 1 || cfg.discard !== DiscardPolicy.New || cfg.discard_new_per_subject !== true)
+    throw new Error(`the contract store ${name} does not enforce per-subject immutability (max_msgs_per_subject=${String(cfg.max_msgs_per_subject)}, discard=${String(cfg.discard)}, discard_new_per_subject=${String(cfg.discard_new_per_subject)}); a digest subject must hold exactly one broker-immutable message or an append-shadow can DoS the store - reprovision it (SPEC 13.7/13.12)`);
+  if (!Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== subject)
+    throw new Error(`the contract store ${name} does not carry exactly the subject ${subject} (got ${JSON.stringify(cfg.subjects)}); a stream that captures anything else is not the contract store - reprovision it (SPEC 13.12)`);
+  if (cfg.storage !== "file")
+    throw new Error(`the contract store ${name} has storage ${JSON.stringify(cfg.storage)}, not file; a non-durable contract store forgets permanent artifacts on restart - reprovision it (SPEC 13.12)`);
 }
 
 /**
@@ -259,6 +360,28 @@ export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, spa
   if (authCfg.allow_direct !== false || authCfg.allow_msg_ttl !== true)
     throw new Error(`the auth store ${authBucket} has a drifted shape (allow_direct=${String(authCfg.allow_direct)}, allow_msg_ttl=${String(authCfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
   assertAuthorityStoreBinding(authCfg, authBucket);
+}
+
+/** Create (idempotently) the per-space SESSION ledger store (P2 item 6, §13.6): the DEDICATED
+ *  {@link sessionsBucket} the manager's session plane CASes `session.<id>` rows over. Kept OUT of
+ *  {@link ensureAuthorityStores} deliberately — the auth path never touches session rows, and the
+ *  manager provisions this store from its own boot — but it wears the SAME authority-store shape as
+ *  the auth bucket: `allow_direct=false` (every ledger fence is a leader-served revision-pinned CAS,
+ *  and Direct Get's follower reads would defeat read-your-writes, §13.1) plus the per-key TTL
+ *  machinery (a terminal/expired session row can carry a delete-marker TTL). The dedication is the
+ *  security substance: the standing session-ledger cred's `kv.get` is a bucket-blind body-selected read,
+ *  and a bucket holding ONLY `session.>` rows makes that read expose nothing but session state — the
+ *  structural fix for the §13.9 subject-blindness a shared auth bucket would carry (creds + gates).
+ *  Create-or-verify, safe at every manager boot; a drifted store FAILS LOUD (§13.12). */
+export async function createSessionsStore(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
+  const bucket = sessionsBucket(space);
+  const stream = `KV_${bucket}`;
+  if (await jsm.streams.info(stream).catch(() => undefined) === undefined)
+    await kvm.create(bucket, { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS });
+  const cfg = (await jsm.streams.info(stream)).config as StreamConfig & { allow_msg_ttl?: boolean };
+  if (cfg.allow_direct !== false || cfg.allow_msg_ttl !== true)
+    throw new Error(`the sessions store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}, allow_msg_ttl=${String(cfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  assertAuthorityStoreBinding(cfg, bucket);
 }
 
 /** The store-BINDING half of the verify (SPEC 13.12): a stream wearing an authority bucket's name
@@ -851,6 +974,9 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   const p = spacePrefix(space);
   const records = recordsBucket(space);
   const publish = [
+    // ONE terminal subject per goal (SPEC:1394, the §13.9 "Result/receipt/terminal/resume facts"
+    // row): the exact-arity `…result` leaf, never an `…result.*` epoch-scoped variant — a per-epoch
+    // subject hid a legitimate pre-restart winner from every reader.
     `${p}.epf.${e}.goal.*.*.*.*.result`,
     `${p}.epf.${e}.eff.>`,
     `${p}.epf.${e}.receipt.>`,
@@ -866,6 +992,86 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
 
+/** The SELF-MEDIATED GOAL-WRITER profile (P2 item 2 "spawn becomes an action"): a standing
+ *  connection that both BINDS a goal at accept AND COMMITS its terminal, for an endpoint that
+ *  accepts action goals INLINE on its ephemeral serve handler (Model B) rather than through a
+ *  separate canonicalizer + effects executor. It is exactly {@link commitPrincipalGrants} (the
+ *  `goal.*.*.*.*.result` terminal + `$KV.<records>.goal.<e>.>` record write + the two leader-served
+ *  `STREAM.MSG.GET` fencing reads the substrate uses) PLUS the ONE row commitPrincipalGrants
+ *  deliberately leaves to the canonicalizer — the goal `.bind` leaf
+ *  (`epf.<e>.goal.*.*.*.*.bind`) — so this single principal owns the whole `accepted → terminal`
+ *  goal-fact chain of its OWN endpoint. The endpoint's SERVE credential
+ *  ({@link import("./endpoint-grants.js").epServePublishRows}) holds NONE of these: a serve
+ *  connection is broker-DENIED every goal write, which is the item-2 privilege separation (the
+ *  dedicated writer is minted on a distinct connection, the serve rails stay serve-only). All of
+ *  commitPrincipalGrants' D32 residuals carry unchanged (payload-blind create-only publish; raw
+ *  `$KV` cannot enforce the per-key CAS the substrate layers on; the two body-selected
+ *  `STREAM.MSG.GET` reads expose EPF + records space-wide). The reply inbox is connection-scoped
+ *  (`_INBOX_<connId>.>`). The `eff`/`wrk`/`receipt`/`cp`/`lease` families in the commit-principal
+ *  base are inert for a goal-only endpoint (the manager writes none) but are the commit-principal
+ *  profile's standard ceiling; a tighter goal-only ceiling is a follow-up if the panel prefers it. */
+export function goalWriterGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const base = commitPrincipalGrants(space, endpoint, connId);
+  const e = endpointToken(endpoint);
+  const bindLeaf = `${spacePrefix(space)}.epf.${e}.goal.*.*.*.*.bind`;
+  // must-5 Q-B — the reconcile index: the goal-writer records each accepted goal under
+  // `goalidx.<e>.<caller triple>.<goalId>` (create-only) before the bind and deletes it at the
+  // terminal, so a successor incarnation can settle orphaned goals. Key-pinned to THIS endpoint's
+  // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
+  // index over the PROVISIONER, never this standing connection).
+  const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
+  // must-5 (a) — the own-gate currency belt: the manager reads its OWN issuance gate
+  // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
+  // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
+  // leader `STREAM.MSG.GET` that cannot be key-pinned to the single gate key — the SAME residual
+  // class the `endpoint-serve-executor` carries (reads any auth-bucket row = gate + ledger
+  // metadata, never bearer bytes), here on a standing rather than one-shot connection. The manager
+  // reads ONLY `epgate.<e>.<iid>`; (a) is the fast-fail belt, (b) barrier-revoke is the durable fence.
+  const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
+  return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
+}
+
+/** The manager's SESSION-LEDGER rows (P2 item 6): the standing connection that owns the §13.6
+ *  session ledger and NOTHING else. It holds NO session rail — not the wildcard it used to hold,
+ *  not an exact one. That is the whole point of the split.
+ *
+ *  §13.6 gives the ledger a job the byte rails do not have: it is "a DURABLE named authority that
+ *  survives the serving endpoint", the thing that still knows what to revoke after the endpoint
+ *  serving a session is gone. So it is standing and renewable, while the rails it records are
+ *  per-session, exact-subject, and die with their session ({@link import("./provision.js").Profile}
+ *  `session-serving` / `session-caller`). An earlier revision fused the two into one standing
+ *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2526 ("no
+ *  standing EPS grant exists on either side") and let one credential read and write every live
+ *  session's bytes at that epoch. Splitting on the lifetime boundary is what removes the wildcard:
+ *  the standing half no longer has rails to widen.
+ *
+ *  Its store is the DEDICATED {@link sessionsBucket}, NOT the auth bucket. The write is
+ *  `$KV.<sessions>.session.*` (create-only CAS + revision-pinned update; `sessionLedgerKey` is the
+ *  single-token `session.<id>`). The read is a bucket-blind leader `STREAM.MSG.GET` (allow_direct=
+ *  false, so `kv.get` is a body-selected read that cannot be key-pinned) — but the dedicated bucket
+ *  holds ONLY `session.>` rows, so that blind read exposes nothing but session ledger state,
+ *  structurally closing the §13.9 subject-blindness the auth bucket carries (creds + gates). The
+ *  reply inbox is connection-scoped. NO auth-bucket, records-bucket, or messaging-plane grant.
+ *
+ *  NAMED RESIDUAL: `session.*` is one token wide and carries no endpoint component, because a
+ *  `sessionId` is an opaque unguessable token with no endpoint inside it. So this credential can
+ *  read and CAS any session row in its space, including another endpoint's. That was equally true
+ *  of the credential it replaces; it is not a regression, and it is confined to ledger STATE — row
+ *  state and credential ids — never to session bytes, which now require a per-session credential
+ *  this profile cannot mint. */
+export function sessionLedgerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const SESS = sessionsBucket(space);
+  return {
+    publish: [
+      `$KV.${SESS}.session.*`,              // ledger create/update — single-token key (`session.<id>`)
+      `${JSAPI}.STREAM.MSG.GET.KV_${SESS}`, // kv.get: leader-served body-selected read, confined to the sessions bucket
+      `${JSAPI}.STREAM.INFO.KV_${SESS}`,    // Kvm bind probe (§13.12)
+      `${JSAPI}.INFO`,                       // JS-API context info (KV client)
+    ],
+    subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`], // connection-scoped reply inbox
+  };
+}
+
 /** The CONTRACT PUBLISHER principal's rows (§13.9 matrix "Contract-artifact publication" +
  *  the trusted-infra half of "Contract-artifact read"): publish `epc.*` (the digest-hex is ONE
  *  subject token; create-only rides `Nats-Expected-Last-Subject-Sequence: 0` at the typed path,
@@ -877,10 +1083,16 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  connection-scoped (`_INBOX_<connId>.>`, never the account-wide default).
  *
  *  D32 residuals, EXPLICIT: (1) the `epc.*` publish is payload-blind — a compromised publisher
- *  can flood NEW digest subjects with garbage artifacts (verify-on-read refuses to SERVE
- *  non-canonical or digest-mismatched bytes, and an existing digest subject is CAS-protected,
- *  so it can waste storage but never corrupt or replace a published artifact); (2) the raw JS
- *  API request carries a caller-selected reply subject (the same confused-deputy injection
+ *  can publish garbage artifacts at NEW (previously-unused) digest subjects (verify-on-read refuses
+ *  to SERVE non-canonical or digest-mismatched bytes, so this is a bounded storage flood carrying
+ *  no authority). It can NOT overwrite, shadow, or replace an EXISTING published artifact: the EPC
+ *  store's shape ({@link ensureContractStore}: `max_msgs_per_subject:1` + discard-new-per-subject)
+ *  makes a second publish to an occupied digest subject broker-REJECTED regardless of the
+ *  create-only header, so per-subject immutability is broker-enforced, not publisher-cooperative.
+ *  (Earlier revisions relied on the cooperative create-only header alone and a fail-closed read,
+ *  which the panel's live repro showed a non-cooperative publisher could defeat by raw append — a
+ *  permanent shadow-DoS; the stream shape + the create-only-winner read fallback close it.) (2) the
+ *  raw JS API request carries a caller-selected reply subject (the same confused-deputy injection
  *  class as every API-holding profile). */
 export function contractPublisherGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const publish = [

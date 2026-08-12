@@ -26,8 +26,8 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable, loadAgentFile,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, mintLifecycleUid, CotalEndpoint,
-  CONTROL_SELF_SERVICE, channelInAllow, chatStream, chatSubject, chatHistDurable, DEV_OWNER,
-  type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
+  chatStream, chatSubject, chatHistDurable, DEV_OWNER,
+  type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -113,19 +113,10 @@ try {
   const poster = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "operator"), card: { name: "poster", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   poster.on("error", (e) => console.log("poster err:", e.message));
   await poster.start();
-  sup.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
-    const allow = allowById.get(req.from.id) ?? [];
-    const ch = typeof req.args?.channel === "string" ? req.args.channel : "";
-    if (req.op === "durableJoin") {
-      if (!channelInAllow(allow, ch)) return { ok: false, error: `"${ch}" outside allowSubscribe` };
-      return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, uidById.get(req.from.id)!) };
-    }
-    if (req.op === "durableLeave") {
-      await dlv.durableLeaveFor(req.from.id, ch, uidById.get(req.from.id)!, typeof req.args?.generation === "number" ? req.args.generation : undefined);
-      return { ok: true, data: { channel: ch } };
-    }
-    return { ok: false, error: `unsupported op ${req.op}` };
-  });
+  // 1d: the delivery daemon serves durableJoin/durableLeave on ctl.delivery directly (startPlane3's
+  // serve loop, ACL-checked via its `(id) => allowById.get(id)` callback) — what
+  // joinChannel/leaveChannel target. (The old `sup.serveControl(CONTROL_SELF_SERVICE)` stub
+  // duplicated this real handler on the deleted manager tier; removed.)
 
   // Pre-seed history BEFORE agents connect (so backfill has something to find).
   await poster.multicast("general-history", { channel: "general" });

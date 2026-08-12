@@ -1,29 +1,24 @@
 /**
- * Attach-endpoint reachability + credential smoke (no NATS, no test runner) — pnpm smoke:attach-auth
+ * Console-endpoint reachability + credential smoke (no NATS, no test runner) — pnpm smoke:attach-auth
  *
- * The manager's attach face used to bind and advertise a hardcoded `127.0.0.1`, so a remote
- * `cotal attach` dialed its OWN loopback and got ECONNREFUSED. It now follows the mesh broker's
- * host — which means it can leave the box, which means the whole surface must be credentialed:
- * it carries terminal read+write for every managed agent, plus the roster and the live feed.
+ * The manager's HTTP face used to bind and advertise a hardcoded `127.0.0.1`. The bind address is
+ * now an operator choice, which means the face can leave the box, which means everything on it that
+ * describes the mesh — or MINTS a credential — must be credentialed.
  *
- * Guards both halves:
- *   - `attachHost` derives the bind/advertise address from the broker URL (and stays loopback
- *     when there is no mesh address to follow);
- *   - every route AND the WS upgrade refuse an unauthenticated caller, accept the token by
- *     query/cookie/bearer, and reject a wrong-length and a same-length-but-wrong token;
- *   - the console page hands the browser the credential as a same-origin HttpOnly cookie;
- *   - `url()` / `consoleUrl()` advertise the bound host, and a wildcard bind advertises loopback.
+ * P2 item 6 removed the `ws://.../attach/` terminal transport from this face: the terminal rides a
+ * mesh §13.6 session, so `cotal attach` reaches a manager on another machine through the BROKER and
+ * there is no per-agent attach ticket left to bind. What remains here, and what this guards:
+ *   - `attachHost` derives a bind/advertise address from a broker URL (and stays loopback when there
+ *     is no mesh address to follow);
+ *   - `/agents`, `/feed` and `POST /session/<name>` refuse an unauthenticated caller, accept the
+ *     token by query/bearer (never a cookie), and reject a wrong-length AND a same-length-but-wrong
+ *     token; the static shell stays open so the page can load and then present the credential;
+ *   - `consoleUrl()` advertises the bound host, keeps the token in the fragment, and a wildcard bind
+ *     advertises loopback;
+ *   - an upgrade to this HTTP-only face is refused, never left hanging.
  */
 import WebSocket from "ws";
 import { AttachEndpoint, attachHost } from "../src/attach-endpoint.js";
-import { dialableAttachUrl } from "../../cli/src/commands/agents.js"; // dev-only smoke import: the operator client lives in @cotal-ai/cli
-
-/** A running handle for endpoints that only exercise URL shape — `url()` now requires one, since a
- *  capability is bound to the incarnation it was issued against. */
-const anyLive = { kind: "pty", status: () => "running", attach: () => ({
-  onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
-  cols: 80, rows: 24, snapshot: async () => "",
-}) };
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -31,7 +26,7 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
-// --- attachHost: the bind address follows the mesh -------------------------------------------
+// --- attachHost: an address derived from the mesh ---------------------------------------------
 check("attachHost: derives the broker's host", attachHost("nats://100.98.80.110:4222") === "100.98.80.110");
 check("attachHost: loopback mesh stays loopback", attachHost("nats://127.0.0.1:4222") === "127.0.0.1");
 check("attachHost: no mesh address → loopback", attachHost(undefined) === "127.0.0.1");
@@ -44,23 +39,35 @@ check("attachHost: an unparseable URL throws, never a silent bind", threw);
 check("attachHost: strips IPv6 brackets for the bind address", attachHost("nats://[::1]:4222") === "::1");
 check("attachHost: strips brackets for a full IPv6 literal", attachHost("nats://[2001:db8::1]:4222") === "2001:db8::1");
 {
-  const v6 = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, attachHost("nats://[::1]:4222"), "d".repeat(64));
-  let ok = false, why = "";
-  try { await v6.start(); ok = true; await v6.stop(); } catch (e) { why = (e as Error).message; }
-  check("an IPv6 broker URL yields a bindable attach host", ok, why);
-  check("...and advertises it re-bracketed", ok && v6.url("a", anyLive as never).startsWith("ws://[::1]:"), ok ? v6.url("a", anyLive as never) : why);
+  const v6 = new AttachEndpoint(() => [], () => [], 0, undefined, attachHost("nats://[::1]:4222"), "d".repeat(64));
+  let ok = false, why = "", advertised = "";
+  try { await v6.start(); ok = true; advertised = v6.consoleUrl(); await v6.stop(); } catch (e) { why = (e as Error).message; }
+  check("an IPv6 broker URL yields a bindable console host", ok, why);
+  check("...and advertises it re-bracketed", ok && advertised.startsWith("http://[::1]:"), ok ? advertised : why);
+}
+
+// --- a blank credential is refused at CONSTRUCTION, not at request time -----------------------
+// The failure DIRECTION that matters: an endpoint that cannot be credentialed must not exist,
+// rather than serve the roster, the feed and the session mint to anyone who reaches the bind host.
+{
+  let blankErr = "";
+  try { new AttachEndpoint(() => [], () => [], 0, undefined, "0.0.0.0", ""); } catch (e) { blankErr = (e as Error).message; }
+  check("an empty console token is refused at construction", blankErr.includes("refusing to serve without a console token"), blankErr);
 }
 
 // --- the live endpoint ------------------------------------------------------------------------
 const TOKEN = "a".repeat(64);
-const live = { kind: "pty", status: () => "running", attach: () => ({
-  onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
-  cols: 80, rows: 24, snapshot: async () => "",
-}) };
-const known: Record<string, unknown> = { nobody: live, mine: live, victim: live };
-const ep = new AttachEndpoint((n: string) => known[n] as never, () => [{ name: "x" }], () => [], 0, "127.0.0.1", TOKEN);
+const minted: string[] = [];
+const ep = new AttachEndpoint(
+  () => [{ name: "x" }],
+  () => [],
+  0,
+  async (name) => { minted.push(name); return { grant: { sessionId: `sess-${name}` }, wsUrl: "ws://127.0.0.1:14999", creds: "CREDS" }; },
+  "127.0.0.1",
+  TOKEN,
+);
 await ep.start();
-const base = ep.consoleUrl().replace(/\/#t=.*$/, "");
+const base = new URL(ep.consoleUrl()).origin;
 
 const get = async (path: string, init?: RequestInit): Promise<Response> => fetch(`${base}${path}`, init);
 
@@ -71,24 +78,35 @@ try {
   for (const p of ["/", "/app.js"])
     check(`static shell GET ${p} is served without a credential`, (await get(p)).status === 200);
 
+  // The mint route is the most sensitive thing on this face: it hands the browser a real §13.6
+  // grant plus a per-session caller credential. It must never answer an uncredentialed caller, and
+  // the refusal must land BEFORE the establisher runs (no offer burned, no credential minted).
+  check("unauthenticated POST /session/<name> → 401", (await get("/session/x", { method: "POST" })).status === 401);
+  check("...and the session establisher was never reached", minted.length === 0, minted);
+
   // Wrong tokens are refused, including one of the right length (so the check is not length-only).
   check("wrong-length token → 401", (await get("/agents?t=nope")).status === 401);
   check("same-length wrong token → 401", (await get(`/agents?t=${"b".repeat(64)}`)).status === 401);
+  check("same-length wrong token on the mint route → 401", (await get(`/session/x?t=${"b".repeat(64)}`, { method: "POST" })).status === 401);
+  check("...still no establisher call", minted.length === 0, minted);
 
   // Each accepted credential channel.
   check("token by query → 200", (await get(`/agents?t=${TOKEN}`)).status === 200);
   check("a cookie is NOT accepted as a credential", (await get("/agents", { headers: { cookie: `cotal_attach=${TOKEN}` } })).status === 401);
   check("token by bearer → 200", (await get("/agents", { headers: { authorization: `Bearer ${TOKEN}` } })).status === 200);
+  check("the credentialed mint route reaches the establisher", (await get(`/session/x?t=${TOKEN}`, { method: "POST" })).status === 200);
+  check("...exactly once, for the named agent", minted.length === 1 && minted[0] === "x", minted);
 
   // NO cookie: cookies are host-scoped, not port-scoped, so one set here would be sent to every
   // other HTTP service on this host and would collide between two managers on one box.
   const page = await get(`/?t=${TOKEN}`);
   check("console page is served", page.status === 200);
-  check("console URL puts the token in the FRAGMENT, never the query", ep.consoleUrl().includes(`#t=${TOKEN}`) && !ep.consoleUrl().includes(`?t=`), ep.consoleUrl());
+  check("console URL puts the token in the FRAGMENT, never the query", ep.consoleUrl().includes(`#t=${TOKEN}`) && !ep.consoleUrl().includes("?t="), ep.consoleUrl());
   check("console page is no-store + no-referrer", (page.headers.get("cache-control") ?? "").includes("no-store") && (page.headers.get("referrer-policy") ?? "").includes("no-referrer"));
   check("console page sets NO cookie", (page.headers.get("set-cookie") ?? "") === "", page.headers.get("set-cookie"));
 
-  // The WS upgrade — the one that carries terminal write access.
+  // HTTP-only face: item 6 deleted the ws terminal transport, so an upgrade gets a clean refusal
+  // rather than a hung or reset socket — credential or not, since there is nothing to authorize.
   const upgradeTo = (pathAndQuery: string): Promise<string> =>
     new Promise((resolve) => {
       const ws = new WebSocket(`${base.replace("http", "ws")}${pathAndQuery}`);
@@ -98,102 +116,23 @@ try {
       ws.on("error", (e) => done(`error:${(e as Error).message}`));
       setTimeout(() => done("timeout"), 4000);
     });
-  const upgrade = (qs: string): Promise<string> =>
-    new Promise((resolve) => {
-      const ws = new WebSocket(`${base.replace("http", "ws")}/attach/nobody${qs}`);
-      const done = (v: string) => { try { ws.close(); } catch { /* already closing */ } resolve(v); };
-      ws.on("unexpected-response", (_req, res) => done(`http-${res.statusCode}`));
-      ws.on("open", () => done("upgraded"));
-      ws.on("error", (e) => done(`error:${(e as Error).message}`));
-      setTimeout(() => done("timeout"), 4000);
-    });
+  check("a ws upgrade to the deleted attach transport is refused", (await upgradeTo("/attach/nobody")) === "http-400");
+  check("...and holding the console token does not resurrect it", (await upgradeTo(`/attach/nobody?t=${TOKEN}`)) === "http-400");
 
-  const anon = await upgrade("");
-  check("unauthenticated WS upgrade refused with 401", anon === "http-401", anon);
-  const authed = await upgrade(`?t=${TOKEN}`);
-  check("console token upgrade is accepted (the operator drives every agent)", authed === "upgraded", authed);
-
-  // THE BYPASS: a capability issued for one agent must not attach another. `url()` mints a ticket
-  // bound to the name the manager just authorized; swapping the path must be refused.
-  const issued = new URL(ep.url("mine", live as never));
-  const ticket = issued.searchParams.get("t") ?? "";
-  const swapped = await upgradeTo(`/attach/victim?t=${ticket}`);
-  check("a ticket for 'mine' CANNOT attach 'victim'", swapped === "http-401", swapped);
-
-  const fresh = new URL(ep.url("mine", live as never)).searchParams.get("t") ?? "";
-  check("a ticket redeems for its own agent", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "upgraded");
-  check("...and only once (single use)", (await upgradeTo(`/attach/mine?t=${fresh}`)) === "http-401");
-  check("two issues produce different tickets", ticket !== fresh);
-
-  // A NAME IS A REUSABLE SLOT. A ticket issued for one incarnation must not attach a same-name
-  // SUCCESSOR that takes the slot inside the TTL — on a user-auth mesh that successor can belong to
-  // a different owner, so name-only binding would be a cross-owner terminal handover.
-  {
-    const successor = { kind: "pty", status: () => "running", attach: () => ({
-      onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {},
-      cols: 80, rows: 24, snapshot: async () => "",
-    }) };
-    const issued2 = new URL(ep.url("mine", live as never)).searchParams.get("t") ?? "";
-    known.mine = successor as never; // the original exits; a same-name successor takes the slot
-    const afterSwap = await upgradeTo(`/attach/mine?t=${issued2}`);
-    check("a ticket does NOT survive a same-name successor taking the slot", afterSwap === "http-401", afterSwap);
-    known.mine = live as never; // restore
-
-    // ...and the same slot-reuse race one step EARLIER, which the swap above does not reach: the
-    // successor arrives DURING authorization, before the ticket is issued. `opAttach` resolves the
-    // name, awaits authorization (user mode reads the ledger), and only then asks for a capability.
-    // Re-resolving the name at issuance would hand out a valid ticket for an incarnation nobody
-    // authorized. `url()` takes the AUTHORIZED handle and refuses when the slot has moved under it.
-    known.mine = successor as never; // the swap lands while the caller is still awaiting authz
-    let raced = "";
-    try { ep.url("mine", live as never); } catch (e) { raced = (e as Error).message; }
-    check("url() refuses a capability when the slot moved during authorization", raced.includes("replaced during authorization"), raced);
-    // The successor itself is still attachable — this closes a race, it does not wedge the slot.
-    const okAfter = new URL(ep.url("mine", successor as never)).searchParams.get("t") ?? "";
-    check("...while the successor's OWN authorized handle still issues", (await upgradeTo(`/attach/mine?t=${okAfter}`)) === "upgraded");
-    known.mine = live as never; // restore
-  }
-
-  // Issuing for an agent that is not running is a caller bug, not a silently dead ticket.
-  let noAgent = "";
-  try { ep.url("does-not-exist", live as never); } catch (e) { noAgent = (e as Error).message; }
-  check("url() refuses to issue for an unknown agent", noAgent.includes("no such running agent"), noAgent);
-
-  // What the manager hands back over the control plane.
-  known["agent one"] = live as never;
-  const url = ep.url("agent one", live as never);
-  check("url() carries a credential", /[?&]t=[0-9a-f]{64}\b/.test(url), url);
-  check("url() does NOT hand out the manager-wide console token", !url.includes(TOKEN), url);
-  check("url() percent-encodes the agent name", url.includes("/attach/agent%20one"), url);
-
-  const remote = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "100.98.80.110", TOKEN);
-  check("url() advertises the bound host, not loopback", remote.url("a", anyLive as never).startsWith("ws://100.98.80.110:"), remote.url("a", anyLive as never));
-  const wild = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "0.0.0.0", TOKEN);
-  check("a wildcard bind advertises loopback (not a dialable name)", wild.url("a", anyLive as never).startsWith("ws://127.0.0.1:"), wild.url("a", anyLive as never));
-  // An address this machine does not own: a manager pointed at a broker on ANOTHER host. It must
-  // say which address and why, not surface a bare errno from deep inside startup.
-  const orphan = new AttachEndpoint(() => anyLive as never, () => [], () => [], 0, "203.0.113.7", TOKEN);
+  // Where it advertises itself.
+  const remote = new AttachEndpoint(() => [], () => [], 0, undefined, "100.98.80.110", TOKEN);
+  check("consoleUrl() advertises the bound host, not loopback", remote.consoleUrl().startsWith("http://100.98.80.110:"), remote.consoleUrl());
+  const wild = new AttachEndpoint(() => [], () => [], 0, undefined, "0.0.0.0", TOKEN);
+  check("a wildcard bind advertises loopback (not a dialable name)", wild.consoleUrl().startsWith("http://127.0.0.1:"), wild.consoleUrl());
+  // An address this machine does not own. It must say which address and why, not surface a bare
+  // errno from deep inside startup.
+  const orphan = new AttachEndpoint(() => [], () => [], 0, undefined, "203.0.113.7", TOKEN);
   let bindErr = "";
   try { await orphan.start(); await orphan.stop(); } catch (e) { bindErr = (e as Error).message; }
   check(
     "binding an address this host lacks fails with operator-legible guidance",
-    bindErr.includes("203.0.113.7") && bindErr.includes("must run on the machine"),
+    bindErr.includes("203.0.113.7") && bindErr.includes("console host it owns"),
     bindErr,
-  );
-  // The CLIENT decides where to dial: a manager that could only name loopback (a wildcard bind)
-  // must not send a remote operator to its own machine.
-  check(
-    "a loopback-advertised URL is redialled at the broker we actually reached",
-    dialableAttachUrl("ws://127.0.0.1:9/attach/a?t=x", "nats://100.98.80.110:4222") === "ws://100.98.80.110:9/attach/a?t=x",
-    dialableAttachUrl("ws://127.0.0.1:9/attach/a?t=x", "nats://100.98.80.110:4222"),
-  );
-  check(
-    "a manager that named a real host is left alone",
-    dialableAttachUrl("ws://10.1.2.3:9/attach/a?t=x", "nats://100.98.80.110:4222") === "ws://10.1.2.3:9/attach/a?t=x",
-  );
-  check(
-    "a genuinely local mesh keeps loopback",
-    dialableAttachUrl("ws://127.0.0.1:9/attach/a?t=x", "nats://127.0.0.1:4222") === "ws://127.0.0.1:9/attach/a?t=x",
   );
 } finally {
   await ep.stop();
