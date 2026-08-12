@@ -53,8 +53,12 @@ try {
   writeFileSync(path, '{"i":1}\n{"i":2}\n');
   const src = new JsonlFileSource<{ i: number }>(path);
   const adopt = await readOr(src, undefined, "fresh adopt");
-  c("a fresh adopt does not rebroadcast existing history", adopt.records.length === 0, adopt.records);
-  c("the adopt cursor is the current end", adopt.cursor === "16", adopt.cursor);
+  // ONE cell asserting both halves: the separate cursor row did not discriminate M4 (reading from 0
+  // still lands the cursor on the same value), so it read as coverage without being any
+  // (fmae-rev-test F2). Folded rather than kept as a green tick that proves nothing.
+  c("a fresh adopt reads nothing and starts at the current end",
+    adopt.records.length === 0 && adopt.cursor === String(Buffer.byteLength('{"i":1}\n{"i":2}\n')),
+    adopt);
 
   // ── new complete records are read forward ──
   appendFileSync(path, '{"i":3}\n{"i":4}\n');
@@ -69,7 +73,11 @@ try {
   appendFileSync(path, '{"i":5}\n{"i":6'); // no trailing newline: the writer is mid-line
   const r3 = await readOr(src, r2.cursor, "partial-line read");
   c("a half-written trailing line is NOT consumed", r3.records.length === 1 && r3.records[0].i === 5, r3.records);
-  c("the cursor stops at the last complete line", Number(r3.cursor) < 16 + 16 + 8 + 6, r3.cursor);
+  // EXACT, not an inequality. This read `< 46` while the correct stop is 40, so 32..45 all passed —
+  // a wrong stop one byte either side would have gone unnoticed (fmae-rev-test F1). The expected
+  // value is computed from the fixture bytes so it stays true if the fixture changes.
+  const expectedStop = Buffer.byteLength('{"i":1}\n{"i":2}\n{"i":3}\n{"i":4}\n{"i":5}\n');
+  c("the cursor stops EXACTLY at the end of the last complete line", r3.cursor === String(expectedStop), { got: r3.cursor, want: expectedStop });
 
   // ── and it arrives once the writer finishes it ──
   appendFileSync(path, '}\n');
