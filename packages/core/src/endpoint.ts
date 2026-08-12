@@ -1773,9 +1773,10 @@ export class CotalEndpoint extends EventEmitter {
    *
    *  **Why this exists when `channelHistory` already works:** authorization. A consumer pins its
    *  authorization at CREATE time, so a caller whose read ACL is revoked mid-scroll keeps being served
-   *  by the consumer it already holds. The mediator re-reads the ACL from the durable registry on
-   *  EVERY call, so a revocation stops the very next read. That is the whole point of the verb; a
-   *  mediator that cached the ACL would be a rename of the path it replaces.
+   *  by the consumer it already holds. The mediator re-reads authorization on EVERY call (live
+   *  registry row ∩ mint-time ceiling — SPEC §9.6), so a revocation stops the very next read and a
+   *  registry-only widen cannot exceed the effective credential. That is the whole point of the verb;
+   *  a mediator that cached the ACL would be a rename of the path it replaces.
    *
    *  **The caller never names itself.** The daemon takes the principal from the broker-authenticated
    *  request subject ({@link serveControl} fail-closes when the payload `from` disagrees), so there is
@@ -2139,8 +2140,13 @@ export class CotalEndpoint extends EventEmitter {
    *  delivery daemon can re-authorize the agent's durable entries and validate its runtime
    *  durable-joins without holding any in-memory ledger. Written ATOMICALLY ({@link writeAclRecord}),
    *  so a present record is always complete (`[]` = known no-read, never a half-write). */
-  async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+  async commitAcl(
+    targetId: string,
+    lifecycleUid: string,
+    allowSubscribe: string[],
+    opts?: { reissue?: boolean },
+  ): Promise<void> {
+    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe, opts);
   }
 
   /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
@@ -2155,9 +2161,18 @@ export class CotalEndpoint extends EventEmitter {
    *  authz seam for callers that arrive with alias identity only (a `ctl.delivery` durable-join).
    *  THROWS {@link AmbiguousAclAlias} on two live rows — first-match would let a stale lifecycle
    *  authorize the successor (SPEC 13.1: at most one live lifecycle per alias). */
-  async aclForAlias(principal: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined> {
+  async aclForAlias(principal: string): Promise<{
+    allowSubscribe: string[];
+    issuedAllowSubscribe: string[];
+    lifecycleUid: string;
+  } | undefined> {
     const row = await readAclForAlias(await this.aclRegistry(), principal);
-    return row === undefined ? undefined : { allowSubscribe: row.record.allowSubscribe, lifecycleUid: row.lifecycleUid };
+    if (row === undefined) return undefined;
+    const allow = row.record.allowSubscribe;
+    // Legacy rows predate the ceiling field: treat missing as equal to allowSubscribe so behaviour
+    // matches what that row already exposed. New rows always carry an explicit ceiling.
+    const issued = row.record.issuedAllowSubscribe ?? allow;
+    return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
   }
 
   /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
@@ -2609,11 +2624,19 @@ export class CotalEndpoint extends EventEmitter {
    *  holds the consumer so the caller does not have to: this is a privilege reduction, not a new
    *  capability, and it is the shape SPEC's "Mediated reads (normative)" rule asks for.
    *
-   *  THE ONE INVARIANT THIS METHOD EXISTS FOR: the ACL is read FRESH from the durable registry on every
-   *  call and never cached across calls. A consumer pins its authorization when it is created, so a
-   *  revoked caller keeps being served by a consumer it already holds; re-reading here is what makes a
-   *  revocation stop the very NEXT read. Cache this and the verb loses its only advantage over the raw
-   *  consumer path.
+   *  THE ONE INVARIANT THIS METHOD EXISTS FOR: authorization is read FRESH on every call and never
+   *  cached across calls. A consumer pins its authorization when it is created, so a revoked caller
+   *  keeps being served by a consumer it already holds; re-reading here is what makes a revocation
+   *  stop the very NEXT read. Cache this and the verb loses its only advantage over the raw consumer
+   *  path.
+   *
+   *  AUTHORITY (SPEC §9.6): "current read ACL" is the effective broker-accepted credential. The
+   *  durable registry is a live mirror of that credential, not a second grant source. History
+   *  authorizes against `allowSubscribe ∩ issuedAllowSubscribe` — the live row (so revocation via
+   *  plain commitAcl still stops the next read) intersected with the mint-time ceiling (so a
+   *  registry widen without a remint cannot grant what the JWT does not). Raising the ceiling is
+   *  `commitAcl(..., { reissue: true })`, which is what provision does when it bakes the list into
+   *  the JWT.
    *
    *  The caller arrives as an alias (the control subject carries owner+actor, never a uid) and is the
    *  AUTHENTICATED subject sender — `serveControl` has already fail-closed on any payload that names a
@@ -2632,13 +2655,30 @@ export class CotalEndpoint extends EventEmitter {
     // FRESH per call — see the method doc. Same registry, same alias resolution, and the same loud
     // refusal on two live rows that `durableJoin` uses: a stale lifecycle must never authorize its
     // successor's read.
-    let acl: { allowSubscribe: string[]; lifecycleUid: string } | undefined;
+    //
+    // SPEC §9.6: "current read ACL" is the effective broker-accepted credential. The registry row is
+    // a live mirror and can be rewritten by plain commitAcl without a remint. Authorizing history
+    // from the row ALONE let a widen grant reads channelHistory still broker-denies — a new
+    // capability wearing a privilege-reduction label (panel BLOCKING at 914fd7b0). History therefore
+    // requires the channel in BOTH the live row AND the mint-time ceiling (`issuedAllowSubscribe`).
+    // Revocation still works: narrowing allowSubscribe stops the next read. Raising the ceiling
+    // requires reissue (provision/remint), which is the same act that bakes the list into the JWT.
+    let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; lifecycleUid: string } | undefined;
     try { acl = await this.aclForAlias(caller); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     if (acl === undefined)
       return { ok: false, error: `readHistory: no read ACL on record for ${caller} - not permitted` };
-    if (!channelInAllow(acl.allowSubscribe, channel))
-      return { ok: false, error: `readHistory: channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}] - refused` };
+    const inLive = channelInAllow(acl.allowSubscribe, channel);
+    const inIssued = channelInAllow(acl.issuedAllowSubscribe, channel);
+    if (!inLive || !inIssued) {
+      // Name the live list in the error — that is what operators edit and what revocation clears.
+      // A ceiling miss (registry widened past the credential) is the same refusal shape as a live
+      // miss so a caller cannot probe which half failed.
+      return {
+        ok: false,
+        error: `readHistory: channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}] - refused`,
+      };
+    }
 
     // One message MORE than the page is the completeness probe: if the backlog hands back limit+1,
     // something older exists behind the page and `complete` is false. Cheaper and more honest than a

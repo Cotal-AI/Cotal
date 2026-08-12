@@ -24,12 +24,14 @@
  * was the wrong shape twice over, since newest-N returns the LAST two, and it is now asserted as
  * newest-N.
  *
- * THE PROPERTY THAT DISTINGUISHES THIS FROM THE CONSUMER PATH, and the reason it is worth shipping:
- * a consumer pins its authorization at CREATE time, so a revoked ACL keeps serving the open
- * consumer. The mediator re-reads the ACL PER CALL, so a revocation stops the very next read. That
- * is directly observable, it survives the loss of cursors intact, and it is the check in this file
- * that must never be relaxed — without it slice 1 ships a verb with no advantage over the raw
- * consumer path it exists to replace.
+ * TWO PROPERTIES THAT DISTINGUISH THIS FROM THE CONSUMER PATH, and the reason it is worth shipping:
+ * 1. A consumer pins its authorization at CREATE time, so a revoked ACL keeps serving the open
+ *    consumer. The mediator re-reads authorization PER CALL, so a revocation stops the very next
+ *    read.
+ * 2. SPEC §9.6: current read ACL is the effective broker credential. The mediator authorizes
+ *    against the live registry row ∩ the mint-time ceiling, so a registry widen WITHOUT a remint
+ *    cannot grant history the caller's JWT still broker-denies. Without (2) the verb is a new
+ *    capability wearing a privilege-reduction label (panel BLOCKING at 914fd7b0).
  *
  * Run: pnpm smoke:read-history:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -197,13 +199,85 @@ try {
   const dflt = await reader.readHistory("ops");
   check("an omitted limit serves the default page", dflt.items.length === 6 && dflt.complete === true, { n: dflt.items.length });
 
-  // 5. THE PROPERTY THAT JUSTIFIES THE FEATURE, and the one check here that must never be relaxed:
-  // authorization is re-read PER CALL. A consumer pins its ACL at create time and keeps serving after
-  // a revocation; the mediator must stop on the very next read. Fully testable without cursors.
+  // 5. THE PROPERTIES THAT JUSTIFY THE FEATURE. A consumer pins its ACL at create time; the mediator
+  // must (a) stop on the next read after a live-row revocation and (b) refuse a registry-only widen
+  // that the caller's JWT does not back (SPEC §9.6). Fully testable without cursors.
   const p3 = await reader.readHistory("ops", { limit: 1 });
   check("a read is served while the ACL still admits the channel", (p3.items?.length ?? 0) === 1, p3);
-  // Revoke on the SAME key provisioning wrote and the mediator reads: the ACL registry is keyed by the
-  // PRINCIPAL (`<owner>.<actor>`), not by the raw nkey. Revoking under `rId.id` writes a row nothing
+
+  // 5a. Registry widen WITHOUT remint must NOT grant history. Seed a secret the reader has never
+  // held in its JWT, widen only the registry row, and assert mediated read still refuses — while a
+  // direct channelHistory on the same connection still gets a broker Permissions Violation. This is
+  // the panel's executed BLOCKING at 914fd7b0; green here is the only proof the ceiling holds.
+  {
+    const sId = newIdentity();
+    const uidS = mintLifecycleUid();
+    const sCreds = await provisionAgent(mgr, auth, sId, {
+      allowSubscribe: ["ops"], allowPublish: ["ops"], subscribe: ["ops"], lifecycleUid: uidS,
+    });
+    // Post the secret under a writer that may publish it.
+    const wId = newIdentity();
+    const uidW = mintLifecycleUid();
+    const wCreds = await provisionAgent(mgr, auth, wId, {
+      allowSubscribe: ["secret"], allowPublish: ["secret"], subscribe: ["secret"], lifecycleUid: uidW,
+    });
+    const writer = new CotalEndpoint({
+      space, servers: SERVERS, creds: wCreds, channels: ["secret"], consume: false, lifecycleUid: uidW,
+      watchPresence: false, registerPresence: false, card: { id: wId.id, name: "seeder", kind: "agent" },
+    });
+    writer.on("error", () => {});
+    await writer.start();
+    await writer.multicast("SECRET-CONTENT-SHOULD-NOT-LEAK", { channel: "secret" });
+    await writer.stop().catch(() => {});
+
+    const limited = new CotalEndpoint({
+      space, servers: SERVERS, creds: sCreds, channels: ["ops"], consume: false, lifecycleUid: uidS,
+      watchPresence: false, registerPresence: false, card: { id: sId.id, name: "limited", kind: "agent" },
+    });
+    limited.on("error", () => {});
+    await limited.start();
+    // Baseline: secret is refused under the minted ACL.
+    let baseErr = "";
+    try { await limited.readHistory("secret", { limit: 10 }); }
+    catch (e) { baseErr = (e as Error).message; }
+    check("pre-widen: secret is refused under the minted ACL", /not within your read ACL/i.test(baseErr), baseErr);
+
+    // Widen ONLY the registry row — no remint, no reconnect. Plain commitAcl (no reissue).
+    await mgr.commitAcl(principalKey(DEV_OWNER, sId.id).key, uidS, ["ops", "secret"]);
+    await wait(300);
+
+    let widenErr = "";
+    let widenLeak: unknown;
+    try { widenLeak = await limited.readHistory("secret", { limit: 10 }); }
+    catch (e) { widenErr = (e as Error).message; }
+    const leaked = widenErr === "" && Array.isArray((widenLeak as { items?: unknown[] })?.items)
+      && ((widenLeak as { items: { parts?: { text?: string }[] }[] }).items ?? [])
+        .some((m) => (m.parts ?? []).some((p) => p.text?.includes("SECRET-CONTENT-SHOULD-NOT-LEAK")));
+    check(
+      "a registry widen without remint does NOT grant mediated history (SPEC §9.6 ceiling)",
+      widenErr !== "" && !leaked,
+      { widenErr, widenLeak },
+    );
+
+    // Positive control on the same connection: direct channelHistory is still broker-denied.
+    let directErr = "";
+    try { await limited.channelHistory("secret", { limit: 10 }); }
+    catch (e) { directErr = (e as Error).message; }
+    check(
+      "direct channelHistory still broker-denies secret after the registry widen",
+      /Permissions Violation|permission/i.test(directErr),
+      directErr,
+    );
+
+    // Ops still works after the widen — we did not break the live half.
+    const stillOps = await limited.readHistory("ops", { limit: 1 });
+    check("ops remains readable after a refused secret widen", (stillOps.items?.length ?? 0) >= 1, stillOps);
+
+    await limited.stop().catch(() => {});
+  }
+
+  // 5b. Revoke on the SAME key provisioning wrote and the mediator reads: the ACL registry is keyed by
+  // the PRINCIPAL (`<owner>.<actor>`), not by the raw nkey. Revoking under `rId.id` writes a row nothing
   // resolves, the original permissive row survives, and the read below succeeds — which reads exactly
   // like the mediator failing to re-check. A revocation that does not revoke turns the one check this
   // file exists for into a check of nothing.

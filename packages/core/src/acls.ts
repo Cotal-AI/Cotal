@@ -144,13 +144,36 @@ async function enumerateLiveAclRows(
  * effect: writing the same `allowSubscribe` is harmless. Use `allowSubscribe: []` to revoke all reads
  * (the reader then DROPS the owner's entries) — distinct from {@link deleteAcl}, which removes the row.
  */
-export async function commitAcl(kv: KV, owner: string, lifecycleUid: string, allowSubscribe: string[]): Promise<AclRecord> {
+export type CommitAclOpts = {
+  /**
+   * Credential re-issue: raise the history ceiling (`issuedAllowSubscribe`) to match `allowSubscribe`.
+   * Use from provision/remint — the same act that bakes the list into the JWT. Plain commits
+   * (revocation, runtime narrow) leave the ceiling in place so a registry-only widen cannot mint
+   * history reach the broker credential does not grant (SPEC §9.6).
+   */
+  reissue?: boolean;
+};
+
+export async function commitAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+  opts: CommitAclOpts = {},
+): Promise<AclRecord> {
   const key = aclKey(owner, lifecycleUid);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     const cur = await readAcl(kv, owner, lifecycleUid);
+    // Ceiling: create and reissue set it to the new list; a plain update keeps the prior ceiling
+    // (defaulting a legacy row's missing field to its then-current allowSubscribe so the first
+    // post-upgrade plain write does not invent a higher ceiling than the row already exposed).
+    const issued = opts.reissue || !cur
+      ? [...allowSubscribe]
+      : [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
     const next: AclRecord = {
       allowSubscribe: [...allowSubscribe],
+      issuedAllowSubscribe: issued,
       revision: (cur?.record.revision ?? 0) + 1,
       updatedAt: Date.now(),
     };

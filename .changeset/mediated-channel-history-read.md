@@ -28,3 +28,9 @@ page, which would look exactly like a channel nobody has posted to.
 
 This is additive. Nothing is removed and no existing caller changes: reading history the previous way
 still works, and moving to the mediated path is a separate migration. Chat channels only.
+
+Authorization is the live registry row intersected with the mint-time ceiling. Revoking access
+(narrowing the live row) stops the very next page. Widening the registry without re-minting the
+caller's credential does not grant history the broker would still deny — the ceiling only rises
+when the credential does.
+
