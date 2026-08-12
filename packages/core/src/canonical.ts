@@ -138,9 +138,28 @@ export function rawDigest(data: Uint8Array | string): string {
   return DIGEST_PREFIX + h.digest("hex");
 }
 
+/** Verify OPAQUE bytes against their advertised `sha256:<hex>` digest, and return them unchanged.
+ *
+ *  The counterpart to {@link rawDigest}, as {@link verifyArtifact} is to {@link contractDigest} —
+ *  and deliberately NOT the same function. `verifyArtifact` parses its input as JSON and
+ *  re-canonicalizes it; artifact bytes are opaque (an image, a tarball, a truncated file) and must
+ *  never be parsed, both because parsing would reject legitimate content and because a digest over
+ *  a re-serialization is not a digest over what was carried.
+ *
+ *  This runs on every fetch, before any byte reaches a caller. Digest-verify on READ is what
+ *  catches the truncation class: a store that hands back a short object is otherwise
+ *  indistinguishable from a small one. */
+export function verifyRawBytes(bytes: Uint8Array, digest: string): Uint8Array {
+  if (!isContractDigest(digest)) throw new Error(`verifyRawBytes: malformed digest ${JSON.stringify(digest)}`);
+  const actual = rawDigest(bytes);
+  if (actual !== digest) throw new Error(`verifyRawBytes: digest mismatch over ${bytes.byteLength} bytes; advertised ${digest}, content is ${actual}`);
+  return bytes;
+}
+
 /** Verify fetched artifact BYTES against their advertised digest (verify-on-read, SPEC §13.7):
  *  content addressing, not store ACLs, is the tamper boundary. The bytes must parse as JSON and
- *  re-canonicalize to the digest; anything else throws. Returns the parsed artifact. */
+ *  re-canonicalize to the digest; anything else throws. Returns the parsed artifact.
+ *  For opaque (non-JSON) bytes use {@link verifyRawBytes}. */
 export function verifyArtifact(bytes: Uint8Array, digest: string): unknown {
   if (!isContractDigest(digest)) throw new Error(`verifyArtifact: malformed digest ${JSON.stringify(digest)}`);
   let parsed: unknown;

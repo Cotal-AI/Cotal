@@ -12,6 +12,7 @@ import {
   assertLifecycleToken,
   newIdentity,
   provisionAgent,
+  partsToText,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -224,9 +225,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     `${c.bold(card.name)}${card.role ? c.dim("/" + card.role) : ""}`;
 
   ep.on("message", (m: CotalMessage, d: Delivery) => {
-    const text = m.parts
-      .map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data)))
-      .join(" ");
+    const text = partsToText(m.parts);
     if (m.to === me)
       print(`${c.magenta("(DM)")} ${who(m.from)} ${c.dim("→ you:")} ${text}`);
     else if (m.toService)

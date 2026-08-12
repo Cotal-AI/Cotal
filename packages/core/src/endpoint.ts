@@ -22,6 +22,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
+import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -3658,10 +3659,18 @@ function isEndpointRef(value: unknown): boolean {
     (value.role === undefined || typeof value.role === "string");
 }
 
+/** A conformant message part: the three CORE kinds, or a reverse-DNS extension kind (SPEC §5).
+ *
+ *  Reached from {@link isCotalMessage}, which gates the Plane-3 delivery frame — so a core kind
+ *  missing an arm here is not a schema nicety: the durable backstop DROPS every message carrying
+ *  it, silently, and the drop surfaces nowhere near the feature that added the part. `artifact`
+ *  was exactly that case before it was added (a bare kind has no dot, so it fell through to the
+ *  extension regex and failed). */
 function isMessagePart(value: unknown): boolean {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   if (value.kind === "text") return typeof value.text === "string";
   if (value.kind === "data") return Object.prototype.hasOwnProperty.call(value, "data");
+  if (value.kind === ARTIFACT_PART_KIND) return isArtifactPart(value);
   return /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(value.kind);
 }
 
