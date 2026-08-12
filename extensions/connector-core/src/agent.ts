@@ -480,6 +480,14 @@ export class MeshAgent extends EventEmitter {
     return true;
   }
 
+  /** Whether this id is currently protected from the overflow valve — i.e. some frame is mid-delivery
+   *  holding it. Read-only observability for the property {@link holdInFlight} establishes. A caller
+   *  that needs a batch to actually BE in flight before it acts must wait on this, never on a sleep:
+   *  the handoff runs through a real relay process whose latency is not the caller's to predict. */
+  isInFlight(id: string): boolean {
+    return this.inFlightIds.has(id);
+  }
+
   /** One frame's verdict is in (either way). The id is ordinary backlog again only once EVERY frame
    *  holding it has reported — a release from one must not speak for another still in flight. */
   releaseInFlight(ids: readonly string[]): void {
