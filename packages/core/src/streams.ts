@@ -362,6 +362,14 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // sealed"), so a sealed store cannot arrive through the create path - only by a later update. That
   // narrows it to a deliberate operator action, which is exactly the drift worth naming.
   if (config.sealed === true) drift.push("the stream is SEALED (writes permanently refused)");
+  // The message-count and size limits must stay unbounded, because THE CAP IS SUPPOSED TO BE THE
+  // OPERATIVE BOUND. Reproduced: max_msgs=2 accepts setup, the first 1-byte object succeeds (chunk +
+  // meta = 2 messages), and the second fails "maximum messages exceeded" with 4 GiB still free. A
+  // hidden limit that overrides the advertised capacity makes the number this code reports a lie -
+  // loud rather than silent, but still a bound nobody configured deliberately.
+  for (const [field, value] of [["max_msgs", config.max_msgs], ["max_msgs_per_subject", config.max_msgs_per_subject],
+                                ["max_msg_size", config.max_msg_size]] as const)
+    if (value !== -1) drift.push(`${field} is ${value}, expected -1 (max_bytes is the only bound this store advertises)`);
   if (drift.length)
     throw new Error(
       `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +

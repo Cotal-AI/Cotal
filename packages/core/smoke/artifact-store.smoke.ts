@@ -215,6 +215,32 @@ try {
   check("setup REFUSES a store that expires artifacts", ageRefusal.includes("max_age"), ageRefusal);
   await deleteSpace({ servers, space: aged });
 
+  // A hidden message limit overriding the advertised cap: loud rather than silent, but still a bound
+  // nobody configured. One 1-byte object costs 2 messages (chunk + meta), so max_msgs=2 admits
+  // exactly one artifact while 4 GiB sits free.
+  const capped = `${SPACE}capped`;
+  const cnc = await connect({ servers });
+  const cb = artifactBucket(capped);
+  await (await jetstreamManager(cnc)).streams.add({
+    name: objectStoreStream(cb), subjects: [`$O.${cb}.C.>`, `$O.${cb}.M.>`],
+    max_bytes: ARTIFACT_STORE_MAX_BYTES, discard: "new" as never, storage: "file" as never,
+    retention: "limits" as never, allow_rollup_hdrs: true, max_msgs: 2,
+  });
+  const cos = await new Objm(jetstream(cnc)).create(cb);
+  await cos.put({ name: "first" }, ReadableStream.from([new Uint8Array([1])]));
+  let secondErr = "";
+  try { await cos.put({ name: "second" }, ReadableStream.from([new Uint8Array([1])])); }
+  catch (e) { secondErr = (e as Error).message; }
+  await cnc.close();
+  check("a message-capped store refuses a second artifact with the byte cap free",
+    secondErr.length > 0, secondErr || "second put unexpectedly succeeded");
+  let capRefusal = "";
+  try { await setupSpaceStreams({ servers, space: capped }); capRefusal = "ADOPTED A HIDDEN-LIMIT STORE"; }
+  catch (e) { capRefusal = (e as Error).message; }
+  check("setup REFUSES a store whose real bound is not its byte cap", capRefusal.includes("max_msgs"),
+    capRefusal);
+  await deleteSpace({ servers, space: capped });
+
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();
   check("teardown removes the object store", !gone.includes(OBJ), gone);
