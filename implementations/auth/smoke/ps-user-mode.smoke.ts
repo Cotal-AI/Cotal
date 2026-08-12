@@ -60,17 +60,59 @@ const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
-function cotal(args: string[], timeoutMs = 120_000): Promise<{ status: number | null; out: string }> {
+/**
+ * How the child ENDED is part of the result, not a detail of the wrapper.
+ *
+ * `status: null` is reported for ANY signal death — this suite's own timeout, an external
+ * SIGTERM/SIGKILL, an OOM kill, a supervisor sweep — and a launch failure never fires `exit` at
+ * all. Every one of those yields the exact shape step 4's cell demands (`status !== 0`, no
+ * "(no managed agents)"), so any of them lets a run that proved nothing print PASS. A `timedOut`
+ * flag alone is not enough: it only knows about OUR timer.
+ *
+ * So carry all four routes and let {@link mustHaveRun} insist on the only gradeable outcome —
+ * the child exited by itself, with a real numeric code.
+ */
+type Run = {
+  status: number | null;
+  out: string;
+  timedOut: boolean;
+  signal: NodeJS.Signals | null;
+  launchError?: string;
+};
+function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const child = spawn(TSX, [BIN, ...args], {
       cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
-    const t = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    let timedOut = false;
+    let settled = false;
+    const t = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    // One settle path. A launch error otherwise leaves this Promise pending until the timer, and the
+    // failure then wears the wrong label — "timed out" for something that never started.
+    const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(t); res(r); };
+    child.on("error", (e) => done({ status: null, out, timedOut, signal: null, launchError: e.message }));
     child.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr!.on("data", (d: Buffer) => { out += d.toString(); });
-    child.on("exit", (status) => { clearTimeout(t); res({ status, out }); });
+    child.on("exit", (status, signal) => done({ status, out, timedOut, signal }));
   });
+}
+
+/** Refuse to grade anything but a self-terminated child with a real exit code. Fatal, because every
+ *  rejected shape here is one that would otherwise SATISFY the cells below. */
+function mustHaveRun(r: Run, what: string): void {
+  const why =
+    r.launchError ? `never launched (${r.launchError})`
+    : r.timedOut ? "was SIGKILLed by this suite's timeout"
+    : r.signal ? `was killed by ${r.signal} from outside this suite`
+    : r.status === null ? "ended with neither an exit code nor a signal"
+    : null;
+  if (why === null) return;
+  process.exitCode = 1;
+  throw new Error(
+    `${what} ${why}: that yields status null and no output, which is exactly the shape the ` +
+      `empty-success cell treats as a pass. Grading it would be a false green.`,
+  );
 }
 
 let handler: ReturnType<typeof toNodeHandler> | undefined;
@@ -144,6 +186,8 @@ try {
   console.log(`   killed manager pid ${await killManagerAtRoot(root)} — the cell below grades a DEAD mesh`);
   const psDead = await cotal(["ps", "--space", SPACE], 20_000);
   console.log(`   dead exit=${psDead.status}\n` + psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
+  // Fatal BEFORE grading, not a cell alongside it.
+  mustHaveRun(psDead, "the dead-manager `cotal ps`");
   const emptySuccess =
     psDead.status === 0 &&
     !/unreachable/i.test(psDead.out) &&

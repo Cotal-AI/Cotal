@@ -39,15 +39,47 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 let pass = 0, fail = 0;
 const check = (n: string, v: boolean, x?: unknown) => { v ? (pass++, console.log(`  ✓ ${n}`)) : (fail++, console.log(`  ✗ FAIL: ${n}`, x ?? "")); };
 
-function cotal(args: string[], timeoutMs = 120_000): Promise<{ status: number | null; out: string }> {
+/**
+ * How the child ENDED rides in the result. `status: null` covers ANY signal death — this suite's
+ * timeout, an external SIGTERM/SIGKILL, an OOM kill — and a launch failure never fires `exit` at
+ * all. Each of those produces the shape step 3's `claimsEmptySuccess` treats as a pass, so a run
+ * that proved nothing prints green. A `timedOut` flag alone only knows about OUR timer.
+ */
+type Run = {
+  status: number | null;
+  out: string;
+  timedOut: boolean;
+  signal: NodeJS.Signals | null;
+  launchError?: string;
+};
+function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   return new Promise((res) => {
     const child = spawn("npx", ["tsx", BIN, ...args], { cwd: root, env: { ...process.env, COTAL_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
-    const t = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    let timedOut = false;
+    let settled = false;
+    const t = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    // One settle path, so a launch error is not left to the timer and then mislabelled a timeout.
+    const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(t); res(r); };
+    child.on("error", (e) => done({ status: null, out, timedOut, signal: null, launchError: e.message }));
     child.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr!.on("data", (d: Buffer) => { out += d.toString(); });
-    child.on("exit", (status) => { clearTimeout(t); res({ status, out }); });
+    child.on("exit", (status, signal) => done({ status, out, timedOut, signal }));
   });
+}
+
+/** Refuse to grade anything but a self-terminated child with a real exit code: every shape rejected
+ *  here would otherwise SATISFY the cells below. */
+function mustHaveRun(r: Run, what: string): void {
+  const why =
+    r.launchError ? `never launched (${r.launchError})`
+    : r.timedOut ? "was SIGKILLed by this suite's timeout"
+    : r.signal ? `was killed by ${r.signal} from outside this suite`
+    : r.status === null ? "ended with neither an exit code nor a signal"
+    : null;
+  if (why === null) return;
+  console.log(`\n  => FIXTURE FAILURE, not a product defect: ${what} ${why}, which fakes the pass shape.\n`);
+  process.exit(1);
 }
 
 try {
@@ -84,6 +116,9 @@ try {
   // of the product defect this suite exists to catch.
   console.log(`   killed manager pid ${await killManagerAtRoot(root)} — the cell below grades a DEAD mesh`);
   const psDead = await cotal(["ps", "--space", SPACE], 20_000);
+  // Fatal before grading: any of the null-status routes would satisfy `claimsEmptySuccess === false`
+  // on evidence this suite fabricated rather than observed.
+  mustHaveRun(psDead, "the dead-manager `cotal ps`");
   console.log(`   dead-manager ps exit=${psDead.status}`);
   console.log(psDead.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 500));
   const claimsEmptySuccess =

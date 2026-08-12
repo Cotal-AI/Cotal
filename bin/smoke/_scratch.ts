@@ -25,20 +25,47 @@
  * sandbox is what makes the suite pass, but the assertion is what keeps it honest if the sandbox
  * ever stops working.
  */
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { parsePid, probeLiveness } from "../../implementations/cli/src/lib/pid.js";
 
-/** The nearest ancestor of `start` (inclusive) holding a `.cotal`, or null if the path is free.
- *  Deliberately mirrors `findCotalRoot`'s walk — if that changes, this must change with it. */
-export function cotalRootCaptor(start: string): string | null {
-  let dir = resolve(start);
+/** The physical path, symlinks resolved. Falls back to the lexical form for a path that does not
+ *  exist yet (a candidate base we are about to reject anyway). */
+function physical(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** One `findCotalRoot`-shaped walk from `start` up to `/`. */
+function walkUp(start: string): string | null {
+  let dir = start;
   for (;;) {
     if (existsSync(join(dir, ".cotal"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/**
+ * The nearest ancestor of `start` (inclusive) holding a `.cotal`, or null if the path is free.
+ *
+ * Walks BOTH the lexical and the physical form, and reports a captor found by either. A symlinked
+ * base makes those two different sets of directories: `/var/tmp/alias` walks `/var/tmp` → `/var` →
+ * `/`, while its target walks the real chain, and a `.cotal` on the physical side is invisible to
+ * the lexical walk. That matters because we do not get to choose which walk the product does —
+ * `process.cwd()` is physical on POSIX, so a spawned `cotal` resolves its root physically, while a
+ * path handed to `--root` resolves lexically. Checking one and shipping is how a guard passes while
+ * the thing it guards is captured. Fail closed: either walk finding a `.cotal` is a capture.
+ */
+export function cotalRootCaptor(start: string): string | null {
+  const lex = resolve(start);
+  const phys = physical(start);
+  return walkUp(lex) ?? (phys === lex ? null : walkUp(phys));
 }
 
 /**
@@ -74,7 +101,10 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
     }
     let scratch: string;
     try {
-      scratch = mkdtempSync(join(base, prefix));
+      // Canonical, not lexical. A spawned child's `process.cwd()` is physical on POSIX, so handing
+      // out a symlinked path guarantees the suite and the product disagree about where the fixture
+      // is. Resolve it once, here, and every later comparison is against the same string.
+      scratch = realpathSync.native(mkdtempSync(join(base, prefix)));
     } catch (e) {
       tried.push(`${base} (${(e as Error).message})`);
       continue;
@@ -100,7 +130,7 @@ export function makeScratch(prefix = "cotal-smoke-"): string {
  * correct run, which is what the first version of this function did.
  */
 export function assertScratchHeld(dir: string, what = "scratch"): void {
-  const self = resolve(dir);
+  const self = physical(dir);
   const captor = cotalRootCaptor(dirname(self));
   if (captor) {
     throw new Error(
@@ -137,22 +167,39 @@ export async function killManagerAtRoot(root: string): Promise<number> {
     );
   }
   const raw = readFileSync(pidFile, "utf8").trim();
-  const pid = Number(raw);
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`unparseable manager pid ${JSON.stringify(raw)} at ${pidFile}`);
-  try {
-    process.kill(pid, 0);
-  } catch {
+  // The CLI's own parser and tri-state probe, imported rather than re-implemented. That module says
+  // it is "consumed everywhere", and a second copy here would be free to drift from the contract it
+  // is supposed to be enforcing.
+  const pid = parsePid(raw);
+  if (pid === undefined) throw new Error(`unparseable manager pid ${JSON.stringify(raw)} at ${pidFile}`);
+
+  // Only ESRCH proves death. A bare `catch` collapses EPERM (alive, just not ours to signal) and
+  // unknown errnos into "dead" — which would let this helper report a kill it never proved, the
+  // exact false-proof this guard exists to prevent.
+  const before = probeLiveness(pid);
+  if (before === "dead")
     throw new Error(`manager pid ${pid} (${pidFile}) was already dead before the kill — the fixture never armed`);
+  if (before === "unknown")
+    throw new Error(`manager pid ${pid} (${pidFile}) is UNATTRIBUTABLE before the kill — refusing to claim a kill this helper cannot prove`);
+
+  // The signal itself can fail (EPERM on a process that is not ours). Name that as what it is — a
+  // kill this helper could not perform — rather than letting a raw errno escape from a guard whose
+  // whole job is to say precisely why the fixture did not arm.
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (e) {
+    throw new Error(
+      `SIGKILL of manager pid ${pid} (${pidFile}) failed: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}` +
+        ` — the mesh is still alive and nothing below this point is grading what it claims`,
+    );
   }
-  process.kill(pid, "SIGKILL");
   // Poll rather than sleep a guessed interval: the assertion is "it is gone", not "some time passed".
   for (let i = 0; i < 100; i++) {
     await new Promise((r) => setTimeout(r, 50));
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return pid;
-    }
+    const after = probeLiveness(pid);
+    if (after === "dead") return pid;
+    if (after === "unknown")
+      throw new Error(`manager pid ${pid} became UNATTRIBUTABLE after SIGKILL — cannot prove the mesh is dead`);
   }
   throw new Error(`manager pid ${pid} survived SIGKILL after 5s`);
 }
