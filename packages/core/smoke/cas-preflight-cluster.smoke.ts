@@ -65,10 +65,29 @@ try {
   let up = false;
   for (let i = 0; i < 100 && !up; i++) { up = await isReachable(`nats://127.0.0.1:${ports[0]}`); if (!up) await wait(100); }
   c("cluster is reachable", up);
-  await wait(2500); // let raft settle before asking for a replicated stream
 
+  // WAIT FOR READINESS, never a fixed sleep. A constant raft-settle delay is a bet on how loaded
+  // the machine is: this smoke passed on a quiet box with `await wait(2500)` and FAILED in 9s on a
+  // busy one, because JetStream had not come up yet. A green that depends on machine load is not a
+  // green. Poll the actual readiness signal — a JetStream manager that answers — with a real budget.
   const nc = await connect({ servers: `nats://127.0.0.1:${ports[0]}` });
-  const jsm = await jetstreamManager(nc);
+  let jsm: Awaited<ReturnType<typeof jetstreamManager>> | undefined;
+  const deadline = 60_000;
+  for (let waited = 0; waited < deadline && !jsm; waited += 500) {
+    try { jsm = await jetstreamManager(nc); } catch { await wait(500); }
+  }
+  if (!jsm) throw new Error(`JetStream did not become available within ${deadline}ms — cluster never formed`);
+  c("JetStream is available (cluster formed)", true);
+
+  // A replicated stream also needs a meta leader with three peers; asking too early yields
+  // "insufficient resources" rather than a timeout, so poll that too rather than sleeping.
+  let peersReady = false;
+  for (let waited = 0; waited < deadline && !peersReady; waited += 500) {
+    try { await jsm.streams.add({ name: "READY", subjects: ["ready.>"], num_replicas: 3 }); peersReady = true; }
+    catch { await wait(500); }
+  }
+  c("the cluster can host a 3-replica stream", peersReady);
+  if (peersReady) await jsm.streams.delete("READY");
 
   // ── the fact under the design: R1-in-a-cluster behaves like standalone ──
   await jsm.streams.add({ name: "R1C", subjects: ["r1c.>"], num_replicas: 1 });
