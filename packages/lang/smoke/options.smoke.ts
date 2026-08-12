@@ -18,7 +18,7 @@
  * the primitive switch and `fanOut`'s `key` is read in the scope-combinator path instead. Reading
  * the code found the gap in the wrong places; running it finds the gap where it is.
  */
-import { run } from "../src/interpret.js";
+import { run, resume, RunDivergence } from "../src/interpret.js";
 import { PRIMITIVES } from "../src/primitives.js";
 import { SimHandler } from "../src/sim.js";
 import type { EffectContext, EffectHandler } from "../src/effects.js";
@@ -211,6 +211,140 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   const ha = a.journal.entries()[0]?.inputHash;
   const hb = b.journal.entries()[0]?.inputHash;
   ok("and swapping the model changes the input hash", ha !== hb, { ha, hb });
+}
+
+// ---- 5) the hash table is a claim, not a comment ------------------------------------------------
+
+/**
+ * `hashedOptions` decides, for every option, whether editing it on a resumed run diverges or
+ * replays. That is the difference between a run that notices you changed the question and one that
+ * hands you an old answer to a new one, and it was DOCUMENTATION: the interpreter grew a projection
+ * per primitive, the table stayed at whatever it said the day it was written, and the two disagreed
+ * on four primitives at once. `checkpoint` was fixed in isolation while `wait.timeout`,
+ * `turn.deadline` and `ask.attempts|deadline` still replayed clean under an edit; `sleep` hashed its
+ * subject while the table said it did not.
+ *
+ * The gap is not "someone forgot". It is that a second copy of a rule with no test between them
+ * decays, and this one decayed in the direction where nothing fails: a stale table makes the NEXT
+ * person's "align the code to the table" a regression that looks like tidying.
+ *
+ * So the table is executed. Each option is edited on a real resume and the run must diverge exactly
+ * when the table says the option is hashed. The controls matter as much as the positives: `permits`,
+ * `supervise`, `onFork` and `fail`↔`proceed` must replay CLEAN, or "diverge on everything" would
+ * pass this suite while destroying every legitimate migration.
+ */
+{
+  const spec = (prim: string) =>
+    PRIMITIVES[prim as keyof typeof PRIMITIVES] as unknown as {
+      hashedOptions: readonly string[];
+      hashedValues?: Readonly<Record<string, readonly unknown[]>>;
+    };
+
+  /**
+   * What the TABLE predicts, derived rather than restated. An option is hashed outright, or it is
+   * hashed for particular values and an edit that touches one of those crosses the boundary.
+   */
+  const tableSaysHashed = (prim: string, opt: string, a: unknown, b: unknown): boolean => {
+    const s = spec(prim);
+    if (s.hashedOptions.includes(opt)) return true;
+    const values = s.hashedValues?.[opt];
+    return values !== undefined && (values.includes(a) || values.includes(b));
+  };
+
+  interface Probe {
+    readonly prim: string;
+    readonly opt: string;
+    /** The value on each side of the edit, for the table lookup. */
+    readonly a: unknown;
+    readonly b: unknown;
+    /** The whole option bag on each side, because some options are only legal beside others. */
+    readonly bagA: string;
+    readonly bagB: string;
+  }
+
+  const SPAWN = (bag: string) => `const t = channel("t");\nconst u = channel("u");\nawait spawn("p", { ${bag} });\n`;
+  const TURN = (bag: string) => `const a = await spawn("p", { name: "a" });\nawait turn(a, { ${bag} });\n`;
+  const ASK = (bag: string) => `const a = await spawn("p", { name: "a" });\nawait ask(a, { ${bag} });\n`;
+  const CP = (bag: string) => `await checkpoint("gate", "ok?", { ${bag} });\n`;
+  const WAIT = (bag: string) => `const a = await spawn("p", { name: "a" });\nawait wait(replied(a), { ${bag} });\n`;
+
+  const SOURCE: Readonly<Record<string, (bag: string) => string>> = {
+    spawn: SPAWN, turn: TURN, ask: ASK, checkpoint: CP, wait: WAIT,
+  };
+
+  const PROBES: readonly Probe[] = [
+    // spawn: identity is hashed, policy is not. `permits` is a budget and `supervise` a restart
+    // rule; both decide how a recorded fact is ACTED ON, so they are reapplied from current source.
+    { prim: "spawn", opt: "worktree", a: "wt-1", b: "wt-2", bagA: 'name: "a", worktree: "wt-1"', bagB: 'name: "a", worktree: "wt-2"' },
+    { prim: "spawn", opt: "join", a: "t", b: "u", bagA: 'name: "a", join: [t]', bagB: 'name: "a", join: [u]' },
+    { prim: "spawn", opt: "role", a: "r1", b: "r2", bagA: 'name: "a", role: "r1"', bagB: 'name: "a", role: "r2"' },
+    { prim: "spawn", opt: "permits", a: 3, b: 9, bagA: 'name: "a", permits: { turns: 3 }', bagB: 'name: "a", permits: { turns: 9 }' },
+    { prim: "spawn", opt: "supervise", a: "never", b: "on-fail", bagA: 'name: "a", supervise: { restart: "never" }', bagB: 'name: "a", supervise: { restart: "on-fail" }' },
+    { prim: "spawn", opt: "onFork", a: "respawn", b: "adopt", bagA: 'name: "a", onFork: "respawn"', bagB: 'name: "a", onFork: "adopt"' },
+
+    // The three siblings the checkpoint fix left behind. Each one STOPS OBSERVATION: the recorded
+    // result answers "within this cutoff", and a longer cutoff is a different question.
+    { prim: "turn", opt: "deadline", a: "1m", b: "10m", bagA: 'name: "go", deadline: "1m"', bagB: 'name: "go", deadline: "10m"' },
+    { prim: "ask", opt: "deadline", a: "1m", b: "10m", bagA: 'name: "q", schema: { days: "number" }, deadline: "1m"', bagB: 'name: "q", schema: { days: "number" }, deadline: "10m"' },
+    { prim: "ask", opt: "attempts", a: 1, b: 5, bagA: 'name: "q", schema: { days: "number" }, attempts: 1', bagB: 'name: "q", schema: { days: "number" }, attempts: 5' },
+    { prim: "ask", opt: "schema", a: "days", b: "weeks", bagA: 'name: "q", schema: { days: "number" }', bagB: 'name: "q", schema: { weeks: "number" }' },
+    { prim: "wait", opt: "timeout", a: "1m", b: "10m", bagA: 'name: "w", timeout: "1m"', bagB: 'name: "w", timeout: "10m"' },
+
+    { prim: "checkpoint", opt: "schema", a: "ok", b: "fine", bagA: 'schema: { ok: "boolean" }', bagB: 'schema: { fine: "boolean" }' },
+    { prim: "checkpoint", opt: "timeout", a: "1m", b: "10m", bagA: 'timeout: "1m"', bagB: 'timeout: "10m"' },
+    // The conditional rule, both ways round. Reading an expiry differently is a reapply; minting a
+    // second checkpoint is a new effect.
+    { prim: "checkpoint", opt: "onExpiry", a: "fail", b: "proceed", bagA: 'timeout: "1m", onExpiry: "fail"', bagB: 'timeout: "1m", onExpiry: "proceed"' },
+    { prim: "checkpoint", opt: "onExpiry", a: "proceed", b: "escalate", bagA: 'timeout: "1m", onExpiry: "proceed"', bagB: 'timeout: "1m", onExpiry: "escalate", to: "david"' },
+    { prim: "checkpoint", opt: "to", a: "david", b: "sam", bagA: 'timeout: "1m", onExpiry: "escalate", to: "david"', bagB: 'timeout: "1m", onExpiry: "escalate", to: "sam"' },
+  ];
+
+  const script = {
+    turns: { go: { status: "done", at: 0 } },
+    asks: { q: { days: 3 } },
+    // Resolved on the first mint, so no probe accidentally depends on an escalation hop.
+    checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+    events: { w: ["hello"] },
+    clock: { start: 0 },
+  } as const;
+
+  let audited = 0;
+  let hashedSeen = 0;
+  let cleanSeen = 0;
+  const wrong: string[] = [];
+
+  for (const p of PROBES) {
+    const src = SOURCE[p.prim] as (bag: string) => string;
+    const runId = `o-h-${p.prim}-${p.opt}-${String(p.b)}`;
+    const live = await run(src(p.bagA), { runId, handler: new SimHandler(script) });
+
+    let diverged: unknown;
+    try {
+      await resume(src(p.bagB), live.journal, { runId, handler: new SimHandler(script) });
+    } catch (e) {
+      diverged = e;
+    }
+
+    const predicted = tableSaysHashed(p.prim, p.opt, p.a, p.b);
+    const actual = diverged instanceof RunDivergence;
+    audited += 1;
+    if (predicted) hashedSeen += 1;
+    else cleanSeen += 1;
+    if (predicted !== actual) {
+      wrong.push(
+        `${p.prim}.${p.opt} ${JSON.stringify(p.a)}->${JSON.stringify(p.b)}: table says ${predicted ? "hashed" : "reapplied"}, run ${actual ? "diverged" : "replayed clean"}`,
+      );
+    } else if (diverged !== undefined && !actual) {
+      wrong.push(`${p.prim}.${p.opt}: resume threw something other than divergence - ${String(diverged).slice(0, 80)}`);
+    }
+  }
+
+  // A count, because a loop that audits nothing prints the same green as one that audits everything.
+  ok("the hash audit ran every probe", audited === PROBES.length && audited >= 16, audited);
+  // Both halves present: an interpreter that diverged on EVERY edit would satisfy the positives
+  // while breaking every reapply, and one that never diverged would satisfy the controls.
+  ok("with both hashed options and reapplied ones under test", hashedSeen >= 10 && cleanSeen >= 4, { hashedSeen, cleanSeen });
+  ok("the interpreter's projection matches the table on every option", wrong.length === 0, wrong);
 }
 
 console.log(`options.smoke: ${pass} checks passed`);

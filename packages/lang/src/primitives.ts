@@ -35,8 +35,28 @@ export interface PrimitiveSpec extends CalleeDoc {
    *  `notify(agents, fact, opts)` and `checkpoint(name, prompt, opts)` both take a record in an
    *  earlier position, and treating that as options would reject perfectly good data. */
   readonly optionsAt: number;
-  /** Option keys folded into the input hash. Everything else only steered live execution. */
+  /**
+   * Option keys folded into the input hash. Everything else only steered live execution.
+   *
+   * NORMATIVE AND EXECUTED. This was documentation for a while, and drifted: the interpreter grew
+   * a projection per primitive and this table stayed at whatever it said on the day it was written,
+   * so "align interpret to the table" was a change that would have reintroduced the very holes the
+   * projections closed. `options.smoke` now edits each key on a resumed run and requires exactly
+   * the keys listed here to raise L5001, which is what makes the table a claim rather than a note.
+   */
   readonly hashedOptions: readonly string[];
+  /**
+   * Keys whose VALUE decides whether they are hashed: listed here with the values that put them
+   * into the projection, absent from `hashedOptions` because they are not always in it.
+   *
+   * There is exactly one of these and it is the subtlest rule in the table. `onExpiry` chooses how
+   * to READ a recorded expiry at `fail` and `proceed`, which is a reapply and must replay clean;
+   * at `escalate` it MINTS A SECOND EFFECT, which is a different question being asked and must
+   * diverge. Flattening that either way breaks something real: hash it always and editing `fail`
+   * to `proceed` stops working, hash it never and switching an answered checkpoint to `escalate`
+   * silently keeps the old answer.
+   */
+  readonly hashedValues?: Readonly<Record<string, readonly unknown[]>>;
   /** True when the positional subject is part of the input hash. */
   readonly hashesSubject: boolean;
   /** This primitive opens a concurrency scope, so it pushes a scope frame. */
@@ -62,7 +82,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     nameRequired: true,
     options: ["name", "deadline"],
     optionsAt: 1,
-    hashedOptions: [],
+    hashedOptions: ["deadline"],
     hashesSubject: true,
     opensScope: false,
     signature: "turn(agent, { name, deadline? }) -> { status, to?, note?, at }",
@@ -75,7 +95,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     nameRequired: true,
     options: ["name", "schema", "deadline", "attempts"],
     optionsAt: 1,
-    hashedOptions: ["schema"],
+    hashedOptions: ["schema", "deadline", "attempts"],
     hashesSubject: true,
     opensScope: false,
     signature: "ask(agent, { name, schema, deadline?, attempts? }) -> record",
@@ -88,7 +108,10 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     nameRequired: true,
     options: ["schema", "timeout", "onExpiry", "to"],
     optionsAt: 2,
-    hashedOptions: ["schema"],
+    // `to` is unconditionally hashed because it cannot legally appear without `escalate` (L3044),
+    // so wherever it exists it is addressing a mint. `onExpiry` is the conditional one.
+    hashedOptions: ["schema", "timeout", "to"],
+    hashedValues: { onExpiry: ["escalate"] },
     hashesSubject: true,
     opensScope: false,
     signature:
@@ -103,7 +126,10 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     options: ["name"],
     optionsAt: 1,
     hashedOptions: [],
-    hashesSubject: false,
+    // The duration is the subject and it IS hashed: a resumed run reads elapsed time back through
+    // the run clock, so editing 1h to 1m must diverge rather than silently keep the path the old
+    // duration chose. This said `false` while the interpreter hashed it.
+    hashesSubject: true,
     opensScope: false,
     signature: "sleep(duration, { name? }) -> null",
     doc: "A durable timer. A resumed run does not re-sleep an elapsed sleep; use fork to re-run from this step.",
@@ -114,7 +140,8 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     nameRequired: false,
     options: ["name", "timeout"],
     optionsAt: 1,
-    hashedOptions: [],
+    // A recorded null means "not within THIS timeout", never "never".
+    hashedOptions: ["timeout"],
     hashesSubject: true,
     opensScope: false,
     signature: "wait(event, { name?, timeout? }) -> value | null",

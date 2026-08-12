@@ -59,8 +59,16 @@ export type CheckpointRaw =
       readonly artifact?: string;
       readonly by?: string;
       readonly at: number;
-      /** Which answer the settle accepted. Every resolver presents as the run driver, so the
-       *  arbiter has to NAME its choice: a principal cannot discriminate between two answers. */
+      /**
+       * Which answer the settle accepted. Every resolver presents as the run driver, so the
+       * arbiter has to NAME its choice: a principal cannot discriminate between two answers.
+       *
+       * NOTHING IN THIS PACKAGE SETS IT. The binding between an answer id and a settle fact lives
+       * in the substrate the mesh handler talks to, which is a v0.4 delta this package does not
+       * carry; the field is here so the journal preserves what a production handler reports rather
+       * than dropping it, and the simulator deliberately never invents one. Read an absent
+       * `answerId` as "this handler does not name its answers", never as "the answer was anonymous".
+       */
       readonly answerId?: string;
     }
   | { readonly outcome: "expired"; readonly at: number };
@@ -222,6 +230,15 @@ export interface EffectContext {
    * what recovery keys on, because a crash before the handler learned them leaves none.
    */
   readonly requestId: string;
+  /**
+   * Which attempt of this step {@link EffectContext.requestId} names, counted from 0.
+   *
+   * Only an escalating checkpoint ever exceeds 0, and it is the interpreter, not the handler, that
+   * decides whether to hop. A handler reads this for tracing and for the far side's own idempotency
+   * bookkeeping; it must not treat a non-zero attempt as licence to retry, because the attempt that
+   * is open is the only one it has been asked to complete.
+   */
+  readonly attempt: number;
   /**
    * Present when a previous attempt at this step started but never settled, carrying whatever it
    * passed to {@link EffectContext.bind}. The handler must RE-BIND to that resource and await its

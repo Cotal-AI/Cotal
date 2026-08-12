@@ -13,7 +13,7 @@
 import { run, resume, RunDivergence } from "../src/interpret.js";
 import { requestId } from "../src/keys.js";
 import { SimHandler } from "../src/sim.js";
-import { Journal } from "../src/journal.js";
+import { Journal, type JournalEntry } from "../src/journal.js";
 import { EffectError } from "../src/effects.js";
 
 /** Collect what a program logged. A program has no return value: its outcome is what it did. */
@@ -642,6 +642,144 @@ log(c.status);
     rowIdAtSecondMint !== undefined && rowIdAtSecondMint === chain[1]?.requestId,
     { rowIdAtSecondMint, recorded: chain[1]?.requestId },
   );
+}
+
+// ---- 17) recovery completes the OPEN attempt; it does not replay the hop ------------------------
+
+/**
+ * The escalation chain was recoverable in the sense that a resumed run finished. It was not
+ * recoverable in the sense that the run told the truth about what happened.
+ *
+ * Two failures, one root. `perform` always ran the live body, so a run resuming with attempt 1 open
+ * called the handler, saw an expiry, and escalated AGAIN under the same identity: the far side
+ * served its own cached expiry back and the interpreter counted it as a second observation, so the
+ * one-hop stop rule was satisfied on paper by a hop that never happened. And the non-escalating
+ * return arm wrote `attempt: 0` as a literal, so recovering an attempt-1 mint that RESOLVED erased
+ * the hop from the record and left the journal claiming the escalated mint was the original.
+ *
+ * Neither is visible from the outside: the program gets a plausible answer both times. What is
+ * wrong is the journal, which is the only thing a later fork, migration or audit can read. So the
+ * assertions here are about the handler call count and the recorded chain, not the return value.
+ */
+{
+  const ESC = `
+const c = await checkpoint("gate", "Approve?", { timeout: "1m", onExpiry: "escalate", to: "david" });
+log(c.status);
+`;
+  // THE CRASHED JOURNAL IS TAKEN, NOT WRITTEN. An earlier version of this hand-planted
+  // `{ requestId: id1, attempt: 1 }` onto the row, which tested the recovery logic against a fixture
+  // the test itself authored: deleting the journal write that records the index left every check
+  // below green, because the fixture supplied what the code had stopped storing. So the row is
+  // snapshotted from a REAL run, from inside the second mint, which is exactly the instant a host
+  // can die with work outstanding.
+  let atSecondMint: readonly JournalEntry[] = [];
+  const live = await (async () => {
+    const journal = new Journal({ run: "r-17" });
+    const sim = new SimHandler({
+      checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "resolved", value: 1, by: "d" }] },
+      clock: { start: 0 },
+    });
+    const innerCp = sim.checkpoint.bind(sim);
+    let call = 0;
+    return await run(ESC, {
+      runId: "r-17",
+      journal,
+      handler: new Proxy(sim, {
+        get(t, prop, recv) {
+          if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
+          return async (req: never, ctx: never) => {
+            call += 1;
+            if (call === 2) atSecondMint = journal.entries().map((e) => ({ ...e }));
+            return innerCp(req, ctx);
+          };
+        },
+      }) as never,
+    });
+  })();
+
+  const chain = (live.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+  const id0 = chain[0]?.requestId as string;
+  const id1 = chain[1]?.requestId as string;
+  ok("the live chain gives two distinct identities to recover from", id0 !== undefined && id1 !== undefined && id0 !== id1, { id0, id1 });
+
+  const openRow = atSecondMint.find((e) => e.kind === "checkpoint");
+  ok("the row a crash would leave behind is still pending", openRow?.state === "pending", openRow);
+  // Both halves, because an id without an index cannot say how much of the chain is spent.
+  ok("and it names the open attempt's identity AND its index", openRow?.requestId === id1 && openRow?.attempt === 1, {
+    requestId: openRow?.requestId,
+    attempt: openRow?.attempt,
+    expected: id1,
+  });
+
+  /** Exactly what survived the crash, replayed back at the interpreter. */
+  const crashed = () => new Journal({ run: "r-17", entries: atSecondMint });
+
+  for (const [label, outcome, expected] of [
+    ["resolves", { status: "resolved", value: 1, by: "d" }, "resolved"],
+    ["expires", { status: "expired", by: "s" }, "expired"],
+  ] as const) {
+    const seen: string[] = [];
+    const logs: unknown[] = [];
+    const sim = new SimHandler({ checkpoints: { gate: outcome as never }, clock: { start: 0 } });
+    const innerCp = sim.checkpoint.bind(sim);
+    const spied = new Proxy(sim, {
+      get(t, prop, recv) {
+        if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
+        return async (req: never, ctx: { requestId: string }) => {
+          seen.push(ctx.requestId);
+          return innerCp(req, ctx as never);
+        };
+      },
+    });
+
+    const r = await run(ESC, { runId: "r-17", journal: crashed(), handler: spied as never, onLog: (l) => logs.push(l.values[0]) });
+
+    // THE COUNT IS THE TEST. One mint is outstanding, so exactly one call completes it. Two calls
+    // means the hop was replayed, and the second one lands on an id the far side already answered.
+    ok(`recovering an open hop that ${label} calls the handler exactly once`, seen.length === 1, seen);
+    ok(`and submits under the RECORDED attempt-1 id`, seen[0] === id1, { saw: seen[0], expected: id1 });
+
+    const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+    ok(`and the recovered chain still records both attempts`, rec.length === 2, rec);
+    ok(`and attempt 1 stays numbered 1 rather than being relabelled the first`, rec[1]?.attempt === 1 && rec[1]?.requestId === id1, rec);
+    ok(`and attempt 0 keeps its own identity in the record`, rec[0]?.requestId === id0 && rec[0]?.requestId !== rec[1]?.requestId, rec);
+    ok(`and the program sees ${expected}`, logs[0] === expected, logs);
+  }
+}
+
+// ---- 18) the escalated mint does not ask the far side to escalate -------------------------------
+
+/**
+ * The interpreter owns the one-hop rule, and it can only own it if nobody else is invited to hop.
+ * The second mint carried `onExpiry: "escalate"` verbatim, so a production handler that honours the
+ * disposition on the wire would mint a third attempt under an identity this journal never
+ * allocated: live work nothing can name, which is the exact failure the attempt ids exist to
+ * prevent. The simulator does not read `onExpiry` at all, so no existing test could see this.
+ */
+{
+  const ESC = `await checkpoint("gate", "Approve?", { timeout: "1m", onExpiry: "escalate", to: "david" });\n`;
+  const reqs: { onExpiry?: string; to?: string }[] = [];
+  const sim = new SimHandler({
+    checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "resolved", value: 1, by: "d" }] },
+    clock: { start: 0 },
+  });
+  const innerCp = sim.checkpoint.bind(sim);
+  await run(ESC, {
+    runId: "r-18",
+    handler: new Proxy(sim, {
+      get(t, prop, recv) {
+        if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
+        return async (req: { onExpiry?: string; to?: string }, ctx: never) => {
+          reqs.push(req);
+          return innerCp(req as never, ctx);
+        };
+      },
+    }) as never,
+  });
+
+  ok("the first mint does ask for the escalation", reqs[0]?.onExpiry === "escalate", reqs[0]);
+  ok("the escalated mint does NOT, so the far side cannot hop again", reqs[1]?.onExpiry !== "escalate", reqs[1]);
+  ok("and it still addresses the escalation target", reqs[1]?.to === "david", reqs[1]);
 }
 
 console.log(`interpret.smoke: ${pass} checks passed`);

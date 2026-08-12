@@ -41,6 +41,17 @@ export interface JournalEntry {
    * absent entirely if the crash came first.
    */
   readonly requestId?: string;
+  /**
+   * WHICH attempt {@link JournalEntry.requestId} names, counted from 0.
+   *
+   * The id alone is not enough to recover an escalation. An escalated checkpoint mints twice under
+   * one entry, and a resumed run that knows only the open id cannot tell whether the hop has been
+   * spent: it re-runs the live body, mints a second time under the id the far side already holds,
+   * and collects that mint's cached expiry as if it were a fresh observation. The index is what
+   * makes "complete the open attempt" expressible at all. Absent on an entry written before this
+   * rule, which reads as attempt 0 and is correct for every non-escalating effect.
+   */
+  readonly attempt?: number;
   readonly state: EntryState;
   readonly status?: EntryStatus;
   readonly result?: unknown;
@@ -145,7 +156,7 @@ export class Journal {
       name: key.name,
       occurrence: key.occurrence,
       inputHash,
-      ...(requestId !== undefined ? { requestId } : {}),
+      ...(requestId !== undefined ? { requestId, attempt: 0 } : {}),
       state: "pending",
       startedAt,
     };
@@ -163,13 +174,16 @@ export class Journal {
    * is about to be open rather than the one that already settled. Without this a crash after the
    * second mint leaves the far side holding work under an identity the journal never recorded, and
    * recovery reissues the first attempt and gets its cached expiry.
+   *
+   * The INDEX moves with the id, and it is the half that recovery reads: an id says what to submit
+   * under, the index says how much of the chain is already spent.
    */
-  reissueAs(key: StepKey, requestId: string): void {
+  reissueAs(key: StepKey, requestId: string, attempt: number): void {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`reissueAs before begin for ${k}`);
-    this.byKey.set(k, { ...entry, requestId });
+    this.byKey.set(k, { ...entry, requestId, attempt });
   }
 
   bind(key: StepKey, external: Readonly<Record<string, unknown>>): void {

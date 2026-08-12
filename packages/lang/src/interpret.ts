@@ -289,7 +289,7 @@ class Interpreter {
     kind: EffectKind,
     name: string,
     hashedInput: unknown,
-    perform: (ctx: EffectContext) => Promise<unknown>,
+    perform: (ctx: EffectContext, inputHash: string) => Promise<unknown>,
     frame: Frame,
   ): Promise<unknown> {
     const key = frame.keys.nextEffect(kind, name);
@@ -333,10 +333,14 @@ class Interpreter {
     // moved, which is exactly why it read as correct: the whole point of writing the id down is
     // the case where it does NOT agree, and a resumed run that re-derives is reissuing under an
     // identity the far side may never have seen. An entry with no recorded id predates this rule.
-    const reqId =
-      verdict.verdict === "pending" && verdict.entry.requestId !== undefined
-        ? verdict.entry.requestId
-        : requestId(this.options.runId, key, inputHash);
+    const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
+    const reqId = recorded?.requestId ?? requestId(this.options.runId, key, inputHash);
+    // WHICH attempt is open, not merely which id. An id alone cannot say how much of an escalation
+    // chain is already spent, and a recovery that cannot tell replays the hop: it mints again under
+    // the id the far side already holds and reads that mint's cached expiry back as a fresh
+    // observation. An entry written before the index existed reads as attempt 0, which is what it
+    // is for every effect that never hops.
+    const attempt = recorded?.attempt ?? 0;
     if (verdict.verdict === "miss") {
       this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
     }
@@ -348,6 +352,7 @@ class Interpreter {
       // entry by `begin` above BEFORE the handler runs. A handler submits under it idempotently,
       // so a resumed run reissues the same id rather than creating a second goal.
       requestId: reqId,
+      attempt,
       ...(resume !== undefined ? { resume } : {}),
       bind: async (external) => {
         this.journal.bind(key, external);
@@ -355,7 +360,7 @@ class Interpreter {
     };
 
     try {
-      const result = await perform(ctx);
+      const result = await perform(ctx, inputHash);
       assertCrossable(result, `the result of ${stepKeyString(key)}`);
       const endedAt = this.options.handler.now();
       this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
@@ -670,32 +675,38 @@ class Interpreter {
       }
       case "turn": {
         const agent = deepFreeze(args[0]) as AgentHandleValue;
+        // The deadline STOPS OBSERVATION (design 5.12), so it belongs in the projection: a turn
+        // recorded under a 1m deadline cannot answer what a 10m turn would have produced, and a
+        // resumed run under the edited deadline replaying the old result is the silent-wrong-path
+        // class. Closing that for `checkpoint` and leaving it open on the siblings closed nothing.
+        const deadline = this.option(bag, "deadline") as string | undefined;
         return await this.performEffect(
           "turn",
           stepName as string,
-          { agent: agent.agent },
-          (ctx) => handler.turn({ agent, ...(this.option(bag, "deadline") !== undefined ? { deadline: this.option(bag, "deadline") as string } : {}) }, ctx),
+          { agent: agent.agent, deadline: deadline ?? null },
+          (ctx) => handler.turn({ agent, ...(deadline !== undefined ? { deadline } : {}) }, ctx),
           frame,
         );
       }
       case "ask": {
         const agent = deepFreeze(args[0]) as AgentHandleValue;
         const schema = this.option(bag, "schema");
+        // Both of these END THE ASKING: `deadline` is the cutoff and `attempts` is how many
+        // schema-failed replies are tolerated before it gives up. A record made under one attempt
+        // is not an answer to what five attempts would have produced.
+        const deadline = this.option(bag, "deadline") as string | undefined;
+        const attempts = this.option(bag, "attempts") as number | undefined;
         return await this.performEffect(
           "ask",
           stepName as string,
-          { agent: agent.agent, schema: schema ?? null },
+          { agent: agent.agent, schema: schema ?? null, deadline: deadline ?? null, attempts: attempts ?? null },
           (ctx) =>
             handler.ask(
               {
                 agent,
                 schema,
-                ...(this.option(bag, "deadline") !== undefined
-                  ? { deadline: this.option(bag, "deadline") as string }
-                  : {}),
-                ...(this.option(bag, "attempts") !== undefined
-                  ? { attempts: this.option(bag, "attempts") as number }
-                  : {}),
+                ...(deadline !== undefined ? { deadline } : {}),
+                ...(attempts !== undefined ? { attempts } : {}),
               },
               ctx,
             ),
@@ -726,14 +737,18 @@ class Interpreter {
           timeout: cpTimeout ?? null,
           ...(onExpiry === "escalate" ? { onExpiry, to: cpTo ?? null } : {}),
         };
-        const attemptId = (ctx: EffectContext, n: number) =>
-          requestId(this.options.runId, ctx.key, digest(cpInput), n);
         return applyCheckpointPolicy(
           (await this.performEffect(
           "checkpoint",
           stepName as string,
           cpInput,
-          async (ctx) => {
+          async (ctx, inputHash) => {
+            // ONE hash value, threaded from what the entry is actually keyed by rather than
+            // re-digested from the projection here. The two agreed, which is exactly the problem:
+            // a second derivation that happens to match is a coincidence maintained by hand, and
+            // the first edit to the projection would desync attempt 1's identity from its own
+            // step with no type error and no failing test.
+            const attemptId = (n: number) => requestId(this.options.runId, ctx.key, inputHash, n);
             const req = {
               prompt,
               ...(schema !== undefined ? { schema } : {}),
@@ -741,30 +756,55 @@ class Interpreter {
               ...(onExpiry !== undefined ? { onExpiry } : {}),
               ...(cpTo !== undefined ? { to: cpTo } : {}),
             };
+            // THE FINAL MINT DOES NOT ASK FOR AN ESCALATION. The interpreter owns the one-hop stop
+            // rule, and it can only own it if the far side is not simultaneously told to hop: a
+            // handler that honours `onExpiry` on the wire would mint a third attempt under an
+            // identity this journal never allocated, and nothing here would ever learn of it.
+            const finalReq = onExpiry === "escalate" ? { ...req, onExpiry: "proceed" as const } : req;
+
+            // RECOVERY COMPLETES THE OPEN ATTEMPT. IT DOES NOT REPLAY THE CHAIN.
+            //
+            // Arriving here with a non-zero attempt means the hop was issued before the crash, so
+            // the far side is already holding work under this very id. Re-running the live body
+            // from the top would call the handler again under it and take that call's cached
+            // expiry for a second observation: the stop rule would be satisfied on paper while the
+            // run had in fact observed one attempt twice. The chain's shape is recoverable without
+            // re-running it, because attempt 0's identity is derivable and its outcome is implied:
+            // the only path that opens attempt 1 is attempt 0 expiring.
+            if (ctx.attempt > 0) {
+              const raw = await handler.checkpoint(finalReq, ctx);
+              return {
+                ...raw,
+                attempts: [
+                  { attempt: 0, requestId: attemptId(0), settled: "expired" },
+                  { attempt: ctx.attempt, requestId: ctx.requestId, to: cpTo ?? null, settled: raw.outcome },
+                ],
+              };
+            }
+
             const first = await handler.checkpoint(req, ctx);
             if (first.outcome !== "expired" || onExpiry !== "escalate") {
-              return { ...first, attempts: [{ attempt: 0, requestId: ctx.requestId, settled: first.outcome }] };
+              // `ctx.attempt`, not a literal 0. Writing the literal made every recovery relabel the
+              // open attempt as the first one, which erased the hop from the journal and left the
+              // record claiming the escalated mint was the original.
+              return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: first.outcome }] };
             }
             // ESCALATION STAYS INSIDE THIS ENTRY. The program made one call, and the interpreter
             // owns key allocation, so a second mint must not become a second occurrence. What it
             // does need is a second IDENTITY, derived from attempt 1 before the mint happens, or a
             // crash between minting and recording leaves live work nothing in the journal names.
-            const to = cpTo;
-            // Name the open attempt on the pending row BEFORE issuing it, or the far side holds
-            // work under an identity the journal never recorded.
-            const nextId = attemptId(ctx, 1);
-            this.journal.reissueAs(ctx.key, nextId);
-            const second = await handler.checkpoint(
-              { ...req, ...(to !== undefined ? { to } : {}) },
-              { ...ctx, requestId: nextId },
-            );
+            //
+            // Name the open attempt on the pending row BEFORE issuing it, index and all.
+            const nextId = attemptId(1);
+            this.journal.reissueAs(ctx.key, nextId, 1);
+            const second = await handler.checkpoint(finalReq, { ...ctx, requestId: nextId, attempt: 1 });
             // ONE HOP. An escalation that can escalate again never terminates, so a second expiry
             // settles as expired and the program decides, exactly as `proceed` would.
             return {
               ...second,
               attempts: [
                 { attempt: 0, requestId: ctx.requestId, settled: "expired" },
-                { attempt: 1, requestId: attemptId(ctx, 1), to: to ?? null, settled: second.outcome },
+                { attempt: 1, requestId: nextId, to: cpTo ?? null, settled: second.outcome },
               ],
             };
           },
@@ -792,10 +832,15 @@ class Interpreter {
       case "wait": {
         const event = deepFreeze(args[0]) as EventDescriptor;
         const timeout = this.option(bag, "timeout") as string | undefined;
+        // A `wait` that resolved null did not observe "the event never happens": it observed "the
+        // event did not happen WITHIN THIS TIMEOUT". Editing the timeout therefore asks a different
+        // question, and replaying the recorded null answers the old one. This is the same hole the
+        // checkpoint projection closed, and leaving it open here left `?? recovery` steering off a
+        // stale cutoff.
         return await this.performEffect(
           "wait",
           stepName ?? "",
-          event,
+          { event, timeout: timeout ?? null },
           (ctx) => handler.wait({ event, ...(timeout !== undefined ? { timeout } : {}) }, ctx),
           frame,
         );
