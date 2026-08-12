@@ -27,8 +27,9 @@ import { Kvm } from "@nats-io/kv";
 import { contractDigest, createSpaceAuth, ensureAuthorityStores, epfStreamName, isReachable, parseEffectFact, publishFactCreateOnly, readLastFact, recordsBucket, serverConfig, spacePrefix, createEndpointStreams, effectFactOf, effectCancelledFactOf, type AcceptanceFact } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { assertAppliableCommitKey, assertEffectsCancelSubject, assertPoolRepairSubject, drainApplierGrants, drainCancellerGrants, drainReconcilerGrants, makeDrainRepairers } from "../src/drain-repair.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;

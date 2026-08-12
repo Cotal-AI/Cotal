@@ -59,6 +59,7 @@ import {
   projectGoalTerminal, goalResultSubject, goalRefOf, readLastFact, epfStreamName,
   type EpCaller, type GoalRef, type ParsedEpRequest, type ActionContext,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -87,7 +88,7 @@ c("a goal's terminal subject is the ONE flat SPEC:1394 form, with no epoch token
   goalResultSubject(SPACE, ref("g1")).endsWith(".g1.result")
   && !/\.result\.\d+$/.test(goalResultSubject(SPACE, ref("g1"))));
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epfence-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

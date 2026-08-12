@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import { isReachable, openAclRegistry, readAcl, commitAcl, reissueAcl, deleteAcl, aclKey } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -29,7 +30,7 @@ const U1 = "owner1aaaaaaaaaaaaaaaaaaaaa"; // 26 chars, [a-z0-9]
 const UG = "garbledbbbbbbbbbbbbbbbbbbbb";
 const UW = "wedgedcccccccccccccccccccc";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-aclcas-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

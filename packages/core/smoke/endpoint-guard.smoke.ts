@@ -26,6 +26,7 @@ import {
   ownerCommitProof, claimGuardClearanceMint, resumeCheckpoint, expireCheckpoint, readCheckpointSpec,
   type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam, type ActionContext,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -124,7 +125,7 @@ await rejects("the guard call and obligation verification share ONE gate budget 
 }
 
 // ── the hold wiring over the checkpoint pause primitive (real broker) ──
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epguard-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 try {

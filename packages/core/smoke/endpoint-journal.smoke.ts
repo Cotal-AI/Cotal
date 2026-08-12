@@ -21,6 +21,7 @@ import {
   epjSubject, epRequestSubject, parseEpSubject,
   type AcceptanceFact, type RejectionFact, type QuarantineFact, type ParsedEpRequest, type EpCaller,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -156,7 +157,7 @@ c("size preflight passes a bounded fact", assertFactFits(rej, 1024 * 1024).lengt
 throws("size preflight refuses an acceptance that cannot fit", () => assertFactFits(acc, 64));
 
 // ── the decision CAS + plain appends (real broker) ──
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epjrn-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

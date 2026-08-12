@@ -137,7 +137,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";

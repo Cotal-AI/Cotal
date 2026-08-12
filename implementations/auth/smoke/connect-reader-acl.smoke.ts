@@ -26,8 +26,9 @@ import { ensureRootCredential } from "../src/root-credential.js";
 import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import { credRowKey, parseLedgerRow } from "../src/credential-ledger.js";
 import type { ValidatedUserToken } from "../src/token.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>

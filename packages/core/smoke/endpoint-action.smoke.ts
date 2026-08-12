@@ -32,6 +32,7 @@ import {
   type EpCaller, type GoalRef, type ParsedEpRequest, type GoalResultFact, type ActionContext,
   type Receipt, type ReceiptEmissionWiring, type ReceiptStoreContext,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -68,7 +69,7 @@ c("the per-goal progress topic carries the caller identity for mint-time read co
   epeSubject(SPACE, "manager", "i".repeat(26), 1, goalProgressTopic(ref("g1")))
     .endsWith(`.goal.u_abc.worker.${UID}.g1.progress`));
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epact-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 
