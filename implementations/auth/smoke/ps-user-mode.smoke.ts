@@ -22,7 +22,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -44,11 +44,18 @@ const scratch = makeScratch("cotal-psuser-");
 const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
 const root = mkdtempSync(join(scratch, "root-"));
+// ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS. `findCotalRoot` stops at the first `.cotal`
+// starting from the directory itself, so owning one here makes every later resolution from this
+// root land on this root - during `up`, during `ps`, and during `down` - no matter what appears
+// above it in between. Ownership then does not depend on the timing of any check, which is the
+// only way to close a race against a child that re-resolves cwd for itself.
+mkdirSync(join(root, ".cotal"), { recursive: true });
 const { establishIdpSession } = await import("../src/index.js");
 
-// Did a mesh ever start? Decides whether an unstopped fixture is an orphan worth preserving
-// evidence for, or simply nothing.
-let meshStarted = false;
+// Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
+// have launched detached processes, and those are exactly the ones whose pidfiles must survive.
+// Attribution evidence is earned by the attempt, not by the outcome.
+let upAttempted = false;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
 let pass = 0, fail = 0;
@@ -153,15 +160,21 @@ async function approve(userCode: string): Promise<void> {
 
 try {
   console.log("1) up --user-auth");
-  // Checked FIRST and fatal: with the root captured, `up` still exits 0 and every cell below still
-  // "runs" — against a mesh that is not where this suite thinks it is.
+  // DIRECT EXISTENCE, not a consequence of it. `foreignRootFor(root) === null` is ALSO true with no
+  // anchor at all under the clean ancestry makeScratch builds, so it cannot tell "anchored" from
+  // "nothing here" on an ordinary run - it would have let CI delete the load-bearing anchor and stay
+  // green. Assert the thing itself; keep the resolution cell beside it as the consequence.
+  check("the fixture root OWNS its .cotal (the anchor exists)", existsSync(join(root, ".cotal")), root);
   const captor = foreignRootFor(root);
-  check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
-  if (captor) { process.exitCode = 1; throw new Error(`fixture root captured by ${captor}`); }
+  check("...and therefore outranks any ancestor", captor === null, captor);
+  if (captor) { process.exitCode = 1; throw new Error(`anchor missing: ${root} resolves to ${captor}`); }
+  upAttempted = true;
   const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
+  // Attribute HOW `up` ended before reading its status: a signalled or timed-out `up` reports
+  // `status: null`, which reads only as "non-zero" and loses why.
+  mustHaveRun(up, "`cotal up`");
   check("up exits 0", up.status === 0, up.out.slice(-600));
   if (up.status !== 0) { process.exitCode = 1; throw new Error("fixture"); }
-  meshStarted = true;
   await wait(3000);
 
   console.log("2) device login + admin grant");
@@ -225,11 +238,23 @@ try {
   // dangerous thing the suite does.
   let meshStopped = false;
   await step("stop the mesh", async () => {
-    const foreign = foreignRootFor(root);
-    if (foreign !== null) {
+    // AN ANCHOR, NOT A GATE. `cotal down` is a child that re-resolves its own root from cwd, so no
+    // check performed here can bind what it will decide a moment later — a pre-spawn `foreignRootFor`
+    // returning null then losing to a `.cotal` created before the spawn was measured killing a
+    // foreign process. A time-of-check test cannot win a time-of-use race.
+    //
+    // What CAN close it is a fact that outranks anything appearing afterwards: `findCotalRoot` stops
+    // at the FIRST `.cotal` starting from the directory itself, so once `root/.cotal` exists the
+    // child's resolution IS `root`, permanently, whatever appears above it later. That is the only
+    // condition under which a root-resolving teardown is safe here.
+    if (!existsSync(join(root, ".cotal"))) {
+      const foreign = foreignRootFor(root);
       throw new Error(
-        `refusing \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT root `
-          + `and signal processes this suite did not start. Any mesh this run began is under it and must be stopped by hand.`,
+        `refusing \`cotal down\`: ${root} does not own a .cotal, so the child would resolve to whatever root `
+          + `wins from its cwd and could signal processes this suite never started`
+          + (upAttempted
+            ? `. A mesh may have started under ${foreign ? join(foreign, ".cotal") : "another root"} — stop it by hand.`
+            : `. Nothing was started.`),
       );
     }
     const down = await cotal(["down"], 60_000);
@@ -244,7 +269,7 @@ try {
     // Only once nothing is left to find. The scratch's `.cotal` holds the pidfiles that are the only
     // way to locate a mesh this suite failed to stop; deleting them turns a recoverable orphan into
     // an anonymous one.
-    if (meshStarted && !meshStopped) {
+    if (upAttempted && !meshStopped) {
       process.exitCode = 1;
       console.error(
         `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `

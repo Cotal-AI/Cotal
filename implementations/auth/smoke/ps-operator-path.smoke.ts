@@ -18,7 +18,7 @@
  * Mutation-proved: delete that grant row and this suite goes red.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -31,14 +31,21 @@ const scratch = makeScratch("cotal-psstatic-");
 const home = mkdtempSync(join(scratch, "home-"));
 process.env.COTAL_HOME = home;
 const root = mkdtempSync(join(scratch, "root-"));
+// ANCHOR THE ROOT BEFORE ANY PRODUCT COMMAND RUNS. `findCotalRoot` stops at the first `.cotal`
+// starting from the directory itself, so owning one here makes every later resolution from this
+// root land on this root - during `up`, during `ps`, and during `down` - no matter what appears
+// above it in between. Ownership then does not depend on the timing of any check, which is the
+// only way to close a race against a child that re-resolves cwd for itself.
+mkdirSync(join(root, ".cotal"), { recursive: true });
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `psstatic-${Math.floor(Math.random() * 1e6)}`;
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 
-// Did a mesh ever start? Decides whether an unstopped fixture is an orphan worth preserving
-// evidence for, or simply nothing.
-let meshStarted = false;
+// Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
+// have launched detached processes, and those are exactly the ones whose pidfiles must survive.
+// Attribution evidence is earned by the attempt, not by the outcome.
+let upAttempted = false;
 
 let pass = 0, fail = 0;
 const check = (n: string, v: boolean, x?: unknown) => { v ? (pass++, console.log(`  ✓ ${n}`)) : (fail++, console.log(`  ✗ FAIL: ${n}`, x ?? "")); };
@@ -92,17 +99,23 @@ function mustHaveRun(r: Run, what: string): void {
 
 try {
   console.log("1) up (STATIC auth — no --user-auth, no IdP, no device login)");
-  // Checked before `up`, because a captured root does not make `up` fail — it makes every later cell
-  // grade a mesh that is not this fixture's.
+  // DIRECT EXISTENCE, not a consequence of it. `foreignRootFor(root) === null` is ALSO true with no
+  // anchor at all under the clean ancestry makeScratch builds, so it cannot tell "anchored" from
+  // "nothing here" on an ordinary run - it would have let CI delete the load-bearing anchor and stay
+  // green. Assert the thing itself; keep the resolution cell beside it as the consequence.
+  check("the fixture root OWNS its .cotal (the anchor exists)", existsSync(join(root, ".cotal")), root);
   const captor = foreignRootFor(root);
-  check("fixture root has no .cotal ancestor (else nothing below can arm)", captor === null, captor);
-  if (captor) { process.exitCode = 1; throw new Error(`FIXTURE FAILURE, not a product defect: the temp root is captured by ${captor}.`); }
+  check("...and therefore outranks any ancestor", captor === null, captor);
+  if (captor) { process.exitCode = 1; throw new Error(`FIXTURE FAILURE, not a product defect: anchor missing, ${root} resolves to ${captor}.`); }
+  upAttempted = true;
   const up = await cotal(["up", "--detach", "--server", SERVER, "--space", SPACE]);
+  // Attribute HOW `up` ended before reading its status: a signalled or timed-out `up` reports
+  // `status: null`, which reads only as "non-zero" and loses why.
+  mustHaveRun(up, "`cotal up`");
   check("`cotal up` exits 0 — checked FIRST so a fixture failure is distinguishable from a product one", up.status === 0, up.out.slice(-700));
   // Also a throw, not an exit: a PARTIALLY started mesh is the case most in need of the teardown
   // that `finally` performs, and `process.exit` here would strand exactly that.
   if (up.status !== 0) { process.exitCode = 1; throw new Error("FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised."); }
-  meshStarted = true;
 
   console.log("\n2) cotal ps --space, under the STATIC credential");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
@@ -164,11 +177,19 @@ try {
   // outside its own fixture is worse than no teardown.
   let meshStopped = false;
   await step("stop the mesh", async () => {
-    const foreign = foreignRootFor(root);
-    if (foreign !== null) {
+    // AN ANCHOR, NOT A GATE — see the user-mode sibling for the full reasoning. `cotal down` is a
+    // child that re-resolves its root from cwd, so a pre-spawn check cannot bind its answer; that
+    // race was measured killing a foreign process. Only `root/.cotal` existing makes the child's
+    // resolution knowable in advance, because nearest-wins means nothing appearing above can outrank
+    // it afterwards.
+    if (!existsSync(join(root, ".cotal"))) {
+      const foreign = foreignRootFor(root);
       throw new Error(
-        `refusing \`cotal down\`: ${root} resolves to ${join(foreign, ".cotal")}, so down would target THAT root `
-          + `and signal processes this suite did not start. Stop any mesh under it by hand.`,
+        `refusing \`cotal down\`: ${root} does not own a .cotal, so the child would resolve to whatever root `
+          + `wins from its cwd and could signal processes this suite never started`
+          + (upAttempted
+            ? `. A mesh may have started under ${foreign ? join(foreign, ".cotal") : "another root"} — stop it by hand.`
+            : `. Nothing was started.`),
       );
     }
     const down = await cotal(["down"], 60_000);
@@ -181,7 +202,7 @@ try {
   await step("remove the scratch", () => {
     // The scratch's `.cotal` holds the pidfiles that are the only way to find a mesh this suite
     // failed to stop. Deleting them turns a recoverable orphan into an anonymous one.
-    if (meshStarted && !meshStopped) {
+    if (upAttempted && !meshStopped) {
       process.exitCode = 1;
       console.error(
         `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
