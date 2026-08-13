@@ -51,8 +51,9 @@ export interface SpaceBackupInventory {
 }
 
 /** The complete Cotal stream inventory at a stable backup cut. Only the eight `backedUp` streams
- * enter a full artifact; the five excluded streams are transient, derived, leases, or the artifact
- * object store. EVERY stream a space owns must appear in one list or the other:
+ * enter a full artifact; the seven excluded streams are transient, derived, leases, or one of the
+ * three artifact stores (object bytes, possession rows, attachment rows). EVERY stream a space owns
+ * must appear in one list or the other:
  * {@link validateSpaceBackupInventory} is exact set-equality, so an unenumerated stream fails
  * validation for the WHOLE space, and a missing one fails it the same way. */
 export function spaceBackupInventory(space: string): SpaceBackupInventory {

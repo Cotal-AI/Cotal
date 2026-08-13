@@ -32,8 +32,14 @@ import type { AttachmentRow } from "./artifact-index.js";
  * (`ControlReply` is `{ ok, data?, error? }`). Frozen and exported so the daemon and its suite name
  * the same thing rather than agreeing by convention — a refusal matched by substring, or by a
  * literal retyped in a test, is a mapping nobody is checking.
+ *
+ * `Object.freeze`, not merely `as const`. `as const` is a TYPE-level claim that vanishes at runtime,
+ * so an `as const` refusal table is an ordinary mutable object any imported module can rewrite — and
+ * a refusal vocabulary is exactly the kind of live-read security collection that class covers. This
+ * shipped unfrozen and `smoke:frozen-exports` caught it; the guard is the enforcement, this is the
+ * fix.
  */
-export const ATTACH_REFUSAL = {
+export const ATTACH_REFUSAL = Object.freeze({
   /** A1 — the `seq` names no entry in the chat stream. */
   entryNotFound: "confirmAttach: no such stream entry",
   /** A3 — the confirm's `channel` disagrees with the entry's SUBJECT channel (never `msg.channel`). */
@@ -66,12 +72,12 @@ export const ATTACH_REFUSAL = {
    * store, so naming it leaks nothing about what exists.
    */
   ambiguousAlias: "confirmAttach: AmbiguousAclAlias",
-} as const;
+} as const);
 
 export type AttachRefusal = (typeof ATTACH_REFUSAL)[keyof typeof ATTACH_REFUSAL];
 
 /** Every refusal this verb may return — the closed set a suite checks against. */
-export const ATTACH_REFUSALS: readonly string[] = Object.values(ATTACH_REFUSAL);
+export const ATTACH_REFUSALS: readonly string[] = Object.freeze(Object.values(ATTACH_REFUSAL));
 
 export interface ConfirmAttachArgs {
   digest: string;

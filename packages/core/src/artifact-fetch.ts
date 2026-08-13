@@ -19,8 +19,14 @@
  * named cell to redden. Without that, the rule is prose and the code is free to drift from it.
  */
 
-/** Named refusals for the fetch path. */
-export const FETCH_REFUSAL = {
+/**
+ * Named refusals for the fetch path.
+ *
+ * `Object.freeze`, not merely `as const` — `as const` is a TYPE-level claim that vanishes at runtime,
+ * leaving an ordinary mutable object any imported module can rewrite. A refusal vocabulary is a
+ * live-read security collection, which is precisely the class `smoke:frozen-exports` enforces.
+ */
+export const FETCH_REFUSAL = Object.freeze({
   /**
    * The caller may not read this scope. Returned BEFORE any digest-dependent state is touched, so
    * it is indistinguishable from every other reason a stranger might be refused.
@@ -41,9 +47,9 @@ export const FETCH_REFUSAL = {
   notYetAttached: "fetchArtifact: artifact not yet attached",
   /** The attachment expired or its bytes were swept. */
   expired: "fetchArtifact: artifact expired",
-} as const;
+} as const);
 
-export const FETCH_REFUSALS: readonly string[] = Object.values(FETCH_REFUSAL);
+export const FETCH_REFUSALS: readonly string[] = Object.freeze(Object.values(FETCH_REFUSAL));
 
 export interface FetchGateDeps {
   /** The scope read two-gate: live ACL ∩ mint-time ceiling. MUST be consulted first. */

@@ -38,10 +38,28 @@ const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
 assert.equal(inventory.full.length, 8);
-// 5 excluded, not 4: the artifact object store joined them. It is excluded because pin extends
-// LIFETIME, not durability - artifact bytes are transferable, not records. Its own `artifact`
-// class exists so this line cannot be read as "derived, therefore recomputable".
-assert.equal(inventory.excluded.length, 5);
+// 7 excluded, not 5: the artifact OBJECT store arrived in S2 and the two artifact INDEX stores
+// (possession, attachment) in S3. All three carry the `artifact` class because pin extends LIFETIME,
+// not durability - artifact bytes are transferable, not records - so this line cannot be read as
+// "derived, therefore recomputable".
+assert.equal(inventory.excluded.length, 7);
+// A COUNT THAT MATCHES WITH DIFFERENT MEMBERSHIP IS NOT A PASS. This lane's own mutation ledger
+// records a miss of exactly that shape (same kill-set size, different cells), and a bare length
+// check would let a swap - one stream added, another dropped - through unchanged. So the names are
+// pinned as LITERALS, deliberately not rebuilt from the same helpers the inventory uses: a set
+// recomputed from its own source compares a value to itself and can never disagree with it.
+assert.deepEqual(
+  inventory.excluded.map((s) => `${s.class}:${s.name}`).sort(),
+  [
+    "artifact:KV_cotal_artattach_backup_smoke",
+    "artifact:KV_cotal_artpossess_backup_smoke",
+    "artifact:OBJ_cotal_artifacts_backup_smoke",
+    "derived:KV_cotal_membership_backup_smoke",
+    "lease:KV_cotal_delivery_backup_smoke",
+    "lease:KV_cotal_manager_backup_smoke",
+    "transient:KV_cotal_presence_backup_smoke",
+  ],
+);
 assert.deepEqual(validateSpaceBackupInventory(space, [...inventory.full, ...inventory.excluded.map((s) => s.name)]), inventory);
 assert.throws(() => validateSpaceBackupInventory(space, inventory.full), /missing/);
 assert.throws(
