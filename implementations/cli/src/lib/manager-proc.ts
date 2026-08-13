@@ -117,16 +117,15 @@ export function startManagerDetached(
  *  one detached. Best-effort — callers treat it as non-fatal. A caller that needs THE manager to
  *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
  *  taken as-is. */
-export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
-  probe: LivenessProbe = probeLiveness,
-): { running: boolean } {
+/** Refuse to stand a manager up OVER a record we cannot read or attribute.
+ *
+ *  Exported because `ensureManager` is not the only path that starts one: `cotal spawn -f` calls
+ *  `startManagerDetached` directly after its own lease checks, and so skipped this entirely. A lease
+ *  says nobody is ANSWERING; it does not say the recorded pid is dead. Overwriting an unknown or
+ *  unattributable record is the same defect as deleting it, reached through a different verb, which
+ *  is the third time that shape has appeared in this change. Any future starter calls this first. */
+export function assertManagerRecordReplaceable(probe: LivenessProbe = probeLiveness): void {
   const state = managerLiveness(probe);
-  if (state === "alive") return { running: true };
-  // REFUSE, loudly, rather than pick a silent wrong answer. Reusing an unattributable pid wedges the
-  // control plane permanently (reported running, nothing reachable, no retry clears it); starting a
-  // second manager over one that may be live double-binds the plane. Neither is recoverable from
-  // here and both look like success, so this is the one case that must reach a human.
   if (state === "unattributable")
     throw new Error(
       `the manager pidfile at ${PID_PATH()} holds content that is not a pid (${JSON.stringify(readFileSync(PID_PATH(), "utf8").trim())}).\n` +
@@ -135,11 +134,19 @@ export function ensureManager(
     );
   if (state === "unknown")
     throw new Error(
-      `the recorded manager pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
-        `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +
-        `Cotal will not guess: reusing it would report a control plane that is not there, and starting a second manager could double-bind a live one.\n` +
-        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/manager.pid\` and re-run. If it is running, use it or stop it.`,
+      `the recorded manager pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
+        `Refusing to start a manager over it: it may still be running and bound to the control plane.\n` +
+        `NEXT: verify with \`ps -p <pid>\`. If it is gone, remove \`.cotal/manager.pid\` and re-run.`,
     );
+}
+
+export function ensureManager(
+  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  probe: LivenessProbe = probeLiveness,
+): { running: boolean } {
+  const state = managerLiveness(probe);
+  if (state === "alive") return { running: true };
+  assertManagerRecordReplaceable(probe); // refuses on unknown / unattributable
   startManagerDetached(o);
   return { running: true };
 }

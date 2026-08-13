@@ -245,6 +245,43 @@ try {
   check("ensureManager REFUSES corrupt content instead of launching over it", ensureRefused !== undefined);
   check("and does NOT overwrite the record it could not read", readFileSync(mgrPid, "utf8") === corruptBefore);
 
+  // ── the THIRD stop sibling: a signal accepted is not a death ────────────────────────────────
+  // stopAuthService handled EPERM correctly and then deleted the record immediately after a
+  // SUCCESSFUL SIGTERM, so a service that ignores it was reported stopped while still running. The
+  // reviewer's mutation check survived 226 checks with the deletion removed: nothing asserted the
+  // post-signal outcome anywhere.
+  const { stopAuthService } = await import("../../../implementations/cli/src/lib/auth-proc.js");
+  // The path is hex-encoded per space (readPidPath), so derive it rather than guessing: my first
+  // version invented `auth-service.pid`, the helper found nothing, and the cell failed for the wrong
+  // reason. A fixture that misses its subject proves nothing about the subject.
+  const { PID_PATH: AUTH_PID_PATH } = await import("../../../implementations/cli/src/lib/auth-proc.js").then(
+    async (m) => m as unknown as { PID_PATH?: (s: string) => string },
+  ).catch(() => ({}) as { PID_PATH?: (s: string) => string });
+  const authPid = AUTH_PID_PATH
+    ? AUTH_PID_PATH("main")
+    : join(root, ".cotal", `auth-service.${Buffer.from("main").toString("hex")}.pid`);
+  writeFileSync(authPid, "not-a-pid\n");
+  let authMalformed: string | undefined;
+  try {
+    stopAuthService("main");
+  } catch (e) {
+    authMalformed = (e as Error).message;
+  }
+  check("stopAuthService REFUSES a malformed pidfile", authMalformed !== undefined);
+  check("and that record SURVIVES", existsSync(authPid));
+
+  // The gap the reviewer's mutation exposed: 226 checks survived with the final deletion removed,
+  // so NOTHING asserted the post-signal outcome. A signal accepted is not a death.
+  writeFileSync(authPid, `${process.pid}\n`);
+  let authOutlived: string | undefined;
+  try {
+    stopAuthService("main", alive, () => {}); // accepted, but never dies
+  } catch (e) {
+    authOutlived = (e as Error).message;
+  }
+  check("stopAuthService REFUSES when the service outlives SIGTERM", authOutlived !== undefined);
+  check("and preserves its pidfile rather than recording a stop that did not happen", existsSync(authPid));
+
   // ── pid 0 and negatives must never reach kill ────────────────────────────────────────────────
   // `kill(0, sig)` is POSIX for "signal my own process group", so a pidfile of `0` reaching the raw
   // syscall would signal the caller. The shared parser exists to stop exactly this, and these pin
