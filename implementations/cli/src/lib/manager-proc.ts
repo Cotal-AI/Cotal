@@ -6,7 +6,10 @@ import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
 import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
 
-const PID_PATH = () => cotalPath("manager.pid");
+/** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
+ *  "cannot be attributed" without saying which pid is not actionable. */
+export const MANAGER_PID_PATH = (): string => cotalPath("manager.pid");
+const PID_PATH = MANAGER_PID_PATH;
 /** Sibling marker of `manager.pid`: written by THIS build's manager (which no longer hosts Plane-3 —
  *  the server-side delivery daemon does). Its presence beside a live `manager.pid` proves the manager is
  *  "delivery-aware" / non-hosting. A live `manager.pid` WITHOUT this marker is an OLD (pre-delivery-daemon)

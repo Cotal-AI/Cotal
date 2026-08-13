@@ -123,6 +123,24 @@ try {
   // The dual defect: the old shape overwrote a LIVE holder's pidfile with a replacement it could
   // then neither stop nor track. Refusing must leave the record exactly as it found it.
   check("the refusal does NOT overwrite the live holder's pidfile", readFileSync(mgrPid, "utf8") === before);
+
+  // THE ORDERING BUG, which the refusal above did NOT cover and nothing caught. `ensureControlPlane`
+  // runs preflight -> ensureDelivery -> ensureManager. The preflight read `managerUp()`, which folds
+  // unknown to false, so an unattributable manager with no delivery-aware marker (exactly the old
+  // Plane-3-hosting shape) read as "no old manager": the preflight skipped, a second daemon was
+  // minted, written and started, and only THEN did ensureManager throw. A guard that runs after the
+  // work is not a guard, so the preflight refuses first and this pins the position, not just the rule.
+  const { stopOldHostingManagerIfPresent } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
+  rmSync(join(root, ".cotal", "manager.delivery-aware"), { force: true }); // no marker: the old shape
+  let preflightRefused: string | undefined;
+  try {
+    stopOldHostingManagerIfPresent(stuck);
+  } catch (e) {
+    preflightRefused = (e as Error).message;
+  }
+  check("the delivery cutover preflight REFUSES on an unattributable manager", preflightRefused !== undefined);
+  check("it refuses BEFORE the daemon, naming double-binding as the reason", /double-bind/i.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
+  check("the preflight leaves the manager pidfile untouched too", readFileSync(mgrPid, "utf8") === before);
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });

@@ -10,7 +10,7 @@ import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpace
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
-import { ensureManager, managerHasDeliveryMarker, managerUp, stopManager } from "./manager-proc.js";
+import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager } from "./manager-proc.js";
 
 const PID_PATH = () => cotalPath("delivery.pid");
 // The daemon's cred goes through the secret-store seam; the shared key (== the filename, so the
@@ -50,18 +50,38 @@ function hasAuth(): boolean {
   return listSpaceAccounts(authDir(findCotalRoot())).length > 0;
 }
 
-/** True if an OLD (pre-delivery-daemon) Plane-3-hosting manager is live: a `manager.pid` that is alive
- *  but carries no delivery-aware marker. Such a manager still calls `startPlane3` and would double-bind
- *  `fanout`/`reader` against the new daemon. */
-function oldHostingManagerLive(): boolean {
-  return managerUp() && !managerHasDeliveryMarker();
+/** The cutover preflight's verdict, THREE-VALUED, because the boolean it replaced was read before the
+ *  refusal boundary and therefore defeated it.
+ *
+ *  `managerUp()` folds `unknown` to false, so an unattributable manager with no marker (which IS the
+ *  old Plane-3-hosting shape) read as "no old manager", the preflight skipped, and `ensureDelivery`
+ *  went on to mint a credential, write a pidfile and start a second daemon. Only afterwards did
+ *  `ensureManager` throw. Everything the refusal was supposed to prevent had already happened, and
+ *  the daemon's own lease cannot help: it is a delivery-daemon-only mechanism and can neither prove
+ *  nor exclude an old manager still hosting Plane 3.
+ *
+ *  A guard that runs after the work is not a guard, so this one reads the tri-state directly and the
+ *  caller refuses BEFORE anything is minted, written or started. */
+function oldHostingManagerVerdict(probe: LivenessProbe = probeLiveness): "stop-it" | "proceed" | "indeterminate" {
+  const state = managerLiveness(probe);
+  if (state === "unknown") return "indeterminate";
+  if (state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
+  return managerHasDeliveryMarker() ? "proceed" : "stop-it"; // alive: the marker decides
 }
 
 /** Cutover preflight — the FIRST action, BEFORE the daemon can bind: stop any old Plane-3-hosting
  *  manager (live `manager.pid` without the delivery-aware marker) so it never double-binds the
  *  daemon's durables. A delivery-aware (this-build) manager is left running. No-op on a fresh install. */
-export function stopOldHostingManagerIfPresent(): void {
-  if (oldHostingManagerLive()) {
+export function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiveness): void {
+  const verdict = oldHostingManagerVerdict(probe);
+  // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
+  if (verdict === "indeterminate")
+    throw new Error(
+      `the recorded manager pid (${readFileSync(MANAGER_PID_PATH(), "utf8").trim()}) cannot be attributed, so the delivery cutover preflight cannot run: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
+        `Refusing before the daemon starts. If that manager is an old Plane-3-hosting one it is still bound to fanout/reader, and starting the daemon anyway would double-bind them; the daemon's own lease cannot detect that.\n` +
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/manager.pid\` and re-run. If it is running, stop it with \`cotal down\` first.`,
+    );
+  if (verdict === "stop-it") {
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     stopManager();
   }
@@ -106,7 +126,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
  *  treat it as non-fatal (a missing daemon degrades durable delivery, never live). */
 export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean }> {
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
-  if (oldHostingManagerLive()) {
+  if (oldHostingManagerVerdict(probe) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
     );
