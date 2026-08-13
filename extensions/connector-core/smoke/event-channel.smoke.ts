@@ -161,7 +161,15 @@ c("the corpus AND its images together produce no shared channel", dup === "", du
   const verdict = (f: (n: string) => unknown, n: string): boolean => {
     try { f(n); return true; } catch { return false; }
   };
-  const probes = ["\uD800", "\uDC00", "A\uD800", "\uD800A", "\uDC00\uD800", "agent \uD83D\uDE00", "\uFFFD", "worker", "Ada Lovelace"];
+  // EVERY rule the shared validator enforces, not just the surrogate one. The first version probed
+  // surrogates and well-formed names only, so it was a surrogate-rule staleness sentinel while its
+  // name claimed whole-rule agreement — deleting core's EMPTY-NAME refusal left it green. Found by
+  // fmae-rev-test. A cell's probe set is part of its claim, and this one's name outran it.
+  const probes = [
+    "\uD800", "\uDC00", "A\uD800", "\uD800A", "\uDC00\uD800",      // unpaired surrogates
+    "", " ada ", "ada\nlovelace", "owner/name", "a\\b",             // empty / whitespace / newline / reserved
+    "agent \uD83D\uDE00", "\uFFFD", "worker", "Ada Lovelace",      // must be ACCEPTED
+  ];
   const disagreed = probes.filter((n) => verdict(ruleFromSource, n) !== verdict((x) => eventChannel(x), n));
   c("the rule `eventChannel` EXECUTES agrees with core's SOURCE rule (else core's dist is stale)",
     disagreed.length === 0,

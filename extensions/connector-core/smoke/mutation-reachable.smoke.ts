@@ -95,6 +95,7 @@ function owningPackage(fileRel: string): string | undefined {
   return undefined;
 }
 
+const sourceImporting: string[] = [], fileReading: string[] = [], assembledOnly: string[] = [];
 for (const rel of suites) {
   const own = owningPackage(rel);
   // A suite whose package cannot be resolved is a FAILURE, not a skip: skipping would quietly
@@ -105,9 +106,42 @@ for (const rel of suites) {
   // import a mutation has to reach. Importing a DIFFERENT first-party package is fine: that code is
   // not what this suite mutates, and a blanket ban would collect exemptions until it meant nothing.
   const byName = new RegExp(`from\\s+["']${own.replace(/[/@\\-]/g, "\\$&")}["']`).test(src);
-  c(`${rel.split("/").pop()} imports its own package ("${own}") by SOURCE path`, !byName,
+  // ABSENCE of the bad import is only half of it, and the label used to claim the other half it did
+  // not check: a suite importing NOTHING from its own package passed, because `!byName` is true of a
+  // file with no production import at all. Found by fmae-rev-test, which added an untracked smoke
+  // containing one `console.log` and watched the derived set grow while the guard stayed green.
+  // The claim was "imports its own package by SOURCE path"; the check was "does not import it by
+  // name". Same shape as every other defect this lane closed: the sentence was stronger than the
+  // instrument under it.
+  c(`${rel.split("/").pop()} does NOT import its own package ("${own}") by name`, !byName,
     byName ? `imports "${own}" — a mutation to its source would never reach this suite` : undefined);
+
+  // HOW does this suite reach the code it grades? Three honest answers, and the point is that the
+  // third exists rather than being quietly counted as the first.
+  const bySource = /from\s+["']\.\.?\//.test(src);
+  const byReading = /readFileSync|execFileSync|readdirSync/.test(src);
+  if (bySource) sourceImporting.push(rel);
+  else if (byReading) fileReading.push(rel);
+  else assembledOnly.push(rel);
 }
+
+// The set that CANNOT be reached by a source mutation, named rather than hidden.
+//
+// A suite reaching its subject only through package-name imports grades the ASSEMBLED product —
+// which is what `dist/` is — so a source mutation will not redden it. For `bin/` composition-root
+// parity suites that is the intent, not a defect: they exist to check that the pieces agree once
+// built. What is NOT acceptable is letting them be counted as source-reachable, which is what this
+// guard did while its label claimed otherwise.
+//
+// This is reported, not failed. A permanently-red cell for something deliberate would normalise red
+// and the next reader would learn to skim it — the same reason a known-open defect is kept off the
+// gate rather than gated and ignored.
+c("every suite is classified, so none is silently assumed source-reachable",
+  sourceImporting.length + fileReading.length + assembledOnly.length === suites.length,
+  { sourceImporting: sourceImporting.length, fileReading: fileReading.length, assembledOnly: assembledOnly.length });
+if (assembledOnly.length)
+  console.log(`  [named] ${assembledOnly.length} suite(s) grade the ASSEMBLED product and are NOT source-mutation-reachable:\n` +
+    assembledOnly.map((f) => `      ${f}`).join("\n"));
 
 console.log(`mutation-reachable smoke: ${ok} passed, ${fail} failed (${suites.length} suites derived from the lane diff)`);
 if (fail > 0) process.exit(1);
