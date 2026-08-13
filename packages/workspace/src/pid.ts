@@ -1,12 +1,21 @@
 /**
- * THE pid-attribution contract for the CLI's pidfile subsystem, in ONE place.
+ * THE pid-attribution contract for machine-local pidfiles, in ONE place.
  *
  * Two copies of "parse a pid" + "is it alive" had drifted (a bounded parser in `auth-proc`, an
  * unbounded `Number.isInteger` parser plus a two-state `isAlive` in `down`), and the gap between a
  * guard's validity predicate and what `process.kill` actually accepts is exactly where a live
  * process gets misread as dead and its pidfile deleted under a clean-stop report. One parser, one
- * tri-state probe, consumed everywhere - so every surface that decides "is this record a live
- * process, a dead one, or unattributable" decides it the same way.
+ * tri-state probe, so every surface that decides "is this record a live process, a dead one, or
+ * unattributable" decides it the same way.
+ *
+ * WHO CAN ACTUALLY CONSUME IT, because "consumed everywhere" was never reachable and claiming it
+ * hid the gap. This lives in `workspace` (machine-local operator tooling), the widest tier that may
+ * hold a local-process concept: the CLI, the manager, the auth service and the web surface all
+ * depend on it. `extensions/*` peer-depend `core` ONLY, and a pid probe is not a wire concept, so
+ * moving it into core to reach them would leak a local concern into the standard. The two
+ * extension-side probes (`connector-opencode`, `connector-hermes`) therefore keep their own copies
+ * BY CONSTRUCTION, not by oversight; if they need this contract, the fix is a shared local-process
+ * module they may depend on, never a core export.
  */
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`

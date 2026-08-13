@@ -7,7 +7,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   establishIdpSession,
@@ -272,8 +272,10 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) - respawn this agent to re-provision it`);
     }
     const info = loadAuthServiceInfo(dir);
-    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    if (!info || !alive(info.pid))
+    // Only a proven ESRCH means gone. The old two-state probe called EPERM dead, so a service
+    // running as another user produced "not running - restart it with `cotal up`" about a service
+    // that was up the whole time.
+    if (!info || probeLiveness(info.pid) === "dead")
       throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
     let res: Response;
     try {

@@ -14,7 +14,7 @@
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type SecretStore } from "@cotal-ai/core";
-import { assertUserAuthInfo, homeCotalDir, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
@@ -37,13 +37,11 @@ import {
 
 const READY_TIMEOUT_MS = 15_000;
 
+/** Present unless PROVEN gone. `probeLiveness` already reads EPERM (another user's process) as
+ *  alive; `unknown` stays present too, because the wrong answer here declares a running auth
+ *  service dead and tells the operator to restart one that is already up. */
 function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return probeLiveness(pid) !== "dead";
 }
 
 export const cotalAuthProvider: AuthProvider = {

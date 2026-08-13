@@ -12,7 +12,7 @@ import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, 
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness } from "./pid.js";
+import { parsePid, probeLiveness } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
@@ -34,7 +34,7 @@ function readPidPath(space: string): string {
   return l && !c ? legacy : canonical;
 }
 
-// parsePid + probeLiveness (the pid-attribution contract) live in ./pid.js, shared with `down` so
+// parsePid + probeLiveness (the pid-attribution contract) live in @cotal-ai/workspace, shared so
 // there is exactly ONE parser + ONE tri-state probe across the pidfile subsystem.
 
 // Provider resolution now lives in core (the manager needs the identical resolution); re-exported

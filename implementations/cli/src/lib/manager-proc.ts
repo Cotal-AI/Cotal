@@ -4,6 +4,7 @@ import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
+import { parsePid, probeLiveness } from "@cotal-ai/workspace";
 
 const PID_PATH = () => cotalPath("manager.pid");
 /** Sibling marker of `manager.pid`: written by THIS build's manager (which no longer hosts Plane-3 —
@@ -13,21 +14,17 @@ const PID_PATH = () => cotalPath("manager.pid");
  *  old hosting manager never double-binds `fanout`/`reader` against the new daemon. */
 const DELIVERY_AWARE_MARKER = () => cotalPath("manager.delivery-aware");
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0); // signal 0: liveness probe, doesn't actually signal
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** True if the manager we started for this folder is still running (pid file + liveness). */
 export function managerUp(): boolean {
   const p = PID_PATH();
   if (!existsSync(p)) return false;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  return Number.isFinite(pid) && alive(pid);
+  const pid = parsePid(readFileSync(p, "utf8"));
+  // NOT `=== "alive"`. `unknown` (a pid the kernel would not answer for) must read as UP here,
+  // because the caller starts a second manager when this says no, and double-binding a
+  // live one is worse than refusing to start. Preserving on
+  // anything but a proven ESRCH is the pid contract's rule, and the old two-state probe broke it
+  // twice over: it also called EPERM dead, so another user's live process read as gone.
+  return pid !== undefined && probeLiveness(pid) !== "dead";
 }
 
 /** True if the live manager carries a delivery-aware marker BOUND to its current pid (i.e. it's THIS

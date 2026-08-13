@@ -6,7 +6,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
@@ -24,21 +24,17 @@ const credsStore = () => workspaceSecretStore(findCotalRoot());
  *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
 type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number };
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** True if the delivery daemon we started for this folder is still running (pid file + liveness). */
 export function deliveryUp(): boolean {
   const p = PID_PATH();
   if (!existsSync(p)) return false;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  return Number.isFinite(pid) && alive(pid);
+  const pid = parsePid(readFileSync(p, "utf8"));
+  // NOT `=== "alive"`. `unknown` (a pid the kernel would not answer for) must read as UP here,
+  // because the caller starts a second daemon when this says no, and two daemons on one
+  // fanout is worse than refusing to start. Preserving on
+  // anything but a proven ESRCH is the pid contract's rule, and the old two-state probe broke it
+  // twice over: it also called EPERM dead, so another user's live process read as gone.
+  return pid !== undefined && probeLiveness(pid) !== "dead";
 }
 
 /** True when this folder runs an authed mesh — the only mode with a delivery daemon (Plane-3 needs the
