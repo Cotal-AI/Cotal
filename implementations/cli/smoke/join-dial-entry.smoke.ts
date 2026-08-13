@@ -30,7 +30,7 @@ process.env.COTAL_NO_PROMPT = "1"; // flag form, never the wizard
 
 // The CLI composition root, imported exactly as the binary does.
 await import("../src/index.js");
-const { findMesh, loadMeshes } = await import("@cotal-ai/workspace");
+const { findMesh, loadMeshes, removeMesh } = await import("@cotal-ai/workspace");
 const { meshes } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -107,12 +107,31 @@ try {
   check("  nothing recorded", findMesh("boxmesh") === undefined);
 
   console.log("\nthe opt-in accepts it, and the dependency still reaches the operator");
-  const overlay = await add("boxmesh", "nats://100.64.0.1:14899", { "allow-unencrypted-overlay": true });
+  // `--force` here is deliberate and does NOT weaken the three checks below. The dial policy is
+  // decided ABOVE the `--force` branch (`meshes.ts:144`, and its residual is printed at `:148`),
+  // which is exactly what these read; `--force` only skips the broker PROBE at `:167`. This file
+  // already proves force cannot buy passage through the policy, two cases up.
+  //
+  // Without it this case is the one place here that reaches a live connect, and the target is a
+  // CGNAT literal that BLACKHOLES rather than refusing: `probeConnect` returns its verdict on the
+  // 5s deadline but tears nothing down on the throw path, so the pending socket outlives the
+  // command and the suite prints its checks and then never exits (core #389, pre-existing — this
+  // suite exposed it, it did not cause it). A gate step that only ends when something kills it is
+  // the false-green shape, and force-exiting around it would hide a future real hang through the
+  // same door, so the fix is to not open the socket rather than to escape it.
+  const overlay = await add("boxmesh", "nats://100.64.0.1:14899", { "allow-unencrypted-overlay": true, force: true });
   check("with the flag it is NOT refused by the dial policy", !/cannot protect/i.test(overlay.out), overlay.out);
   check("  the warning is printed, not swallowed", /tunnel is down|carrier-grade NAT/i.test(overlay.out), overlay.out);
   check("  it says the rule will tighten", /become a refusal/i.test(overlay.out), overlay.out);
 
-  check("nothing at all was registered by this file", loadMeshes().length === 0, loadMeshes());
+  // Stronger than the bare no-state assertion this replaces: every refusal case above must have
+  // written NOTHING, so the single accepted-and-forced record is the only write the file can
+  // account for. A case that silently recorded would show up here as a second entry.
+  check("  and that forced record is the ONLY thing any case in this file wrote",
+    loadMeshes().length === 1 && findMesh("boxmesh") !== undefined, loadMeshes());
+  removeMesh("boxmesh");
+
+  check("nothing at all is left registered by this file", loadMeshes().length === 0, loadMeshes());
   console.log(`\njoin-dial-entry: ${pass} checks passed`);
 } finally {
   for (const dir of [home, root]) rmSync(dir, { recursive: true, force: true });
