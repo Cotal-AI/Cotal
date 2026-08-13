@@ -25,7 +25,29 @@ import { hardenPrivate } from "@cotal-ai/core";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
 export const MAINTENANCE_JOURNAL_VERSION = 1 as const;
-export const MAINTENANCE_RESUME_DOCUMENT_VERSION = 1 as const;
+/**
+ * The resume document version WRITTEN by this binary.
+ *
+ * **v2 exists because `launch.transcript` became `launch.events`, and those are not the same
+ * request.** `transcript` asked for the condensed-text `tr-` mirror; `events` asks for the agent
+ * event plane that REPLACED it — a different mechanism, wire shape, grant and consumer. Treating
+ * one as a spelling of the other is a semantic decision, and this version boundary is where that
+ * decision is made visibly and once, rather than invisibly on every read by a parser alias.
+ *
+ * **The bump is also the only thing that arms the downgrade barrier at all.** Both gates below
+ * (`resumeBytes` normalization and `validResumeDescriptor`) compare the version for equality against
+ * a known set. Had this stayed at 1, a new binary would write `launch.events` into a document still
+ * stamped v1, an older binary would accept that version, proceed, and find the key it expects simply
+ * absent — silently. Leaving the version alone does not preserve the barrier; it disarms it.
+ */
+export const MAINTENANCE_RESUME_DOCUMENT_VERSION = 2 as const;
+
+/**
+ * Versions this binary can READ. Writing is always at the current version; reading accepts the
+ * older shapes it knows how to migrate, and **anything outside this set fails loud** — a newer
+ * document reaching an older binary is the no-downgrade support boundary, not a parse error.
+ */
+export const SUPPORTED_RESUME_DOCUMENT_VERSIONS = [1, 2] as const;
 export const MAX_MAINTENANCE_RESUME_BYTES = 1024 * 1024;
 
 export type MaintenanceAuthMode = "auth" | "open" | "user";
@@ -1229,6 +1251,59 @@ function cloneJsonValue(value: unknown, seen: Set<object>, depth = 0, budget = {
   }
 }
 
+/**
+ * Migrate a persisted resume document forward to {@link MAINTENANCE_RESUME_DOCUMENT_VERSION}, or
+ * FAIL LOUD naming the version and the remedy.
+ *
+ * **v1 → v2 carries a semantic decision, stated here rather than hidden in a parser.** A v1 document
+ * spelled the flag `launch.transcript`, which requested the condensed-text `tr-` mirror. That
+ * mechanism has been REPLACED by the agent event plane, which `launch.events` requests. They are not
+ * two spellings of one feature, so migrating the key is a judgement: **a resumed session that asked
+ * for the abolished mirror is taken to be asking for its successor.** That is almost certainly what
+ * an operator wants — the alternative is a preserved inventory that silently comes back with the
+ * feature off — but it is a decision, and it is made once, here, at a named boundary, where a
+ * reader can see it and disagree with it.
+ *
+ * Precedence is explicit, never OR-ed: if a document somehow carries BOTH keys it contradicts
+ * itself, and `events` wins because it is the one this binary can honour.
+ *
+ * An UNKNOWN version is refused rather than coerced. A version ABOVE ours is the no-downgrade
+ * support boundary: a newer binary wrote it, this one cannot read it, and the remedy is to upgrade
+ * rather than to guess at a shape we have never seen.
+ */
+function refuseResumeVersion(version: unknown, paths: { readonly resume: string; readonly root: string }): never {
+  if (typeof version === "number" && version > MAINTENANCE_RESUME_DOCUMENT_VERSION)
+    maintenanceError("resume-invalid",
+      `maintenance resume document is version ${version}; this build reads up to ` +
+      `${MAINTENANCE_RESUME_DOCUMENT_VERSION}. It was written by a NEWER cotal — upgrade this ` +
+      `installation to resume from it. Older builds never rewrite a newer document.`,
+      { root: paths.root, paths: [paths.resume],
+        recourse: [{ action: "repair", description: "Upgrade cotal to a build that reads this document version.", command: "npm i -g cotal-ai@latest", paths: [paths.resume] }] });
+  maintenanceError("resume-invalid",
+    `maintenance resume document reports version ${JSON.stringify(version)}, which is not a known ` +
+    `version (this build reads ${SUPPORTED_RESUME_DOCUMENT_VERSIONS.join(", ")}); it is refused ` +
+    `rather than coerced.`,
+    { root: paths.root, paths: [paths.resume] });
+}
+
+function migrateResumeDocument(parsed: unknown, paths: { readonly resume: string; readonly root: string }): unknown {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
+  const doc = parsed as { version?: unknown; launch?: unknown };
+  const version = doc.version;
+
+  if (version === MAINTENANCE_RESUME_DOCUMENT_VERSION) return parsed;
+  if (version !== 1) refuseResumeVersion(version, paths);
+
+  // v1 → v2: rename the launch flag, carrying the decision described above.
+  const launch = doc.launch;
+  let migratedLaunch = launch;
+  if (launch && typeof launch === "object" && !Array.isArray(launch) && "transcript" in launch) {
+    const { transcript, ...rest } = launch as Record<string, unknown>;
+    migratedLaunch = "events" in rest ? rest : { ...rest, events: transcript };
+  }
+  return { ...(parsed as Record<string, unknown>), version: MAINTENANCE_RESUME_DOCUMENT_VERSION, launch: migratedLaunch };
+}
+
 function resumeBytes(document: MaintenanceResumeDocument): {
   readonly document: MaintenanceResumeDocument;
   readonly data: string;
@@ -1267,8 +1342,11 @@ function resumeBytes(document: MaintenanceResumeDocument): {
 
 function validResumeDescriptor(value: unknown): value is MaintenanceResumeDescriptor {
   const descriptor = value as MaintenanceResumeDescriptor;
+  // A READABLE version, not the current one: a v1 cut written before the rename must still resume,
+  // and the migration below is what makes that safe. An older binary has only `[1]` here, so a v2
+  // descriptor refuses there — that refusal IS the downgrade barrier.
   return Boolean(descriptor && typeof descriptor === "object" &&
-    descriptor.version === MAINTENANCE_RESUME_DOCUMENT_VERSION && descriptor.file === "resume.json" &&
+    (SUPPORTED_RESUME_DOCUMENT_VERSIONS as readonly number[]).includes(descriptor.version) && descriptor.file === "resume.json" &&
     Number.isInteger(descriptor.bytes) && descriptor.bytes > 0 && descriptor.bytes <= MAX_MAINTENANCE_RESUME_BYTES &&
     typeof descriptor.sha256 === "string" && /^[0-9a-f]{64}$/.test(descriptor.sha256));
 }
@@ -1315,6 +1393,13 @@ export function readMaintenanceResumeDocument<
   Launch extends JsonValue = JsonValue,
 >(root: string, descriptor: MaintenanceResumeDescriptor): MaintenanceResumeDocument<Inventory, Launch> {
   const paths = maintenancePaths(root);
+  // The version is refused FIRST and by name. Falling through to the generic "descriptor is invalid"
+  // would still block a newer document — the barrier would hold — but it would tell an operator
+  // nothing about WHY or what to do, and a barrier whose message cannot be acted on is only half
+  // shipped. Same refusal text at both gates, so the descriptor and document layers cannot drift.
+  if (descriptor && typeof descriptor === "object" &&
+      !(SUPPORTED_RESUME_DOCUMENT_VERSIONS as readonly number[]).includes((descriptor as MaintenanceResumeDescriptor).version))
+    refuseResumeVersion((descriptor as MaintenanceResumeDescriptor).version, { resume: paths.resume, root: paths.root });
   if (!validResumeDescriptor(descriptor))
     maintenanceError("resume-invalid", "maintenance resume descriptor is invalid", { paths: [paths.journal] });
   let fd: number;
@@ -1373,7 +1458,11 @@ export function readMaintenanceResumeDocument<
   } catch {
     maintenanceError("resume-invalid", "maintenance resume document is not valid JSON", { paths: [paths.resume] });
   }
-  const normalized = resumeBytes(parsed as MaintenanceResumeDocument).document;
+  // Migrate BEFORE normalization: `resumeBytes` gates on the CURRENT version by exact equality, so
+  // an un-migrated v1 document would be refused here rather than resumed. The migration is what
+  // makes an existing persisted cut survive the rename.
+  const migrated = migrateResumeDocument(parsed, { resume: paths.resume, root: paths.root });
+  const normalized = resumeBytes(migrated as MaintenanceResumeDocument).document;
   return normalized as MaintenanceResumeDocument<Inventory, Launch>;
 }
 

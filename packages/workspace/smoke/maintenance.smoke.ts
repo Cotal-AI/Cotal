@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,7 @@ import {
   readPreservationCommitIntent,
   writePreservationCommitIntent,
   readMaintenanceJournal,
+  MAINTENANCE_RESUME_DOCUMENT_VERSION,
   readMaintenanceResumeDocument,
   readPreservationPrepareIntent,
   readStoreIdentity,
@@ -141,7 +143,7 @@ function ready(name: string, mode: MaintenanceAuthMode = "auth"): {
   const p = project(name);
   const lock = acquireMaintenanceLock(p.root);
   const resume = writeMaintenanceResumeDocument(lock, {
-    version: 1,
+    version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
     inventory: [{ id: `agent-${name}`, principal: { mode } }],
     launch: { runtime: "pty", root: p.root, store: p.store, space: `space-${name}` },
   });
@@ -208,7 +210,7 @@ for (const mode of ["auth", "open", "user"] as const) {
   const p = project("cut-intent-crash");
   const lock = acquireMaintenanceLock(p.root);
   const resume = writeMaintenanceResumeDocument(lock, {
-    version: 1, inventory: [{ id: "retained-agent" }], launch: { server: normalEndpoint, runtime: "pty" },
+    version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: [{ id: "retained-agent" }], launch: { server: normalEndpoint, runtime: "pty" },
   });
   const intent = beginMaintenanceCut(lock, {
     attemptId: "cut-crash-1", space: "cut-crash", mode: "auth", sourcePath: p.store, resume,
@@ -331,11 +333,11 @@ if (process.platform !== "win32") {
   const lock = acquireMaintenanceLock(p.root);
   expectCode("resume document rejects non-JSON values", "resume-invalid", () =>
     writeMaintenanceResumeDocument(lock, {
-      version: 1, inventory: undefined, launch: {},
+      version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: undefined, launch: {},
     } as never));
   expectCode("resume document enforces its byte bound", "resume-too-large", () =>
     writeMaintenanceResumeDocument(lock, {
-      version: 1, inventory: [], launch: { value: "x".repeat(1024 * 1024) },
+      version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: [], launch: { value: "x".repeat(1024 * 1024) },
     }));
   check("invalid resume documents publish no bytes", !statExists(maintenancePaths(p.root).resume));
   releaseMaintenanceLock(lock);
@@ -345,7 +347,7 @@ if (process.platform !== "win32") {
   const p = project("private-layout");
   const lock = acquireMaintenanceLock(p.root);
   const resume = writeMaintenanceResumeDocument(lock, {
-    version: 1, inventory: [], launch: { runtime: "pty" },
+    version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: [], launch: { runtime: "pty" },
   });
   beginMaintenanceCut(lock, {
     attemptId: "cut-private-layout", space: "private-layout", mode: "auth",
@@ -588,8 +590,86 @@ if (process.platform !== "win32") {
     consumed.state === "resume-retired" && readMaintenanceJournal(p.root) === undefined &&
     sameStoreIdentity(source, readStoreIdentity(p.store)) && statExists(maintenancePaths(p.root).resume));
   check("retired consumption preserves exact resume inventory",
-    readMaintenanceResumeDocument(p.root, p.resume).version === 1);
+    readMaintenanceResumeDocument(p.root, p.resume).version === MAINTENANCE_RESUME_DOCUMENT_VERSION);
   releaseMaintenanceLock(recoveredLock);
+}
+
+// ── THE v1 → v2 RESUME MIGRATION AND THE NO-DOWNGRADE BARRIER ──
+//
+// The document version moved to 2 because `launch.transcript` became `launch.events`, and those are
+// NOT two spellings of one feature: `transcript` requested the condensed-text mirror, `events`
+// requests the plane that replaced it. Migrating the key is a semantic decision, so it is made once
+// at this boundary rather than invisibly on every read by a parser alias.
+//
+// WHAT NO OTHER FIXTURE HERE BUILDS: an actual v1 document on disk. Every other resume fixture is
+// written by `writeMaintenanceResumeDocument`, which now only ever emits the CURRENT version — so
+// without hand-building the old shape, the migration path would have no input and would be proved
+// by nothing, while the suite stayed green.
+{
+  const p = project("resume-migration");
+  const lock = acquireMaintenanceLock(p.root);
+  const paths = maintenancePaths(p.root);
+
+  /** Place a resume document of an arbitrary version on disk with a descriptor that matches it. */
+  const placeDocument = (document: unknown): MaintenanceResumeDescriptor => {
+    const data = `${JSON.stringify(document, null, 2)}\n`;
+    writeFileSync(paths.resume, data, { mode: 0o600 });
+    return {
+      version: (document as { version: number }).version,
+      file: "resume.json",
+      bytes: Buffer.byteLength(data),
+      sha256: createHash("sha256").update(data).digest("hex"),
+    };
+  };
+
+  const v1 = placeDocument({
+    version: 1,
+    inventory: [{ id: "legacy-agent" }],
+    launch: { runtime: "pty", transcript: true },
+  });
+  const migrated = readMaintenanceResumeDocument<JsonValue, { runtime?: string; events?: unknown; transcript?: unknown }>(p.root, v1);
+  check("a v1 resume document is READ, not refused (an existing preserved cut must still resume)",
+    migrated.version === MAINTENANCE_RESUME_DOCUMENT_VERSION);
+  check("v1 `launch.transcript` migrates to `launch.events`, carrying the value",
+    migrated.launch.events === true && !("transcript" in migrated.launch));
+  check("the migration leaves the rest of `launch` untouched", migrated.launch.runtime === "pty");
+  check("and it leaves the inventory untouched",
+    JSON.stringify(migrated.inventory) === JSON.stringify([{ id: "legacy-agent" }]));
+
+  // THE OTHER POLARITY, and it is here because I built this migration AFTER reading the same gap
+  // reported against the manager's parser — and reproduced it anyway. `transcript: false` is a real
+  // persisted state (an operator who ran `--no-transcript`) and must migrate to `events: false`.
+  // Without this cell, a migration mapping every legacy value to `true` passes: the cell above only
+  // feeds `true`, and the both-keys cell below is satisfied by `events` already being present.
+  // Disabled would silently become enabled on resume — the disclosure direction, not the harmless
+  // one.
+  const off = placeDocument({ version: 1, inventory: [], launch: { transcript: false } });
+  check("v1 `transcript: false` migrates to `events: false` — disabled stays disabled",
+    readMaintenanceResumeDocument<JsonValue, { events?: unknown }>(p.root, off).launch.events === false);
+
+  // A self-contradicting document: `events` wins, never OR-ed, so two disagreeing values cannot
+  // silently resolve to the permissive one.
+  const both = placeDocument({ version: 1, inventory: [], launch: { transcript: true, events: false } });
+  check("when a v1 document carries BOTH keys, `events` wins and `transcript` is dropped",
+    readMaintenanceResumeDocument<JsonValue, { events?: unknown }>(p.root, both).launch.events === false);
+
+  // THE DOWNGRADE BARRIER. A document from a NEWER binary is refused with an operator-facing error
+  // naming the version and the remedy — never coerced, never partially read.
+  const future = placeDocument({ version: MAINTENANCE_RESUME_DOCUMENT_VERSION + 1, inventory: [], launch: {} });
+  expectCode("a NEWER resume document is refused — the no-downgrade support boundary", "resume-invalid",
+    () => readMaintenanceResumeDocument(p.root, future));
+  let barrierMessage = "";
+  try { readMaintenanceResumeDocument(p.root, future); } catch (e) { barrierMessage = (e as Error).message; }
+  check("the refusal names the document's version, this build's ceiling, and the remedy",
+    barrierMessage.includes(String(MAINTENANCE_RESUME_DOCUMENT_VERSION + 1)) &&
+    barrierMessage.includes(String(MAINTENANCE_RESUME_DOCUMENT_VERSION)) &&
+    /upgrade/i.test(barrierMessage), barrierMessage);
+
+  const unknown = placeDocument({ version: 0, inventory: [], launch: {} });
+  expectCode("an unknown version is refused rather than coerced", "resume-invalid",
+    () => readMaintenanceResumeDocument(p.root, unknown));
+
+  releaseMaintenanceLock(lock);
 }
 
 {
@@ -1276,7 +1356,7 @@ if (process.platform !== "win32") {
   const p = project("cut-committed-recovery");
   const lock = acquireMaintenanceLock(p.root);
   const resume = writeMaintenanceResumeDocument(lock, {
-    version: 1, inventory: [], launch: { server: normalEndpoint },
+    version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: [], launch: { server: normalEndpoint },
   });
   beginMaintenanceCut(lock, {
     attemptId: "cut-committed-1", space: "cut-committed", mode: "auth", sourcePath: p.store, resume,
@@ -1312,7 +1392,7 @@ if (process.platform !== "win32") {
   check("prepare intent survives a crash with exact attempt and launch binding",
     intent?.attemptId === "prepare-1" && intent.space === "prepare-space" && intent.storeDir === p.store);
   const resume = writeMaintenanceResumeDocument(lock, {
-    version: 1, inventory: [], launch: { server: normalEndpoint },
+    version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: [], launch: { server: normalEndpoint },
   });
   beginMaintenanceCut(lock, {
     attemptId: "prepare-1", space: "prepare-space", mode: "auth", sourcePath: p.store, resume,
@@ -1336,7 +1416,7 @@ if (process.platform !== "win32") {
   check("no commit intent reads as undefined", readPreservationCommitIntent(p.root) === undefined);
   expectCode("commit intent without a cut-intent journal is refused", "invalid-transition", () =>
     writePreservationCommitIntent(lock, { attemptId: "commit-1" }));
-  const resume = writeMaintenanceResumeDocument(lock, { version: 1, inventory: [], launch: { server: normalEndpoint } });
+  const resume = writeMaintenanceResumeDocument(lock, { version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: [], launch: { server: normalEndpoint } });
   beginMaintenanceCut(lock, {
     attemptId: "commit-1", space: "commit-space", mode: "auth", sourcePath: p.store, resume,
     launch: { server: normalEndpoint },

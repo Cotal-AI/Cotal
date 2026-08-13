@@ -63,6 +63,19 @@ try {
   c("new `events` document parses unchanged", launchOf(r).events === false, launchOf(r));
 } catch (e) { c("new `events` document parses unchanged", false, String(e)); }
 
+// ── THE OTHER POLARITY. `transcript: false` is a real persisted state — an operator who ran
+//    `--no-transcript` — and it must migrate to `events: false`, not to "on".
+//
+//    Without this cell the suite could not see a mutation mapping EVERY legacy value to `true`:
+//    the cell above only ever feeds `true`, so true→true passes; and the both-keys cell below is
+//    satisfied by `events` already being present, so it passes too. Disabled would have silently
+//    become enabled on resume — turning a stream the operator switched OFF back ON, which is the
+//    disclosure direction rather than the harmless one. Found by fmae-rev-test. ──
+try {
+  const r = parseResumeControlArgs(doc({ transcript: false }));
+  c("legacy `transcript: false` migrates to `events: false` — disabled stays disabled", launchOf(r).events === false, launchOf(r));
+} catch (e) { c("legacy `transcript: false` migrates to `events: false` — disabled stays disabled", false, String(e)); }
+
 // ── self-contradictory document: `events` wins, and the two are NEVER OR-ed ──
 try {
   const r = parseResumeControlArgs(doc({ transcript: true, events: false }));
