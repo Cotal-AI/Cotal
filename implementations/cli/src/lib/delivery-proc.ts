@@ -174,23 +174,63 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
  *  kill runs even if the creds delete fails (finally) — a delete error must never leave the daemon
  *  alive to outlive the teardown and reattach to a restarted broker; the error still propagates
  *  after the kill so the caller can surface it. */
-export async function stopDelivery(): Promise<void> {
-  try {
+export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
+  const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
+  const p = PID_PATH();
+  // ORDER MATTERS, AND IT USED TO BE BACKWARDS. The credential was deleted FIRST, in a try whose
+  // finally then signalled and removed the pidfile unconditionally. Under a refused signal that left
+  // a LIVE daemon with no pidfile and no standing credential: still connected, still serving, and its
+  // reconnect and renewal source deleted out from under it, while the function returned success.
+  // Nothing is removed now until the process is proven gone.
+  // Once death is PROVEN, both records are stale and the pidfile goes first: a creds-delete failure
+  // (a blocked path, a store error) must still propagate loudly, but it must not leave behind a
+  // pidfile for a process that is definitely gone. delivery-teardown.smoke.ts pins exactly that
+  // combination, and caught this when the first version of this fix ordered them the other way.
+  const removeRecords = async (): Promise<void> => {
+    rmSync(p, { force: true });
     await credsStore().delete(DELIVERY_CREDS_KEY);
-  } finally {
-    const p = PID_PATH();
-    if (existsSync(p)) {
-      const pid = Number(readFileSync(p, "utf8").trim());
-      if (Number.isFinite(pid)) {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {
-          /* already gone */
-        }
-      }
-      rmSync(p);
-    }
+  };
+  if (!existsSync(p)) {
+    await credsStore().delete(DELIVERY_CREDS_KEY); // no pid recorded: no live daemon to strand
+    return;
   }
+  const pid = parsePid(readFileSync(p, "utf8"));
+  if (pid === undefined) {
+    await removeRecords(); // unattributable content is not a claim that something is running
+    return;
+  }
+  const before = probe(pid);
+  if (before === "dead") {
+    await removeRecords();
+    return;
+  }
+  if (before === "unknown")
+    throw new Error(
+      `refusing to stop the delivery daemon (pid ${pid}): its liveness cannot be determined (a seccomp filter or LSM policy answers kill(pid,0) with an arbitrary errno).\n` +
+        `The pidfile and standing credential are LEFT IN PLACE: removing them would strand a daemon that may still be connected, with its renewal source gone.\n` +
+        `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`.cotal/delivery.pid\` if it is gone.`,
+    );
+  try {
+    send(pid, "SIGTERM");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") {
+      await removeRecords(); // raced to exit between probe and signal
+      return;
+    }
+    throw new Error(
+      `refusing to stop the delivery daemon (pid ${pid}): the signal was rejected (${code ?? "unknown error"}).\n` +
+        `EPERM means it belongs to another user, so it is running and not ours to stop. The pidfile and standing credential are LEFT IN PLACE.\n` +
+        `NEXT: stop it as its owner, or remove \`.cotal/delivery.pid\` if you are certain it is gone.`,
+    );
+  }
+  const deadline = Date.now() + 15_000;
+  while (probe(pid) !== "dead" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  if (probe(pid) !== "dead")
+    throw new Error(
+      `the delivery daemon (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile and credential were preserved rather than recording a stop that did not happen.`,
+    );
+  await removeRecords();
 }
 
 /** Bring up the control plane in the correct cutover order: OLD-manager preflight → delivery daemon

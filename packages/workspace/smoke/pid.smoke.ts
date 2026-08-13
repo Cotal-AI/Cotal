@@ -180,6 +180,23 @@ try {
   check("stopManager REFUSES when the process outlives SIGTERM", outlived !== undefined);
   check("and still leaves the pidfile in place", readFileSync(mgrPid, "utf8") === beforeStop);
   check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), stopManager()) === "already-gone" && !existsSync(mgrPid), deadPid);
+
+  // ── THE SIBLING, which is worse: it deleted the CREDENTIAL before even attempting the signal ──
+  // A refused stop therefore left a LIVE daemon still connected and still serving, with its pidfile
+  // and its renewal source both gone, and the function returned success. Ordering is the defect as
+  // much as the catch: nothing may be removed before the process is proven gone.
+  const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
+  writeFileSync(delPid, `${process.pid}\n`);
+  const delBefore = readFileSync(delPid, "utf8");
+  let delRefused: string | undefined;
+  try {
+    await stopDelivery(alive, refuseSignal);
+  } catch (e) {
+    delRefused = (e as Error).message;
+  }
+  check("stopDelivery REFUSES a signal it cannot send, rather than reporting success", delRefused !== undefined);
+  check("THE DELIVERY PIDFILE SURVIVES it", readFileSync(delPid, "utf8") === delBefore);
+  check("the refusal says the credential was preserved, which is the strand it prevents", /credential are LEFT IN PLACE|standing credential/i.test(delRefused ?? ""), delRefused?.slice(0, 90));
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
