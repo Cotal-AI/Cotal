@@ -27,7 +27,7 @@
  *
  * Run: pnpm smoke:durable-source
  */
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync, openSync, readSync, writeSync, closeSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlFileSource } from "../src/durable-source.js";
@@ -92,10 +92,29 @@ try {
   c("an unparseable COMPLETE line fails loud", threw);
 
   // ── truncation/replacement is loud too: neither re-adopting nor re-sending is safe to guess ──
+  //
+  // THIS CELL USED TO PROVE NOTHING. It built its past-end cursor with
+  // `adopt.cursor.replace(/:\d+$/, ":9999")` — but a cursor is `dev:ino:offset:seal` and the seal is
+  // 16 HEX characters, so `/:\d+$/` matched in 0 of 200 trials. The cell went green anyway, because
+  // the `writeFileSync` above shrank the file and `offset > size` fired for an entirely different
+  // reason than the one the cell is named for. Found in review; the production path was always fine.
+  // Now the cursor is built by PARTS, so the offset is genuinely past the end and the seal is real.
   writeFileSync(path, '{"i":1}\n');
-  let truncThrew = false;
-  try { await src.read(adopt.cursor.replace(/:\d+$/, ":9999")); } catch { truncThrew = true; }
-  c("a cursor past the end (truncated or replaced file) fails loud", truncThrew);
+  const st = statSync(path);
+  const live = await src.read(undefined);                       // a real 4-part cursor for this file
+  const seal = live.cursor.split(":")[3];
+  const pastEnd = `${st.dev}:${st.ino}:${st.size + 4096}:${seal}`;
+  c("the crafted cursor is genuinely 4-part with a real seal", pastEnd.split(":").length === 4 && /^[0-9a-f]{16}$/.test(seal), pastEnd);
+  let truncThrew = false, truncWhy = "";
+  try { await src.read(pastEnd); } catch (e) { truncThrew = true; truncWhy = (e as Error).message; }
+  // TWO cells, and their names say which is which. The first is the WEAK one and is named for the
+  // weaker property it actually proves: no path returns data for a past-end cursor, by ANY route.
+  // It stays green with the past-end check deleted (the seal check throws instead), so on its own it
+  // is a bystander — it was previously named "…past the end…fails loud", which read as coverage of
+  // the past-end rule and was not. A cell may be weak; its NAME must not be stronger than its
+  // assertion. The second cell is the discriminating one.
+  c("a past-end cursor never silently succeeds — it is refused by SOME named refusal", truncThrew, truncWhy);
+  c("and it is refused for the PAST-END reason specifically, not by the seal check downstream", /past end/.test(truncWhy), truncWhy);
 
   // ── a malformed cursor is refused rather than coerced ──
   let badCursor = false;
@@ -190,6 +209,79 @@ try {
     try { await src.read(bad); } catch (e) { msg = (e as Error).message; }
     c(`B4: non-canonical cursor ${JSON.stringify(bad)} is refused AS a malformed cursor`,
       /malformed cursor/.test(msg), msg || "did not throw");
+  }
+  // ── a SYMLINKED source is refused, not followed (R-SEC-2) ──
+  //    Built before any seam feeds this class a caller-controlled path, which is the cheap moment:
+  //    afterwards it stops being a fix and becomes a compatibility argument. The CONTROL matters as
+  //    much as the refusal — without it this cell would pass for an `open` that had broken outright.
+  {
+    const ld = mkdtempSync(join(tmpdir(), "symlink-src-"));
+    try {
+      const real = join(ld, "real.jsonl");
+      writeFileSync(real, '{"i":1}\n');
+      const link = join(ld, "link.jsonl");
+      symlinkSync(real, link);
+
+      let linkErr = "";
+      try { await new JsonlFileSource(link).read(undefined); } catch (e) { linkErr = String((e as NodeJS.ErrnoException).code ?? (e as Error).message); }
+      c("a SYMLINKED source is refused (ELOOP), never silently followed", /ELOOP/.test(linkErr), linkErr || "not refused");
+
+      const direct = await new JsonlFileSource(real).read(undefined);
+      c("CONTROL: the same file opened directly still reads, so the refusal is about the symlink",
+        typeof direct.cursor === "string" && direct.cursor.split(":").length === 4, direct);
+    } finally {
+      rmSync(ld, { recursive: true, force: true });
+    }
+  }
+
+  // ── THE SEAL'S WINDOW IS PINNED BY THESE CELLS, AND BY NOTHING ELSE. ──
+  //
+  // `sealAt` authenticates the last `min(offset, 512)` bytes of the consumed prefix. Until now the
+  // suite proved the seal EXISTS but never proved how far it REACHES: reducing the window from 512
+  // to 7 bytes left the whole file green (fmae-rev-test). A size that nothing asserts is a size
+  // that can be tuned to nothing, and narrowing the doc comment does not help — a comment cannot
+  // be mutation-killed. The honest description and the enforced behaviour are separate deliverables.
+  //
+  // Two cells, one on each side of the boundary, so the window is bounded from BOTH directions:
+  // a rewrite 500 bytes back MUST be caught (any shrink below that reddens this), and one 600 bytes
+  // back is NOT caught — which is the documented residual, asserted rather than merely described,
+  // so if the seal is ever widened this cell fails and forces the comment to be updated with it.
+  {
+    const sd = mkdtempSync(join(tmpdir(), "seal-window-"));
+    try {
+      const sealPath = join(sd, "s.jsonl");
+      // >512 bytes of COMPLETE records, so the cursor sits far enough in for both probes.
+      writeFileSync(sealPath, "");
+      for (let i = 0; i < 30; i++) appendFileSync(sealPath, `${JSON.stringify({ i, pad: "p".repeat(40) })}\n`);
+      const sealSrc = new JsonlFileSource(sealPath);
+      const at = await sealSrc.read(undefined);
+      const off = Number(at.cursor.split(":")[2]);
+      c("the seal fixture has a consumed prefix longer than the window", off > 600, off);
+
+      /** Flip one byte in place at an absolute position: same inode, same size. */
+      const flipAt = (pos: number) => {
+        const fd = openSync(sealPath, "r+");
+        const b = Buffer.alloc(1);
+        readSync(fd, b, 0, 1, pos);
+        writeSync(fd, Buffer.from([b[0]! === 0x70 ? 0x71 : 0x70]), 0, 1, pos);
+        closeSync(fd);
+      };
+
+      flipAt(off - 500);
+      let caught = "";
+      try { await sealSrc.read(at.cursor); } catch (e) { caught = (e as Error).message; }
+      c("a rewrite 500 bytes before the cursor IS caught — the window really is ~512, not smaller",
+        /have changed/.test(caught), caught || "not detected");
+      flipAt(off - 500); // restore that byte so the next probe is independent
+
+      flipAt(off - 600);
+      let outside = "";
+      try { await sealSrc.read(at.cursor); } catch (e) { outside = (e as Error).message; }
+      c("a rewrite 600 bytes before the cursor is NOT caught — the bound, asserted rather than only described",
+        outside === "", outside || "(not detected, as documented)");
+    } finally {
+      rmSync(sd, { recursive: true, force: true });
+    }
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

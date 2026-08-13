@@ -17,6 +17,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
@@ -78,8 +79,23 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
   }
 
   /**
-   * A seal over the bytes immediately BEFORE the cursor — the exact invariant a resumable offset
-   * needs: *the bytes I already consumed are still the bytes at that position.*
+   * A seal over **the last 512 bytes before the cursor** — a BOUNDED form of the invariant a
+   * resumable offset wants: *the bytes immediately before my cursor are still the bytes that were
+   * there when I stopped.*
+   *
+   * **THE BOUND IS PART OF THE GUARANTEE AND IS STATED HERE BECAUSE IT IS NOT THE WHOLE PREFIX.**
+   * A rewrite confined to bytes EARLIER than `offset - 512` that preserves the sealed window, the
+   * inode and the size is **not detected** — reproduced independently by three reviewers, including
+   * with an ordinary same-length in-place PII scrub of earlier transcript lines. That is a real
+   * limitation with known edges: a scrub via temp-file+rename changes the inode and IS caught; one
+   * that changes length trips the offset/identity path and IS caught; one touching the sealed window
+   * IS caught. Only same-inode, same-size, in-place, wholly-outside-the-window escapes.
+   *
+   * What that costs is bounded and worth naming precisely: the emit path stays correct, because the
+   * cursor never moves backwards and forward records are read from bytes the rewrite did not touch.
+   * What is lost is the ability to detect that already-consumed on-disk history drifted after we
+   * read it. If whole-prefix integrity is ever required, this span must cover it — or the cursor has
+   * to carry a rolling hash instead of a window.
    *
    * `dev`/`ino` catch unlink-and-recreate, but **not an in-place rewrite** (`writeFileSync` with no
    * unlink keeps the inode), and that case resumes at a byte offset inside a different document and
@@ -91,7 +107,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    * invariant rather than guessing at intent.
    */
   private static async sealAt(fh: FileHandle, offset: number): Promise<string> {
-    const span = Math.min(offset, 512);
+    const span = Math.min(offset, 512); // the WINDOW, not the whole prefix — see the bound above
     const buf = Buffer.allocUnsafe(span);
     if (span > 0) await fh.read(buf, 0, span, offset - span);
     return createHash("sha256").update(buf.subarray(0, span)).digest("hex").slice(0, 16);
@@ -115,7 +131,15 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<T>> {
-    const fh = await open(this.path, "r");
+    // O_NOFOLLOW: a symlinked source is REFUSED, not followed.
+    //
+    // No seam feeds this class a caller-controlled path today — each connector supplies its own
+    // harness-native session file — so this is a fence built before the thing it fences exists.
+    // That is deliberate and it is the cheap moment: once a caller-supplied path seam does exist,
+    // adding this stops being a fix and becomes a compatibility argument with whoever is already
+    // relying on the old behaviour. The same rule the maintenance reader already applies to its
+    // resume document (`O_RDONLY | O_NOFOLLOW`), for the same reason.
+    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const st = await fh.stat();
       const size = st.size;
@@ -146,9 +170,10 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         throw new Error(
           `JsonlFileSource: cursor offset ${from.offset} is past end ${size} for ${this.path} — the file was truncated`,
         );
-      // The consumed prefix must still be the bytes we consumed. dev/ino catch unlink-and-recreate;
-      // this catches an IN-PLACE rewrite, which keeps the inode and which size cannot see when the
-      // replacement is larger.
+      // The last 512 bytes of the consumed prefix must still be the bytes we consumed. dev/ino catch
+      // unlink-and-recreate; this catches an IN-PLACE rewrite, which keeps the inode and which size
+      // cannot see when the replacement is larger. It is a WINDOW, not the whole prefix: a rewrite
+      // confined to bytes before `offset - 512` passes here. See `sealAt` for the bound and its edges.
       const seal = await JsonlFileSource.sealAt(fh, from.offset);
       if (seal !== from.seal)
         throw new Error(
