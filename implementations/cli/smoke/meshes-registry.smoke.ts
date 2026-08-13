@@ -511,6 +511,45 @@ try {
     findMesh("openmesh") !== undefined && findMesh("openmesh")?.unencryptedOverlay === undefined, findMesh("openmesh"));
   removeMesh("openmesh");
 
+  // …and the case the two cases above CANNOT reach: overlay A -> a DIFFERENT overlay B. Both cases
+  // above end on an address that needs no consent (a loopback), so both are satisfied by a wizard
+  // that merely CLEARS the acceptance when the address changes. Neither can tell that apart from a
+  // wizard that RE-ASKS for the new target — and re-asking is the actual guarantee, because B needs
+  // a consent of its own that only the operator can give. Mutating the binding
+  // (`ackedFor !== server` -> `ackedFor === undefined`) left the suite 105/105 green with the marker
+  // proving the weakened guard ran: the fixtures reached for the case the fix already handled, so
+  // the guard shipped unfenced. This case is the fence. Assert on the RECORDED PROMPTS rather than
+  // the outcome: under the weakened binding the second question is never asked, and an
+  // outcome-only assertion cannot tell "asked and consented" from "never asked".
+  const OVERLAY_B = "nats://100.64.0.2:4222"; // a DIFFERENT overlay literal, same unprotectable class
+  const reacked = driver([
+    true,        // accept the dependency for OVERLAY (A)
+    "retype",    // …then change your mind
+    OVERLAY_B,   // …to another address that ALSO cannot be protected
+    true,        // and consent AGAIN, for B this time — the prompt the binding exists to force
+    "anyway",    // nothing answers on an overlay literal -> record it unverified
+    "reacked",   // space name
+    true,        // register
+  ]);
+  // A wizard that skips B's question runs off the end of a script written for the correct flow, so
+  // catch that and let the prompt-count checks below report it — a throw here is the mutation's
+  // signature, not a reason to abort the file.
+  let reackedOut: boolean | undefined;
+  let reackedThrew: string | undefined;
+  try {
+    reackedOut = await addWizard({ server: OVERLAY, root }, root, reacked.io as never);
+  } catch (e) {
+    reackedThrew = (e as Error).message;
+  }
+  const consentAsks = reacked.asked.filter((a) => a.kind === "confirm" && /accepting that dependency/i.test(a.message));
+  check("changing one unprotectable address for another RE-ASKS the consent (a consent for A is not a consent for B)",
+    consentAsks.length === 2, { consentAsks: consentAsks.length, threw: reackedThrew, asked: reacked.asked });
+  check("…and the second question is asked DEFAULT-DENY too, so Enter cannot carry A's yes onto B",
+    consentAsks[1]?.initialValue === false, consentAsks[1]);
+  check("…and the record written for B carries B's own acceptance",
+    reackedOut === true && findMesh("reacked")?.unencryptedOverlay === true, { reackedOut, entry: findMesh("reacked"), threw: reackedThrew });
+  removeMesh("reacked");
+
   // The same hole reached without any address change: a pre-seeded flag plus a loopback server.
   const seededSafe = driver(["seeded-safe", true]);
   const seededOut = await addWizard({ server: LIVE, root, allowUnencryptedOverlay: true } as never, root, seededSafe.io as never);
