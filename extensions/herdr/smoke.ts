@@ -205,6 +205,36 @@ throws("spawn refuses a regular file as cwd", () =>
   runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/etc/hosts"), /is not a directory/);
 ok("no pane was created for the refused cwd", herdr.agentInfo(SESSION, "bad-cwd-agent") === undefined);
 
+console.log("\n── layout ──────────────────────────────────────");
+
+// Default: every agent gets its own name-labeled tab. COTAL_HERDR_LAYOUT=split opts back into
+// herdr's native same-tab split; an unknown value fails loud before any side effects.
+const tabOf = (name: string): string =>
+  ((herdr.run(SESSION, ["agent", "get", name]).agent as Record<string, unknown>).tab_id as string);
+const layoutA = runtime.spawn("layout-a", { command: "sleep", args: ["30"], env: {} }, "/tmp");
+const layoutB = runtime.spawn("layout-b", { command: "sleep", args: ["30"], env: {} }, "/tmp");
+ok("by default each agent lands in its own tab", tabOf("layout-a") !== tabOf("layout-b"));
+const tabs = herdr.run(SESSION, ["tab", "list"]).tabs as Record<string, unknown>[];
+ok("agent tabs are labeled with the agent name",
+  tabs.some((t) => t.label === "layout-a") && tabs.some((t) => t.label === "layout-b"));
+
+process.env.COTAL_HERDR_LAYOUT = "split";
+const layoutC = runtime.spawn("layout-c", { command: "sleep", args: ["30"], env: {} }, "/tmp");
+const layoutD = runtime.spawn("layout-d", { command: "sleep", args: ["30"], env: {} }, "/tmp");
+ok("COTAL_HERDR_LAYOUT=split shares one tab", tabOf("layout-c") === tabOf("layout-d"));
+
+process.env.COTAL_HERDR_LAYOUT = "bogus";
+throws("an unknown COTAL_HERDR_LAYOUT fails loud (nothing spawned)", () =>
+  runtime.spawn("layout-e", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /COTAL_HERDR_LAYOUT/);
+ok("no pane was created for the refused layout", herdr.agentInfo(SESSION, "layout-e") === undefined);
+delete process.env.COTAL_HERDR_LAYOUT;
+
+for (const h of [layoutA, layoutB, layoutC, layoutD]) {
+  h.stop({ graceful: false });
+  await h.waitForExit!();
+}
+ok("layout agents torn down", herdr.agentInfo(SESSION, "layout-a") === undefined);
+
 console.log("\n── launcher hygiene ────────────────────────────");
 
 const launcher = privateLauncher({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: "s3cr3t-token" } }, "/tmp");

@@ -15,8 +15,11 @@ import.
   operation can touch unrelated panes). The session server is started headless on first spawn
   and owns the panes, so agents keep running when the manager's terminal goes away; watch them
   with `herdr session attach cotal-<space>` (Herdr's Agents sidebar shows each one, tagged with
-  a `cotal` metadata token). Env and creds ride an owner-only launcher script, never herdr's
-  command line. Graceful stop types `/exit` then closes the pane; hard stop closes immediately.
+  a `cotal` metadata token). By default every agent gets its own name-labeled tab; set
+  `COTAL_HERDR_LAYOUT=split` on the manager to opt into herdr's native same-tab split instead
+  (an unknown value fails loud). Env and creds ride an owner-only launcher script, never
+  herdr's command line. Graceful stop types `/exit` then closes the pane; hard stop closes
+  immediately.
 
 Lifecycle is keyed off Herdr's globally-unique `terminal_id`; the workspace-scoped public
 `pane_id` (which changes when a pane is moved) is re-resolved before every pane-scoped call.

@@ -56,6 +56,17 @@ export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher 
   return { argv: [process.execPath, script], dir, script };
 }
 
+/** How spawned agents are laid out in the session: `tab` (default) gives each agent its own
+ *  name-labeled tab; `split` keeps herdr's native behavior of splitting the focused tab.
+ *  Selected per manager process via COTAL_HERDR_LAYOUT; an unknown value fails loud. */
+function layoutFromEnv(): "tab" | "split" {
+  const raw = process.env.COTAL_HERDR_LAYOUT ?? "tab";
+  if (raw === "tab" || raw === "split") return raw;
+  throw new Error(
+    `herdr runtime: unknown COTAL_HERDR_LAYOUT ${JSON.stringify(raw)} (expected "tab" or "split")`,
+  );
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -95,12 +106,17 @@ export class HerdrRuntime implements Runtime {
     // fails loud at spawn instead of the agent starting somewhere else entirely (a non-directory
     // would otherwise die later, invisibly, at the launcher's chdir).
     if (!isDirectory(cwd)) throw new Error(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
+    const layout = layoutFromEnv(); // before any side effects, so a bad value spawns nothing
     herdr.ensureServer(this.session);
 
     const launcher = privateLauncher(spec, cwd);
     let agent: herdr.HerdrAgent | undefined;
     try {
       agent = herdr.agentStart(this.session, name, cwd, launcher.argv);
+      // Default layout: every agent in its own name-labeled tab (herdr's native behavior is
+      // to split the focused tab, which `split` opts back into). The move may change the
+      // public pane id — keep the returned record.
+      if (layout === "tab") agent = herdr.paneMoveNewTab(this.session, agent.paneId, name);
       // Cosmetic but part of the spawn contract: fail loud, and don't leave the started pane behind.
       herdr.reportMetadata(this.session, agent.paneId, "cotal", { cotal: this.session });
     } catch (err) {

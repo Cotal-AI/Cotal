@@ -311,6 +311,17 @@ export function closePane(session: string, paneId: string): void {
   }
 }
 
+/** Move a pane into its own new tab labeled `label` (herdr closes the old tab when it becomes
+ *  empty) and return the pane's updated record — the public pane id may change. Used for the
+ *  default one-tab-per-agent layout. */
+export function paneMoveNewTab(session: string, paneId: string, label: string): HerdrAgent {
+  const result = run(session, ["pane", "move", paneId, "--new-tab", "--label", label, "--no-focus"]);
+  const moved = (result.move_result as Record<string, unknown> | undefined)?.pane;
+  if (!moved || typeof moved !== "object")
+    throw new Error(`herdr: pane move returned no pane (${JSON.stringify(result)})`);
+  return parseAgent(moved as Record<string, unknown>);
+}
+
 /** Attach Cotal identity to a pane as display metadata tokens (visible in herdr's pane/agent
  *  UI). Values ride argv — never a shell — so no quoting/injection surface. */
 export function reportMetadata(
