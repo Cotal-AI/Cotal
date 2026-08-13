@@ -256,7 +256,12 @@ export function startControlServer(
       const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
       const awaitHandoff = (frame as { handoff?: unknown }).handoff === true;
       const reply = await handle(agent, ev);
-      opts.onReply?.(ev, await writeReply(sock, reply, awaitHandoff));
+      // Write FIRST, then report. `opts.onReply?.(ev, await writeReply(...))` short-circuits the
+      // whole call expression when `onReply` is absent — arguments included — so the reply was never
+      // written at all for the callers that do not observe delivery (opencode, hermes, pi, codex).
+      // Answering the client is the server's job; `onReply` only watches it.
+      const delivered = await writeReply(sock, reply, awaitHandoff);
+      opts.onReply?.(ev, delivered);
     });
     sock.on("error", () => {
       /* ignore client errors */

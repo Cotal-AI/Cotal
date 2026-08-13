@@ -1031,7 +1031,7 @@ export class Manager {
    *
    *  The manager is the renewal owner for every credential it CAN re-sign, and these two are the ones
    *  it cannot: they are `rotation-renewed`, so no resident process re-mints them and they simply die
-   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all —
+   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all,
    *  it discovered the expiry as an "Authorization Violation" in the delivery log and a refused
    *  membership adoption, weeks after the warning would have been actionable (#338). The pass runs
    *  every half-TTL of the 24h class, so this repeats about twice a day for the ~7 days between the

@@ -241,7 +241,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     ({ handle: membership, down: membershipDown } = await startMembership({ space, server }, store));
   } catch (e) {
     membershipDown = (e as Error).message;
-    console.error(`! membership: failed to start (${membershipDown}) — graph membership degraded, delivery unaffected`);
+    console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
   }
 
   let stopping = false;

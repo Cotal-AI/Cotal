@@ -13,13 +13,13 @@ import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./
 import { workspaceSecretStore } from "./secret-store-fs.js";
 
 /**
- * The class-3 ($SYS) renewal owner's half — the counterpart to `renewal.ts`, which owns the class-2
+ * The class-3 ($SYS) renewal owner's half, the counterpart to `renewal.ts`, which owns the class-2
  * standing renewal and deliberately EXCLUDES these two files.
  *
  * `membership-observer.creds` and `connection-evictor.creds` are `rotation-renewed`: they are signed
  * by the system-account seed, which is never persisted (`putSpaceAuth` strips it), so no running
  * process can re-sign them for their existing identity the way `remintDaemonCreds` does. Their only
- * renewal is a system-account ROTATION — a fresh $SYS account under the SAME broker operator, fresh
+ * renewal is a system-account ROTATION: a fresh $SYS account under the SAME broker operator, fresh
  * creds minted from its in-memory seed, and a broker that reloads the new operator/system JWTs.
  *
  * That rotation is NOT destructive. `rotateSystemAccount` re-signs the operator JWT with a new
@@ -49,7 +49,7 @@ export const SYSTEM_CREDS_FILES = ["membership-observer.creds", "connection-evic
 export interface SystemRotationResult {
   /** The broker record's new system-account generation (the successor discriminator `putSpaceAuth` guards). */
   gen: number;
-  /** The rotated bundle — the caller MUST render `server.conf` from this, not from its pre-rotation copy. */
+  /** The rotated bundle. The caller MUST render `server.conf` from this, not from its pre-rotation copy. */
   auth: SpaceAuth;
   /** Expiry (epoch sec) of the freshly minted $SYS creds, so the caller can print the next rotation date. */
   expiresAt?: number;
@@ -68,7 +68,7 @@ export interface SystemRotationResult {
  * stale or non-successor write. Then the creds land. What this buys is a single failure direction: a
  * cred file is never overwritten for a system account the record does not already carry, because the
  * inverse order could clobber the last-good creds with creds for an authority the broker will never
- * load — the availability loss `remintDaemonCreds` guards on its own class.
+ * load, which is the availability loss `remintDaemonCreds` guards on its own class.
  *
  * It does NOT make the persistence atomic. `putSpaceAuth` is two puts and the creds are two more, so
  * a crash leaves the record AHEAD of the creds. That state is detected rather than prevented (see
@@ -88,7 +88,7 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   // The guard reads the FS account records, and that is exactly why this function takes NO
   // SecretStore. `SecretStore` cannot enumerate, so an injected multi-tenant store paired with an
   // empty local root would sail past this check and retire the system account for every tenant in
-  // it — a guard that looks broker-wide while enforcing nothing. Taking the store away makes the
+  // it: a guard that looks broker-wide while enforcing nothing. Taking the store away makes the
   // mismatch impossible to express rather than merely refused at runtime, and it costs nothing real:
   // the $SYS pair is FS-only anyway (a hosted composition has nowhere in the store to put it), so
   // this operation was never store-composable to begin with. If store enumeration ever exists, this
@@ -108,12 +108,12 @@ export async function rotateSystemCreds(root: string, expectedSpace: string): Pr
   const observer = await mintMembershipObserverCreds(rotated, newIdentity());
   const evictor = await mintConnectionEvictorCreds(rotated, newIdentity());
 
-  // Commit the trust record FIRST — the generation guard lives in this call, and it is what makes the
+  // Commit the trust record FIRST: the generation guard lives in this call, and it is what makes the
   // successor real. Only then the creds that record authorizes.
   //
   // This is NOT one atomic act, and the code must not pretend otherwise: `putSpaceAuth` is itself two
   // puts, and the two cred writes are two more. A crash anywhere in this sequence leaves the record
-  // AHEAD of the creds — both files stale (crash before either write) or one stale (crash between
+  // AHEAD of the creds: both files stale (crash before either write) or one stale (crash between
   // them). The window is not closed here; it is DETECTED, by {@link staleSystemCreds}, which every
   // boot and every `doctor auth` runs against the persisted record. It cannot be repaired in place
   // either: the successor's signing seed is gone the moment it is persisted, so the only repair is
@@ -137,7 +137,7 @@ export interface StaleSystemCred {
 }
 
 /**
- * The $SYS cred files whose issuer is not `sysPub` — the ONE staleness question, asked in one place
+ * The $SYS cred files whose issuer is not `sysPub`: the ONE staleness question, asked in one place
  * so every surface answers it identically.
  *
  * This exists because expiry cannot see the failure. A rotation that committed the trust record and
@@ -145,12 +145,12 @@ export interface StaleSystemCred {
  * broker, because the account that signed them no longer exists as far as the successor config is
  * concerned. Comparing the two files to each other is not enough either: a crash BEFORE either write
  * leaves them stale but mutually consistent. Only the persisted record settles it, which is why this
- * takes `sysPub` and why the callers are the two surfaces that hold it — the boot path, which warns
+ * takes `sysPub` and why the callers are the two surfaces that hold it: the boot path, which warns
  * before it renders a config the files cannot serve, and `cotal doctor auth`, which must never call
  * this state healthy. The delivery daemon is deliberately NOT a caller: it never loads the signer.
  *
  * Absent files are not stale (an unprovisioned space is a different, separately reported state), and
- * an unreadable file is reported with no `iss` rather than throwing — a diagnosis surface must not
+ * an unreadable file is reported with no `iss` rather than throwing, because a diagnosis surface must not
  * crash on the corruption it exists to describe.
  */
 export function staleSystemCreds(root: string, sysPub: string): StaleSystemCred[] {

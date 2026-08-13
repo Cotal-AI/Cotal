@@ -36,11 +36,11 @@ export async function executeEviction(server: string, principal: string): Promis
   const cfgPath = join(dir, "membership.json");
   if (!existsSync(obsPath) || !existsSync(evPath))
     throw new Error(
-      "evictPrincipal: the $SYS observer/evictor creds are not provisioned here (a space created before live eviction) — mint them with `cotal down` then `cotal up --rotate-sys`; until then removal is deny-new-only (durable reauth)",
+      "evictPrincipal: the $SYS observer/evictor creds are not provisioned here (a space created before live eviction); mint them with `cotal down` then `cotal up --rotate-sys`. Until then removal is deny-new-only (durable reauth)",
     );
   if (!existsSync(cfgPath))
     throw new Error(
-      `evictPrincipal: ${cfgPath} is missing, so the account to scan is unknown — until then removal is deny-new-only (durable reauth)`,
+      `evictPrincipal: ${cfgPath} is missing, so the account to scan is unknown; until then removal is deny-new-only (durable reauth)`,
     );
   const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
   if (!accountId) throw new Error("evictPrincipal: .cotal/membership.json has no accountId");
@@ -73,7 +73,7 @@ export async function executePlaneLiveness(server: string, query: unknown): Prom
   const cfgPath = join(dir, "membership.json");
   if (!existsSync(obsPath))
     throw new Error(
-      "planeConnLiveness: the $SYS observer creds are not provisioned here (a space created before live observation) — mint them with `cotal down` then `cotal up --rotate-sys`",
+      "planeConnLiveness: the $SYS observer creds are not provisioned here (a space created before live observation); mint them with `cotal down` then `cotal up --rotate-sys`",
     );
   if (!existsSync(cfgPath)) throw new Error(`planeConnLiveness: ${cfgPath} is missing, so the account to scan is unknown`);
   const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
