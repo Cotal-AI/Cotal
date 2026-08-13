@@ -23,7 +23,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   contractStoreContext, fetchContractClosure, contractRefToHex, contractArtifactDigestHex,
-  type ContractStoreContext,
+  type ContractStoreContext, type ArtifactMemo,
 } from "./endpoint-contract-store.js";
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall, epScatterService } from "./endpoint-verbs.js";
@@ -135,8 +135,8 @@ export async function describeEndpoint(
 /** Fetch + verify ONE cluster document from the store at its closure digest (two-stage §13.7:
  *  the manifest at the closure digest, whose `root` names the document artifact). A cluster
  *  document declares no by-digest child references, so its closure is {root}. */
-async function fetchClusterDocument(store: ContractStoreContext, closureDigest: string): Promise<ClusterDocument> {
-  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, () => []);
+async function fetchClusterDocument(store: ContractStoreContext, closureDigest: string, artifactMemo?: ArtifactMemo): Promise<ClusterDocument> {
+  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, () => [], { ...(artifactMemo ? { artifactMemo } : {}) });
   const rootBytes = artifacts.get(contractRefToHex(manifest.root));
   if (rootBytes === undefined)
     throw new EpEnvelopeError("failed-precondition", `the cluster manifest ${closureDigest} names root ${manifest.root} but the root artifact is absent from the fetched closure (SPEC 13.7)`);
@@ -146,11 +146,11 @@ async function fetchClusterDocument(store: ContractStoreContext, closureDigest: 
 /** Fetch a schema CLOSURE from the store and PROFILE-recompile it, binding every by-digest member.
  *  The recompiled contract's closureDigest MUST equal the digest we fetched at — a store that
  *  served bytes hashing to a different closure is a tamper/bug and fails loud (§13.7). */
-async function recompileClosure(store: ContractStoreContext, closureDigest: string): Promise<CompiledContract> {
+async function recompileClosure(store: ContractStoreContext, closureDigest: string, artifactMemo?: ArtifactMemo): Promise<CompiledContract> {
   // Walk the schema closure, resolving `cotal:sha256:<hex>` refs a document makes (the profile's
   // reference form) so a multi-document schema bundle rebuilds. A recompiled contract carries the
   // registered digest, so an equality check below is the tamper boundary.
-  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, (bytes) => extractSchemaRefs(bytes));
+  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, (bytes) => extractSchemaRefs(bytes), { ...(artifactMemo ? { artifactMemo } : {}) });
   const members: Record<string, unknown> = {};
   for (const [hex, bytes] of artifacts) members[`sha256:${hex}`] = JSON.parse(dec.decode(bytes));
   const rootRef = manifest.root;
@@ -186,6 +186,29 @@ function extractSchemaRefs(bytes: Uint8Array): string[] {
   return refs;
 }
 
+/** The most store reads one {@link resolveService} keeps in flight at once. The fan-out width is
+ *  the RESPONDER's command count (it comes off the describe answer), so leaving it unbounded would
+ *  let a describing endpoint decide how many concurrent requests its caller opens — a caller-side
+ *  amplification the rest of §13.7 is careful to bound. Every other limit on this path is explicit;
+ *  so is this one. High enough that real surfaces overlap freely, low enough to stay a bound. */
+const RESOLVE_MAX_INFLIGHT_READS = 32;
+
+/** Run `work` over `items` with at most `limit` in flight, preserving RESULT ORDER (the resolved
+ *  surface must not depend on read timing). Rejects like `Promise.all`: the first failure wins. */
+async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await work(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 /** The describe answer shape a caller reads (a subset — the fields the resolver needs). */
 interface DescribeAnswer {
   public: boolean;
@@ -210,22 +233,38 @@ export async function resolveService(
 ): Promise<ResolvedService> {
   const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, opts);
   const store = await contractStoreContext(nc, space);
-  const commands = new Map<string, ResolvedCommand>();
   const visible = new Set<string>(answer.descriptor.clusters.flatMap((cl) => cl.commands));
-  for (const cluster of answer.descriptor.clusters) {
-    const doc = await fetchClusterDocument(store, cluster.digest);
-    for (const cmd of doc.commands) {
-      if (!visible.has(cmd.name)) continue; // a describe VIEW may narrow a cluster's commands
-      commands.set(cmd.name, {
-        command: cmd.name,
-        contract: { input: await recompileClosure(store, cmd.inputDigest), output: await recompileClosure(store, cmd.outputDigest) },
-        class: cmd.class,
-        targeted: cmd.targeted,
-        modes: cmd.modes ?? [],
-        capability: cmd.capability,
-      });
-    }
-  }
+  // The store reads dominate a resolve's wall time and are all caller->broker round-trips, so they
+  // are issued CONCURRENTLY and deduped through one memo rather than queued one behind another (a
+  // 17-command surface measured 70 strictly sequential reads, 22 of them re-reads; at a WAN RTT
+  // that is the whole latency). Each closure walk is still internally sequential and its §13.7
+  // bounds are still counted per walk — the concurrency is BETWEEN walks, so no limit is widened.
+  const artifactMemo: ArtifactMemo = new Map();
+  const docs = await pooled(answer.descriptor.clusters, RESOLVE_MAX_INFLIGHT_READS, (cl) => fetchClusterDocument(store, cl.digest, artifactMemo));
+  // Flattened in DOCUMENT ORDER first, then resolved concurrently and inserted in that same order:
+  // when two clusters declare one command name, last-in-document-order still wins, exactly as the
+  // sequential form did. Concurrency must not make the resolved surface depend on read timing.
+  const declared = docs.flatMap((doc) => doc.commands).filter((cmd) => visible.has(cmd.name)); // a describe VIEW may narrow a cluster's commands
+  // Each command needs two closures, so the pool runs at half the read bound to keep the in-flight
+  // read count under it.
+  const resolved = await pooled(declared, Math.max(1, RESOLVE_MAX_INFLIGHT_READS >> 1), async (cmd): Promise<ResolvedCommand> => {
+    // Each command recompiles its OWN validators (cheap, CPU-only) even when two commands share a
+    // closure digest: a compiled contract is not shared, only the artifact bytes behind it are.
+    const [input, output] = await Promise.all([
+      recompileClosure(store, cmd.inputDigest, artifactMemo),
+      recompileClosure(store, cmd.outputDigest, artifactMemo),
+    ]);
+    return {
+      command: cmd.name,
+      contract: { input, output },
+      class: cmd.class,
+      targeted: cmd.targeted,
+      modes: cmd.modes ?? [],
+      capability: cmd.capability,
+    };
+  });
+  const commands = new Map<string, ResolvedCommand>();
+  for (const rc of resolved) commands.set(rc.command, rc);
   return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
 }
 
