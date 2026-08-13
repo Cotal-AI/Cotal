@@ -937,6 +937,29 @@ let openInventory: ManagerResumeAgent;
     const reply = denied.agents[0]?.reply;
     check("static resume REFUSES when the CREDENTIAL lacks the event channel the inventory claims",
       reply?.ok === false, JSON.stringify(reply));
+    // THE REVERSE ARM — owed to fmae-rev-test's discriminator: "mutate inventory and credential
+    // independently and prove the decision follows the credential actually presented, not the
+    // inventory claim." One arm alone would pass for an implementation that refused whenever the
+    // inventory claimed anything, which is a different bug wearing the same green. It also caught a
+    // real defect: both checks used to run for static mode, so a credential that DID grant the
+    // channel was still refused when the inventory omitted it — a false refusal on a healthy agent,
+    // and proof the decision was not following the credential at all.
+    // The credential must live at the manager-owned path for this agent — a differently-named file
+    // is refused by an earlier check and the cell would never reach the grant decision at all.
+    const grantingCreds = await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id), allowPublish: ["events.static-worker"] });
+    const grantingPath = credsPath;
+    writeFileSync(grantingPath, grantingCreds, { mode: 0o600 });
+    const reverseManager = managerWith((n) => fakeHandle(n));
+    (reverseManager as unknown as { auth: unknown }).auth = auth;
+    const reverse = await reverseManager.resumePreserved(inventoryOf({
+      ...entry,
+      identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: grantingPath, sha256: digest(grantingPath) } },
+      // inventory OMITS the channel; the credential GRANTS it
+      launch: { ...entry.launch, connector: "preserve-events-connector", events: true, allowPublish: [] },
+    }));
+    check("REVERSE: the credential GRANTS it while the inventory omits it — resume PROCEEDS, so the decision follows the credential",
+      reverse.agents[0]?.reply?.ok === true, JSON.stringify(reverse.agents[0]?.reply));
+
     check("and the refusal names the CREDENTIAL as what does not grant it, not the inventory",
       /CREDENTIAL does not grant/.test(String(reply && reply.ok === false ? reply.error : "")), String(reply && reply.ok === false ? reply.error : "(ok)"));
   }

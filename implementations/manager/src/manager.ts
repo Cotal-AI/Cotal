@@ -295,7 +295,17 @@ function credentialPublishGrants(credsPath: string): string[] | undefined {
     // `cotal.<space>.chat.<principal>.<channel…>` -> `<channel…>`; anything without a chat segment
     // is not a channel grant and is dropped rather than guessed at.
     return allow
-      .map((s) => { const i = s.indexOf(".chat."); if (i < 0) return ""; const rest = s.slice(i + ".chat.".length); const j = rest.indexOf("."); return j < 0 ? "" : rest.slice(j + 1); })
+      // `chatSubject` is `<prefix>.chat.<owner>.<actor>.<channel…>` — TWO principal segments, not
+      // one. An earlier version stripped a single segment and returned `<actor>.<channel>`, which
+      // never matched a channel pattern. The forward test still passed, because that credential had
+      // no grants at all and a broken parser refuses just as convincingly as a correct one; only the
+      // REVERSE case — a credential that genuinely GRANTS the channel — could tell them apart.
+      .map((subject) => {
+        const at = subject.indexOf(".chat.");
+        if (at < 0) return "";
+        const parts = subject.slice(at + ".chat.".length).split(".");
+        return parts.length > 2 ? parts.slice(2).join(".") : "";
+      })
       .filter((c) => c.length > 0);
   } catch {
     return undefined;
@@ -3510,7 +3520,13 @@ export class Manager {
         // and a wrong one: a legitimate wildcard grant (`events.>`, `>`) genuinely covers this
         // channel and would have been refused, so the preflight added to stop a mute stream would
         // instead have blocked healthy resumes. Drive the shipped matcher; never restate its rule.
-        if (!channelInAllow(entry.launch.allowPublish ?? [], required))
+        // The inventory's claim is the best available evidence ONLY where no credential exists to
+        // consult. Static mode returned above on the credential, which is authoritative — running
+        // both would mean a credential that DOES grant the channel could still be refused because
+        // the inventory forgot to record it, which is a false refusal on a healthy agent and would
+        // mean the decision does not actually follow the credential. Discriminator owed to
+        // fmae-rev-test: mutate the two independently and the outcome must track the credential.
+        if (entry.identity.mode !== "static" && !channelInAllow(entry.launch.allowPublish ?? [], required))
           return {
             ok: false,
             error:
