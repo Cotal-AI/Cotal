@@ -44,7 +44,7 @@ export async function startMembership(opts: { space: string; server: string }, s
   ].filter((f): f is string => f !== undefined);
   if (missing.length) {
     // Name the missing piece AND a repair that reaches it. `cotal up --rotate-sys` re-mints the $SYS
-    // pair — it holds a system-account signing seed for exactly that moment — but it writes neither
+    // pair, since it holds a system-account signing seed for exactly that moment, but it writes neither
     // the DATA-account rw cred nor the account-id config: those are written once, when a space is
     // first provisioned. So a rotation repairs a missing OBSERVER and nothing else, and pointing a
     // pre-feature space at one would send an operator through a stop/start that cannot help it.
@@ -52,28 +52,28 @@ export async function startMembership(opts: { space: string; server: string }, s
       missing.length === 1 && missing[0] === "membership-observer.creds"
         ? "the $SYS observer cred is missing - re-mint it with `cotal down` then `cotal up --rotate-sys`"
         : `the membership bundle is incomplete here (missing ${missing.join(", ")}) - a space created before broker-sourced membership gains the feed only when its auth is regenerated; \`cotal up --rotate-sys\` re-mints the $SYS pair but writes neither the rw cred nor the account id`;
-    console.error(`• membership: ${down} — the graph falls back to traffic-only. Delivery is unaffected.`);
+    console.error(`• membership: ${down}. The graph falls back to traffic-only; delivery is unaffected.`);
     return { down };
   }
 
   const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
   if (!accountId) {
     const down = ".cotal/membership.json has no accountId";
-    console.error(`• membership: ${down} — membership disabled (delivery unaffected)`);
+    console.error(`• membership: ${down}; membership disabled (delivery unaffected)`);
     return { down };
   }
 
   // Check the OBSERVER's own expiry before connecting. It is `rotation-renewed`, so unlike every
   // renewable cred here nothing re-signs it: at its 30-day horizon the broker simply answers
   // "Authorization Violation", which names neither the credential nor the repair. Reading the JWT
-  // costs nothing and turns the daemon's one loud line into the actual diagnosis — the difference
+  // costs nothing and turns the daemon's one loud line into the actual diagnosis: the difference
   // between an operator finding this in minutes and finding it in a support thread.
   const obsCreds = readFileSync(obsPath, "utf8");
   // A TORN rotation is the other way this cred goes broker-dead without a byte of its own changing:
   // `rotateSystemCreds` commits the trust record, then writes both $SYS creds, so a crash between the
   // two leaves one file on the retired system account. The broker answers the same bare
   // "Authorization Violation" either way. The daemon cannot ask the trust record which account is
-  // current — it deliberately never loads the signer — but it does not need to: the pair is written
+  // current (it deliberately never loads the signer), but it does not need to: the pair is written
   // by one rotation, so two DIFFERENT issuers prove one of them is stale, with no signer read at all.
   // (`doctor auth`, which legitimately holds the record, checks each file against it directly.)
   const evPath = join(dir, "connection-evictor.creds");
@@ -85,7 +85,7 @@ export async function startMembership(opts: { space: string; server: string }, s
     } catch { /* an unreadable file is the health check's case just below */ }
     if (obsIss !== undefined && evIss !== undefined && obsIss !== evIss) {
       const down = `the two $SYS creds are signed by DIFFERENT system accounts (observer ${obsIss.slice(0, 12)}…, evictor ${evIss.slice(0, 12)}…) - a system-account rotation did not finish, so one of them is broker-dead: re-run \`cotal down\` then \`cotal up --rotate-sys\` to land a complete generation`;
-      console.error(`! membership: ${down} — graph membership degraded, delivery unaffected`);
+      console.error(`! membership: ${down}; graph membership degraded, delivery unaffected`);
       return { down };
     }
   }
@@ -95,7 +95,7 @@ export async function startMembership(opts: { space: string; server: string }, s
       obs.state === "expired"
         ? `the $SYS observer cred (${obsPath}) EXPIRED ${new Date((obs.exp ?? 0) * 1000).toISOString()} and the broker denies it - it is rotation-renewed, so nothing re-signs it: run \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data are untouched)`
         : `the $SYS observer cred (${obsPath}) is unreadable (${obs.error})`;
-    console.error(`! membership: ${down} — graph membership degraded, delivery unaffected`);
+    console.error(`! membership: ${down}; graph membership degraded, delivery unaffected`);
     return { down };
   }
 

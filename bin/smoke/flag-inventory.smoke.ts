@@ -33,7 +33,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
-      // `--rotate-sys` (2026-08): the class-3 renewal — rotate the system account and re-mint the
+      // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
       "rotate-sys:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
