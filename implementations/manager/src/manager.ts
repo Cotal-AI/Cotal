@@ -4607,7 +4607,7 @@ export class Manager {
         if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
           acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
           resolveAccept(acceptance);
-          terminalEntered = true; // not ours to settle — see the bind-loss claim below
+          terminalEntered = true; // not ours to settle; see the bind-loss claim below
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
         }
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:

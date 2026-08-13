@@ -283,7 +283,7 @@ try {
     check("M7 the failed terminal is DURABLE, not only an epe event", durable?.state === "failed", durable);
   }
 
-  // ── M8: DUPLICATE-GOAL RACE — the LOSER of the bind CAS must not commit the terminal (#357) ──
+  // ── M8: DUPLICATE-GOAL RACE: the LOSER of the bind CAS must not commit the terminal (#357) ──
   {
     // The duplicate is the SAME REQUEST BYTES delivered a second time: a client retry, a redelivery,
     // or one anycast reaching two responders. Captured off the wire and replayed rather than
