@@ -452,9 +452,14 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   // THREE labels, because two of them are advice and the third must not be. "stale pidfile" tells the
   // operator to clean it; saying that about a record whose liveness the kernel would not answer for
   // invites deleting a live holder. Indeterminate says so instead.
+  // FOUR labels. I wrote three and left `undefined` falling into "stale pidfile", which is the same
+  // defect one state over: content parsePid rejects is UNATTRIBUTABLE by this PR's own contract, and
+  // "stale" is advice to delete it. `down` refuses such a record correctly, so this line was telling
+  // the operator to run a command that would then refuse them.
   const liveness = pid === undefined ? undefined : probeLiveness(pid);
   const state =
-    liveness === "alive" ? `pid ${pid}`
+    pid === undefined ? `UNATTRIBUTABLE pidfile content ${JSON.stringify(raw)} - it may front a live process nobody can identify; inspect it, do not clean it blindly`
+    : liveness === "alive" ? `pid ${pid}`
     : liveness === "unknown" ? `pid ${pid}, liveness INDETERMINATE - the kernel answered neither running nor gone (seccomp/LSM policy does this); verify before cleaning`
     : "stale pidfile";
   return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
