@@ -29,12 +29,17 @@ export function deliveryUp(): boolean {
   const p = PID_PATH();
   if (!existsSync(p)) return false;
   const pid = parsePid(readFileSync(p, "utf8"));
-  // NOT `=== "alive"`. `unknown` (a pid the kernel would not answer for) must read as UP here,
-  // because the caller starts a second daemon when this says no, and two daemons on one
-  // fanout is worse than refusing to start. Preserving on
-  // anything but a proven ESRCH is the pid contract's rule, and the old two-state probe broke it
-  // twice over: it also called EPERM dead, so another user's live process read as gone.
-  return pid !== undefined && probeLiveness(pid) !== "dead";
+  // PROOF REQUIRED. `alive` only: `dead` and `unknown` both read as NOT up. The two questions this
+  // contract answers pull in opposite directions and must not share a predicate:
+  //   destructive  ("may I delete this record?")  -> preserve on doubt, `!== "dead"` (see down.ts)
+  //   presence     ("is it up, may I skip starting one?") -> require proof, `=== "alive"`
+  // Getting this backwards here is not a near-miss: an `unknown` reported as UP is permanent (no
+  // retry can clear it), silent (the caller is told `running: true`), and unrecoverable, while the
+  // cost of the other direction is at worst a refused start. Reviewed against a live repro that
+  // wedged three ensureControlPlane retries against an unreachable manager.
+  // EPERM is unaffected either way: the contract already resolves it to `alive`, which is the
+  // actual defect this change exists to fix.
+  return pid !== undefined && probeLiveness(pid) === "alive";
 }
 
 /** True when this folder runs an authed mesh — the only mode with a delivery daemon (Plane-3 needs the

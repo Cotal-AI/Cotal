@@ -37,11 +37,12 @@ import {
 
 const READY_TIMEOUT_MS = 15_000;
 
-/** Present unless PROVEN gone. `probeLiveness` already reads EPERM (another user's process) as
- *  alive; `unknown` stays present too, because the wrong answer here declares a running auth
- *  service dead and tells the operator to restart one that is already up. */
+/** Present only if PROVEN present. `probeLiveness` resolves EPERM (another user's process) to
+ *  `alive`, which is the defect this fixes: the old two-state probe called that dead. `unknown`
+ *  reads as NOT present, matching the behaviour this replaced, because a readiness caller that
+ *  accepts an undeterminable pid hands out an endpoint nothing is listening on. */
 function pidAlive(pid: number): boolean {
-  return probeLiveness(pid) !== "dead";
+  return probeLiveness(pid) === "alive";
 }
 
 export const cotalAuthProvider: AuthProvider = {

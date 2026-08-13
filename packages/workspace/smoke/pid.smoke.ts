@@ -1,20 +1,30 @@
 /**
- * PID-ATTRIBUTION CONTRACT smoke (no broker, no child processes).
+ * PID-ATTRIBUTION CONTRACT smoke (no broker, no fixture that can silently skip).
  *
- * The property that matters and that nothing exercised before: asking the kernel about a process
- * has THREE answers, not two. It is there, it is gone, or it is there but not ours to signal
- * (`EPERM`). A two-state probe folds the third into "gone", and every caller then treats a running
- * process as dead: `managerUp()` says no and a second manager is launched onto a live one, `cotal
- * down` reports a clean stop it never made, `ext` calls a live pidfile stale and invites you to
- * delete it, and the auth CLI tells you to restart a service that is already up.
+ * The property: asking the kernel about a process has THREE answers, not two. It is there, it is
+ * gone, or it is there but not ours to signal (`EPERM`). A two-state probe folds the third into
+ * "gone" and callers then act on a running process as if it had died.
  *
- * Half the private copies in this repo got this right on their own and half did not, which is why
- * the contract is one module rather than a convention.
+ * TWO THINGS THIS SUITE LEARNED THE HARD WAY, both from review rather than from me:
+ *
+ * 1. The first version reached the EPERM rule only by probing pid 1 and hoping the process was
+ *    unprivileged. As root, or in some containers, that cell SKIPPED and the suite still printed a
+ *    passing banner: a deliberately broken implementation read GREEN. The errno-to-state mapping is
+ *    now a pure function, so there is no fixture left to skip and no root/container variance.
+ *
+ * 2. The first version tested the PRIMITIVE and nothing else. A reviewer inverted all five converted
+ *    call sites and this suite still printed PASSED: zero of five mutations killed. The change under
+ *    test was the conversions, and they were entirely unprotected. The caller cells below exist for
+ *    that, and their honest coverage limit is stated at the bottom rather than implied away.
  *
  * Run: pnpm smoke:pid-contract
  */
 import { strict as assert } from "node:assert";
-import { parsePid, probeLiveness } from "../src/pid.js";
+import { spawn } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { livenessFromErrno, parsePid, probeLiveness } from "../src/pid.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -30,35 +40,62 @@ for (const bad of ["0", "-1", "1.5", "", "   ", "abc", "12abc", "NaN", "Infinity
   check(`parsePid rejects ${JSON.stringify(bad)} as unattributable`, parsePid(bad) === undefined, bad);
 check("parsePid admits the largest pid process.kill accepts", parsePid(String(0x7fffffff)) === 0x7fffffff);
 
-// ── probeLiveness: three answers ──────────────────────────────────────────────────────────────
-check("our own pid is alive", probeLiveness(process.pid) === "alive");
+// ── the mapping, exhaustively, with NO environment in the loop ─────────────────────────────────
+// This is the cell the old suite could only reach by luck. It cannot skip.
+check("ESRCH is the ONLY thing that proves a process gone", livenessFromErrno("ESRCH") === "dead");
+check("EPERM reads ALIVE: it exists, it is just not ours to signal", livenessFromErrno("EPERM") === "alive");
+for (const code of ["ERR_INVALID_ARG_TYPE", "ERR_OUT_OF_RANGE", "EIO", "EINVAL", "ENOSYS", "", undefined])
+  check(`an unfamiliar outcome (${JSON.stringify(code)}) is UNKNOWN, never dead`, livenessFromErrno(code) === "unknown", code);
 
-// A pid that cannot be running: allocate one by watching a child exit. Reusing a hardcoded high
-// number would be a guess, and a guess that happened to be live would invert this cell silently.
-const { spawnSync, spawn } = await import("node:child_process");
+// ── the real syscall agrees with the mapping ──────────────────────────────────────────────────
+check("our own pid is alive", probeLiveness(process.pid) === "alive");
+// A pid that cannot be running: allocate one by watching a child exit. Guessing a high number risks
+// picking a live process and inverting this cell silently.
 const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
 await new Promise<void>((r) => dead.once("exit", () => r()));
 const deadPid = dead.pid!;
-check("a just-exited child reads dead (ESRCH is the only thing that proves gone)", probeLiveness(deadPid) === "dead", deadPid);
+check("a just-exited child reads dead", probeLiveness(deadPid) === "dead", deadPid);
 
-// EPERM: pid 1 belongs to root, so an unprivileged probe throws EPERM rather than ESRCH. Assert
-// this ONLY when the fixture actually produces EPERM: running as root it succeeds instead, and a
-// cell that cannot fail is indistinguishable from one that passed.
-let eperm = false;
+// ── THE CALLERS, which are the actual change ──────────────────────────────────────────────────
+// Driven through a real pidfile in a real cotal root, not by calling the predicate by hand: the
+// defect being guarded is a caller reading the contract in the wrong DIRECTION, so the caller has
+// to be the thing that runs.
+const root = mkdtempSync(join(tmpdir(), "cotal-pidcaller-"));
+mkdirSync(join(root, ".cotal"), { recursive: true });
+const prevCwd = process.cwd();
 try {
-  process.kill(1, 0);
-} catch (e) {
-  eperm = (e as NodeJS.ErrnoException).code === "EPERM";
-}
-if (eperm) {
-  check("EPERM reads ALIVE, not dead: it exists, it is just not ours to signal", probeLiveness(1) === "alive");
-  // The regression this replaces, stated as executable code rather than as a comment.
-  const twoState = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  check("the two-state probe this replaces calls that same live process DEAD", twoState(1) === false);
-} else {
-  const who = spawnSync("id", ["-u"], { encoding: "utf8" }).stdout.trim();
-  console.log(`  · EPERM cell skipped: probing pid 1 did not raise EPERM (uid ${who || "unknown"}); CI is the oracle`);
+  process.chdir(root);
+  const { managerUp } = await import("../../../implementations/cli/src/lib/manager-proc.js");
+  const { deliveryUp } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
+
+  const mgrPid = join(root, ".cotal", "manager.pid");
+  const delPid = join(root, ".cotal", "delivery.pid");
+
+  writeFileSync(mgrPid, `${process.pid}\n`);
+  writeFileSync(delPid, `${process.pid}\n`);
+  check("managerUp is TRUE for a live pid", managerUp() === true);
+  check("deliveryUp is TRUE for a live pid", deliveryUp() === true);
+
+  writeFileSync(mgrPid, `${deadPid}\n`);
+  writeFileSync(delPid, `${deadPid}\n`);
+  check("managerUp is FALSE for a proven-dead pid (else ensureManager never starts one)", managerUp() === false, deadPid);
+  check("deliveryUp is FALSE for a proven-dead pid", deliveryUp() === false, deadPid);
+
+  writeFileSync(mgrPid, "not-a-pid\n");
+  check("managerUp is FALSE for an unattributable pidfile", managerUp() === false);
+  rmSync(mgrPid);
+  check("managerUp is FALSE with no pidfile at all", managerUp() === false);
+} finally {
+  process.chdir(prevCwd);
+  rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks${eperm ? ", incl. the EPERM pair" : ", EPERM cell skipped"})`);
+console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks)`);
+console.log(
+  "  NOTE, stated rather than implied: no cell here can kill a caller mutation on the `unknown`\n" +
+  "  DIRECTION (`=== \"alive\"` vs `!== \"dead\"`), because those differ only on `unknown` and no\n" +
+  "  parsePid-accepted input produces one on a real kernel. Exercising it needs a syscall shim\n" +
+  "  forcing an unfamiliar errno from kill(pid,0). That is how the defect was found, and it is the\n" +
+  "  way to re-check it; nothing in this file proves that direction stays correct.",
+);
 process.exit(0);

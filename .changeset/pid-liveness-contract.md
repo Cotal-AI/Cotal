@@ -26,8 +26,7 @@ Fixed, with the wrong answer named at each site:
 | `cli ext` | printed "stale pidfile" about a live extension, which is advice to delete it |
 
 Both `up` functions also parsed their pidfile with `Number.isFinite`, which admits fractional and
-out-of-range values `process.kill` throws on. They now use the contract's bounded parser, and treat
-`unknown` as present: refusing to start beats double-binding a live process.
+out-of-range values `process.kill` throws on. They now use the contract's bounded parser.
 
 The contract moved from `implementations/cli/src/lib/pid.ts` to `@cotal-ai/workspace`, the widest
 tier that may hold a local-process concept. **"Consumed everywhere" was never reachable and the
@@ -35,9 +34,21 @@ claim hid the gap:** `extensions/*` peer-depend `core` only, and a pid probe is 
 so reaching them would mean leaking a local concern into the standard. The two extension-side
 probes keep their own copies by construction, and the module now says so instead of overclaiming.
 
-Covered by a new broker-free suite, `smoke:pid-contract`, which pins the parser boundaries, allocates
-a genuinely dead pid by watching a child exit rather than guessing a high number, and asserts the
-`EPERM` rule against a real `EPERM` (probing pid 1 unprivileged) while skipping that cell loudly
-when the fixture cannot produce one. It also runs the two-state probe it replaces side by side, so
-the defect is executable rather than described. Mutation-proved by mapping `EPERM` to dead, which
-reddens that cell and only that cell.
+Presence questions require PROOF (`=== "alive"`); only destructive questions preserve on doubt
+(`!== "dead"`, which is why `down.ts` is written that way and is untouched). An earlier revision of
+this change had the presence sites preserving too, and review reproduced what that buys: a permanent,
+silent, retry-proof false-up, where the control plane reports `running: true` three times over
+against an unreachable manager. The demonstrated defect was `EPERM` alone, and widening past it was
+unforced.
+
+Covered by a new broker-free suite, `smoke:pid-contract`. The errno-to-state mapping is a pure
+exported function tested exhaustively, so there is no fixture to skip: the first revision reached the
+`EPERM` rule only by probing pid 1 and hoping the process was unprivileged, and as root or in a
+container that cell skipped while the suite still printed a passing banner over a deliberately broken
+implementation. The suite also drives the CONVERTED CALLERS through real pidfiles, because the first
+revision tested only the primitive and a reviewer inverted all five call sites without reddening a
+single check.
+
+Honest coverage limit, stated in the suite's own output: no cell can kill a caller mutation on the
+`unknown` direction, since the two predicates differ only there and no accepted input produces an
+`unknown` on a real kernel. That needs a syscall shim, which is how it was found.

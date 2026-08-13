@@ -449,7 +449,7 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   // "stale pidfile" is advice to delete it, so it must not be printed about a process that is
   // merely unsignalable: the shared probe calls that alive, the old inline try/catch called it stale.
   const pid = parsePid(raw);
-  const state = pid !== undefined && probeLiveness(pid) !== "dead" ? `pid ${pid}` : "stale pidfile";
+  const state = pid !== undefined && probeLiveness(pid) === "alive" ? `pid ${pid}` : "stale pidfile";
   return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
 }
 

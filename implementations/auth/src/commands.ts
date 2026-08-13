@@ -272,10 +272,12 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       throw new Error(`agent-bearer: can't read the actor token file at ${tokenFile} (${e instanceof Error ? e.message : String(e)}) - respawn this agent to re-provision it`);
     }
     const info = loadAuthServiceInfo(dir);
-    // Only a proven ESRCH means gone. The old two-state probe called EPERM dead, so a service
-    // running as another user produced "not running - restart it with `cotal up`" about a service
-    // that was up the whole time.
-    if (!info || probeLiveness(info.pid) === "dead")
+    // Proof required: only `alive` counts as running. The old two-state probe called EPERM dead, so
+    // a service running as ANOTHER USER produced "not running - restart it with `cotal up`" about a
+    // service that was up the whole time; the contract resolves EPERM to alive and fixes exactly
+    // that. `unknown` still refuses, because telling an operator to talk to an endpoint whose
+    // liveness cannot be established is worse than telling them to restart.
+    if (!info || probeLiveness(info.pid) !== "alive")
       throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
     let res: Response;
     try {

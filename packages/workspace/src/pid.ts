@@ -27,20 +27,34 @@ export function parsePid(raw: string): number | undefined {
   return Number.isInteger(n) && n > 0 && n <= 0x7fffffff ? n : undefined;
 }
 
-/** Tri-state liveness. The whole contract turns on one rule: only an actual `ESRCH` proves a
- *  process gone. A successful `kill(pid,0)` or an EPERM (it exists but is another user's, so we
- *  cannot signal it) means alive; ANY other outcome - argument/range errors, unknown errnos - is
- *  UNKNOWN, never dead. A two-state boolean collapses `unknown` into `dead`, which is the defect:
- *  a value the kernel will not accept then has its record deleted and a replacement launched.
- *  Callers reclaim/remove ONLY on `dead`; `alive` and `unknown` both preserve. */
+/** The errno-to-state MAPPING, split out from the syscall so it can be tested exhaustively without
+ *  an environment in the loop. The whole contract turns on one rule: only an actual `ESRCH` proves a
+ *  process gone. `EPERM` (it exists, it is just another user's, so we cannot signal it) is ALIVE.
+ *  Anything else - argument/range errors, unfamiliar errnos, a missing code - is UNKNOWN, never dead.
+ *
+ *  This is exported because the old suite could only reach the EPERM rule by probing pid 1 and
+ *  hoping the process was unprivileged, so as root or in some containers that cell SKIPPED and the
+ *  suite still printed a passing banner: a wrong implementation reading green. A pure mapping has
+ *  no fixture to skip. Found by review, not by me. */
+export function livenessFromErrno(code: string | undefined): "alive" | "dead" | "unknown" {
+  if (code === "ESRCH") return "dead";
+  if (code === "EPERM") return "alive"; // exists, just not ours to signal
+  return "unknown"; // ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE / anything else - cannot attribute
+}
+
+/** Tri-state liveness against the real kernel.
+ *
+ *  CALLERS MUST PICK A DIRECTION, because the two questions pull opposite ways:
+ *    destructive ("may I delete this record?")      -> preserve on doubt: `!== "dead"`
+ *    presence    ("is it up, may I skip starting?") -> require proof:    `=== "alive"`
+ *  A presence check written as `!== "dead"` turns an `unknown` into a permanent, silent, retry-proof
+ *  false-up. Reviewed against a repro that wedged three control-plane retries against an
+ *  unreachable manager. */
 export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   try {
     process.kill(pid, 0);
     return "alive";
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return "dead";
-    if (code === "EPERM") return "alive"; // exists, just not ours to signal
-    return "unknown"; // ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE / anything else - cannot attribute
+    return livenessFromErrno((e as NodeJS.ErrnoException).code);
   }
 }
