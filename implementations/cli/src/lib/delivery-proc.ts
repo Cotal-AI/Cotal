@@ -28,11 +28,13 @@ type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; 
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
  *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
  *  libuv preserves it), and both ways of folding it into a boolean fail silently. */
-export function deliveryLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" {
+export function deliveryLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
   const p = PID_PATH();
   if (!existsSync(p)) return "absent";
-  const pid = parsePid(readFileSync(p, "utf8"));
-  if (pid === undefined) return "absent";
+  const raw = readFileSync(p, "utf8").trim();
+  if (raw === "") return "absent";
+  const pid = parsePid(raw);
+  if (pid === undefined) return "unattributable"; // see managerLiveness: never fold this into absent
   return probe(pid);
 }
 
@@ -64,7 +66,7 @@ function hasAuth(): boolean {
  *  caller refuses BEFORE anything is minted, written or started. */
 function oldHostingManagerVerdict(probe: LivenessProbe = probeLiveness): "stop-it" | "proceed" | "indeterminate" {
   const state = managerLiveness(probe);
-  if (state === "unknown") return "indeterminate";
+  if (state === "unknown" || state === "unattributable") return "indeterminate";
   if (state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
   return managerHasDeliveryMarker() ? "proceed" : "stop-it"; // alive: the marker decides
 }
@@ -147,7 +149,7 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   const deliveryState = deliveryLiveness(probe);
   // Same refusal as the manager: an unattributable pid must not be silently reused (a daemon
   // reported running that is not there) nor silently replaced (two daemons on one fanout).
-  if (deliveryState === "unknown")
+  if (deliveryState === "unknown" || deliveryState === "unattributable")
     throw new Error(
       `the recorded delivery daemon pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
         `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +

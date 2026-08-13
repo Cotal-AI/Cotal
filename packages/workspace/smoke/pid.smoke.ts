@@ -93,7 +93,11 @@ try {
   const { deliveryLiveness } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
   check("managerLiveness reports ABSENT with no pidfile (distinct from dead)", managerLiveness() === "absent");
   writeFileSync(mgrPid, "not-a-pid\n");
-  check("managerLiveness reports ABSENT for unattributable content, never a pid to reason about", managerLiveness() === "absent");
+  // NOT absent. Folding corrupt content into "nothing recorded" let the ensure paths overwrite it
+  // and launch a replacement over a record that may front a live process nobody can identify.
+  check("managerLiveness reports UNATTRIBUTABLE for corrupt content, distinct from absent", managerLiveness() === "unattributable");
+  writeFileSync(mgrPid, "");
+  check("an EMPTY pidfile is ABSENT (a husk), not unattributable", managerLiveness() === "absent");
   writeFileSync(mgrPid, `${deadPid}\n`);
   check("managerLiveness reports DEAD for a proven-dead pid", managerLiveness() === "dead", deadPid);
   writeFileSync(mgrPid, `${process.pid}\n`);
@@ -226,6 +230,37 @@ try {
   }
   check("stopDelivery REFUSES a malformed pidfile too", delMalformed !== undefined);
   check("the malformed delivery pidfile SURVIVES", existsSync(delPid));
+
+  // ── ensure paths must REFUSE corrupt content, not overwrite it ───────────────────────────────
+  // Fixing only the stop helpers was insufficient: with corrupt content read as `absent`,
+  // ensureManager cheerfully launched a replacement and rewrote the record.
+  writeFileSync(mgrPid, "not-a-pid\n");
+  const corruptBefore = readFileSync(mgrPid, "utf8");
+  let ensureRefused: string | undefined;
+  try {
+    ensureManager({});
+  } catch (e) {
+    ensureRefused = (e as Error).message;
+  }
+  check("ensureManager REFUSES corrupt content instead of launching over it", ensureRefused !== undefined);
+  check("and does NOT overwrite the record it could not read", readFileSync(mgrPid, "utf8") === corruptBefore);
+
+  // ── pid 0 and negatives must never reach kill ────────────────────────────────────────────────
+  // `kill(0, sig)` is POSIX for "signal my own process group", so a pidfile of `0` reaching the raw
+  // syscall would signal the caller. The shared parser exists to stop exactly this, and these pin
+  // that the stop helpers route through it rather than `Number`.
+  for (const hostile of ["0", "-1", "-99"]) {
+    writeFileSync(delPid, `${hostile}\n`);
+    let sent: number | undefined;
+    let threw = false;
+    try {
+      await stopDelivery(alive, (pid) => { sent = pid; });
+    } catch {
+      threw = true;
+    }
+    check(`a delivery pidfile of ${JSON.stringify(hostile)} is refused and NEVER signalled`, threw && sent === undefined, { hostile, sent });
+    check(`and its record survives (${JSON.stringify(hostile)})`, existsSync(delPid), hostile);
+  }
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });

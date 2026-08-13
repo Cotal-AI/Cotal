@@ -25,11 +25,17 @@ const DELIVERY_AWARE_MARKER = () => cotalPath("manager.delivery-aware");
  *  (`SECCOMP_RET_ERRNO`) or an LSM policy can return an arbitrary errno for `kill(pid, 0)` without
  *  executing it at all, and libuv preserves it. Proven with a live seccomp BPF filter, not by
  *  interposition. So the caller has to SEE the third state and refuse. */
-export function managerLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" {
+export function managerLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
   const p = PID_PATH();
   if (!existsSync(p)) return "absent";
-  const pid = parsePid(readFileSync(p, "utf8"));
-  if (pid === undefined) return "absent"; // unattributable content is not a pid to reason about
+  const raw = readFileSync(p, "utf8").trim();
+  if (raw === "") return "absent"; // a pre-protocol husk: nothing is behind it
+  const pid = parsePid(raw);
+  // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
+  // ensure paths OVERWRITE it and launch a replacement, which is the same defect as deleting it:
+  // that record may front a live process nobody can identify. `absent` means no pidfile (or an
+  // empty husk); corrupt content is its own state and every action path must refuse on it.
+  if (pid === undefined) return "unattributable";
   return probe(pid);
 }
 
@@ -121,6 +127,12 @@ export function ensureManager(
   // control plane permanently (reported running, nothing reachable, no retry clears it); starting a
   // second manager over one that may be live double-binds the plane. Neither is recoverable from
   // here and both look like success, so this is the one case that must reach a human.
+  if (state === "unattributable")
+    throw new Error(
+      `the manager pidfile at ${PID_PATH()} holds content that is not a pid (${JSON.stringify(readFileSync(PID_PATH(), "utf8").trim())}).\n` +
+        `Refusing to start a manager over it: that record may front a live process nobody can identify, and overwriting it would orphan the process while reporting a healthy control plane.\n` +
+        `NEXT: find and stop that process, then remove \`.cotal/manager.pid\` by hand.`,
+    );
   if (state === "unknown")
     throw new Error(
       `the recorded manager pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
