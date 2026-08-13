@@ -30,7 +30,7 @@ let passed = 0;
 let failed = 0;
 /** Cells whose absence should be visible: a suite that silently skips a section reports the same
  *  green as one that proved everything, so the count is asserted against an expected floor. */
-const EXPECTED_MIN_CELLS = 80;
+const EXPECTED_MIN_CELLS = 96;
 
 function ok(label: string, val: unknown) {
   if (val) {
@@ -205,6 +205,41 @@ ok("shellQuote neutralises $(…) substitution", herdr.shellQuote("$(touch /tmp/
   ok("negative control: the unquoted path does NOT create the file", !existsSync(naive));
 }
 
+// ── the process-info shape differs BY PLATFORM ────────────────────────────────
+// These two payloads are real `pane process-info` output captured from herdr 0.8.0. macOS carries
+// `argv0`; Linux does not carry it at all. The driver used to read `argv0` alone, so readiness
+// matched on macOS and never on Linux — the runtime could not start a single agent there, and a
+// macOS-only test run reported 87/87 green while doing it.
+//
+// Both shapes are asserted on EVERY platform precisely because a live run only ever exercises the
+// local one. That is the regression this section exists to prevent.
+console.log("\n── process-info shape (both platforms) ─────────");
+{
+  const MACOS = { argv0: "node", argv: ["/opt/homebrew/bin/node", "launch.mjs"], name: "node", pid: 4242 };
+  const LINUX = { argv: ["sleep", "30"], cmdline: "sleep 30", name: "sleep", pid: 834047 };
+  const LINUX_NODE = { argv: ["/usr/bin/node", "launch.mjs"], cmdline: "/usr/bin/node launch.mjs", name: "node", pid: 99 };
+
+  ok("macOS shape: matches via argv0", herdr.processIsCommand(MACOS, "node"));
+  ok("macOS shape: matches an absolute interpreter path by basename",
+    herdr.processIsCommand(MACOS, "/usr/local/bin/node"));
+  ok("LINUX shape (no argv0 key at all): still matches via argv[0]", herdr.processIsCommand(LINUX, "sleep"));
+  ok("LINUX shape: an absolute argv[0] matches a bare command by basename",
+    herdr.processIsCommand(LINUX_NODE, "node"));
+  ok("LINUX shape: matches when the caller passes process.execPath",
+    herdr.processIsCommand(LINUX_NODE, "/some/other/prefix/bin/node"));
+
+  ok("negative: a different command does NOT match", !herdr.processIsCommand(LINUX, "node"));
+  ok("negative: the truncated/versioned `name` field is NOT used to match",
+    !herdr.processIsCommand({ name: "node", pid: 1 }, "node"));
+  ok("negative: a record with no usable name matches nothing", !herdr.processIsCommand({ pid: 1 }, "node"));
+  ok("negative: a non-object matches nothing",
+    !herdr.processIsCommand(null, "node") && !herdr.processIsCommand("node", "node"));
+  ok("processNames prefers argv0 then argv[0]",
+    JSON.stringify(herdr.processNames(MACOS)) === JSON.stringify(["node", "/opt/homebrew/bin/node"]));
+  ok("processNames on the Linux shape yields argv[0] alone",
+    JSON.stringify(herdr.processNames(LINUX)) === JSON.stringify(["sleep"]));
+}
+
 console.log("\n── driver ──────────────────────────────────────");
 
 ok("serverRunning() false before ensureServer", !herdr.serverRunning(SESSION));
@@ -223,9 +258,12 @@ ok("agentInfo resolves the terminal", herdr.agentInfo(SESSION, probe.terminalId)
 {
   // agentStart's readiness wait must prove the PROCESS started, not merely that `pane run`
   // accepted the keystrokes — a shell that ate the command would otherwise read as a live agent.
-  const info = herdr.run(SESSION, ["pane", "process-info", "--pane", probe.paneId]);
-  const fg = ((info.process_info as Record<string, unknown>).foreground_processes ?? []) as Record<string, unknown>[];
-  ok("the requested command is actually the pane's foreground process", fg.some((p) => p.argv0 === "sleep"));
+  const fg = herdr.foregroundProcesses(SESSION, probe.paneId);
+  ok("the requested command is actually the pane's foreground process",
+    fg.some((p) => herdr.processIsCommand(p, "sleep")));
+  ok("foregroundPid resolves the started process's pid on THIS platform",
+    (herdr.foregroundPid(SESSION, probe.paneId, "sleep") ?? 0) > 0,
+    JSON.stringify(fg));
 }
 {
   // Each agent lands in its own workspace, so the cwd is honoured per agent.

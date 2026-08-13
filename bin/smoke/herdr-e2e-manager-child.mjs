@@ -51,11 +51,10 @@ const started = await mgr.startAgent({ name: "hagent", agent: "herdr-e2e", cwd: 
 const lifecycleUid = mgr.agents?.get?.("hagent")?.lifecycleUid ?? "";
 const panes = herdr.run(HERDR_SESSION, ["pane", "list"]).panes ?? [];
 const pane = panes[0];
-let agentPid;
-if (pane) {
-  const info = herdr.run(HERDR_SESSION, ["pane", "process-info", "--pane", pane.pane_id]);
-  agentPid = (info.process_info?.foreground_processes ?? []).find((p) => String(p.argv0) === "node")?.pid;
-}
+// Via the driver's platform-aware matcher, NOT a hand-rolled `argv0` read: Linux omits `argv0`
+// from process-info entirely, so reading it directly reports no pid on Linux — and a survival
+// check on pid 0 proves nothing while still printing green.
+const agentPid = pane ? herdr.foregroundPid(HERDR_SESSION, pane.pane_id, process.execPath) : undefined;
 
 console.log(`HE2E_READY ${JSON.stringify({
   ok: started?.ok === true,

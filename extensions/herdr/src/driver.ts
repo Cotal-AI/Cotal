@@ -287,29 +287,62 @@ export function shellQuote(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
 }
 
-/** True when the pane's foreground process is the command we asked for. The readiness signal for
- *  {@link agentStart}: `pane run` types into a shell, so a successful CLI call proves the keystrokes
- *  were delivered, NOT that the process started. Polling the real process table is the only proof.
+/** The names one foreground-process record can be matched by, most authoritative first.
  *
- *  Matched on the BASENAME: herdr reports `argv0` as the bare command name (`node`) while the
- *  caller passes an absolute interpreter path (`process.execPath`), so a literal comparison never
- *  matches and every spawn would time out. */
-function paneRunning(session: string, paneId: string, command: string): boolean {
+ *  herdr's `pane process-info` shape is PLATFORM-DEPENDENT, which is not documented anywhere and
+ *  is the whole reason this helper exists:
+ *
+ *    macOS  {"argv0":"node","argv":["/usr/local/bin/node","x.mjs"],"name":"node",…}
+ *    Linux  {              "argv":["sleep","30"],                 "name":"sleep",…}
+ *
+ *  Linux omits `argv0` entirely. Reading it alone matched on macOS and NEVER on Linux, so no
+ *  agent could start there at all — the readiness poll below simply timed out on every spawn.
+ *
+ *  `name` is deliberately NOT consulted: it is the kernel's comm string, truncated to 15 bytes on
+ *  Linux and version-suffixed on macOS ("python3.13"), so matching it would trade a false negative
+ *  for a false positive — and a readiness probe that lies green is worse than one that lies red. */
+export function processNames(proc: unknown): string[] {
+  if (!proc || typeof proc !== "object") return [];
+  const p = proc as Record<string, unknown>;
+  const names: string[] = [];
+  if (typeof p.argv0 === "string") names.push(p.argv0);
+  if (Array.isArray(p.argv) && typeof p.argv[0] === "string") names.push(p.argv[0]);
+  return names;
+}
+
+/** True when `proc` was invoked as `command`, compared by BASENAME: herdr reports either a bare
+ *  name (`node`) or an absolute path depending on platform and field, while the caller passes an
+ *  absolute interpreter path (`process.execPath`). A literal comparison matches neither reliably. */
+export function processIsCommand(proc: unknown, command: string): boolean {
+  const want = basename(command);
+  return processNames(proc).some((n) => basename(n) === want);
+}
+
+/** The pane's foreground processes as herdr reports them, or `[]` when it cannot say. */
+export function foregroundProcesses(session: string, paneId: string): Record<string, unknown>[] {
   let result: Record<string, unknown>;
   try {
     result = run(session, ["pane", "process-info", "--pane", paneId]);
   } catch {
-    return false; // pane may not have settled yet; the caller's deadline decides
+    return []; // pane may not have settled yet; the caller's deadline decides
   }
   const info = result.process_info as Record<string, unknown> | undefined;
   const procs = info?.foreground_processes;
-  if (!Array.isArray(procs)) return false;
-  const want = basename(command);
-  return procs.some((p) => {
-    if (!p || typeof p !== "object") return false;
-    const argv0 = (p as Record<string, unknown>).argv0;
-    return typeof argv0 === "string" && basename(argv0) === want;
-  });
+  return Array.isArray(procs) ? (procs as Record<string, unknown>[]) : [];
+}
+
+/** The pid of the pane's foreground process running `command`, or undefined when it is not there. */
+export function foregroundPid(session: string, paneId: string, command: string): number | undefined {
+  const proc = foregroundProcesses(session, paneId).find((p) => processIsCommand(p, command));
+  const pid = proc?.pid;
+  return typeof pid === "number" ? pid : undefined;
+}
+
+/** True when the pane's foreground process is the command we asked for. The readiness signal for
+ *  {@link agentStart}: `pane run` types into a shell, so a successful CLI call proves the keystrokes
+ *  were delivered, NOT that the process started. Polling the real process table is the only proof. */
+function paneRunning(session: string, paneId: string, command: string): boolean {
+  return foregroundProcesses(session, paneId).some((p) => processIsCommand(p, command));
 }
 
 /** Start `argv` in its own workspace of `session` and return its stable refs.
