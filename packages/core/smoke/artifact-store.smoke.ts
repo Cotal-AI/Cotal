@@ -17,12 +17,13 @@
  * Run: pnpm smoke:artifact-store   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import { Objm } from "@nats-io/obj";
+import { Kvm } from "@nats-io/kv";
 import {
   CotalEndpoint,
   chatStream,
@@ -37,6 +38,7 @@ import {
   ARTIFACT_STORE_MAX_BYTES,
   possessionBucket,
   attachmentBucket,
+  ensureArtifactIndexStores,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -321,6 +323,76 @@ try {
     } finally {
       await ep.stop().catch(() => {});
     }
+  }
+
+  // ---- THE FIFTH LIST: RESTORE ---------------------------------------------------------------
+  //
+  // This suite's own header says a space resource must appear in five lists and that being in four
+  // of them reads as correct. It then covered FOUR: it drives setup and teardown, and never restore.
+  // The index stores duly shipped absent from the restore list, under a changeset asserting they
+  // were in all five — the second four-of-five in one slice, caught by a reviewer rather than here.
+  //
+  // WHAT THIS CELL CAN AND CANNOT PROVE, stated because the distinction is the whole finding. The
+  // end-to-end instrument is `smoke:backup-restore:live`, which is NOT in `smoke:ci` (it is reached
+  // by `pnpm check`), so the PR gate contains no cell that drives a real restore. What is provable
+  // here is the property that restore's own assertion turns on: that the shipped helper brings a
+  // space MISSING its index stores back to a state the inventory validator accepts. The state below
+  // is constructed to be exactly the one a restore produced before the fix — the other four excluded
+  // stores present, these two absent.
+  {
+    const rspace = `${SPACE}restore`;
+    await setupSpaceStreams({ servers, space: rspace });
+    const rnc = await connect({ servers });
+    const rkvm = new Kvm(rnc);
+    // Reproduce the broken post-restore state: remove ONLY the two index buckets. Deleted at the
+    // STREAM level, which is how the broker holds a KV bucket and how `deleteSpace` removes one.
+    const rjsm = await jetstreamManager(rnc);
+    await rjsm.streams.delete(`KV_${possessionBucket(rspace)}`);
+    await rjsm.streams.delete(`KV_${attachmentBucket(rspace)}`);
+
+    // Only THIS space's streams. The broker still holds the main suite space and its drift cases,
+    // and feeding the whole list to an exact-set-equality validator reports them all as `unexpected`.
+    // `artstore` is a prefix of `artstorerestore`, so this must match on the SUFFIX: a `startsWith`
+    // or an `includes` here would sweep the other space in and the cell would fail for a reason that
+    // has nothing to do with restore.
+    const mine = async () => minusKnown(await live()).filter((n) => n.endsWith(rspace));
+
+    // NEGATIVE CONTROL FIRST — the instrument must be able to SEE the absence. Without this the
+    // green below would be indistinguishable from a validator that accepts anything, which is the
+    // precise shape that let four-of-five pass twice.
+    //
+    // AND IT ASSERTS THE EXACT NAMES, not the substrings `artpossess`/`artattach`. The first version
+    // of this cell matched substrings and PASSED against a message that named the OTHER space's
+    // buckets — a cell reporting a green for a reason unrelated to what it tests, written while
+    // fixing a defect of that same class.
+    let sawGap = "";
+    try { validateSpaceBackupInventory(rspace, await mine()); sawGap = "VALIDATOR IS BLIND"; }
+    catch (e) { sawGap = (e as Error).message; }
+    check("the validator SEES a space whose index stores are missing (negative control)",
+      sawGap.includes(`KV_${possessionBucket(rspace)}`) && sawGap.includes(`KV_${attachmentBucket(rspace)}`),
+      sawGap);
+
+    // Drive the SHIPPED helper — the one `restore.ts` now calls, not a re-implementation of it.
+    await ensureArtifactIndexStores(rkvm, rspace);
+    let healed = "";
+    try { validateSpaceBackupInventory(rspace, await mine()); healed = "ok"; }
+    catch (e) { healed = (e as Error).message; }
+    check("the restore-side helper brings the space back to a validating inventory", healed === "ok", healed);
+    await rnc.close();
+    await deleteSpace({ servers, space: rspace });
+  }
+
+  // AND THAT RESTORE ACTUALLY CALLS IT. The cells above prove the helper works; they cannot prove
+  // the restore path reaches it, and a helper nothing calls is the four-of-five failure wearing a
+  // green suite. POSITIVE-CONTROLLED: the pattern must first find the call site it is known to have
+  // (space setup), or a pattern that matches nothing reports the same clean result as a codebase
+  // with no caller at all.
+  {
+    const restoreSrc = readFileSync(new URL("../../../implementations/cli/src/lib/restore.ts", import.meta.url), "utf8");
+    const setupSrc = readFileSync(new URL("../src/streams.ts", import.meta.url), "utf8");
+    const CALL = /\bensureArtifactIndexStores\s*\(/;
+    check("(positive control) the sweep finds the known space-setup call site", CALL.test(setupSrc));
+    check("the RESTORE path calls the shared index-store helper", CALL.test(restoreSrc));
   }
 
   await deleteSpace({ servers, space: SPACE });

@@ -352,6 +352,33 @@ export function fanoutDurableConfig(
  * `ensureAuthorityStores` already uses, and the same reason: an idempotent setup path must either
  * converge the resource or report that it cannot.
  */
+/**
+ * Create the artifact INDEX stores — possession rows and attachment rows.
+ *
+ * ONE HELPER, CALLED BY BOTH SPACE SETUP AND RESTORE, AND THAT IS THE ENTIRE POINT.
+ *
+ * A space resource has to appear in five lists — create, delete, grants, backup inventory, restore —
+ * and being in four of them is the failure that reads as correct. This lane shipped four-of-five
+ * TWICE in one slice: once on the create list, and once on RESTORE, under a changeset asserting the
+ * opposite. Both times the cause was the same — the create list and the restore list were two
+ * independent bodies of code that happened to agree, so keeping them in agreement was a thing a
+ * person had to remember.
+ *
+ * Extracting the creation into one function does not merely fix the omission, it removes the class:
+ * the two paths can no longer disagree about what an artifact index store is, because there is only
+ * one place that says. The remaining four excluded stores are still duplicated between the two paths;
+ * they are another surface's to collapse, and this comment is where the next person doing it should
+ * start.
+ *
+ * NO TTL, and it is load-bearing: possession must OUTLIVE the lifecycle that earned it so a delayed
+ * message can still attach after its publisher retires. A ttl here would reap the rows on a timer and
+ * re-fire the exact branch the `confirmAttach` design exists to close, with no adversary involved.
+ */
+export async function ensureArtifactIndexStores(kvm: Kvm, space: string): Promise<void> {
+  await kvm.create(possessionBucket(space), { history: 1 });
+  await kvm.create(attachmentBucket(space), { history: 1 });
+}
+
 export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
   const bucket = artifactBucket(space);
   const stream = objectStoreStream(bucket);
@@ -456,17 +483,7 @@ export async function setupSpaceStreams(opts: {
     // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
-    // The artifact INDEX stores. Created HERE — the list that actually brings them into existence.
-    // Adding them to the delete list, the grants and the backup inventory without this one is the
-    // four-of-five failure that reads as correct: `validateSpaceBackupInventory` is exact
-    // set-equality, so it caught the omission from the "enumerated but never created" direction the
-    // moment it ran against a real broker.
-    //
-    // No TTL: possession must OUTLIVE the lifecycle that earned it, so a delayed message can still
-    // attach after its publisher retires. A ttl here would reap the rows on a timer and re-fire the
-    // branch the whole design exists to close.
-    await kvm.create(possessionBucket(opts.space), { history: 1 });
-    await kvm.create(attachmentBucket(opts.space), { history: 1 });
+    await ensureArtifactIndexStores(kvm, opts.space);
     await ensureAuthorityStores(jsm, kvm, opts.space);
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.

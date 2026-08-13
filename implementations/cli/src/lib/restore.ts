@@ -37,6 +37,7 @@ import {
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
   type PersistentConsumerCheckpoint,
+  ensureArtifactIndexStores,
   ensureArtifactStore,
 } from "@cotal-ai/core";
 import {
@@ -544,6 +545,14 @@ async function createOmittedInfrastructure(
     // refuse rather than adopt it, which matters more here than at setup - a restore is exactly when
     // an operator is least able to tell an inherited config from a fresh one.
     await ensureArtifactStore(nc, space);
+    // The artifact INDEX stores, through the SAME helper space setup calls — not a second list that
+    // has to be kept in agreement with the first. They were absent here while being present in the
+    // other four lists, so a real restore threw at the `streams.info` assertion immediately below,
+    // and the changeset that added them asserted they were in all five. The site comment three lines
+    // up said exactly why that happens and did not reach the person who came to this file to copy
+    // the block above it: a site comment serves whoever is editing that line and is invisible to
+    // everyone else. Sharing the creation is what makes it structural rather than remembered.
+    await ensureArtifactIndexStores(kvm, space);
     for (const stream of [...create, ...excluded]) await jsm.streams.info(stream);
     // The normal listener is exposed only over a complete space: assert the exact stream inventory
     // (restored + created + excluded transient) before the coordinator may write commit intent.
