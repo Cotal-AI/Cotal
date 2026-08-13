@@ -55,9 +55,15 @@ try {
   // The live-broker fence itself, asserted rather than trusted. It is the one guard in this suite
   // whose failure mode is silent: if it stopped refusing, every cell below would still pass, against
   // whatever broker it was pointed at.
-  const refuses = (servers: string) => { try { assertEphemeralBroker(servers); return false; } catch { return true; } };
-  check("the live broker is REFUSED (even hidden in a multi-URL list)", refuses("nats://broker.cotal.ai:4222") && refuses("broker.cotal.ai:4222") && refuses("nats://127.0.0.1:4222,nats://broker.cotal.ai:4222"));
-  check("a throwaway loopback broker is allowed (the fence is not refusing everything)", !refuses(SERVERS));
+  // The fence has TWO layers and they must be pinned separately: naming the live host by itself is
+  // not load-bearing (a loopback-only rule already refuses it), so a cell that only tries
+  // broker.cotal.ai passes even with the named-host check deleted. The loopback rule is what
+  // actually fences; the named host exists so the refusal SAYS why. One cell each.
+  const refusal = (servers: string) => { try { assertEphemeralBroker(servers); return undefined; } catch (e) { return (e as Error).message; } };
+  check("the live broker is REFUSED (bare, and hidden in a multi-URL list)", [ "nats://broker.cotal.ai:4222", "broker.cotal.ai:4222", "nats://127.0.0.1:4222,nats://broker.cotal.ai:4222" ].every((s) => refusal(s) !== undefined));
+  check("ANY non-loopback broker is refused, not just the one we named", refusal("nats://10.0.0.5:4222") !== undefined);
+  check("the live broker's refusal NAMES it as the live broker (not the generic message)", /is the LIVE broker/.test(refusal("nats://broker.cotal.ai:4222") ?? ""));
+  check("a throwaway loopback broker is allowed (the fence is not refusing everything)", refusal(SERVERS) === undefined);
 
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) break; await sleep(200); }
 
