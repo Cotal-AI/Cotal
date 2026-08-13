@@ -277,7 +277,12 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     // service that was up the whole time; the contract resolves EPERM to alive and fixes exactly
     // that. `unknown` still refuses, because telling an operator to talk to an endpoint whose
     // liveness cannot be established is worse than telling them to restart.
-    if (!info || probeLiveness(info.pid) !== "alive")
+    const svc = info === undefined ? "absent" : probeLiveness(info.pid);
+    if (svc === "unknown")
+      throw new Error(
+        `agent-bearer: the user-auth service for space "${space}" records pid ${info!.pid}, whose liveness cannot be determined - the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes). Refusing rather than reporting it down: verify with \`ps -p ${info!.pid}\` before restarting anything.`,
+      );
+    if (svc !== "alive" || info === undefined)
       throw new Error(`agent-bearer: the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
     let res: Response;
     try {

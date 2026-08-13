@@ -449,7 +449,14 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   // "stale pidfile" is advice to delete it, so it must not be printed about a process that is
   // merely unsignalable: the shared probe calls that alive, the old inline try/catch called it stale.
   const pid = parsePid(raw);
-  const state = pid !== undefined && probeLiveness(pid) === "alive" ? `pid ${pid}` : "stale pidfile";
+  // THREE labels, because two of them are advice and the third must not be. "stale pidfile" tells the
+  // operator to clean it; saying that about a record whose liveness the kernel would not answer for
+  // invites deleting a live holder. Indeterminate says so instead.
+  const liveness = pid === undefined ? undefined : probeLiveness(pid);
+  const state =
+    liveness === "alive" ? `pid ${pid}`
+    : liveness === "unknown" ? `pid ${pid}, liveness INDETERMINATE - the kernel answered neither running nor gone (seccomp/LSM policy does this); verify before cleaning`
+    : "stale pidfile";
   return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
 }
 

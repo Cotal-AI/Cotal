@@ -6,7 +6,7 @@ import {
   newIdentity,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpaceAccounts, parsePid, probeLiveness, type LivenessProbe, workspaceSecretStore } from "@cotal-ai/workspace";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
@@ -28,12 +28,12 @@ type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; 
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
  *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
  *  libuv preserves it), and both ways of folding it into a boolean fail silently. */
-export function deliveryLiveness(): "alive" | "dead" | "unknown" | "absent" {
+export function deliveryLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" {
   const p = PID_PATH();
   if (!existsSync(p)) return "absent";
   const pid = parsePid(readFileSync(p, "utf8"));
   if (pid === undefined) return "absent";
-  return probeLiveness(pid);
+  return probe(pid);
 }
 
 /** True only if the daemon is PROVABLY running. Callers that ACT on the answer take
@@ -104,7 +104,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
  *  never double-binds. Mints a SCOPED `delivery` cred from the local signer ONCE, writes it to
  *  `.cotal/delivery.creds` (0600), and launches the daemon WITHOUT signer access. Best-effort — callers
  *  treat it as non-fatal (a missing daemon degrades durable delivery, never live). */
-export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }> {
+export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean }> {
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
   if (oldHostingManagerLive()) {
     console.error(
@@ -121,7 +121,7 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   const creds = await mintCreds(auth, id, "delivery");
   const space = o.space ?? resolveSpace(process.cwd());
   const server = o.server ?? DEFAULT_SERVER;
-  const deliveryState = deliveryLiveness();
+  const deliveryState = deliveryLiveness(probe);
   // Same refusal as the manager: an unattributable pid must not be silently reused (a daemon
   // reported running that is not there) nor silently replaced (two daemons on one fanout).
   if (deliveryState === "unknown")

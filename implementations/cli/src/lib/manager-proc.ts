@@ -4,7 +4,7 @@ import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
-import { parsePid, probeLiveness } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
 
 const PID_PATH = () => cotalPath("manager.pid");
 /** Sibling marker of `manager.pid`: written by THIS build's manager (which no longer hosts Plane-3 —
@@ -22,12 +22,12 @@ const DELIVERY_AWARE_MARKER = () => cotalPath("manager.delivery-aware");
  *  (`SECCOMP_RET_ERRNO`) or an LSM policy can return an arbitrary errno for `kill(pid, 0)` without
  *  executing it at all, and libuv preserves it. Proven with a live seccomp BPF filter, not by
  *  interposition. So the caller has to SEE the third state and refuse. */
-export function managerLiveness(): "alive" | "dead" | "unknown" | "absent" {
+export function managerLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" {
   const p = PID_PATH();
   if (!existsSync(p)) return "absent";
   const pid = parsePid(readFileSync(p, "utf8"));
   if (pid === undefined) return "absent"; // unattributable content is not a pid to reason about
-  return probeLiveness(pid);
+  return probe(pid);
 }
 
 /** True only if the manager is PROVABLY running. `unknown` is not up, and callers that would ACT on
@@ -110,8 +110,9 @@ export function startManagerDetached(
  *  taken as-is. */
 export function ensureManager(
   o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  probe: LivenessProbe = probeLiveness,
 ): { running: boolean } {
-  const state = managerLiveness();
+  const state = managerLiveness(probe);
   if (state === "alive") return { running: true };
   // REFUSE, loudly, rather than pick a silent wrong answer. Reusing an unattributable pid wedges the
   // control plane permanently (reported running, nothing reachable, no retry clears it); starting a

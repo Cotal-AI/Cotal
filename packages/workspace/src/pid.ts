@@ -50,6 +50,12 @@ export function livenessFromErrno(code: string | undefined): "alive" | "dead" | 
  *  A presence check written as `!== "dead"` turns an `unknown` into a permanent, silent, retry-proof
  *  false-up. Reviewed against a repro that wedged three control-plane retries against an
  *  unreachable manager. */
+/** The liveness probe as a DEPENDENCY. `unknown` is only producible by kernel policy (a seccomp
+ *  `SECCOMP_RET_ERRNO` filter, an LSM answering `security_task_kill`), so no test input can reach it
+ *  and the branch that handles it would otherwise be guarded by nothing executable. Callers take
+ *  this so that branch can be driven directly. Production passes nothing and gets the real one. */
+export type LivenessProbe = (pid: number) => "alive" | "dead" | "unknown";
+
 export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   try {
     process.kill(pid, 0);

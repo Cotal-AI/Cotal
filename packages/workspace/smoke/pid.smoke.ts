@@ -21,7 +21,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { livenessFromErrno, parsePid, probeLiveness } from "../src/pid.js";
@@ -99,6 +99,30 @@ try {
   writeFileSync(mgrPid, `${process.pid}\n`);
   check("managerLiveness reports ALIVE for a live pid", managerLiveness() === "alive");
   check("deliveryLiveness reports DEAD for a proven-dead pid", (writeFileSync(delPid, `${deadPid}\n`), deliveryLiveness()) === "dead", deadPid);
+
+  // ── THE UNKNOWN BRANCH, driven deterministically ────────────────────────────────────────────
+  // `unknown` is only producible by kernel policy (a seccomp SECCOMP_RET_ERRNO filter, an LSM
+  // answering security_task_kill), so no input reaches it and until now it was guarded by nothing
+  // executable. The probe is a dependency; injecting it drives the exact branch review reproduced
+  // with a live seccomp filter, and does it on every platform in milliseconds.
+  const { ensureManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
+  const stuck = () => "unknown" as const;
+
+  writeFileSync(mgrPid, `${process.pid}\n`); // a LIVE holder, the dual review proved was overwritten
+  check("managerLiveness surfaces UNKNOWN rather than folding it to a boolean", managerLiveness(stuck) === "unknown");
+  const before = readFileSync(mgrPid, "utf8");
+  let refused: string | undefined;
+  try {
+    ensureManager({}, stuck);
+  } catch (e) {
+    refused = (e as Error).message;
+  }
+  check("ensureManager REFUSES on unknown instead of returning a healthy result", refused !== undefined);
+  check("the refusal names the pid it could not attribute", refused?.includes(String(process.pid)) === true, refused?.slice(0, 80));
+  check("the refusal names the cause an operator can act on (seccomp/LSM)", /seccomp|LSM/i.test(refused ?? ""));
+  // The dual defect: the old shape overwrote a LIVE holder's pidfile with a replacement it could
+  // then neither stop nor track. Refusing must leave the record exactly as it found it.
+  check("the refusal does NOT overwrite the live holder's pidfile", readFileSync(mgrPid, "utf8") === before);
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
@@ -106,14 +130,11 @@ try {
 
 console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks)`);
 console.log(
-  "  NOTE, stated rather than implied: no cell here exercises `unknown`. It IS reachable on a real\n" +
-  "  kernel (a Linux seccomp SECCOMP_RET_ERRNO filter or an LSM policy answers kill(pid,0) with an\n" +
-  "  arbitrary errno without executing it; libuv preserves it), but not through any input this\n" +
-  "  process can supply, so the loud refusal in ensureManager/ensureDelivery is verified by a\n" +
-  "  seccomp BPF harness outside this suite, not here. Nor can any cell here kill a mutation on the\n" +
-  "  DIRECTION (`=== \"alive\"` vs `!== \"dead\"`), because those differ only on `unknown` and no\n" +
-  "  parsePid-accepted input produces one on a real kernel. Exercising it needs a syscall shim\n" +
-  "  forcing an unfamiliar errno from kill(pid,0). That is how the defect was found, and it is the\n" +
-  "  way to re-check it; nothing in this file proves that direction stays correct.",
+  "  COVERAGE, precisely: the `unknown` branch IS exercised, via the injected probe seam, including\n" +
+  "  that a refusal leaves a live holder's pidfile untouched. What the seam does NOT prove is that\n" +
+  "  the real kernel ever produces `unknown` -- that is established outside this suite, by a seccomp\n" +
+  "  BPF filter answering kill(pid,0) with an arbitrary errno without executing it (SECCOMP_RET_ERRNO,\n" +
+  "  or an LSM through security_task_kill). Both halves are needed and neither substitutes for the\n" +
+  "  other: the seam proves the code handles the state, the seccomp harness proves the state happens.",
 );
 process.exit(0);
