@@ -21,6 +21,7 @@
  */
 
 import { parseSubject } from "./subjects.js";
+import { AmbiguousAclAlias } from "./acls.js";
 import { isArtifactPart } from "./artifact.js";
 import type { CotalMessage } from "./types.js";
 import type { AttachmentRow } from "./artifact-index.js";
@@ -192,10 +193,21 @@ export async function confirmAttach(
   let lifecycleUid: string;
   try {
     lifecycleUid = await deps.liveLifecycleFor(caller);
-  } catch {
-    // Distinct on purpose: an ambiguous alias is an infrastructure fault, not a fact about the
-    // store, so naming it leaks nothing about what exists.
-    return { ok: false, error: ATTACH_REFUSAL.ambiguousAlias };
+  } catch (e) {
+    // NARROW, and it used to be bare. A bare `catch` here mapped EVERY throw to `AmbiguousAclAlias`:
+    // a dropped connection, a missing bucket, a malformed key all came back as "your alias resolves
+    // to two live rows". Fail-closed, so not a privilege defect — but an operator reading it would
+    // chase an ACL problem while the broker was down, and mapping every failure to one meaning is
+    // the same defect as swallowing every `create` error as "already exists".
+    //
+    // The suite could not see it either: A7 threw `new Error("AmbiguousAclAlias")`, whose `name` is
+    // "Error", so a cell asserting the refusal passed against a mapping that was wrong for every
+    // other input. The cell now throws the real class, which is what makes this line testable.
+    if (e instanceof AmbiguousAclAlias) return { ok: false, error: ATTACH_REFUSAL.ambiguousAlias };
+    // Anything else is an infrastructure fault this verb cannot name honestly. Rethrow rather than
+    // inventing a refusal: a caller seeing a transport error knows to retry, and a caller told
+    // "AmbiguousAclAlias" does not.
+    throw e;
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import {
   type ConfirmAttachArgs, type ConfirmAttachReply, type ConfirmAttachDeps,
 } from "../src/artifact-attach.js";
 import { chatSubject } from "../src/subjects.js";
+import { AmbiguousAclAlias } from "../src/acls.js";
 import { ARTIFACT_PART_KIND } from "../src/artifact.js";
 import type { CotalMessage } from "../src/types.js";
 
@@ -174,9 +175,27 @@ await refuses("A2 an entry published by ANOTHER principal refuses with the SAME 
 
 // ---- A7 — ambiguous alias, ALLOWED to be distinct ----------------------------------------------
 // An infrastructure fault rather than a fact about the store, so naming it leaks nothing.
+// THE REAL CLASS, not `new Error("AmbiguousAclAlias")`. The first version threw a bare Error whose
+// `name` is "Error" and whose message merely CONTAINED the words — so it passed against a bare
+// `catch` that mapped every throw, including a dead broker, to this refusal. A fixture that can be
+// satisfied by the wrong implementation is not testing the right one.
 await refuses("A7 two live ACL rows for the alias refuse `AmbiguousAclAlias`, distinctly",
   ATTACH_REFUSAL.ambiguousAlias,
-  () => run({ ...base, seq: 5 }, { async liveLifecycleFor() { throw new Error("AmbiguousAclAlias"); } }));
+  () => run({ ...base, seq: 5 },
+    { async liveLifecycleFor() { throw new AmbiguousAclAlias(CALLER, [LC, "01h" + "z".repeat(22) + "b"]); } }));
+
+// ---- A7b — AND ANY OTHER FAULT IS NOT AN AMBIGUOUS ALIAS ---------------------------------------
+// The companion that makes A7 mean something. A broker failure must NOT come back wearing an ACL
+// refusal: it propagates, so the caller can tell "retry the transport" from "your alias is broken".
+{
+  let threw: unknown;
+  try {
+    await run({ ...base, seq: 5 }, { async liveLifecycleFor() { throw new Error("ECONNRESET"); } });
+  } catch (e) { threw = e; }
+  check("A7b an infrastructure fault PROPAGATES — it is not renamed as an ambiguous alias",
+    threw instanceof Error && (threw as Error).message === "ECONNRESET",
+    threw instanceof Error ? threw.message : threw);
+}
 
 // ---- THE STRUCTURE ORACLE, CLOSED — asserted as an INDISTINGUISHABILITY -------------------------
 //
