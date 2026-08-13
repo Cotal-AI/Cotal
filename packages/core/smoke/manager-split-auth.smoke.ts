@@ -247,6 +247,12 @@ try {
   check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(provCreds, dmGet, prov.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(provCreds, `$JS.API.STREAM.DELETE.${PKV}`, prov.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED (not a purger)", await tryPublish(provCreds, `$JS.API.STREAM.PURGE.${DM}`, prov.id) === "denied");
+  // #286: the provisioner reconciles the three TTL'd KV buckets' `max_age` at `cotal up` (STREAM.UPDATE on
+  // presence + the two leases) so a bucket predating the TTL still ages out dead presence / stale leases. The
+  // grant is scoped to exactly those three streams — a general stream UPDATE (e.g. the DM mailbox) stays denied.
+  check("STREAM.UPDATE the presence bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${PKV}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the manager-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${managerBucket(space)}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
 

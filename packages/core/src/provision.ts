@@ -1641,7 +1641,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     recordsBucket, epAuthBucket, sessionsBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
-  // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.
+  // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.
   // The §13.7 CONTRACT store (EPC) joins the list for the static manager's start-time
   // `ensureContractStore` (P2 item 1, 1c): create-or-verify only — the provisioner holds no
   // artifact-publish grant on it (publication rides the scoped endpoint-serve executor).
@@ -1655,6 +1655,15 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
+  // #286: STREAM.UPDATE on EXACTLY the three TTL'd KV streams (presence + the two leases). `kvm.create`
+  // never updates an existing bucket's config, so a bucket created by a cotal that predates the `max_age`
+  // TTL keeps NO expiry forever — dead presence records (and stale leases) never age out. `setupSpaceStreams`
+  // reconciles their `max_age` via STREAM.UPDATE at every `cotal up`, which needs this grant. Scoped to these
+  // three streams only — the durable streams (chat/dm/task/inbox/dlv, channel/members/acl/membership
+  // registries) are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
+  // denial; this widening is provisioning-only.
+  const ttlStreams = [presenceBucket, deliveryBucket, managerBucket].map((b) => `KV_${b(space)}`);
+  const streamReconcile = ttlStreams.map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // DM/DLV/TASK durable pre-create (bind-only mailboxes): both the new-API CREATE and legacy DURABLE.CREATE
   // forms (the client's consumer-add path varies by version), plus INFO (the add returns ConsumerInfo).
   // NO MSG.NEXT/MSG.GET/ACK — the provisioner creates the consumer but MUST NOT read its body.
@@ -1668,6 +1677,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
       allow: [
         "$JS.API.INFO",
         ...streamSetup,
+        ...streamReconcile,
         ...consumerCreate,
         // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
         // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).

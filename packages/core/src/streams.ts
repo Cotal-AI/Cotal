@@ -314,6 +314,28 @@ export function fanoutDurableConfig(
 
 /** Connect with the given (privileged) creds, create the space's streams, and disconnect.
  *  Used by `cotal up` to pre-create streams once at setup. */
+/** #286: reconcile a TTL'd KV bucket's `max_age` to `ttlMs`. `kvm.create` NEVER updates an existing
+ *  bucket's config, so a presence/lease bucket created by a cotal that predated the TTL (or created
+ *  without it) keeps NO expiry forever — dead presence records and stale leases never age out, and a
+ *  raw-KV reader (a dashboard) shows a crashed agent as live indefinitely. Run at every `cotal up`, this
+ *  `STREAM.UPDATE`s the backing stream when its `max_age` has drifted. Lowering `max_age` immediately
+ *  ages out already-expired messages (the intended liveness effect; active leases are younger than their
+ *  TTL and survive, a stale one dies and its holder self-fences on its next failed renewal). NATS requires
+ *  `duplicate_window <= max_age`; an old unlimited bucket's 120s window would otherwise reject the update,
+ *  so the window is lowered in the SAME update. Idempotent (a matching bucket is skipped); reads back to
+ *  prove the update took, else throws (no silent drift). The `provisioner` cred holds `STREAM.UPDATE` on
+ *  exactly these three streams (see provision.ts). */
+async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<void> {
+  const wantNs = nanos(ttlMs);
+  const info = await jsm.streams.info(streamName);
+  if (info.config.max_age === wantNs) return; // already at the intended TTL — no update
+  const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs); // NATS constraint: duplicate_window <= max_age
+  await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
+  const after = await jsm.streams.info(streamName);
+  if (after.config.max_age !== wantNs)
+    throw new Error(`TTL reconcile failed for ${streamName}: max_age is ${after.config.max_age}ns, expected ${wantNs}ns (the STREAM.UPDATE did not take)`);
+}
+
 export async function setupSpaceStreams(opts: {
   servers: string;
   space: string;
@@ -357,6 +379,12 @@ export async function setupSpaceStreams(opts: {
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
     await ensureAuthorityStores(jsm, kvm, opts.space);
+    // #286: `kvm.create` above is a no-op on an ALREADY-EXISTING bucket, so a bucket from a cotal that
+    // predated these TTLs keeps its old (often unlimited) `max_age` and never expires dead presence /
+    // stale leases. Reconcile the three TTL'd buckets' `max_age` here (STREAM.UPDATE), idempotently.
+    await reconcileBucketTtl(jsm, `KV_${presenceBucket(opts.space)}`, PRESENCE_TTL_MS);
+    await reconcileBucketTtl(jsm, `KV_${deliveryBucket(opts.space)}`, LEASE_TTL_MS);
+    await reconcileBucketTtl(jsm, `KV_${managerBucket(opts.space)}`, MANAGER_LEASE_TTL_MS);
   } finally {
     await nc.drain();
   }
