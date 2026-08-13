@@ -82,7 +82,7 @@ const writeActiveSlot = async (alias: string, ownerInstanceId: string | undefine
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor: id.id, lifecycleUid: uid, alias } });
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kvm = new Kvm(nc);
     const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));
@@ -97,7 +97,7 @@ const writeActiveSlot = async (alias: string, ownerInstanceId: string | undefine
 
 const readSlotPhase = async (alias: string): Promise<string | undefined> => {
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kvm = new Kvm(nc);
     const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));

@@ -50,7 +50,7 @@ const eq = (a: string[] = [], b: string[]) => a.length === b.length && [...a].so
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
-const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+const noop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
 // Dev/static principal for an agent nkey: owner=DEV_OWNER ("local"), actor=the nkey. The feed keys BOTH
 // arms by this dot-form — the live arm from the CONNZ `principal:` tag, the durable arm from the members
 // registry — so seeds + lookups here use it (mirrors plane3-auth). A raw nkey would fork one agent in two.
@@ -59,7 +59,7 @@ const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 const space = `membership-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space); // sys.signingSeed lives in-memory here — mint the observer below
 const dir = mkdtempSync(join(tmpdir(), "cotal-membership-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const conns: Array<Awaited<ReturnType<typeof connect>>> = [];

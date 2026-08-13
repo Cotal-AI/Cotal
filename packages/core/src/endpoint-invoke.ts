@@ -28,7 +28,6 @@ import {
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall, epScatterService } from "./endpoint-verbs.js";
 import { epGoalProgressGrantRow } from "./endpoint-grants.js";
-import { openRecordsBucket } from "./endpoint-records.js";
 import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
 import type { EpVerbTarget, EpAttributedReply, EpScatterResult } from "./endpoint-verbs.js";
@@ -377,12 +376,12 @@ export async function scatterCommand(
   let sendArgs = args;
   if (sendArgs === undefined && !resolved.contract.input.validate(null) && resolved.contract.input.validate({}))
     sendArgs = {};
-  // `checkAPI: false` so the caller needs NO account `$JS.API.INFO` grant: the freeze's reads are the
-  // scoped records-registry rows (a `svc.*` enumeration consumer + a leader `STREAM.MSG.GET`), never
-  // an account probe. The scatter's grant stays exactly the §13.9 records read.
+  // `checkAPI: false` so the caller needs NO account `$JS.API.INFO` grant: the freeze's reads are
+  // the scoped records-registry rows (`STREAM.INFO` + leader `STREAM.MSG.GET`), never an account
+  // probe. The scatter's grant stays exactly the §13.9 records read. No KV handle is opened — the
+  // freeze derives the bucket name and reads via jsm only.
   const jsm = await jetstreamManager(nc, { checkAPI: false });
-  const kv = await openRecordsBucket(nc, space);
-  return epScatterService(nc, jsm, kv, space, {
+  return epScatterService(nc, jsm, space, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
   }, opts);

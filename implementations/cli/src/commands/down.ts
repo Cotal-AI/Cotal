@@ -647,7 +647,7 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(user ?? { creds: resolved.creds }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -682,12 +682,15 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
 }
 
 /** Read current KV subjects by Direct Get so the cut check leaves no ephemeral/native consumer. */
-async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
+/** Exported for the gated tombstone cell. A regression test for the lease walk has to run through
+ *  THIS function, not a transcription of it: a copy carries its own `allowEmpty` parameter, so it
+ *  stays green when the argument at the real call site is removed and proves nothing about the fix. */
+export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(user ?? { creds: resolved.creds }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -703,8 +706,30 @@ async function readPresenceWithoutConsumer(space: string, server: string): Promi
       if (!presence.card?.id) throw new Error(`presence record ${subject} is malformed`);
       roster.push(presence);
     }
+    // ENUMERATE THE PER-INSTANCE LEASE KEYS. P2 item 3 demoted this bucket from a single `lease` key to
+    // one `lease.<instanceId>` per manager, and NOTHING WRITES THE BARE PREFIX ANY MORE — the supervisor's
+    // grant is `$KV.<bucket>.lease.*`, which does not even cover it, so no writer can legalise it. Reading
+    // the bare subject threw inside `directKvValue` on every preserve-state cut, which meant the holder
+    // guard on the next line was unreachable and the operator saw "maintenance inventory read failed"
+    // instead. Same STREAM.INFO + point-get shape as `liveKeys` above: no consumer, no new grant.
     const leaseBucket = managerBucket(space);
-    const lease = await directValue<ManagerLeaseInfo>(`KV_${leaseBucket}`, `$KV.${leaseBucket}.${MANAGER_LEASE_KEY}`);
+    const leaseStream = `KV_${leaseBucket}`;
+    // `lease.*`, not `lease.>`: `managerLeaseKey` is contractually ONE lowercase-alnum token, so `*`
+    // matches exactly the key space that can exist while `>` would additionally admit a malformed
+    // multi-token key. Matches `readManagerLease`'s filter — two probes of one bucket disagreeing on
+    // their wildcard is drift the next reader has to adjudicate from scratch.
+    const leaseInfo = await (await jetstreamManager(nc)).streams.info(leaseStream, { subjects_filter: `$KV.${leaseBucket}.${MANAGER_LEASE_KEY}.*` });
+    let lease: ManagerLeaseInfo | undefined;
+    for (const subject of Object.keys(leaseInfo.state.subjects ?? {})) {
+      // `allowEmpty` MUST be true here. STREAM.INFO lists tombstoned subjects, so a cleanly stopped
+      // manager's released key is in this walk; without it `directKvValue` THROWS on the tombstone
+      // instead of returning undefined, and the cut dies naming a dead manager's key before a live
+      // holder later in the list is ever examined. `Object.keys` order decides whether it fires, so
+      // it is a coin flip on exactly the clean-stop scenario. Both sibling walks in this function
+      // (`liveKeys`, the presence roster) already pass true; this one was copied from them without it.
+      const held = await directValue<ManagerLeaseInfo>(leaseStream, subject, true);
+      if (held?.holder) { lease = held; break; }
+    }
     if (!lease?.holder) throw new Error("manager lease has no authoritative holder principal");
     return { roster, managerId: parsePrincipalKey(lease.holder) ? lease.holder : principalKey(DEV_OWNER, lease.holder).key };
   } finally {

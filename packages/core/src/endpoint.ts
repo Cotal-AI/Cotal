@@ -21,6 +21,7 @@ import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedServic
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
+import { liveKvEntries } from "./kv-scan.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -69,7 +70,7 @@ import {
   durableEligible,
   StaleMembershipWrite,
 } from "./members.js";
-import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord } from "./acls.js";
+import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
 import {
   openChannelRegistry,
@@ -251,6 +252,43 @@ const READER_MAX_REDELIVERIES = 10;
 /** A value or a promise of it — the Plane-3 `aclFor` reads the durable ACL registry FRESH per entry
  *  (async), so the reader/fan-out call sites await it. */
 type MaybePromise<T> = T | Promise<T>;
+
+/** Page size for the mediated history read when the caller names none — matches `channelHistory`'s
+ *  own default, since the mediated read exists to be a drop-in for it. */
+const READ_HISTORY_DEFAULT_LIMIT = 100;
+/** Hard server-side ceiling on one mediated page. The caller PROPOSES a limit and the mediator
+ *  decides: the reader is pooled and privileged, so an unbounded caller-chosen limit would let one
+ *  request pull a channel's whole retained set through it. Clamped, not refused — a UI asking for
+ *  more than a page should get a page, and `complete: false` already tells it more remains. */
+const READ_HISTORY_MAX_LIMIT = 200;
+
+/** One page of a mediated history read: the newest `limit` messages, oldest-first WITHIN the page.
+ *
+ *  `complete` is the honest-truncation signal and the reason this is not just `CotalMessage[]`:
+ *  `true` means the page reaches the start of the channel's RETAINED history (nothing older is on
+ *  the stream to read), `false` means older messages exist behind it. A caller that cannot tell
+ *  those apart renders "there is more" as "this is the beginning of the conversation". It says
+ *  nothing about messages already aged out by retention — no reader can see those. */
+export type HistoryPage = { items: CotalMessage[]; complete: boolean };
+
+/** The NEWEST prefix-from-the-end of `items` whose serialized size fits `budget` bytes, order
+ *  preserved. Returns `[]` when not even the newest single message fits — the caller must refuse
+ *  loudly there rather than serve an empty page, which would read as "no history".
+ *
+ *  Measured in ENCODED bytes, not `string.length`: a page of multi-byte text would otherwise be
+ *  undercounted and still overflow the broker. Same discipline as `assertFactFits`. */
+export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMessage[] {
+  const enc = new TextEncoder();
+  let used = 2; // the enclosing `[]`
+  let first = items.length; // index of the oldest kept item
+  for (let i = items.length - 1; i >= 0; i--) {
+    const size = enc.encode(JSON.stringify(items[i])).length + 1; // + the `,` separator
+    if (used + size > budget) break;
+    used += size;
+    first = i;
+  }
+  return first === items.length ? [] : items.slice(first);
+}
 
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
@@ -1681,16 +1719,18 @@ export class CotalEndpoint extends EventEmitter {
     const kv = await this.membershipFeedRegistry();
     const members: MembershipEntry[] = [];
     let asOf: number | undefined;
-    for await (const key of await kv.keys()) {
-      const e = await kv.get(key);
-      if (!e || e.operation === "DEL" || e.operation === "PURGE") continue;
-      if (key === MEMBERSHIP_FEED_KEY) {
+    // ONE pass. This was `kv.keys()` followed by a sequential `kv.get()` per key — O(N) round trips,
+    // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
+    // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
+    // than reporting a partial roster as the whole one.
+    for (const e of await liveKvEntries(kv)) {
+      if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
       }
       try {
         const rec = e.json<ChannelMembership>();
-        members.push({ id: key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt });
+        members.push({ id: e.key, live: rec.live ?? [], durable: rec.durable ?? [], observedAt: rec.observedAt });
       } catch { /* skip undecodable */ }
     }
     return { asOf, members };
@@ -1722,6 +1762,45 @@ export class CotalEndpoint extends EventEmitter {
     );
   }
 
+  /** Read a channel's recent history THROUGH THE DELIVERY DAEMON instead of through a consumer this
+   *  connection creates itself — the mediated read of SPEC's "Mediated reads (normative)" rule (no raw
+   *  consumer / `DIRECT.GET` / `STREAM.MSG.GET` for an untrusted holder; the trusted reader serves it
+   *  onto the caller's own confined rail). `items` is shape-identical to what {@link channelHistory}
+   *  returns — the same `CotalMessage[]`, the same newest-N selection, the same oldest-first order
+   *  within the page — so a caller migrates by reading `.items` and nothing else changes. The return
+   *  is WRAPPED rather than bare precisely because of `complete`: a bare array cannot say whether
+   *  older history remains behind it.
+   *
+   *  **Why this exists when `channelHistory` already works:** authorization. A consumer pins its
+   *  authorization at CREATE time, so a caller whose read ACL is revoked mid-scroll keeps being served
+   *  by the consumer it already holds. The mediator re-reads authorization on EVERY call (live
+   *  registry row ∩ mint-time ceiling — SPEC §9.6), so a revocation stops the very next read and a
+   *  registry-only widen cannot exceed the effective credential. That is the whole point of the verb;
+   *  a mediator that cached the ACL would be a rename of the path it replaces.
+   *
+   *  **The caller never names itself.** The daemon takes the principal from the broker-authenticated
+   *  request subject ({@link serveControl} fail-closes when the payload `from` disagrees), so there is
+   *  no caller-supplied identity to forge.
+   *
+   *  A channel outside the caller's read ACL THROWS. It must never come back as an empty page: "you
+   *  may not read this" and "there is nothing here" are different answers and only one is safe to
+   *  render as an empty conversation.
+   *
+   *  Chat channels only — DM history is deliberately not served here (it is god-view-only today, a
+   *  different authorization model, and one handler with two authz paths is the wrong shape on the
+   *  surface where a mistake exposes private messages). */
+  async readHistory(channel: string, opts?: { limit?: number }): Promise<HistoryPage> {
+    const reply = await this.requestDelivery("readHistory", { channel, limit: opts?.limit });
+    if (!reply.ok) throw new Error(reply.error ?? "readHistory failed");
+    const data = reply.data as { items?: unknown; complete?: unknown } | undefined;
+    // Validate rather than coerce. A malformed reply must not be massaged into a plausible page:
+    // defaulting `complete` would invent the very signal a caller uses to decide whether it is
+    // looking at the start of a conversation.
+    if (!Array.isArray(data?.items) || typeof data?.complete !== "boolean")
+      throw new Error("readHistory: the delivery daemon returned a malformed page (expected { items, complete })");
+    return { items: data.items as CotalMessage[], complete: data.complete };
+  }
+
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. God-view only:
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
    *  skips for them — only an `admin`-profile cred can read it. */
@@ -1734,34 +1813,174 @@ export class CotalEndpoint extends EventEmitter {
     );
   }
 
-  /** Drain up to `limit` recent messages matching `subject` from a stream's backlog via a
-   *  throwaway consumer. Fetches exactly the pending count (from consumer info) so it returns
-   *  the moment the backlog is delivered — a plain `fetch({max_messages: limit})` would instead
-   *  block for the pull's full expiry (~30s) whenever the backlog is smaller than `limit`. */
+  /**
+   * The `limit` MOST RECENT messages matching `subject`, oldest-first within the page.
+   *
+   * **This used to return the OLDEST N.** `js.consumers.get(stream, {...})` builds an ORDERED
+   * consumer, which defaults to `DeliverPolicy.StartSequence` with `opt_start_seq: 1` — the very
+   * beginning of the stream. Capping the fetch at `limit` therefore took the first N messages ever
+   * sent, while this method is documented as "recent" and every caller (the dashboard feed, the
+   * agent-facing history tools) presents the result as the latest. Confirmed live against a
+   * 123-message channel: `limit=10` returned the ten oldest, not the ten newest.
+   *
+   * Fixing it by draining from the start and keeping the tail would be correct and ruinous: it
+   * transfers the entire backlog to show one screen. Instead, find the newest matching sequence and
+   * consume a WINDOW ending there, widening geometrically until the window holds `limit` matches.
+   * A filtered subject's sequences are non-contiguous (other channels interleave in the same
+   * stream), so the window cannot be computed arithmetically. A FAILED attempt holds fewer than a
+   * page by definition, so wasted transfer stays page-sized and geometric growth keeps the number of
+   * attempts logarithmic. The one unbounded case is named in the body: a channel whose matches are
+   * all old and sparse walks back to the start of the stream and reads its whole retained set.
+   *
+   * `before` pages toward the past: pass the `seq` of the oldest message you already have.
+   */
   private async streamHistory(
     stream: string,
     subject: string,
     limit: number,
+    before?: number,
   ): Promise<CotalMessage[]> {
     if (!this.nc) throw new Error("endpoint not started");
+    if (limit <= 0) return [];
     const js = jetstream(this.nc);
-    const msgs: CotalMessage[] = [];
     try {
-      const consumer = await js.consumers.get(stream, { filter_subjects: [subject] });
-      const pending = Math.min(limit, (await consumer.info()).num_pending);
-      if (pending === 0) return msgs;
+      // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
+      // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
+      // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
+      // instead (which is all `STREAM.INFO` offers) was a loose upper bound, and on a quiet channel
+      // in a busy stream the gap between the two is the whole problem: every window near the stream
+      // head is empty, so the search widened over and over before finding anything.
+      //
+      // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
+      // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
+      // shipped once from this function and turned every non-admin history read into an empty list.
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subject);
+      if (ceiling < 1) return [];
+
+      // Widen from the exact ceiling until a window holds a full page, or until the window IS the
+      // whole subject. Draining each attempt is bounded, and that is the point: a window only fails
+      // when it holds FEWER than `limit` matches, so every wasted drain moves less than one page.
+      // Geometric growth keeps the number of attempts logarithmic, so total wasted transfer is a
+      // small multiple of a page.
+      //
+      // NAMED POLICY for the remaining case: when a channel's matches are all old and sparse, the
+      // search walks back to sequence 1 and the final drain transfers that subject's whole retained
+      // set. That is chosen deliberately — a FULL page of genuinely recent messages, at the cost of
+      // an unbounded read on a channel that has not been used in a long time — over returning a
+      // short page while older messages exist. The exact ceiling above means this is now reached
+      // only by real sparsity WITHIN a channel, never by the channel simply being quiet lately.
+      let span = Math.max(limit * 4, 64);
+      for (;;) {
+        const start = Math.max(1, ceiling - span + 1);
+        const page = await this.drainWindow(js, stream, subject, start, ceiling);
+        if (page.length >= limit || start === 1) return page.slice(-limit);
+        span *= 4;
+      }
+    } catch (e) {
+      // NARROW. This catch is how the MSG.GET grant bug shipped: it turned a Permissions Violation
+      // into an empty history, so every non-admin read looked exactly like a quiet channel, and the
+      // smokes stayed green because they run as admin against a local broker. Emitting on the error
+      // event is not enough either — callers consume the RETURN VALUE, and the dashboard renders
+      // empty regardless of what an operator log says.
+      //
+      // So only two things may still produce an empty result:
+      //   1. The stream does not exist (a space with no history yet).
+      //   2. A permission denial on the DM backlog specifically. `dmHistory` is god-view by
+      //      contract: a normal agent's ACL denies it, and returning empty there is documented
+      //      behaviour, not a bug being hidden.
+      // Anything else — a denial on CHAT, a timeout, a 503, a protocol or consumer-create failure —
+      // is raised, because "no history" and "I could not read the history" are different answers and
+      // only one of them is safe to render as an empty conversation.
+      const msg = String((e as { message?: unknown } | null)?.message ?? "");
+      if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
+      if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
+      throw e;
+    }
+  }
+
+  /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
+   *
+   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  (available from the create, before anything is delivered) is 0 for an empty subject, and
+   *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
+   *  already uses, so no broker authority is added. */
+  private async lastMatchingSeq(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+  ): Promise<number> {
+    const consumer = await js.consumers.get(stream, {
+      filter_subjects: [subject],
+      deliver_policy: DeliverPolicy.Last,
+    });
+    try {
+      // Bind-time zero is the ONLY thing that means "this subject has no messages".
+      if ((await consumer.info(true)).num_pending === 0) return 0;
+      const iter = await consumer.fetch({ max_messages: 1 });
+      for await (const m of iter) return m.seq;
+      // Bind said a message was pending and none arrived. The pinned client's pull iterator ends
+      // CLEANLY when the connection closes ("we don't propagate the error here"), so this is what a
+      // dropped link looks like from here. Returning 0 would make the caller report an empty
+      // channel, which is the same "could not read means no history" lie the narrowed catch above
+      // exists to stop.
+      throw new Error(`history: the broker reported messages on ${subject} but delivered none - the read was cut short, not empty`);
+    } finally {
+      await consumer.delete().catch(() => { /* already gone, or denied */ });
+    }
+  }
+
+  /** Drain every message matching `subject` with sequence in `[start, ceiling]`, oldest-first.
+   *  One ephemeral ordered consumer, one batched pull — `AckPolicy.None`, so no per-message ack
+   *  round trip. Fetches exactly the pending count so it returns as soon as the window is
+   *  delivered rather than blocking for the pull's full expiry. */
+  private async drainWindow(
+    js: ReturnType<typeof jetstream>,
+    stream: string,
+    subject: string,
+    start: number,
+    ceiling: number,
+  ): Promise<CotalMessage[]> {
+    const out: CotalMessage[] = [];
+    const consumer = await js.consumers.get(stream, { filter_subjects: [subject], opt_start_seq: start });
+    try {
+      // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
+      // explicit uncached `info()` this used to call was a round trip for data we already had.
+      const pending = (await consumer.info(true)).num_pending;
+      if (pending === 0) return out;
       const iter = await consumer.fetch({ max_messages: pending });
+      // PROVE THE WINDOW COMPLETED. The pull iterator ends cleanly on a dropped connection, so a
+      // close after three of ten deliveries would otherwise return a convincing three-message page.
+      // The window is done when we have reached its upper bound or consumed everything bind said
+      // was pending; anything else is a cut-short read and must say so.
+      let delivered = 0;
+      let complete = false;
       for await (const m of iter) {
+        delivered++;
+        if (m.seq >= ceiling) { // reached the page's upper bound
+          if (m.seq === ceiling) {
+            try { out.push(m.json<CotalMessage>()); } catch { /* skip undecodable */ }
+          }
+          complete = true;
+          break;
+        }
         try {
-          msgs.push(m.json<CotalMessage>());
+          out.push(m.json<CotalMessage>());
         } catch {
           /* skip undecodable */
         }
+        if (delivered >= pending) { complete = true; break; }
       }
-    } catch {
-      /* stream missing or consumer create denied (non-admin) */
+      if (!complete)
+        throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the window was cut short, not empty`);
+      return out;
+    } finally {
+      // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
+      // inactive threshold, so leaving them behind is not free: the widening search below can make
+      // up to eight per call, the dashboard makes one call per channel, and a reload repeats it.
+      // Left alone that accumulates consumers on the broker until the thresholds expire, and the
+      // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
+      await consumer.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
     }
-    return msgs;
   }
 
   // ---- internals -----------------------------------------------------------
@@ -1925,6 +2144,15 @@ export class CotalEndpoint extends EventEmitter {
     await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
   }
 
+  /**
+   * Raise the mint-time ACL ceiling. Provision/remint only — see {@link reissueAcl}.
+   * Process discipline: call only in the same act that bakes `allowSubscribe` into the JWT; the
+   * write is not crypto-bound to credential bytes.
+   */
+  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
+    await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+  }
+
   /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
    *  (`allowSubscribe`) from the durable registry (exact key `<owner>.<actor>.<uid>`), or `undefined`
    *  if no record (an unknown lifecycle — the reader DEFERS, never drops). A present `[]` (known
@@ -1937,9 +2165,18 @@ export class CotalEndpoint extends EventEmitter {
    *  authz seam for callers that arrive with alias identity only (a `ctl.delivery` durable-join).
    *  THROWS {@link AmbiguousAclAlias} on two live rows — first-match would let a stale lifecycle
    *  authorize the successor (SPEC 13.1: at most one live lifecycle per alias). */
-  async aclForAlias(principal: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined> {
+  async aclForAlias(principal: string): Promise<{
+    allowSubscribe: string[];
+    issuedAllowSubscribe: string[];
+    lifecycleUid: string;
+  } | undefined> {
     const row = await readAclForAlias(await this.aclRegistry(), principal);
-    return row === undefined ? undefined : { allowSubscribe: row.record.allowSubscribe, lifecycleUid: row.lifecycleUid };
+    if (row === undefined) return undefined;
+    const allow = row.record.allowSubscribe;
+    // Legacy rows predate the ceiling field: treat missing as equal to allowSubscribe so behaviour
+    // matches what that row already exposed. New rows always carry an explicit ceiling.
+    const issued = row.record.issuedAllowSubscribe ?? allow;
+    return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
   }
 
   /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
@@ -2043,22 +2280,61 @@ export class CotalEndpoint extends EventEmitter {
     } catch { /* not ours / already gone */ }
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
-   *  presence/existence check — the most-recently-written live `lease.*` key across all instances (a
-   *  point `last_by_subj` wildcard get, no consumer). Single-instance-exact; the CLI's `spawn -f` reuse
-   *  and `waitLeaseGone` only need "is any manager here". Open-only — never creates the bucket, so a probe
-   *  that finds no manager leaves none behind. (Instance-precise enumeration for the class scatter comes
-   *  from the registration records KV in 3b-4, not this liveness bucket.) */
+   *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
+   *  manager here". Open-only — never creates the bucket, so a probe that finds no manager leaves none
+   *  behind. (Instance-precise enumeration for the class scatter comes from the registration records KV
+   *  in 3b-4, not this liveness bucket.)
+   *
+   *  MULTI-INSTANCE EXACT, and it has to be read that way rather than as a point get. Several managers
+   *  may hold one space, each renewing its own `lease.<instanceId>`. A single `last_by_subj` over
+   *  `lease.*` returns the newest message under the wildcard REGARDLESS OF KEY — so a stopping peer's
+   *  DEL tombstone, being newest, answered "no manager here" while a sibling was alive and renewing.
+   *  Only an explicit `kv.delete` writes that tombstone: a manager whose lease TTL-expires is removed by
+   *  limits and leaves nothing behind, so the poisoning case was the ORDINARY one (stop a manager
+   *  cleanly, then `spawn -f`), not the crash. Enumerating live entries collapses to the greatest
+   *  revision PER KEY and drops keys whose final state is a marker, so a peer's DEL can only retire that
+   *  peer's own key and can never mask a live one. */
   async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
     if (!this.nc) return undefined;
     try {
       const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
-      const m = await jsm.streams.getMessage(`KV_${managerBucket(this.space)}`, { last_by_subj: `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.*` });
-      const op = m?.header?.get("KV-Operation");
-      if (m === null || op === "DEL" || op === "PURGE" || m.data.length === 0) return undefined;
-      return JSON.parse(new TextDecoder().decode(m.data)) as ManagerLeaseInfo;
-    } catch {
-      // 10037 = no message on the subtree (genuinely no manager); any other read error ⇒ none found.
-      return undefined;
+      const stream = `KV_${managerBucket(this.space)}`;
+      const prefix = `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.`;
+      // STREAM.INFO to learn WHICH instance keys exist, then one point-get per key. NOT a bucket
+      // scan: `liveKvEntries` binds a push consumer, and this principal's grant on this bucket is
+      // STREAM.INFO + STREAM.MSG.GET + the `lease.*` publish only (`provision.ts`, supervisor). A
+      // consumer here is a permissions violation for the very callers this probe serves, and no
+      // open-mesh test can see that, because an open mesh has no permissions to violate.
+      const info = await jsm.streams.info(stream, { subjects_filter: `${prefix}*` });
+      let newest: { data: Uint8Array; seq: number } | undefined;
+      for (const subject of Object.keys(info.state.subjects ?? {})) {
+        // `last_by_subj` is CORRECT PER KEY and wrong across keys. Scoped to one instance's subject
+        // it returns that instance's latest state, so a DEL here retires only its own key. The
+        // defect was asking one wildcard for the newest message in the whole subtree, where a
+        // stopping peer's tombstone outranks a live sibling's older PUT.
+        const m = await jsm.streams.getMessage(stream, { last_by_subj: subject }).catch(() => null);
+        if (m === null) continue; // key vanished between INFO and GET: it is not a live holder
+        const op = m.header?.get("KV-Operation");
+        if (op === "DEL" || op === "PURGE" || m.data.length === 0) continue;
+        if (newest === undefined || m.seq > newest.seq) newest = { data: m.data, seq: m.seq };
+      }
+      if (newest === undefined) return undefined;
+      return JSON.parse(new TextDecoder().decode(newest.data)) as ManagerLeaseInfo;
+    } catch (e) {
+      // ABSENCE MUST BE PROVEN, NOT INFERRED FROM A FAILED READ. Exactly two outcomes mean "genuinely
+      // no manager": 10037, no message on the subtree, and a missing bucket — this probe is open-only
+      // and on an authed mesh nothing creates it until a manager first takes a lease, so a space that
+      // has never run one has no stream to read. Every OTHER failure (a JetStream hiccup, a request
+      // timeout, a permissions refusal, or `liveKvEntries` refusing a pass that died mid-delivery) used
+      // to return undefined here as well, and every caller reads undefined as "the space is empty": the
+      // CLI's `spawn -f` reuse stands a SECOND manager up against a live one and `waitLeaseGone` reports
+      // the space free. A read that failed is not evidence of absence, so refuse loudly rather than
+      // degrade (AGENTS.md: no fallbacks). This is the wider of the two doors the point-get fix closes:
+      // it needs only a transient error, where the tombstone path needed a peer to stop.
+      const code = (e as { code?: unknown }).code;
+      if (code === 10037) return undefined;
+      if (code === 404 || /stream not found/i.test((e as Error)?.message ?? "")) return undefined;
+      throw e;
     }
   }
 
@@ -2276,6 +2552,7 @@ export class CotalEndpoint extends EventEmitter {
     const args = req.args ?? {};
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
+    if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
     if (req.op === "listMemberships") {
       if (typeof args.lifecycleUid !== "string")
         return { ok: false, error: "listMemberships: the caller's lifecycleUid is required (membership rows are lifecycle-keyed, SPEC 13.1)" };
@@ -2345,6 +2622,106 @@ export class CotalEndpoint extends EventEmitter {
     try { await this.durableLeaveFor(caller, channel, uid, args.generation); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     return { ok: true, data: { channel } };
+  }
+
+  /** Serve one MEDIATED HISTORY READ (`readHistory`, the client side is {@link readHistory}). The daemon
+   *  holds the consumer so the caller does not have to: this is a privilege reduction, not a new
+   *  capability, and it is the shape SPEC's "Mediated reads (normative)" rule asks for.
+   *
+   *  THE ONE INVARIANT THIS METHOD EXISTS FOR: authorization is read FRESH on every call and never
+   *  cached across calls. A consumer pins its authorization when it is created, so a revoked caller
+   *  keeps being served by a consumer it already holds; re-reading here is what makes a revocation
+   *  stop the very NEXT read. Cache this and the verb loses its only advantage over the raw consumer
+   *  path.
+   *
+   *  AUTHORITY (SPEC §9.6): "current read ACL" is the effective broker-accepted credential. The
+   *  durable registry is a live mirror of that credential, not a second grant source. History
+   *  authorizes against `allowSubscribe ∩ issuedAllowSubscribe` — the live row (so revocation via
+   *  plain commitAcl still stops the next read) intersected with the mint-time ceiling (so a
+   *  registry widen without a remint cannot grant what the JWT does not). Raising the ceiling is
+   *  {@link reissueAcl}, which is what provision does when it bakes the list into the JWT.
+   *
+   *  The caller arrives as an alias (the control subject carries owner+actor, never a uid) and is the
+   *  AUTHENTICATED subject sender — `serveControl` has already fail-closed on any payload that names a
+   *  different principal, so `caller` cannot be self-asserted. */
+  private async deliveryReadHistory(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
+    const channel = this.checkDurableChannelArg(args, "readHistory");
+    if (typeof channel !== "string") return channel; // a ControlReply error
+
+    // The caller PROPOSES a limit; the mediator decides. Reject a nonsense limit loudly rather than
+    // silently substituting a default — a caller asking for -1 has a bug and should hear about it.
+    const asked = args.limit === undefined ? READ_HISTORY_DEFAULT_LIMIT : args.limit;
+    if (typeof asked !== "number" || !Number.isInteger(asked) || asked < 1)
+      return { ok: false, error: `readHistory: limit must be a positive integer (got ${JSON.stringify(args.limit)})` };
+    const limit = Math.min(asked, READ_HISTORY_MAX_LIMIT);
+
+    // FRESH per call — see the method doc. Same registry, same alias resolution, and the same loud
+    // refusal on two live rows that `durableJoin` uses: a stale lifecycle must never authorize its
+    // successor's read.
+    //
+    // SPEC §9.6: "current read ACL" is the effective broker-accepted credential. The registry row is
+    // a live mirror and can be rewritten by plain commitAcl without a remint. Authorizing history
+    // from the row ALONE let a widen grant reads channelHistory still broker-denies — a new
+    // capability wearing a privilege-reduction label (panel BLOCKING at 914fd7b0). History therefore
+    // requires the channel in BOTH the live row AND the mint-time ceiling (`issuedAllowSubscribe`).
+    // Revocation still works: narrowing allowSubscribe stops the next read. Raising the ceiling
+    // requires reissueAcl (provision/remint), which is the same act that bakes the list into the JWT.
+    let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; lifecycleUid: string } | undefined;
+    try { acl = await this.aclForAlias(caller); }
+    catch (e) { return { ok: false, error: (e as Error).message }; }
+    if (acl === undefined)
+      return { ok: false, error: `readHistory: no read ACL on record for ${caller} - not permitted` };
+    const inLive = channelInAllow(acl.allowSubscribe, channel);
+    const inIssued = channelInAllow(acl.issuedAllowSubscribe, channel);
+    if (!inLive || !inIssued) {
+      // Name the live list in the error — that is what operators edit and what revocation clears.
+      // A ceiling miss (registry widened past the credential) is the same refusal shape as a live
+      // miss so a caller cannot probe which half failed.
+      return {
+        ok: false,
+        error: `readHistory: channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}] - refused`,
+      };
+    }
+
+    // One message MORE than the page is the completeness probe: if the backlog hands back limit+1,
+    // something older exists behind the page and `complete` is false. Cheaper and more honest than a
+    // separate count, which could race the page it describes.
+    let page: CotalMessage[];
+    try { page = await this.channelHistory(channel, { limit: limit + 1 }); }
+    catch (e) {
+      // Surface the read failure. `streamHistory` deliberately raises rather than returning empty on a
+      // denial or a cut-short window, and that distinction must survive the rail: an error here would
+      // otherwise reach the caller as an empty page and render as "no history".
+      return { ok: false, error: `readHistory: ${(e as Error).message}` };
+    }
+    const reachedStart = page.length <= limit;
+    const wanted = reachedStart ? page : page.slice(-limit);
+
+    // A page that cannot be SENT is not a page. The reply rides one NATS message, so `limit` alone is
+    // the wrong bound: 200 large messages serialize past `max_payload`, `m.respond` throws inside
+    // `serveControl`'s swallow, and the caller sees a bare request timeout it cannot tell apart from a
+    // dead daemon. Measured, not predicted: 200 x ~6 KB timed out at 5s with the message "timeout".
+    //
+    // So bound by BYTES too, keeping the NEWEST that fit — which needs no new vocabulary, because
+    // `complete: false` already means "older history remains behind this page". Trimming here is the
+    // documented truncation signal doing its job, not a silent degradation.
+    const fitted = fitHistoryPage(wanted, this.payloadBudget());
+    // `wanted.length > 0` is load-bearing, not defensive: an EMPTY channel also fits nothing, and
+    // without this guard a channel nobody has posted to was refused with "the newest message exceeds
+    // the payload budget" — a confident, entirely wrong explanation for a legitimately empty result.
+    // Genuine emptiness is `{ items: [], complete: true }`; only a message too large to ever send is
+    // the error.
+    if (wanted.length > 0 && fitted.length === 0)
+      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.payloadBudget()} bytes) - refused loudly rather than served as an empty page` };
+    return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
+  }
+
+  /** Bytes a control reply may occupy: the broker's `max_payload` less headroom for the `ControlReply`
+   *  envelope wrapped around the items. Read from the live server info rather than assumed, since an
+   *  operator can raise or lower it. */
+  private payloadBudget(): number {
+    const max = this.nc?.info?.max_payload ?? 1_048_576;
+    return Math.max(1, Math.floor(max * 0.9));
   }
 
   /** (Re)bind the Plane-3 fan-out writer + trusted reader. Idempotent — the durables resume from their

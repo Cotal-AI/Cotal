@@ -55,7 +55,7 @@ async function epConnection(
     console.error(c.dim("  open meshes have no service registry; user-mode meshes gain this surface with the 1c.2c bearer-triple wiring"));
     process.exit(1);
   }
-  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds: t.auth.creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds: t.auth.creds, tls: false }), maxReconnectAttempts: 0 });
   return { nc, space: t.space, auth: t.auth };
 }
 

@@ -23,6 +23,7 @@ import {
   fmtCreds,
 } from "@nats-io/jwt";
 import { createOperator, createAccount, fromPublic, fromSeed } from "@nats-io/nkeys";
+import type { BrokerTransport } from "./broker-tls.js";
 import {
   token,
   spacePrefix,
@@ -653,6 +654,11 @@ export interface DurableProvisioner {
    *  membership: boot durable membership is now the agent SELF-JOINING its durable channels via the
    *  daemon's `ctl.delivery` op at connect. */
   commitAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
+  /**
+   * Raise the mint-time ceiling. Only the provisioning path that also remints the JWT.
+   * Process discipline, not crypto binding — see {@link reissueAcl}.
+   */
+  reissueAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
   provisionTaskQueue(role: string): Promise<void>;
 }
 
@@ -744,7 +750,13 @@ export async function provisionAgentDurables(
   // live-only launcher, e.g. `cotal spawn --live-only`) opts out of the ACL row → the daemon never
   // authorizes a durable backstop for it, so it stays live-only.
   // ACL is keyed by the lifecycle-scoped dot-form <owner>.<actor>.<uid> (per-incarnation read authority).
-  if (opts.durableMembership !== false) await provisioner.commitAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
+  // reissueAcl — rides THIS mint: allowSubscribe was just baked into the user JWT above. Separate
+  // from commitAcl so an ordinary registry writer cannot raise the ceiling by passing a flag
+  // (SPEC §9.6). Not crypto-bound to the JWT bytes — process discipline that this call stays next
+  // to the mint (ACL-authority panel residual).
+  if (opts.durableMembership !== false) {
+    await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
+  }
   if (opts.role) await provisioner.provisionTaskQueue(opts.role);
   return allowSubscribe;
 }
@@ -907,9 +919,9 @@ export function permissionsFor(
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge (PR 1.5)
   if (profile === "teardown") return teardownPermissions(space, pr); // sole STREAM.DELETE holder (PR 1.5)
-  if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged"); // ps/start reads (PR 1.5)
-  if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin"); // any-mode stop/attach (PR 1.5)
-  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin"); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
+  if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads (PR 1.5)
+  if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach (PR 1.5)
+  if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
   if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails (P2 item 6)
   if (profile === "session-serving") return sessionServingPermissions(space, pr, opts.sessionServing); // one §13.6 session's SERVING rails (P2 item 6)
   if (profile === "session-ledger") return sessionLedgerPermissions(space, pr); // the dedicated session ledger, no rails (P2 item 6)
@@ -1372,11 +1384,19 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
  *     broker gating the any-mode rows + the cred being ephemeral (mint → one request →
  *     disconnect, from the local signing seed); on a user mesh the manager's serve-time ledger
  *     re-check sits on top. */
-function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin"): Record<string, unknown> {
+function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin", opts: MintOpts = {}): Record<string, unknown> {
   // 1d: the manager `ctl` rail is gone — an operator instrument holds ONLY its v0.4 ep rows (the
   // tier-matched request set, the reply rail, describe, the one epc fetch). The `epTier` selects
   // privileged (ps/start reads) vs admin (any-mode stop/attach) exactly as the ctl tier did.
-  const ep = instrumentEpRows(space, pr, epTier);
+  //
+  // B6 / `--on <instanceId>`: these instruments are ONE-SHOT, minted per control call, and the
+  // resolve that pins the instance happens BEFORE the mint. So the caller can hand the exact
+  // instance id down and get the exact `ep.inst.<endpoint>.<iid>.<command>` row for THIS invocation
+  // and nothing else — the least-privilege issuance, with no standing wildcard anywhere. The
+  // `extra` seam is the same one the deployer's owner-equality `launch` row already rides, and the
+  // emitter's `if (cap.instanceId)` branch validates the token, so a malformed id fails loud at
+  // mint rather than widening a subject.
+  const ep = instrumentEpRows(space, pr, epTier, opts.endpointCapabilities ?? []);
   return {
     // The PRIVILEGED tier (the `cotal ps` instrument) also carries the SCOPED §13.9 records read the
     // class scatter's freeze rides (P2 item 3): `freezeExpectedSet` enumerates `svc.<endpoint>.*.spec`
@@ -1398,10 +1418,15 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "pri
 function scatterFreezeReadRows(space: string): string[] {
   const REC = recordsBucket(space);
   return [
-    // `kv.keys("svc.<e>.*.spec")` rides an ordered ephemeral consumer over the records bucket.
-    `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,
-    `$JS.API.CONSUMER.INFO.KV_${REC}.>`,
-    `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,
+    // The `svc.<e>.*.spec` enumeration is a `STREAM.INFO` carrying a `subjects_filter` — ONE
+    // read-only metadata verb. It replaced a `kv.keys()` that rode an ordered ephemeral consumer and
+    // therefore needed CONSUMER.CREATE/INFO/DELETE on this bucket: three consumer-lifecycle verbs to
+    // list keys, on a credential that only ever wanted to read them.
+    //
+    // MEASURED, not assumed: with the enumeration converted and this row absent, the static/operator
+    // `cotal ps` is refused on `$JS.API.STREAM.INFO.KV_<records>` — a path that works today. The
+    // conversion and this row land TOGETHER or the operator path regresses.
+    `$JS.API.STREAM.INFO.KV_${REC}`,
     // The per-slot spec/status reads (`freezeExpectedSet` + the registration reconcile) are
     // leader-served `STREAM.MSG.GET` — stream-scoped (NAMED RESIDUAL above), plus the subject-pinned
     // keyed Direct Get form for any direct-aware read path (scoped to the `svc.` registry prefix).
@@ -1503,14 +1528,18 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
  *  the LIFETIME, not a manager re-check: minted from LOCAL same-checkout auth for one `spawn -f`,
  *  memory-only, dropped after deploy. If it is ever persisted, handed to user-supplied `--creds`, or
  *  reused as a general "read + admin" cred, revisit. */
-function deployerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin" = "admin"): Record<string, unknown> {
+function deployerPermissions(space: string, pr: MintPrincipal, epTier: "privileged" | "admin" = "admin", opts: MintOpts = {}): Record<string, unknown> {
   // The v0.4 ep rows of the deploy authority: static (admin) deploys carry the admin instrument
   // set; the user-mode deployer VIEW (privileged) carries the privileged set PLUS an untargeted
   // `launch` row — its launch stays owner-equality-authorized (the manager's ledger-derived admin
   // flag is false for a spawn-scoped deployer), exactly the v0.3 user-mode privileged-tier launch.
+  // B6 / `--on`: the per-invocation pin APPENDS to this profile's standing set, never replaces it -
+  // the privileged deployer view keeps its owner-equality `launch` row and additionally gets the one
+  // exact `ep.inst.<endpoint>.<iid>.<command>` row for the instance this deploy resolved.
+  const pinned = opts.endpointCapabilities ?? [];
   const ep = epTier === "admin"
-    ? instrumentEpRows(space, pr, "admin")
-    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }]);
+    ? instrumentEpRows(space, pr, "admin", pinned)
+    : instrumentEpRows(space, pr, "privileged", [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "launch" }, ...pinned]);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`, MGRKV = `KV_${managerBucket(space)}`;
   const DLVKV = `KV_${deliveryBucket(space)}`;
@@ -1944,6 +1973,15 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // chat (the fan-out consumes the whole stream), so a stream-wide CHAT consumer grant is no
     // escalation. The catch-up ephemeral names (`cu_<owner>_<gen>`) are dynamic, so they can't be
     // name-pinned; CHAT-wide is correct here.
+    //
+    // BOTH forms, and the bare one is not redundant: a create carrying `filter_subjects` cannot encode
+    // its filter in the subject, so the client publishes to the BARE `…CREATE.<CHAT>` while a named
+    // consumer goes to the `.>` form. The mediated history read (`readHistory`) builds exactly that
+    // multi-filter ephemeral, and with only the `.>` grant it fails with a Permissions Violation on the
+    // bare subject — measured, not predicted. The observer profile already carries both for the same
+    // reason. Grants the daemon nothing new in substance: it may already create any named consumer on
+    // this stream and already reads all of it.
+    `$JS.API.CONSUMER.CREATE.${CHAT}`,
     `$JS.API.CONSUMER.CREATE.${CHAT}.>`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${CHAT}.>`,
     `$JS.API.CONSUMER.INFO.${CHAT}.>`,
@@ -2118,6 +2156,59 @@ export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Iden
  *  NOTE (W4): the MEMORY resolver is one static whole-broker map, so every mutation rewrites all of
  *  it. Concurrent add/remove of spaces needs a broker-authoritative inventory with generation/CAS
  *  and atomic promotion above this function; this renderer is deliberately pure. */
+/**
+ * Render the config for an OPEN (no-auth) broker.
+ *
+ * This exists so that no path reaches a listener without naming its transport. Open mode used to
+ * start nats-server from bare CLI flags (`-js -sd … -p … -a …`) and never called `serverConfig` at
+ * all, which meant the required `transport` union protected the auth path and was silent on the
+ * open one: an operator could pass a cert and key, watch `up` print its normal banner, and get a
+ * cleartext listener. That is the silent downgrade this feature exists to prevent, reachable by
+ * someone who did everything right — so open mode renders a config too.
+ *
+ * It deliberately does NOT reuse `serverConfig`: that renders the operator, system account and
+ * MEMORY resolver, none of which a no-auth broker should carry. What the two share is the thing
+ * that matters — a REQUIRED transport, so the choice cannot be omitted on either path.
+ *
+ * IMPORTANT, and it must be said wherever open-mode TLS is surfaced to an operator: TLS ON AN
+ * OPEN MESH GIVES CONFIDENTIALITY, NOT AUTHENTICATION. It hides traffic from a passive observer.
+ * It does not verify who is connecting, because an open broker has no credentials to check — so
+ * anyone who can reach the port still gets in, encrypted. It is a legitimate configuration for a
+ * mesh crossing a network nobody controls, and it is NOT "secure" in the sense a reader will
+ * assume from seeing `cotals://`. Describe it as the caveat it is rather than as a feature.
+ */
+export function openServerConfig(opts: {
+  port?: number;
+  host?: string;
+  storeDir: string;
+  transport: BrokerTransport;
+}): string {
+  const port = opts.port ?? 4222;
+  const host = opts.host ?? "127.0.0.1";
+  return `# Generated by \`cotal up\` - do not edit by hand.
+host: ${host}
+port: ${port}
+max_control_line: 65536
+${renderTlsBlock(opts.transport)}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+`;
+}
+
+/** The one place a `tls{}` block is produced, shared by both broker renderers.
+ *
+ *  `allow_non_tls` is deliberately never emitted. It is a TOP-LEVEL knob (nested inside `tls{}`
+ *  nats-server rejects it as an unknown field), and it turns the listener into mixed mode: INFO
+ *  then advertises `tls_available` instead of `tls_required`, and a client that declines to
+ *  upgrade is served in cleartext — precisely the credential exposure this transport closes.
+ *  There is no supported migration mode; enabling TLS is all-or-nothing. */
+function renderTlsBlock(transport: BrokerTransport): string {
+  if (transport.kind === "plaintext") return "";
+  return `tls {
+  cert_file: ${JSON.stringify(transport.certFile)}
+  key_file: ${JSON.stringify(transport.keyFile)}
+}
+`;
+}
+
 export function serverConfig(
   broker: BrokerAuth,
   spaces: readonly SpaceAccountAuth[],
@@ -2128,6 +2219,12 @@ export function serverConfig(
     /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
      *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
     extraAccounts?: Array<{ pub: string; jwt: string }>;
+    /** How the client port is served. REQUIRED, and required on purpose: an optional TLS field
+     *  would let any future path that regenerates this config omit it and silently render a
+     *  plaintext listener. Callers must say `{ kind: "plaintext" }` when that is what they mean.
+     *  TLS is listener-wide, so it lives here in the broker options rather than per space —
+     *  no space can enable, disable or rotate it independently. */
+    transport: BrokerTransport;
     /** OPT-IN NATS websocket listener port (P2 item 6): browsers cannot speak raw NATS TCP, so the
      *  console session client (a real mesh caller) needs one. This is a NEW ATTACK SURFACE the broker
      *  did not have — emitted only when set, DEFAULT-BOUND TO LOCALHOST ({@link wsHost}), no TLS
@@ -2164,11 +2261,12 @@ export function serverConfig(
   // agent JWT — but right-sized, not generous: the CONNECT line is parsed BEFORE auth, so the cap
   // is a per-connection pre-auth allocation under connection flooding. 64 KB clears a many-channel
   // agent JWT (~4–8 KB) with wide margin while keeping the pre-auth surface ~16× tighter than 1 MB.
+  const tlsBlock = renderTlsBlock(opts.transport);
   return `# Generated by \`cotal up\` - do not edit by hand.
 host: ${host}
 port: ${port}
 max_control_line: 65536
-jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+${tlsBlock}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
 resolver: MEMORY

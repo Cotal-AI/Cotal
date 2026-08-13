@@ -223,7 +223,23 @@ try {
   {
     const r = await callSpawn({ name: "m4", agent: "stuck" }); // stuck hangs -> the 2s readiness window
     const acc4 = acc(r);
-    await wait(900); // let the agent provision + become managed, still inside the window
+    // WAIT FOR THE SIGNAL, DO NOT RACE THE WINDOW. This used to be a flat 900ms sleep against a
+    // suite-wide 2s readiness window, which is a bet that provisioning finishes in time — and under
+    // gate load it does not, so the suite reddened only inside the gate and passed for anyone who
+    // investigated. Poll for the `launched` edge, which is the state the despawn below actually
+    // depends on, with a ceiling and a message that names what never arrived so a genuine hang
+    // still reads as a hang rather than as a timeout.
+    const gid4 = acc4.goalId as string;
+    const sawLaunched = await (async () => {
+      for (let i = 0; i < 200; i++) {
+        if ((events.get(gid4) ?? []).some((e) => e.phase === "launched")) return true;
+        if ((events.get(gid4) ?? []).some((e) => e.phase === "terminal")) return false; // terminalized before we could despawn
+        await wait(50);
+      }
+      return false;
+    })();
+    check("M4 the goal reached `launched` before the despawn (the state the cancel race depends on)",
+      sawLaunched, { goalId: gid4, phases: (events.get(gid4) ?? []).map((e) => e.phase) });
     const rD = await callDespawn({ actor: acc4.actor as string, lifecycleUid: acc4.uid as string });
     check("M4 the mid-goal despawn is accepted", rD.reply.ok === true, rD.reply);
     const f = await followGoal(acc4.goalId as string, 12_000);

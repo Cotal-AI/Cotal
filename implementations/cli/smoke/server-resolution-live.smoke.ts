@@ -14,7 +14,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,12 +34,15 @@ const freePort = (): Promise<number> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-home-"));
 const cwd = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-cwd-"));
 const projectRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-root-"));
+// Created out here with its siblings so the `finally` sweep removes it on every exit path — a
+// dir made inside the `try` leaks one OS temp directory per run when a cell throws.
+const mismatchRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-mismatch-"));
 process.env.COTAL_HOME = home;
 const startCwd = process.cwd(); // restored before cleanup so Windows can rmdir `cwd` (it locks a live process's cwd)
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry
 
 const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
-const { recordMesh, loadMeshes, resolveMeshTarget } = await import("@cotal-ai/workspace");
+const { recordMesh, loadMeshes, resolveMeshTarget, spaceAccountPath, listSpaceAccounts } = await import("@cotal-ai/workspace");
 const { resolveControlTarget } = await import("../src/lib/control.js");
 
 let pass = 0;
@@ -127,6 +130,40 @@ try {
   ok("bare resolve prunes the dead entry (global sweep)", !loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
   ok("bare resolve returns the surviving live mesh", bareAfter.server === OVERRIDE, bareAfter);
 
+  // 7. REGISTERED-BUT-BROKEN must fail loud — it must never fall through to a credential-less open
+  //    connection. `resolveControlTarget` peeks at the target's MODE before connecting. For an
+  //    `origin: "up"` AUTH entry whose recorded root now holds another space's account,
+  //    `targetFromEntry` PRUNES the entry and THEN throws `stale-auth-root`. An earlier cut of the
+  //    peek absorbed the whole WorkspaceTargetError family, so that prune left `connectOrExit`
+  //    seeing no registration at all; with an explicit `--server` it took the raw-open arm and
+  //    connected with NO CREDENTIALS. A misconfigured AUTH mesh silently became an OPEN one and the
+  //    operator was never told. ABSENCE (`unknown-space`/`no-meshes`) may be absorbed; "registered
+  //    and broken" may not. Regression guard for that exact swap.
+
+  const mismatchAuth = join(mismatchRoot, ".cotal", "auth");
+  mkdirSync(mismatchAuth, { recursive: true });
+  // The root's on-disk auth is for a DIFFERENT space than the entry names — the exact divergence
+  // `stale-auth-root` exists to catch (the root was re-`up`ed as another space without re-recording).
+  const foreign = "someone-else";
+  writeFileSync(
+    spaceAccountPath(mismatchAuth, foreign),
+    JSON.stringify({ space: foreign, account: { pub: "A_FAKE_PUB", jwt: "fake.jwt.value", signingSeed: "SA_FAKE_SEED", signingPub: "A_FAKE_SIGNING_PUB" } }),
+  );
+  ok("fixture: the root's auth really does hold only the FOREIGN space", listSpaceAccounts(mismatchAuth).includes(foreign) && !listSpaceAccounts(mismatchAuth).includes("mismatch"), listSpaceAccounts(mismatchAuth));
+  recordMesh({ space: "mismatch", server: OVERRIDE, root: mismatchRoot, mode: "auth", origin: "up", ts });
+  let staleRefused: unknown;
+  let staleResolved: unknown;
+  try {
+    staleResolved = await resolveControlTarget({ space: "mismatch", server: OVERRIDE }, "control-caller-privileged");
+  } catch (e) {
+    staleRefused = e;
+  }
+  // The live OVERRIDE broker is open and reachable, so a raw-open fallthrough SUCCEEDS — which is
+  // precisely why this has to assert the refusal and not merely "did not crash".
+  ok("a registered AUTH mesh whose root auth is foreign REFUSES, never a credential-less raw open", staleRefused !== undefined, { staleResolved });
+  ok("and it refuses for the stale-auth reason, not some incidental error",
+    (staleRefused as { code?: string })?.code === "stale-auth-root", staleRefused);
+
   console.log(`\nmanager server-resolution live e2e: ${pass} checks passed`);
 } finally {
   for (const cp of kids) {
@@ -147,5 +184,6 @@ try {
   rmSync(home, rmOpts);
   rmSync(cwd, rmOpts);
   rmSync(projectRoot, rmOpts);
+  rmSync(mismatchRoot, rmOpts);
 }
 process.exit(0);

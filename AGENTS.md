@@ -100,7 +100,7 @@ plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
 plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
 - `**@cotal-ai/orca**` (`extensions/orca`): the Orca integration: a driver over the public Orca
 CLI plus a self-registering `orca` Runtime provider.
-- `**@cotal-ai/cli**` (`implementations/cli`): the mesh CLI: `up`, `join`, `watch`, `console`,
+- `**@cotal-ai/cli**` (`implementations/cli`): the mesh CLI: `up`, `join`, `console`,
 `spawn`, `mint`, `status`, `doctor`, `channels`, `history`, `ext` (operator-installed command extensions).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
@@ -124,6 +124,13 @@ endpoint methods; those go into `core`, generalized.
 - **Never fix an issue you could not reproduce.** Reproduce the failure (live, not just in
 reasoning or a unit simulation) before writing a fix; the repro is also the only proof the
 fix works. If you can't reproduce it, report that and stop, don't ship a guess.
+- **A test that passes with the fix reverted proves nothing — so prove it doesn't.** `pnpm
+mutation-proof` breaks the implementation on purpose and requires the suite to go red **on the
+assertion you name**. It refuses an absent or ambiguous target, refuses a dirty tree (git must be
+your recovery, not the tool), refuses an already-red suite, verifies its own restore, and reports
+`SURVIVED` rather than a pass when the suite fails to notice. Red alone is not proof: an unrelated
+early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
+real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.

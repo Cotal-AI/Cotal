@@ -124,6 +124,7 @@ current.
 
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
+cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 ```
@@ -142,6 +143,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | — | With `--user-auth`: the IdP auth base URL to pin on first enable |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
+| `--tls-cert <path>` | — | PEM certificate to serve TLS with. Must be given together with `--tls-key`. The pair is validated **before** the broker starts — readability, private-key mode, that the two match, the validity window, and that the certificate covers the host clients will dial — because `nats-server` starts happily on an expired certificate and only the client then fails. The decision is recorded, so a later bare `cotal up` after a `cotal down` keeps serving TLS rather than silently reverting to cleartext |
+| `--tls-key <path>` | — | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | — | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
@@ -494,19 +497,30 @@ cotal attach --name <n> [--space <s>]
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
-renders each managed agent's last credential-refresh outcome, fail-closed. In a space with more than
-one manager instance, bare `ps` is a **class scatter**: it merges every registered instance's agents,
-grouped and attributed per instance, and a non-answering instance is shown `unreachable` (never
-silently omitted). `--on <instance>` pins the read to one exact instance id instead. `attach` streams and
-drives an agent's terminal on the `pty` runtime; detach with the escape key (Ctrl-] by default; see
-[`COTAL_DETACH_KEY`](config.md)). It does so over a one-use, holder-bound mesh session ([SPEC](../SPEC.md)
-§13.6): the manager replies with a signed session grant (never a `127.0.0.1` URL), the CLI redeems it
-once over the broker, and the browser console (`cotal console`) drives the same session. `stop` and
-`attach` need a running manager to talk to. On a
-static mesh they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent
-under your owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger
-row ([identity & auth](identity-and-auth.md)). Launch detached agents with
-[`spawn --detach`](#spawn).
+renders each managed agent's last credential-refresh outcome, fail-closed.
+
+**Mode split (chosen up front, never try-scatter-then-degrade):**
+
+- **Static / open mesh.** Bare `ps` is a **class scatter**: it freezes the live manager class from
+  the records registry, merges every registered instance's agents grouped and attributed per
+  instance, and a non-answering instance is shown `unreachable` (never silently omitted).
+  `--on <instance>` pins the read to one exact instance id instead.
+- **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
+  read against the manager's in-memory roster, owner-filtered). It does **not** report other
+  manager instances, and it cannot tell you that one is down — an unreachable manager is absent
+  from the list, not flagged. Completeness across a multi-manager user-auth space is not claimed.
+  A manager that does not answer fails the command outright (exit non-zero), rather than printing
+  an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
+  reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
+
+`attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
+(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). It does so over a one-use, holder-bound
+mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
+`127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
+drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
+they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent under your
+owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
+([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
 
 `attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind

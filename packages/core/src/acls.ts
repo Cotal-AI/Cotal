@@ -14,8 +14,9 @@
  * record (a genuinely-unknown owner — the reader DEFERS, never drops).
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey } from "./subjects.js";
+import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey, patternInAllow } from "./subjects.js";
 import type { AclRecord } from "./types.js";
+import { liveKvEntries } from "./kv-scan.js";
 
 /** Open the ACL registry bucket. Auth mode OPENs the bucket pre-created at `cotal up`; a privileged
  *  caller may pass `{ create: true }` to lazily CREATE it. Mirrors {@link openMembersRegistry}. */
@@ -94,6 +95,12 @@ export async function readAclForAlias(
   // makes it absent (defer). Two live rows in EITHER pass refuse. Bounded at two passes — an
   // alias replaced BETWEEN the passes (disjoint singles) also refuses, and the caller's retry
   // resolves against the settled state; anything stronger is the P2 occupancy reservation.
+  // DO NOT COLLAPSE THESE TWO CALLS. `enumerateLiveAclRows` is single-pass, which makes it look like
+  // calling it twice is redundant work to optimize away. It is not: the second enumerate is the
+  // TOCTOU barrier. Each pass is bounded by the stream sequence at ITS OWN consumer-create, so a
+  // successor row committed after the first pass is invisible to it and only the second can see it.
+  // One enumerate silently disables AmbiguousAclAlias detection and lets a respawn inherit a
+  // predecessor's ACL — a lifecycle-safety regression, not a speedup.
   const second = await enumerateLiveAclRows(kv, principal);
   if (second.length > 1) throw new AmbiguousAclAlias(principal, second.map((l) => l.lifecycleUid).sort());
   if (second.length === 0) return undefined;
@@ -102,22 +109,30 @@ export async function readAclForAlias(
   return { record: second[0].record, revision: second[0].revision, lifecycleUid: second[0].lifecycleUid };
 }
 
-/** One live-row enumeration pass for {@link readAclForAlias}: LIVE rows, not keys — each candidate
- *  key is resolved through {@link readAcl} (which filters DEL/PURGE markers and garbled values)
- *  BEFORE it counts toward ambiguity. The pinned @nats-io/kv keys() already skips DEL/PURGE
- *  markers, so the re-read is belt-and-suspenders — but the refusal invariant is ">=2 LIVE rows",
- *  and counting raw iterator keys would let a client-version drift (a keys() that surfaces
- *  markers) fail-closed the NORMAL deprovision-then-respawn path. */
+/** One live-row enumeration pass for {@link readAclForAlias}: LIVE rows, not keys — DEL/PURGE
+ *  markers and garbled values are excluded BEFORE anything counts toward ambiguity, because the
+ *  refusal invariant is ">=2 LIVE rows" and counting raw keys would fail-closed the NORMAL
+ *  deprovision-then-respawn path.
+ *
+ *  ONE filtered pass. This used to be `keys(filter)` plus a per-key `readAcl()` get, and
+ *  {@link readAclForAlias} calls it TWICE, so it cost 2N round trips on the durable-join re-auth
+ *  path. The marker/garble exclusion that the per-key read provided is now split: DEL/PURGE is the
+ *  collapse's job (which also closes the resurrection case a per-key read could not see), and an
+ *  undecodable value is dropped here. */
 async function enumerateLiveAclRows(
   kv: KV,
   principal: string,
 ): Promise<{ lifecycleUid: string; record: AclRecord; revision: number }[]> {
   const live: { lifecycleUid: string; record: AclRecord; revision: number }[] = [];
-  for await (const key of await kv.keys(aclAliasFilter(principal))) {
-    const parsed = parseLifecycleSubjectKey(key);
+  for (const e of await liveKvEntries(kv, aclAliasFilter(principal))) {
+    const parsed = parseLifecycleSubjectKey(e.key);
     if (!parsed || `${parsed.owner}.${parsed.actor}` !== principal) continue;
-    const row = await readAcl(kv, principal, parsed.lifecycleUid);
-    if (row !== undefined) live.push({ lifecycleUid: parsed.lifecycleUid, ...row });
+    let record: AclRecord;
+    try { record = e.json<AclRecord>(); } catch { continue; } // a garbled value is never a live row
+    // Same half/garbled rejection {@link readAcl} applies: a record without its `allowSubscribe`
+    // array is UNKNOWN (the reader DEFERS), not a live row, and must not count toward ambiguity.
+    if (!Array.isArray(record.allowSubscribe)) continue;
+    live.push({ lifecycleUid: parsed.lifecycleUid, record, revision: e.revision });
   }
   return live;
 }
@@ -129,13 +144,75 @@ async function enumerateLiveAclRows(
  * effect: writing the same `allowSubscribe` is harmless. Use `allowSubscribe: []` to revoke all reads
  * (the reader then DROPS the owner's entries) — distinct from {@link deleteAcl}, which removes the row.
  */
-export async function commitAcl(kv: KV, owner: string, lifecycleUid: string, allowSubscribe: string[]): Promise<AclRecord> {
+/**
+ * Raise the mint-time history ceiling (`issuedAllowSubscribe`) to match `allowSubscribe`.
+ *
+ * CALL PATH: only {@link provisionAgent} (and tests of that path). Ordinary registry writers use
+ * {@link commitAcl}, which cannot raise the ceiling — a boolean flag on commitAcl would let any
+ * DurableProvisioner holder re-open the ACL-authority hole. Separate function = separate call path.
+ *
+ * PROCESS DISCIPLINE, NOT CRYPTO BINDING: this write does not verify that a broader JWT was minted.
+ * A caller who can reach `reissueAcl` can raise the ceiling while leaving the live credential
+ * narrow, and mediated history will then serve channels `channelHistory` still broker-denies.
+ * That is accepted residual: whoever holds the provisioner can already mint arbitrary JWTs. The
+ * obligation is that `reissueAcl` may ONLY ride the same act that bakes `allowSubscribe` into the
+ * user JWT (provision/remint). Do not call it from revoke, repair, or any path that does not also
+ * remint. Docs must not claim the ceiling is bound to credential bytes.
+ */
+export async function reissueAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+): Promise<AclRecord> {
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: true });
+}
+
+/**
+ * Write the live read ACL. Never raises the mint-time ceiling: create sets ceiling = allow;
+ * updates that exceed the ceiling throw. For a legitimate broaden that also remints the JWT, use
+ * {@link reissueAcl} from the provisioning path only.
+ */
+export async function commitAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+): Promise<AclRecord> {
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: false });
+}
+
+async function writeAcl(
+  kv: KV,
+  owner: string,
+  lifecycleUid: string,
+  allowSubscribe: string[],
+  opts: { reissue: boolean },
+): Promise<AclRecord> {
   const key = aclKey(owner, lifecycleUid);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     const cur = await readAcl(kv, owner, lifecycleUid);
+    // Ceiling is writable ONLY by create and by reissueAcl (provision/remint). Plain commitAcl
+    // MUST NOT raise it. Legacy rows missing the field treat their then-current allowSubscribe
+    // as the ceiling.
+    let issued: string[];
+    if (opts.reissue || !cur) {
+      issued = [...allowSubscribe];
+    } else {
+      issued = [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
+      const excess = allowSubscribe.filter((a) => !patternInAllow(issued, a));
+      if (excess.length > 0) {
+        throw new Error(
+          `commitAcl: cannot raise ACL above mint-time ceiling without reissue ` +
+            `(entries [${excess.join(", ")}] not within ceiling [${issued.join(", ")}]); ` +
+            `use reissueAcl from the provisioning path that also remints the JWT`,
+        );
+      }
+    }
     const next: AclRecord = {
       allowSubscribe: [...allowSubscribe],
+      issuedAllowSubscribe: issued,
       revision: (cur?.record.revision ?? 0) + 1,
       updatedAt: Date.now(),
     };

@@ -26,6 +26,7 @@ import {
   CONTRACT_ARTIFACT_MAX_BYTES, CONTRACT_CLOSURE_MAX_ARTIFACTS,
   type ContractStoreContext,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -58,7 +59,7 @@ await rejects("non-JSON bytes are never an artifact",
 await rejects("invalid UTF-8 bytes are never an artifact",
   () => assertCanonicalArtifactBytes(new Uint8Array([0x7b, 0xff, 0x7d]), "probe"), "contract-invalid");
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epstore-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 try {

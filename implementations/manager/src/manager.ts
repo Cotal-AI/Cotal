@@ -499,6 +499,12 @@ export interface SpawnHooks {
    *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
    *  so a terminal-commit failure never disrupts the (already-replied) spawn. */
   onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<void> | void;
+  /** Fires when this spawn ends with its goal's terminal owned by ANOTHER path — today only a
+   *  despawn/stop that lands inside the readiness window, whose own handler commits `cancel`.
+   *  It commits nothing; it only claims the terminal so the post-accept fallback does not
+   *  manufacture a `failed` from the non-ok reply and race the real `cancel`. Without it, a
+   *  deliberate stop mid-launch reports the agent as having died on launch. */
+  onTerminalDeferred?: () => void;
 }
 
 /** The spawn-as-action acceptance (P2 item 2 floor): the ALLOCATED agent identity (name + the
@@ -936,6 +942,12 @@ export class Manager {
       // agent endpoint's 75% source re-read adopts it.
       if (!this.userMode) {
         for (const a of [...this.agents.values()]) {
+          // The `terminalizing` test here is an OPTIMISATION, NOT THE GUARD. There are awaits below
+          // it, so an agent can latch mid-iteration and this filter will have already let it
+          // through — what actually refuses is the same test at the top of
+          // {@link renewManagedStaticCred}, which every renewal on this path goes through.
+          // COUPLING: deleting or weakening that check silently promotes this line from an
+          // optimisation into the whole guard, and nothing fails at the moment of the change.
           if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
           try {
             const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds));
@@ -3091,6 +3103,10 @@ export class Manager {
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
       // launched".
       const readiness = await this.awaitReadiness(managed);
+      // Deliberately stopped mid-launch: reaped by onExit, and the despawn/stop path owns the
+      // goal terminal. Return BEFORE the failed/uncertain arms so this emits no competing
+      // outcome and does not re-arm an exit watcher on an agent already gone.
+      if (!readiness.ok && readiness.deliberate) { hooks?.onTerminalDeferred?.(); return { ok: false, error: readiness.detail }; }
       if (!readiness.ok && !readiness.uncertain) { await hooks?.onOutcome?.({ kind: "failed", data: { error: readiness.detail } }); return { ok: false, error: readiness.detail }; } // failed → already reaped
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
@@ -3360,7 +3376,14 @@ export class Manager {
 
       let connector: Connector;
       try {
-        connector = registry.resolve<Connector>("connector", entry.launch.connector);
+        // The SAME resolver the spawn path uses. A bare `registry.resolve` here made preserve→resume
+        // fail for EVERY retained agent on the published binary: the resuming manager is a fresh
+        // process whose registry is empty (its supervise child runs with the connector seed
+        // skipped), so nothing is registered until something materializes it from the ext manifest.
+        // That is precisely what `resolveConnector` does and what every spawn path already calls.
+        // Resolving bare meant a preserved mesh could never come back — first-party connectors
+        // included, since the asymmetry is about materialization, not about which connector it is.
+        connector = await this.resolveConnector(entry.launch.connector);
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -3561,7 +3584,7 @@ export class Manager {
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
    *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
-  private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; detail: string }> {
+  private async awaitReadiness(a: ManagedAgent): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
@@ -3589,7 +3612,7 @@ export class Manager {
       let done = false;
       let timer: ReturnType<typeof setTimeout>;
       let unsubExit = (): void => {};
-      const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; detail: string }): void => {
+      const finish = (r: { ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }): void => {
         if (done) return;
         done = true;
         clearTimeout(timer);
@@ -3606,9 +3629,46 @@ export class Manager {
       const onExit = (): void => {
         if (done || !s) return;
         clearTimeout(timer);
+        // ┌─ DO NOT MOVE THIS READ. Its POSITION is the fix; its value is not. ──────────────────┐
+        // MOVING IT BELOW `onAgentExit` MAKES READINESS STOP REPORTING GENUINE LAUNCH FAILURES.
+        // That is what breaks — not a style regression, a silent loss of every `failed` terminal
+        // for an agent that really did die on launch. `onAgentExit` reaches `freeSlot`, which sets
+        // this SAME latch on its way through (see its "also covers exit/reap paths" comment), so a
+        // read taken after that call is true for EVERY exit, deliberate or not.
+        //
+        // Read HERE — first statement, before the await and before `onAgentExit` — a set latch can
+        // only have been set by someone else, and the only other setter on this path is
+        // `stopHandle`, which latches SYNCHRONOUSLY and then kills with no suspension between. So a
+        // despawn-caused exit is guaranteed observed with the latch UP and a natural exit with it
+        // DOWN: the distinction holds by program order, never by winning a race.
+        //
+        // The same latch, read one function call apart, answers two different questions.
+        //
+        // TO RE-VERIFY (this is the mutation that proves it, and it is the exact regression a tidy
+        // refactor produces): move this capture below `onAgentExit` and run
+        // `pnpm smoke:manager-spawn-action`. M3 `process exit -> failed` must FAIL. Note that M4 —
+        // the case this fix exists for — still PASSES under that mutation, so the suite this fix
+        // was written against cannot catch its own regression. M3 catches it only because it
+        // happens to share a file.
+        // └──────────────────────────────────────────────────────────────────────────────────────┘
+        const deliberate = a.terminalizing === true;
         void (async () => {
           const tail = this.tail(await s.backlog());
           this.onAgentExit(a);
+          // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
+          // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
+          // caller the agent died on launch when in fact an operator cancelled it. The process
+          // teardown above still runs — only the goal's OUTCOME is left to the path that caused it.
+          // A deliberate stop still has to SETTLE this promise. `clearTimeout` above already
+          // removed the only other resolver, so returning here leaves it pending forever and the
+          // spawn's lifecycle ticket is never released — which permanently wedges every drain
+          // (preparePreservation, and through it a preserving `down`). Settle it as its own
+          // variant: not `failed` and not `uncertain`, so the caller emits NO terminal and the
+          // despawn path keeps sole ownership of this goal's `cancel`.
+          if (deliberate) {
+            finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
+            return;
+          }
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
         })();
       };
@@ -3730,7 +3790,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
       lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(this.space));
@@ -3752,7 +3812,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
       endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
@@ -3814,7 +3874,7 @@ export class Manager {
     {
       // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
-      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds }), maxReconnectAttempts: 0 });
+      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       try {
         // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
         // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
@@ -4253,7 +4313,7 @@ export class Manager {
       open: async (cred) => {
         // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
         // without its own credential is exactly the standing-writer shape this design removes.
-        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds }) : {};
+        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
         return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
       },
       revoke: async (credentialId) => {
@@ -4294,7 +4354,7 @@ export class Manager {
     try {
       let entries: { ref: GoalRef; iid: string }[] = [];
       const nc = this.auth
-        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner") }), maxReconnectAttempts: 0 })
+        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
         : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
       try {
         const kvm = new Kvm(nc);
@@ -4546,6 +4606,10 @@ export class Manager {
       },
       onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
       onOutcome,
+      // Claim the terminal WITHOUT committing one: the despawn/stop that ended this launch owns
+      // it and commits `cancel`. This only stops the non-ok reply below from manufacturing a
+      // `failed` that would race that `cancel` (first-terminal-fact-wins).
+      onTerminalDeferred: () => { terminalEntered = true; },
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
@@ -4672,6 +4736,32 @@ export class Manager {
    *  never routes through any barrier (renewal is the THIRD transition). */
   private async renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     if (!this.auth || !a.seed || !a.secretPaths?.creds) throw new Error("renewManagedStaticCred: not a renewable managed-static agent");
+    // THIS CHECK IS THE AUTHORITATIVE ONE. The renewal sweep's own `a.terminalizing` filter is an
+    // optimisation that has already-awaited by the time it matters; removing or weakening this line
+    // promotes that filter into the whole guard, with nothing failing at the moment of the change.
+    //
+    // CONFIRMED, OPEN, AND UNGATED. This check runs at ENTRY and there are FOUR awaits before the
+    // two writes below (`secrets.put` and `materializeSecretToFile`). A despawn landing in that
+    // window latches `terminalizing` and the retirement cleanup deletes exactly those two things —
+    // same secret key, same path — so an in-flight renewal RE-CREATES a valid bounded credential
+    // after teardown removed it, and `appendStaticCredentialRow` lands in the window too, which is
+    // the worse half: a stale file is recoverable by re-running cleanup, a durable credential row
+    // is the journal asserting the credential is legitimate.
+    //
+    // Reproduced by `smoke:renewal-terminal-race` (`renewal-terminal-race.smoke.ts`), which asserts
+    // the DURABLE ROW rather than the file — the file is timing-dependent, the row is a KV read.
+    // That suite is deliberately NOT in `smoke:ci`: it is expected RED until this is fixed, and
+    // gating a known red trains readers to treat the gate as noisy. So the absence of a red here
+    // is not evidence this is closed; run that suite.
+    //
+    // Reproduced on the FIRST attempt that reached the race, and that suite cannot produce a second:
+    // the alias frees only when teardown completes, and the defect is that teardown does not, so
+    // every later attempt is refused at spawn. That is a limit of the probe, NOT of the world — a
+    // FRESH ALIAS PER ATTEMPT makes a rate measurable. Do not read hits-over-attempts off that file
+    // as written; it is a number that is not a count.
+    //
+    // The fix is to make the WRITES conditional on the same latch the teardown orders against,
+    // never to retry: the correct outcome is "no credential", never "a credential minted later".
     if (a.terminalizing) throw new Error("renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins");
     const exp = Math.floor(Date.now() / 1000) + MANAGED_STATIC_TTL_SEC;
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
@@ -4709,7 +4799,7 @@ export class Manager {
     if (!this.auth) return;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     const slotRows: StaticManagedSlotRow[] = [];
     try {
       const jsm = await jetstreamManager(nc);

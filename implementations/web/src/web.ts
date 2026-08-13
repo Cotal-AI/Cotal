@@ -148,6 +148,19 @@ export async function web(args: ParsedArgs): Promise<void> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
+    // THE RESOLVED TRANSPORT, NOT A DEFAULT. `connectOrExit` already decided this from the mesh
+    // record and `Connection.tls` is non-optional, so the answer was in scope and was being dropped
+    // here — the same shape as `--tls-cert` being validated and then discarded at a call boundary,
+    // which is the defect this branch exists to close.
+    //
+    // It matters more here than the omission looks. Against a TLS broker this endpoint CONNECTED
+    // FINE without it, by upgrading the socket once it read `tls_required` — so nothing was visibly
+    // wrong. But that INFO is unauthenticated plaintext: an on-path attacker strips `tls_required`
+    // and a client with no requirement of its own carries on in the clear, with its credentials in
+    // the CONNECT line. The client's own `tls` is the PRIMARY fence, not a second layer, so a
+    // dashboard that omits it is protected by the server's cooperation rather than by its own
+    // demand.
+    tls: conn.tls,
     ...(user
       ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
       : { creds: conn.creds, card: { name: "web", kind: "endpoint" as const } }),
@@ -240,11 +253,22 @@ export async function web(args: ParsedArgs): Promise<void> {
       // Backfill the all-activity feed: merge recent channel history with DM history (the live
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged
       // ({mode, msg}) to match the live feed so DMs render as DMs.
+      //
+      // NOT OPTIMISED, DELIBERATELY. An earlier version fetched an even share per channel and
+      // topped up only channels that saturated their share, to avoid moving (channels + 1) times
+      // what it displays. That is WRONG for a global top-N: saturation counts messages, not
+      // recency. With ten channels, limit 200 and a share of 40, if every channel holds at least 40
+      // messages the top-up never fires, so a channel owning the globally newest 200 contributes
+      // only its newest 40 and 160 genuinely-newer messages are dropped for 160 older ones.
+      //
+      // A correct cheap version needs an iterative timestamp-aware top-up: compute the provisional
+      // cutoff (the ts of the limit-th newest in the union) and re-fetch only channels whose oldest
+      // fetched message is still at or above it, until none can extend above the cutoff. That is
+      // worth doing, with a test encoding the counterexample above, and it is not this change.
+      // Correctness first: fetch a full page per channel and merge.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
       const chans = await ep.listChannels();
-      const chat = (
-        await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit })))
-      )
+      const chat = (await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit }))))
         .flat()
         .map((msg) => ({ mode: "chat" as const, msg }));
       const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));

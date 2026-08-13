@@ -74,7 +74,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const space = `deprov-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-deprov-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const localPrincipal = (actor: string) => principalKey(DEV_OWNER, actor).key;
 
@@ -255,22 +255,43 @@ try {
     // CREATE-AFTER-SNAPSHOT PROBE (the panel's post-scan TOCTOU gate): a successor row committed
     // AFTER the first enumeration's point-in-time key snapshot is invisible to that pass — a
     // single-pass resolver would return the lone scanned row (the predecessor) instead of
-    // refusing. Interpose on the KV surface readAclForAlias uses (keys + get) and commit a twin
+    // refusing. Interpose on the KV surface readAclForAlias enumerates through and commit a twin
     // row exactly when the SECOND enumeration begins, so pass 1 sees [B] and pass 2 sees [B, D]:
-    // the post-scan re-verify must surface AmbiguousAclAlias. Under the single-pass code this
-    // wrapper never fires (one keys() call) and the probe FAILS by resolving B — the
-    // distinguishing shape for the temp-revert proof.
+    // the post-scan re-verify must surface AmbiguousAclAlias. Under a single-pass resolver this
+    // wrapper fires only once and the probe FAILS by resolving B — the distinguishing shape.
+    //
+    // The interposed method is `history` (one pass yielding values), which replaced the
+    // keys()-then-get()-per-key enumeration. The TOCTOU property is unchanged: each pass is still
+    // bounded by the stream sequence at its OWN consumer-create, so a row committed between the two
+    // is invisible to the first and visible to the second. The explicit call-count assertion below
+    // is the guard against someone "simplifying" the two passes into one.
     {
       const uidD = mintLifecycleUid();
-      let keysCalls = 0;
-      const racedKv = {
-        keys: async (filter?: string) => {
-          keysCalls++;
-          if (keysCalls === 2) await commitAclRow(kv, localPrincipal(agent.id), uidD, ["general"]);
-          return kv.keys(filter);
+      let scanCalls = 0;
+      // Interpose by DELEGATION, not by substitution. `liveKvEntries` binds its own consumer through
+      // the client's Bucket implementation and refuses anything that is not one — deliberately, since
+      // falling back to `history()` is what made an interrupted read indistinguishable from an empty
+      // one. `Object.create(kv)` keeps the real Bucket as the prototype (so `instanceof` and every
+      // unshadowed member still resolve) while letting one method be shadowed. `_buildCC` is called
+      // exactly once per enumeration pass, which is the hook this race needs.
+      const racedKv = Object.create(kv) as typeof kv;
+      const realJs = (kv as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => unknown } } }).js;
+      Object.defineProperty(racedKv, "js", {
+        value: {
+          ...realJs,
+          consumers: {
+            ...realJs.consumers,
+            // The ordering point. Each enumeration pass binds exactly one consumer here, and the
+            // bind is what fixes that pass's view of the stream — so committing the twin BEFORE the
+            // second bind, and only then, is precisely "a successor row that pass 1 could not see".
+            getPushConsumer: async (...args: unknown[]) => {
+              scanCalls++;
+              if (scanCalls === 2) await commitAclRow(kv, localPrincipal(agent.id), uidD, ["general"]);
+              return realJs.consumers.getPushConsumer.apply(realJs.consumers, args);
+            },
+          },
         },
-        get: (k: string) => kv.get(k),
-      } as unknown as typeof kv;
+      });
       let refusedRace = false, otherRace: unknown, leaked: string | undefined;
       try {
         const r = await readAclForAlias(racedKv, localPrincipal(agent.id));
@@ -279,7 +300,9 @@ try {
         if (e instanceof AmbiguousAclAlias) refusedRace = true; else otherRace = e;
       }
       check("POST-SCAN: a successor row created after the first scan's snapshot REFUSES (AmbiguousAclAlias), never resolves the lone predecessor",
-        refusedRace, otherRace ?? { leaked, keysCalls });
+        refusedRace, otherRace ?? { leaked, scanCalls });
+      check("POST-SCAN: the resolver enumerated TWICE (the TOCTOU barrier is intact, not collapsed)",
+        scanCalls === 2, { scanCalls });
       const { deleteAcl: deleteAclRow } = await import("../src/acls.js");
       await deleteAclRow(kv, localPrincipal(agent.id), uidD);
       const settled = await readAclForAlias(kv, localPrincipal(agent.id));

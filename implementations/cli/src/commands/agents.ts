@@ -93,7 +93,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   const t = await resolveControlTarget(v, "control-caller-privileged");
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
-  // single-manager view. Default = CLASS SCATTER: merge EVERY registered instance's rows below.
+  // single-manager view. Same path for both modes (no freeze; no scatter).
   if (v.on) {
     const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
     failIfNotOk(reply);
@@ -106,9 +106,31 @@ export async function ps(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  // DEFAULT CLASS SCATTER (P2 item 3): freeze the live class from the records registry, scatter `ps`
-  // on the `all` rail, and merge with per-instance attribution. A non-answering instance is labeled
-  // unreachable, NEVER silently omitted (pin 3).
+  // Mode chosen UP FRONT from the connection shape. Never try-scatter-catch-degrade: a silent
+  // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole
+  // night in miniature.
+  //
+  // USER MODE (bearer present): `ep.one` to one manager. The ledger-scoped bearer holds
+  // `ep.one.manager.ps` when scope includes `admin` (measured); it does NOT hold the freeze
+  // STREAM.INFO row, so a class scatter would die on a permissions violation that reads as
+  // "no manager". The manager answers from its in-memory roster with an owner filter — no
+  // privileged records read. Multi-manager completeness is not claimed (see docs/cli.md).
+  //
+  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds
+  // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
+  // unreachable (pin 3).
+  if (t.auth.bearer) {
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner");
+    failIfNotOk(reply);
+    const rows = (reply.data as AgentRow[]) ?? [];
+    if (!rows.length) {
+      console.log(c.dim("(no managed agents)"));
+      return;
+    }
+    for (const r of rows) printAgentRow(r);
+    return;
+  }
+
   const scatter = await scatterManager(t.space, t.server, "ps", t.auth);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
@@ -173,7 +195,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
     sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
     expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
   });
-  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
+  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
   console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
   try {
     await attachClient(meshSessionTransport(nc, grant));

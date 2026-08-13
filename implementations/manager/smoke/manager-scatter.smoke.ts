@@ -56,7 +56,7 @@ const mkRoot = (tag: string): string => {
   saveSpaceAuth(authDir(r), auth); // each manager reloads the SAME space auth from its own root
   return r;
 };
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 type MgrPriv = { managerInstanceId: string };
 const kids: ReturnType<typeof spawn>[] = [];
@@ -86,14 +86,14 @@ try {
   const callerUid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
   const callerCreds = await mintCreds(auth, callerId, "control-caller-privileged", { lifecycleUid: callerUid });
-  nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
+  nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
 
   console.log("1. the instrument FREEZES the expected set (its scoped §13.9 records read)");
   // checkAPI:false — the scoped scatter grant carries NO account `$JS.API.INFO` (exactly how
   // scatterCommand constructs its JSM); the freeze rides only the `svc.*` records rows.
   const jsm = await jetstreamManager(nc, { checkAPI: false });
   const recKv = await openRecordsBucket(nc, SPACE);
-  const frozen = await freezeExpectedSet(jsm, recKv, SPACE, MANAGER_ENDPOINT);
+  const frozen = await freezeExpectedSet(jsm, SPACE, MANAGER_ENDPOINT);
   const frozenIds = new Set(frozen.map((f) => f.instanceId));
   check("the caller instrument can FREEZE the class (scoped records-read grant) — both instances present",
     frozen.length === 2 && frozenIds.has(IID1) && frozenIds.has(IID2), frozen);
@@ -113,7 +113,7 @@ try {
   await wait(500);
   // The freeze STILL names IID2 (READY record, no deregistration): a severed instance is not silently
   // dropped from the expected set.
-  const frozen2 = await freezeExpectedSet(jsm, recKv, SPACE, MANAGER_ENDPOINT);
+  const frozen2 = await freezeExpectedSet(jsm, SPACE, MANAGER_ENDPOINT);
   check("the severed instance is STILL frozen (READY record, no clean deregister)",
     new Set(frozen2.map((f) => f.instanceId)).has(IID2), frozen2);
   const t0 = Date.now();

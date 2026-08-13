@@ -39,7 +39,20 @@ import {
   type EpIssuanceBarrier, type EpVerbOp,
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
+import { pickFreePort } from "./_free-port.js";
 
+/** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
+ *
+ *  `c()` prints NOTHING on a pass. A cell's name appears in the output **if and only if it FAILED**.
+ *  So an empty grep for a cell name is the SUCCESS signal here, which is backwards from every other
+ *  instrument: normally an empty result means the pattern missed or the thing is absent. Someone
+ *  auditing a run by grepping for a cell name — without reading this line — misreads every run they
+ *  do, and half the misreadings are the reassuring direction.
+ *
+ *  So: to check ONE cell, grep its name and expect NOTHING when it passes. Never read the suite's
+ *  exit code as evidence about a single cell — any other cell failing gives you a red total while
+ *  the cell you care about quietly still passes, and still-passing is exactly what a vacuous cell
+ *  does. The aggregate cannot show you one vacuous cell; only that cell's absence-or-presence can. */
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown, code?: string) => {
@@ -223,12 +236,35 @@ throws("a cluster document declaring describe refuses (reserved, never a cluster
 throws("a duplicate command declaration refuses to parse",
   () => parseClusterDocument({ ...DOC_MAIN, commands: [cmd("x"), cmd("x")] }));
 
-// ── unreadable registry (stubbed KV: the enumeration boundary itself fails, before any jsm read) ──
-await rejects("an UNREADABLE registry is failed-precondition, never an empty success",
-  () => freezeExpectedSet({} as never, { keys: () => { throw new Error("permissions violation"); } } as never, SPACE, "manager"), "failed-precondition");
+// ── unreadable vs empty registry: the enumeration boundary, RE-POINTED at STREAM.INFO ──
+// The old fixture stubbed `kv.keys`, which the consumer-free enumeration no longer calls. Measured:
+// with that stub removed entirely the cell still passed (disarmed run, 133/0, this cell silent) — it
+// was green on an empty `{}` jsm throwing a TypeError, not on any permissions failure.
+//
+// And the CODE ALONE CANNOT DISCRIMINATE HERE, which is the hazard the substitution introduces: an
+// unreadable registry and an EMPTY one are both `failed-precondition`. Under `kv.keys` a refusal
+// threw; under STREAM.INFO a refused read and a registry with no matching subjects differ only in
+// which throw fires. Collapsing them reports "no managers" as an empty success, and an empty registry
+// is never an empty success (SPEC 13.5). So both arms pin their MESSAGE, and a third asserts the two
+// messages actually differ — the discriminator has to be absent from one side to discriminate at all.
+const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: string }> => {
+  try { await freezeExpectedSet(jsmStub as never, SPACE, "manager"); return { message: "NO THROW" }; }
+  catch (e) { return { code: (e as EpEnvelopeError).code, message: (e as Error).message }; }
+};
+{
+  const refused = await freezeErr({ streams: { info: () => { throw new Error("permissions violation"); } } });
+  c("a REFUSED registry read is failed-precondition and says UNREADABLE (never an empty success)",
+    refused.code === "failed-precondition" && /is unreadable/.test(refused.message), refused);
+  const empty = await freezeErr({ streams: { info: () => ({ state: { subjects: {} } }) } });
+  c("an EMPTY-but-readable registry is failed-precondition and says NO LIVE INSTANCES (a distinct event)",
+    empty.code === "failed-precondition" && /no live registered instances/.test(empty.message), empty);
+  c("refused and empty are NOT collapsed: different messages",
+    refused.message !== empty.message && /is unreadable/.test(refused.message) && !/is unreadable/.test(empty.message),
+    { refused: refused.message.slice(0, 70), empty: empty.message.slice(0, 70) });
+}
 
 // ── live broker ──
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epserve-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 
@@ -292,7 +328,7 @@ try {
   c("a FIRST registration of a fresh instanceId keeps epoch 0 (a never-restarted single manager)",
     gateStates.get(`manager/${IID_B}`)!.processEpoch === 0);
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regB.registrationRevision } });
-  const frozen = await freezeExpectedSet(jsm, kv, SPACE, "manager");
+  const frozen = await freezeExpectedSet(jsm, SPACE, "manager");
   c("the frozen expected set carries (instanceId, registrationRevision, epoch) per live instance",
     frozen.length === 2
     && frozen.some((f) => f.instanceId === IID_A && f.registrationRevision === regA2.registrationRevision && f.epoch === 3)
@@ -305,16 +341,16 @@ try {
     gateStates.get(`manager/${IID_B}`)!.processEpoch === 1);
   c("a stale projection (status behind the CURRENT registration) leaves the frozen set",
     regB2.registrationRevision > regB.registrationRevision
-    && (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
+    && (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
   await writeServiceStatus(kv, { endpoint: "manager", instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_EXITED, observedSpecRevision: regB2.registrationRevision } });
-  c("an exited instance leaves the frozen set", (await freezeExpectedSet(jsm, kv, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
+  c("an exited instance leaves the frozen set", (await freezeExpectedSet(jsm, SPACE, "manager")).every((f) => f.instanceId !== IID_B));
   await rejects("an empty registry is failed-precondition, never an empty scatter success",
-    () => freezeExpectedSet(jsm, kv, SPACE, "ghost"), "failed-precondition");
+    () => freezeExpectedSet(jsm, SPACE, "ghost"), "failed-precondition");
   // Malformed mediated-writer state fails LOUD (§13.9), never enters the set.
   await kv.put(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]), new TextEncoder().encode(JSON.stringify({ attackerControlled: true, owner: "u_evil" })));
   await kv.put(`svc.manager.${T_UID}.status`, new TextEncoder().encode(JSON.stringify({ epoch: 1, state: SERVICE_READY, observedSpecRevision: 1 })));
   await rejects("a malformed registered spec fails LOUD at the freeze, never enters the set",
-    () => freezeExpectedSet(jsm, kv, SPACE, "manager"), "internal");
+    () => freezeExpectedSet(jsm, SPACE, "manager"), "internal");
   await kv.purge(recordSpecKey(RECORD_KINDS.svc, ["manager", T_UID]));
   await kv.purge(`svc.manager.${T_UID}.status`);
 
@@ -909,18 +945,28 @@ try {
       () => epochOf("z".repeat(26)), "failed-precondition");
 
     // scatter: freeze -> gather -> production reconcile, one call
-    const s1 = await epScatterService(nc, jsm, kv, SPACE, opC("status"), { deadlineMs: 4000 });
+    const s1 = await epScatterService(nc, jsm, SPACE, opC("status"), { deadlineMs: 4000 });
     c("epScatterService freezes from the LIVE registry and completes over both instances",
       s1.complete === true && s1.replies.size === 2 && s1.churn.length === 0 && s1.missing.length === 0 && s1.invalid.length === 0,
       JSON.stringify({ complete: s1.complete, replies: s1.replies.size, churn: s1.churn, missing: s1.missing, invalid: s1.invalid }));
     // distsys BLOCKING 2: the FREEZE is charged against the ONE deadline. A stalled enumeration is
     // deadline-exceeded within the budget, never a scatter that silently overruns it.
+    // RE-POINTED for the consumer-free enumeration: the freeze stalls on STREAM.INFO now, not on
+    // `kv.keys`. Stalling a call the code no longer makes left this cell reporting "no throw" — the
+    // fixture aimed at a deleted call site, which is the exact class this suite exists to catch.
+    // ONLY `streams.info` stalls: the per-slot leader reads use other jsm methods and must stay
+    // live, or this would prove "a stalled everything" rather than "a stalled enumeration".
+    // Mutation-proved: pass `info` through to the real jsm and this cell reports "no throw".
+    const stalledJsm = Object.create(jsm) as typeof jsm;
+    (stalledJsm as unknown as { streams: unknown }).streams = Object.assign(Object.create(jsm.streams as object), {
+      info: () => new Promise(() => { /* never settles */ }),
+    });
     await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
-      () => epScatterService(nc, jsm, { keys: () => new Promise(() => { /* never settles */ }) } as never, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
+      () => epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)
-    const frozen1 = await freezeExpectedSet(jsm, kv, SPACE, EPC);
+    const frozen1 = await freezeExpectedSet(jsm, SPACE, EPC);
     const regCB2 = await reg(kv, { spec: { endpoint: EPC, owner: "u_op", clusterDigests: [DC_MAIN, DC_AUX], protocol: { v: 1 } }, instanceId: IID_B, registrant: asOp, authority });
     const s2 = await epScatter(nc, SPACE, opC("status"), { deadlineMs: 4000, expected: frozen1, reconcileRegistration: registrationReconciler(jsm, SPACE, EPC, frozen1) });
     c("a mid-scatter re-registration is `registration` churn through the PRODUCTION reconciler (counted reply dropped)",
@@ -931,7 +977,7 @@ try {
     // a REAL mid-scatter deregistration: the explicit registered:false verdict — a departure
     // does NOT invalidate the reply the departed instance already gave (§13.5)
     await writeServiceStatus(kv, { endpoint: EPC, instanceId: IID_B, epoch: 1, readProcessEpoch: () => 1, status: { epoch: 1, state: SERVICE_READY, observedSpecRevision: regCB2.registrationRevision } });
-    const frozen2 = await freezeExpectedSet(jsm, kv, SPACE, EPC);
+    const frozen2 = await freezeExpectedSet(jsm, SPACE, EPC);
     c("(setup) the re-converged freeze holds both instances again", frozen2.length === 2);
     await kv.delete(recordSpecKey(RECORD_KINDS.svc, [EPC, IID_B]));
     await kv.delete(recordStatusKey(RECORD_KINDS.svc, [EPC, IID_B]));

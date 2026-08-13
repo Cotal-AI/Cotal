@@ -17,14 +17,28 @@ import {
   type Profile,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { authDir, endpointAuth, findCotalRoot, loadSpaceAuth, soleSpaceOf } from "@cotal-ai/workspace";
+import {
+  authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
+  pruneStaleMeshes, renderWorkspaceError, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
+} from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
  *  static mint produced one ({@link askManager}'s ep-rail path rides it). */
-export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller };
+export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller; tls?: boolean };
+
+/** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
+ *  only ones the mode peek in {@link resolveControlTarget} may absorb. **Every other code is
+ *  NON-ABSENCE and must fail loud** — which is the precise claim, and covers more than one
+ *  situation: `stale-auth-root` / `unreadable-auth` / `user-auth-unrecorded` are an entry that
+ *  exists and is broken, while `ambiguous-target` can be several perfectly healthy entries and
+ *  `default-occupied` an intended local target with no entry at all. What unites them is not
+ *  breakage, it is that absence has NOT been established, so falling through to a
+ *  credential-less raw-open connect would be unsound. Deliberately a closed allow-list, not a
+ *  deny-list: a new code defaults to failing loud. */
+const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["unknown-space", "no-meshes"]);
 
 /** Client-side request window for the manager's readiness-waiting launch ops (`start`, and the
  *  manifest `launch` — both funnel into the same startAgent readiness wait). #159 B1: the manager
@@ -51,9 +65,59 @@ export async function resolveControlTarget(
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
-  // USER MODE rides through: the control call connects with the operator's bearer (actor `cli`) and
-  // publishes on its OWN ctl principal subject — the broker grants that publish only when the cli
-  // actor's ledger scope carries the matching capability (`spawn` → privileged, `admin` → admin).
+  // USER MODE: ledger-scoped bearer is the control surface; there is no instrument mint.
+  // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
+  // bearer does not hold). Route through {@link connectUserControlOrExit}, which takes NO role —
+  // a dummy Profile would be meaningless today and wrong the day the user path starts consulting
+  // it. Declared translation at this layer (the one that knows), not a silent substitute inside
+  // connectOrExit.
+  //
+  // Cost: the target is resolved here for the mode check and again inside the connect helper.
+  // Accepted for this slice so mode choice stays where it is knowable. The two reads are not
+  // atomic; a mesh that flips mode between them is an operator action mid-command.
+  //
+  // This peek reads the MODE and NOTHING ELSE — it must never decide the command's fate. It used
+  // to run through `resolveTargetOrExit`, which EXITS on a WorkspaceTargetError, so it killed a
+  // legitimate input on the way past: `--server` with an UNREGISTERED `--space` is the raw-open
+  // escape hatch, and by definition it has no registry entry to carry a mode. Resolve through the
+  // THROWING form instead and read ABSENCE as "not a registry mesh, therefore not user mode",
+  // leaving that path to `connectOrExit` below, which owns it.
+  //
+  // ABSENCE ONLY. The two absent codes are the entire escape hatch; every other
+  // MeshTargetErrorCode is NON-ABSENCE, and swallowing those is a
+  // fallback, not a restoration. `stale-auth-root` is the one that bites: `targetFromEntry`
+  // PRUNES the entry before throwing it, so absorbing it leaves `connectOrExit` seeing no
+  // registration at all — and with an explicit `--server` it then takes the raw-open arm and
+  // connects with NO CREDENTIALS. A misconfigured AUTH mesh would silently become an OPEN one,
+  // hiding the misconfiguration and switching identity planes under the operator. Those codes
+  // rethrow and the command dies loud, exactly as it did before this peek existed.
+  // Raw `--creds` skips the peek entirely (static/raw path below).
+  if (!withSpace.creds) {
+    // Sweep first when no space is named, exactly as `resolveTargetOrExit` does before ITS
+    // resolve. Without it the peek reads a world `connectOrExit` never sees: a dead entry
+    // alongside a live one makes a bare resolve `ambiguous-target` here while the connect,
+    // having pruned, resolves the single survivor cleanly. Same sweep, same view, one answer.
+    if (!withSpace.space) await pruneStaleMeshes();
+    let mode: MeshTarget["mode"] | undefined;
+    try {
+      mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
+    } catch (e) {
+      // Non-absence propagates and ends the command. It is rethrown rather than rendered-and-exited
+      // here so this function stays composable and testable; the CLI boundary renders every
+      // WorkspaceTargetError through `renderWorkspaceError` (see the dispatcher's catch), which is
+      // what turns "entry X points at a root holding Y" into the removed-fact plus a recovery line.
+      if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
+    }
+    if (mode === "user") {
+      const conn = await connectUserControlOrExit(withSpace);
+      return {
+        space: conn.space,
+        server: conn.server,
+        auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+      };
+    }
+  }
+  // Static / open / raw-creds: mint the requested instrument (or bare open connect).
   const conn = await connectOrExit(withSpace, profile);
   return {
     space: conn.space,
@@ -115,7 +179,7 @@ async function askManagerEp(
   // mesh (no credential system; the broker enforces nothing).
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds } : {}),
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -241,7 +305,7 @@ async function askManagerScatterEp(
   const caller = auth.epCaller!;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds } : {}),
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
   });
   try {

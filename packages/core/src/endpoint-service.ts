@@ -717,16 +717,32 @@ export interface FrozenInstance {
  *  is `failed-precondition`, never an empty success (§13.5); a MALFORMED registry record fails
  *  loud (`internal`, §13.9: readers fail loud on invalid mediated-writer state). The read grant
  *  this runs under is a §13.9 matrix row. */
-export async function freezeExpectedSet(jsm: JetStreamManager, kv: KV, space: string, endpoint: string): Promise<FrozenInstance[]> {
+export async function freezeExpectedSet(jsm: JetStreamManager, space: string, endpoint: string): Promise<FrozenInstance[]> {
   const e = endpointToken(endpoint);
   const frozen: FrozenInstance[] = [];
   const instanceIds: string[] = [];
   try {
-    // Enumeration is a bounded-lag `kv.keys` LIST (which instances exist): a just-registered
-    // instance missed here simply is not frozen this round (it falls to the gather/reconcile), so
-    // the list read need not be leader-served — but each frozen slot's coordinate reads below ARE.
-    const iter = await kv.keys(`svc.${e}.*.spec`);
-    for await (const key of iter) instanceIds.push(key.split(".")[2]);
+    // Enumeration is a bounded-lag LIST (which instances exist): a just-registered instance missed
+    // here simply is not frozen this round (it falls to the gather/reconcile), so the list read need
+    // not be leader-served — but each frozen slot's coordinate reads below ARE.
+    //
+    // It reads `STREAM.INFO` with a `subjects_filter` rather than `kv.keys()`. Both enumerate the
+    // same subjects; `kv.keys()` rides an ORDERED EPHEMERAL CONSUMER, so every caller of this
+    // function needs CONSUMER.CREATE/INFO/DELETE on the bucket — three consumer-lifecycle verbs to
+    // list keys. `subjects_filter` is the native JetStream feature for exactly this and needs one
+    // read-only metadata verb instead. The bucket name is derived from `space` (same derivation
+    // `scatterFreezeReadRows` uses for the grant); there is no KV handle parameter because nothing
+    // here opens one — per-slot reads are leader-served `STREAM.MSG.GET` via `jsm`.
+    //
+    // `state.subjects` counts messages per subject, so a key whose latest write is a DELETE marker
+    // still appears where `kv.keys()` would omit it. That is already handled and always was — the
+    // per-slot read below reports a tombstone as `{ deleted: true }` and the loop skips it as "gone
+    // since the enumeration list", which is the same tolerance a bounded-lag list needs anyway.
+    const REC = recordsBucket(space);
+    const prefix = `$KV.${REC}.`;
+    const info = await jsm.streams.info(`KV_${REC}`, { subjects_filter: `${prefix}svc.${e}.*.spec` });
+    for (const subject of Object.keys(info.state.subjects ?? {}))
+      instanceIds.push(subject.slice(prefix.length).split(".")[2]);
   } catch (err) {
     const wrapped = new EpEnvelopeError("failed-precondition", `the service registry for "${endpoint}" is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${(err as Error)?.message ?? String(err)}`);
     (wrapped as Error & { cause?: unknown }).cause = err;

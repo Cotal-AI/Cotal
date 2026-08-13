@@ -57,7 +57,7 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 for (const n of ["fence"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 // A "stuck" child hangs forever without joining presence — the goal stays inside the readiness
 // window, so its terminal is driven by the manager (exactly where the (a) belt gates the commit).
@@ -97,14 +97,14 @@ try {
     lifecycleUid: uid, capabilities: ["spawn"],
     endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "spawn" }],
   });
-  const callNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
+  const callNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
   conns.push(callNc);
   const callSpawn = (args: Record<string, unknown>) =>
     epCall(callNc, space, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
 
   // ── M7: WRITER SEPARATION (serve cred DENIED a goal write) ──────────────────────────────────
   {
-    const serveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.serviceServe!.creds! }), maxReconnectAttempts: 0 });
+    const serveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.serviceServe!.creds!, tls: false }), maxReconnectAttempts: 0 });
     // The serve cred lacks every goal row: a KV goal-record write acks only if permitted, so a
     // request-timeout is the broker's silent denial (the manager-service KV-denial pattern).
     let denied = false;
@@ -126,7 +126,7 @@ try {
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } });
   {
     const gwPrincipal = principalKey(DEV_OWNER, M.goalWriterIdentity!.id).key;
-    const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds }), maxReconnectAttempts: 0 });
+    const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
     const authKv = await new Kvm(execNc).open(epAuthBucket(space));
     const rows: Array<{ holderPrincipal?: string; state?: string }> = [];
     for await (const k of await authKv.keys(`${epcredFamilyPrefix(MANAGER_ENDPOINT, iid)}.>`)) {
@@ -149,7 +149,7 @@ try {
     // SUPERSEDE the manager's OWN instance: a synthetic takeover barrier advances its gate epoch
     // (freeze → reopen at epoch+1). We deliberately do NOT evict (that is the $SYS takeover
     // machinery the FAMILY test proves membership in); this isolates the (a) currency belt.
-    const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds }), maxReconnectAttempts: 0 });
+    const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
     const barrier = endpointRegistrationBarrier(await new Kvm(execNc).open(epAuthBucket(space)), space, { endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: mintLifecycleUid() });
     const obs = await barrier.observe();
     const token = await barrier.freeze(obs!.revision);
@@ -160,7 +160,7 @@ try {
     // accepted epoch → REFUSES the commit. The corpse writes NO terminal fact.
     await wait(2_000); // past the 1.5s readiness window (+ margin) from the accept
     const gwReadCreds = await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
-    const readNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: gwReadCreds }), maxReconnectAttempts: 0 });
+    const readNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: gwReadCreds, tls: false }), maxReconnectAttempts: 0 });
     conns.push(readNc);
     // Reading an EXECUTOR-PINNED goal terminal resolves the executor's CURRENT epoch (item 3's (i)
     // fence): after the synthetic takeover the gate is at epoch obs+1, so the reader looks at

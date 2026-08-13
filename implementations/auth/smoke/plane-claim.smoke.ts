@@ -35,8 +35,9 @@ import { openRecordsScannerCandidate } from "../src/records-scanner.js";
 import { acquirePlaneClaim, parsePlaneClaimRow, scannerDeathCopy, PLANE_CLAIM_KEY, type PlaneLivenessOracle } from "../src/plane-claim.js";
 import { openAuthAuthorityPlane } from "../src/service.js";
 import type { EvictPrincipal } from "../src/credential-ledger.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -46,7 +47,7 @@ const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { a
 const space = `plcl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-plcl-"));
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
 const quiet = () => {};

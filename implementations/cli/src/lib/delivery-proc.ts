@@ -17,7 +17,12 @@ const PID_PATH = () => cotalPath("delivery.pid");
 // file stays `.cotal/delivery.creds`) comes from workspace — never a hand-copied literal.
 const credsStore = () => workspaceSecretStore(findCotalRoot());
 
-type Opts = { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number };
+/** `tls` is the broker's transport decision, propagated to the daemon's argv. It is not optional
+ *  information the daemon can do without: it cannot derive the transport itself (see the note at
+ *  the argv site), and omitting it leaves a standing-credential daemon connecting
+ *  plaintext-capable to a TLS broker while looking entirely healthy.
+ *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number };
 
 function alive(pid: number): boolean {
   try {
@@ -72,6 +77,15 @@ export function startDeliveryDetached(o: Opts = {}): number {
     o.space ?? resolveSpace(process.cwd()),
     "--server",
     o.server ?? DEFAULT_SERVER,
+    // Propagate the broker's transport decision. The daemon cannot derive it: it learns everything
+    // from argv by design - it is a pre-minted scoped-cred client, injectable behind a SecretStore,
+    // and making it read the machine-local mesh registry to pick a transport would couple a
+    // hosted-composable daemon to a workstation artifact. So the launcher, which DOES know, tells it.
+    //
+    // Without this the daemon connects plaintext-capable to a TLS broker and nothing looks wrong,
+    // because it still upgrades on the server's INFO. It holds a STANDING credential and reconnects
+    // unattended, so that exposure would repeat on every reconnect with nobody watching.
+    ...(o.tls ? ["--tls"] : []),
   ];
   // Internal child re-exec (the `up` that reached here already seeded); the delivery daemon does not
   // launch agents, so it skips the connector seed on boot (a direct `cotal deliver` still seeds).

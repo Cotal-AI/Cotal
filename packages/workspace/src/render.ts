@@ -15,7 +15,7 @@ import type { PreflightFailure } from "./preflight.js";
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
   | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean }
-  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable"; server: string };
+  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable"; server: string; hasAuth: boolean };
 
 /** Render a workspace failure as the canonical one-line `cotal …` sentence. */
 export function renderWorkspaceError(e: WorkspaceError): string {
@@ -25,7 +25,7 @@ export function renderWorkspaceError(e: WorkspaceError): string {
     case "preflight":
       return renderPreflightFailure(e.failure, e.target, e.pruned);
     case "reachable":
-      return renderReachable(e.reason, e.server);
+      return renderReachable(e.reason, e.server, e.hasAuth);
   }
 }
 
@@ -83,15 +83,29 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
       return `✗ broker at ${t.server} requires auth, but this mesh is open (no trust material) - use \`--space <name>\` for an auth mesh, or run \`cotal up\` here without \`--open\``;
     case "stale-auth":
       return `✗ credentials for "${t.space}" have EXPIRED - this mesh enforces bounded credential lifetimes; run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`;
+    case "tls-trust":
+      // INFO advertised tls_required (shape evidence only — unauthenticated). Never claims removal
+      // or peer identity; conservatively keep the record and point at the trust-store repair.
+      return `✗ mesh "${t.space}" at ${t.server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, or fix the trust store; a TLS-required NATS listener still greets there (INFO is unauthenticated — not mesh identity) so the registry entry was conservatively kept`;
   }
 }
 
 /** Plain reachability for a RAW (off-registry) probe — the `--creds` / `--server`+unregistered-`--space`
  *  escape hatch, which never touches the registry (no prune, no stale-entry wording). */
-function renderReachable(reason: "auth-required" | "stale-auth" | "unreachable", server: string): string {
+function renderReachable(
+  reason: "auth-required" | "stale-auth" | "unreachable",
+  server: string,
+  hasAuth: boolean,
+): string {
   if (reason === "stale-auth")
     return `✗ credential EXPIRED at ${server} - bounded lifetime reached (credential death); run \`cotal doctor auth\` where the mesh runs, or re-mint the credential`;
-  return reason === "auth-required"
+  if (reason === "unreachable") return `✗ can't reach a broker at ${server} - is it running? (\`cotal up\`)`;
+  // `auth-required` is two different user situations with two different repairs, and this path used
+  // to collapse them. The registry path never did: `classifyPreflightFailure` branches on the same
+  // bit into `creds-rejected` vs `open-wants-auth`. Told "credentials rejected" after sending NO
+  // credentials, a caller goes looking for what is wrong with creds they never had, when the actual
+  // next step is to obtain some.
+  return hasAuth
     ? `✗ credentials rejected at ${server} - check your creds, or the broker wants different auth`
-    : `✗ can't reach a broker at ${server} - is it running? (\`cotal up\`)`;
+    : `✗ broker at ${server} requires auth, but no credentials were supplied - pass \`--creds <file>\`, or \`cotal join\` with a link/token`;
 }
