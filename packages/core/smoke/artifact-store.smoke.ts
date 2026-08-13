@@ -346,9 +346,19 @@ try {
     const rkvm = new Kvm(rnc);
     // Reproduce the broken post-restore state: remove ONLY the two index buckets. Deleted at the
     // STREAM level, which is how the broker holds a KV bucket and how `deleteSpace` removes one.
+    //
+    // TOLERANT OF ALREADY-ABSENT, and that is not defensive habit — it is what keeps this block from
+    // destroying the suite it belongs to. A bare `delete` throws `StreamNotFoundError` when the
+    // bucket is missing, which is exactly the state a mutation of the creation helper produces: the
+    // first version of this line ABORTED the whole suite under that mutation, so the cells below
+    // never reported and the kill set read as smaller than it was. A step whose only job is to
+    // arrange a precondition must never be able to fail the run.
     const rjsm = await jetstreamManager(rnc);
-    await rjsm.streams.delete(`KV_${possessionBucket(rspace)}`);
-    await rjsm.streams.delete(`KV_${attachmentBucket(rspace)}`);
+    const removeIfPresent = async (stream: string) => {
+      try { await rjsm.streams.delete(stream); } catch { /* already absent: the precondition holds */ }
+    };
+    await removeIfPresent(`KV_${possessionBucket(rspace)}`);
+    await removeIfPresent(`KV_${attachmentBucket(rspace)}`);
 
     // Only THIS space's streams. The broker still holds the main suite space and its drift cases,
     // and feeding the whole list to an exact-set-equality validator reports them all as `unexpected`.
