@@ -26,7 +26,7 @@ const myConnector: Connector = {
       env: { /* COTAL_* wiring from opts */ },
     };
   },
-  // optional: listModels, supportsModelVariant, supportsResume, transcriptChannel, pluginRoot
+  // optional: listModels, supportsModelVariant, supportsResume, eventChannel, pluginRoot
 };
 
 registry.register(myConnector);          // runs on import — that's what makes it "plug in"

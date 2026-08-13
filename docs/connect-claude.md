@@ -223,8 +223,9 @@ with the adapter:
 A managed session mirrors its own transcript onto a per-agent channel, **`events.<name>`**, so
 peers and cheap observer agents can read what the agent *actually* did: assistant text in
 full, tool calls as one-liners, results truncated, thinking omitted. Gated by
-`COTAL_EVENTS` (set for managed sessions; a personal session with the plugin never
-mirrors). An `events.` channel is a regular channel (durable, listed by `cotal_channels`,
+`COTAL_EVENTS`, which is **off by default** — the manager sets it for a managed session only
+when event publishing is enabled for that spawn (`COTAL_EVENTS_DEFAULT`, also off by default, or
+`--events`). A personal session with the plugin never mirrors. An `events.` channel is a regular channel (durable, listed by `cotal_channels`,
 readable on demand) with a rolling window, so long sessions age out early entries. In
 auth mode the launcher provisions publish rights for it alongside the agent's channels.
 
