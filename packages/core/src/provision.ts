@@ -71,6 +71,7 @@ import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
 } from "./subjects.js";
+import { possessionBucket, attachmentBucket } from "./artifact-index.js";
 import {
   epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities,
   operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
@@ -1345,6 +1346,7 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
     PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
     `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     objectStoreStream(artifactBucket(space)),
+    `KV_${possessionBucket(space)}`, `KV_${attachmentBucket(space)}`,
   ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
@@ -1644,6 +1646,10 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   const buckets = [
     presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
     recordsBucket, epAuthBucket, sessionsBucket,
+    // The artifact index stores. They must be in the CREATE grants as well as the delete grants
+    // below: a space resource has to appear in all five lists, and being in four of them is the
+    // failure that reads as correct.
+    possessionBucket, attachmentBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.

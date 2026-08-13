@@ -35,6 +35,8 @@ import {
   spaceBackupInventory,
   validateSpaceBackupInventory,
   ARTIFACT_STORE_MAX_BYTES,
+  possessionBucket,
+  attachmentBucket,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -91,6 +93,27 @@ try {
 
   const after = await live();
   check("space setup creates the artifact object store", after.includes(OBJ), after);
+  check("space setup creates the possession index store",
+    after.includes(`KV_${possessionBucket(SPACE)}`), after.filter((n) => n.includes("artpossess")));
+  check("space setup creates the attachment index store",
+    after.includes(`KV_${attachmentBucket(SPACE)}`), after.filter((n) => n.includes("artattach")));
+
+  // ---- THE SUBTRACTION LIST IS PINNED, AND THIS CELL IS WHY -------------------------------------
+  //
+  // Subtracting an unenumerated bucket by name is an honest workaround for ONE known, filed hole
+  // (#356). It becomes something worse the moment it reads as the house style: the next person adding
+  // a bucket meets a file where "if yours is not in the inventory, subtract it by name" is the
+  // established pattern, and a third hole gets normalised in without anyone deciding to.
+  //
+  // So the list is pinned to exactly the known set. Growing it now REDDENS a cell and costs a
+  // sentence, which makes adding to it a deliberate act rather than an edit nobody sees. When #356
+  // lands, this cell fails too — correctly — and the subtraction goes away with it.
+  {
+    const subtracted = after.filter(isUnenumeratedAuthority).sort();
+    const expected = [`KV_cotal_auth_${SPACE}`, `KV_cotal_records_${SPACE}`].sort();
+    check("the by-name subtraction is EXACTLY the known #356 set — it may not grow",
+      JSON.stringify(subtracted) === JSON.stringify(expected), { subtracted, expected });
+  }
 
   // THE LOAD-BEARING CELL. Exact set-equality between what the broker holds and what the inventory
   // declares — so a store created but unenumerated fails here, and one enumerated but never created

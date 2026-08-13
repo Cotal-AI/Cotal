@@ -15,6 +15,7 @@ import {
   artifactBucket,
   objectStoreStream,
 } from "./subjects.js";
+import { possessionBucket, attachmentBucket } from "./artifact-index.js";
 import { idFromCreds } from "./identity.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
@@ -131,6 +132,11 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
       // sweep of the space never sees it. Teardown is the sole STREAM.DELETE holder, so a stream
       // missing from this list is not merely un-deleted - nothing in the system can ever reap it.
       objectStoreStream(artifactBucket(opts.space)),
+      // The artifact INDEX stores. Same reasoning as the object store above, and the same trap: a
+      // bucket missing from this list is not merely un-deleted — teardown is the sole STREAM.DELETE
+      // holder, so nothing in the system could ever reap it.
+      `KV_${possessionBucket(opts.space)}`,
+      `KV_${attachmentBucket(opts.space)}`,
     ];
     for (const s of streams) await jsm.streams.delete(s).catch(() => {});
   } finally {

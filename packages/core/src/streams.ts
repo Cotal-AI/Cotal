@@ -41,6 +41,7 @@ import {
   principalKey,
   deprovisionTargetPrincipal,
 } from "./subjects.js";
+import { possessionBucket, attachmentBucket } from "./artifact-index.js";
 import { idFromCreds } from "./identity.js";
 import { ensureAuthorityStores } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
@@ -455,6 +456,17 @@ export async function setupSpaceStreams(opts: {
     // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates
     // them so neither daemon needs first-write stream creation. Create-or-verify, idempotent,
     // drift fails loud.
+    // The artifact INDEX stores. Created HERE — the list that actually brings them into existence.
+    // Adding them to the delete list, the grants and the backup inventory without this one is the
+    // four-of-five failure that reads as correct: `validateSpaceBackupInventory` is exact
+    // set-equality, so it caught the omission from the "enumerated but never created" direction the
+    // moment it ran against a real broker.
+    //
+    // No TTL: possession must OUTLIVE the lifecycle that earned it, so a delayed message can still
+    // attach after its publisher retires. A ttl here would reap the rows on a timer and re-fire the
+    // branch the whole design exists to close.
+    await kvm.create(possessionBucket(opts.space), { history: 1 });
+    await kvm.create(attachmentBucket(opts.space), { history: 1 });
     await ensureAuthorityStores(jsm, kvm, opts.space);
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.

@@ -23,6 +23,7 @@ import {
   artifactBucket,
   objectStoreStream,
 } from "./subjects.js";
+import { possessionBucket, attachmentBucket } from "./artifact-index.js";
 
 export type SpaceBackupSelection = "full" | "registry";
 export type SpaceBackupStreamClass = "messages" | "registry" | "authorization";
@@ -72,6 +73,13 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
+    // The INDEX stores follow the BYTES. §7 already decided that pin extends lifetime, not
+    // durability — artifacts do not survive a restore — so restoring possession and attachment rows
+    // over bytes that were never backed up would rebuild an index pointing at nothing: rows whose
+    // authorization passes and whose blob is gone. Excluding all three keeps them consistent, and
+    // restore rebuilds them empty.
+    { name: `KV_${possessionBucket(space)}`, class: "artifact" },
+    { name: `KV_${attachmentBucket(space)}`, class: "artifact" },
   ];
   return {
     backedUp,
