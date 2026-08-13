@@ -78,8 +78,31 @@ const isSafeNonNegInt = (n: unknown): n is number => Number.isSafeInteger(n) && 
  * already" from "this frontier is from a foreign vintage", which puts it in the same class as a
  * corrupt or tuple-mismatched document.
  *
- * Three named relations rather than one compound boolean: an operator who cannot see WHICH relation
- * broke cannot act on it, and a single fused check gives a mutation only one cell to kill.
+ * Named relations rather than one compound boolean: an operator who cannot see WHICH relation broke
+ * cannot act on it, and a single fused check gives a mutation only one cell to kill.
+ *
+ * **THERE IS DELIBERATELY NO `sourceCursor` RELATION HERE, AND THAT IS A CORRECTION.**
+ * An earlier version asserted `pending.sourceCursor >= frontier.sourceCursor` using string `<`.
+ * A cursor is **OPAQUE** — `DurableSource` defines it per source and states that a caller "never
+ * parses it". `JsonlFileSource` happens to emit `dev:ino:offset:seal`, and lexicographic order is
+ * NOT offset order once the digit width changes, so that check was wrong in BOTH directions:
+ *
+ *   frontier offset 8,   acked pending offset 45  → REFUSED a healthy WAL ("45" < "8")
+ *   frontier offset 170, acked pending offset 98  → ACCEPTED a mixed-vintage one ("98" > "170")
+ *
+ * The first wedges recovery on ordinary source growth across any digit boundary — on the exact
+ * crash window the `acked` state exists to survive. The second silently admits the mixed vintage
+ * the relation was written to refuse. Found independently by two reviewers, then reproduced here.
+ *
+ * The root cause is not the operator; it is that **ordering an opaque value requires parsing it**,
+ * and parsing it would bind this WAL to one source's format — breaking the abstraction the moment
+ * a store-backed source uses something else (OpenCode's `part.id`, a rollout path, an API token).
+ * So the relation is not fixed, it is REMOVED: it cannot be stated correctly at this layer.
+ *
+ * What remains is sufficient and well-defined, because it uses the WAL's OWN monotonic counters
+ * rather than a foreign key: an acked frame must be exactly the frontier's successor, and its
+ * ackSeq must be ahead of the frontier's. A document whose halves come from different vintages
+ * disagrees on those too, since both sides are written by this file.
  */
 function assertAckedVintage(path: string, p: WalPending, f: WalFrontier): void {
   if (p.state !== "acked") return;
@@ -99,13 +122,8 @@ function assertAckedVintage(path: string, p: WalPending, f: WalFrontier): void {
       "acked.seq === frontier.seq + 1",
       `pending.seq=${p.seq} frontier.seq=${f.seq} — an acked frame must be exactly the frontier's successor`,
     );
-  if (f.sourceCursor !== undefined && p.sourceCursor < f.sourceCursor)
-    throw new WalCorruptError(
-      path,
-      "acked.sourceCursor >= frontier.sourceCursor",
-      `pending.sourceCursor=${p.sourceCursor} frontier.sourceCursor=${f.sourceCursor} — the acked ` +
-        `frame was derived from source position BEHIND the frontier, which no single vintage produces`,
-    );
+  // NO sourceCursor comparison — see the note above. The cursor is opaque; ordering it here is not
+  // a thing this layer can do correctly, and doing it with string `<` was wrong in both directions.
 }
 
 function parseDoc(path: string, raw: string, threadId: string, principal: string): WalDoc {

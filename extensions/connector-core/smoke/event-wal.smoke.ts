@@ -157,9 +157,46 @@ try {
   await refuses("acked.seq must be exactly the frontier's successor",
     "acked.seq === frontier.seq + 1", () => EventWal.open(gapSeq, EXISTS));
 
-  const behind = p(); writeFileSync(behind, ackedDoc({ sourceCursor: "c0" }, {}));
-  await refuses("[B1] an acked frame derived from source BEHIND the frontier is refused",
-    "acked.sourceCursor >= frontier.sourceCursor", () => EventWal.open(behind, EXISTS));
+  // ── [B1] REAL CURSORS, ACROSS A DIGIT BOUNDARY. ──
+  //
+  // The fixtures above use "c0"/"c1"/"c2", which happen to sort lexicographically — and that
+  // accident hid a defect in BOTH directions. A real `JsonlFileSource` cursor is
+  // `dev:ino:offset:seal`, and string order is not offset order once the digit width changes:
+  //
+  //   frontier offset 8,   acked pending offset 45  → a healthy WAL was REFUSED  ("45" < "8")
+  //   frontier offset 170, acked pending offset 98  → a mixed-vintage one LOADED ("98" > "170")
+  //
+  // The first wedged recovery on ordinary source growth, on the exact crash window the `acked`
+  // state exists to survive. Found by two reviewers independently. The cursor is OPAQUE, so the
+  // relation was removed rather than repaired — ordering it needs parsing, and parsing binds this
+  // WAL to one source's format. These cells pin that the WAL does NOT order cursors: both load,
+  // and the seq relations still do the vintage work.
+  //
+  // This is the B1 question answered against reality rather than against the fixtures: toy cursors
+  // never leave the happy order, so no amount of mutation on the old suite could have found it.
+  const realCur = (off: number) => `66309:7734287:${off}:0123456789abcdef`;
+
+  /** Open, converting an UNEXPECTED refusal into a cell failure instead of aborting the suite.
+   *  Without this a re-added comparison throws here and the run dies before printing which cell
+   *  died — and an illegible kill set is indistinguishable from no mutation testing. */
+  const loads = async (what: string, path: string, wantCursor: string) => {
+    try {
+      const w = await EventWal.open(path, EXISTS);
+      c(what, w.pending?.state === "acked" && w.pending.sourceCursor === wantCursor, w.pending);
+    } catch (e) {
+      c(what, false, `REFUSED: ${(e as { invariant?: string }).invariant ?? (e as Error).message}`);
+    }
+  };
+
+  const digitCross = p();
+  writeFileSync(digitCross, ackedDoc({ sourceCursor: realCur(45) }, { sourceCursor: realCur(8) }));
+  await loads("[B1] a real cursor pair across a DIGIT BOUNDARY loads — recovery is not wedged by string order",
+    digitCross, realCur(45));
+
+  const lexInverted = p();
+  writeFileSync(lexInverted, ackedDoc({ sourceCursor: realCur(98) }, { sourceCursor: realCur(170) }));
+  await loads("[B1] and the inverse lexicographic pair also loads — the WAL does not order opaque cursors at all",
+    lexInverted, realCur(98));
 
   const noAckSeq = p(); writeFileSync(noAckSeq, doc({
     frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" },
