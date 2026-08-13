@@ -264,7 +264,7 @@ scopes the capability out. None is a wire concern.
    store and the manager re-signs it there, so the graph feed's writer renews end-to-end on a hosted
    backend (its data connection adopts each generation on a preflight-proven 75% timer). What still
    reads from a fixed on-disk path are the *static* `membership-observer.creds` and
-   `connection-evictor.creds` ($SYS creds, mintable only at `up`) and `membership.json`
+   `connection-evictor.creds` ($SYS creds, minted at the `up` that provisions the account and renewed by `up --rotate-sys`) and `membership.json`
    (`{accountId}`, non-secret config); those, plus the private provisioning wrapper, keep immediate
    live eviction and a fully-hosted feed a partial gap. Missing files degrade membership to
    traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
