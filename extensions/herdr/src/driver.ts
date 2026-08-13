@@ -312,14 +312,19 @@ export function closePane(session: string, paneId: string): void {
 }
 
 /** Move a pane into its own new tab labeled `label` (herdr closes the old tab when it becomes
- *  empty) and return the pane's updated record — the public pane id may change. Used for the
- *  default one-tab-per-agent layout. */
-export function paneMoveNewTab(session: string, paneId: string, label: string): HerdrAgent {
+ *  empty) and return the pane's updated record — the public pane id may change. `terminalId`
+ *  pins the response: a malformed or wrong-terminal record is rejected so a bad reply can
+ *  never make later metadata/cleanup target a different terminal. Used for the default
+ *  one-tab-per-agent layout. */
+export function paneMoveNewTab(session: string, paneId: string, label: string, terminalId: string): HerdrAgent {
   const result = run(session, ["pane", "move", paneId, "--new-tab", "--label", label, "--no-focus"]);
   const moved = (result.move_result as Record<string, unknown> | undefined)?.pane;
   if (!moved || typeof moved !== "object")
     throw new Error(`herdr: pane move returned no pane (${JSON.stringify(result)})`);
-  return parseAgent(moved as Record<string, unknown>);
+  const agent = parseAgent(moved as Record<string, unknown>);
+  if (agent.terminalId !== terminalId)
+    throw new Error(`herdr: pane move returned a different terminal (${agent.terminalId}, expected ${terminalId})`);
+  return agent;
 }
 
 /** Attach Cotal identity to a pane as display metadata tokens (visible in herdr's pane/agent

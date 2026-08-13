@@ -235,6 +235,51 @@ for (const h of [layoutA, layoutB, layoutC, layoutD]) {
 }
 ok("layout agents torn down", herdr.agentInfo(SESSION, "layout-a") === undefined);
 
+console.log("\n── partial-move cleanup ────────────────────────");
+
+// A move that SUCCEEDS server-side but returns a malformed/wrong response must not leak the
+// pane. The proxy herdr really moves the pane — to a NEW WORKSPACE, so the public pane id
+// genuinely changes and closing the stale pre-move id would provably leak — then garbles the
+// reply. Spawn must throw AND tear the moved pane down via the stable terminal id.
+const realHerdr = execFileSync("sh", ["-c", "command -v herdr"], { encoding: "utf8" }).trim();
+const proxyDir = mkdtempSync(join(tmpdir(), "cotal-herdr-proxybin-"));
+writeFileSync(
+  join(proxyDir, "herdr"),
+  `#!/bin/sh\n` +
+    `if [ "$3" = "pane" ] && [ "$4" = "move" ]; then\n` +
+    `  "${realHerdr}" "$1" "$2" pane move "$5" --new-workspace --no-focus >/dev/null 2>&1\n` +
+    `  if [ "$COTAL_SMOKE_GARBLE" = "wrong-terminal" ]; then\n` +
+    `    echo '{"id":"g","result":{"move_result":{"pane":{"pane_id":"w9:p9","terminal_id":"term_bogus","workspace_id":"w9"}},"type":"pane_move"}}'\n` +
+    `  else\n` +
+    `    echo '{"id":"g","result":{"move_result":{},"type":"pane_move"}}'\n` +
+    `  fi\n` +
+    `  exit 0\n` +
+    `fi\n` +
+    `exec "${realHerdr}" "$@"\n`,
+  { mode: 0o755 },
+);
+{
+  const realPath = process.env.PATH;
+  process.env.PATH = `${proxyDir}:${realPath}`;
+  try {
+    const dirsBefore = countLauncherDirs();
+    throws("a malformed move response fails the spawn", () =>
+      runtime.spawn("garble-a", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /returned no pane/);
+    ok("the really-moved pane is torn down (stale pre-move id would leak it)",
+      herdr.agentInfo(SESSION, "garble-a") === undefined);
+    ok("launcher cleaned up after the partial-move failure", countLauncherDirs() === dirsBefore);
+
+    process.env.COTAL_SMOKE_GARBLE = "wrong-terminal";
+    throws("a wrong-terminal move response is rejected", () =>
+      runtime.spawn("garble-b", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /different terminal/);
+    ok("wrong-terminal spawn leaves no pane behind", herdr.agentInfo(SESSION, "garble-b") === undefined);
+  } finally {
+    delete process.env.COTAL_SMOKE_GARBLE;
+    process.env.PATH = realPath;
+    rmSync(proxyDir, { recursive: true, force: true });
+  }
+}
+
 console.log("\n── launcher hygiene ────────────────────────────");
 
 const launcher = privateLauncher({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: "s3cr3t-token" } }, "/tmp");

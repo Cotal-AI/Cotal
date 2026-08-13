@@ -111,18 +111,23 @@ export class HerdrRuntime implements Runtime {
 
     const launcher = privateLauncher(spec, cwd);
     let agent: herdr.HerdrAgent | undefined;
+    let startedTerminalId: string | undefined;
     try {
       agent = herdr.agentStart(this.session, name, cwd, launcher.argv);
+      startedTerminalId = agent.terminalId;
       // Default layout: every agent in its own name-labeled tab (herdr's native behavior is
       // to split the focused tab, which `split` opts back into). The move may change the
-      // public pane id — keep the returned record.
-      if (layout === "tab") agent = herdr.paneMoveNewTab(this.session, agent.paneId, name);
+      // public pane id — keep the returned, terminal-pinned record.
+      if (layout === "tab") agent = herdr.paneMoveNewTab(this.session, agent.paneId, name, startedTerminalId);
       // Cosmetic but part of the spawn contract: fail loud, and don't leave the started pane behind.
       herdr.reportMetadata(this.session, agent.paneId, "cotal", { cotal: this.session });
     } catch (err) {
-      if (agent) {
+      if (startedTerminalId) {
+        // A move may have already changed the public pane id when the failure hit — never
+        // close whichever pane record happened to assign; re-resolve off the stable terminal.
         try {
-          herdr.closePane(this.session, agent.paneId);
+          const current = herdr.agentInfo(this.session, startedTerminalId);
+          if (current) herdr.closePane(this.session, current.paneId);
         } catch {
           /* best-effort teardown of the half-spawned pane */
         }
