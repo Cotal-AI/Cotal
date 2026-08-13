@@ -4482,7 +4482,7 @@ export class Manager {
    *      SNAPSHOT IT ENUMERATED, so a sibling mint that observes the gate and stages a ledger row
    *      WITHOUT the observe/open/commit fence can be staged and released AFTER that enumerate and
    *      never be revoked. This layer is closed exactly where BOTH sibling mint sites
-   *      ({@link mintAndStageGoalWriter}, {@link mintAndStageSessionWriter}) route their stage
+   *      ({@link mintAndStageGoalWriter}, {@link mintAndStageSessionLedger}) route their stage
    *      through `commitSiblingIssuance` (the revision-pinned CAS that makes a losing mint release
    *      nothing), and open exactly where they do not — state the mechanism, never the branch.
    *   2. THE BARRIER WINDOW. A gate FREEZE neither kills this connection nor advances the epoch,
