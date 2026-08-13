@@ -58,6 +58,7 @@ export * from "./registry.js";
 export * from "./auth-provider.js";
 export * from "./canonical.js";
 export * from "./artifact.js";
+export * from "./artifact-chunk.js";
 export * from "./parts.js";
 export * from "./schema-profile.js";
 export * from "./broker-floor.js";
