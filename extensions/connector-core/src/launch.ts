@@ -14,6 +14,7 @@
  * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
+import { createHash } from "node:crypto";
 import type { McpServerSpec } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
@@ -204,13 +205,57 @@ export function userAuthEnv(opts: {
  *  session shared one channel and therefore one retention budget.
  *
  *  **A grant on `events.<name>` does NOT cover `events.<name>.<session>`** — `patternCovers` is false
- *  in both directions between `a` and `a.>`, so a caller needing both must mint BOTH patterns. That
- *  is the manager's job, and it is why this returns the BASE channel only.
+ *  in both directions between `a` and `a.>`, so a caller needing both must mint BOTH patterns.
+ *
+ *  **NOTHING MINTS THE DESCENDANT PATTERN TODAY, AND NOTHING EMITS ON ONE.** An earlier version of
+ *  this comment said minting both "is the manager's job", which read as a description of existing
+ *  behaviour; the manager appends only `eventChannel(name)`. Per-session sub-channels are a LATER
+ *  step — no connector emits to one, so the absent grant is not a mute stream today. It becomes one
+ *  the moment anything publishes to `events.<name>.<session>`, and the grant must be minted in the
+ *  same change that starts emitting, not before and not after.
+ *
+ *  This is stated as an unbuilt future rather than a delegated duty because a comment asserting
+ *  another component's behaviour is a test nobody wrote — the third such overclaim found in this
+ *  surface (the seal's window, the resume barrier's write direction, and this).
  *
  *  Sanitizer kept exact (illegal runs collapse to a single `-`), so a name that mapped to one channel
  *  under the old prefix maps to one channel under the new one. */
 export function eventChannel(name: string): string {
-  return `events.${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+  const safe = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  // COLLISION-RESISTANT — deliberately NOT called injective, because it is not.
+  //
+  // A truncated digest cannot guarantee that no two inputs share an output; it makes the chance
+  // negligible. Injective would require a REVERSIBLE encoding, and encoding both case and every
+  // separator into `[a-z0-9_-]` would turn `Ada Lovelace` into something no operator can read on a
+  // channel list — a real cost against a vanishing risk. So the trade is taken deliberately and the
+  // name says which property it has. An earlier version of this comment said "INJECTIVE", which
+  // claimed universally what the cells prove over a measured set: the exact overclaim class this
+  // function was being fixed for.
+  //
+  // THE BOUND, stated so it can be judged rather than trusted: 16 hex characters of SHA-256 = 64
+  // bits, and the digest only has to separate names that ALREADY share a sanitised form. Two such
+  // names collide at ~2^-64; the birthday bound within one sanitised group is ~2^32 names.
+  //
+  // The sanitiser alone is not even collision-resistant: `assertValidName` deliberately allows internal spaces and
+  // dots ("human display names like 'Ada Lovelace'", `resolve.ts:80-84`), so `Alice Bob`,
+  // `Alice.Bob`, `alice bob` and `alice-bob` all collapsed to `events.alice-bob` — and case-folding
+  // collapses `Alice` onto `alice` besides. Measured: 8 valid distinct names → 3 channels.
+  //
+  // That is an ISOLATION defect, not a cosmetic one. The publish grant is minted FROM this value
+  // (`manager.ts`, the `eventChannel` append), so two distinct principals received the same grant
+  // and published to the same subject — a per-agent stream silently shared. Spawn de-duplication
+  // does not catch it: both foreground `uniqueMeshName` and the manager's funnel de-duplicate by
+  // exact roster NAME, never by resolved channel. Found by fmae-rev-sec, reachability confirmed by
+  // fmae-rev-eng and measured here.
+  //
+  // A name that is ALREADY channel-safe maps unchanged, so nothing that works today moves. Only a
+  // name that the sanitiser would alter gains a short digest of the EXACT original — which is what
+  // makes the mapping injective, since the digest distinguishes precisely the inputs the sanitiser
+  // fused. Rejecting unsafe names was the alternative and it is worse: it would break a naming
+  // grammar the product documents as supported.
+  return safe === name
+    ? `events.${safe}`
+    : `events.${safe}-${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
 }
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /

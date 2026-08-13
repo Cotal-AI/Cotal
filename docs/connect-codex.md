@@ -105,7 +105,7 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   still available. In the foreground that is your terminal; detached it is the manager's pty,
   which is exactly what `cotal attach` streams and drives. With no terminal at all (piped output,
   CI, a smoke) the host stays headless and prints an activity feed instead: the same peer either
-  way, only the UI differs. `--transcript` mirrors the feed to `tr-<name>`.
+  way, only the UI differs. `--events` publishes the feed to `events.<name>`.
   **Which mode you get** is decided by whether *stdout* is a terminal, and `COTAL_CODEX_TUI=1|0`
   overrides that check when it would guess wrong (a wrapper that redirects output, a CI run that
   wants deterministic text). It is read from the environment of **whichever process builds the

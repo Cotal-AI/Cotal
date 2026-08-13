@@ -73,6 +73,29 @@ export function downComplete(argv: string[]): CompletionResult {
 
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
+/**
+ * The refusal message when an in-flight cut was prepared by a build that writes a DIFFERENT resume
+ * document version, or `undefined` when the retry may proceed.
+ *
+ * **Exported so a cell can drive the shipped decision rather than restate it.** The decision is the
+ * subtle part: it must fire ONLY on a version mismatch, because the caller's `catch` also handles a
+ * genuine inventory mismatch where aborting is correct — and both surface as the same
+ * `invalid-transition`. Narrowing to the version case is what stops a data-loss path being traded
+ * for a wedged-cut one.
+ *
+ * Returning a message rather than throwing keeps the decision separable from the control flow it
+ * guards, so a test can ask "would this refuse?" without driving a durable cut.
+ */
+export function resumeVersionRefusal(preparedAt: number | undefined, attemptId: string): string | undefined {
+  if (preparedAt === undefined || preparedAt === MAINTENANCE_RESUME_DOCUMENT_VERSION) return undefined;
+  return (
+    `preservation attempt ${attemptId} was prepared by a different cotal (resume document version ` +
+    `${preparedAt}; this build writes ${MAINTENANCE_RESUME_DOCUMENT_VERSION}). Nothing has been ` +
+    `changed or deleted. Finish or discard the in-flight cut with the binary that started it, then ` +
+    `rerun \`cotal down --preserve-state\` with this one.`
+  );
+}
+
 export async function down(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string; space?: string };
   const requested = [...new Set(args.positionals)];
@@ -437,6 +460,29 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         const replan = reprepared.ok ? reprepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } : undefined;
         if (!replan?.inventory || (replan.failures?.length ?? 0) !== 0 || (replan.state !== "prepared" && replan.state !== "preserved"))
           throw new Error(reprepared.error ?? "manager could not re-prepare the recorded preservation attempt");
+        // A CUT PREPARED BY AN OLDER BINARY IS REFUSED WITHOUT ABORTING — the version mismatch is
+        // separated from a genuine inventory mismatch BEFORE the catch below, because the two need
+        // opposite handling and the catch cannot tell them apart.
+        //
+        // The journal's resume descriptor carries the version the cut was prepared at. If it is not
+        // ours, `writeMaintenanceResumeDocument` refuses on the descriptor comparison, the catch
+        // below fires, and it calls `abortMaintenanceCut` unconditionally — **deleting the journal
+        // while a commit intent may still be present**, with children possibly already stopped. That
+        // is a state no code was written to read: worse than either finishing or refusing.
+        //
+        // WHY NOT RE-PREPARE AT THE JOURNAL'S OWN VERSION, which would be the least surprising
+        // behaviour: `replan.inventory` above comes from the RUNNING manager, i.e. this binary, so
+        // it is already the NEW shape. Writing it under the OLD version stamp would produce a
+        // document whose version claims a compatibility its contents do not have — the same
+        // false-stamp defect as a migration that reports success and changes nothing, and aimed at
+        // exactly the older binary the version barrier exists to protect.
+        //
+        // So the honest behaviour is to stop. A version bump is a breaking change, and an operation
+        // in flight across one should refuse and say so rather than guess. Nothing is deleted, so
+        // the cut remains finishable or discardable under the binary that prepared it.
+        const versionRefusal = resumeVersionRefusal(readMaintenanceJournal(lock.root)?.resume.version, attemptId);
+        if (versionRefusal) throw new Error(versionRefusal);
+
         try {
           writeMaintenanceResumeDocument(lock, {
             version: MAINTENANCE_RESUME_DOCUMENT_VERSION,

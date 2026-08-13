@@ -23,10 +23,12 @@
  *
  * Run: pnpm smoke:event-wal
  */
-import { mkdtempSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, statSync, symlinkSync, readFileSync, constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventWal, WalCorruptError, EVENT_WAL_VERSION } from "../src/event-wal.js";
+import { EventWal, WalCorruptError, EVENT_WAL_VERSION, openExclusiveNoFollow } from "../src/event-wal.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -154,8 +156,61 @@ try {
     "acked.ackSeq > frontier.lastSubjectSeq", () => EventWal.open(staleAck, EXISTS));
 
   const gapSeq = p(); writeFileSync(gapSeq, ackedDoc({ seq: 4 }, {}));
-  await refuses("acked.seq must be exactly the frontier's successor",
-    "acked.seq === frontier.seq + 1", () => EventWal.open(gapSeq, EXISTS));
+  await refuses("a pending frame must be exactly the frontier's successor",
+    "pending.seq === frontier.seq + 1", () => EventWal.open(gapSeq, EXISTS));
+
+  // ── THE sent_unacked PATH, WHICH USED TO BE ALMOST UNGUARDED ──
+  //    Every relation above ran only for `acked`. `sent_unacked` — the crash window transition 1
+  //    exists to survive — loaded with an `E` that disagreed with the frontier, a `seq` that was not
+  //    its successor, or an `ackSeq` contradicting its own tag. Recovery would then retry a frozen
+  //    expectation that cannot be this frontier's honest successor: permanent CAS halt, or a publish
+  //    at the wrong position, with no loud corrupt at open. I wrote three named relations for the
+  //    path that had already succeeded and almost none for the one still in flight.
+  const sentDoc = (over: Record<string, unknown>) => doc({
+    frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" },
+    pending: { state: "sent_unacked", id: "ok", E: 5, seq: 2, sourceCursor: "c2", ...over },
+  });
+  const sentOk = p(); writeFileSync(sentOk, sentDoc({}));
+  const sentLoaded = await EventWal.open(sentOk, EXISTS);
+  c("CONTROL: a well-formed sent_unacked pending loads (so the refusals below are not vacuous)",
+    sentLoaded.pending?.state === "sent_unacked");
+
+  const sentAck = p(); writeFileSync(sentAck, sentDoc({ ackSeq: 99 }));
+  await refuses("a sent_unacked pending carrying an ackSeq contradicts its own tag",
+    "sent_unacked has no ackSeq", () => EventWal.open(sentAck, EXISTS));
+
+  const sentE = p(); writeFileSync(sentE, sentDoc({ E: 0 }));
+  await refuses("a frozen E that is not the frontier's tip is refused",
+    "pending.E === frontier.lastSubjectSeq", () => EventWal.open(sentE, EXISTS));
+
+  const sentSeq = p(); writeFileSync(sentSeq, sentDoc({ seq: 9 }));
+  await refuses("a sent_unacked seq that is not the frontier's successor is refused",
+    "pending.seq === frontier.seq + 1", () => EventWal.open(sentSeq, EXISTS));
+
+  // ── THE TRANSITION API REFUSES BEFORE THE DURABLE WRITE, not on the boot after it ──
+  {
+    const api = await EventWal.open(p(), T);
+    for (const bad of [" ", "bad\nid", "a".repeat(65), "has.dots", ""]) {
+      let threw = false;
+      try { await api.beginSend({ id: bad, E: 0, seq: 1, sourceCursor: "c" }); } catch { threw = true; }
+      c(`beginSend refuses an id the WIRE would reject: ${JSON.stringify(bad).slice(0, 12)}`, threw);
+    }
+    let succession = false;
+    try { await api.beginSend({ id: "ok-id", E: 3, seq: 1, sourceCursor: "c" }); } catch { succession = true; }
+    c("beginSend refuses an E that is not the frontier's tip", succession);
+
+    // recordAck(-1) previously ACCEPTED, fold() then persisted lastSubjectSeq = -1, and the NEXT
+    // open refused the file — one bad ack durably bricked the WAL while every call reported success.
+    await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c1" });
+    let ackThrew = false;
+    try { await api.recordAck(-1); } catch { ackThrew = true; }
+    c("recordAck refuses a negative ackSeq BEFORE the durable write", ackThrew);
+    let staleAckThrew = false;
+    try { await api.recordAck(0); } catch { staleAckThrew = true; }
+    c("recordAck refuses an ackSeq that is not ahead of the frontier's tip", staleAckThrew);
+    c("and the WAL is still openable afterwards — a refused ack cannot brick it",
+      (await EventWal.open(api.path, EXISTS)).pending?.state === "sent_unacked");
+  }
 
   // ── [B1] REAL CURSORS, ACROSS A DIGIT BOUNDARY. ──
   //
@@ -220,6 +275,91 @@ try {
   await secret.recordAck(1);
   c("and it is STILL 0600 after a rewrite (the rename must not restore a default mode)",
     (statSync(secret.path).mode & 0o777) === 0o600, (statSync(secret.path).mode & 0o777).toString(8));
+
+  // ── THE WRITE PATH UNDER A CONTESTED TEMP ──
+  //
+  // The old write used a temp name derived from `path` + `pid` (predictable) and `open(tmp, "w",
+  // 0o600)`. Both halves were exploitable and both were reproduced by reviewers and then here:
+  //   - `"w"` does not re-chmod an EXISTING inode, so a planted 0644 temp survived as the WAL's
+  //     mode and the file holding `pending.id` — a pre-publication secret by this class's own
+  //     argument — ended up world-readable under a comment claiming 0600;
+  //   - `"w"` follows symlinks, so a symlink planted at the predicted name made the next transition
+  //     truncate an arbitrary file.
+  //
+  // TWO DEFENCES, AND THE CELLS PROVE THEM SEPARATELY, because a random name makes a plant MISS
+  // while the flags make it REFUSE — and only the second is a guarantee. Testing just the outcome
+  // would let the flags rot silently behind the randomisation.
+  {
+    const wd = mkdtempSync(join(tmpdir(), "wal-contested-"));
+    try {
+      // (a) OUTCOME: a plant at the OLD predictable name no longer captures the WAL's mode.
+      const target = join(wd, "w.json");
+      const oldStyle = join(wd, `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`);
+      writeFileSync(oldStyle, "", { mode: 0o644 });
+      const contested = await EventWal.open(target, T);
+      await contested.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1" });
+      c("a planted 0644 temp does NOT become the WAL's mode — it is 0600 on the surviving inode",
+        (statSync(target).mode & 0o777) === 0o600, (statSync(target).mode & 0o777).toString(8));
+
+      // (b) OUTCOME: a symlink planted at the old predictable name does not get written through.
+      const victim = join(wd, "victim");
+      writeFileSync(victim, "DO_NOT_CLOBBER");
+      const t2 = join(wd, "w2.json");
+      symlinkSync(victim, join(wd, `.${createHash("sha256").update(t2).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`));
+      const other = await EventWal.open(t2, T);
+      await other.beginSend({ id: "x", E: 0, seq: 1, sourceCursor: "c1" });
+      c("a planted symlink at the old temp name does not get clobbered through",
+        readFileSync(victim, "utf8") === "DO_NOT_CLOBBER", readFileSync(victim, "utf8"));
+
+      // (c) THE FLAGS THEMSELVES, tested directly — the guarantee that survives if the name ever
+      //     becomes predictable again. O_EXCL must refuse an existing file; O_NOFOLLOW must refuse
+      //     a symlink. Without this the randomisation alone would be carrying the whole defence.
+      const existing = join(wd, "already-there");
+      writeFileSync(existing, "x");
+      // Drives the SHIPPED helper, not a locally-composed flag set. The first version of these two
+      // cells rebuilt the flags in the test and a mutation reverting the real open to `"w"` left the
+      // suite fully green — a cell testing a copy of the rule. Caught by running the mutation.
+      let exclCode = "";
+      try { const fh = await openExclusiveNoFollow(existing); await fh.close(); } catch (e) { exclCode = String((e as NodeJS.ErrnoException).code); }
+      c("the write flags REFUSE an existing file (O_EXCL), not adopt it", exclCode === "EEXIST", exclCode || "did not throw");
+
+      const link = join(wd, "a-symlink");
+      symlinkSync(victim, link);
+      let followCode = "";
+      try { const fh = await openExclusiveNoFollow(link); await fh.close(); } catch (e) { followCode = String((e as NodeJS.ErrnoException).code); }
+      c("the write flags REFUSE a symlink (O_NOFOLLOW/O_EXCL), never follow it",
+        followCode === "ELOOP" || followCode === "EEXIST", followCode || "did not throw");
+    } finally {
+      rmSync(wd, { recursive: true, force: true });
+    }
+  }
+
+  // ── MUTATIONS ARE SERIALIZED: memory and disk cannot disagree ──
+  //    Two concurrent `beginSend` calls both read `this.doc.pending === null` before either durable
+  //    replace finished — the guard is an in-memory read, not atomic with the write across its
+  //    `await` points. Reviewers reproduced the split (memory "A", disk "B"), which breaks the one
+  //    guarantee this file exists for: that `id` and `E` are frozen AND agreed. Note this cell is
+  //    inherently racy to observe — my own first reproduction happened to land both on the same
+  //    value — so it asserts the INVARIANT (memory === disk, exactly one winner) rather than a
+  //    particular winner.
+  {
+    const rd = mkdtempSync(join(tmpdir(), "wal-concurrent-"));
+    try {
+      const rp = join(rd, "r.json");
+      const w = await EventWal.open(rp, T);
+      const settled = await Promise.allSettled([
+        w.beginSend({ id: "A", E: 0, seq: 1, sourceCursor: "c1" }),
+        w.beginSend({ id: "B", E: 0, seq: 2, sourceCursor: "c2" }),
+      ]);
+      const won = settled.filter((r) => r.status === "fulfilled").length;
+      c("exactly ONE concurrent beginSend wins; the other is refused cleanly", won === 1, settled.map((r) => r.status));
+      const onDisk = JSON.parse(readFileSync(rp, "utf8")).pending?.id;
+      c("memory and disk agree on the frozen id after a concurrent race", w.pending?.id === onDisk,
+        { memory: w.pending?.id, disk: onDisk });
+    } finally {
+      rmSync(rd, { recursive: true, force: true });
+    }
+  }
 
   // ── one emit unit is ONE pending frame (`[P8]`) ──
   const single = await EventWal.open(p(), T);

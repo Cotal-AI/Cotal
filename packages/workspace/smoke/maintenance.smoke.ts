@@ -622,36 +622,58 @@ if (process.platform !== "win32") {
     };
   };
 
-  const v1 = placeDocument({
-    version: 1,
-    inventory: [{ id: "legacy-agent" }],
-    launch: { runtime: "pty", transcript: true },
+  // THE SHAPE BELOW IS THE ONE `cotal down --preserve-state` ACTUALLY WRITES, and that distinction
+  // is the whole finding. `down.ts` persists `launch: { attemptId, space, server, storeDir, mode }`
+  // — the top-level `launch` NEVER carries an agent flag — while the retained agents, and their
+  // `transcript`/`events` flag, live at `inventory.agents[].launch`.
+  //
+  // The previous version of these cells put the flag at the TOP LEVEL, and the migration rewrote it
+  // there, so both agreed and the suite was green while a real document migrated NOTHING and still
+  // stamped itself v2. Hand-building a fixture does not make it real; it makes it the author's idea
+  // of real, and the same understanding produced the fixture and the code. Found by fmae-rev-sec.
+  const legacyAgent = (launch: Record<string, unknown>) => ({
+    space: "s", name: "worker", identity: { mode: "open", id: "p", lifecycleUid: "u" },
+    launch: { connector: "c", runtime: "pty", cwd: "/tmp", source: { kind: "persona", ref: "worker", configPath: "/tmp/p.md", configSha256: "x" }, allowSubscribe: ["general"], ...launch },
+    dependencies: [], spawner: "local.manager", startedAt: "now",
   });
-  const migrated = readMaintenanceResumeDocument<JsonValue, { runtime?: string; events?: unknown; transcript?: unknown }>(p.root, v1);
+  const realDoc = (agents: unknown[]) => ({
+    version: 1,
+    inventory: { space: "s", agents },
+    launch: { attemptId: "a1", space: "s", server: "nats://x", storeDir: "/tmp/x", mode: "open" },
+  });
+  type MigratedInv = { agents: { launch: Record<string, unknown> }[] };
+
+  const v1 = placeDocument(realDoc([legacyAgent({ transcript: true })]));
+  const migrated = readMaintenanceResumeDocument<MigratedInv, Record<string, unknown>>(p.root, v1);
   check("a v1 resume document is READ, not refused (an existing preserved cut must still resume)",
     migrated.version === MAINTENANCE_RESUME_DOCUMENT_VERSION);
-  check("v1 `launch.transcript` migrates to `launch.events`, carrying the value",
-    migrated.launch.events === true && !("transcript" in migrated.launch));
-  check("the migration leaves the rest of `launch` untouched", migrated.launch.runtime === "pty");
-  check("and it leaves the inventory untouched",
-    JSON.stringify(migrated.inventory) === JSON.stringify([{ id: "legacy-agent" }]));
+  check("the AGENT's `launch.transcript` migrates to `launch.events`, carrying the value",
+    migrated.inventory.agents[0].launch.events === true && !("transcript" in migrated.inventory.agents[0].launch));
+  check("the migration leaves the rest of the agent's launch untouched",
+    migrated.inventory.agents[0].launch.runtime === "pty" && migrated.inventory.agents[0].launch.connector === "c");
+  check("and it leaves the document's own top-level launch untouched",
+    JSON.stringify(Object.keys(migrated.launch).sort()) === JSON.stringify(["attemptId", "mode", "server", "space", "storeDir"]));
 
-  // THE OTHER POLARITY, and it is here because I built this migration AFTER reading the same gap
-  // reported against the manager's parser — and reproduced it anyway. `transcript: false` is a real
-  // persisted state (an operator who ran `--no-transcript`) and must migrate to `events: false`.
-  // Without this cell, a migration mapping every legacy value to `true` passes: the cell above only
-  // feeds `true`, and the both-keys cell below is satisfied by `events` already being present.
-  // Disabled would silently become enabled on resume — the disclosure direction, not the harmless
-  // one.
-  const off = placeDocument({ version: 1, inventory: [], launch: { transcript: false } });
-  check("v1 `transcript: false` migrates to `events: false` — disabled stays disabled",
-    readMaintenanceResumeDocument<JsonValue, { events?: unknown }>(p.root, off).launch.events === false);
+  // THE OTHER POLARITY. `transcript: false` is a real persisted state (an operator who ran
+  // `--no-transcript`) and must migrate to `events: false`. Without this cell a migration mapping
+  // every legacy value to `true` passes, and disabled would silently become enabled on resume —
+  // the disclosure direction, not the harmless one.
+  const off = placeDocument(realDoc([legacyAgent({ transcript: false })]));
+  check("agent `transcript: false` migrates to `events: false` — disabled stays disabled",
+    readMaintenanceResumeDocument<MigratedInv, Record<string, unknown>>(p.root, off).inventory.agents[0].launch.events === false);
 
-  // A self-contradicting document: `events` wins, never OR-ed, so two disagreeing values cannot
-  // silently resolve to the permissive one.
-  const both = placeDocument({ version: 1, inventory: [], launch: { transcript: true, events: false } });
-  check("when a v1 document carries BOTH keys, `events` wins and `transcript` is dropped",
-    readMaintenanceResumeDocument<JsonValue, { events?: unknown }>(p.root, both).launch.events === false);
+  // Self-contradicting: `events` wins, never OR-ed.
+  const both = placeDocument(realDoc([legacyAgent({ transcript: true, events: false })]));
+  check("when an agent carries BOTH keys, `events` wins and `transcript` is dropped",
+    readMaintenanceResumeDocument<MigratedInv, Record<string, unknown>>(p.root, both).inventory.agents[0].launch.events === false);
+
+  // MULTIPLE agents: every retained agent migrates, not just the first.
+  const many = placeDocument(realDoc([legacyAgent({ transcript: true }), legacyAgent({ transcript: false }), legacyAgent({ events: true })]));
+  const manyOut = readMaintenanceResumeDocument<MigratedInv, Record<string, unknown>>(p.root, many);
+  check("EVERY retained agent migrates, not only the first",
+    manyOut.inventory.agents.map((a) => a.launch.events).join(",") === "true,false,true" &&
+    manyOut.inventory.agents.every((a) => !("transcript" in a.launch)),
+    manyOut.inventory.agents.map((a) => a.launch));
 
   // THE DOWNGRADE BARRIER. A document from a NEWER binary is refused with an operator-facing error
   // naming the version and the remedy — never coerced, never partially read.
@@ -664,6 +686,34 @@ if (process.platform !== "win32") {
     barrierMessage.includes(String(MAINTENANCE_RESUME_DOCUMENT_VERSION + 1)) &&
     barrierMessage.includes(String(MAINTENANCE_RESUME_DOCUMENT_VERSION)) &&
     /upgrade/i.test(barrierMessage), barrierMessage);
+
+  // ── THE BARRIER ON THE *WRITE* PATH — the direction the suite never tested ──
+  //
+  // Every cell above drives READS: a newer document is refused when read. Nothing drove the WRITE
+  // path, and it never inspected an existing `resume.json` before replacing it — so an OLDER build
+  // silently destroyed a NEWER document, falsifying this file's own comment claiming that cannot
+  // happen. The suite covered the direction that was already safe and skipped the one that loses
+  // data. Found by fmae-rev-sec.
+  {
+    const future = placeDocument({ version: MAINTENANCE_RESUME_DOCUMENT_VERSION + 1, inventory: ["future-only"], launch: {} });
+    void future;
+    const before = readFileSync(paths.resume, "utf8");
+    let refused = "";
+    try {
+      // MUST be a document this build would otherwise accept — `realDoc` stamps v1, which the
+      // writer's own validation rejects before the barrier is ever reached, so the cell would have
+      // "passed" on an unrelated refusal. Caught by asserting WHICH refusal, not that one occurred.
+      writeMaintenanceResumeDocument(lock, {
+        ...realDoc([legacyAgent({ events: true })]),
+        version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
+      } as never);
+    } catch (e) { refused = (e as Error).message; }
+    check("the WRITE path refuses to overwrite a NEWER resume document", refused !== "", "no refusal");
+    check("the refusal names both versions and the remedy",
+      /version \d+/.test(refused) && /upgrade/i.test(refused), JSON.stringify(refused));
+    check("and the newer document is BYTE-IDENTICAL afterwards — nothing was changed",
+      readFileSync(paths.resume, "utf8") === before);
+  }
 
   const unknown = placeDocument({ version: 0, inventory: [], launch: {} });
   expectCode("an unknown version is refused rather than coerced", "resume-invalid",

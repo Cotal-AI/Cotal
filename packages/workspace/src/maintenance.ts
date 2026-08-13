@@ -1286,6 +1286,29 @@ function refuseResumeVersion(version: unknown, paths: { readonly resume: string;
     { root: paths.root, paths: [paths.resume] });
 }
 
+/**
+ * Rename `launch.transcript` → `launch.events` on every retained agent, leaving everything else
+ * byte-identical. `events` wins if both are present — never OR-ed, since two disagreeing values must
+ * not silently resolve to the permissive one, and `transcript: false` must survive as `events: false`
+ * (an operator who ran `--no-transcript` does not get a live stream back on resume).
+ */
+function migrateInventoryAgents(inventory: unknown): unknown {
+  if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)) return inventory;
+  const inv = inventory as { agents?: unknown };
+  if (!Array.isArray(inv.agents)) return inventory;
+  return {
+    ...(inventory as Record<string, unknown>),
+    agents: inv.agents.map((agent) => {
+      if (!agent || typeof agent !== "object" || Array.isArray(agent)) return agent;
+      const a = agent as { launch?: unknown };
+      const launch = a.launch;
+      if (!launch || typeof launch !== "object" || Array.isArray(launch) || !("transcript" in launch)) return agent;
+      const { transcript, ...rest } = launch as Record<string, unknown>;
+      return { ...(agent as Record<string, unknown>), launch: "events" in rest ? rest : { ...rest, events: transcript } };
+    }),
+  };
+}
+
 function migrateResumeDocument(parsed: unknown, paths: { readonly resume: string; readonly root: string }): unknown {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
   const doc = parsed as { version?: unknown; launch?: unknown };
@@ -1294,14 +1317,39 @@ function migrateResumeDocument(parsed: unknown, paths: { readonly resume: string
   if (version === MAINTENANCE_RESUME_DOCUMENT_VERSION) return parsed;
   if (version !== 1) refuseResumeVersion(version, paths);
 
-  // v1 → v2: rename the launch flag, carrying the decision described above.
-  const launch = doc.launch;
-  let migratedLaunch = launch;
-  if (launch && typeof launch === "object" && !Array.isArray(launch) && "transcript" in launch) {
-    const { transcript, ...rest } = launch as Record<string, unknown>;
-    migratedLaunch = "events" in rest ? rest : { ...rest, events: transcript };
+  // v1 → v2: rename the launch flag on EVERY RETAINED AGENT.
+  //
+  // **THE FLAG LIVES AT `inventory.agents[].launch`, NOT AT THE DOCUMENT'S TOP-LEVEL `launch`.**
+  // An earlier version of this migration rewrote the top-level `launch`, which `cotal down
+  // --preserve-state` writes as `{ attemptId, space, server, storeDir, mode }` (`down.ts`) and which
+  // therefore NEVER carries an agent flag. It stamped the document v2 and changed nothing — a false
+  // success, masked downstream by the manager's parser alias. Its fixture built the flag at the top
+  // level because the same understanding produced both the fixture and the code, so the two agreed
+  // with each other and neither agreed with the disk.
+  //
+  // The inventory is manager-shaped by construction — `down.ts` persists the manager's own
+  // `replan.inventory` verbatim — so walking `agents[].launch` here is reading a real shape, not
+  // guessing at one. The walk is deliberately defensive: anything that is not an agent array with
+  // object launches is passed through untouched rather than coerced, because a document we do not
+  // recognise is not one to rewrite.
+  const migratedInventory = migrateInventoryAgents((parsed as { inventory?: unknown }).inventory);
+  return { ...(parsed as Record<string, unknown>), version: MAINTENANCE_RESUME_DOCUMENT_VERSION, inventory: migratedInventory };
+}
+
+/**
+ * The version stamped on an existing resume document, or `undefined` when there is none to read.
+ *
+ * Deliberately tolerant: a missing, unreadable or unparseable file returns `undefined` so the write
+ * proceeds — this guard exists to stop a NEWER document being destroyed, not to make every damaged
+ * file un-writable. A corrupt document is the READ path's problem and it already fails loud there.
+ */
+function readExistingResumeVersion(resumePath: string): number | undefined {
+  try {
+    const v = (JSON.parse(readFileSync(resumePath, "utf8")) as { version?: unknown }).version;
+    return typeof v === "number" ? v : undefined;
+  } catch {
+    return undefined;
   }
-  return { ...(parsed as Record<string, unknown>), version: MAINTENANCE_RESUME_DOCUMENT_VERSION, launch: migratedLaunch };
 }
 
 function resumeBytes(document: MaintenanceResumeDocument): {
@@ -1374,6 +1422,30 @@ export function writeMaintenanceResumeDocument<Inventory extends JsonValue, Laun
       });
     return journal.resume;
   }
+  // NEVER OVERWRITE A NEWER DOCUMENT. The barrier was enforced on READS and absent on WRITES.
+  //
+  // `readMaintenanceResumeDocument` refuses a version above ours — that is the downgrade barrier, and
+  // it is what every read-side test exercises. But nothing inspected an existing `resume.json` before
+  // the rename below replaced it, so an OLDER build silently destroyed a NEWER document: reproduced
+  // with a v3 document and the v2 writer, `overwritten = true, afterVersion = 2`. That directly
+  // falsified this file's own comment claiming older builds never rewrite a newer document.
+  //
+  // Reachable outside a constructed case: a writer that runs before `beginMaintenanceCut` leaves a
+  // `resume.json` with no journal, which is exactly the state the branch above does not cover.
+  //
+  // The general shape, worth more than the fix: **a barrier must be asserted on every path that can
+  // cross it, not on the direction it was written for.** "Both sides" is not only shrink-and-widen;
+  // it is read-and-write. This is the second read/write asymmetry in this lane — `O_NOFOLLOW` on a
+  // read path with the write path open was the first.
+  const existingVersion = readExistingResumeVersion(paths.resume);
+  if (existingVersion !== undefined && existingVersion > MAINTENANCE_RESUME_DOCUMENT_VERSION)
+    maintenanceError("resume-invalid",
+      `refusing to overwrite the resume document at ${paths.resume}: it is version ${existingVersion} ` +
+      `and this build writes ${MAINTENANCE_RESUME_DOCUMENT_VERSION}. It was written by a NEWER cotal — ` +
+      `upgrade this installation rather than replacing a document it cannot read. Nothing was changed.`,
+      { root: lock.root, paths: [paths.resume],
+        recourse: [{ action: "repair", description: "Upgrade cotal to a build that writes this document version.", command: "npm i -g cotal-ai@latest", paths: [paths.resume] }] });
+
   const tmp = `${paths.resume}.${process.pid}.${randomUUID()}.tmp`;
   try {
     writePrivateExclusive(tmp, serialized.data);

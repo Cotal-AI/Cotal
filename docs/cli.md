@@ -473,7 +473,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--cwd <dir>` | this cwd | Working directory to root the agent at |
 | `--prompt <text>` | — | Initial prompt auto-submitted at start |
 | `--resume <id>` | — | Fork an existing session id into the mesh (claude only) |
-| `--transcript` / `--no-transcript` | off | Mirror the session transcript to `tr-<name>` |
+| `--events` / `--no-events` | off | Publish the session's agent events to `events.<name>` |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |

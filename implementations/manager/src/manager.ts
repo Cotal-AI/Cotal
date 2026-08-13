@@ -25,6 +25,7 @@ import {
   actionContext,
   parsePrincipalKey,
   parseShareSelection,
+  channelInAllow,
   principalKey,
   probeConnect,
   provisionAgent,
@@ -268,6 +269,38 @@ export type ManagerResumeIdentity =
       sentinelCredential: { kind: "file"; path: string; sha256: string };
       health: { kind: "file"; path: string };
     };
+
+/**
+ * The CHANNEL patterns a minted creds file actually grants publish on.
+ *
+ * Reads the JWT's `nats.pub.allow` and strips each subject down to its channel segment, so the
+ * result can be compared with `channelInAllow` — the same matcher the grant is minted through —
+ * rather than by string equality against a whole subject.
+ *
+ * Returns `undefined` when the file cannot be read or parsed, which the caller treats as a REFUSAL
+ * rather than as "no grant": an unreadable credential is an unknown, and resuming on an unknown is
+ * the guess this whole path exists to avoid.
+ */
+function credentialPublishGrants(credsPath: string): string[] | undefined {
+  try {
+    const jwt = readFileSync(credsPath, "utf8")
+      .split("\n")
+      .find((l) => l && !l.startsWith("-") && l.split(".").length === 3);
+    if (!jwt) return undefined;
+    const claims = JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")) as {
+      nats?: { pub?: { allow?: string[] } };
+    };
+    const allow = claims.nats?.pub?.allow;
+    if (!Array.isArray(allow)) return undefined;
+    // `cotal.<space>.chat.<principal>.<channel…>` -> `<channel…>`; anything without a chat segment
+    // is not a channel grant and is dropped rather than guessed at.
+    return allow
+      .map((s) => { const i = s.indexOf(".chat."); if (i < 0) return ""; const rest = s.slice(i + ".chat.".length); const j = rest.indexOf("."); return j < 0 ? "" : rest.slice(j + 1); })
+      .filter((c) => c.length > 0);
+  } catch {
+    return undefined;
+  }
+}
 
 export interface ManagerResumeAgent {
   space: string;
@@ -3449,7 +3482,35 @@ export class Manager {
         if (!connector.eventChannel)
           return { ok: false, error: `${connector.name} connector does not support event publishing (events)` };
         const required = connector.eventChannel(entry.name);
-        if (!(entry.launch.allowPublish ?? []).includes(required))
+
+        // VERIFY THE CREDENTIAL, NOT THE INVENTORY'S CLAIM ABOUT IT.
+        //
+        // `entry.launch.allowPublish` records what was REQUESTED at spawn. The credential records
+        // what was GRANTED. In static mode those can differ — a cred minted without the event
+        // channel resumed successfully whenever the inventory claimed it, because the preflight
+        // read the record instead of the artifact. That is the same defect class as verifying a
+        // preflight function's behaviour without checking that anything calls it.
+        //
+        // The credential's own path and digest are already part of the retained identity, so
+        // reading it is inside the trust model the resume already relies on, not a new one.
+        if (entry.identity.mode === "static") {
+          const granted = credentialPublishGrants(entry.identity.credential.path);
+          if (granted === undefined)
+            return { ok: false, error: `retained agent ${entry.name} has events enabled but its credential at ${entry.identity.credential.path} could not be read to confirm the grant` };
+          if (!channelInAllow(granted, required))
+            return {
+              ok: false,
+              error:
+                `retained agent ${entry.name} has events enabled but its CREDENTIAL does not grant ` +
+                `"${required}" (the inventory claims it; the minted JWT does not). Resuming would ` +
+                `launch it with a mute event stream. Re-spawn it with --events.`,
+            };
+        }
+        // `channelInAllow`, not `includes`. An exact string match is a LOCAL COPY of the grant rule
+        // and a wrong one: a legitimate wildcard grant (`events.>`, `>`) genuinely covers this
+        // channel and would have been refused, so the preflight added to stop a mute stream would
+        // instead have blocked healthy resumes. Drive the shipped matcher; never restate its rule.
+        if (!channelInAllow(entry.launch.allowPublish ?? [], required))
           return {
             ok: false,
             error:

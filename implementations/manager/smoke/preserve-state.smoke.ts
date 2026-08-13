@@ -477,6 +477,30 @@ let openInventory: ManagerResumeAgent;
   check("open resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("resume"), capturedLaunch?.lifecycleUid);
 }
 
+// ── WHERE THE WRITER ACTUALLY PUTS THE PER-AGENT FLAG ──
+//
+// This cell exists so the migration and its fixture cannot drift back into agreeing with each other
+// while both disagree with the disk. The v1→v2 migration originally rewrote the resume document's
+// TOP-LEVEL `launch`, and its fixture put the flag there too — one author, one mental model, two
+// artifacts that agreed and neither of which matched what `cotal down --preserve-state` writes. The
+// document stamped itself v2 and migrated nothing.
+//
+// So: assert the LOCATION against a real retained inventory, here in the manager where the type is
+// real. If `down.ts` ever moves the flag, this cell fails — and the migration cell in the workspace
+// suite, which reads from that same location, fails with it. Neither is checking anyone's memory of
+// the format.
+{
+  // openInventory is a real `ManagerResumeAgent` — the same type `down.ts` persists as
+  // `replan.inventory` — so this reads the writer's shape, not a literal written here.
+  const asJson = JSON.parse(JSON.stringify(inventoryOf(openInventory))) as {
+    agents: { launch: Record<string, unknown> }[];
+    launch?: Record<string, unknown>;
+  };
+  check("the per-agent events flag lives at inventory.agents[].launch, NOT at the document's top level",
+    "events" in asJson.agents[0].launch && !("events" in (asJson.launch ?? {})),
+    { agentLaunchKeys: Object.keys(asJson.agents[0].launch), topLevel: Object.keys(asJson.launch ?? {}) });
+}
+
 // ── RESUME MUST PREFLIGHT THE EVENT GRANT, NOT ADOPT IT UNCHECKED ──
 //
 // A retained entry carries both its provisioned `allowPublish` and its `events` bit. Adopting both
@@ -517,6 +541,25 @@ let openInventory: ManagerResumeAgent;
   const allowed = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith(["events.worker"])));
   check("CONTROL: the same entry WITH the grant resumes, so the refusal is specific",
     allowed.agents[0]?.reply?.ok === true && capturedLaunch?.events === true, JSON.stringify(allowed));
+
+  // (c) WILDCARD GRANTS. The first version of this preflight used `allowPublish.includes(required)`
+  // — an exact string match, i.e. a LOCAL COPY of the grant rule, and a wrong one. A legitimate
+  // `events.>` or `>` genuinely covers `events.worker`, so a check added to prevent a mute stream
+  // would instead have REFUSED healthy resumes. The suite could not see it because every fixture
+  // granted the exact literal; the fixture only built the case the implementation handled.
+  // Found by fmae-rev-sec. These drive `channelInAllow`, the shipped matcher.
+  for (const grant of ["events.>", ">", "events.*"]) {
+    capturedLaunch = undefined;
+    const wild = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith([grant])));
+    check(`a WILDCARD grant "${grant}" covers the event channel and resumes`,
+      wild.agents[0]?.reply?.ok === true, JSON.stringify(wild.agents[0]?.reply));
+  }
+
+  // …and a wildcard that does NOT cover it must still refuse, so (c) is not just "accept anything
+  // with a dot in it".
+  const wrongWild = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith(["other.>"])));
+  check("a wildcard that does NOT cover the event channel still refuses",
+    wrongWild.agents[0]?.reply?.ok === false, JSON.stringify(wrongWild.agents[0]?.reply));
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,
@@ -870,6 +913,33 @@ let openInventory: ManagerResumeAgent;
   const ok = await manager.resumePreserved(inventoryOf(entry));
   check("static resume accepts matching retained credential", ok.ok && capturedLaunch?.id === identity.id && capturedLaunch?.creds === credsPath, ok);
   check("static resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor(identity.id), capturedLaunch?.lifecycleUid);
+
+  // ── THE CREDENTIAL IS THE AUTHORITY, NOT THE INVENTORY'S CLAIM ABOUT IT ──
+  //
+  // `launch.allowPublish` records what was REQUESTED at spawn; the minted JWT records what was
+  // GRANTED. They can differ, and the preflight used to read the record — so a credential minted
+  // WITHOUT the event channel resumed successfully whenever the inventory claimed it, producing a
+  // mute stream reported as success. Same class as verifying a preflight function's behaviour
+  // without checking that anything calls it. Found by fmae-rev-sec, reproduced live against a real
+  // JWT. `retainedCreds` was minted with no allowPublish, so the credential genuinely lacks the
+  // channel while the inventory below claims it — the exact contradiction.
+  {
+    const claimManager = managerWith((n) => fakeHandle(n));
+    (claimManager as unknown as { auth: unknown }).auth = auth;
+    const lying: ManagerResumeAgent = {
+      ...entry,
+      // MUST use the events-capable connector: with `preserve-connector` the refusal comes from the
+      // no-eventChannel branch and the credential check is never reached — the first cell would then
+      // pass vacuously, which is exactly what the message cell caught.
+      launch: { ...entry.launch, connector: "preserve-events-connector", events: true, allowPublish: ["events.static-worker"] },
+    };
+    const denied = await claimManager.resumePreserved(inventoryOf(lying));
+    const reply = denied.agents[0]?.reply;
+    check("static resume REFUSES when the CREDENTIAL lacks the event channel the inventory claims",
+      reply?.ok === false, JSON.stringify(reply));
+    check("and the refusal names the CREDENTIAL as what does not grant it, not the inventory",
+      /CREDENTIAL does not grant/.test(String(reply && reply.ok === false ? reply.error : "")), String(reply && reply.ok === false ? reply.error : "(ok)"));
+  }
 
   const mismatchManager = managerWith((name) => fakeHandle(name));
   (mismatchManager as unknown as { auth: unknown }).auth = auth;

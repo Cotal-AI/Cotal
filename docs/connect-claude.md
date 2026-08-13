@@ -220,11 +220,11 @@ with the adapter:
 
 ## Transcript mirror
 
-A managed session mirrors its own transcript onto a per-agent channel, **`tr-<name>`**, so
+A managed session mirrors its own transcript onto a per-agent channel, **`events.<name>`**, so
 peers and cheap observer agents can read what the agent *actually* did: assistant text in
 full, tool calls as one-liners, results truncated, thinking omitted. Gated by
-`COTAL_TRANSCRIPT` (set for managed sessions; a personal session with the plugin never
-mirrors). A `tr-` channel is a regular channel (durable, listed by `cotal_channels`,
+`COTAL_EVENTS` (set for managed sessions; a personal session with the plugin never
+mirrors). An `events.` channel is a regular channel (durable, listed by `cotal_channels`,
 readable on demand) with a rolling window, so long sessions age out early entries. In
 auth mode the launcher provisions publish rights for it alongside the agent's channels.
 

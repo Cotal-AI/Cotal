@@ -21,8 +21,10 @@
  * heuristic here is a silent-loss path wearing a helpful face.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { assertIdToken } from "@cotal-ai/core";
 
 /** Bump ONLY with a migration. An unknown version fails loud; it is never coerced. */
 export const EVENT_WAL_VERSION = 1;
@@ -68,6 +70,23 @@ export class WalCorruptError extends Error {
 const isSafeNonNegInt = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
 
 /**
+ * Create a file EXCLUSIVELY and WITHOUT following a symlink, at mode 0600.
+ *
+ * **Exported so a test can drive the shipped flags rather than recompose them.** A cell that builds
+ * `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW` itself is testing a COPY of this rule: it stays green
+ * while the production open drifts or loses a flag. That is not hypothetical here — the first
+ * version of those cells did exactly that, and a mutation reverting the real open to `"w"` left the
+ * suite fully green. Driving this function is what makes the mutation land.
+ *
+ * `O_EXCL` refuses a pre-existing file rather than adopting it — which matters because `"w"` does
+ * NOT re-chmod an existing inode, so an adopted 0644 temp would carry its mode onto the renamed WAL
+ * and expose `pending.id`. `O_NOFOLLOW` refuses a symlink rather than truncating its target.
+ */
+export async function openExclusiveNoFollow(path: string): Promise<FileHandle> {
+  return open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+}
+
+/**
  * The boot invariant for an `acked` pending, checked in ONE place and stated positively.
  *
  * A WAL whose frontier is NEWER than its acked pending is a file of MIXED VINTAGE, and the reason
@@ -104,8 +123,44 @@ const isSafeNonNegInt = (n: unknown): n is number => Number.isSafeInteger(n) && 
  * ackSeq must be ahead of the frontier's. A document whose halves come from different vintages
  * disagrees on those too, since both sides are written by this file.
  */
-function assertAckedVintage(path: string, p: WalPending, f: WalFrontier): void {
-  if (p.state !== "acked") return;
+function assertPendingVintage(path: string, p: WalPending, f: WalFrontier): void {
+  // ── RELATIONS THAT HOLD FOR *EITHER* TAG ──
+  //
+  // These were previously checked ONLY for `acked`, which left `sent_unacked` — the crash window
+  // transition 1 exists to survive — almost unguarded. Documents with `E` disagreeing with the
+  // frontier's tip, or a `seq` that is not the frontier's successor, LOADED and would then retry a
+  // frozen expectation that cannot be the honest successor of this frontier: a permanent CAS halt,
+  // or a publish at the wrong stream position, with no loud corrupt at open.
+  //
+  // The asymmetry was mine: I wrote three named relations for the path that has already succeeded
+  // and almost none for the path that is still in flight. Found by fmae-rev-sec, reproduced by
+  // fmae-rev-eng and fmae-rev-wal, then here.
+  if (p.E !== f.lastSubjectSeq)
+    throw new WalCorruptError(
+      path,
+      "pending.E === frontier.lastSubjectSeq",
+      `pending.E=${p.E} frontier.lastSubjectSeq=${f.lastSubjectSeq} — the frozen expectation is not ` +
+        `the tip this WAL believes, so retrying it can only CAS-halt or append at the wrong position`,
+    );
+  if (p.seq !== f.seq + 1)
+    throw new WalCorruptError(
+      path,
+      "pending.seq === frontier.seq + 1",
+      `pending.seq=${p.seq} frontier.seq=${f.seq} — a pending frame must be exactly the frontier's successor`,
+    );
+
+  if (p.state === "sent_unacked") {
+    // The tag says "not yet acked". An ackSeq here means the document contradicts its own tag, and
+    // guessing which half is true is exactly the repair this file never does.
+    if (p.ackSeq !== undefined)
+      throw new WalCorruptError(
+        path,
+        "sent_unacked has no ackSeq",
+        `state is "sent_unacked" but ackSeq=${String(p.ackSeq)} — the document contradicts its own tag`,
+      );
+    return;
+  }
+
   if (!isSafeNonNegInt(p.ackSeq))
     throw new WalCorruptError(path, "acked.ackSeq present", `state is "acked" but ackSeq is ${String(p.ackSeq)}`);
   if (!(p.ackSeq > f.lastSubjectSeq))
@@ -115,12 +170,6 @@ function assertAckedVintage(path: string, p: WalPending, f: WalFrontier): void {
       `ackSeq=${p.ackSeq} frontier.lastSubjectSeq=${f.lastSubjectSeq} — the frontier is of a later ` +
         `vintage than the acked frame, so its sourceCursor may already have passed events that were ` +
         `never published; resuming would drop them with no gap for a consumer to see`,
-    );
-  if (p.seq !== f.seq + 1)
-    throw new WalCorruptError(
-      path,
-      "acked.seq === frontier.seq + 1",
-      `pending.seq=${p.seq} frontier.seq=${f.seq} — an acked frame must be exactly the frontier's successor`,
     );
   // NO sourceCursor comparison — see the note above. The cursor is opaque; ordering it here is not
   // a thing this layer can do correctly, and doing it with string `<` was wrong in both directions.
@@ -166,13 +215,37 @@ function parseDoc(path: string, raw: string, threadId: string, principal: string
     if (typeof p.sourceCursor !== "string")
       throw new WalCorruptError(path, "pending.sourceCursor is a string", typeof p.sourceCursor);
     pending = p as WalPending;
-    assertAckedVintage(path, pending, f as WalFrontier);
+    assertPendingVintage(path, pending, f as WalFrontier);
   }
 
   return { v: doc.v, epoch: doc.epoch, threadId, principal, frontier: f as WalFrontier, pending };
 }
 
 export class EventWal {
+  /**
+   * Every mutation runs one-at-a-time on this chain.
+   *
+   * Without it, two concurrent `beginSend` calls both read `this.doc.pending === null` before either
+   * durable replace finishes — the guard is an in-memory read that is NOT atomic with the write
+   * across its `await` points. Reviewers reproduced the split: one call fulfils, one rejects, and
+   * the process is left holding `pending.id === "A"` in memory while the disk says `"B"`. Recovery
+   * would then resume the frame on disk while the live emitter retries the other, which breaks the
+   * one thing this file exists to guarantee — that `id` and `E` are frozen and agreed.
+   *
+   * A per-instance chain is sufficient and honest about its scope: it serializes THIS process's
+   * callers. Cross-process exclusion is a different problem, solved upstream by the principal-level
+   * lock (§5.5's one-emitter-per-principal rule), not here.
+   */
+  private chain: Promise<unknown> = Promise.resolve();
+
+  /** Run `op` after every previously-queued mutation, whether they resolved or threw. */
+  private serialize<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(op, op);
+    // Keep the chain alive after a rejection so one failed mutation cannot wedge every later one.
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
   private constructor(
     readonly path: string,
     private doc: WalDoc,
@@ -231,8 +304,20 @@ export class EventWal {
 
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
   async beginSend(frame: { id: string; E: number; seq: number; sourceCursor: string }): Promise<void> {
+    return this.serialize(async () => {
     if (this.doc.pending) throw new Error(`event WAL ${this.path}: a frame is already pending; one emit unit is one pending frame`);
+    // THE SAME GRAMMAR THE WIRE USES, not a restatement of it. `beginSend` previously accepted ids
+    // (" ", a newline, 65 chars, dots) that `multicastExpecting`'s `assertIdToken` rejects — so T1
+    // could freeze an id on disk that can NEVER publish, wedging the emitter until an abandon. The
+    // id is supposed to be one token on the wire and in the WAL; importing the check is what makes
+    // that true rather than asserted.
+    assertIdToken(frame.id, "event WAL pending id");
+    if (frame.E !== this.doc.frontier.lastSubjectSeq)
+      throw new Error(`event WAL ${this.path}: E=${frame.E} is not the frontier's tip ${this.doc.frontier.lastSubjectSeq}`);
+    if (frame.seq !== this.doc.frontier.seq + 1)
+      throw new Error(`event WAL ${this.path}: seq=${frame.seq} is not the frontier's successor ${this.doc.frontier.seq + 1}`);
     await this.write({ ...this.doc, pending: { state: "sent_unacked", ...frame } });
+    });
   }
 
   /**
@@ -240,19 +325,31 @@ export class EventWal {
    * A duplicate ack must never reach here; the caller fails loud on one.
    */
   async recordAck(ackSeq: number): Promise<void> {
+    return this.serialize(async () => {
     const p = this.doc.pending;
     if (!p || p.state !== "sent_unacked") throw new Error(`event WAL ${this.path}: no sent_unacked frame to ack`);
+    // VALIDATE BEFORE THE DURABLE WRITE. `recordAck(-1)` was accepted, `fold()` then persisted
+    // `frontier.lastSubjectSeq = -1`, and the NEXT open refused the file — a single bad ack durably
+    // bricked the WAL while every call reported success. Fail-closed has to happen before the write,
+    // not on the boot after it.
+    if (!isSafeNonNegInt(ackSeq))
+      throw new Error(`event WAL ${this.path}: ackSeq must be a safe non-negative integer, got ${String(ackSeq)}`);
+    if (ackSeq <= this.doc.frontier.lastSubjectSeq)
+      throw new Error(`event WAL ${this.path}: ackSeq=${ackSeq} is not ahead of the frontier's tip ${this.doc.frontier.lastSubjectSeq}`);
     await this.write({ ...this.doc, pending: { ...p, state: "acked", ackSeq } });
+    });
   }
 
   /** Transition 3 — fold the acked frame into the frontier and clear pending. */
   async fold(): Promise<void> {
+    return this.serialize(async () => {
     const p = this.doc.pending;
     if (!p || p.state !== "acked" || p.ackSeq === undefined) throw new Error(`event WAL ${this.path}: no acked frame to fold`);
     await this.write({
       ...this.doc,
       frontier: { seq: p.seq, lastSubjectSeq: p.ackSeq, sourceCursor: p.sourceCursor },
       pending: null,
+    });
     });
   }
 
@@ -264,8 +361,10 @@ export class EventWal {
    * failed must not share a path: conflating them turns a parser bug into silently skipped history.
    */
   async advanceCursorOnly(rangeEnd: string): Promise<void> {
+    return this.serialize(async () => {
     if (this.doc.pending) throw new Error(`event WAL ${this.path}: cannot advance the cursor while a frame is pending`);
     await this.write({ ...this.doc, frontier: { ...this.doc.frontier, sourceCursor: rangeEnd } });
+    });
   }
 
   /**
@@ -276,11 +375,13 @@ export class EventWal {
    * tip to 0 while the WAL still holds a non-zero `E`, permanently CAS-failing every later publish.
    */
   async abandon(): Promise<void> {
+    return this.serialize(async () => {
     await this.write({
       ...this.doc,
       epoch: randomUUID(),
       frontier: { seq: 0, lastSubjectSeq: 0, sourceCursor: undefined },
       pending: null,
+    });
     });
   }
 
@@ -305,9 +406,32 @@ export class EventWal {
    * cheap enough that naming it as an accepted residual would be the worse trade.
    */
   private async write(next: WalDoc): Promise<void> {
-    const tmp = join(dirname(this.path), `.${createHash("sha256").update(this.path).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`);
+    // The temp name is RANDOM per write, and the open is EXCLUSIVE and NON-FOLLOWING.
+    //
+    // The previous version derived the name from `path` + `pid` — predictable — and used
+    // `open(tmp, "w", 0o600)`. Both halves were exploitable and both were reproduced:
+    //   - `open(…, "w")` does not re-chmod an EXISTING inode; the mode argument applies only on
+    //     create. A planted 0644 temp therefore survived as the WAL's mode, and the file holding
+    //     `pending.id` — a pre-publication secret by this class's own argument — ended up
+    //     world-readable while a comment three lines up claimed 0600.
+    //   - `"w"` follows symlinks. A symlink planted at the predicted name made the next transition
+    //     truncate and overwrite an arbitrary file the process could open. One plant, one write.
+    // Found by fmae-rev-sec, reproduced independently by fmae-rev-eng and fmae-rev-wal, then here.
+    //
+    // **The symlink half is the one I have no excuse for: I added `O_NOFOLLOW` to `JsonlFileSource`
+    // in this same session, for this same class, and did not carry it to the file this module
+    // writes.** A fence built on the read path while the write path stayed open.
+    //
+    // O_EXCL makes a pre-existing temp a hard failure rather than something to adopt; O_NOFOLLOW
+    // refuses a symlink outright; the random suffix removes the predictability that made planting
+    // reliable; and the mode is asserted on the SURVIVING inode after rename, since that is the one
+    // that holds the secret.
+    const tmp = join(
+      dirname(this.path),
+      `.${createHash("sha256").update(this.path).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.wal.tmp`,
+    );
     const body = JSON.stringify(next);
-    const fh = await open(tmp, "w", 0o600);
+    const fh = await openExclusiveNoFollow(tmp);
     try {
       await fh.writeFile(body, "utf8");
       await fh.sync();
