@@ -52,6 +52,13 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 try {
+  // The live-broker fence itself, asserted rather than trusted. It is the one guard in this suite
+  // whose failure mode is silent: if it stopped refusing, every cell below would still pass, against
+  // whatever broker it was pointed at.
+  const refuses = (servers: string) => { try { assertEphemeralBroker(servers); return false; } catch { return true; } };
+  check("the live broker is REFUSED (even hidden in a multi-URL list)", refuses("nats://broker.cotal.ai:4222") && refuses("broker.cotal.ai:4222") && refuses("nats://127.0.0.1:4222,nats://broker.cotal.ai:4222"));
+  check("a throwaway loopback broker is allowed (the fence is not refusing everything)", !refuses(SERVERS));
+
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) break; await sleep(200); }
 
   // The REAL provisioner credential — the identity `setupSpaceStreams` runs as at `cotal up`.
