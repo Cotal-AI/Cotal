@@ -20,7 +20,7 @@ issued by GitHub Actions. Each published package must be configured once on npmj
 
 For **every** published package (`@cotal-ai/core`, `@cotal-ai/cli`, `@cotal-ai/manager`,
 `@cotal-ai/delivery`, `@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`,
-`@cotal-ai/connector-opencode`, `@cotal-ai/connector-hermes`, `@cotal-ai/pi`, `@cotal-ai/cmux`, `@cotal-ai/orca`, and the
+`@cotal-ai/connector-opencode`, `@cotal-ai/connector-hermes`, `@cotal-ai/pi`, `@cotal-ai/cmux`, `@cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/herdr`, and the
 `cotal-ai` binary):
 
 1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.

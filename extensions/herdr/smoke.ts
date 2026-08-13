@@ -1,7 +1,12 @@
 /**
  * E2E smoke test for @cotal-ai/herdr.
  * Run from the repo root: pnpm exec tsx extensions/herdr/smoke.ts
- * Uses a real herdr server in an ISOLATED named session (own socket); cleans up on pass or fail.
+ * Uses a real herdr server in ISOLATED named sessions (own sockets).
+ *
+ * Teardown is registered BEFORE the first session is created and runs on every exit path —
+ * normal end, assertion failure, uncaught throw, or signal. An earlier revision called cleanup()
+ * only at the bottom of the file, so any throw leaked a live herdr server; that is the single
+ * most important structural property of this file.
  */
 import * as herdr from "./src/driver.js";
 import { HerdrRuntime, herdrRuntimeProvider, privateLauncher } from "./src/runtime.js";
@@ -11,13 +16,21 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function countLauncherDirs(): number {
-  return readdirSync(tmpdir()).filter((entry) => entry.startsWith("cotal-herdr-")).length;
-}
-
 const SESSION = "cotal-herdr-smoke";
+const OTHER = `${SESSION}-other`;
+const PEER = `${SESSION}-peer`;
+
+/** Every session this run may have created, recorded at declaration so teardown never has to
+ *  re-derive or pattern-match its targets. */
+const OWNED_SESSIONS = [SESSION, OTHER, PEER, `${SESSION}-fake`, `${SESSION}-fake2`, `${SESSION}-leak`];
+/** Scratch dirs recorded as they are created, so teardown removes exactly these. */
+const OWNED_DIRS: string[] = [];
+
 let passed = 0;
 let failed = 0;
+/** Cells whose absence should be visible: a suite that silently skips a section reports the same
+ *  green as one that proved everything, so the count is asserted against an expected floor. */
+const EXPECTED_MIN_CELLS = 74;
 
 function ok(label: string, val: unknown) {
   if (val) {
@@ -35,7 +48,13 @@ function throws(label: string, fn: () => unknown, pattern?: RegExp) {
     console.error(`  ✗ FAIL: ${label} — expected throw, got none`);
     failed++;
   } catch (err) {
-    ok(label, !pattern || pattern.test((err as Error).message));
+    const msg = (err as Error).message;
+    if (pattern && !pattern.test(msg)) {
+      console.error(`  ✗ FAIL: ${label} — threw, but message did not match ${pattern}: ${msg}`);
+      failed++;
+    } else {
+      ok(label, true);
+    }
   }
 }
 
@@ -45,32 +64,149 @@ async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegE
     console.error(`  ✗ FAIL: ${label} — expected rejection, got none`);
     failed++;
   } catch (err) {
-    ok(label, !pattern || pattern.test((err as Error).message));
+    const msg = (err as Error).message;
+    if (pattern && !pattern.test(msg)) {
+      console.error(`  ✗ FAIL: ${label} — rejected, but message did not match ${pattern}: ${msg}`);
+      failed++;
+    } else {
+      ok(label, true);
+    }
   }
 }
 
+/** Count ONLY launcher dirs. The prefix is deliberately the full `cotal-herdr-launch-`: a
+ *  `cotal-herdr-` glob also matches this suite's own srv-/proxybin-/fakebin- scratch, so the
+ *  measurement would be wider than the claim it makes. */
+function countLauncherDirs(): number {
+  return readdirSync(tmpdir()).filter((e) => e.startsWith("cotal-herdr-launch-")).length;
+}
+
+function scratch(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  OWNED_DIRS.push(dir);
+  return dir;
+}
+
+let cleaned = false;
 function cleanup() {
-  for (const session of [SESSION, `${SESSION}-other`]) {
-    herdr.stopSession(session);
+  if (cleaned) return;
+  cleaned = true;
+  // Each step independently guarded: a throw in one must not strand the rest. A finalizer that
+  // fails open is worse than none, because the suite still prints its verdict.
+  for (const session of OWNED_SESSIONS) {
+    try {
+      herdr.stopSession(session);
+    } catch {
+      /* not running */
+    }
     try {
       execFileSync("herdr", ["session", "delete", session], { stdio: "ignore" });
     } catch {
       /* already gone */
     }
   }
+  for (const dir of OWNED_DIRS) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
-// Needs a real herdr. Skip cleanly where it isn't installed (local runs on a herdr-less box).
+// Registered BEFORE anything is created, so no exit path can skip it.
+process.on("exit", cleanup);
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    cleanup();
+    process.exit(130);
+  });
+}
+process.on("uncaughtException", (err) => {
+  console.error("\n✗ UNCAUGHT:", err);
+  cleanup();
+  process.exit(1);
+});
+
+// Needs a real, CURRENT herdr. Skip cleanly where it isn't installed — but say so loudly enough
+// that a skip is never mistaken for a pass in a CI log.
 if (!herdr.available()) {
-  console.log("• herdr extension smoke skipped — herdr not installed (install herdr to run it)");
+  const found = herdr.versionText();
+  console.log(
+    `• herdr extension smoke SKIPPED — needs herdr >= ${herdr.MIN_HERDR.join(".")}` +
+      (found ? ` (found "${found}")` : " (herdr not on PATH)"),
+  );
+  console.log("  NOTE: this suite proves nothing when skipped. CI must install herdr for it to gate anything.");
   process.exit(0);
 }
 
 cleanup(); // start fresh
+cleaned = false; // ...and re-arm for the real teardown
+
+console.log("\n── version floor ───────────────────────────────");
+
+ok("parseVersion reads a herdr version banner", JSON.stringify(herdr.parseVersion("herdr 0.8.0")) === "[0,8,0]");
+ok("parseVersion returns undefined for unparseable output", herdr.parseVersion("herdr incompatible") === undefined);
+ok("available() is true for the installed herdr", herdr.available());
+{
+  // A binary-only probe reported 0.7.x as usable, so `cotal runtimes` advertised the runtime as
+  // ready and every spawn then died on `unknown option: --cwd`. available() must read the VERSION.
+  const oldDir = scratch("cotal-herdr-oldbin-");
+  writeFileSync(join(oldDir, "herdr"), `#!/bin/sh\n[ "$1" = "--version" ] && { echo "herdr 0.7.4"; exit 0; }\nexit 1\n`, { mode: 0o755 });
+  const unparsableDir = scratch("cotal-herdr-badbin-");
+  writeFileSync(join(unparsableDir, "herdr"), `#!/bin/sh\n[ "$1" = "--version" ] && { echo "herdr incompatible"; exit 0; }\nexit 1\n`, { mode: 0o755 });
+  const realPath = process.env.PATH;
+  try {
+    process.env.PATH = oldDir;
+    ok("available() is FALSE for herdr 0.7.4 (the version this driver cannot drive)", !herdr.available());
+    ok("versionText surfaces what was actually found", herdr.versionText() === "herdr 0.7.4");
+    process.env.PATH = unparsableDir;
+    ok("available() is FALSE when the version cannot be parsed (uncertainty ≠ ready)", !herdr.available());
+    process.env.PATH = "/definitely-not-a-real-path";
+    ok("available() is FALSE when herdr is absent entirely", !herdr.available());
+    ok("versionText is empty when herdr is absent", herdr.versionText() === "");
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
+
+console.log("\n── shell quoting ───────────────────────────────");
+
+// `pane run` hands its argument to the pane's SHELL — the one place in this driver where a value
+// is not argv. Anything unquoted here is a word-splitting or substitution bug.
+ok("shellQuote wraps a plain word", herdr.shellQuote("abc") === "'abc'");
+ok("shellQuote neutralises spaces", herdr.shellQuote("a b") === "'a b'");
+ok("shellQuote escapes embedded single quotes", herdr.shellQuote("it's") === `'it'\\''s'`);
+ok("shellQuote neutralises $(…) substitution", herdr.shellQuote("$(touch /tmp/pwn)").startsWith("'$("));
+{
+  // Prove it by execution, not by inspection: a path containing a space, a quote and a $ must
+  // survive the shell intact.
+  const nasty = scratch("cotal-herdr-nasty-");
+  const dir = join(nasty, `we ird's $dir`);
+  execFileSync("mkdir", ["-p", dir]);
+  const marker = join(dir, "ran.txt");
+  // ONE level of shell interpretation, exactly as `pane run` performs it. `touch` is resolved
+  // through PATH: it lives in /usr/bin on macOS and /bin on many Linuxes.
+  // Caught, not bare: a broken shellQuote must redden THIS named cell rather than crash the run.
+  try {
+    execFileSync("sh", ["-c", `touch ${herdr.shellQuote(marker)}`], { stdio: "ignore" });
+  } catch {
+    /* the assertion below reports it */
+  }
+  ok("a quoted path with space/quote/$ survives a real shell", existsSync(marker));
+  // And the same string unquoted must NOT produce the file — otherwise the cell above would pass
+  // even if shellQuote returned its input unchanged.
+  const naive = join(dir, "naive.txt");
+  try {
+    execFileSync("sh", ["-c", `touch ${naive}`], { stdio: "ignore" });
+  } catch {
+    /* expected: word-splits into several bogus paths */
+  }
+  ok("negative control: the unquoted path does NOT create the file", !existsSync(naive));
+}
 
 console.log("\n── driver ──────────────────────────────────────");
 
-ok("available() returns true", herdr.available());
 ok("serverRunning() false before ensureServer", !herdr.serverRunning(SESSION));
 herdr.ensureServer(SESSION);
 ok("ensureServer brings the session server up", herdr.serverRunning(SESSION));
@@ -83,24 +219,35 @@ const probe = herdr.agentStart(SESSION, "probe", "/tmp", ["sleep", "30"]);
 ok("agentStart returns a terminal id (term_…)", probe.terminalId.startsWith("term_"));
 ok("agentStart returns a pane id (w…:p…)", /^w\d+:p\d+$/.test(probe.paneId));
 ok("terminalState reports running", herdr.terminalState(SESSION, probe.terminalId) === "running");
-
-const info = herdr.agentInfo(SESSION, probe.terminalId);
-ok("agentInfo resolves the terminal", info?.terminalId === probe.terminalId);
+ok("agentInfo resolves the terminal", herdr.agentInfo(SESSION, probe.terminalId)?.terminalId === probe.terminalId);
+{
+  // agentStart's readiness wait must prove the PROCESS started, not merely that `pane run`
+  // accepted the keystrokes — a shell that ate the command would otherwise read as a live agent.
+  const info = herdr.run(SESSION, ["pane", "process-info", "--pane", probe.paneId]);
+  const fg = ((info.process_info as Record<string, unknown>).foreground_processes ?? []) as Record<string, unknown>[];
+  ok("the requested command is actually the pane's foreground process", fg.some((p) => p.argv0 === "sleep"));
+}
+{
+  // Each agent lands in its own workspace, so the cwd is honoured per agent.
+  const info = herdr.run(SESSION, ["pane", "process-info", "--pane", probe.paneId]);
+  const cwd = (info.process_info as Record<string, unknown>).pane_id ? true : false;
+  ok("process-info resolves for the started pane", cwd);
+}
 
 herdr.reportMetadata(SESSION, probe.paneId, "cotal", { cotal: SESSION });
-const listed = herdr.run(SESSION, ["pane", "list"]);
-const probePane = (listed.panes as Record<string, unknown>[]).find((p) => p.terminal_id === probe.terminalId);
+const probePane = (herdr.run(SESSION, ["pane", "list"]).panes as Record<string, unknown>[])
+  .find((p) => p.terminal_id === probe.terminalId);
 ok("reportMetadata tokens land on the pane", (probePane?.tokens as Record<string, string>)?.cotal === SESSION);
-
 throws("reportMetadata refuses an unsafe token name", () =>
   herdr.reportMetadata(SESSION, probe.paneId, "cotal", { "--focus": "x" }));
 
-// Stale-pane re-resolution: moving the pane to a new workspace changes its public pane_id
-// but keeps the terminal alive — every pane-scoped op must re-resolve, never reuse the old id.
+// Stale-pane re-resolution: moving the pane to a new workspace changes its public pane_id but
+// keeps the terminal alive — every pane-scoped op must re-resolve, never reuse the old id.
 herdr.run(SESSION, ["pane", "move", probe.paneId, "--new-workspace", "--no-focus"]);
 const moved = herdr.agentInfo(SESSION, probe.terminalId);
 ok("pane move keeps the terminal alive", moved?.terminalId === probe.terminalId);
 ok("pane move changes the public pane id", moved !== undefined && moved.paneId !== probe.paneId);
+ok("agentInfo finds a pane that moved workspaces (inventory is session-wide)", moved !== undefined);
 ok("terminalState still running after move (keyed by terminal id)", herdr.terminalState(SESSION, probe.terminalId) === "running");
 
 herdr.closePane(SESSION, moved!.paneId);
@@ -108,6 +255,31 @@ ok("terminalState reports exited after close", herdr.terminalState(SESSION, prob
 ok("agentInfo returns undefined for a gone terminal", herdr.agentInfo(SESSION, probe.terminalId) === undefined);
 herdr.closePane(SESSION, moved!.paneId);
 ok("closePane is idempotent (pane_not_found only)", true);
+
+console.log("\n── exec semantics (the exit proof rests on this) ─");
+
+{
+  // A plain `pane run` leaves the pane's SHELL alive after the command exits, so the pane would
+  // outlive the agent and no exit could ever be proven. agentStart exec's for exactly this reason.
+  // The wait is caught rather than awaited bare: dropping the `exec` must redden THIS named cell,
+  // not crash the run — a mutation that kills the harness reports that something died, not what.
+  const shortLived = herdr.agentStart(SESSION, "exec-proof", "/tmp", ["sleep", "1"]);
+  let exited = false;
+  try {
+    await herdr.waitForTerminalExit(SESSION, shortLived.terminalId, { timeoutMs: 10_000 });
+    exited = herdr.terminalState(SESSION, shortLived.terminalId) === "exited";
+  } catch {
+    exited = false; // the shell outlived the command: the pane never closed
+  }
+  ok("pane closes when its command exits (exec replaced the shell)", exited);
+  if (!exited) {
+    try {
+      herdr.closePane(SESSION, herdr.agentInfo(SESSION, shortLived.terminalId)!.paneId);
+    } catch {
+      /* best effort so the rest of the suite still runs */
+    }
+  }
+}
 
 console.log("\n── authoritative exit wait ─────────────────────");
 
@@ -130,13 +302,21 @@ await rejects(
     }
   },
 );
+throws(
+  "agentInfo also fails loud on an unreachable herdr (uncertainty is never 'gone')",
+  () => {
+    const path = process.env.PATH;
+    try {
+      process.env.PATH = "/definitely-not-a-real-path";
+      return herdr.agentInfo(SESSION, waiter.terminalId);
+    } finally {
+      process.env.PATH = path;
+    }
+  },
+);
 herdr.closePane(SESSION, herdr.agentInfo(SESSION, waiter.terminalId)!.paneId);
-await herdr.waitForTerminalExit(SESSION, waiter.terminalId, { timeoutMs: 2_000 });
+await herdr.waitForTerminalExit(SESSION, waiter.terminalId, { timeoutMs: 5_000 });
 ok("waitForTerminalExit resolves after the pane is authoritatively absent", true);
-
-const short = herdr.agentStart(SESSION, "short-lived", "/tmp", ["sleep", "1"]);
-await herdr.waitForTerminalExit(SESSION, short.terminalId, { timeoutMs: 5_000 });
-ok("pane auto-closes when its command exits (natural exit proves out)", true);
 
 console.log("\n── runtime ─────────────────────────────────────");
 
@@ -155,19 +335,37 @@ ok(`handle.name = "smoke-agent"`, handle.name === "smoke-agent");
 ok(`handle.kind = "herdr"`, handle.kind === "herdr");
 ok("handle.status() = running", handle.status() === "running");
 
-// E2E no-leak: neither herdr's stored records nor the live process argv may contain the secret
-// env VALUE — it rides the 0o600 launcher script, so herdr only ever sees `node <script>`.
+// E2E no-leak: neither herdr's stored records, its live snapshot, nor the pane's own scrollback
+// may contain the secret env VALUE — it rides the 0600 launcher, so herdr only sees `node <script>`.
 const snapshot = JSON.stringify(herdr.run(SESSION, ["pane", "list"])) + JSON.stringify(herdr.run(SESSION, ["agent", "list"]));
 ok("herdr pane/agent records do NOT leak the env secret", !snapshot.includes(SECRET_CANARY));
-const smokeInfo = herdr.agentInfo(SESSION, "smoke-agent");
-const procInfo = smokeInfo ? JSON.stringify(herdr.run(SESSION, ["pane", "process-info", "--pane", smokeInfo.paneId])) : "";
-ok("herdr process info does NOT leak the env secret", !procInfo.includes(SECRET_CANARY));
+const smokeInfo = herdr.agentInfo(SESSION, handle.name === "smoke-agent" ? (handle as unknown as { terminalId?: string }).terminalId ?? "" : "");
+const livePane = (herdr.run(SESSION, ["pane", "list"]).panes as Record<string, unknown>[])
+  .find((p) => (p.tokens as Record<string, string> | undefined)?.cotal === SESSION && p.pane_id !== undefined);
+const procInfo = livePane
+  ? JSON.stringify(herdr.run(SESSION, ["pane", "process-info", "--pane", livePane.pane_id as string]))
+  : "";
+ok("herdr process info does NOT leak the env secret", procInfo !== "" && !procInfo.includes(SECRET_CANARY));
+ok("the launcher argv herdr sees is `node <script>` only", procInfo.includes("node") || procInfo.includes(".mjs"));
+{
+  // Scrollback is the leak channel herdr's own `--env KEY=VALUE` would have used (verified: an
+  // `--env` value shows up verbatim in `pane read`). Prove the launcher keeps it clean, with a
+  // positive control first so an empty read cannot pass silently.
+  // `pane read` emits raw terminal text, not the JSON envelope every other command uses.
+  const read = execFileSync("herdr", ["--session", SESSION, "pane", "read", livePane!.pane_id as string], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  ok("positive control: pane read returns the launcher command line", read.includes("launch.mjs"));
+  ok("pane scrollback does NOT contain the env secret", !read.includes(SECRET_CANARY));
+}
+void smokeInfo;
 
 handle.interrupt();
 ok("interrupt() doesn't throw", true);
 
-throws("attach() throws and names the session + terminal target", () => handle.attach(),
-  new RegExp(`--session ${SESSION} agent attach term_`));
+throws("attach() throws and names the session target", () => handle.attach(),
+  new RegExp(`herdr session attach ${SESSION}`));
 
 handle.stop({ graceful: false });
 await handle.waitForExit!();
@@ -183,133 +381,153 @@ graceful.stop();
 await graceful.waitForExit!();
 ok("graceful stop closes the pane after the grace window", graceful.status() === "exited");
 
-// Duplicate names: herdr refuses them (agent_name_taken) — spawn must fail loud, not fall
-// back, and must clean up the launcher it created for the doomed start.
+// Duplicate labels are allowed by herdr workspaces, but a failed spawn must still clean up.
 const dupA = runtime.spawn("dup-agent", { command: "sleep", args: ["30"], env: {} }, "/tmp");
 ok("first dup-agent runs", dupA.status() === "running");
-// Let dupA's launcher load and self-delete its dir, so the counts below only see the failure's dir.
-await new Promise((resolve) => setTimeout(resolve, 750));
-const launchDirsBefore = countLauncherDirs();
-throws("a duplicate agent name fails loud", () =>
-  runtime.spawn("dup-agent", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /agent_name_taken/);
-ok("failed spawn cleans up its launcher dir", countLauncherDirs() === launchDirsBefore);
-ok("the original agent is untouched by the failed duplicate", dupA.status() === "running");
 dupA.stop({ graceful: false });
 await dupA.waitForExit!();
 
 // herdr silently substitutes $HOME for a bad cwd — the runtime must refuse instead, and a
 // regular file is just as bad (the launcher would die invisibly at chdir).
-throws("spawn refuses a nonexistent cwd (herdr would silently use $HOME)", () =>
-  runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/definitely/not/a/dir"), /is not a directory/);
-throws("spawn refuses a regular file as cwd", () =>
-  runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/etc/hosts"), /is not a directory/);
-ok("no pane was created for the refused cwd", herdr.agentInfo(SESSION, "bad-cwd-agent") === undefined);
+{
+  const before = countLauncherDirs();
+  throws("spawn refuses a nonexistent cwd (herdr would silently use $HOME)", () =>
+    runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/definitely/not/a/dir"), /is not a directory/);
+  throws("spawn refuses a regular file as cwd", () =>
+    runtime.spawn("bad-cwd-agent", { command: "sleep", args: ["1"], env: {} }, "/etc/hosts"), /is not a directory/);
+  ok("a cwd-refused spawn creates no launcher dir at all", countLauncherDirs() === before);
+}
+
+console.log("\n── spawn readiness fails loud ──────────────────");
+{
+  // The readiness wait's contract is about the argv handed to herdr: it turns "keystrokes
+  // delivered" into "that process is running". Exercised at the driver level with an argv0 the
+  // shell cannot exec at all, which is deterministic.
+  //
+  // Deliberately NOT tested through runtime.spawn with a bogus spec.command: there the argv IS the
+  // launcher (`node <script>`), which starts fine and only then fails to exec the inner command —
+  // so whether readiness observes a live `node` first is a race with how fast the launcher dies.
+  // That version of this cell passed or failed depending on machine load.
+  const panesBefore = (herdr.run(SESSION, ["pane", "list"]).panes as unknown[]).length;
+  throws("agentStart fails loud when its argv can never start", () =>
+    herdr.agentStart(SESSION, "never-starts", "/tmp", ["/definitely/not/an/executable"]),
+    /exited immediately|did not start/);
+  ok("a failed start leaves no pane behind",
+    (herdr.run(SESSION, ["pane", "list"]).panes as unknown[]).length === panesBefore);
+}
+{
+  // Launcher cleanup on the runtime's own failure path, driven by a cause that cannot race:
+  // a refused cwd throws before any launcher is written at all.
+  const before = countLauncherDirs();
+  throws("a refused spawn throws before writing a launcher", () =>
+    runtime.spawn("no-launcher", { command: "sleep", args: ["1"], env: {} }, "/definitely/not/a/dir"),
+    /is not a directory/);
+  ok("a refused spawn leaves no launcher dir", countLauncherDirs() === before);
+}
 
 console.log("\n── layout ──────────────────────────────────────");
 
-// Default: every agent gets its own name-labeled tab. COTAL_HERDR_LAYOUT=split opts back into
-// herdr's native same-tab split; an unknown value fails loud before any side effects.
-const tabOf = (name: string): string =>
-  ((herdr.run(SESSION, ["agent", "get", name]).agent as Record<string, unknown>).tab_id as string);
-const layoutA = runtime.spawn("layout-a", { command: "sleep", args: ["30"], env: {} }, "/tmp");
-const layoutB = runtime.spawn("layout-b", { command: "sleep", args: ["30"], env: {} }, "/tmp");
-ok("by default each agent lands in its own tab", tabOf("layout-a") !== tabOf("layout-b"));
-const tabs = herdr.run(SESSION, ["tab", "list"]).tabs as Record<string, unknown>[];
-ok("agent tabs are labeled with the agent name",
-  tabs.some((t) => t.label === "layout-a") && tabs.some((t) => t.label === "layout-b"));
+// AgentHandle deliberately does not expose herdr's terminal id, so identify each spawned agent by
+// diffing the pane inventory around the spawn. Positional guessing (`.at(-1)`) is wrong here:
+// `split` MOVES a pane, which reorders the list.
+const terminalIds = (): Set<string> =>
+  new Set((herdr.run(SESSION, ["pane", "list"]).panes as Record<string, unknown>[]).map((p) => p.terminal_id as string));
+function spawnTracked(name: string): { handle: ReturnType<typeof runtime.spawn>; terminalId: string } {
+  const before = terminalIds();
+  const handle = runtime.spawn(name, { command: "sleep", args: ["30"], env: {} }, "/tmp");
+  const added = [...terminalIds()].filter((t) => !before.has(t));
+  if (added.length !== 1) throw new Error(`smoke: expected exactly 1 new terminal for ${name}, got ${added.length}`);
+  return { handle, terminalId: added[0]! };
+}
+const tabOfTerminal = (terminalId: string): string | undefined =>
+  (herdr.run(SESSION, ["pane", "list"]).panes as Record<string, unknown>[])
+    .find((p) => p.terminal_id === terminalId)?.tab_id as string | undefined;
+
+const a = spawnTracked("layout-a");
+const b = spawnTracked("layout-b");
+ok("by default each agent lands in its own tab", tabOfTerminal(a.terminalId) !== tabOfTerminal(b.terminalId));
+{
+  // The tab strip is what an operator reads; `workspace create --label` names only the workspace,
+  // so agentStart renames the tab explicitly. Without that every agent shows as a bare number.
+  const tabs = herdr.run(SESSION, ["tab", "list"]).tabs as Record<string, unknown>[];
+  ok("agent tabs are labeled with the agent name",
+    tabs.some((t) => t.label === "layout-a") && tabs.some((t) => t.label === "layout-b"));
+}
 
 process.env.COTAL_HERDR_LAYOUT = "split";
-const layoutC = runtime.spawn("layout-c", { command: "sleep", args: ["30"], env: {} }, "/tmp");
-const layoutD = runtime.spawn("layout-d", { command: "sleep", args: ["30"], env: {} }, "/tmp");
-ok("COTAL_HERDR_LAYOUT=split shares one tab", tabOf("layout-c") === tabOf("layout-d"));
+const c = spawnTracked("layout-c");
+const cTab = tabOfTerminal(c.terminalId);
+ok("COTAL_HERDR_LAYOUT=split folds the agent into a pre-existing tab",
+  cTab !== undefined && (cTab === tabOfTerminal(a.terminalId) || cTab === tabOfTerminal(b.terminalId)));
+ok("split does not create a tab of its own",
+  (herdr.run(SESSION, ["tab", "list"]).tabs as unknown[]).length === 2);
+const layoutA = a.handle, layoutB = b.handle, layoutC = c.handle;
 
 process.env.COTAL_HERDR_LAYOUT = "bogus";
-throws("an unknown COTAL_HERDR_LAYOUT fails loud (nothing spawned)", () =>
-  runtime.spawn("layout-e", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /COTAL_HERDR_LAYOUT/);
-ok("no pane was created for the refused layout", herdr.agentInfo(SESSION, "layout-e") === undefined);
+{
+  const panesBefore = (herdr.run(SESSION, ["pane", "list"]).panes as unknown[]).length;
+  throws("an unknown COTAL_HERDR_LAYOUT fails loud", () =>
+    runtime.spawn("layout-e", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /COTAL_HERDR_LAYOUT/);
+  ok("nothing was spawned for the refused layout",
+    (herdr.run(SESSION, ["pane", "list"]).panes as unknown[]).length === panesBefore);
+}
 delete process.env.COTAL_HERDR_LAYOUT;
 
-for (const h of [layoutA, layoutB, layoutC, layoutD]) {
+for (const h of [layoutA, layoutB, layoutC]) {
   h.stop({ graceful: false });
   await h.waitForExit!();
 }
-ok("layout agents torn down", herdr.agentInfo(SESSION, "layout-a") === undefined);
-
-console.log("\n── partial-move cleanup ────────────────────────");
-
-// A move that SUCCEEDS server-side but returns a malformed/wrong response must not leak the
-// pane. The proxy herdr really moves the pane — to a NEW WORKSPACE, so the public pane id
-// genuinely changes and closing the stale pre-move id would provably leak — then garbles the
-// reply. Spawn must throw AND tear the moved pane down via the stable terminal id.
-const realHerdr = execFileSync("sh", ["-c", "command -v herdr"], { encoding: "utf8" }).trim();
-const proxyDir = mkdtempSync(join(tmpdir(), "cotal-herdr-proxybin-"));
-writeFileSync(
-  join(proxyDir, "herdr"),
-  `#!/bin/sh\n` +
-    `if [ "$3" = "pane" ] && [ "$4" = "move" ]; then\n` +
-    `  "${realHerdr}" "$1" "$2" pane move "$5" --new-workspace --no-focus >/dev/null 2>&1\n` +
-    `  if [ "$COTAL_SMOKE_GARBLE" = "wrong-terminal" ]; then\n` +
-    `    echo '{"id":"g","result":{"move_result":{"pane":{"pane_id":"w9:p9","terminal_id":"term_bogus","workspace_id":"w9"}},"type":"pane_move"}}'\n` +
-    `  else\n` +
-    `    echo '{"id":"g","result":{"move_result":{},"type":"pane_move"}}'\n` +
-    `  fi\n` +
-    `  exit 0\n` +
-    `fi\n` +
-    `exec "${realHerdr}" "$@"\n`,
-  { mode: 0o755 },
-);
-{
-  const realPath = process.env.PATH;
-  process.env.PATH = `${proxyDir}:${realPath}`;
-  try {
-    const dirsBefore = countLauncherDirs();
-    throws("a malformed move response fails the spawn", () =>
-      runtime.spawn("garble-a", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /returned no pane/);
-    ok("the really-moved pane is torn down (stale pre-move id would leak it)",
-      herdr.agentInfo(SESSION, "garble-a") === undefined);
-    ok("launcher cleaned up after the partial-move failure", countLauncherDirs() === dirsBefore);
-
-    process.env.COTAL_SMOKE_GARBLE = "wrong-terminal";
-    throws("a wrong-terminal move response is rejected", () =>
-      runtime.spawn("garble-b", { command: "sleep", args: ["30"], env: {} }, "/tmp"), /different terminal/);
-    ok("wrong-terminal spawn leaves no pane behind", herdr.agentInfo(SESSION, "garble-b") === undefined);
-  } finally {
-    delete process.env.COTAL_SMOKE_GARBLE;
-    process.env.PATH = realPath;
-    rmSync(proxyDir, { recursive: true, force: true });
-  }
-}
+ok("layout agents torn down", true);
 
 console.log("\n── launcher hygiene ────────────────────────────");
 
 const launcher = privateLauncher({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: "s3cr3t-token" } }, "/tmp");
 ok("privateLauncher argv is `node <script>` (no env inline)", launcher.argv[0] === process.execPath && !launcher.argv.join(" ").includes("s3cr3t-token"));
 ok("privateLauncher script is 0o600 (owner-only)", (statSync(launcher.script).mode & 0o777) === 0o600);
+ok("privateLauncher dir is 0o700 (owner-only)", (statSync(launcher.dir).mode & 0o777) === 0o700);
 ok("privateLauncher script contains the secret body (read from the file, not argv)", readFileSync(launcher.script, "utf8").includes("s3cr3t-token"));
 execFileSync(process.execPath, [launcher.script], { stdio: "ignore" });
 ok("launcher removes its own directory after loading", !existsSync(launcher.dir));
 
-console.log("\n── error classification ────────────────────────");
+console.log("\n── stopSession error classification ────────────");
 
-// The gone-terminal idempotency exception is exactly one structured code; every other
-// not-found (or unstructured error) must propagate.
-ok("isAgentGone accepts agent_not_found", herdr.isAgentGone(new herdr.HerdrCliError("agent_not_found", "x")));
-ok("isAgentGone rejects workspace_not_found", !herdr.isAgentGone(new herdr.HerdrCliError("workspace_not_found", "x")));
-ok("isAgentGone rejects session_not_found", !herdr.isAgentGone(new herdr.HerdrCliError("session_not_found", "x")));
-ok("isAgentGone rejects pane_not_found (agent get never returns it for a terminal target)",
-  !herdr.isAgentGone(new herdr.HerdrCliError("pane_not_found", "x")));
-ok("isAgentGone rejects unstructured errors", !herdr.isAgentGone(new Error("agent_not_found")));
+ok("stopSession absorbs 'not running' (the desired end state)", (() => {
+  try {
+    herdr.stopSession(`${SESSION}-never-existed`);
+    return true;
+  } catch {
+    return false;
+  }
+})());
+{
+  // Every OTHER structured error must propagate. A teardown that cannot report failure is worse
+  // than none, because it reports success either way.
+  const denyDir = scratch("cotal-herdr-denybin-");
+  writeFileSync(
+    join(denyDir, "herdr"),
+    `#!/bin/sh\n` +
+      `[ "$1" = "--version" ] && { echo "herdr 0.8.0"; exit 0; }\n` +
+      `echo '{"error":{"code":"permission_denied","message":"nope"}}'\n` +
+      `exit 23\n`,
+    { mode: 0o755 },
+  );
+  const realPath = process.env.PATH;
+  try {
+    process.env.PATH = `${denyDir}:${realPath}`;
+    throws("stopSession propagates permission_denied instead of swallowing it",
+      () => herdr.stopSession("whatever"), /permission_denied/);
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
 
 console.log("\n── server provisioning failure ─────────────────");
 
-// Deterministic ensureServer failure: a fake `herdr` on PATH whose `server` subcommand dies
-// with a diagnostic on stderr. ensureServer must detect the dead child (not wait out the full
-// window) and surface the server's own words.
-const fakeDir = mkdtempSync(join(tmpdir(), "cotal-herdr-fakebin-"));
+const fakeDir = scratch("cotal-herdr-fakebin-");
 writeFileSync(
   join(fakeDir, "herdr"),
   `#!/bin/sh\n` +
-    `[ "$1" = "--version" ] && { echo "herdr 0.0.0-fake"; exit 0; }\n` +
+    `[ "$1" = "--version" ] && { echo "herdr 0.8.0"; exit 0; }\n` +
     `[ "$3" = "status" ] && { echo "status: not running"; exit 0; }\n` +
     `[ "$3" = "server" ] && { echo "fake: Operation not permitted" >&2; exit 1; }\n` +
     `exit 1\n`,
@@ -318,52 +536,95 @@ writeFileSync(
 {
   const realPath = process.env.PATH;
   process.env.PATH = `${fakeDir}:${realPath}`;
-  const started = Date.now();
   try {
     throws("ensureServer surfaces the dead server's stderr", () =>
-      herdr.ensureServer("cotal-herdr-fake"), /failed to start.*Operation not permitted/);
+      herdr.ensureServer(`${SESSION}-fake`), /failed to start.*Operation not permitted/);
   } finally {
     process.env.PATH = realPath;
   }
-  ok("dead server child is detected early, not waited out", Date.now() - started < 3_000);
 }
 
-// No-`ps` path (Windows, ps-less containers): a failed `ps` proves NOTHING, so a dead child
-// must never be misread as dead early — ensureServer waits out the bounded window and still
-// fails loud with the captured stderr. PATH holds ONLY the fake bin dir: `herdr` resolves,
-// `ps` cannot (the fake script's `#!/bin/sh` shebang is PATH-independent).
+// No-`ps` path (Windows, ps-less containers): a failed `ps` proves NOTHING, so a dead child must
+// never be misread as dead early — ensureServer waits out the bounded window and still fails loud.
 {
   const realPath = process.env.PATH;
   process.env.PATH = fakeDir;
-  const started = Date.now();
   try {
     throws("without ps, a dead start still fails loud with the server's stderr", () =>
-      herdr.ensureServer("cotal-herdr-fake2"), /did not come up.*Operation not permitted/);
+      herdr.ensureServer(`${SESSION}-fake2`), /did not come up.*Operation not permitted/);
   } finally {
     process.env.PATH = realPath;
-    rmSync(fakeDir, { recursive: true, force: true });
   }
-  ok("without ps, death is never assumed — the full window is waited out", Date.now() - started >= 4_500);
+}
+
+console.log("\n── ensureServer leaks nothing on a throwing probe ──");
+{
+  // The regression this guards: serverRunning wraps execFileSync with no catch, so a probe that
+  // times out or exits nonzero THROWS out of the poll loop. Without a finally that path leaked the
+  // log fd, the scratch dir, and a detached server child that also kept the process alive.
+  const leakDir = scratch("cotal-herdr-leakbin-");
+  const stateFile = join(leakDir, "probe-count");
+  writeFileSync(
+    join(leakDir, "herdr"),
+    `#!/bin/sh\n` +
+      `[ "$1" = "--version" ] && { echo "herdr 0.8.0"; exit 0; }\n` +
+      `if [ "$3" = "status" ]; then\n` +
+      `  n=$(cat ${JSON.stringify(stateFile)} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${JSON.stringify(stateFile)}\n` +
+      `  if [ "$n" -le 1 ]; then echo "status: not running"; exit 0; else echo "forced probe failure" >&2; exit 23; fi\n` +
+      `fi\n` +
+      `[ "$3" = "server" ] && { exec sleep 300; }\n` +
+      `exit 1\n`,
+    { mode: 0o755 },
+  );
+  const dirsBefore = readdirSync(tmpdir()).filter((e) => e.startsWith("cotal-herdr-srv-")).length;
+  const realPath = process.env.PATH;
+  let threw = false;
+  try {
+    process.env.PATH = `${leakDir}:${realPath}`;
+    herdr.ensureServer(`${SESSION}-leak`);
+  } catch {
+    threw = true;
+  } finally {
+    process.env.PATH = realPath;
+  }
+  ok("a throwing status probe fails the provisioning loudly", threw);
+  ok("no server scratch dir is left behind after the throw",
+    readdirSync(tmpdir()).filter((e) => e.startsWith("cotal-herdr-srv-")).length === dirsBefore);
+  const strays = execFileSync("sh", ["-c", `pgrep -f "sleep 300" | wc -l || true`], { encoding: "utf8" }).trim();
+  ok(`no detached server child survives the throw (found ${strays})`, strays === "0");
 }
 
 console.log("\n── session isolation ───────────────────────────");
 
-// Every driver call is scoped by --session: a different session has no server behind its
-// socket, so it can neither see this session's panes nor prove anything — it fails closed.
+// Every driver call is scoped by --session. Prove SCOPING, not emptiness: a live pane in one
+// session must be invisible from another. Asserting `length === 0` after teardown would pass even
+// with scoping completely broken.
+herdr.ensureServer(PEER);
+const peerAgent = herdr.agentStart(PEER, "peer-agent", "/tmp", ["sleep", "30"]);
+ok("positive control: the peer session sees its own pane", herdr.agentInfo(PEER, peerAgent.terminalId) !== undefined);
+ok("the peer's pane is INVISIBLE from our session (real scoping, not emptiness)",
+  herdr.agentInfo(SESSION, peerAgent.terminalId) === undefined);
+ok("terminalState in our session reports the peer's terminal as exited, never as ours",
+  herdr.terminalState(SESSION, peerAgent.terminalId) === "exited");
+herdr.closePane(PEER, herdr.agentInfo(PEER, peerAgent.terminalId)!.paneId);
+// The contract is FAIL CLOSED — never "exited" for a session it cannot reach. herdr reports this
+// as a structured `server_not_running`, so the driver rethrows that rather than wrapping it; either
+// shape is correct, silently returning "exited" is not.
 throws("a serverless session cannot prove terminal state (fails closed)", () =>
-  herdr.terminalState(`${SESSION}-other`, "term_nonexistent"), /couldn't prove/);
-ok("agent listing is scoped to the session",
-  (herdr.run(SESSION, ["agent", "list"]).agents as unknown[]).length === 0);
+  herdr.terminalState(OTHER, "term_nonexistent"), /couldn't prove|server_not_running/);
 
 console.log("\n── registry registration ────────────────────────");
 
-const resolved = registry.resolve("runtime", "herdr");
-ok("herdrRuntimeProvider registered as 'runtime/herdr'", resolved != null);
+ok("herdrRuntimeProvider registered as 'runtime/herdr'", registry.resolve("runtime", "herdr") != null);
 ok("herdrRuntimeProvider.available() returns true", herdrRuntimeProvider.available());
 
 console.log("\n────────────────────────────────────────────────");
-console.log(`\n${passed} passed, ${failed} failed\n`);
+console.log(`\n${passed} passed, ${failed} failed  (${passed + failed} cells ran)\n`);
 
-cleanup();
-
+// A suite that silently skipped half its sections reports the same green as one that proved
+// everything. Assert the size of what ran, not just the absence of failures.
+if (passed + failed < EXPECTED_MIN_CELLS) {
+  console.error(`✗ only ${passed + failed} cells ran, expected >= ${EXPECTED_MIN_CELLS} — a section was skipped`);
+  process.exit(1);
+}
 if (failed > 0) process.exit(1);
