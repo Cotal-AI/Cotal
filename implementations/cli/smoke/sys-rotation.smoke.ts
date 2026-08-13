@@ -237,7 +237,7 @@ try {
 
   console.log("\n1b) baseline: the PRE-rotation broker ACCEPTS the pre-rotation $SYS cred");
   mkdirSync(storeDir, { recursive: true });
-  writeFileSync(confPath, serverConfig(auth, [auth], { storeDir, port: PORT }));
+  writeFileSync(confPath, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, storeDir, port: PORT }));
   await startBroker();
   check("a healthy pre-rotation observer is ACCEPTED before the rotation", await accepts(livePreObserver));
   check("the already-expired observer is refused even HERE (so its later refusal proves nothing)", !(await accepts(preObserver)));
@@ -336,7 +336,7 @@ try {
   check("the manifest refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeManifest);
 
   console.log("\n5) live broker on the ROTATED config — the same cred, config the only variable");
-  writeFileSync(confPath, serverConfig(rot.auth, [rot.auth], { storeDir, port: PORT }));
+  writeFileSync(confPath, serverConfig(rot.auth, [rot.auth], { transport: { kind: "plaintext" }, storeDir, port: PORT }));
   await startBroker();
   // Bind "came up on the ROTATED config" to IDENTITY, not to a TCP probe: `isReachable` with no
   // creds proves only that something is listening, which any broker on this port satisfies.

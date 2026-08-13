@@ -138,9 +138,19 @@ async function daemonTail(from: number, ms = 25_000): Promise<string> {
  * boot cannot bind; give each daemon 2.5s more and every cycle is clean). A real operator's daemon
  * has been up for weeks, so this suite waits rather than encoding the bug as an expectation.
  */
-async function settleThenDown(): Promise<{ code: number | null; out: string }> {
+async function settleThenDown(opts: { awaitManagerLease?: boolean } = {}): Promise<{ code: number | null; out: string }> {
   await wait(3000);
-  return cotal(["down"]);
+  const r = cotal(["down"]);
+  // The MANAGER has the same shape of problem on its own lease, and it bites the boot AFTER the one
+  // that was stopped. Its instance id is persisted, so a restart re-acquires the SAME per-instance
+  // key; a manager whose predecessor did not release it refuses to start ("already serves space … -
+  // stop it first"), `up` still exits 0, and the mesh comes back with no manager at all — no renewal
+  // pass runs, so `doctor auth` goes on grading a record from before the repair. Waiting out
+  // MANAGER_LEASE_TTL_MS (10s) is what makes it deterministic. Also reproducible with no rotation
+  // anywhere: three ordinary `up`/`down` cycles refuse on the third, and the same three with 12s
+  // after each `down` do not.
+  if (opts.awaitManagerLease) await wait(12_000);
+  return r;
 }
 
 async function accepts(creds: string): Promise<boolean> {
@@ -156,7 +166,7 @@ async function accepts(creds: string): Promise<boolean> {
 /** A privileged standalone JS connection: a scoped cred subscribes only `_INBOX_<id>.>`, so the
  *  JS-API replies need the pinned inbox prefix or every request hangs on a permissions violation. */
 async function withJsm<T>(creds: string, fn: (jsm: Awaited<ReturnType<typeof jetstreamManager>>) => Promise<T>): Promise<T> {
-  const nc = await connect({ servers: SERVERS, timeout: 5000, reconnect: false, maxReconnectAttempts: 0, ...standaloneConnectOpts({ creds }) });
+  const nc = await connect({ servers: SERVERS, timeout: 5000, reconnect: false, maxReconnectAttempts: 0, ...standaloneConnectOpts({ creds, tls: false }) });
   try {
     return await fn(await jetstreamManager(nc));
   } finally {
@@ -244,14 +254,18 @@ try {
 
   // ── 4) the repair that works ───────────────────────────────────────────────────────────────────
   console.log("\n4) `down` + `up --rotate-sys`");
-  const down2 = await settleThenDown();
+  // The manager must be able to start on the boot that follows, because the doctor check below
+  // grades the renewal record its first pass writes.
+  const down2 = await settleThenDown({ awaitManagerLease: true });
   check("`cotal down` exits 0 before the rotation", down2.code === 0, down2.out.slice(-400));
   survivors("down 2");
+  const mgrMark = (() => { try { return readFileSync(cotalPath("manager.log"), "utf8").length; } catch { return 0; } })();
   mark = logSize();
   const boot3 = cotal(["up", "--rotate-sys", "--detach", "--space", SPACE, "--server", SERVERS]);
   check("`cotal up --rotate-sys --detach` exits 0", boot3.code === 0, boot3.out.slice(-800));
   check("the rotation tells the operator its backups are now unrestorable", /backup/i.test(boot3.out), boot3.out.slice(-800));
 
+  survivors("boot 3");
   const rotated = await getSpaceAuth(store, SPACE);
   const newObs = readFileSync(obsPath, "utf8");
   const newEv = readFileSync(evPath, "utf8");
@@ -265,8 +279,18 @@ try {
   const tail3 = await daemonTail(mark);
   check("the daemon's membership feed IS up after the rotation", /membership feed up/.test(tail3), tail3.slice(-500));
   check("the daemon no longer reports a degraded membership feed", !/! membership:/.test(tail3), tail3.slice(-500));
-  const doc3 = cotal(["doctor", "auth"]);
-  check("`cotal doctor auth` exits 0 after the rotation", doc3.code === 0, `code=${doc3.code} ${doc3.out.slice(-400)}`);
+  // Bounded, and only on the POSITIVE assertion. `doctor auth` also grades the last renewal record,
+  // which still holds the pre-rotation adoption failure until the manager's first post-boot pass
+  // rewrites it — so this waits for that pass rather than for the rotation, which has already
+  // happened. A red here at the deadline is a real finding: it would mean an operator sees a failed
+  // doctor for as long as the record stays stale after a successful repair.
+  const started = Date.now();
+  let doc3 = cotal(["doctor", "auth"]);
+  while (doc3.code !== 0 && Date.now() - started < 60_000) {
+    await wait(2000);
+    doc3 = cotal(["doctor", "auth"]);
+  }
+  check(`\`cotal doctor auth\` exits 0 after the rotation (${Math.round((Date.now() - started) / 1000)}s)`, doc3.code === 0, `code=${doc3.code} ${doc3.out.slice(-400)}`);
 
   // ── 5) what the repair promised to leave alone ─────────────────────────────────────────────────
   console.log("\n5) the survival claim the repair copy makes");
@@ -286,6 +310,9 @@ try {
     console.log("\n---- FULL DELIVERY LOG ----\n" + readFileSync(deliveryLog, "utf8"));
     console.log("\n---- DOWN OUTPUTS ----\n1:", down1.out, "\n2:", down2.out, "\n3:", down3.out);
     console.log("\n---- BOOT3 OUT ----\n", boot3.out);
+    try { console.log("\n---- MANAGER LOG (boot 3 only) ----\n" + readFileSync(cotalPath("manager.log"), "utf8").slice(mgrMark)); } catch (e) { console.log("mgr tail unreadable:", (e as Error).message); }
+    try { console.log("\n---- MANAGER LOG (full tail) ----\n" + readFileSync(cotalPath("manager.log"), "utf8").slice(-3000)); } catch (e) { console.log("manager.log unreadable:", (e as Error).message); }
+    try { console.log("\n---- RENEWAL RECORD ----\n" + readFileSync(cotalPath("renewal.json"), "utf8")); } catch (e) { console.log("renewal record unreadable:", (e as Error).message); }
   }
 
   console.log(`\n${fail ? "✗" : "✓"} $SYS ROTATION E2E: ${pass} passed, ${fail} failed`);
