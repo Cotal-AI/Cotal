@@ -18,10 +18,15 @@ fail loudly with the matching install command; they never fall back to pty.
 Trusted publishing replaces the long-lived `NPM_TOKEN` secret with short-lived OIDC tokens
 issued by GitHub Actions. Each published package must be configured once on npmjs.com.
 
-For **every** published package (`@cotal-ai/core`, `@cotal-ai/cli`, `@cotal-ai/manager`,
-`@cotal-ai/delivery`, `@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`,
-`@cotal-ai/connector-opencode`, `@cotal-ai/connector-hermes`, `@cotal-ai/pi`, `@cotal-ai/cmux`, `@cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/herdr`, and the
-`cotal-ai` binary):
+This list is the `fixed` group in [`.changeset/config.json`](../.changeset/config.json) — that
+group is what actually gets versioned and published, so derive the list from it rather than
+maintaining it by hand. It had drifted by six packages before this was last reconciled.
+
+For **every** published package — `cotal-ai` (the binary), `@cotal-ai/core`,
+`@cotal-ai/workspace`, `@cotal-ai/cli`, `@cotal-ai/manager`, `@cotal-ai/delivery`,
+`@cotal-ai/web`, `@cotal-ai/cmux`, `@cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/herdr`,
+`@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`, `@cotal-ai/connector-hermes`,
+`@cotal-ai/connector-opencode`, `@cotal-ai/connector-codex`, `@cotal-ai/pi`, `@cotal-ai/auth`:
 
 1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.
    `https://www.npmjs.com/package/@cotal-ai/core/access`).
@@ -29,7 +34,7 @@ For **every** published package (`@cotal-ai/core`, `@cotal-ai/cli`, `@cotal-ai/m
 3. Pick **GitHub Actions**.
 4. Fill in:
    - **Organization or user:** the GitHub owner (your org or user).
-   - **Repository:** `SWARL` (or whatever this repo is called).
+   - **Repository:** `Cotal`.
    - **Workflow filename:** `changesets.yml`.
    - **Environment name:** leave blank.
 5. Save. Repeat for every package.
