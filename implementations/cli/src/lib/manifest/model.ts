@@ -53,6 +53,8 @@ export interface ResolvedAgent {
   description?: string;
   /** Manifest persona body (REPLACES the file body when set; the sole body for inline). */
   instructions?: string;
+  /** Kickoff prompt auto-submitted at session start (manifest-only; personas carry none). */
+  prompt?: string;
   /** Manifest capabilities — win over the persona's when present. */
   capabilities?: string[];
   /** Effective policy for THIS agent: per-agent override ?? top-level ?? "reject". */

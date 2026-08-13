@@ -4,7 +4,7 @@ import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
 import { use, useComplete } from "./commands/use.js";
-import { meshes } from "./commands/meshes.js";
+import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
 import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
@@ -25,6 +25,7 @@ import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
 import { endpoints } from "./commands/endpoints.js";
+import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } from "./commands/describe.js";
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
 
@@ -112,6 +113,7 @@ const baseCommands: Command[] = [
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
       { name: "run", type: "string", value: "<id>", description: "tear down one `spawn -f` run by id" },
+      { name: "space", type: "string", value: "<name>", description: "with components: the mesh whose target-addressed components (e.g. web) to stop" },
       { name: "dry-run", type: "boolean", description: "print what would stop, mutate nothing" },
       { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
       { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },
@@ -153,8 +155,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "meshes",
     group: "Mesh",
-    summary: "list the running meshes (a `*` marks the `current` default a bare spawn joins)",
+    summary: "list the meshes this machine knows (a `*` marks the `current` default a bare spawn joins); add/rm register one running elsewhere",
+    usage: "meshes [list] | meshes add [<space>] [--server <url>] [--root <dir>] [--mode auth|open] | meshes rm <space> …  (bare `meshes add` on a terminal is guided)",
+    positionals: "[list | add <space> | rm <space> …]",
+    flags: meshesFlags,
     run: meshes,
+    complete: meshesComplete,
   },
   {
     kind: "command",
@@ -383,6 +389,28 @@ const baseCommands: Command[] = [
     summary: "list every endpoint in the live presence roster, including the manager",
     flags: [...targetFlags],
     run: endpoints,
+  },
+  {
+    kind: "command",
+    name: "describe",
+    group: "Observe",
+    summary: "resolve a registered v0.4 service's command surface off the wire (describe + the contract store)",
+    usage: "describe <endpoint>  [--space <s>] [--server <url>]",
+    positionals: "<endpoint>",
+    flags: describeFlags,
+    run: describeCmd,
+    complete: describeComplete,
+  },
+  {
+    kind: "command",
+    name: "invoke",
+    group: "Observe",
+    summary: "invoke one v0.4 service command by name with JSON args (schemas fetched, never hand-imported)",
+    usage: "invoke <endpoint> <command>  [--args '<json>'] [--name <agent> | --self] [--admin]",
+    positionals: "<endpoint> <command>",
+    flags: invokeFlags,
+    run: invokeCmd,
+    complete: describeComplete,
   },
   {
     kind: "command",

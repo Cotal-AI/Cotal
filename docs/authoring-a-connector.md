@@ -4,7 +4,7 @@
 
 A **connector** teaches Cotal how to launch one agent harness (Claude Code, OpenCode, your own) as a
 mesh node. Connectors are ordinary [extensions](cli.md#ext): you publish an npm package, the operator
-runs `cotal ext add <your-package>`, and it plugs in exactly like the four first-party connectors,
+runs `cotal ext add <your-package>`, and it plugs in exactly like the first-party connectors,
 which are themselves just connectors seeded on first run. There is no special-casing for built-ins,
 so anything the built-ins can do, yours can too.
 

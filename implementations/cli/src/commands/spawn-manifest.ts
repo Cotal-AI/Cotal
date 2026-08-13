@@ -4,8 +4,10 @@
  *
  *  - classifies channels (new → seed + own · existing → `exists-unmanaged`, card untouched) and
  *    agents (will-create · already-owned · stale) against the live mesh + any prior ledger;
- *  - boots agents through the workspace-local manager's admin `launch` op (it reads the run spec by
- *    id and mints from the resolved policy — the control wire carries no authority);
+ *  - boots agents through the serving manager's admin `launch` op — a manager in THIS checkout
+ *    reads the run spec by id; a manager in another checkout/host gets the resolved spec pushed
+ *    inline over the control plane (it validates + persists it itself, and mints from the resolved
+ *    policy — the control wire carries no authority, and never a path);
  *  - records exactly what it created in a `cotal-ledger/v1` ledger so `down -f` removes only that;
  *  - flags unmanaged actors on declared channels as a SECURITY warning (an explicit lower bound).
  *
@@ -21,19 +23,18 @@ import {
   newIdentity,
   readChannelRegistry,
   seedChannelRegistry,
-  CONTROL_ADMIN,
-  CONTROL_PRIVILEGED,
   type ControlReply,
   type MembershipSnapshot,
   type Presence,
 } from "@cotal-ai/core";
+import { findMesh } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { startManagerDetached } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, channelsSeed, genRunId, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
-import { buildLedger, hashManifestSource, listLedgers, writeLedger, type LedgerAgent } from "../lib/manifest/ledger.js";
+import { buildLedger, buildLedgerAgentRow, hashManifestSource, listLedgers, writeLedger, type LedgerAgent } from "../lib/manifest/ledger.js";
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "../lib/manifest/spawn-plan.js";
 import { connectProbe, launchAgent, settleRoster, waitLeaseGone, waitManagerReady } from "../lib/manifest/live.js";
 import { renderInherited, renderSpawnPlan, renderSpawnSummary, renderWarnings } from "../lib/manifest/render.js";
@@ -86,20 +87,19 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   // operator-grade (a "channel-writer" view, scope "admin", below).
   const connection = await connectOrExit({ server: m.broker?.servers ?? flags.server, space }, "deployer");
   const user = connection.bearer ? await userViewAuthOrExit(connection, "deployer") : undefined;
-  const tier = user ? CONTROL_PRIVILEGED : CONTROL_ADMIN;
 
   const root = cotalRoot();
-  // Same-checkout invariant (security/UX): the launch spec, the ledger, and the manager `spawn -f`
-  // drives all live under THIS checkout's `.cotal`. Deploying onto a mesh recorded by a different
-  // checkout would decouple those local artifacts from that mesh's root/manager. Refuse unless the
-  // resolved mesh is registered to this root; a raw off-registry target (no recorded root) isn't
-  // supported for a manifest deploy.
+  // Deploy-home invariant (UX): the ledger and any locally-minted creds live under THIS checkout's
+  // `.cotal`, and `down -f` later resolves them from here — so the deploy must run from the
+  // checkout the mesh is REGISTERED to on this machine. (The serving MANAGER may live elsewhere;
+  // that's the remote path below.) A raw off-registry target (no recorded root) isn't supported
+  // for a manifest deploy.
   if (!connection.root) {
     console.error(c.red(`✗ spawn -f needs a mesh registered to this checkout - a raw off-registry target (--server/--space) isn't supported for a manifest deploy`));
     process.exit(1);
   }
   if (resolve(connection.root) !== resolve(root)) {
-    console.error(c.red(`✗ mesh "${space}" belongs to a different checkout (${connection.root}) - \`spawn -f\` / \`down -f\` are same-checkout; run them from ${connection.root}`));
+    console.error(c.red(`✗ mesh "${space}" is registered to another checkout on this machine (${connection.root}) - run \`spawn -f\` / \`down -f\` from there (the deploy's ledger lives with the registration)`));
     process.exit(1);
   }
   const manifestHash = hashManifestSource(readFileSync(abs, "utf8"));
@@ -132,6 +132,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     space,
     server: connection.server,
     creds: connection.creds,
+    lifecycleUid: user ? user.lifecycleUid : connection.epCaller?.uid,
     user: user ? { source: user.source, sentinelCreds: user.sentinelCreds, owner: user.owner, actor: user.actor } : undefined,
   });
   try {
@@ -173,10 +174,10 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     // backend before seeding channels or writing launch state, so a missing app cannot strand an
     // unledgered partial deploy.
     const held = agentPlan.willCreate.length ? await ep.readManagerLease() : undefined;
-    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS, tier));
+    const heldReady = Boolean(held && await waitManagerReady(ep, MANAGER_PROBE_MS));
     if (heldReady && held) {
-      if (resolve(held.root) !== resolve(root))
-        throw new Error(`a manager from a different checkout serves "${space}" (root ${held.root}) - stop it, or run spawn -f from there`);
+      // A manager in another checkout (or on another host) is fine — the deploy goes REMOTE below,
+      // pushing the resolved spec over the control plane. Only a runtime mismatch is unresolvable.
       if (held.runtime !== runtime)
         throw new Error(`a ${held.runtime} manager already serves "${space}" but runtime ${runtime} was requested - stop it, or match it with --runtime ${held.runtime}`);
     } else if (agentPlan.willCreate.length) {
@@ -205,10 +206,12 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     const agents: LedgerAgent[] = [...(prior?.created.agents ?? [])];
     const launchedNow: string[] = [];
     if (agentPlan.willCreate.length) {
-      // The manager reads the run spec by runId on each `launch`. USER MODE stamps the deploy's
-      // owner (the login's derived owner, read from the deployer-view bearer) into the spec — the
-      // manager launches the agents under it AND enforces it equals the launch caller's owner.
-      writeLaunchSpec(root, buildLaunchSpec(eff, runId, user?.owner), { update: Boolean(prior) });
+      // The manager reads the run spec by runId on each `launch` (a remote manager gets it pushed
+      // inline instead, below). USER MODE stamps the deploy's owner (the login's derived owner,
+      // read from the deployer-view bearer) into the spec — the manager launches the agents under
+      // it AND enforces it equals the launch caller's owner.
+      const spec = buildLaunchSpec(eff, runId, user?.owner);
+      writeLaunchSpec(root, spec, { update: Boolean(prior) });
       // Ensure a manager is SERVING this space, then validate it's ours — the lease is the authoritative
       // owner record. A held lease alone is not proof a manager is alive (a crashed holder's key lingers
       // until the bucket TTL, MANAGER_LEASE_TTL_MS), so read it (fast) and, when one exists, PROBE control to tell
@@ -216,11 +219,15 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       // another way — two managers queue-split every control op).
       const launchHeld = await ep.readManagerLease();
       const launchReady = launchHeld
-        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS, tier))
+        ? (launchHeld.holder === held?.holder ? heldReady : await waitManagerReady(ep, MANAGER_PROBE_MS))
         : false;
+      // A manifest deploy can be the thing that stands a manager up, and it never carries a `--host`
+      // of its own — so it reads the mesh's recorded exposure, or it would quietly replace a
+      // reachable attach face with a loopback-only one.
+      const attachHost = findMesh(space)?.attachHost;
       if (!launchHeld) {
         // Nobody owns the space — stand up a manager (it acquires the lease on boot).
-        startManagerDetached({ space, server: connection.server, runtime });
+        startManagerDetached({ space, server: connection.server, runtime, attachHost });
       } else if (!launchReady) {
         // A lease exists but its holder doesn't answer control — a STALE key a crashed manager left. It
         // blocks a replacement's acquire until the bucket TTL expires; wait it out, then stand one up.
@@ -229,13 +236,13 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
           console.error(c.red(`✗ a manager lease for "${space}" is still held by an unresponsive holder (pid ${launchHeld.pid}) after its TTL - stop it or check .cotal/manager.log`));
           process.exit(1);
         }
-        startManagerDetached({ space, server: connection.server, runtime });
+        startManagerDetached({ space, server: connection.server, runtime, attachHost });
       }
       // else: a live manager already answered — reuse it. All paths converge here: confirm a manager is
       // serving, then validate THE HOLDER THAT ACTUALLY ANSWERED by re-reading the CURRENT lease (not the
       // `held` snapshot, which can turn over during the probe / a concurrent start — TOCTOU). Fail LOUD if
       // a foreign-checkout or wrong-runtime manager won the space before we launch into it.
-      if (!(await waitManagerReady(ep, undefined, tier))) {
+      if (!(await waitManagerReady(ep))) {
         console.error(c.red("✗ manager did not become ready for control - see .cotal/manager.log"));
         process.exit(1);
       }
@@ -244,23 +251,37 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         console.error(c.red(`✗ "${space}" has no manager lease after the manager became ready - re-run \`cotal spawn -f\``));
         process.exit(1);
       }
-      if (resolve(live.root) !== resolve(root)) {
-        console.error(c.red(`✗ a manager from a different checkout serves "${space}" (root ${live.root}) - stop it, or run spawn -f from there`));
-        process.exit(1);
-      }
       if (live.runtime !== runtime) {
         console.error(c.red(`✗ a ${live.runtime} manager already serves "${space}" but runtime ${runtime} was requested - stop it, or match it with --runtime ${live.runtime}`));
         process.exit(1);
       }
+      // A manager from another checkout/host serves the space → REMOTE deploy: each `launch` call
+      // carries the resolved spec inline (the manager validates it as untrusted input and persists
+      // it under ITS OWN run tree). The ledger — and so `down -f` — stays with THIS checkout.
+      const remote = resolve(live.root) !== resolve(root);
+      if (remote) {
+        const wireBytes = Buffer.byteLength(JSON.stringify(spec));
+        if (wireBytes > 512 * 1024) {
+          console.error(c.red(`✗ launch spec too large to push over the control plane (${Math.round(wireBytes / 1024)}KB > 512KB) - deploy from the manager's checkout (${live.root})`));
+          process.exit(1);
+        }
+        console.log(c.dim(`  ~ remote manager serves "${space}" (root ${live.root}) - pushing the launch spec over the control plane`));
+      }
       for (const e of agentPlan.willCreate) {
-        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, tier);
+        const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, remote ? spec : undefined);
         if (!reply.ok) {
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
           continue;
         }
-        const d = reply.data as { name: string; id: string; requested: string; hash: string };
-        agents.push({ requested: d.requested, name: d.name, id: d.id, hash: d.hash });
-        launchedNow.push(d.name);
+        // `requested`/`hash` come from the PLAN, not the reply: they are this caller's own inputs,
+        // and the launch acceptance floor deliberately does not carry them (P2 item 2 ruling 3).
+        // The reply supplies only the SPAWNED identity — including the incarnation uid, so `down -f`
+        // derives the lifecycle-keyed cred path this spawn materialized (a pre-split manager's reply
+        // carries none → legacy name-keyed path). Parsed, not cast: a row that the reader would
+        // refuse now fails HERE, naming the field, instead of at teardown.
+        const d = (reply.data ?? {}) as { name?: unknown; id?: unknown; lifecycleUid?: unknown };
+        agents.push(buildLedgerAgentRow({ requested: e.agent.name, hash: e.hash }, d));
+        launchedNow.push(String(d.name));
         console.log(c.green(`✓ launched ${d.name}`) + c.dim(` (${e.agent.agentType})`));
       }
     }

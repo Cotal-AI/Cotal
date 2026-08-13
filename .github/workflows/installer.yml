@@ -1,0 +1,118 @@
+name: Installer
+
+# install.sh is the first thing most people run, on a machine we know nothing about, so it
+# gets its own gate rather than riding along with CI. The container matrix covers the Linux
+# configurations (no Node, old Node, musl, wget-only, each shell); macOS gets a real run on
+# the only honest macOS oracle there is.
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'install.sh'
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  lint:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # Pinned rather than the runner's preinstalled shellcheck: that version moves with the
+      # runner image, so the same commit can lint clean one week and fail the next on a newly
+      # added check. Bump this deliberately.
+      - name: shellcheck (POSIX sh, pinned)
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 -s sh install.sh
+      - name: shellcheck (test harness, pinned)
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 install/test-matrix.sh
+      - name: Parses under dash, not just bash
+        run: sudo apt-get install -y -qq dash && dash -n install.sh
+      - name: Truncation-safe at byte granularity
+        # A cut-off download must define functions and do nothing. A real pipe breaks
+        # mid-line, not on a line boundary, so this cuts by BYTE. The tail bytes matter most:
+        # a bare `main` is a complete command, which is why the invocation is brace-wrapped.
+        #
+        # --dry-run is the invocation on purpose. It is what distinguishes the two outcomes
+        # that matter: a prefix that runs main WITH the caller's argv performs a dry run and
+        # leaves nothing, while a prefix that runs a bare `main` loses the flag and performs a
+        # REAL install, which the artifact check below then catches. Note the complete script
+        # legitimately runs here, so "the last byte executes" is the expected result, not a
+        # finding: at total-1 only the trailing newline is missing and nothing has been lost.
+        run: |
+          total=$(wc -c < install.sh)
+          fail=0
+          # Every byte of the final 40, plus a spread across the whole file.
+          offsets=$(seq $(( total - 40 )) $(( total - 1 )))
+          for pct in 5 10 25 40 50 60 75 90 95 99; do
+            offsets="$offsets $(( total * pct / 100 ))"
+          done
+          for n in $offsets; do
+            [ "$n" -gt 0 ] || continue
+            rm -rf "$HOME/.local/share/cotal" "$HOME/.local/bin/cotal"
+            head -c "$n" install.sh > /tmp/prefix.sh
+            timeout 20 sh /tmp/prefix.sh --dry-run >/dev/null 2>&1 || true
+            if [ -e "$HOME/.local/bin/cotal" ] || [ -e "$HOME/.local/share/cotal" ]; then
+              echo "::error::a ${n}-byte prefix of install.sh had side effects"
+              fail=1
+            fi
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "no byte-prefix of install.sh has side effects"
+
+  matrix:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Onboarding matrix
+        run: ./install/test-matrix.sh
+
+  macos:
+    timeout-minutes: 15
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Dry run reports without changing anything
+        run: |
+          sh install.sh --dry-run
+          test ! -e "$HOME/.local/share/cotal" || { echo "::error::--dry-run wrote something"; exit 1; }
+      - name: Install, on the runner's own Node
+        run: sh install.sh --no-setup
+      - name: The launcher works and is pinned to a good Node
+        run: |
+          "$HOME/.local/bin/cotal" --version
+          node_used=$("$HOME/.local/share/cotal/nodebin/node" -v)
+          major=${node_used#v}; major=${major%%.*}
+          test "$major" -ge 22 || { echo "::error::launcher pinned Node $node_used"; exit 1; }
+      - name: Re-running upgrades in place and does not stack PATH blocks
+        run: |
+          sh install.sh --no-setup
+          blocks=$(cat "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc" 2>/dev/null | grep -c '^# cotal$' || true)
+          test "$blocks" -le 1 || { echo "::error::wrote $blocks PATH blocks"; exit 1; }
+      - name: Vendored Node path, including checksum verification
+        run: |
+          rm -rf "$HOME/.local/share/cotal" "$HOME/.local/bin/cotal"
+          sh install.sh --no-setup --vendor-node
+          "$HOME/.local/bin/cotal" --version
+
+  installer-ok:
+    # One required status to gate on, the same shape ci.yml uses.
+    if: always()
+    needs: [lint, matrix, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fan in
+        run: |
+          [ "${{ needs.lint.result }}" = success ] &&
+          [ "${{ needs.matrix.result }}" = success ] &&
+          [ "${{ needs.macos.result }}" = success ] || exit 1

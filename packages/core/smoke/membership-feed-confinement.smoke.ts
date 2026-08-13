@@ -108,7 +108,7 @@ async function tryKvGet(creds: string, id: string, bucket: string, key: string):
 const space = `membership-conf-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-memconf-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 try {

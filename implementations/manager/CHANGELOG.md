@@ -1,5 +1,173 @@
 # @cotal-ai/manager
 
+## 0.16.0
+
+### Patch Changes
+
+- Updated dependencies [531d37d]
+- Updated dependencies [498055c]
+  - @cotal-ai/workspace@0.16.0
+  - @cotal-ai/core@0.16.0
+
+## 0.15.0
+
+### Patch Changes
+
+- Updated dependencies [f89560a]
+  - @cotal-ai/core@0.15.0
+  - @cotal-ai/workspace@0.15.0
+
+## 0.14.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.11
+- @cotal-ai/workspace@0.14.11
+
+## 0.14.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.10
+- @cotal-ai/workspace@0.14.10
+
+## 0.14.9
+
+### Patch Changes
+
+- c88ef4c: `cotal spawn -f` now deploys to a remote manager: when the mesh's serving manager lives in another checkout or on another host, the resolved launch spec rides the `launch` control op inline — the manager validates it with the same untrusted-input contract as the file path and persists it under its own `.cotal/run/` (stale-restart and retained resume read one source either way). The ledger stays with the deploying checkout, so `down -f` works from there too. Also fixes a pre-existing re-apply edge: the transient persona file is now written atomic-replace instead of exclusive-create, so re-launching an agent after a partial deploy failure no longer dies on EEXIST.
+- Updated dependencies [a4c082a]
+  - @cotal-ai/workspace@0.14.9
+  - @cotal-ai/core@0.14.9
+
+## 0.14.8
+
+### Patch Changes
+
+- 84f6200: Per-agent `prompt:` in the mesh manifest — a kickoff message auto-submitted once the session is up, the declarative form of `cotal spawn --prompt`. Submitted on first boot and on stale-restart (hash-covered, so changing it marks a running agent stale); a reclaim of a still-live session does not re-submit. Imperative `--prompt` alongside a manifest launch is still rejected (one source). `topology view` marks agents that carry one.
+- Updated dependencies [84f6200]
+  - @cotal-ai/core@0.14.8
+  - @cotal-ai/workspace@0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- 12ad5e3: Close two attach defects: a capability issued for the wrong agent, and remote attach silently dying after a manager repair.
+
+  **An attach capability could be issued for an incarnation nobody authorized.** `opAttach` resolved the
+  agent name, awaited authorization — which on a user mesh performs a ledger read, a real async
+  boundary — and then asked for a ticket by NAME. Ticket issuance re-resolved that name and bound
+  whichever agent held the slot at that moment. A stop and same-name respawn landing inside the await
+  therefore authorized one incarnation and handed out a valid terminal capability for its successor,
+  which on a user-auth mesh can belong to a different owner. `url()` now requires the authorized handle
+  and refuses when the slot has moved under it, and `opAttach` re-asserts the incarnation immediately
+  after the await so the non-pty path shares the invariant. This is the same class as the name-binding
+  fix in 0.14.4, one step earlier in the sequence: that closed the window at redemption, this closes it
+  at issuance.
+
+  **A manager replacement quietly demoted attach to loopback.** The bind host for the manager's
+  attach/console face was passed only on the first `cotal up` and never recorded, so every later launch
+  for the same mesh fell back to loopback: a same-root repair, adopting a preserved or restored
+  listener, and a `spawn -f` manifest deploy. The broker, the agents, and the mesh all stayed up, so the
+  only symptom was `cotal attach` failing to connect from another machine. It is not derivable after
+  the fact — a broker dial address is deliberately not treated as a manager bind address — so the
+  decision is now recorded on the mesh entry and read back by every manager launch. An explicit
+  `--host` still wins, and a mesh that never asked for exposure records nothing and stays loopback-only.
+
+  Also narrows `.cotal/manager.log` to 0600 (new and existing), since the manager's console URL is
+  written there and that URL carries a credential reaching every agent's terminal.
+
+- Updated dependencies [12ad5e3]
+  - @cotal-ai/workspace@0.14.7
+  - @cotal-ai/core@0.14.7
+
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- 1a1c4e1: Bind an attach capability to the agent incarnation, not the reusable name.
+
+  0.14.4 made attach capabilities single-use, short-lived tickets bound to the one agent name the
+  manager had just authorized. A name, however, is a reusable slot rather than an identity: if the
+  authorized agent exits and a same-name successor takes that slot within the ticket's two-minute
+  lifetime, the untouched URL would attach the successor's terminal. On a per-user-auth mesh that
+  successor can belong to a different owner, which turns it into a cross-owner terminal handover, the
+  same class of boundary failure the ticket was introduced to close.
+
+  A ticket is now bound to the agent _handle_ it was issued against. The manager creates a new handle
+  per spawn, so a successor can never compare equal to its predecessor, and redemption re-resolves the
+  name and requires the same incarnation. Issuing a capability for an agent that is not running is now
+  a loud error rather than a ticket that quietly never redeems.
+
+  Covered by two added checks in `smoke:attach-auth` (40 total): a ticket is refused once a same-name
+  successor occupies the slot, and `url()` refuses to issue for an unknown agent.
+
+  - @cotal-ai/core@0.14.5
+  - @cotal-ai/workspace@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- eccf48c: Make `cotal attach` reach a manager on another machine, and credential that endpoint properly.
+
+  The manager's attach face bound a hardcoded `127.0.0.1` and advertised that same literal in the URL
+  it handed back over the control plane, so a remote operator dialed their own loopback and got
+  `ECONNREFUSED`. Attach only ever worked when the manager happened to be on the same box.
+
+  **Where it binds is now an explicit decision.** The endpoint takes a bind address, still loopback by
+  default, so a bare `cotal supervise` and an embedded `Manager` keep exactly the machine-local
+  endpoint they have always had. `cotal up` passes the address it bound the broker to (via a new
+  `supervise --console-host`), which is what makes a remote attach work. The broker's _dial_ address is
+  deliberately not reused as the _bind_ address: a manager may supervise a broker on another host and
+  cannot bind that address at all, and a failover list's first entry need not be the server actually
+  selected. Where the manager can only name loopback — a wildcard bind — the client substitutes the
+  broker address its own control connection reached, so `up --host 0.0.0.0` works too instead of
+  silently handing back an unreachable URL.
+
+  **The endpoint is now credentialed, in two tiers.** It carries terminal read and write for every
+  managed agent, plus the managed roster and the live mesh feed, so once it can leave the machine
+  "unauthenticated but loopback-only" stops being a safe position. A mesh caller receives a **ticket**
+  bound to the one agent the manager just authorized, single-use and short-lived; this is what makes
+  the existing per-agent owner/admin check real, since a manager-wide token would let a caller
+  legitimately authorized for its own agent swap the path and take over another owner's terminal. The
+  **console token** is the operator's own, reaches every agent because the console drives all of them,
+  and is printed solely to the manager's own output. The roster, feed, and PTY stream answer `401`
+  without a credential; the static console shell stays open, since it describes no agent.
+
+  Credentials never ride a cookie: cookies are host-scoped rather than port-scoped, so one set here
+  would be sent to every other HTTP service on the same host and would collide between two managers on
+  one box. The console URL carries its token in the fragment, which a browser never sends to a server,
+  and the console page is served `no-store` with `Referrer-Policy: no-referrer`.
+
+  Also fixes an IPv6 regression in the same area: `URL.hostname` returns an IPv6 literal bracketed
+  (`[::1]`), which `listen()` treats as a DNS name and fails `ENOTFOUND`. Brackets are stripped for the
+  bind and restored for the advertised URL. An address this host does not own now fails with the
+  address named and the resolutions spelled out, rather than a bare errno from deep inside startup.
+
+  Covered by a new `smoke:attach-auth` in the CI gate (38 checks), including the cross-agent path-swap
+  that the first design allowed.
+
+  - @cotal-ai/core@0.14.4
+  - @cotal-ai/workspace@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes

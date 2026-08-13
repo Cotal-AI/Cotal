@@ -1,5 +1,268 @@
 # @cotal-ai/cli
 
+## 0.16.0
+
+### Minor Changes
+
+- 531d37d: Register, list and unregister meshes from the CLI.
+
+  `cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open]` records a mesh this
+  machine did not start — one running on another machine, a shared broker, a hosted space — so
+  `--space`, `cotal use` and a bare `cotal spawn` can reach it from any directory. The broker is
+  probed before anything is written, so a wrong address or credentials that mesh will not accept fail
+  at registration instead of at the first spawn; `--force` records without verifying and replaces an existing
+  record. `cotal meshes rm <space> …` drops records (never stopping a mesh: a mesh running here is
+  refused in favour of `cotal down`) and releases the `current` pointer when it pointed at one.
+
+  Registry records now carry an origin, and an automatic prune only ever deletes records that
+  `cotal up` wrote. A record added by hand cannot be reconstructed by this machine, so an unreachable
+  broker under one is reported — `offline` in `cotal meshes`, and a preflight failure that names
+  `cotal meshes rm` rather than `cotal up` — instead of silently unregistering a mesh that was live
+  all along.
+
+- 498055c: Stop paying one network round trip per record, and return the recent messages history claimed to return.
+
+  Several read paths issued one sequential round trip per record, which is invisible against a loopback
+  broker and ruinous on any ordinary cross-continent link. Measured against a mesh at 534ms RTT with
+  healthy uplinks at both ends, reading the membership feed took 30 to 34 seconds for 89 entries; it
+  now takes under a second for 93.
+
+  - `liveKvEntries` is the one sanctioned full-bucket KV read: a single pass whose request count is
+    independent of record count, which collapses by greatest revision with tombstones so a deleted key
+    cannot resurrect, and which binds its own consumer so that an empty result is PROVEN by the
+    bind-time pending count rather than inferred from silence. A pass that is cut short raises rather
+    than returning what arrived. That distinction is load-bearing on the ACL path: read this way, a
+    dropped link mid-scan would otherwise report a provisioned principal as having no ACL row, and a
+    durable join would be refused as "not provisioned" instead of as "could not read". The membership
+    feed, the members and channel registries, and the ACL alias enumeration all read through it. No
+    change to broker authority: the same ordered push consumer over the same subject.
+  - `channelHistory` and `dmHistory` returned the OLDEST messages on any channel holding more than the
+    requested limit, while being documented as recent and rendered everywhere as the latest. They now
+    return the newest, read through a bounded window rather than by draining the backlog.
+  - `cotal status` started the Claude CLI twice for data one listing contains.
+
+  Two optimisations were attempted and REVERTED during review, and are not part of this change: the
+  dashboard's activity feed still fetches a full page per channel (the cheaper version dropped
+  genuinely-newer messages, because saturation counts messages rather than recency), and control
+  commands still open a probe connection before the real one (skipping it flattened typed auth
+  failures and lost the probe's deadline).
+
+  This is the read-path half of the work. The registry-safety half — a failed network probe must not
+  delete a mesh record — is a separate change on top of the `origin`/`pruneMesh` model from
+  `cotal meshes add`.
+
+### Patch Changes
+
+- Updated dependencies [531d37d]
+- Updated dependencies [498055c]
+  - @cotal-ai/workspace@0.16.0
+  - @cotal-ai/core@0.16.0
+
+## 0.15.0
+
+### Minor Changes
+
+- f89560a: New Codex connector (`--agent codex`): an OpenAI Codex session as a full lateral mesh peer, in Codex's own TUI. A host-mode peer drives a `codex app-server` thread over JSON-RPC: inbound batches wake a real turn, and directed messages steer INTO a live turn mid-flight.
+
+  `cotal spawn --agent codex` opens Codex's own TUI. The app-server runs as a loopback websocket listener guarded by a per-incarnation capability token (0600, inside the agent's private home), and the TUI attaches to the very thread the mesh drives, so mesh turns render as they happen and anything you type is a real user turn on that same thread. With no terminal (piped output, CI, a smoke) the host stays headless with an activity feed instead; `COTAL_CODEX_TUI=1|0` picks the mode explicitly when the tty check would guess wrong. Once Codex owns the terminal the host's own log moves to `host.log` in the agent's private home, and the handoff line names that path so a later failure is findable.
+
+  The shared `cotal_*` tools are served by the host process itself over a bearer-authenticated loopback MCP endpoint, with the token passed to codex by env var name so it never reaches the process table. Because the app-server is the MCP client, the same tools work on a mesh-driven turn and on one typed into the TUI; the connector's own tools are pre-approved so an unattended agent never stalls on an approval prompt nobody is watching, and `mcp_servers.cotal.*` is reserved and refused rather than silently overridden.
+
+  Autonomy defaults suit an agent woken by peer messages when nobody is watching: `approval_policy=never` (never ask before running a command, not refuse), `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`. Network is on because Codex's own workspace-write default has it off, which breaks installing a dependency or pushing a branch with an error that reads like the task is impossible rather than the sandbox refusing; filesystem containment is kept, because a peer's message is a remote input that can make the agent run commands. The network default is applied only where the sandbox is actually `workspace-write`, so tightening the mode does not leave a network grant in the launch. All three are overridable per spawn with `--opt` (including `sandbox_mode=danger-full-access` for no sandbox at all), while an interactive `approval_policy` is refused loud rather than auto-answered on the operator's behalf.
+
+  The guide states the sandbox's guarantee literally: it blocks out-of-workspace local filesystem writes, and does not block reads, exfiltration, or networked side effects. With the network on, a peer-driven turn can read broadly and send what it reads, reach loopback and link-local services, and act through any credential it can read, including irreversibly, via a force-push or an API delete. Containing filesystem writes is not the same as containing damage, and the docs say so rather than implying the residual is disclosure-only. The offline, tighter-mode, and separate-OS-user mitigations are named in both the autonomy section and Limits.
+
+  At-least-once delivery with exact-id acks on turn completion: a failed turn retries with backoff, an interrupt redelivers, and an app-server crash restarts the child in place on the same mesh lifecycle and re-drives the un-acked batch (a crash loop is fatal, never an endless respawn). Presence from the event stream, an opt-in transcript mirror, model catalog + reasoning-effort variants (`cotal models --agent codex`, `--variant`), `--opt` passthrough to codex `-c` config overrides, and a private per-agent `CODEX_HOME` (operator config/hooks/MCP servers never load; auth.json symlinked; trust writes never touch the operator's config). Unwired options fail loud: `--resume` (a resumed codex thread comes up without its configured MCP servers, so the agent would be mute on the mesh) and tool-sharing.
+
+  Also fixes the seed reconciler, which treated a generation match alone as up-to-date: a built-in connector added at an unchanged generation would never seed on an already-installed workstation (`--agent codex` reporting no connector installed). Both fast paths now also require every `SEED_BUILTINS` entry to be present in the ever-seeded set.
+
+  A connector can now declare `launchHint`, the one line a foreground `cotal spawn` prints about what to expect next. That text used to be hard-coded to Claude Code's first-run gate for every agent type, telling operators of other harnesses to press Enter at a prompt that never appears.
+
+  The web dashboard gains Codex branding (the OpenAI mark, from Simple Icons), so a codex agent renders with an icon and a label instead of a blank badge. That map was hand-maintained with nothing tying it to the connector set, so it is now covered by a test: every official connector must have a complete entry, and a new connector cannot ship icon-less with a green suite again.
+
+### Patch Changes
+
+- Updated dependencies [f89560a]
+  - @cotal-ai/core@0.15.0
+  - @cotal-ai/workspace@0.15.0
+
+## 0.14.11
+
+### Patch Changes
+
+- ca962f7: Fix `cotal setup` failing on every upgrade with `plugin <name>@cotal-mesh is at version <old>,
+expected <new> (the update did not take)`. `installOrUpdatePlugin` ran `claude plugin update`
+  only inside the install-failed branch, but `claude plugin install` reports "is already
+  installed" and exits **zero**, so on an upgrade the update never fired, the Claude plugin cache
+  kept the old version, and the verification step then threw. The update is now triggered by what
+  `plugin install` reports rather than by an exit status that never comes, which is what closes
+  the upgrade path for the `cotal` connector plugin and the `cotal-skills` plugin alike.
+
+  Also correct setup's own Node preflight, which still checked for Node 20 and told the user
+  "Cotal needs Node 20 or newer" while `cotal-ai` declares and enforces a Node 22 floor.
+
+  - @cotal-ai/core@0.14.11
+  - @cotal-ai/workspace@0.14.11
+
+## 0.14.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.10
+- @cotal-ai/workspace@0.14.10
+
+## 0.14.9
+
+### Patch Changes
+
+- a4c082a: `cotal down web` now works from any directory. The dashboard starts target-resolved (registry current mesh first) and records its pidfile under the target mesh's root, but a selective `down` only looked under the folder it ran in and reported "Nothing running for web" while the dashboard kept running. A `LocalProcess` can now declare `rootedAt: "target"`; `down` resolves such components through the same mesh-target resolution the start side uses, with a new `cotal down web --space <name>` to name the mesh explicitly. Bare `cotal down` remains a folder-scoped sweep, and folder-rooted components refuse `--space`.
+- c88ef4c: `cotal spawn -f` now deploys to a remote manager: when the mesh's serving manager lives in another checkout or on another host, the resolved launch spec rides the `launch` control op inline — the manager validates it with the same untrusted-input contract as the file path and persists it under its own `.cotal/run/` (stale-restart and retained resume read one source either way). The ledger stays with the deploying checkout, so `down -f` works from there too. Also fixes a pre-existing re-apply edge: the transient persona file is now written atomic-replace instead of exclusive-create, so re-launching an agent after a partial deploy failure no longer dies on EEXIST.
+- Updated dependencies [a4c082a]
+  - @cotal-ai/workspace@0.14.9
+  - @cotal-ai/core@0.14.9
+
+## 0.14.8
+
+### Patch Changes
+
+- 84f6200: Per-agent `prompt:` in the mesh manifest — a kickoff message auto-submitted once the session is up, the declarative form of `cotal spawn --prompt`. Submitted on first boot and on stale-restart (hash-covered, so changing it marks a running agent stale); a reclaim of a still-live session does not re-submit. Imperative `--prompt` alongside a manifest launch is still rejected (one source). `topology view` marks agents that carry one.
+- Updated dependencies [84f6200]
+  - @cotal-ai/core@0.14.8
+  - @cotal-ai/workspace@0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- 12ad5e3: Close two attach defects: a capability issued for the wrong agent, and remote attach silently dying after a manager repair.
+
+  **An attach capability could be issued for an incarnation nobody authorized.** `opAttach` resolved the
+  agent name, awaited authorization — which on a user mesh performs a ledger read, a real async
+  boundary — and then asked for a ticket by NAME. Ticket issuance re-resolved that name and bound
+  whichever agent held the slot at that moment. A stop and same-name respawn landing inside the await
+  therefore authorized one incarnation and handed out a valid terminal capability for its successor,
+  which on a user-auth mesh can belong to a different owner. `url()` now requires the authorized handle
+  and refuses when the slot has moved under it, and `opAttach` re-asserts the incarnation immediately
+  after the await so the non-pty path shares the invariant. This is the same class as the name-binding
+  fix in 0.14.4, one step earlier in the sequence: that closed the window at redemption, this closes it
+  at issuance.
+
+  **A manager replacement quietly demoted attach to loopback.** The bind host for the manager's
+  attach/console face was passed only on the first `cotal up` and never recorded, so every later launch
+  for the same mesh fell back to loopback: a same-root repair, adopting a preserved or restored
+  listener, and a `spawn -f` manifest deploy. The broker, the agents, and the mesh all stayed up, so the
+  only symptom was `cotal attach` failing to connect from another machine. It is not derivable after
+  the fact — a broker dial address is deliberately not treated as a manager bind address — so the
+  decision is now recorded on the mesh entry and read back by every manager launch. An explicit
+  `--host` still wins, and a mesh that never asked for exposure records nothing and stays loopback-only.
+
+  Also narrows `.cotal/manager.log` to 0600 (new and existing), since the manager's console URL is
+  written there and that URL carries a credential reaching every agent's terminal.
+
+- Updated dependencies [12ad5e3]
+  - @cotal-ai/workspace@0.14.7
+  - @cotal-ai/core@0.14.7
+
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.5
+- @cotal-ai/workspace@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- eccf48c: Make `cotal attach` reach a manager on another machine, and credential that endpoint properly.
+
+  The manager's attach face bound a hardcoded `127.0.0.1` and advertised that same literal in the URL
+  it handed back over the control plane, so a remote operator dialed their own loopback and got
+  `ECONNREFUSED`. Attach only ever worked when the manager happened to be on the same box.
+
+  **Where it binds is now an explicit decision.** The endpoint takes a bind address, still loopback by
+  default, so a bare `cotal supervise` and an embedded `Manager` keep exactly the machine-local
+  endpoint they have always had. `cotal up` passes the address it bound the broker to (via a new
+  `supervise --console-host`), which is what makes a remote attach work. The broker's _dial_ address is
+  deliberately not reused as the _bind_ address: a manager may supervise a broker on another host and
+  cannot bind that address at all, and a failover list's first entry need not be the server actually
+  selected. Where the manager can only name loopback — a wildcard bind — the client substitutes the
+  broker address its own control connection reached, so `up --host 0.0.0.0` works too instead of
+  silently handing back an unreachable URL.
+
+  **The endpoint is now credentialed, in two tiers.** It carries terminal read and write for every
+  managed agent, plus the managed roster and the live mesh feed, so once it can leave the machine
+  "unauthenticated but loopback-only" stops being a safe position. A mesh caller receives a **ticket**
+  bound to the one agent the manager just authorized, single-use and short-lived; this is what makes
+  the existing per-agent owner/admin check real, since a manager-wide token would let a caller
+  legitimately authorized for its own agent swap the path and take over another owner's terminal. The
+  **console token** is the operator's own, reaches every agent because the console drives all of them,
+  and is printed solely to the manager's own output. The roster, feed, and PTY stream answer `401`
+  without a credential; the static console shell stays open, since it describes no agent.
+
+  Credentials never ride a cookie: cookies are host-scoped rather than port-scoped, so one set here
+  would be sent to every other HTTP service on the same host and would collide between two managers on
+  one box. The console URL carries its token in the fragment, which a browser never sends to a server,
+  and the console page is served `no-store` with `Referrer-Policy: no-referrer`.
+
+  Also fixes an IPv6 regression in the same area: `URL.hostname` returns an IPv6 literal bracketed
+  (`[::1]`), which `listen()` treats as a DNS name and fails `ENOTFOUND`. Brackets are stripped for the
+  bind and restored for the advertised URL. An address this host does not own now fails with the
+  address named and the resolutions spelled out, rather than a bare errno from deep inside startup.
+
+  Covered by a new `smoke:attach-auth` in the CI gate (38 checks), including the cross-agent path-swap
+  that the first design allowed.
+
+  - @cotal-ai/core@0.14.4
+  - @cotal-ai/workspace@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- fce3199: Report which machine an agent runs on, and fix three defects that only appear once a mesh spans hosts.
+
+  **`meta.host` on the agent card.** A mesh can span machines: a manager on another box launches
+  agents into its own host, so "where is this agent actually running" was unanswerable from the
+  roster. Each session now publishes its own `os.hostname()` as `meta.host`, overlaid last like
+  `meta.connector` so an agent file cannot claim a host it is not on. It is advisory display
+  metadata only, never an authorization or routing input, and the dashboard renders it with no
+  change (unknown meta keys already display generically). `SPEC.md` records it alongside the other
+  reserved `meta` keys.
+
+  **`cotal up --host <addr>` killed the broker it had just started.** The bind address and the
+  broker URL were tracked independently, so `--host` bound one address while the readiness probe
+  still used the loopback default. The probe found nothing, timed out, and the caller SIGTERM'd a
+  broker that had started correctly, which made `--host` alone impossible to use. The two are now
+  reconciled: with no explicit `--server`, the URL is derived from the host; a contradicting pair is
+  refused with one sentence instead of starting something unreachable; and wildcard binds
+  (`0.0.0.0`, `::`) correctly keep a dialable loopback URL rather than advertising the wildcard. The
+  manifest path (`broker.host` without `broker.servers`) had the same defect and shares the fix.
+
+  **One slow probe silently unregistered a live mesh.** `pruneStaleMeshes` deleted any registry
+  entry that failed a single reachability check whose budget is 1s, which a healthy broker across a
+  slow or jittery link misses routinely. Deletion is destructive and, for a mesh this machine did
+  not start, unrecoverable, since only `cotal up` writes registry records. A first failure now only
+  makes an entry a candidate; it is pruned only if a second, longer probe also fails. A genuinely
+  dead mesh still prunes.
+
+  **A timed-out request killed the whole dashboard.** `cotal web` passed an async listener to
+  `createServer`, so a rejection inside any route (for example a JetStream call timing out against a
+  slow broker) became an unhandled rejection and took the process down on the first slow request.
+  The dashboard is a read-only observer: a failing route now returns 500 and the server stays up.
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes

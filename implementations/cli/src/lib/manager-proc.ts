@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, openSync, closeSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
@@ -50,9 +50,18 @@ export function managerHasDeliveryMarker(): boolean {
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
 export function startManagerDetached(
-  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
+  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
 ): number {
-  const fd = openSync(cotalPath("manager.log"), "a");
+  // 0600: the manager prints its console URL here, and that URL carries the console token — a
+  // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
+  // `.cotal` is already 0700, so this is defence in depth rather than the boundary, but a log the
+  // group/world can read is a needless second copy of that credential.
+  const fd = openSync(cotalPath("manager.log"), "a", 0o600);
+  // The mode above only applies when the file is CREATED, so every log that already exists from an
+  // earlier version would keep its 0644. Narrow those too. Best-effort: a filesystem that cannot
+  // represent the mode (or a Windows volume, where `.cotal`'s ACL is the real control) is not a
+  // reason to refuse to start the manager.
+  try { chmodSync(cotalPath("manager.log"), 0o600); } catch { /* mode is defence in depth, not the boundary */ }
   const [node, ...self] = selfArgv();
   const args = [
     ...self,
@@ -62,11 +71,17 @@ export function startManagerDetached(
     "--server",
     o.server ?? DEFAULT_SERVER,
     ...(o.runtime ? ["--runtime", o.runtime] : []),
+    // The address the broker was bound to. Passing it is what makes `cotal attach` reach this
+    // manager from another machine; omitted, the endpoint stays loopback-only, so terminal exposure
+    // never happens as a side effect of anything but an operator binding the mesh somewhere reachable.
+    ...(o.attachHost ? ["--console-host", o.attachHost] : []),
     ...(o.spawn?.length ? ["--spawn", o.spawn.join(",")] : []),
     // A resolved mesh-manifest launch spec (cotal up -f): the manager materializes + boots each agent.
     ...(o.launch ? ["--launch", o.launch] : []),
     ...(o.resumeAttempt ? ["--resume-attempt", o.resumeAttempt] : []),
     ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
+    // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
+    ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -85,7 +100,7 @@ export function startManagerDetached(
  *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
  *  taken as-is. */
 export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; resumeAttempt?: string; resumeCommitToken?: string } = {},
+  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
 ): { running: boolean } {
   if (managerUp()) return { running: true };
   startManagerDetached(o);

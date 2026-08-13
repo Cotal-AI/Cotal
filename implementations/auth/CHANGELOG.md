@@ -1,5 +1,90 @@
 # @cotal-ai/auth
 
+## 0.16.0
+
+### Patch Changes
+
+- Updated dependencies [531d37d]
+- Updated dependencies [498055c]
+  - @cotal-ai/workspace@0.16.0
+  - @cotal-ai/core@0.16.0
+
+## 0.15.0
+
+### Patch Changes
+
+- Updated dependencies [f89560a]
+  - @cotal-ai/core@0.15.0
+  - @cotal-ai/workspace@0.15.0
+
+## 0.14.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.11
+- @cotal-ai/workspace@0.14.11
+
+## 0.14.10
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.10
+- @cotal-ai/workspace@0.14.10
+
+## 0.14.9
+
+### Patch Changes
+
+- Updated dependencies [a4c082a]
+  - @cotal-ai/workspace@0.14.9
+  - @cotal-ai/core@0.14.9
+
+## 0.14.8
+
+### Patch Changes
+
+- Updated dependencies [84f6200]
+  - @cotal-ai/core@0.14.8
+  - @cotal-ai/workspace@0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- Updated dependencies [12ad5e3]
+  - @cotal-ai/workspace@0.14.7
+  - @cotal-ai/core@0.14.7
+
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.5
+- @cotal-ai/workspace@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.14.4
+- @cotal-ai/workspace@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes

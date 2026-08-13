@@ -40,6 +40,9 @@ export const webProcess: LocalProcess = {
   label: "web dashboard",
   order: 40,
   pidFile: "web.pid",
+  // The dashboard starts target-resolved from any directory and claims its pidfile under the
+  // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
+  rootedAt: "target",
 };
 
 function pidAlive(pid: number): boolean {
@@ -145,6 +148,19 @@ export async function web(args: ParsedArgs): Promise<void> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
+    // THE RESOLVED TRANSPORT, NOT A DEFAULT. `connectOrExit` already decided this from the mesh
+    // record and `Connection.tls` is non-optional, so the answer was in scope and was being dropped
+    // here — the same shape as `--tls-cert` being validated and then discarded at a call boundary,
+    // which is the defect this branch exists to close.
+    //
+    // It matters more here than the omission looks. Against a TLS broker this endpoint CONNECTED
+    // FINE without it, by upgrading the socket once it read `tls_required` — so nothing was visibly
+    // wrong. But that INFO is unauthenticated plaintext: an on-path attacker strips `tls_required`
+    // and a client with no requirement of its own carries on in the clear, with its credentials in
+    // the CONNECT line. The client's own `tls` is the PRIMARY fence, not a second layer, so a
+    // dashboard that omits it is protected by the server's cooperation rather than by its own
+    // demand.
+    tls: conn.tls,
     ...(user
       ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
       : { creds: conn.creds, card: { name: "web", kind: "endpoint" as const } }),
@@ -194,7 +210,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
 
-  const httpServer = createServer(async (req, res) => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
 
@@ -237,11 +253,22 @@ export async function web(args: ParsedArgs): Promise<void> {
       // Backfill the all-activity feed: merge recent channel history with DM history (the live
       // SSE tap only carries messages from after a client connects). Entries are mode-tagged
       // ({mode, msg}) to match the live feed so DMs render as DMs.
+      //
+      // NOT OPTIMISED, DELIBERATELY. An earlier version fetched an even share per channel and
+      // topped up only channels that saturated their share, to avoid moving (channels + 1) times
+      // what it displays. That is WRONG for a global top-N: saturation counts messages, not
+      // recency. With ten channels, limit 200 and a share of 40, if every channel holds at least 40
+      // messages the top-up never fires, so a channel owning the globally newest 200 contributes
+      // only its newest 40 and 160 genuinely-newer messages are dropped for 160 older ones.
+      //
+      // A correct cheap version needs an iterative timestamp-aware top-up: compute the provisional
+      // cutoff (the ts of the limit-th newest in the union) and re-fetch only channels whose oldest
+      // fetched message is still at or above it, until none can extend above the cutoff. That is
+      // worth doing, with a test encoding the counterexample above, and it is not this change.
+      // Correctness first: fetch a full page per channel and merge.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
       const chans = await ep.listChannels();
-      const chat = (
-        await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit })))
-      )
+      const chat = (await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit }))))
         .flat()
         .map((msg) => ({ mode: "chat" as const, msg }));
       const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
@@ -295,6 +322,23 @@ export async function web(args: ParsedArgs): Promise<void> {
       return;
     }
     res.writeHead(404).end("not found");
+  };
+
+  // A route handler talks to the broker, so ANY of them can reject — a JetStream request that
+  // times out (a slow or briefly unreachable broker, e.g. a mesh reached over a relayed overlay
+  // link) rejects inside the async handler. `createServer(async …)` does not await its listener,
+  // so such a rejection became an unhandled rejection and killed the whole dashboard process on
+  // the first slow request. The dashboard is a read-only observer: one failed route must degrade
+  // to a 500, never take down the server. Reply only when nothing has been written yet — a /feed
+  // stream (or any partially-sent response) is already committed to its status line.
+  const httpServer = createServer((req, res) => {
+    void handleRequest(req, res).catch((e: unknown) => {
+      const why = e instanceof Error ? e.message : String(e);
+      console.error(c.red(`! ${req.method ?? "GET"} ${req.url ?? "/"} failed: ${why}`));
+      if (res.headersSent) return void res.end();
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: why }));
+    });
   });
 
   // Comment ping keeps idle SSE connections alive through proxies.

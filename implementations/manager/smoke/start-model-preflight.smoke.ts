@@ -96,6 +96,7 @@ const fakeEp = (extra: Record<string, unknown> = {}, roster?: () => Array<{ card
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
+  waitForPresenceSnapshot: async () => {},
   getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid }))),
   ...extra,
 });

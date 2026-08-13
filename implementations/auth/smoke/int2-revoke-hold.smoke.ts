@@ -72,7 +72,7 @@ type LaunchSpec = import("@cotal-ai/core").LaunchSpec;
 type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn } = await import("node:child_process");
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -100,7 +100,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -137,7 +137,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
@@ -270,7 +271,7 @@ try {
     idpUrl: base,
   });
   jsDir = mkdtempSync(join(tmpdir(), "cotal-fsb-js-"));
-  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
+  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
@@ -401,7 +402,14 @@ try {
   // ---------- C. inject a revokeAgent FAILURE, then despawn ----------
   console.log("C) capture the actor token; make the ledger revoke FAIL; despawn");
   // A copied actor token: while the standing-mint-authority row lives, it exchanges->mints a bearer.
-  const predActorToken = readFileSync(join(credsDir, `${AGENT}.actor-token`), "utf8").trim();
+  // The actor token is filed lifecycle-keyed (`<name>.<uid>.actor-token`); recover the predecessor's
+  // uid from disk to read it.
+  const predUid = (() => {
+    const re = new RegExp(`^${AGENT}\\.([a-z0-9]{26,32})\\.actor-token$`);
+    for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
+    throw new Error(`no incarnation actor-token on disk for ${AGENT} in ${credsDir}`);
+  })();
+  const predActorToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, predUid).actorToken, "utf8").trim();
   check("predecessor actor token captured (models a copied token)", predActorToken.length > 0);
   const exBefore = await agentExchange(AGENT, predActorToken, OWNER);
   check("baseline: the captured actor token exchanges->mints a bearer while the agent is live (200)",

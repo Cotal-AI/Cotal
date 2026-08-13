@@ -18,7 +18,7 @@ It is two-tier, gated on a machine marker.
 
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
 
-- splash → intro → core **checks** (Node >= 20; **locate** `nats-server`: located, never
+- splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
   started) → **connector picker** → write the demo personas (david/sven/me) and seed the generic
   `default` → **offer a global install** (`offerGlobalInstall`) → onboarded marker → a finale that
   lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
@@ -123,7 +123,7 @@ status-card hints so they match how you ran it.
 
 ## Built-in connectors are seeded extensions
 
-The four first-party connectors (`claude`, `opencode`, `hermes`, `pi`) are **not** static-imported by
+The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `pi`) are **not** static-imported by
 the binary. The composition root (`bin/cotal.ts`) registers no connector; they self-register only when
 imported, and they are imported only once installed. On the first real command of each boot the CLI
 **seeds** them through the same `cotal ext add` path a third party uses, so they are ordinary

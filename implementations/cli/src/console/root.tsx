@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CotalEndpoint, chatWildcard } from "@cotal-ai/core";
+import { CotalEndpoint, chatWildcard, mintLifecycleUid } from "@cotal-ai/core";
 import { App } from "./app.js";
 import { SpacePicker } from "./ui/SpacePicker.js";
 
@@ -22,6 +22,11 @@ export function makeObserver(
   const ep = new CotalEndpoint({
     space,
     servers: server,
+    // A synthesized incarnation uid so the palette's `ps`/`stop` can invoke the manager service
+    // over the ep rails (1d: the console's ctl door is gone). On an open mesh the broker enforces
+    // nothing; on an authed mesh the console's read-only cred simply gets a clean publish denial
+    // (its ps/stop never functioned there - the reclassified-out surface).
+    lifecycleUid: mintLifecycleUid(),
     ...(auth.user
       ? {
           bearer: auth.user.source,

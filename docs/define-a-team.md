@@ -121,6 +121,15 @@ declared item against the live mesh:
 > `spawn -f` prints a warning: an isolation conflict on a shared mesh. It is an explicit *lower
 > bound* (presence plus the broker membership feed), not a guarantee that no other access exists.
 
+**Deploying to a remote manager.** The mesh's manager may live on another machine (or another
+checkout): `spawn -f` detects that from the manager lease and pushes the resolved launch spec
+inline over the control plane — the manager validates it as untrusted input and persists it under
+its own `.cotal/run/` before launching, so nothing changes downstream. Run the deploy from the
+checkout the mesh is **registered** to on your machine (that's where the ledger lands), and run
+`down -f` from that same checkout; it stops remote agents over the control plane and treats a
+locally-absent cred file as proven-absent. One residual: the agents' cred files minted on the
+manager's host stay there until the mesh's own cleanup, exactly as after a crash.
+
 ## Operating a manifest mesh
 
 Every mesh-touching command resolves the broker from the mesh registry, so `--space <name>` is

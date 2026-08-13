@@ -42,6 +42,7 @@ import {
   type EpCaller, type WorkItemRef, type WorkPoolContext, type ServiceStatus,
   type ActivatorContext, type RestartHistoryEntry,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -64,7 +65,7 @@ const ref = (id: string, pool: string): WorkItemRef => ({ endpoint: "manager", p
 const enc = (s: string) => new TextEncoder().encode(s);
 const td = new TextDecoder();
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epvirtual-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 
@@ -500,9 +501,9 @@ try {
     const revX = await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.svc, [E, IIDX]), specR);
     await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, [E, IIDX]), { epoch: 1, state: SERVICE_ESCALATED, observedSpecRevision: revX });
     await rejects("a registry holding ONLY an escalated instance has no live members (failed-precondition, never an empty success)",
-      () => freezeExpectedSet(jsm, kv, SPACE, E), "failed-precondition");
+      () => freezeExpectedSet(jsm, SPACE, E), "failed-precondition");
     await createRecordEntry(kv, recordStatusKey(RECORD_KINDS.svc, [E, IIDR]), { epoch: 1, state: SERVICE_READY, observedSpecRevision: revR });
-    const frozen = await freezeExpectedSet(jsm, kv, SPACE, E);
+    const frozen = await freezeExpectedSet(jsm, SPACE, E);
     c("the frozen expected set contains the READY instance and EXCLUDES the escalated one (terminally not-startable)",
       frozen.length === 1 && frozen[0].instanceId === IIDR, frozen);
   }

@@ -43,16 +43,24 @@ agents:
     role: lead
     capabilities: [spawn]               # may spawn helpers
     instructions: Coordinate the team.
+    prompt: Introduce yourself in #general and assign the first task.
 ```
 
 Per-agent keys: `persona`, `agent` (harness override), `model`, `variant`, `role`,
-`description`, `instructions`, `capabilities` (`spawn`,
+`description`, `instructions`, `prompt`, `capabilities` (`spawn`,
 [what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
 OpenCode use `provider/model` plus an optional variant (`cotal models --agent opencode`
 lists both). Persona file format: [agent files](agent-files.md).
+
+`instructions` and `prompt` differ in kind: `instructions` become the session's **system
+prompt** (who the agent is), while `prompt` is a **kickoff message** auto-submitted once
+the session is up (what to do right now) — the declarative form of `cotal spawn --prompt`.
+It is submitted on first boot and again on a stale-restart (it is part of the launch form,
+so changing it marks a running agent `stale` like any other launch field); a manager
+reclaiming a still-live session does not re-submit it.
 
 ## `channels:` (the three access verbs)
 

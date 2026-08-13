@@ -19,6 +19,7 @@
       "@cotal-ai/connector-claude-code",
       "@cotal-ai/connector-hermes",
       "@cotal-ai/connector-opencode",
+      "@cotal-ai/connector-codex",
       "@cotal-ai/pi",
       "@cotal-ai/auth"
     ]

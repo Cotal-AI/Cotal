@@ -37,7 +37,6 @@ import {
   chatSubject,
   spacePrefix,
   DEV_OWNER,
-  CONTROL_SELF_SERVICE,
   type CotalMessage,
   type Delivery,
   type MessageMeta,
@@ -74,7 +73,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const space = `selfjoincov-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-selfjoincov-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 let server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 try {
@@ -276,9 +275,9 @@ try {
   // fan-out + trusted reader, so a post after the blip still reaches the member via the backstop.
   const aclC = ["general", "rev.>", "team.>", "ops.>"];
   // Phase 2 Plane-3 host = a scoped `delivery` cred, NOT the manager (`pub`). The manager cred
-  // no longer carries the Plane-3 inject grants (closure (i)); `pub` stays provisioner + publisher
-  // and serves the CONTROL_SELF_SERVICE tier below, but the durableJoin/Leave/ownerMemberships ops
-  // it mediates run on the delivery host (which writes members + hosts the per-member reader).
+  // no longer carries the Plane-3 inject grants (closure (i)); startPlane3 arms the daemon's OWN
+  // `ctl.delivery` handler (fan-out writer + trusted reader + membership authority), which is the
+  // rail joinChannel targets directly — no mediation tier in between (the ctl manager rail is gone, 1d).
   const dlvId = newIdentity();
   const dlv = new CotalEndpoint({
     space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
@@ -288,15 +287,6 @@ try {
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
   await dlv.startPlane3((owner) => (owner === `${DEV_OWNER}.${aId.id}` ? aclC : undefined));
-  pub.serveControl(CONTROL_SELF_SERVICE, async (req) => {
-    const ch = typeof (req.args as { channel?: unknown })?.channel === "string" ? (req.args as { channel: string }).channel : "";
-    if (req.op === "durableJoin") return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, uidA) };
-    if (req.op === "durableLeave") {
-      await dlv.durableLeaveFor(req.from.id, ch, uidA, typeof (req.args as { generation?: unknown })?.generation === "number" ? (req.args as { generation: number }).generation : undefined);
-      return { ok: true };
-    }
-    return { ok: false, error: `unknown op ${req.op}` };
-  });
   await wait(200);
   const dual = await a.joinChannel("ops.dual");
   check("manager-present joinChannel(ops.dual) reports durable:true (Plane-3)", dual.joined === true && dual.durable === true, dual);

@@ -1,5 +1,224 @@
 # cotal-ai
 
+## 0.16.0
+
+### Minor Changes
+
+- 531d37d: Register, list and unregister meshes from the CLI.
+
+  `cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open]` records a mesh this
+  machine did not start — one running on another machine, a shared broker, a hosted space — so
+  `--space`, `cotal use` and a bare `cotal spawn` can reach it from any directory. The broker is
+  probed before anything is written, so a wrong address or credentials that mesh will not accept fail
+  at registration instead of at the first spawn; `--force` records without verifying and replaces an existing
+  record. `cotal meshes rm <space> …` drops records (never stopping a mesh: a mesh running here is
+  refused in favour of `cotal down`) and releases the `current` pointer when it pointed at one.
+
+  Registry records now carry an origin, and an automatic prune only ever deletes records that
+  `cotal up` wrote. A record added by hand cannot be reconstructed by this machine, so an unreachable
+  broker under one is reported — `offline` in `cotal meshes`, and a preflight failure that names
+  `cotal meshes rm` rather than `cotal up` — instead of silently unregistering a mesh that was live
+  all along.
+
+- 498055c: Stop paying one network round trip per record, and return the recent messages history claimed to return.
+
+  Several read paths issued one sequential round trip per record, which is invisible against a loopback
+  broker and ruinous on any ordinary cross-continent link. Measured against a mesh at 534ms RTT with
+  healthy uplinks at both ends, reading the membership feed took 30 to 34 seconds for 89 entries; it
+  now takes under a second for 93.
+
+  - `liveKvEntries` is the one sanctioned full-bucket KV read: a single pass whose request count is
+    independent of record count, which collapses by greatest revision with tombstones so a deleted key
+    cannot resurrect, and which binds its own consumer so that an empty result is PROVEN by the
+    bind-time pending count rather than inferred from silence. A pass that is cut short raises rather
+    than returning what arrived. That distinction is load-bearing on the ACL path: read this way, a
+    dropped link mid-scan would otherwise report a provisioned principal as having no ACL row, and a
+    durable join would be refused as "not provisioned" instead of as "could not read". The membership
+    feed, the members and channel registries, and the ACL alias enumeration all read through it. No
+    change to broker authority: the same ordered push consumer over the same subject.
+  - `channelHistory` and `dmHistory` returned the OLDEST messages on any channel holding more than the
+    requested limit, while being documented as recent and rendered everywhere as the latest. They now
+    return the newest, read through a bounded window rather than by draining the backlog.
+  - `cotal status` started the Claude CLI twice for data one listing contains.
+
+  Two optimisations were attempted and REVERTED during review, and are not part of this change: the
+  dashboard's activity feed still fetches a full page per channel (the cheaper version dropped
+  genuinely-newer messages, because saturation counts messages rather than recency), and control
+  commands still open a probe connection before the real one (skipping it flattened typed auth
+  failures and lost the probe's deadline).
+
+  This is the read-path half of the work. The registry-safety half — a failed network probe must not
+  delete a mesh record — is a separate change on top of the `origin`/`pruneMesh` model from
+  `cotal meshes add`.
+
+### Patch Changes
+
+- Updated dependencies [531d37d]
+- Updated dependencies [498055c]
+  - @cotal-ai/workspace@0.16.0
+  - @cotal-ai/cli@0.16.0
+  - @cotal-ai/core@0.16.0
+  - @cotal-ai/auth@0.16.0
+  - @cotal-ai/delivery@0.16.0
+  - @cotal-ai/manager@0.16.0
+  - @cotal-ai/connector-core@0.16.0
+
+## 0.15.0
+
+### Minor Changes
+
+- f89560a: New Codex connector (`--agent codex`): an OpenAI Codex session as a full lateral mesh peer, in Codex's own TUI. A host-mode peer drives a `codex app-server` thread over JSON-RPC: inbound batches wake a real turn, and directed messages steer INTO a live turn mid-flight.
+
+  `cotal spawn --agent codex` opens Codex's own TUI. The app-server runs as a loopback websocket listener guarded by a per-incarnation capability token (0600, inside the agent's private home), and the TUI attaches to the very thread the mesh drives, so mesh turns render as they happen and anything you type is a real user turn on that same thread. With no terminal (piped output, CI, a smoke) the host stays headless with an activity feed instead; `COTAL_CODEX_TUI=1|0` picks the mode explicitly when the tty check would guess wrong. Once Codex owns the terminal the host's own log moves to `host.log` in the agent's private home, and the handoff line names that path so a later failure is findable.
+
+  The shared `cotal_*` tools are served by the host process itself over a bearer-authenticated loopback MCP endpoint, with the token passed to codex by env var name so it never reaches the process table. Because the app-server is the MCP client, the same tools work on a mesh-driven turn and on one typed into the TUI; the connector's own tools are pre-approved so an unattended agent never stalls on an approval prompt nobody is watching, and `mcp_servers.cotal.*` is reserved and refused rather than silently overridden.
+
+  Autonomy defaults suit an agent woken by peer messages when nobody is watching: `approval_policy=never` (never ask before running a command, not refuse), `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`. Network is on because Codex's own workspace-write default has it off, which breaks installing a dependency or pushing a branch with an error that reads like the task is impossible rather than the sandbox refusing; filesystem containment is kept, because a peer's message is a remote input that can make the agent run commands. The network default is applied only where the sandbox is actually `workspace-write`, so tightening the mode does not leave a network grant in the launch. All three are overridable per spawn with `--opt` (including `sandbox_mode=danger-full-access` for no sandbox at all), while an interactive `approval_policy` is refused loud rather than auto-answered on the operator's behalf.
+
+  The guide states the sandbox's guarantee literally: it blocks out-of-workspace local filesystem writes, and does not block reads, exfiltration, or networked side effects. With the network on, a peer-driven turn can read broadly and send what it reads, reach loopback and link-local services, and act through any credential it can read, including irreversibly, via a force-push or an API delete. Containing filesystem writes is not the same as containing damage, and the docs say so rather than implying the residual is disclosure-only. The offline, tighter-mode, and separate-OS-user mitigations are named in both the autonomy section and Limits.
+
+  At-least-once delivery with exact-id acks on turn completion: a failed turn retries with backoff, an interrupt redelivers, and an app-server crash restarts the child in place on the same mesh lifecycle and re-drives the un-acked batch (a crash loop is fatal, never an endless respawn). Presence from the event stream, an opt-in transcript mirror, model catalog + reasoning-effort variants (`cotal models --agent codex`, `--variant`), `--opt` passthrough to codex `-c` config overrides, and a private per-agent `CODEX_HOME` (operator config/hooks/MCP servers never load; auth.json symlinked; trust writes never touch the operator's config). Unwired options fail loud: `--resume` (a resumed codex thread comes up without its configured MCP servers, so the agent would be mute on the mesh) and tool-sharing.
+
+  Also fixes the seed reconciler, which treated a generation match alone as up-to-date: a built-in connector added at an unchanged generation would never seed on an already-installed workstation (`--agent codex` reporting no connector installed). Both fast paths now also require every `SEED_BUILTINS` entry to be present in the ever-seeded set.
+
+  A connector can now declare `launchHint`, the one line a foreground `cotal spawn` prints about what to expect next. That text used to be hard-coded to Claude Code's first-run gate for every agent type, telling operators of other harnesses to press Enter at a prompt that never appears.
+
+  The web dashboard gains Codex branding (the OpenAI mark, from Simple Icons), so a codex agent renders with an icon and a label instead of a blank badge. That map was hand-maintained with nothing tying it to the connector set, so it is now covered by a test: every official connector must have a complete entry, and a new connector cannot ship icon-less with a green suite again.
+
+### Patch Changes
+
+- Updated dependencies [f89560a]
+  - @cotal-ai/connector-core@0.15.0
+  - @cotal-ai/core@0.15.0
+  - @cotal-ai/workspace@0.15.0
+  - @cotal-ai/cli@0.15.0
+  - @cotal-ai/manager@0.15.0
+  - @cotal-ai/auth@0.15.0
+  - @cotal-ai/delivery@0.15.0
+
+## 0.14.11
+
+### Patch Changes
+
+- Updated dependencies [ca962f7]
+  - @cotal-ai/cli@0.14.11
+  - @cotal-ai/core@0.14.11
+  - @cotal-ai/workspace@0.14.11
+  - @cotal-ai/manager@0.14.11
+  - @cotal-ai/delivery@0.14.11
+  - @cotal-ai/connector-core@0.14.11
+  - @cotal-ai/auth@0.14.11
+
+## 0.14.10
+
+### Patch Changes
+
+- dcde8df: Node-version preflight now gives the remedy that matches how cotal was installed. When the
+  launcher written by `curl -fsSL https://get.cotal.ai | sh` is in use (it sets
+  `COTAL_LAUNCHER=1`), a pinned runtime that has been replaced by an older Node points at
+  re-running the installer, or at `--vendor-node` to stop depending on the system Node
+  entirely, rather than at generic nvm advice. Installs that did not come from the installer
+  keep the nvm guidance and now also mention the installer as an option.
+  - @cotal-ai/core@0.14.10
+  - @cotal-ai/workspace@0.14.10
+  - @cotal-ai/cli@0.14.10
+  - @cotal-ai/manager@0.14.10
+  - @cotal-ai/delivery@0.14.10
+  - @cotal-ai/connector-core@0.14.10
+  - @cotal-ai/auth@0.14.10
+
+## 0.14.9
+
+### Patch Changes
+
+- Updated dependencies [a4c082a]
+- Updated dependencies [c88ef4c]
+  - @cotal-ai/workspace@0.14.9
+  - @cotal-ai/cli@0.14.9
+  - @cotal-ai/manager@0.14.9
+  - @cotal-ai/auth@0.14.9
+  - @cotal-ai/delivery@0.14.9
+  - @cotal-ai/core@0.14.9
+  - @cotal-ai/connector-core@0.14.9
+
+## 0.14.8
+
+### Patch Changes
+
+- Updated dependencies [84f6200]
+  - @cotal-ai/core@0.14.8
+  - @cotal-ai/cli@0.14.8
+  - @cotal-ai/manager@0.14.8
+  - @cotal-ai/connector-core@0.14.8
+  - @cotal-ai/auth@0.14.8
+  - @cotal-ai/delivery@0.14.8
+  - @cotal-ai/workspace@0.14.8
+
+## 0.14.7
+
+### Patch Changes
+
+- Updated dependencies [12ad5e3]
+  - @cotal-ai/manager@0.14.7
+  - @cotal-ai/cli@0.14.7
+  - @cotal-ai/workspace@0.14.7
+  - @cotal-ai/auth@0.14.7
+  - @cotal-ai/delivery@0.14.7
+  - @cotal-ai/core@0.14.7
+  - @cotal-ai/connector-core@0.14.7
+
+## 0.14.6
+
+### Patch Changes
+
+- Updated dependencies [ed62069]
+  - @cotal-ai/workspace@0.14.6
+  - @cotal-ai/auth@0.14.6
+  - @cotal-ai/cli@0.14.6
+  - @cotal-ai/delivery@0.14.6
+  - @cotal-ai/manager@0.14.6
+  - @cotal-ai/core@0.14.6
+  - @cotal-ai/connector-core@0.14.6
+
+## 0.14.5
+
+### Patch Changes
+
+- Updated dependencies [1a1c4e1]
+  - @cotal-ai/manager@0.14.5
+  - @cotal-ai/core@0.14.5
+  - @cotal-ai/workspace@0.14.5
+  - @cotal-ai/cli@0.14.5
+  - @cotal-ai/delivery@0.14.5
+  - @cotal-ai/connector-core@0.14.5
+  - @cotal-ai/auth@0.14.5
+
+## 0.14.4
+
+### Patch Changes
+
+- Updated dependencies [eccf48c]
+  - @cotal-ai/manager@0.14.4
+  - @cotal-ai/cli@0.14.4
+  - @cotal-ai/core@0.14.4
+  - @cotal-ai/workspace@0.14.4
+  - @cotal-ai/delivery@0.14.4
+  - @cotal-ai/connector-core@0.14.4
+  - @cotal-ai/auth@0.14.4
+
+## 0.14.3
+
+### Patch Changes
+
+- Updated dependencies [fce3199]
+  - @cotal-ai/connector-core@0.14.3
+  - @cotal-ai/workspace@0.14.3
+  - @cotal-ai/cli@0.14.3
+  - @cotal-ai/manager@0.14.3
+  - @cotal-ai/auth@0.14.3
+  - @cotal-ai/delivery@0.14.3
+  - @cotal-ai/core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes

@@ -21,6 +21,7 @@ import {
   recordPreservationManagerCommit,
   releaseMaintenanceLock,
   removeMeshesByRoot,
+  resolveMeshTarget,
   sameStoreIdentity,
   writePreservationCommitIntent,
   writePreservationPrepareIntent,
@@ -34,7 +35,6 @@ import {
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
-  CONTROL_ADMIN,
   DEV_OWNER,
   isReachable,
   LEASE_TTL_MS,
@@ -74,26 +74,25 @@ export function downComplete(argv: string[]): CompletionResult {
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
 export async function down(args: ParsedArgs): Promise<void> {
-  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string };
+  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "store-dir"?: string; space?: string };
   const requested = [...new Set(args.positionals)];
-  // Every non-manifest `down` stops the shared broker and its per-space daemons; none of them can
-  // address one space, so a multi-space root is refused up front rather than at the space-blind
-  // pidfile lookup below. A manifest teardown (`-f`/`--run`) names its own space and is exempt.
-  if (!values.file && !values.run) assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
   if (values["preserve-state"]) {
-    if (requested.length || values.file || values.run || values["dry-run"])
-      throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --file, --run, or --dry-run");
+    if (requested.length || values.file || values.run || values["dry-run"] || values.space)
+      throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
+    assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
     await preserveStateDown(values["store-dir"]);
     return;
   }
   if (values["store-dir"]) throw new Error("--store-dir is only valid with down --preserve-state");
-  if ((values.file || values.run) && requested.length) {
-    throw new Error("component names cannot be combined with --file or --run");
+  if ((values.file || values.run) && (requested.length || values.space)) {
+    throw new Error("component names and --space cannot be combined with --file or --run");
   }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
+  if (values.space && !requested.length)
+    throw new Error("--space only selects the mesh for target-addressed components - name them (e.g. `cotal down web --space <name>`); bare `cotal down` always stops this folder's stack");
   const all = localProcessSurface();
   const known = all.map((component) => component.name).sort();
   const unknown = requested.filter((name) => !known.includes(name));
@@ -101,7 +100,35 @@ export async function down(args: ParsedArgs): Promise<void> {
     throw new Error(`unknown component${unknown.length > 1 ? "s" : ""} ${unknown.map((name) => JSON.stringify(name)).join(", ")} - known: ${known.join(", ")}`);
   const selected = (requested.length ? requested.map((name) => all.find((part) => part.name === name)!) : all)
     .sort((a, b) => Number(Boolean(a.stopLast)) - Number(Boolean(b.stopLast)) || (a.order ?? 50) - (b.order ?? 50));
-  const context: LocalProcessContext = { root: cotalRoot(), space: resolveSpace(process.cwd()) };
+  // A component whose START is target-resolved (`rootedAt: "target"` — the web dashboard) records
+  // its pidfile under the TARGET mesh's root, so a selective stop resolves the SAME mesh the start
+  // side did (registry current mesh first, `--space` to name one) instead of assuming this folder.
+  // Bare `cotal down` stays a sweep of this folder's stack: its pidfiles live here, and reaching
+  // into another mesh's root mid-sweep would stop a process the folder's broker does not own.
+  const targetAddressed = (component: LocalProcess): boolean => requested.length > 0 && component.rootedAt === "target";
+  if (values.space) {
+    const folderRooted = selected.filter((component) => !targetAddressed(component));
+    if (folderRooted.length)
+      throw new Error(`--space only applies to target-addressed components - ${folderRooted.map((component) => component.name).join(", ")} always stop${folderRooted.length === 1 ? "s" : ""} under this folder's root`);
+  }
+  // A `down` that touches this folder's stack stops the shared broker and its per-space daemons;
+  // none of them can address one space, so a multi-space root is refused up front rather than at
+  // the space-blind pidfile lookup below. A purely target-addressed stop never reads this folder's
+  // pidfiles, so it is exempt (its space comes from the resolved mesh target).
+  if (selected.some((component) => !targetAddressed(component))) assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
+  // Both contexts resolve lazily: a purely target-addressed stop must not require a mesh root at
+  // the cwd, and a folder sweep must not require a resolvable mesh target.
+  let folderContext: LocalProcessContext | undefined;
+  const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveSpace(process.cwd()) });
+  let targetContext: LocalProcessContext | undefined;
+  const contextFor = (component: LocalProcess): LocalProcessContext => {
+    if (!targetAddressed(component)) return folderCtx();
+    if (!targetContext) {
+      const target = resolveMeshTarget(process.cwd(), values.space ? { space: values.space } : {});
+      targetContext = { root: target.root, space: target.space };
+    }
+    return targetContext;
+  };
 
   if (selected.some((component) => component.stopLast)) {
     const selectedNames = new Set(selected.map((component) => component.name));
@@ -109,7 +136,9 @@ export async function down(args: ParsedArgs): Promise<void> {
     // unattributable/unknown pidfile) blocks a stop-last shutdown - stopping the broker out from
     // under a live dependant we could not confirm gone is exactly the signer-orphan the contract
     // forbids. `mayBeRunning`, not `processAlive` (which reads uncertainty as "not running").
-    const dependants = all.filter((component) => !selectedNames.has(component.name) && mayBeRunning(component, context));
+    // Folder context: the question is what depends on THIS folder's broker, so a dependant is
+    // judged by the record under this root regardless of how it would be addressed selectively.
+    const dependants = all.filter((component) => !selectedNames.has(component.name) && mayBeRunning(component, folderCtx()));
     if (dependants.length) {
       throw new Error(
         `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running (or its liveness cannot be confirmed) - name them too, or run bare \`cotal down\``,
@@ -118,7 +147,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
 
   if (values["dry-run"]) {
-    const recorded = selected.filter((component) => processRecorded(component, context));
+    const recorded = selected.filter((component) => processRecorded(component, contextFor(component)));
     for (const component of recorded) console.log(c.dim(`would stop ${component.label}`));
     if (!recorded.length) {
       const target = requested.length ? requested.join(", ") : "the local stack";
@@ -132,13 +161,13 @@ export async function down(args: ParsedArgs): Promise<void> {
   let any = false;
   let allStopped = true;
   for (const component of selected) {
-    any = processRecorded(component, context) || any;
+    any = processRecorded(component, contextFor(component)) || any;
     if (component.stopLast && !allStopped) {
       console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
       continue;
     }
     try {
-      await stopLocalProcess(component, context);
+      await stopLocalProcess(component, contextFor(component));
     } catch (e) {
       allStopped = false;
       console.error(c.red(`✗ ${(e as Error).message}`));
@@ -151,14 +180,14 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
 
   for (const component of selected) {
-    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, context), { force: true });
+    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, contextFor(component)), { force: true });
   }
 
   // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
   // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
   if (selected.some((component) => component.clearsMesh)) {
-    rmSync(join(context.root, ".cotal", "run"), { recursive: true, force: true });
-    removeMeshesByRoot(context.root);
+    rmSync(join(folderCtx().root, ".cotal", "run"), { recursive: true, force: true });
+    removeMeshesByRoot(folderCtx().root);
   }
   if (!any) {
     const target = requested.length ? requested.join(", ") : "the local stack";
@@ -404,7 +433,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         // Plane-3 fence precedes the re-prepared inventory, exactly as on the fresh path.
         const retryDelivery = all.find((component) => component.name === "delivery");
         if (retryDelivery && mayBeRunning(retryDelivery, context)) await stopLocalProcess(retryDelivery, context); // fence an uncertain delivery too (stopLocalProcess throws loud on unattributable → abort)
-        const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, CONTROL_ADMIN, 60_000);
+        const reprepared = await askManager(retryTarget.space, retryTarget.server, "preparePreservation", { attemptId }, retryTarget.auth, "any", 60_000);
         const replan = reprepared.ok ? reprepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } : undefined;
         if (!replan?.inventory || (replan.failures?.length ?? 0) !== 0 || (replan.state !== "prepared" && replan.state !== "preserved"))
           throw new Error(reprepared.error ?? "manager could not re-prepare the recorded preservation attempt");
@@ -418,7 +447,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           // A restarted manager prepared a DIFFERENT inventory: the journaled cut no longer
           // matches reality. Release its fence and abandon the stale intent; a rerun cuts fresh.
           try {
-            await askManager(retryTarget.space, retryTarget.server, "abortPreservation", { attemptId }, retryTarget.auth, CONTROL_ADMIN, 30_000);
+            await askManager(retryTarget.space, retryTarget.server, "abortPreservation", { attemptId }, retryTarget.auth, "any", 30_000);
           } catch { /* best effort - the fence dies with the manager */ }
           abortMaintenanceCut(lock);
           clearPreservationPrepareIntent(lock);
@@ -451,7 +480,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         "preparePreservation",
         { attemptId },
         target.auth,
-        CONTROL_ADMIN,
+        "any",
         60_000,
       );
       if (!prepared.ok) throw new Error(prepared.error ?? "manager preservation prepare failed");
@@ -516,7 +545,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         "commitPreservation",
         { attemptId },
         target.auth,
-        CONTROL_ADMIN,
+        "any",
         120_000,
       );
       if (!commit.ok) throw new Error(commit.error ?? "manager preservation commit was incomplete");
@@ -618,7 +647,7 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(user ?? { creds: resolved.creds }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -653,12 +682,15 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
 }
 
 /** Read current KV subjects by Direct Get so the cut check leaves no ephemeral/native consumer. */
-async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
+/** Exported for the gated tombstone cell. A regression test for the lease walk has to run through
+ *  THIS function, not a transcription of it: a copy carries its own `allowEmpty` parameter, so it
+ *  stays green when the argument at the real call site is removed and proves nothing about the fix. */
+export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(user ?? { creds: resolved.creds }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -674,8 +706,30 @@ async function readPresenceWithoutConsumer(space: string, server: string): Promi
       if (!presence.card?.id) throw new Error(`presence record ${subject} is malformed`);
       roster.push(presence);
     }
+    // ENUMERATE THE PER-INSTANCE LEASE KEYS. P2 item 3 demoted this bucket from a single `lease` key to
+    // one `lease.<instanceId>` per manager, and NOTHING WRITES THE BARE PREFIX ANY MORE — the supervisor's
+    // grant is `$KV.<bucket>.lease.*`, which does not even cover it, so no writer can legalise it. Reading
+    // the bare subject threw inside `directKvValue` on every preserve-state cut, which meant the holder
+    // guard on the next line was unreachable and the operator saw "maintenance inventory read failed"
+    // instead. Same STREAM.INFO + point-get shape as `liveKeys` above: no consumer, no new grant.
     const leaseBucket = managerBucket(space);
-    const lease = await directValue<ManagerLeaseInfo>(`KV_${leaseBucket}`, `$KV.${leaseBucket}.${MANAGER_LEASE_KEY}`);
+    const leaseStream = `KV_${leaseBucket}`;
+    // `lease.*`, not `lease.>`: `managerLeaseKey` is contractually ONE lowercase-alnum token, so `*`
+    // matches exactly the key space that can exist while `>` would additionally admit a malformed
+    // multi-token key. Matches `readManagerLease`'s filter — two probes of one bucket disagreeing on
+    // their wildcard is drift the next reader has to adjudicate from scratch.
+    const leaseInfo = await (await jetstreamManager(nc)).streams.info(leaseStream, { subjects_filter: `$KV.${leaseBucket}.${MANAGER_LEASE_KEY}.*` });
+    let lease: ManagerLeaseInfo | undefined;
+    for (const subject of Object.keys(leaseInfo.state.subjects ?? {})) {
+      // `allowEmpty` MUST be true here. STREAM.INFO lists tombstoned subjects, so a cleanly stopped
+      // manager's released key is in this walk; without it `directKvValue` THROWS on the tombstone
+      // instead of returning undefined, and the cut dies naming a dead manager's key before a live
+      // holder later in the list is ever examined. `Object.keys` order decides whether it fires, so
+      // it is a coin flip on exactly the clean-stop scenario. Both sibling walks in this function
+      // (`liveKeys`, the presence roster) already pass true; this one was copied from them without it.
+      const held = await directValue<ManagerLeaseInfo>(leaseStream, subject, true);
+      if (held?.holder) { lease = held; break; }
+    }
     if (!lease?.holder) throw new Error("manager lease has no authoritative holder principal");
     return { roster, managerId: parsePrincipalKey(lease.holder) ? lease.holder : principalKey(DEV_OWNER, lease.holder).key };
   } finally {

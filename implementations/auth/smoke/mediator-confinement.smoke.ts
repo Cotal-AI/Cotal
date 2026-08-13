@@ -39,6 +39,7 @@ import {
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-registry.js";
 import { runExactPoolCleaner } from "../src/retirement-barrier.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -73,7 +74,7 @@ const D = contractDigest({ s: 1 });
 const fp = (tag: string): string => contractDigest({ fp: tag });
 const enc = new TextEncoder();
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-confine-"));
 // The connection-scoped inbox nonces (SPEC 13.9: never the account-wide `_INBOX.>` default). The
 // mediator holds NO records-stream consumer grant (site 3): its drain enumerates through the sealed

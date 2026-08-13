@@ -54,6 +54,7 @@ const groups = [
       'docs/connectors.md',
       'docs/connect-claude.md',
       'docs/connect-opencode.md',
+      'docs/connect-codex.md',
       'docs/connect-hermes.md',
       'docs/connect-pi.md',
       'docs/build-a-client.md',
@@ -64,6 +65,7 @@ const groups = [
     label: 'Concepts',
     files: [
       'docs/architecture.md',
+      'docs/control-surface.md',
       'docs/spaces.md',
       'docs/transport.md',
       'docs/presence-and-delivery.md',
@@ -174,6 +176,11 @@ mkdirSync(genDir, { recursive: true });
 // Publish the machine-readable schema at its canonical URL (/cotal.schema.json).
 mkdirSync(pubDir, { recursive: true });
 copyFileSync(join(repoRoot, 'spec', 'cotal.schema.json'), join(pubDir, 'cotal.schema.json'));
+
+// Publish the installer at /install.sh, which is what get.cotal.ai serves. The repo root
+// copy is canonical and the only one to edit; this copy exists so the deployed script can
+// never drift from the one people audit on GitHub.
+copyFileSync(join(repoRoot, 'install.sh'), join(pubDir, 'install.sh'));
 
 const sidebar = [];
 for (const group of groups) {

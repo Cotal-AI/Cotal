@@ -45,7 +45,7 @@ const ANNOTATIONS = {
     effect: "Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic",
     availability: "always",
     notes:
-      "OpenCode, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).",
+      "OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).",
   },
   cotal_send: {
     effect: "publishes to a channel",
@@ -92,7 +92,7 @@ const ANNOTATIONS = {
   cotal_despawn: {
     effect: "stops a teammate (or yourself)",
     availability:
-      "self-despawn (no name) is granted to all; stopping a *named* peer rides the privileged tier (your own children only)",
+      "self-despawn (no name) is granted to all; stopping a *named* peer rides the spawn capability's owner-mode reach (your own owner's agents only)",
   },
   cotal_persona: {
     effect: "writes a persona file via the manager (becomes spawnable)",
@@ -160,7 +160,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below assume the standard `general` setup; channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
+  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below assume the standard `general` setup; channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
 );
 lines.push("");
 lines.push(
@@ -186,7 +186,7 @@ for (const s of specs) {
   lines.push("");
   if (s.name === "cotal_inbox") {
     lines.push(
-      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.",
+      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Codex, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.",
     );
     lines.push("");
   }

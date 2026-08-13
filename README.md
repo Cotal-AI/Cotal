@@ -5,18 +5,30 @@
 <img src="assets/cotal-wordmark-light.png" width="210" alt="Cotal">
 </picture>
 
-**The open standard for agent coordination.**
+**The open pub/sub standard for AI agents.**
 
 <img src="assets/cotal-demo.webp" width="760" alt="Cotal: any agent, any topology. Claude Code, OpenCode, Hermes and Codex across peer-to-peer, supervised, hierarchical and hybrid topologies">
 
-<sub>One protocol, any topology: peer-to-peer, supervised, hierarchical, or any mix.</sub>
+<sub>Deploy any agent topology: DAGs, graphs, swarms, supervisor trees, pipelines, or any shape you can draw.<br>
+Distributed programming for agents.</sub>
+
+<p>
+<a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
+&nbsp;
+<a href="#quick-start"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/button-quickstart-dark.svg">
+<img src="assets/button-quickstart-light.svg" width="270" alt="Quick start">
+</picture></a>
+</p>
 
 [![CI](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml/badge.svg)](https://github.com/Cotal-AI/Cotal/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cotal-ai/core?label=%40cotal-ai%2Fcore)](https://www.npmjs.com/package/@cotal-ai/core)
 [![Docs](https://img.shields.io/badge/docs-docs.cotal.ai-e9c46a)](https://docs.cotal.ai)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/fhPqe3b4qu)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org)
+
+[Examples](#examples) · [Supported agents](#supported-agents) · [FAQ](#faq)
 
 </div>
 
@@ -32,10 +44,60 @@ with no shared space at all. With Cotal it is configuration: who delegates to wh
 whether anyone is in charge, is something you set, so the same standard runs a **flat team
 of peers**, a **manager with workers**, a **chain of command**, or **any mix**.
 
+And a mesh is not tied to one project or one machine. Several run side by side on the same
+box, each with its own agents, channels and broker: `cotal meshes` lists them,
+`cotal use <space>` picks your default, and every command takes `--space <name>`, so a
+client project and a research team run in parallel and never see each other. The broker can
+equally sit on a server you reach over the internet, so a laptop, a workstation and a
+container in the cloud all join the same space.
+
 Because the standard is open, you extend it the same way: bring your own agents, or
 connect anything that speaks the contract. It runs on [NATS and JetStream](https://nats.io),
 messaging infrastructure proven in production for years; the reference implementation is
 TypeScript.
+
+## Quick start
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+Installs into your home directory, no sudo, then runs guided setup. Read it first at
+[get.cotal.ai](https://get.cotal.ai), or preview it with `| sh -s -- --dry-run`.
+
+On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`.
+Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
+
+Setup gets your machine ready and **starts nothing**. Then:
+
+```bash
+cotal up --detach  # start the mesh
+cotal spawn        # put your agent on it and talk to it (Ctrl-C to leave)
+cotal web          # watch it in the browser
+cotal down         # stop everything
+```
+
+One agent, on a real mesh, that you can talk to. Add a second and they can see each other, which
+is the whole point.
+
+`cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, plus the
+server-side delivery daemon for durable delivery). `cotal up --open` gives you a loopback-only,
+live-only mesh with no auth.
+
+Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
+session you drive); then `cotal spawn david` and watch with `cotal console`.
+
+> [!TIP]
+> **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
+> pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
+> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
+
+**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), each agent
+in its own [cmux](https://cmux.com), [tmux](https://github.com/tmux/tmux/wiki) or
+[Orca](https://www.onorca.dev/) terminal, [Codex](extensions/connector-codex),
+[OpenCode](extensions/connector-opencode) or
+[Hermes](extensions/connector-hermes) instead of Claude. Install flags, requirements and
+uninstall are in [docs/getting-started.md](docs/getting-started.md).
 
 ## How it works
 
@@ -67,71 +129,15 @@ them.
 - **[MCP](https://modelcontextprotocol.io)** connects an agent to its tools.
 - **[A2A](https://a2a-protocol.org)** connects two agents in a pairwise
   request/response.
-- **Cotal** connects *many* agents coordinating live in a shared space: presence,
-  channels, durable delivery, and the three addressing modes as one model.
+- **Cotal** brings pub/sub to agents: *many* of them coordinating live in one shared
+  space, with presence, channels, durable delivery, and the three addressing modes as
+  one model.
 
 Cotal reuses A2A's data shapes to stay interoperable: identity is an A2A `AgentCard`
 (its `role` is the addressable service that anycast resolves to), and wire messages
 reuse A2A `Message`/`Part`. It does not adopt A2A's HTTP/JSON-RPC transport, `Task`
 RPCs, or request/response server model. Only the shapes carry over. Underneath, NATS +
 JetStream has run in production for years. We didn't invent the hard parts.
-
-## Quick start
-
-Cotal's guided setup is one command on a fresh machine:
-
-```bash
-npx cotal-ai setup  # checks your machine, installs `cotal`, and configures your first agent mesh
-```
-
-Or skip the terminal and paste one line into any coding agent, which sets everything up itself:
-
-```text
-Read https://docs.cotal.ai/prompt.md, then set up Cotal on this machine: install it, start a local mesh, and put an agent on it.
-```
-
-`setup` gets your machine ready and **starts nothing**: checks Node/NATS, lets you pick connectors
-(Claude installs a plugin; OpenCode auto-wires at spawn), installs the web dashboard extension,
-seeds one default agent, and offers to put `cotal` on your PATH. Then run:
-
-```bash
-cotal up --detach  # start the local mesh + delivery daemon + manager
-cotal status       # detailed setup, process, registry, and live mesh status
-cotal web          # open the browser view of the mesh
-cotal spawn        # launch your default agent here and talk to it (Ctrl-C to leave)
-cotal down         # stop the mesh, delivery daemon, manager, and web
-```
-
-If setup hits a step it cannot finish, it hands you to an interactive Claude with the failure
-context, then retries.
-
-Once the mesh is up, `cotal web` and `cotal console` watch the same live space; `cotal spawn`
-launches the default agent in this terminal. `cotal up` is **JWT-authed** by default (sender
-authenticity + per-agent ACLs, with the server-side delivery daemon for the durable backstop). Pass
-`cotal up --open` for a frictionless open, loopback-only, live-only mesh (no auth, no daemon).
-
-Want the guided team too? Add it explicitly, then spawn the teammates you want:
-
-```bash
-cotal setup --demo  # add david (engineer), sven (guide), and me (driving session)
-cotal spawn david   # or: cotal spawn sven / cotal spawn me
-cotal console       # terminal view of presence, channels, and messages
-```
-
-> [!NOTE]
-> **Want each teammate in its own terminal?** Run the manager with `cotal supervise --runtime cmux`
-> (a **[cmux](https://cmux.com)** tab per agent), `--runtime tmux` (a **[tmux](https://github.com/tmux/tmux/wiki)** window per agent), or `--runtime orca` (an **[Orca](https://www.onorca.dev/)** terminal in the matching worktree). Otherwise they run in the
-> background on the same mesh, watched with `cotal console` or the dashboard.
-
-> [!TIP]
-> **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
-> pull in teammates on demand: ask your agent for one ("spin up a reviewer") and it spawns it
-> on the mesh via `cotal_spawn`. See [docs/connect-claude.md](docs/connect-claude.md).
-
-**Run it your way:** a whole team from one [`cotal.yaml` manifest](docs/manifest.md), agents in
-cmux/tmux/Orca terminals, [OpenCode](extensions/connector-opencode) or [Hermes](extensions/connector-hermes)
-instead of Claude, or the guided expert team (`cotal setup --demo`). Start at
-[docs/getting-started.md](docs/getting-started.md).
 
 ## The web dashboard
 
@@ -184,15 +190,16 @@ Full index: [docs/examples.md](docs/examples.md).
 
 <table>
 <tr>
-<td align="center" width="25%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
-<td align="center" width="25%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
-<td align="center" width="25%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
-<td align="center" width="25%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-claude-code"><img src="assets/agents/claude-code.svg" height="44" alt=""><br><strong>Claude Code</strong></a><br><sub>installed plugin + hooks</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-opencode"><img src="assets/agents/opencode.svg" height="44" alt=""><br><strong>OpenCode</strong></a><br><sub>native in-process plugin</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-codex"><img src="assets/agents/codex.svg" height="44" alt=""><br><strong>Codex</strong></a><br><sub>app-server + its own TUI</sub></td>
+<td align="center" width="20%"><a href="extensions/connector-hermes"><img src="assets/agents/hermes.png" height="44" alt=""><br><strong>Hermes</strong></a><br><sub>gateway daemon + plugin</sub></td>
+<td align="center" width="20%"><a href="extensions/pi"><img src="assets/agents/pi.svg" height="44" alt=""><br><strong>pi</strong></a><br><sub>pi extension + live steer</sub></td>
 </tr>
 </table>
 
-They attach differently but expose the same `cotal_*` tools, and all four push, so a
-peer message wakes an idle agent the instant it arrives; pi additionally drives a live
+They attach differently but expose the same `cotal_*` tools, and all five push, so a
+peer message wakes an idle agent the instant it arrives; Codex and pi additionally drive a live
 turn, folding an arriving message into an in-flight one with `steer()`. Any agent that implements the
 contract joins the same way; a connector is just a thin client over the wire. Want one
 for an agent that isn't here yet?
@@ -251,7 +258,7 @@ concrete mechanism you can check against the code.
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
-Plus the three agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
+Plus the five agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
 [`@cotal-ai/tmux`](extensions/tmux), and [`@cotal-ai/orca`](extensions/orca) runtime integrations;
 the full package list is in [AGENTS.md](AGENTS.md).
 

@@ -82,6 +82,9 @@ importers:
       '@cotal-ai/connector-claude-code':
         specifier: workspace:*
         version: link:../extensions/connector-claude-code
+      '@cotal-ai/connector-codex':
+        specifier: workspace:*
+        version: link:../extensions/connector-codex
       '@cotal-ai/connector-hermes':
         specifier: workspace:*
         version: link:../extensions/connector-hermes
@@ -144,6 +147,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -174,6 +180,33 @@ importers:
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
+
+  extensions/connector-codex:
+    devDependencies:
+      '@cotal-ai/connector-core':
+        specifier: workspace:*
+        version: link:../connector-core
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.1
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   extensions/connector-core:
     dependencies:
@@ -420,12 +453,21 @@ importers:
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/nats-core':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
 
   implementations/web:
     devDependencies:
@@ -468,6 +510,15 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+
+  packages/lang:
+    dependencies:
+      acorn:
+        specifier: ^8.15.0
+        version: 8.18.0
+      json-canonicalize:
+        specifier: ^2.0.0
+        version: 2.0.0
 
   packages/workspace:
     dependencies:
@@ -1470,6 +1521,11 @@ packages:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
 
+  acorn@8.18.0:
+    resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
+
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
@@ -1981,10 +2037,6 @@ packages:
   human-id@4.2.0:
     resolution: {integrity: sha512-K3GbkIWqyvvlpfhBPlbEvD97TtqBpAYA4kt+cn2lD2x2HuohzZCibcA2nOlnJT6exqvJLggoB5nv2dNf192nEA==}
     hasBin: true
-
-  iconv-lite@0.7.2:
-    resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
-    engines: {node: '>=0.10.0'}
 
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
@@ -3695,6 +3747,8 @@ snapshots:
       mime-types: 3.0.2
       negotiator: 1.0.0
 
+  acorn@8.18.0: {}
+
   agent-base@7.1.4: {}
 
   ajv-formats@3.0.1(ajv@8.20.0):
@@ -3780,7 +3834,7 @@ snapshots:
       content-type: 1.0.5
       debug: 4.4.3
       http-errors: 2.0.1
-      iconv-lite: 0.7.2
+      iconv-lite: 0.7.3
       on-finished: 2.4.1
       qs: 6.15.2
       raw-body: 3.0.2
@@ -4235,10 +4289,6 @@ snapshots:
 
   human-id@4.2.0: {}
 
-  iconv-lite@0.7.2:
-    dependencies:
-      safer-buffer: 2.1.2
-
   iconv-lite@0.7.3:
     dependencies:
       safer-buffer: 2.1.2
@@ -4564,7 +4614,7 @@ snapshots:
     dependencies:
       bytes: 3.1.2
       http-errors: 2.0.1
-      iconv-lite: 0.7.2
+      iconv-lite: 0.7.3
       unpipe: 1.0.0
 
   react-reconciler@0.33.0(react@19.2.7):

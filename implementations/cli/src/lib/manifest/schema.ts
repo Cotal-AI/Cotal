@@ -28,6 +28,8 @@ const AgentEntryObject = z
     role: z.string().min(1).optional(),
     description: z.string().optional(),
     instructions: z.string().optional(),
+    /** Kickoff prompt auto-submitted once the session is up (the declarative `--prompt`). */
+    prompt: z.string().min(1).optional(),
     capabilities: z.array(z.string().min(1)).optional(),
     /** Per-agent override of the top-level `personaPermissions` policy. */
     personaPermissions: PersonaPermissions.optional(),

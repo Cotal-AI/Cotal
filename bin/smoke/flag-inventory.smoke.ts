@@ -33,13 +33,20 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
-      "store-dir:string", "user-auth:boolean",
+      // `--rotate-sys` (2026-08): the class-3 renewal — rotate the system account and re-mint the
+      // two $SYS creds, which nothing re-signs in place (issue #338).
+      "rotate-sys:boolean",
+      "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
   },
-  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "store-dir:string"], positionals: true },
+  // `--space` (2026-07): selects the mesh for target-addressed components (`cotal down web --space <name>`).
+  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "space:string", "store-dir:string"], positionals: true },
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
-  meshes: { flags: [], positionals: false },
+  // `meshes` gained the registry-maintenance verbs (2026-08): `add <space> --server … [--root]
+  // [--mode]` registers a mesh this machine did NOT start, `rm <space> …` drops records. `--force`
+  // is add's unverified/replace escape and rm's running-mesh override. Bare `meshes` still lists.
+  meshes: { flags: ["force:boolean", "mode:string", "root:string", "server:string"], positionals: true },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
@@ -52,6 +59,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   send: { flags: [...TARGET], positionals: true },
   endpoints: { flags: [...TARGET], positionals: false },
+  // The generic v0.4 service surface (P2 item 1, 1c.2b): describe an endpoint's registered
+  // command set off the wire; invoke one command by name with JSON args.
+  describe: { flags: [...TARGET], positionals: true },
+  invoke: {
+    flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
+    positionals: true,
+  },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },
   // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
@@ -61,7 +75,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
       "file:string:f", "live-only:boolean", "model:string", "name:string", "no-transcript:boolean",
-      "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
+      "on:string", "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
       "server:string", "share-tools:string", "space:string", "subscribe:string",
       "transcript:boolean", "variant:string",
     ],
@@ -100,7 +114,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string"],
+    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
@@ -108,10 +122,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string"], positionals: false },
-  ps: { flags: [...TARGET], positionals: false },
+  ps: { flags: [...TARGET, "on:string"], positionals: false },
   attach: { flags: [...TARGET, "name:string"], positionals: false },
   deliver: {
-    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string"],
+    // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
+    // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
+    // long ago and the SERVER half did not, which is this whole feature in one line.
+    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean"],
     positionals: false,
   },
   "feedback-intake": {

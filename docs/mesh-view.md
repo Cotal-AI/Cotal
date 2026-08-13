@@ -116,6 +116,7 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 | attention mode (`dnd` / `focus`) | `agents[].attention` |  |  | ✓ roster + detail + graph |
 | per-channel attention (`quiet` / `muted`) | `agents[].channelModes` |  |  | ✓ agent detail |
 | harness, model, variant | `agents[].card.meta` |  |  | ✓ badges + graph |
+| host (which machine it runs on) | `agents[].card.meta.host` |  |  | ✓ agent detail |
 | channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
 
 Both interactive surfaces render every model field. The console adds the signals as an always-on

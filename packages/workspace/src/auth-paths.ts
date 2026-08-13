@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import {
+  assertLifecycleToken,
   composeSpaceAuth,
   jwtIssuedAt,
   mkSecretDir,
@@ -255,19 +256,44 @@ export function agentSecretSegment(name: string): string {
 // One filename source per kind — the store key and the materialized path project the SAME name,
 // so the two can never drift apart (the `DELIVERY_CREDS_KEY` lesson, per kind).
 const agentFile = {
-  creds: (name: string) => `${agentSecretSegment(name)}.creds`,
-  actorToken: (name: string) => `${agentSecretSegment(name)}.actor-token`,
-  sentinelCreds: (name: string) => `${agentSecretSegment(name)}.sentinel.creds`,
+  creds: (base: string) => `${base}.creds`,
+  actorToken: (base: string) => `${base}.actor-token`,
+  sentinelCreds: (base: string) => `${base}.sentinel.creds`,
 };
+
+/** The per-INCARNATION filename base `<name>.<lifecycleUid>` (SPEC 13.1 naming discipline brought
+ *  to the FS): an endpoint-provisioned incarnation's secret family embeds its lifecycle UID, so a
+ *  stale or replayed teardown for a retired incarnation addresses names a same-alias successor
+ *  never uses. The separator is a `.` — a character {@link agentSecretSegment} REFUSES in a
+ *  standing name — so the two families are STRUCTURALLY disjoint: no legal standing alias can
+ *  spell an incarnation base (`worker-<uid>` the standing name maps to `worker-<uid>.creds`;
+ *  `worker` at that uid maps to `worker.<uid>.creds`). Disjointness is grammar, not uid entropy —
+ *  a standing alias is chosen, not sampled, so entropy alone guarantees nothing. Standing
+ *  OPERATOR secrets (`cotal mint`, setup-seeded creds) stay on the name-keyed builders below —
+ *  they have no lifecycle. */
+function agentIncarnationBase(name: string, lifecycleUid: string): string {
+  return `${agentSecretSegment(name)}.${assertLifecycleToken(lifecycleUid)}`;
+}
 
 /** Canonical {@link SecretStore} keys of the per-agent standing secrets, mirroring today's
  *  `.cotal/auth/creds/<name>.<kind>` layout byte-for-byte under the workspace FS composition.
  *  `<name>.creds` is the static-auth scoped cred; the actor token + sentinel cred are the
  *  user-mode pair a spawn mints. The transient `<name>.auth-health.json` is runtime state, NOT a
  *  secret kind — it stays plain-file. */
-export const agentCredsKey = (name: string): string => `auth/creds/${agentFile.creds(name)}`;
-export const agentActorTokenKey = (name: string): string => `auth/creds/${agentFile.actorToken(name)}`;
-export const agentSentinelCredsKey = (name: string): string => `auth/creds/${agentFile.sentinelCreds(name)}`;
+export const agentCredsKey = (name: string): string => `auth/creds/${agentFile.creds(agentSecretSegment(name))}`;
+export const agentActorTokenKey = (name: string): string => `auth/creds/${agentFile.actorToken(agentSecretSegment(name))}`;
+export const agentSentinelCredsKey = (name: string): string => `auth/creds/${agentFile.sentinelCreds(agentSecretSegment(name))}`;
+
+/** Lifecycle-keyed {@link SecretStore} keys of one INCARNATION's secret family — the
+ *  per-incarnation counterparts of the standing name-keyed keys above, for any endpoint that
+ *  provisions managed lifecycles (the manager is the first client; delivery and future endpoints
+ *  ride the same seam). See {@link agentIncarnationBase} for why the uid is embedded. */
+export const agentLifecycleCredsKey = (name: string, lifecycleUid: string): string =>
+  `auth/creds/${agentFile.creds(agentIncarnationBase(name, lifecycleUid))}`;
+export const agentLifecycleActorTokenKey = (name: string, lifecycleUid: string): string =>
+  `auth/creds/${agentFile.actorToken(agentIncarnationBase(name, lifecycleUid))}`;
+export const agentLifecycleSentinelCredsKey = (name: string, lifecycleUid: string): string =>
+  `auth/creds/${agentFile.sentinelCreds(agentIncarnationBase(name, lifecycleUid))}`;
 
 /** The FS materialization paths of one agent's secret family (plus its non-secret health file) —
  *  built from the SAME filename source as the key builders. These are the paths subprocesses read
@@ -277,12 +303,53 @@ export function agentSecretFilePaths(root: string, name: string): {
   creds: string; actorToken: string; sentinelCreds: string; health: string;
 } {
   const dir = agentCredsDir(root);
+  const base = agentSecretSegment(name);
   return {
-    creds: join(dir, agentFile.creds(name)),
-    actorToken: join(dir, agentFile.actorToken(name)),
-    sentinelCreds: join(dir, agentFile.sentinelCreds(name)),
-    health: join(dir, `${agentSecretSegment(name)}.auth-health.json`),
+    creds: join(dir, agentFile.creds(base)),
+    actorToken: join(dir, agentFile.actorToken(base)),
+    sentinelCreds: join(dir, agentFile.sentinelCreds(base)),
+    health: join(dir, `${base}.auth-health.json`),
   };
+}
+
+/** The lifecycle-keyed FS materialization paths of one INCARNATION's secret family (plus its
+ *  non-secret health file) — same projection rule as {@link agentSecretFilePaths}, built from the
+ *  {@link agentIncarnationBase} so a retired incarnation's teardown can never address a same-alias
+ *  successor's files. */
+export function agentLifecycleSecretFilePaths(root: string, name: string, lifecycleUid: string): {
+  creds: string; actorToken: string; sentinelCreds: string; health: string;
+} {
+  const dir = agentCredsDir(root);
+  const base = agentIncarnationBase(name, lifecycleUid);
+  return {
+    creds: join(dir, agentFile.creds(base)),
+    actorToken: join(dir, agentFile.actorToken(base)),
+    sentinelCreds: join(dir, agentFile.sentinelCreds(base)),
+    health: join(dir, `${base}.auth-health.json`),
+  };
+}
+
+/** The store key of a materialized agent-secret FILE — `auth/creds/<basename>`, the same projection
+ *  the builders above apply, for callers that hold a RECORDED path (a resume inventory, a manifest
+ *  ledger) rather than the (name, uid) coordinates: under mixed generations the recorded path is
+ *  the truth, and its key must be derived from the SAME filename, never re-derived from the name
+ *  alone (which would silently address a different generation's row). Refuses a filename that no
+ *  valid provisioning could have written. */
+/** The exact filename-base grammar the two builder families can produce — a standing name
+ *  ({@link agentSecretSegment}'s alphabet, no `.`) or an incarnation base `<name>.<uid>`
+ *  ({@link agentIncarnationBase}). Anything else is a stray no valid provisioning wrote. */
+const PROVISIONABLE_BASE = /^[A-Za-z0-9_-]+(\.[a-z0-9]{26,32})?$/;
+
+export function agentSecretKeyForFile(path: string): string {
+  const file = basename(path);
+  for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
+    if (!file.endsWith(suffix)) continue;
+    const base = file.slice(0, -suffix.length);
+    if (!PROVISIONABLE_BASE.test(base))
+      throw new Error(`"${file}" is not a provisionable agent-secret filename (a standing name, or <name>.<lifecycleUid>)`);
+    return `auth/creds/${file}`;
+  }
+  throw new Error(`"${file}" is not an agent-secret filename (expected a .creds / .actor-token / .sentinel.creds suffix)`);
 }
 
 /** Enumerate the store keys of every per-agent standing secret currently materialized under this
@@ -304,7 +371,7 @@ export function agentSecretKeysUnder(root: string): string[] {
     for (const suffix of [".sentinel.creds", ".actor-token", ".creds"]) {
       if (!file.endsWith(suffix)) continue;
       const base = file.slice(0, -suffix.length);
-      if (/^[A-Za-z0-9_-]+$/.test(base)) keys.push(`auth/creds/${file}`);
+      if (PROVISIONABLE_BASE.test(base)) keys.push(`auth/creds/${file}`);
       break; // longest match decides; a rejected base is a stray either way
     }
   }
@@ -358,6 +425,44 @@ const SPACE_ACCOUNT_SUFFIX = ".json";
 /** Where the one broker trust record lives. */
 export function brokerAuthPath(dir: string): string {
   return join(dir, BROKER_FILE);
+}
+
+/** The persisted MANAGER INSTANCE identity (P2 item 3, SPEC 13.6 item 7): the LOGICAL instanceId
+ *  (stable across restart, so a restart re-registers the SAME id with an ADVANCED epoch and the
+ *  (i) fence bites) + the serve nkey identity (so re-registration reuses the SAME gate principal —
+ *  provisionEndpointGateOpen stays idempotent, no core barrier change, and eviction targets a
+ *  stable principal). Holds a private seed, so it lands in a HARDENED secret file, space-scoped by
+ *  a hex key (an authDir is a shared namespace; a raw space token can collide/case-fold). */
+export interface ManagerInstanceIdentity {
+  instanceId: string;
+  serveIdentity: { id: string; seed: string };
+}
+function managerInstanceFile(root: string, space: string): string {
+  return join(authDir(root), `manager-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+}
+/** Load this workspace root's persisted manager instance identity for `space`, or undefined if a
+ *  manager has never registered here. A present-but-MALFORMED file fails LOUD: minting a fresh id
+ *  over it would orphan the prior registration and break the restart-fence guarantee, so a restart
+ *  never silently becomes a fresh instance (no-fallbacks). */
+export function loadManagerInstanceIdentity(root: string, space: string): ManagerInstanceIdentity | undefined {
+  const f = managerInstanceFile(root, space);
+  if (!existsSync(f)) return undefined;
+  let parsed: ManagerInstanceIdentity;
+  try { parsed = JSON.parse(readFileSync(f, "utf8")) as ManagerInstanceIdentity; }
+  catch (e) { throw new Error(`the persisted manager instance identity at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`); }
+  if (parsed === null || typeof parsed !== "object"
+    || typeof parsed.instanceId !== "string" || parsed.instanceId.length === 0
+    || parsed.serveIdentity === null || typeof parsed.serveIdentity !== "object"
+    || typeof parsed.serveIdentity.id !== "string" || parsed.serveIdentity.id.length === 0
+    || typeof parsed.serveIdentity.seed !== "string" || parsed.serveIdentity.seed.length === 0)
+    throw new Error(`the persisted manager instance identity at ${f} is malformed; refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`);
+  return { instanceId: parsed.instanceId, serveIdentity: { id: parsed.serveIdentity.id, seed: parsed.serveIdentity.seed } };
+}
+/** Persist this workspace root's manager instance identity for `space` (hardened secret file). */
+export function saveManagerInstanceIdentity(root: string, space: string, identity: ManagerInstanceIdentity): void {
+  const dir = authDir(root);
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
+  writeSecretFile(managerInstanceFile(root, space), JSON.stringify(identity, null, 2));
 }
 
 /** The account file's key IS {@link spaceKey} — one injective, case-safe encoder for every

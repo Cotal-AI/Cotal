@@ -25,7 +25,10 @@ process.env.COTAL_HOME = home;
 
 const {
   classifyPreflightFailure,
+  findMesh,
+  MeshTargetError,
   preflightTarget,
+  pruneMesh,
   pruneStaleMeshes,
   resolveMeshTarget,
   recordMesh,
@@ -95,9 +98,35 @@ check("stale-auth preflight copy names `cotal doctor auth` (the repair surface)"
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
 check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
-  const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1" });
+  const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1", hasAuth: true });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
+// TLS-TRUST: live TLS-required NATS listener, failed TLS handshake (private CA / missing CA).
+// Copy must name the repair, admit INFO is unauthenticated (not identity), and MUST NOT claim removal.
+check("tls-trust preflight copy names NODE_EXTRA_CA_CERTS, NATS listener, unauthenticated INFO, conservatively kept", (() => {
+  const t = { space: "team", server: "nats://127.0.0.1:14990", root: "/tmp/p", source: "registry", mode: "auth", tlsRequired: true } as never;
+  const msg = renderWorkspaceError({ kind: "preflight", failure: "tls-trust", target: t, pruned: false });
+  return msg.includes("NODE_EXTRA_CA_CERTS")
+    && msg.includes("TLS-required NATS listener")
+    && msg.includes("unauthenticated")
+    && msg.includes("conservatively kept")
+    && !msg.includes("removed");
+})());
+
+// `auth-required` on the RAW probe splits the same way the registry path splits it. Both cells are
+// load-bearing in one direction each: collapsing them back tells a caller who sent nothing that its
+// credentials were refused, and the reverse tells a caller holding a bad cred to go get one.
+const rawAuthRequired = (hasAuth: boolean) =>
+  renderWorkspaceError({ kind: "reachable", reason: "auth-required", server: "nats://x:1", hasAuth });
+check("raw auth-required WITH creds says they were rejected", (() => {
+  const msg = rawAuthRequired(true);
+  return msg.includes("credentials rejected") && !msg.includes("no credentials were supplied");
+})());
+check("raw auth-required WITHOUT creds says none were supplied, and does not claim rejection", (() => {
+  const msg = rawAuthRequired(false);
+  return msg.includes("no credentials were supplied") && msg.includes("--creds") && !msg.includes("credentials rejected");
+})());
+check("the two raw auth-required sentences actually differ", rawAuthRequired(true) !== rawAuthRequired(false));
 
 // The invariant, exhaustively: a non-registry source is NEVER pruned — whatever the reason/auth.
 for (const s of NON_REGISTRY)
@@ -166,6 +195,90 @@ check("team-ov registry entry survives the override preflight", loadMeshes().som
 recordMesh({ space: "ghost-2", server: "nats://127.0.0.1:14992", root: "/tmp/p2", mode: "open", ts: new Date(0).toISOString() });
 await pruneStaleMeshes();
 check("pruneStaleMeshes drops every dead entry", loadMeshes().length === 0, loadMeshes());
+
+// ── ORIGIN: an automatic prune never deletes what an operator registered by hand ──────────────────
+// `cotal up` can always rewrite its own record; a `cotal meshes add` one usually describes a mesh on
+// another machine, so deleting it on a probe failure is unrecoverable here. Every auto-prune path
+// goes through pruneMesh for exactly this reason.
+const DEAD_2 = "nats://127.0.0.1:14989";
+recordMesh({ space: "ours", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "up", ts: new Date(0).toISOString() });
+recordMesh({ space: "theirs", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+const sweep = await pruneStaleMeshes();
+check("sweep prunes the `up` record", findMesh("ours") === undefined, loadMeshes());
+check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
+check("sweep reports the split (pruned vs offline)", sweep.pruned.includes("ours") && sweep.offline.includes("theirs"), sweep);
+check("pruneMesh reports refusing to delete it", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
+check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);
+// …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
+const manualT = { ...T, space: "theirs", origin: "manual" as const };
+check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {
+  const m = preflightMessage("unreachable", manualT, false);
+  return m.includes("cotal meshes rm theirs") && !m.includes("cotal up");
+})(), preflightMessage("unreachable", manualT, false));
+check("stale-auth-root copy claims a removal only when one happened", (() => {
+  const kept = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "theirs", root: "/tmp/p3", found: "other", removed: false }) });
+  const gone = renderWorkspaceError({ kind: "target", error: new MeshTargetError("stale-auth-root", "x", { space: "ours", root: "/tmp/p3", found: "other", removed: true }) });
+  return !kept.includes("removed") && kept.includes("cotal meshes add") && gone.includes("stale entry removed");
+})());
+
+// ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
+// A TCP peer that greets with INFO {tls_required:true} only after 1.5s. probeConnect fails
+// (not a real NATS TLS handshake) → unreachable; without the confirm budget this would prune.
+{
+  const { createServer } = await import("node:net");
+  const delayed = await new Promise<{ port: number; close: () => void }>((resolve) => {
+    const srv = createServer((sock) => {
+      setTimeout(() => {
+        try {
+          sock.write('INFO {"server_id":"s10","tls_required":true,"version":"2"}\r\n');
+        } catch { /* client gone */ }
+      }, 1_500);
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      resolve({ port, close: () => srv.close() });
+    });
+  });
+  const slowServer = `nats://127.0.0.1:${delayed.port}`;
+  recordMesh({
+    space: "s10-slow",
+    server: slowServer,
+    root: "/tmp/s10-slow",
+    mode: "open",
+    tlsRequired: true,
+    origin: "up",
+    ts: new Date(0).toISOString(),
+  });
+  const slowT: MeshTarget = {
+    ...T,
+    space: "s10-slow",
+    server: slowServer,
+    root: "/tmp/s10-slow",
+    mode: "open",
+    tlsRequired: true,
+    source: "registry",
+    origin: "up",
+  };
+  const t0 = Date.now();
+  const slowR = await preflightTarget(slowT);
+  const elapsed = Date.now() - t0;
+  check(
+    "S10 delayed-INFO: preflightTarget → tls-trust, prune:false (confirm path, not 1s miss)",
+    !slowR.ok && slowR.kind === "tls-trust" && slowR.prune === false,
+    slowR,
+  );
+  check(
+    "S10 delayed-INFO: took >1s (second confirm read engaged)",
+    elapsed >= 1_400,
+    { elapsed },
+  );
+  check(
+    "S10 delayed-INFO: registry entry still present (caller would not prune)",
+    loadMeshes().some((m) => m.space === "s10-slow"),
+    loadMeshes(),
+  );
+  delayed.close();
+}
 
 rmSync(home, { recursive: true, force: true });
 console.log(`\npreflight (workspace) smoke: ${pass} checks passed`);

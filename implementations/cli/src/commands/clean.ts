@@ -12,12 +12,13 @@ import {
   cleanupRestoreFallback,
   deleteSpaceAuth,
   localProcessPath,
-  meshesForRoot,
+  localMeshesForRoot,
   readMaintenanceJournal,
   releaseMaintenanceLock,
   removeMeshesByRoot,
   resolveSpace,
   rollbackRestore,
+  SYSTEM_CREDS_FILES,
   workspaceSecretStore,
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
@@ -106,7 +107,10 @@ export async function clean(args: ParsedArgs): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    for (const mesh of meshesForRoot(root)) {
+    // Only this root's OWN meshes gate the wipe. A hand-registered record co-rooted here describes a
+    // mesh running on another machine: it is reachable by design and is not the operator's to stop,
+    // so counting it would refuse `clean` forever with an instruction nobody here can carry out.
+    for (const mesh of localMeshesForRoot(root)) {
       if (await isReachable(mesh.server))
         throw new Error(`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`);
     }
@@ -147,12 +151,37 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
  *  undefined when everything is stopped. A stale pidfile (recorded pid no longer alive) does not
  *  block: a crashed broker must not wedge its own cleanup. Liveness rides the shared hardened
  *  probe (`pidfileState`): pid > 0 only, EPERM counts as alive. */
-export function liveMeshProcess(root: string): string | undefined {
-  return liveMeshProcesses(root)[0];
+export function liveMeshProcess(root: string, space?: string): string | undefined {
+  return liveMeshProcesses(root, space)[0];
 }
 
-export function liveMeshProcesses(root: string): string[] {
-  const context: LocalProcessContext = { root, space: resolveSpace(root) };
+/**
+ * The live process that makes this root the mesh's HOME, or undefined.
+ *
+ * Not "any Cotal process here": a manager, a delivery daemon or a web dashboard under this root can
+ * perfectly well be pointed at a mesh running on another machine, and their liveness says nothing
+ * about who owns the record. The BROKER is the mesh — and `clearsMesh` already marks it, because it
+ * is the component whose teardown drops the registry entry (`down`). Asking the same question here
+ * keeps "this mesh is running here, use `cotal down`" a true statement: found live against a real
+ * registry, where a dashboard watching the remote optiplex mesh made `meshes rm` refuse and point
+ * at a `cotal down` that would not have stopped that mesh at all.
+ */
+export function liveMeshOwner(root: string, space?: string): string | undefined {
+  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
+  for (const component of localProcessSurface()) {
+    if (!component.clearsMesh) continue;
+    const state = pidfileState(localProcessPath(component.pidFile, context));
+    if (state.live) return `${component.label}, pid ${state.pid}`;
+  }
+  return undefined;
+}
+
+/** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
+ *  which mesh it means (a registry entry does): re-deriving it from the root can resolve a
+ *  DIFFERENT tenant on a multi-space root, and `resolveSpace` throws outright on an unreadable or
+ *  ambiguous one — a caller asking a yes/no liveness question should not inherit that failure. */
+export function liveMeshProcesses(root: string, space?: string): string[] {
+  const context: LocalProcessContext = { root, space: space ?? resolveSpace(root) };
   const running: string[] = [];
   for (const component of localProcessSurface()) {
     const state = pidfileState(localProcessPath(component.pidFile, context));
@@ -242,8 +271,9 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // present and a re-run resolves THIS space, not the default.
     for (const f of [
       "manager.delivery-aware",
-      "membership-observer.creds",
-      "connection-evictor.creds",
+      // The $SYS pair by its ONE named source, shared with the rotation writer, so a file added to
+      // that class can never be minted-but-not-swept (the drift this list was already guarding).
+      ...SYSTEM_CREDS_FILES,
       "membership.json",
       "renewal.json",
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);

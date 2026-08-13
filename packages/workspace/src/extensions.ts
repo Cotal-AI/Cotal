@@ -144,6 +144,8 @@ export function cacheLocalProcess(component: LocalProcess): LocalProcess {
     if (typeof artifact !== "string") throw new Error(`local-process ${component.name} artifacts must be string templates`);
     localProcessPath(artifact, { root: process.cwd(), space: "validation" });
   }
+  if (component.rootedAt !== undefined && component.rootedAt !== "target")
+    throw new Error(`local-process ${component.name} declares an unknown rootedAt ${JSON.stringify(component.rootedAt)} - only "target" is defined`);
   return {
     kind: "local-process",
     name: component.name,
@@ -154,6 +156,7 @@ export function cacheLocalProcess(component: LocalProcess): LocalProcess {
     stopLast: component.stopLast,
     clearsMesh: component.clearsMesh,
     visibleWhen: component.visibleWhen,
+    rootedAt: component.rootedAt,
   };
 }
 

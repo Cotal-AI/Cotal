@@ -30,6 +30,9 @@ export function hashAgent(a: PreparedAgent): string {
     launchOptions: a.launchOptions ? Object.fromEntries(Object.entries(a.launchOptions).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) : null,
     role: a.role ?? null,
     body: a.body ?? null,
+    // Only when set: a prompt-less agent must keep its pre-`prompt:` hash, or upgrading flips
+    // every already-deployed manifest agent to stale.
+    ...(a.prompt !== undefined ? { prompt: a.prompt } : {}),
     capabilities: [...a.capabilities].sort(),
     subscribe: [...a.policy.subscribe].sort(),
     allowSubscribe: [...a.policy.allowSubscribe].sort(),
@@ -49,6 +52,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
     launchOptions: a.launchOptions,
     description: a.description,
     body: a.body,
+    prompt: a.prompt,
     capabilities: a.capabilities.length ? a.capabilities : undefined,
     subscribe: a.policy.subscribe,
     allowSubscribe: a.policy.allowSubscribe,

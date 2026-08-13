@@ -85,6 +85,94 @@ refuses("pattern bomb refused", () =>
 refuses("patternProperties key bomb refused", () =>
   compileContractSchema({ root: { type: "object", patternProperties: { ["x".repeat(SCHEMA_PROFILE.maxPatternChars + 1)]: { type: "string" } } } }), "complexity bound");
 
+// 6b) THERE IS NO SUBSCHEMA-NODE CEILING, AND THIS PINS THE CONSEQUENCE RATHER THAN LEAVING IT
+// IMPLIED. A node bound was proposed as the structural replacement for the CPU-time budget that
+// refused the manager's own service contract on Windows CI ("125ms of CPU ... 80ms elapsed" — CPU
+// above wall clock is only possible with concurrent threads, so that number was mostly V8's JIT).
+// It was removed because neither candidate basis survived measurement: cost has no knee (a 14x
+// spread at one node count), and the codegen RangeError it was meant to sit below is not a stable
+// edge (the same document threw cold and compiled on the immediate warm retry in one process).
+//
+// So the shape the byte/depth/ref-chain bounds always missed is now ADMITTED, and asserting that it
+// COMPILES is the point: a silently re-added ceiling would fail here, and whoever adds it has to
+// come to this case and argue for the number.
+{
+  const heavy: Record<string, unknown> = {};
+  for (let i = 0; i < 1000; i++) heavy[`p${i}`] = { type: "string", pattern: `^a{0,4}b${i}c[0-9]{1,3}$`, minLength: 1, maxLength: 40 };
+  // ~90KB, inside maxDocumentBytes and maxClosureBytes, depth 2, ref-chain 0, every pattern legal.
+  ok("the expensive-but-legal schema is ADMITTED (no node ceiling stands in front of it)", (() => {
+    compileContractSchema({ root: { type: "object", properties: heavy, additionalProperties: false } });
+    return true;
+  })());
+}
+{
+  // BOOLEANS ARE SUBSCHEMAS — `false` is a valid 2020-12 schema and each branch is a compile unit.
+  // That fact was load-bearing for the node count and is now load-bearing for the VOCABULARY walk
+  // one section down, which must treat a boolean as a schema position rather than as a scalar.
+  ok("a schema with boolean branches compiles", (() => {
+    compileContractSchema({ root: { anyOf: [{ type: "string" }, false, true] } });
+    return true;
+  })());
+  // STATED, NOT ASSERTED, because asserting it would put its cost in the gate: 40,000 boolean
+  // branches is 240KB — inside every byte bound — and compiles in ~3.8s. It is admitted. That is
+  // the honest price of removing an unfounded bound: a one-time registration cost, paid by a
+  // principal that already holds the authority to register a contract, in exchange for not refusing
+  // real contracts on a constant nobody could defend.
+}
+// 6c) THE ADMITTED VOCABULARY. The profile refuses an unrecognised keyword rather than ignoring it
+// as JSON Schema would, because counting only what you recognise is what let `contentSchema` and
+// `dependencies` through uncounted. This is the ONLY change in this area that REFUSES MORE, so it
+// is the only one that can break a document that registered before — which makes an untested
+// version of it the worst thing in the file.
+//
+// The refusal has to reach EVERY schema position, or a keyword hides one level down from the walk.
+{
+  refuses("an unadmitted keyword at the root refuses", () =>
+    compileContractSchema({ root: { type: "object", "x-vendor": true } }), "admitted vocabulary");
+  refuses("an unadmitted keyword nested under properties refuses", () =>
+    compileContractSchema({ root: { type: "object", properties: { a: { type: "string", fooBar: 1 } } } }), "admitted vocabulary");
+  refuses("an unadmitted keyword inside $defs refuses", () =>
+    compileContractSchema({ root: { $defs: { d: { type: "string", weird: 1 } }, $ref: "#/$defs/d" } }), "admitted vocabulary");
+}
+// AND THE THREE WAYS THIS COULD BE RIGHT IN SHAPE AND WRONG IN WIDTH. Each of these is a schema a
+// reasonable person writes, and each would be refused by a naive version of the walk. Asserting only
+// the refusals above would pass just as happily with a guard that rejects everything.
+{
+  // 1. INERT ANNOTATIONS ARE ADMITTED. Refusing a contract for carrying documentation would be an
+  //    absurd outcome, and the whole 2020-12 annotation vocabulary is listed for that reason.
+  ok("every inert annotation keyword is admitted", (() => {
+    compileContractSchema({ root: { type: "string", title: "t", description: "d", $comment: "c",
+      deprecated: true, readOnly: true, writeOnly: false, examples: [1], default: 2 } });
+    return true;
+  })());
+  // 2. USER-CHOSEN NAMES ARE NOT KEYWORDS. The keys of `properties` are field names; a walk that
+  //    checked every object key against the vocabulary would refuse a schema with a field called
+  //    `name`. These fields are named after keywords precisely because that is the hostile case.
+  ok("property names that collide with keywords are not treated as vocabulary", (() => {
+    compileContractSchema({ root: { type: "object", properties: { type: { type: "string" }, items: { type: "string" }, not: { type: "string" } } } });
+    return true;
+  })());
+  // 3. INSTANCE DATA IS NOT A SCHEMA. `default`, `examples` and `const`/`enum` values are arbitrary
+  //    JSON, so descending into them would refuse a legitimate default whose object happens to
+  //    carry a key nobody enumerated.
+  ok("arbitrary keys inside default/examples/enum data are not vocabulary", (() => {
+    compileContractSchema({ root: { type: "object", default: { anythingGoes: 1 }, examples: [{ alsoFine: 2 }], enum: [{ q: 1 }] } });
+    return true;
+  })());
+}
+{
+  // WHAT ACTUALLY CATCHES A SCHEMA THE COMPILER CANNOT BUILD: the try/catch around `ajv.compile`,
+  // which normalises any codegen failure to `contract-invalid`. It has been doing this the whole
+  // time, including for the RangeError the node bound was proposed to pre-empt.
+  //
+  // Deliberately proven with a DETERMINISTIC non-compiling schema. The RangeError itself is not
+  // reproducible on demand — it is exactly the "boundary" that moved between two consecutive runs
+  // of one process — so an assertion built on it would be a flake dressed as a guard.
+  refuses("a schema the compiler rejects is contract-invalid, not a thrown RangeError", () =>
+    compileContractSchema({ root: { type: "object", properties: { a: { $ref: "#/$defs/absent" } } } }),
+    "does not compile");
+}
+
 // 7) A member that does not hash to its digest key refuses (also the cache-soundness gate).
 refuses("forged member content refused", () =>
   compileContractSchema({

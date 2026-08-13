@@ -5,8 +5,11 @@ import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceSegment } from "./auth-paths.js";
 
 /**
- * The registry of running meshes: one record per broker `cotal up` started on this machine, so a
- * `cotal spawn` from *any* directory can find which mesh to join, with which creds and personas.
+ * The registry of meshes this machine can reach, so a `cotal spawn` from *any* directory can find
+ * which mesh to join, with which creds and personas. One record per broker `cotal up` started here,
+ * plus any an operator registered by hand with `cotal meshes add` — a mesh running on another
+ * machine, which no local command could otherwise describe. {@link MeshEntry.origin} is which, and
+ * decides what may delete the record without being told to.
  *
  * Stored as **one JSON file per mesh** (`~/.cotal/meshes/<space>.json`) rather than a single
  * `meshes.json`: concurrent `up`/`down` never read-modify-write the same file (no lost-update race),
@@ -33,6 +36,45 @@ export interface MeshEntry {
    *  broker truth: it lives under the user's protected registry dir and is trusted the way the
    *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
   userAuth?: UserAuthInfo;
+  /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
+   *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
+   *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind
+   *  address (see the note in `Manager`'s constructor), so nothing downstream can reconstruct it.
+   *  Every later manager launch for this mesh — same-root repair, adopting a preserved listener,
+   *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
+   *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
+  attachHost?: string;
+  /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
+   *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
+   *  decision was recorded (and is what any record written before this field means).
+   *
+   *  It is deliberately a bare flag and NOT the cert or key paths. Those live in the broker launch
+   *  policy under the workspace root, because this record is machine-home state that feeds status
+   *  output, join links and mesh messages — none of which should carry a path to a private key.
+   *
+   *  Why the flag has to exist at all, rather than clients inferring TLS from the broker: a NATS
+   *  client that omits the requirement still CONNECTS to a TLS broker, by upgrading the same socket
+   *  once it reads `tls_required` in the server's INFO. But that INFO is unauthenticated plaintext,
+   *  so an on-path attacker can forge one without it — and a client with no requirement of its own
+   *  will then send its credentials in the clear. The flag is what turns "encrypted if the server
+   *  says so" into "encrypted or refuse". */
+  tlsRequired?: boolean;
+  /** Who put this record here — and therefore what may take it out. `up` (the default, and what any
+   *  record written without the field is) means THIS machine started the mesh: it is safe to drop
+   *  on a liveness verdict or a local teardown, because `cotal up` writes it straight back.
+   *  `manual` means an operator registered it by hand (`cotal meshes add`) — typically a mesh
+   *  running on another machine, whose record nothing here can reconstruct.
+   *
+   *  A `manual` record is removed or downgraded only by an act that NAMES it, or by a launch that
+   *  demonstrably BECOMES that mesh:
+   *   - `cotal meshes rm` (drops it) and `cotal meshes add --force` (replaces it);
+   *   - a `cotal up` that actually starts the broker for that same space, server and root — it now
+   *     runs the mesh, so it claims the record and `cotal down` clears it again.
+   *  Nothing else infers its way past: not the liveness sweep, not the classified preflight prune,
+   *  not `cotal down` / `cotal clean all` sweeping a shared root, and not a `cotal up` REFRESH that
+   *  merely found a broker already answering (it starts nothing, so it keeps the origin). A `cotal
+   *  up` for that space anywhere else refuses outright rather than reclaim the name. */
+  origin?: "up" | "manual";
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -68,11 +110,19 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}) };
 }
 
-/** The cotal machine-home dir, overridable via `COTAL_HOME` so tests sandbox it and never touch the
- *  real one. POSIX: `~/.cotal`. Windows: `%LOCALAPPDATA%\Cotal` — the platform's place for per-user
- *  app state (a dotdir in the profile root is a Unix idiom; `%LOCALAPPDATA%` is already a per-user
- *  private dir, so secrets under it start owner-only). The single source of that path for the
- *  registry, the current pointer, and the onboard marker. */
+/** The cotal machine-home dir, overridable via `COTAL_HOME`.
+ *
+ *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
+ *  pointer, and the onboard marker resolve under this directory. POSIX default `~/.cotal`; Windows
+ *  `%LOCALAPPDATA%\Cotal`.
+ *
+ *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
+ *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
+ *  resolve via {@link findCotalRoot} (walk up from cwd for a `.cotal/`). Setting only `COTAL_HOME`
+ *  does not redirect those paths. A test or probe that sets `COTAL_HOME` and runs a real
+ *  `cotal up` from a tree whose walked root is the operator home can still write live operator
+ *  config. Sandbox the project root too (temp dir with its own `.cotal/`, and run the CLI with
+ *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
 export function homeCotalDir(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
   if (process.platform === "win32" && process.env.LOCALAPPDATA)
@@ -147,6 +197,26 @@ export function removeMesh(space: string): void {
   removeLegacyMeshFiles(space); // else a pre-hex record would resurrect the mesh in every listing
 }
 
+/**
+ * Drop a record because its mesh looks GONE — the auto-prune path, as opposed to the operator
+ * saying so. Returns whether the record was actually removed.
+ *
+ * Every automatic deletion goes through here rather than {@link removeMesh}, because the rule is one
+ * rule and forgetting it at a single site is the whole failure: a `manual` record (`cotal meshes
+ * add`) is NEVER auto-pruned. An `up` record is safe to drop — `cotal up` writes it back — but a
+ * manual one usually describes a mesh on ANOTHER machine, and nothing on this machine can
+ * reconstruct the server URL, root and mode the operator typed. A sleeping laptop or a VPN blip
+ * would otherwise unregister a perfectly healthy remote mesh for good (observed exactly once, and
+ * once was enough). An unreachable manual record is a STATE the surfaces report ("offline"), not a
+ * deletion; `cotal meshes rm` is how it leaves.
+ */
+export function pruneMesh(space: string): boolean {
+  const m = findMesh(space);
+  if (!m || m.origin === "manual") return false;
+  removeMesh(space);
+  return true;
+}
+
 /** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was
  *  run under, so the same directory reaches us by several names: a symlinked root (macOS `/var` →
  *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps
@@ -167,16 +237,35 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
-/** Drop every registry entry recorded for THIS project root, releasing the `current` pointer per
- *  removed entry (on `cotal down` / `cotal clean all`). Returns the removed space names. */
+/**
+ * Drop the entries recorded for THIS project root because the mesh they describe was just stopped
+ * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer per removed entry.
+ * Returns the removed space names.
+ *
+ * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
+ * defaults `--root` to the project you run it in, so registering a mesh that runs elsewhere from
+ * inside your own project files both records under one root. Tearing down THIS project's mesh says
+ * nothing about the remote one, and deleting its record here is the unrecoverable case (`down` can
+ * rewrite what `up` wrote; nothing rewrites a hand-registered record). `cotal meshes rm` is how one
+ * of those leaves.
+ */
 export function removeMeshesByRoot(root: string): string[] {
   const removed: string[] = [];
   for (const m of meshesForRoot(root)) {
+    if (m.origin === "manual") continue;
     removeMesh(m.space);
     if (getCurrent() === m.space) clearCurrent();
     removed.push(m.space);
   }
   return removed;
+}
+
+/** The entries this root actually RUNS — what a local teardown or wipe may act on. The complement
+ *  of the skip in {@link removeMeshesByRoot}, exported so a caller that guards on "is this root's
+ *  mesh still live" asks about its OWN mesh: a hand-registered record co-rooted here points at a
+ *  broker on another machine, which the operator cannot stop and must not be blocked by. */
+export function localMeshesForRoot(root: string): MeshEntry[] {
+  return meshesForRoot(root).filter((m) => m.origin !== "manual");
 }
 
 /** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —

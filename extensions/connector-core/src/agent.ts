@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { hostname } from "node:os";
 import {
   normalizeMentions,
   subjectMatches,
@@ -7,8 +8,10 @@ import {
   channelInAllow,
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
-  CONTROL_PRIVILEGED,
-  CONTROL_SELF_SERVICE,
+  BASELINE_LIFECYCLE_ENDPOINT,
+  EpEnvelopeError,
+  type EpAttributedReply,
+  type EpVerbTarget,
   type ControlReply,
   type Delivery,
   type MessageMeta,
@@ -38,6 +41,12 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
   if (config.connector) meta.connector = config.connector;
+  // WHICH MACHINE this agent runs on. A mesh spans hosts (a manager on another box launches into
+  // its own machine), so "where is this agent actually running" is not answerable from the roster
+  // without it. This process IS the agent's session, so its own hostname is the authoritative
+  // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
+  // is not on. Advisory display metadata, never an authorization or routing input.
+  meta.host = hostname();
   return Object.keys(meta).length ? meta : undefined;
 }
 
@@ -137,6 +146,9 @@ export class MeshAgent extends EventEmitter {
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
   private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
+  /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
+   *  frames overlap. See {@link holdInFlight}. */
+  private inFlightIds = new Map<string, number>();
   private classificationUnsafe = false;
   /** Terminal receive-time decisions that must survive the live→durable transition: successfully
    *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
@@ -366,7 +378,13 @@ export class MeshAgent extends EventEmitter {
         if (index < 0) index = 0;
         const [evicted] = this.inbox.splice(index, 1);
         this.rememberEvicted(evicted);
-        evicted.ack();
+        // ...but NOT an id that is mid-delivery. Overflow prefers the oldest, which is exactly what a
+        // surfaced batch is made of, so without this an arrival can ack a message a host is still
+        // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
+        // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
+        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxIds} marks the
+        // now-missing id handled so that redelivery is silently acked.
+        if (!this.inFlightIds.has(evicted.item.id)) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -438,6 +456,47 @@ export class MeshAgent extends EventEmitter {
    *  pull-only is the explicit cotal_inbox lane. */
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
     return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
+  }
+
+  /** Mark a surfaced batch as mid-delivery, so the overflow valve will not ack it out from under the
+   *  host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes.
+   *
+   *  **Counted, not a set.** Hook frames overlap, so the same id is routinely in two open batches at
+   *  once; if a hold were a boolean, the first frame's verdict would unprotect ids the second is
+   *  still delivering, and an arrival between the two verdicts would ack one — the very loss this
+   *  guard exists to stop, reached through the concurrency the per-frame keying deliberately allows.
+   *
+   *  **All or nothing, and it says which.** At the ceiling this refuses the whole batch and returns
+   *  `false`; the caller must then NOT surface it. Protecting only part of a batch, or protecting
+   *  none while the caller surfaces anyway, silently reopens exactly the loss this guard exists to
+   *  close — the unprotected ids sit in the inbox for the whole handoff window with the overflow
+   *  valve free to ack them. Declining to surface costs a deferral: the messages stay buffered and go
+   *  out on a later frame, once a verdict releases capacity. */
+  holdInFlight(ids: readonly string[]): boolean {
+    let fresh = 0;
+    for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
+    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;
+    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
+    return true;
+  }
+
+  /** Whether this id is currently protected from the overflow valve — i.e. some frame is mid-delivery
+   *  holding it. Read-only observability for the property {@link holdInFlight} establishes. A caller
+   *  that needs a batch to actually BE in flight before it acts must wait on this, never on a sleep:
+   *  the handoff runs through a real relay process whose latency is not the caller's to predict. */
+  isInFlight(id: string): boolean {
+    return this.inFlightIds.has(id);
+  }
+
+  /** One frame's verdict is in (either way). The id is ordinary backlog again only once EVERY frame
+   *  holding it has reported — a release from one must not speak for another still in flight. */
+  releaseInFlight(ids: readonly string[]): void {
+    for (const id of ids) {
+      const held = this.inFlightIds.get(id);
+      if (held === undefined) continue;
+      if (held <= 1) this.inFlightIds.delete(id);
+      else this.inFlightIds.set(id, held - 1);
+    }
   }
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
@@ -697,10 +756,55 @@ export class MeshAgent extends EventEmitter {
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string }): Promise<ControlReply> {
     this.assertConnected();
-    return this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "start",
-      args: { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd },
-    }, SPAWN_TIMEOUT_MS);
+    const args = { name, role, agent: opts?.agent, model: opts?.model, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };
+    // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
+    // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
+    return this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+  }
+
+  /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
+   *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
+   *  the {@link ControlReply} shape every tool above consumes. `undefined` args are stripped BEFORE the
+   *  compiled input contract validates (closed schemas reject present-but-undefined keys; the ctl path
+   *  shed them in JSON serialization). A broker-denied publish (a capability the caller's credential
+   *  does not hold, e.g. a capability-less purge) has NO responder and surfaces as the deadline —
+   *  named here so the refusal reads as the tier boundary it is. */
+  private async managerInvoke(
+    command: string,
+    args: Record<string, unknown> | undefined,
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+  ): Promise<ControlReply> {
+    const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
+    let r: EpAttributedReply;
+    try {
+      r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
+    } catch (e) {
+      if (e instanceof EpEnvelopeError)
+        return {
+          ok: false,
+          error: e.code === "deadline-exceeded"
+            ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
+            : `${e.code}: ${e.message}`,
+        };
+      return { ok: false, error: (e as Error).message };
+    }
+    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
+  }
+
+  /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
+   *  lifecycleUid), never an alias — §13.2) through the manager's `inspect` read. A STATIC row's
+   *  `id` is the bare actor (nkey) under the caller's own owner; a USER-mode row's `id` is the
+   *  composite `owner.actor` principal key — split it, or the embedded dot breaks the target
+   *  block's subject arity. The owner-mode standing mint pins the caller's OWN owner, so a
+   *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl). */
+  private async managerTargetFor(name: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
+    const info = await this.managerInvoke("inspect", { name });
+    if (!info.ok) return { error: info };
+    const row = info.data as { id: string; lifecycleUid: string };
+    const dot = row.id.indexOf(".");
+    const [owner, actor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [this.ep.principal.owner, row.id];
+    return { target: { mode: "owner", owner, actor, lifecycleUid: row.lifecycleUid } };
   }
 
   /** Ask the manager to tear a teammate down (its `stop` op). Graceful by default —
@@ -714,23 +818,19 @@ export class MeshAgent extends EventEmitter {
   async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
     this.assertConnected();
     const graceful = opts?.graceful ?? true;
-    if (!name) {
-      return this.ep.requestControl(CONTROL_SELF_SERVICE, { op: "stop", args: { graceful } });
-    }
-    return this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "stop",
-      args: { name, graceful },
-    });
+    if (!name) // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
+      return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
+    const resolved = await this.managerTargetFor(name);
+    if ("error" in resolved) return resolved.error;
+    return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
   }
 
   /** Ask the manager to purge the space's retained chat backlog (its `purge` op). Cleanup only —
    *  it doesn't touch live agents or the anycast work queue. `includeDms` also clears DM history. */
   async purgeHistory(opts?: { includeDms?: boolean }): Promise<ControlReply> {
     this.assertConnected();
-    return this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "purge",
-      args: { includeDms: opts?.includeDms ?? false },
-    });
+    const args = { includeDms: opts?.includeDms ?? false };
+    return this.managerInvoke("purge", args);
   }
 
   /** Define a persona and persist it as config (the manager's `definePersona` op writes
@@ -742,11 +842,9 @@ export class MeshAgent extends EventEmitter {
     model?: string;
   }): Promise<ControlReply> {
     this.assertConnected();
-    const reply = await this.ep.requestControl(CONTROL_PRIVILEGED, {
-      op: "definePersona",
-      // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
-      args: { name: def.name, model: def.model, persona: def.prompt },
-    });
+    // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
+    const args = { name: def.name, model: def.model, persona: def.prompt };
+    const reply = await this.managerInvoke("define-persona", args);
     if (reply.ok) await this.send(`persona \`${def.name}\` is now available — spawn it to bring it online`);
     return reply;
   }

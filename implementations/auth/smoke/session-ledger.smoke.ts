@@ -42,6 +42,7 @@ import { writeEndpointGate, epgateKey, reconcileSessionForTakeover, kvServeIssua
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
 import { parseLedgerRow } from "../src/credential-ledger.js";
 import { tryReserveUid, createGateFrozen, reopenGate } from "../src/lifecycle-registry.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -89,7 +90,7 @@ const mkGrant = (sessionId: string, over: Partial<SessionGrant> = {}): SessionGr
 const PRESENTER = { id: HOLDER_ID, lifecycleUid: HOLDER_UID };
 const sid = (n: number) => `${"q".repeat(20)}${String(n).padStart(4, "0")}`;
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-sessadapter-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

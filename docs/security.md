@@ -41,8 +41,10 @@ Each adversary, what it can attempt, and what stops it (or why it is out of scop
   check is therefore normative: receivers MUST reject on mismatch
   ([SPEC §5](../SPEC.md#5-envelopes), [§12](../SPEC.md#12-conformance)).
 - **On-path network attacker** (between an agent and the broker): defeated only when the join
-  link uses `cotals://` (TLS required). Plain `cotal://` is cleartext on the wire, for trusted
-  networks and dev only.
+  link uses `cotals://` (TLS **required** — client refuses if the broker is not TLS). Plain
+  `cotal://` does **not** require TLS: a NATS client may still auto-upgrade against an honest
+  TLS broker, but a forged plaintext `INFO` can strip the upgrade and harvest credentials. Use
+  plain `cotal://` only on trusted networks and in dev.
 - **Content author targeting a reading model:** any writer of channel `description` /
   `instructions`, presence `activity`, message bodies, or free-form metadata can attempt
   prompt injection against an agent that reads it. See *Prompt-facing data*.
@@ -90,11 +92,14 @@ The guarantees, at a glance, each enforced by the broker per
   and adds no per-agent application-level rate limiting.
 - **Replay by a peer:** a peer may re-send its own prior messages; v0 defines no protocol-level
   nonce or idempotency key. It cannot replay as another agent (subject binding still holds).
-- **Static agent credential revocation:** on a static-auth mesh, a minted *agent* cred is
-  long-lived unless the signing key is rotated; despawn cuts a session, not a credential. The
-  machinery is bounded (one-shot command creds expire in minutes, standing daemon creds in 24h
-  with renewal), and a per-user-auth mesh closes the gap entirely: short-lived bearers,
-  ledger revocation that bites at the next connect, and live-connection eviction
+- **Static agent credential revocation:** on a static-auth mesh, a *manager-spawned* agent cred
+  is now bounded (24h TTL, renewed by the manager for live agents only) and lifecycle-registered:
+  despawn drives the full §13.1 retirement — its ledger rows are revoked and the manager's
+  control surface refuses the retired incarnation's credential outright. What remains: within
+  the TTL window a *copied* cred keeps its inline data-plane grants (static has no auth callout,
+  so nothing re-checks at reconnect), and an out-of-band `cotal mint` cred is still long-lived
+  until key rotation. A per-user-auth mesh closes both: short-lived bearers, ledger revocation
+  that bites at the next connect, and live-connection eviction
   ([identity & auth](identity-and-auth.md)). A copied signing *seed* still stays valid until
   rotation on either kind of mesh.
 - **Manager compromise:** the operator side is split into narrow, single-purpose profiles (there

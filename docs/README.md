@@ -63,6 +63,7 @@ For connector users putting an agent on the mesh:
 | [Connectors](connectors.md) | Which harness should I use? One feature matrix across all of them. |
 | [Connect Claude](connect-claude.md) | How does a Claude Code session join the mesh? |
 | [Connect OpenCode (beta)](connect-opencode.md) | How does an OpenCode session join? |
+| [Connect Codex (beta)](connect-codex.md) | How does a Codex session join? |
 | [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
 | [Connect pi (alpha)](connect-pi.md) | How does a pi session — or an agent built on pi's SDK — join? |
 | [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |
@@ -79,6 +80,7 @@ For protocol implementers:
 | Doc | Answers |
 |---|---|
 | [Architecture](architecture.md) | How is it built (the thin waist, the pieces), and why? |
+| [Control surface](control-surface.md) | How are the manager and other daemons driven (endpoints, describe/invoke, actions, sessions)? |
 | [Spaces & channels](spaces.md) | What is a space, how does it differ from a channel? |
 | [Transport vs protocol](transport.md) | What is protocol vs transport, and what must a binding provide? |
 | [Presence & delivery](presence-and-delivery.md) | How do presence, the three delivery modes, and durable delivery work? |

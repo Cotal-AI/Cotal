@@ -255,6 +255,23 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "commit-path", status: "commit-path" },
     mediation: "mediated",
   },
+  goalidx: {
+    // The MANAGER-ENDPOINT reconcile index (P2 item 2 must-5, Q-B): one atomic unsplit key per
+    // IN-FLIGHT action goal, `goalidx.<e>.<cOwner>.<cActor>.<cUid>.<goalId>`, written CREATE-ONLY
+    // by the goal-writer BEFORE the goal bind and DELETED at the terminal. It is the endpoint's
+    // OWN durable list of accepted-but-unterminal goals: a successor incarnation (a manager
+    // restart takes a fresh instanceId, so the in-memory acceptance map is gone) enumerates
+    // `goalidx.<e>.>` over the provisioner and settles every orphan, never dropping an accepted
+    // goal. NARROW by construction: a dedicated index the goal-writer alone writes — NOT a broad
+    // read over the caller-scoped `goal.<triple>.>` records (the rejected sealed-scanner option).
+    // The value carries the goal ref coordinates so the sweep rebuilds the GoalRef without parsing
+    // owner/actor tokens out of the key.
+    kind: "goalidx",
+    qualifiers: [qEndpoint, qOwner("cOwner"), qOwner("cActor"), qUid("cUid"), qId("goalId")],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   cp: {
     kind: "cp",
     qualifiers: [qEndpoint, qId("token")],

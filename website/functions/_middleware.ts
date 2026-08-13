@@ -19,10 +19,43 @@ type Ctx = {
 const prefersMarkdown = (accept: string | null): boolean =>
   !!accept && /\btext\/markdown\b/i.test(accept);
 
+// The hosts whose whole purpose is `curl -fsSL https://get.cotal.ai | sh`. Their root is
+// the installer, not a docs page.
+const INSTALLER_HOSTS = new Set(['get.cotal.ai', 'install.cotal.ai']);
+
+// Served as text/plain on purpose: a browser renders the installer instead of downloading
+// it, so "read it before you pipe it into your shell" is one click, not a saved file.
+const installerResponse = (body: string): Response =>
+  new Response(body, {
+    status: 200,
+    headers: {
+      'content-type': 'text/plain; charset=utf-8',
+      // Short, so a fix reaches people quickly; long enough that a launch does not
+      // hammer the origin.
+      'cache-control': 'public, max-age=300',
+      'x-content-type-options': 'nosniff',
+      'content-disposition': 'inline; filename="install.sh"',
+    },
+  });
+
 export const onRequest = async (context: Ctx): Promise<Response> => {
   const { request, env, next } = context;
   const url = new URL(request.url);
   const slug = url.pathname.replace(/^\/+|\/+$/g, '');
+
+  // get.cotal.ai/ and install.cotal.ai/ are the installer. Checked before content
+  // negotiation so a client sending `Accept: text/markdown` still gets the script.
+  if (INSTALLER_HOSTS.has(url.hostname) && (slug === '' || slug === 'install.sh')) {
+    const sh = await env.ASSETS.fetch(new URL('/install.sh', url.origin));
+    if (sh.ok) return installerResponse(await sh.text());
+  }
+
+  // /install.sh on any host: same script, same readable content type.
+  if (slug === 'install.sh') {
+    const sh = await next();
+    if (sh.ok) return installerResponse(await sh.text());
+    return sh;
+  }
 
   // Only page routes — skip any path that's already a file.
   if (

@@ -2,7 +2,7 @@
 
 > **Reference**: the `cotal_*` tool surface every connected agent gets. · **For:** agents and operators · **Generated** from [`tool-specs.ts`](../extensions/connector-core/src/tool-specs.ts) by `pnpm gen:tooldocs`; do not edit by hand.
 
-The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below assume the standard `general` setup; channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).
+The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below assume the standard `general` setup; channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).
 
 `cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).
 
@@ -72,11 +72,11 @@ No arguments.
 
 Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. Clears them unless peek is true. In focus mode it also pulls back the channel chatter held since you entered focus.
 
-**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.
+**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Codex, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.
 
 - **Side-effect:** Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic.
 - **Available:** always.
-- OpenCode, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).
+- OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -260,7 +260,7 @@ Send feedback about Cotal to its developers. With a configured feedback key it g
 Ask the manager to tear a teammate down: it leaves the mesh and its process/tab is closed. Graceful by default (the session exits cleanly first); pass graceful:false for a hard, immediate kill. The inverse of cotal_spawn. Omit `name` to stop yourself (self-despawn): the manager resolves the target as your own managed entry, so it can only ever stop you, never a peer.
 
 - **Side-effect:** stops a teammate (or yourself).
-- **Available:** self-despawn (no name) is granted to all; stopping a *named* peer rides the privileged tier (your own children only).
+- **Available:** self-despawn (no name) is granted to all; stopping a *named* peer rides the spawn capability's owner-mode reach (your own owner's agents only).
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|

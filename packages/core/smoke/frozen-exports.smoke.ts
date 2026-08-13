@@ -92,16 +92,26 @@ if (misses.length > 0) {
 c(`every exported array (${arrays}) and plain-object (${objects}) collection in @cotal-ai/core is deep-frozen`, misses.length === 0, misses);
 
 // The COMPLETENESS coupling (the critic's 212781d argument): scanning `core.*` covers the WHOLE
-// external-mutation surface ONLY because core's package `exports` map is CLOSED — the sole "."
-// entry means Node refuses every cross-package deep import, so no collection can be externally
-// reachable OFF the barrel. A future "./*" (or any subpath) entry would reopen deep imports and
-// let a non-barrelled mutable export bypass this guard invisibly. This assertion couples the
-// guard to the fact it depends on: widening the exports map fails HERE, at authoring time.
+// external-mutation surface ONLY because core's package `exports` map exposes no collection OFF the
+// barrel. The map is the barrel "." plus a bounded allow-list of RE-EXPORT-ONLY subpaths — a
+// subpath is safe ONLY if every runtime export it exposes is the SAME object the barrel already
+// scanned + froze (identity), so it adds no new mutation surface. A future "./*" wildcard, an
+// opaque deep-import subpath, or a subpath exposing an off-barrel collection fails HERE, at
+// authoring time. (P2 item 6 added "./session-browser": the browser-safe session rail + frame
+// codec re-export for the console bundle.)
 {
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
   const keys = Object.keys(pkg.exports ?? {});
-  c(`core's package "exports" map is CLOSED (exactly ["."], no wildcard/subpath) so the barrel scan equals the external-mutation surface`,
-    keys.length === 1 && keys[0] === ".", keys);
+  const ALLOWED_SUBPATHS = new Set(["./session-browser"]);
+  const unexpected = keys.filter((k) => k !== "." && !ALLOWED_SUBPATHS.has(k));
+  c(`core's package "exports" map is the barrel "." plus only allow-listed re-export subpaths (no wildcard/opaque deep import)`,
+    keys.includes(".") && unexpected.length === 0, unexpected);
+  // Prove each allow-listed subpath is a faithful RE-EXPORT of barrel-covered symbols: every
+  // runtime export it exposes is IDENTICAL (===) to the barrel's same-named export, so it can
+  // surface no collection the barrel scan above did not already reach and freeze.
+  const sb = await import("../src/session-browser.js") as Record<string, unknown>;
+  const offBarrel = Object.keys(sb).filter((k) => sb[k] !== (core as Record<string, unknown>)[k]);
+  c(`"./session-browser" is a faithful re-export (every export === the barrel's, so no off-barrel collection)`, offBarrel.length === 0, offBarrel);
 }
 
 console.log(`\nFROZEN-EXPORTS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed; ${arrays} arrays + ${objects} plain-objects scanned)`);
