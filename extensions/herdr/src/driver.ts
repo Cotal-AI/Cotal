@@ -119,10 +119,16 @@ export function run(session: string, args: string[], opts: { void?: boolean } = 
       { cause: err },
     );
   }
+  // A response that carries a RESULT succeeded, whatever else it printed — so look for the result
+  // first. Scanning for an error first meant any JSON line with a top-level `error` key (a
+  // deprecation notice, an informational warning) failed a command that actually worked, because
+  // parseError scans every line and the result line was never reached.
+  const result = findResult(out);
+  if (result) return result;
   const structured = parseError(out);
   if (structured) throw structured;
   if (opts.void) return {};
-  return parseResult(session, args, out);
+  throw new Error(`herdr --session ${session} ${args.join(" ")}: no JSON result in output (${JSON.stringify(out)})`);
 }
 
 function parseError(out: string): HerdrCliError | undefined {
@@ -140,7 +146,9 @@ function parseError(out: string): HerdrCliError | undefined {
   return undefined;
 }
 
-function parseResult(session: string, args: string[], out: string): Record<string, unknown> {
+/** The `result` payload from the first JSON line that carries one, or undefined. Non-throwing so
+ *  {@link run} can decide precedence between a result and an error in the same output. */
+function findResult(out: string): Record<string, unknown> | undefined {
   for (const line of out.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
@@ -151,7 +159,7 @@ function parseResult(session: string, args: string[], out: string): Record<strin
       /* not JSON — keep scanning */
     }
   }
-  throw new Error(`herdr --session ${session} ${args.join(" ")}: no JSON result in output (${JSON.stringify(out)})`);
+  return undefined;
 }
 
 /** True if the session's server answers on its socket. `herdr status server` exits 0 either

@@ -30,7 +30,7 @@ let passed = 0;
 let failed = 0;
 /** Cells whose absence should be visible: a suite that silently skips a section reports the same
  *  green as one that proved everything, so the count is asserted against an expected floor. */
-const EXPECTED_MIN_CELLS = 74;
+const EXPECTED_MIN_CELLS = 80;
 
 function ok(label: string, val: unknown) {
   if (val) {
@@ -488,6 +488,57 @@ ok("privateLauncher dir is 0o700 (owner-only)", (statSync(launcher.dir).mode & 0
 ok("privateLauncher script contains the secret body (read from the file, not argv)", readFileSync(launcher.script, "utf8").includes("s3cr3t-token"));
 execFileSync(process.execPath, [launcher.script], { stdio: "ignore" });
 ok("launcher removes its own directory after loading", !existsSync(launcher.dir));
+
+console.log("\n── result/error precedence ─────────────────────");
+{
+  // A response carrying a RESULT succeeded, whatever else it printed. parseError scans EVERY
+  // line, so checking errors first meant one informational JSON line (a deprecation notice)
+  // failed a command that actually worked — the result line was never reached.
+  const warnDir = scratch("cotal-herdr-warnbin-");
+  writeFileSync(
+    join(warnDir, "herdr"),
+    `#!/bin/sh\n` +
+      `[ "$1" = "--version" ] && { echo "herdr 0.8.0"; exit 0; }\n` +
+      `echo '{"error":{"code":"deprecation_warning","message":"informational only"}}'\n` +
+      `echo '{"id":"x","result":{"panes":[],"type":"pane_list"}}'\n` +
+      `exit 0\n`,
+    { mode: 0o755 },
+  );
+  const realPath = process.env.PATH;
+  try {
+    process.env.PATH = `${warnDir}:${realPath}`;
+    let out: Record<string, unknown> | undefined;
+    try {
+      out = herdr.run("precedence-probe", ["pane", "list"]);
+    } catch {
+      out = undefined;
+    }
+    ok("an informational error line does NOT fail a command that returned a result",
+      out !== undefined && Array.isArray((out as Record<string, unknown>).panes));
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
+{
+  // The converse must still hold: an error with NO result present still throws.
+  const errDir = scratch("cotal-herdr-errbin-");
+  writeFileSync(
+    join(errDir, "herdr"),
+    `#!/bin/sh\n` +
+      `[ "$1" = "--version" ] && { echo "herdr 0.8.0"; exit 0; }\n` +
+      `echo '{"error":{"code":"pane_not_found","message":"nope"}}'\n` +
+      `exit 0\n`,
+    { mode: 0o755 },
+  );
+  const realPath = process.env.PATH;
+  try {
+    process.env.PATH = `${errDir}:${realPath}`;
+    throws("an error with no result still throws", () => herdr.run("precedence-probe", ["pane", "list"]),
+      /pane_not_found/);
+  } finally {
+    process.env.PATH = realPath;
+  }
+}
 
 console.log("\n── stopSession error classification ────────────");
 
