@@ -424,8 +424,14 @@ export class EventWal {
     //
     // O_EXCL makes a pre-existing temp a hard failure rather than something to adopt; O_NOFOLLOW
     // refuses a symlink outright; the random suffix removes the predictability that made planting
-    // reliable; and the mode is asserted on the SURVIVING inode after rename, since that is the one
-    // that holds the secret.
+    // reliable; and 0600 comes from the CREATE flags, which is the only place it can come from —
+    // `rename` preserves the inode's mode, so there is no post-rename chmod here and this comment
+    // does not claim one. The suite asserts the mode on the surviving file, which is where the
+    // guarantee has to hold; the code's part is refusing to adopt an existing inode at all.
+    // (An earlier version of this sentence said the mode was "asserted on the surviving inode" as
+    // though the production path checked it. It does not — the SUITE does. Flagged independently by
+    // two reviewers: a comment describing a check that lives somewhere else is the same overclaim
+    // class this file's own header warns about.)
     const tmp = join(
       dirname(this.path),
       `.${createHash("sha256").update(this.path).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.wal.tmp`,

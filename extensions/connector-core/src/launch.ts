@@ -250,8 +250,11 @@ export function eventChannel(name: string): string {
   //
   // A name that is ALREADY channel-safe maps unchanged, so nothing that works today moves. Only a
   // name that the sanitiser would alter gains a short digest of the EXACT original — which is what
-  // makes the mapping injective, since the digest distinguishes precisely the inputs the sanitiser
-  // fused. Rejecting unsafe names was the alternative and it is worse: it would break a naming
+  // makes collisions negligible rather than impossible, since the digest distinguishes precisely
+  // the inputs the sanitiser fused. NOT "injective" — that word appeared here in an earlier draft
+  // and contradicted this comment's own heading four lines up. A truncated digest cannot be
+  // injective, and one sentence claiming otherwise is all it takes for the next reader to believe
+  // the stronger property. Rejecting unsafe names was the alternative and it is worse: it would break a naming
   // grammar the product documents as supported.
   return safe === name
     ? `events.${safe}`
