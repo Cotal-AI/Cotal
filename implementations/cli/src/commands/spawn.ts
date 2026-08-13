@@ -113,6 +113,39 @@ function personaItems(argv: string[]) {
   return listPersonas(target.root).map((p) => ({ value: p.name }));
 }
 
+/**
+ * The foreground spawn's publish ACL: flags-or-persona, PLUS the connector's own event channel when
+ * events are on.
+ *
+ * **This is exported so a test can drive the shipped computation into a real credential.** It is
+ * not a formatting helper: the list it returns is what gets minted into the JWT, and auth-mode
+ * publish is default-deny, so getting it wrong does not fail the launch — it produces a launch that
+ * reports SUCCESS while the broker answers every frame with a Permissions Violation the operator
+ * never sees. A cell asserting the returned array would only restate this function; a cell that
+ * MINTS from it and then publishes grades the thing that actually breaks.
+ *
+ * The manager path has always appended the event channel. The foreground path never did — the same
+ * gap existed for the old `--transcript` flag, so the rename carried it forward rather than
+ * introducing it. Inheriting a broken operator path is still shipping one, and it is the flag the
+ * docs advertise.
+ *
+ * Sourced from `connector.eventChannel`, never a hardcoded prefix, so foreground and manager cannot
+ * drift. `events` is a tri-state and foreground treats absent as off, hence `=== true`.
+ *
+ * Throws when events are requested of a connector that cannot emit; the caller renders that.
+ */
+export function foregroundAllowPublish(
+  base: string[] | undefined,
+  events: boolean | undefined,
+  connector: Pick<Connector, "name" | "eventChannel">,
+  name: string,
+): string[] | undefined {
+  if (events !== true) return base;
+  if (!connector.eventChannel)
+    throw new Error(`${connector.name} connector does not support event publishing (--events)`);
+  return [...(base ?? []), connector.eventChannel(name)];
+}
+
 /** Persona selection precedence shared by foreground and detached spawn. */
 export function spawnPersonaRef(configFlag: string | undefined, positionals: readonly string[], env: NodeJS.ProcessEnv = process.env): string {
   return configFlag ?? positionals[0] ?? defaultPersonaRef("default", env);
@@ -419,7 +452,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // runtime (the connector would otherwise read only the persona file / fall back to `general`).
   const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
   const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
-  const allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
+  let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
+  try {
+    allowPublish = foregroundAllowPublish(allowPublish, events, connector, name);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
 
   if (target.mode === "user") {
     // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
