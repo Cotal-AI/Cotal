@@ -20,6 +20,12 @@ outcome.
 
 This also closes a coverage gap rather than arguing it away. The sibling-instance branch (a foreign
 manager already recorded the goal) previously needed its own guard, and mutation-testing that guard
-killed no check because the test races a single manager. There is now one enforced check covering
-both branches, and removing it reddens the duplicate-goal case: 33 passed / 2 failed, the same two
+killed no check because the duplicate-goal test races a single manager. There is now one enforced
+check covering both branches, and removing it reddens that test: 33 passed / 2 failed, the same two
 cells, as predicted before running.
+
+The sibling route is also driven directly now, by a new suite `smoke:goal-sibling-race`: two managers
+in one space, one request frame delivered to both, with A's goal deliberately left in flight so a
+stolen terminal has something to destroy. Removing the fence makes B commit `failed` on A's goal,
+and the recorded committer is B's instance id while the message names A's, which is what makes the
+attribution unambiguous.
