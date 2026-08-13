@@ -110,11 +110,22 @@ export interface AttachmentRow {
  * over possession that would silently pick one.
  */
 export async function readPossession(
-  kv: { get(key: string): Promise<{ value: Uint8Array } | null> },
+  kv: { get(key: string): Promise<{ operation?: string } | null> },
   digest: string,
   principal: string,
   lifecycleUid: string,
 ): Promise<boolean> {
   const e = await kv.get(possessionKey(digest, principal, lifecycleUid));
-  return e !== null;
+  // `e !== null` IS NOT PRESENCE, and an earlier version of this function got that wrong.
+  //
+  // MEASURED against nats-server via @nats-io/kv: `get()` on a DELETED key returns an entry with
+  // `operation: "DEL"` and `length: 0` — it does NOT return null. So a null-check treats a deleted
+  // row as present, and a possession revoked or reaped would keep authorizing attaches forever.
+  //
+  // The defect survived its own suite because the KV double returned `null` for absent keys and had
+  // no concept of a tombstone: the fake was more forgiving than the thing it stood for, so the check
+  // looked right against it and was wrong against a broker.
+  //
+  // Only a PUT is presence. DEL and PURGE are absence wearing an object.
+  return e !== null && e.operation === "PUT";
 }

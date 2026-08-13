@@ -33,11 +33,22 @@ const LC_B = "01h" + "z".repeat(22) + "b";   // a SUCCESSOR under the same alias
 // happy path; they differ only in what they ask for.
 const makeKv = () => {
   const data = new Map<string, Uint8Array>();
+  const tombstones = new Set<string>();
   const gets: string[] = [];
   return {
     data, gets,
-    async get(key: string) { gets.push(key); const v = data.get(key); return v ? { value: v } : null; },
-    put(key: string) { data.set(key, new Uint8Array([1])); },
+    // FAITHFUL TO THE REAL KV, and this matters more than it looks. A real `get()` on a DELETED key
+    // returns an entry with `operation: "DEL"`, NOT null — measured. A double that returns null for
+    // deleted keys is MORE FORGIVING than the thing it doubles, and a presence check written against
+    // it passes while being wrong against a broker. That is exactly what happened here.
+    async get(key: string) {
+      gets.push(key);
+      if (tombstones.has(key)) return { operation: "DEL", value: new Uint8Array() };
+      const v = data.get(key);
+      return v ? { operation: "PUT", value: v } : null;
+    },
+    put(key: string) { data.set(key, new Uint8Array([1])); tombstones.delete(key); },
+    del(key: string) { data.delete(key); tombstones.add(key); },
     // A real NATS KV can enumerate. The double carries it so an ALIAS-SCAN mutation can be written
     // against the READ PATH ALONE — without planting extra rows, which would move the fixture as
     // well as the code and make the kill set answer a two-variable question.
@@ -93,6 +104,19 @@ console.log("artifact index: possession + attachment keys\n");
   // over ACL keys cannot sweep it either.
   check("P3d nor can a prefix-scoped ACL grant reach it",
     !poss.startsWith(acl) && !acl.startsWith(poss), { acl, poss });
+}
+
+// ---- P5 — A DELETED ROW IS ABSENT, not "an object came back" ------------------------------------
+// The defect this cell exists for: `get()` returns a DEL entry rather than null, so `e !== null`
+// reads a tombstone as presence. A revoked or reaped possession would then authorize attaches
+// forever. Found against a real broker, after the original double hid it by returning null.
+{
+  const kv = makeKv();
+  kv.put(possessionKey(D, ALICE, LC_A));
+  check("P5a a PUT row reads as present", await readPossession(kv, D, ALICE, LC_A) === true);
+  kv.del(possessionKey(D, ALICE, LC_A));
+  check("P5b a DELETED row reads as ABSENT — a tombstone is not presence",
+    await readPossession(kv, D, ALICE, LC_A) === false);
 }
 
 // ---- P4 — key grammar round-trips and does not alias distinct principals ------------------------
