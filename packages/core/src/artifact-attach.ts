@@ -106,7 +106,22 @@ export interface ConfirmAttachDeps {
   liveLifecycleFor(caller: string): Promise<string>;
   /** Exact-key possession read. No alias variant exists — see artifact-index.ts. */
   hasPossession(digest: string, principal: string, lifecycleUid: string): Promise<boolean>;
-  /** Idempotent, lifetime-neutral row insert. THE ONLY attachment writer's only write. */
+  /**
+   * INSERT-IF-ABSENT. Not an upsert, and the distinction is the whole lifetime-neutrality
+   * invariant rather than a storage preference.
+   *
+   * `confirmAttach` hands a fresh `createdAt` on EVERY call, including a repeat confirm of an entry
+   * already attached — it has no way to know whether the row exists without a read it deliberately
+   * does not perform. So if this implementation upserts, a second confirm REWRITES `createdAt`, and
+   * anything in §7 that ages a row from that timestamp has just had its clock refreshed. That is
+   * precisely the "any legitimate publisher becomes an unbounded-retention primitive without ever
+   * calling `pin`" failure, arriving through the storage layer rather than through the verb.
+   *
+   * The invariant therefore does not live in `confirmAttach` at all: this verb is lifetime-neutral
+   * only if this dependency is insert-if-absent. Stated here because a contract that lives in one
+   * function's comment while being enforced in another's implementation is a contract nobody checks.
+   * S5 owes the cell: confirm twice, assert `createdAt` is unchanged.
+   */
   putAttachment(digest: string, channel: string, row: AttachmentRow): Promise<void>;
   now(): number;
 }
