@@ -310,7 +310,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error((e as Error).message);
     process.exit(1);
   }
-  // Transcript mirroring to `tr-<name>` is OFF by default. Tri-state: true (--events),
+  // Event publishing to `events.<name>` is OFF by default. Tri-state: true (--events),
   // false (--no-events, explicit), undefined (absent). Foreground treats absent as off;
   // detached forwards the tri-state so absent defers to the manager's default.
   const events = values.events ? true : values["no-events"] ? false : undefined;
@@ -420,6 +420,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
   const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
   const allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
+
   if (target.mode === "user") {
     // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
     // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer

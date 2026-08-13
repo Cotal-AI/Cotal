@@ -198,7 +198,7 @@ export function userAuthEnv(opts: {
  *  grants pub on it through that contract method. It lives in the connector layer, NOT core: an
  *  agent event stream is a connector feature, not the normative wire standard.
  *
- *  **Replaces `eventChannel()` and the `tr-<name>` convention outright** — abolished means
+ *  **Replaces `transcriptChannel()` and the `tr-<name>` convention outright** — abolished means
  *  replaced, not both running. The prefix moves from a glyph-line mirror to a namespace that can hold
  *  per-session sub-channels (`events.<name>.<session>`), which the flat old name could not: every
  *  session shared one channel and therefore one retention budget.
