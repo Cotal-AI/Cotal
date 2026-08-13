@@ -39,10 +39,13 @@ import {
   possessionBucket,
   attachmentBucket,
   ensureArtifactIndexStores,
+  putAttachmentIfAbsent,
+  attachmentKey,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "artstore";
+const LC_PROBE = "01h" + "z".repeat(22) + "a";
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-artstore-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -403,6 +406,49 @@ try {
     const CALL = /\bensureArtifactIndexStores\s*\(/;
     check("(positive control) the sweep finds the known space-setup call site", CALL.test(setupSrc));
     check("the RESTORE path calls the shared index-store helper", CALL.test(restoreSrc));
+  }
+
+  // ---- INSERT-IF-ABSENT, AGAINST A REAL KV -----------------------------------------------------
+  //
+  // `confirmAttach` hands a fresh `createdAt` on EVERY call, so if the attachment write upserts, a
+  // second confirm refreshes the clock every §7 sweep ages a row from — turning any legitimate
+  // publisher into an unbounded-retention primitive without it ever calling `pin`. The contract was
+  // stated in a comment and enforced NOWHERE; a driven attack rewrote `createdAt` 1000 → 9999.
+  //
+  // AGAINST A REAL BUCKET, and that is the point. The attach suite's double is an append-only array
+  // with no create-if-absent and no revisions, so it cannot express the difference between an insert
+  // and an upsert — the same "double more forgiving than the broker" shape that let a revoked
+  // possession row read as present. Only `kv.create` against nats-server can refuse a live PUT.
+  {
+    const ispace = `${SPACE}ifabsent`;
+    await setupSpaceStreams({ servers, space: ispace });
+    const inc = await connect({ servers });
+    const ikv = await new Kvm(inc).open(attachmentBucket(ispace));
+    const D2 = "sha256:" + "ef".repeat(32);
+
+    await putAttachmentIfAbsent(ikv, D2, "general", { attacherLifecycleUid: LC_PROBE, createdAt: 1000 });
+    const first = await ikv.get(attachmentKey(D2, "general"));
+    check("the first attach writes the row", first !== null && first.operation === "PUT", first?.operation);
+
+    // The SECOND confirm, with a later clock — exactly what a repeat `confirmAttach` produces.
+    await putAttachmentIfAbsent(ikv, D2, "general", { attacherLifecycleUid: LC_PROBE, createdAt: 9999 });
+    const second = await ikv.get(attachmentKey(D2, "general"));
+    const row = JSON.parse(new TextDecoder().decode(second!.value)) as { createdAt: number };
+    check("a REPEAT attach leaves `createdAt` UNCHANGED — attach is lifetime-neutral",
+      row.createdAt === 1000, row);
+    check("and it did not stack a second revision", second!.revision === first!.revision,
+      { first: first!.revision, second: second!.revision });
+
+    // NEGATIVE CONTROL: the bucket really does refuse a live PUT, so the green above is the helper
+    // working and not the store quietly accepting everything.
+    let raw = "";
+    try { await ikv.create(attachmentKey(D2, "general"), new TextEncoder().encode("x")); raw = "KV ACCEPTED A DUPLICATE CREATE"; }
+    catch (e) { raw = (e as Error).message; }
+    check("(negative control) the real KV refuses `create` over a live PUT",
+      raw !== "KV ACCEPTED A DUPLICATE CREATE", raw);
+
+    await inc.close();
+    await deleteSpace({ servers, space: ispace });
   }
 
   await deleteSpace({ servers, space: SPACE });
