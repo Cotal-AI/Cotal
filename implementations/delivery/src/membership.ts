@@ -37,9 +37,21 @@ export async function startMembership(opts: { space: string; server: string }, s
   const secrets = store ?? workspaceSecretStore(root);
 
   const rw = await secrets.get(MEMBERSHIP_RW_CREDS_KEY);
-  if (rw === undefined || !existsSync(obsPath) || !existsSync(cfgPath)) {
+  const missing = [
+    rw === undefined ? MEMBERSHIP_RW_CREDS_KEY : undefined,
+    existsSync(obsPath) ? undefined : "membership-observer.creds",
+    existsSync(cfgPath) ? undefined : "membership.json",
+  ].filter((f): f is string => f !== undefined);
+  if (missing.length) {
+    // Name the missing piece AND a repair that reaches it. `cotal up --rotate-sys` re-mints the $SYS
+    // pair — it holds a system-account signing seed for exactly that moment — but it writes neither
+    // the DATA-account rw cred nor the account-id config: those are written once, when a space is
+    // first provisioned. So a rotation repairs a missing OBSERVER and nothing else, and pointing a
+    // pre-feature space at one would send an operator through a stop/start that cannot help it.
     const down =
-      "scoped creds not provisioned here (a space created before broker-sourced membership); the $SYS pair is minted by `cotal down` then `cotal up --rotate-sys`";
+      missing.length === 1 && missing[0] === "membership-observer.creds"
+        ? "the $SYS observer cred is missing - re-mint it with `cotal down` then `cotal up --rotate-sys`"
+        : `the membership bundle is incomplete here (missing ${missing.join(", ")}) - a space created before broker-sourced membership gains the feed only when its auth is regenerated; \`cotal up --rotate-sys\` re-mints the $SYS pair but writes neither the rw cred nor the account id`;
     console.error(`• membership: ${down} — the graph falls back to traffic-only. Delivery is unaffected.`);
     return { down };
   }

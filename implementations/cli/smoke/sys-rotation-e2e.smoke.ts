@@ -231,10 +231,8 @@ try {
   mark = logSize();
   const boot2 = cotal(["up", "--detach", "--space", SPACE, "--server", SERVERS]);
   check("a plain `cotal up` comes back", boot2.code === 0, boot2.out.slice(-500));
-  // Wait for THIS boot's daemon to finish coming up before the next `down`. A daemon killed between
-  // acquiring its single-flight lease and installing its signal handlers never releases it, and the
-  // next boot then refuses to bind for the lease TTL — a harness artefact of three cycles in twenty
-  // seconds, not something an operator's weeks-old daemon can hit.
+  // Wait for THIS boot's daemon before the next `down` — see `settleThenDown` for why a
+  // seconds-old daemon must not be stopped here.
   const tail2 = await daemonTail(mark);
   check("the plain re-up's daemon came up", /delivery daemon up/.test(tail2), tail2.slice(-400));
   check("...and still reports the same expired $SYS cred (the re-up healed nothing)", /! membership:.*EXPIRED/s.test(tail2), tail2.slice(-400));

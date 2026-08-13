@@ -72,4 +72,9 @@ refused with "membership feed is not running" — neither of which mentions a cr
 checks the observer's own expiry before connecting and reports it, carries that reason into the
 adoption reply, and the manager warns on every renewal pass from the 75% point onward rather than
 letting the mesh discover the expiry at the horizon. `cotal doctor auth`, `evictPrincipal`,
-`planeConnLiveness` and the two mint errors now print the repair that works.
+`planeConnLiveness` and the two mint errors now print the repair that works. Where the feed is down
+because its bundle is incomplete rather than expired, the daemon now names the missing files and
+distinguishes the two cases: a missing `$SYS` observer is re-minted by a rotation, while a space
+predating broker-sourced membership is missing the rw cred and the account id as well, which a
+rotation does not write — so it is told the truth rather than sent through a stop/start that cannot
+help it.
