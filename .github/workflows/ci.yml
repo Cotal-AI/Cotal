@@ -131,6 +131,10 @@ jobs:
       # long-lived manager actually does.
       - name: herdr endurance soak (spawn/stop churn, leak deltas)
         run: pnpm smoke:herdr:soak
+      # The integration the unit suite cannot reach: real broker + real Manager + a real agent in
+      # presence, then SIGKILL the manager to prove the agent outlives it.
+      - name: herdr e2e (real broker + manager + agent, manager-kill survival)
+        run: pnpm smoke:herdr-e2e:live
       - name: cmux launcher secret-hygiene smoke
         run: pnpm smoke:cmux
       - name: OpenCode cooperative-stop smoke test
