@@ -38,7 +38,10 @@ const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
 assert.equal(inventory.full.length, 8);
-assert.equal(inventory.excluded.length, 4);
+// 5 excluded, not 4: the artifact object store joined them. It is excluded because pin extends
+// LIFETIME, not durability - artifact bytes are transferable, not records. Its own `artifact`
+// class exists so this line cannot be read as "derived, therefore recomputable".
+assert.equal(inventory.excluded.length, 5);
 assert.deepEqual(validateSpaceBackupInventory(space, [...inventory.full, ...inventory.excluded.map((s) => s.name)]), inventory);
 assert.throws(() => validateSpaceBackupInventory(space, inventory.full), /missing/);
 assert.throws(

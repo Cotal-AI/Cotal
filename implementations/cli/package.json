@@ -28,6 +28,7 @@
     "@cotal-ai/workspace": "workspace:*",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
+    "@nats-io/obj": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0",
     "@clack/prompts": "^1.0.0",
     "ink": "^6.0.0",

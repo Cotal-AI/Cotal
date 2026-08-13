@@ -261,6 +261,41 @@
           "type": "object"
         },
         {
+          "description": "Reference to bytes in the space's artifact store — SPEC §5's reserved slot, now defined. Bare (not reverse-DNS) because it is Cotal's own core primitive: extension kinds wrap EXTERNAL vocabularies, core kinds are the standard's own. The full contract, the guard, and the object-store digest boundary live in `artifact.ts`.",
+          "properties": {
+            "digest": {
+              "description": "`sha256:<hex>` over the raw bytes — the artifact's identity. The only self-verifying field.",
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "kind": {
+              "const": "artifact",
+              "type": "string"
+            },
+            "mediaType": {
+              "description": "MIME type. A publisher's claim.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Human name, e.g. `coverage-report.html`. A publisher's claim, not a checked fact.",
+              "type": "string"
+            },
+            "size": {
+              "description": "Size in bytes. A publisher's claim: a receiver must never preallocate from it.",
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "mediaType",
+            "digest",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
           "additionalProperties": {},
           "properties": {
             "kind": {
