@@ -325,15 +325,66 @@ export function fanoutDurableConfig(
  *  so the window is lowered in the SAME update. Idempotent (a matching bucket is skipped); reads back to
  *  prove the update took, else throws (no silent drift). The `provisioner` cred holds `STREAM.UPDATE` on
  *  exactly these three streams (see provision.ts). */
-export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<void> {
+export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<TtlReconciled | undefined> {
   const wantNs = nanos(ttlMs);
   const info = await jsm.streams.info(streamName);
-  if (info.config.max_age === wantNs) return; // already at the intended TTL — no update
+  if (info.config.max_age === wantNs) return undefined; // already at the intended TTL — no update
+  const fromNs = info.config.max_age;
   const dupNs = Math.min(info.config.duplicate_window ?? wantNs, wantNs); // NATS constraint: duplicate_window <= max_age
   await jsm.streams.update(streamName, { max_age: wantNs, duplicate_window: dupNs });
   const after = await jsm.streams.info(streamName);
   if (after.config.max_age !== wantNs)
     throw new Error(`TTL reconcile failed for ${streamName}: max_age is ${after.config.max_age}ns, expected ${wantNs}ns (the STREAM.UPDATE did not take)`);
+  return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };
+}
+
+/** The TTL'd buckets and their intended `max_age`, in ONE place. Both the create path
+ *  (`setupSpaceStreams`) and the upgrade path (`reconcileSpaceTtls`) read this list, so a bucket can
+ *  never be TTL'd on one and forgotten on the other. NOT mode-gated: an open mesh carries the same
+ *  three buckets and drifts identically. */
+function ttlBuckets(space: string): ReadonlyArray<readonly [string, number]> {
+  return [
+    [presenceBucket(space), PRESENCE_TTL_MS],
+    [deliveryBucket(space), LEASE_TTL_MS],
+    [managerBucket(space), MANAGER_LEASE_TTL_MS],
+  ] as const;
+}
+
+/** What a reconcile actually CHANGED. Returned (rather than logged inside) so the caller can report
+ *  it: a `cotal up` against a running mesh now performs a config write, and a write the operator
+ *  cannot see is the kind of silent behaviour this change exists to remove. `undefined` means the
+ *  bucket already carried the intended TTL and nothing was written. */
+export type TtlReconciled = { stream: string; fromMs: number; toMs: number };
+
+/** #286: reconcile all three TTL'd buckets for a space, over a connection of its own.
+ *
+ *  Exists because `setupSpaceStreams` is only reachable on the CREATE path (`cotal up` starting a
+ *  mesh), while the drifted-bucket case this fixes is by definition a mesh that is ALREADY RUNNING —
+ *  an old deployment being upgraded in place. That path starts nothing and so must not run the
+ *  create-everything routine; it needs exactly the reconcile and nothing else.
+ *
+ *  Read-first by construction: each bucket is skipped when its `max_age` already matches, so a
+ *  steady-state repeat `cotal up` issues three `STREAM.INFO` reads and ZERO writes. Returns only the
+ *  buckets it actually changed. `creds` is omitted on an open mesh, exactly as `setupSpaceStreams`
+ *  documents — the TTL'd buckets are NOT mode-gated, so an open mesh drifts identically. */
+export async function reconcileSpaceTtls(opts: {
+  servers: string;
+  space: string;
+  /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
+  creds?: string;
+}): Promise<TtlReconciled[]> {
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
+  try {
+    const jsm = await jetstreamManager(nc);
+    const changed: TtlReconciled[] = [];
+    for (const [bucket, ttl] of ttlBuckets(opts.space)) {
+      const done = await reconcileBucketTtl(jsm, `KV_${bucket}`, ttl);
+      if (done) changed.push(done);
+    }
+    return changed;
+  } finally {
+    await nc.drain();
+  }
 }
 
 export async function setupSpaceStreams(opts: {
@@ -382,9 +433,9 @@ export async function setupSpaceStreams(opts: {
     // #286: `kvm.create` above is a no-op on an ALREADY-EXISTING bucket, so a bucket from a cotal that
     // predated these TTLs keeps its old (often unlimited) `max_age` and never expires dead presence /
     // stale leases. Reconcile the three TTL'd buckets' `max_age` here (STREAM.UPDATE), idempotently.
-    await reconcileBucketTtl(jsm, `KV_${presenceBucket(opts.space)}`, PRESENCE_TTL_MS);
-    await reconcileBucketTtl(jsm, `KV_${deliveryBucket(opts.space)}`, LEASE_TTL_MS);
-    await reconcileBucketTtl(jsm, `KV_${managerBucket(opts.space)}`, MANAGER_LEASE_TTL_MS);
+    // Same list as `reconcileSpaceTtls`, from one source: two copies would let a fourth TTL'd bucket
+    // be added to the create path and silently miss the upgrade path, which is this defect exactly.
+    for (const [bucket, ttl] of ttlBuckets(opts.space)) await reconcileBucketTtl(jsm, `KV_${bucket}`, ttl);
   } finally {
     await nc.drain();
   }

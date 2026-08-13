@@ -1622,8 +1622,14 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
- *  DM/DLV (it creates the bind-only mailbox but never reads it), NO STREAM.DELETE/PURGE/UPDATE/MSG.DELETE
- *  (it provisions, it does not tear down or tamper). KV value-writes are scoped to exactly the two
+ *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY four streams and no others:
+ *  the three TTL'd KV buckets (presence + the two leases, #286 — an existing bucket's `max_age` cannot be
+ *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it) and the records store.
+ *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
+ *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
+ *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
+ *  scoped to exactly the two
  *  registries provisioning touches: the read-ACL bucket (`commitAcl`) and the channel registry (seed). */
 function provisionerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);

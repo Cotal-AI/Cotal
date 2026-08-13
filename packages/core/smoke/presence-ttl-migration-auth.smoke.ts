@@ -63,6 +63,11 @@ try {
   check("the live broker is REFUSED (bare, and hidden in a multi-URL list)", [ "nats://broker.cotal.ai:4222", "broker.cotal.ai:4222", "nats://127.0.0.1:4222,nats://broker.cotal.ai:4222" ].every((s) => refusal(s) !== undefined));
   check("ANY non-loopback broker is refused, not just the one we named", refusal("nats://10.0.0.5:4222") !== undefined);
   check("the live broker's refusal NAMES it as the live broker (not the generic message)", /is the LIVE broker/.test(refusal("nats://broker.cotal.ai:4222") ?? ""));
+  // The fence must FAIL CLOSED ON NOTHING. An empty/whitespace target used to return without
+  // throwing — the loop had no hosts to inspect, so a guard whose only job is refusal silently
+  // allowed. `process.env.COTAL_SERVERS ?? ""` produces exactly that value.
+  check("an EMPTY broker target is refused (the guard does not fail open on nothing)", refusal("") !== undefined);
+  check("...and a whitespace-only target too", refusal("   ") !== undefined);
   check("a throwaway loopback broker is allowed (the fence is not refusing everything)", refusal(SERVERS) === undefined);
 
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) break; await sleep(200); }

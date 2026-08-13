@@ -58,6 +58,7 @@ import {
   DEV_OWNER,
   presenceBucket,
   managerBucket,
+  deliveryBucket,
   membersBucket,
   membershipBucket,
   aclBucket,
@@ -256,6 +257,9 @@ try {
   // grant is scoped to exactly those three streams — a general stream UPDATE (e.g. the DM mailbox) stays denied.
   check("STREAM.UPDATE the presence bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${PKV}`, prov.id) === "allowed");
   check("STREAM.UPDATE the manager-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${managerBucket(space)}`, prov.id) === "allowed");
+  // The THIRD TTL'd bucket. Its behavioural reconcile is covered elsewhere, but the grant matrix is
+  // what this suite is for, and a matrix missing one of the three streams it grants is not a matrix.
+  check("STREAM.UPDATE the delivery-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${deliveryBucket(space)}`, prov.id) === "allowed");
   check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
