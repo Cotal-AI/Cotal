@@ -20,6 +20,11 @@
  * DIFFERENT PRINCIPAL and is useless against succession — two different jobs, one line.
  */
 
+import { parseSubject } from "./subjects.js";
+import { isArtifactPart } from "./artifact.js";
+import type { CotalMessage } from "./types.js";
+import type { AttachmentRow } from "./artifact-index.js";
+
 /**
  * The refusal vocabulary, exact and stable.
  *
@@ -94,6 +99,73 @@ export interface ConfirmAttachReply {
  * otherwise any legitimate publisher becomes an unbounded-retention primitive without ever calling
  * `pin`.
  */
-export function confirmAttach(_args: ConfirmAttachArgs): Promise<ConfirmAttachReply> {
-  throw new Error("confirmAttach: not implemented");
+export interface ConfirmAttachDeps {
+  /** Load the stream entry named by `seq`, or null. `seq` — there is no get-by-msgID. */
+  entryBySeq(seq: number): Promise<{ subject: string; msg: CotalMessage } | null>;
+  /** The caller's single LIVE lifecycle, or a throw carrying `AmbiguousAclAlias` on two live rows. */
+  liveLifecycleFor(caller: string): Promise<string>;
+  /** Exact-key possession read. No alias variant exists — see artifact-index.ts. */
+  hasPossession(digest: string, principal: string, lifecycleUid: string): Promise<boolean>;
+  /** Idempotent, lifetime-neutral row insert. THE ONLY attachment writer's only write. */
+  putAttachment(digest: string, channel: string, row: AttachmentRow): Promise<void>;
+  now(): number;
+}
+
+export async function confirmAttach(
+  args: ConfirmAttachArgs,
+  caller: string,
+  deps: ConfirmAttachDeps,
+): Promise<ConfirmAttachReply> {
+  const entry = await deps.entryBySeq(args.seq);
+  if (entry === null) return { ok: false, error: ATTACH_REFUSAL.entryNotFound };
+
+  const parsed = parseSubject(entry.subject);
+  if (parsed === null || parsed.kind !== "chat")
+    return { ok: false, error: ATTACH_REFUSAL.entryNotFound };
+
+  // THE SUBJECT's channel, never `msg.channel`. The broker forge-locked the subject; the payload is
+  // whatever the publisher wrote. Comparing the argument against the payload would let the CALLER
+  // decide the scope, which is the caller-declared scope §4.1 refuses.
+  if (parsed.rest !== args.channel)
+    return { ok: false, error: ATTACH_REFUSAL.channelMismatch };
+
+  const part = entry.msg.parts?.find(isArtifactPart);
+  if (part === undefined) return { ok: false, error: ATTACH_REFUSAL.noArtifactPart };
+  if (part.digest !== args.digest) return { ok: false, error: ATTACH_REFUSAL.digestMismatch };
+
+  let lifecycleUid: string;
+  try {
+    lifecycleUid = await deps.liveLifecycleFor(caller);
+  } catch {
+    // Distinct on purpose: an ambiguous alias is an infrastructure fault, not a fact about the
+    // store, so naming it leaks nothing about what exists.
+    return { ok: false, error: ATTACH_REFUSAL.ambiguousAlias };
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // THE FENCE IS THE NEXT TWO LINES, AND IT IS NOT THE SENDER COMPARISON.
+  //
+  // `parsed.sender` is an ALIAS — `<owner>.<actor>`, with no lifecycle anywhere in the CHAT subject
+  // grammar. A same-alias successor therefore passes `parsed.sender === caller` TRIVIALLY. That
+  // comparison rejects a DIFFERENT PRINCIPAL and is useless against succession; the possession read
+  // below, resolved at the caller's LIVE lifecycle, is what stops a successor attaching bytes its
+  // predecessor put. Two different jobs, and only one of them is the fence.
+  //
+  // If you are here to delete one of these as redundant: they are not redundant, and the plan is
+  // not where you would have found that out.
+  // ---------------------------------------------------------------------------------------------
+  if (parsed.sender !== caller) return { ok: false, error: ATTACH_REFUSAL.notYours };
+  if (!(await deps.hasPossession(args.digest, caller, lifecycleUid)))
+    return { ok: false, error: ATTACH_REFUSAL.notYours };
+
+  // Idempotent and lifetime-neutral: adds the row if absent and does nothing else. It may never
+  // extend a TTL, reset an expiry, refresh a refcount clock or resurrect a swept digest — otherwise
+  // any legitimate publisher becomes an unbounded-retention primitive without ever calling `pin`.
+  // The row records the LIFECYCLE that confirmed it, never the alias, so `pin` cannot later be
+  // satisfied by a successor.
+  await deps.putAttachment(args.digest, args.channel, {
+    attacherLifecycleUid: lifecycleUid,
+    createdAt: deps.now(),
+  });
+  return { ok: true };
 }

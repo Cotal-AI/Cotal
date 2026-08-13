@@ -13,8 +13,13 @@
  *
  * Run: pnpm smoke:artifact-attach
  */
-import { ATTACH_REFUSAL, ATTACH_REFUSALS, confirmAttach, type ConfirmAttachArgs, type ConfirmAttachReply }
-  from "../src/artifact-attach.js";
+import {
+  ATTACH_REFUSAL, ATTACH_REFUSALS, confirmAttach,
+  type ConfirmAttachArgs, type ConfirmAttachReply, type ConfirmAttachDeps,
+} from "../src/artifact-attach.js";
+import { chatSubject } from "../src/subjects.js";
+import { ARTIFACT_PART_KIND } from "../src/artifact.js";
+import type { CotalMessage } from "../src/types.js";
 
 let ok = 0, fail = 0;
 const check = (name: string, pass: boolean, extra?: unknown) => {
@@ -59,12 +64,52 @@ const DIGEST = "sha256:" + "ab".repeat(32);
 const OTHER_DIGEST = "sha256:" + "cd".repeat(32);
 const base: ConfirmAttachArgs = { digest: DIGEST, channel: "general", seq: 1 };
 
+const SPACE = "main";
+const OWNER = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const OTHER_OWNER = "UBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const ACTOR = "agent";
+const CALLER = `${OWNER}.${ACTOR}`;
+const LC = "01h" + "z".repeat(22) + "a";
+
+const artifactPart = (digest: string) =>
+  ({ kind: ARTIFACT_PART_KIND, name: "f.bin", mediaType: "application/octet-stream", digest, size: 3 });
+const msgWith = (parts: unknown[]): CotalMessage =>
+  ({ id: "m", ts: 1, space: SPACE, from: { id: CALLER, name: "a", role: "r" },
+     channel: "general", parts } as unknown as CotalMessage);
+
+/**
+ * Each fixture differs from the CONTROL in exactly ONE predicate, so a cell that reddens names the
+ * check that fired. A fixture failing two predicates would pass its cell while proving nothing
+ * about which one did the work.
+ */
+const ENTRIES: Record<number, { subject: string; msg: CotalMessage } | null> = {
+  1: { subject: chatSubject(SPACE, OWNER, ACTOR, "general"), msg: msgWith([artifactPart(DIGEST)]) },
+  2: { subject: chatSubject(SPACE, OWNER, ACTOR, "general"), msg: msgWith([{ kind: "text", text: "hi" }]) },
+  3: { subject: chatSubject(SPACE, OWNER, ACTOR, "general"), msg: msgWith([artifactPart(DIGEST)]) },
+  4: { subject: chatSubject(SPACE, OTHER_OWNER, ACTOR, "general"), msg: msgWith([artifactPart(DIGEST)]) },
+  5: { subject: chatSubject(SPACE, OWNER, ACTOR, "general"), msg: msgWith([artifactPart(DIGEST)]) },
+  6: { subject: chatSubject(SPACE, OWNER, ACTOR, "general"), msg: msgWith([artifactPart(DIGEST)]) },
+};
+
+const attachments: { digest: string; channel: string; lc: string }[] = [];
+const deps = (over: Partial<ConfirmAttachDeps> = {}): ConfirmAttachDeps => ({
+  async entryBySeq(seq) { return ENTRIES[seq] ?? null; },
+  async liveLifecycleFor() { return LC; },
+  // seq 3 is the no-possession fixture; every other seq possesses.
+  async hasPossession() { return true; },
+  async putAttachment(digest, channel, row) { attachments.push({ digest, channel, lc: row.attacherLifecycleUid }); },
+  now() { return 1; },
+  ...over,
+});
+const run = (args: ConfirmAttachArgs, over?: Partial<ConfirmAttachDeps>) =>
+  confirmAttach(args, CALLER, deps(over));
+
 console.log("confirmAttach refusal suite\n");
 
 // ---- A1 — the seq names no entry --------------------------------------------------------------
 await refuses("A1 a seq past the stream head refuses `entry not found`",
   ATTACH_REFUSAL.entryNotFound,
-  () => confirmAttach({ ...base, seq: 999_999_999 }));
+  () => run({ ...base, seq: 999_999_999 }));
 
 // ---- A3 — the SUBJECT channel disagrees -------------------------------------------------------
 // The comparison is against the subject-parsed channel, never the payload's `msg.channel`. Deleting
@@ -72,42 +117,45 @@ await refuses("A1 a seq past the stream head refuses `entry not found`",
 // exactly what §4.1 refuses and what the whole possession design exists to avoid.
 await refuses("A3 confirming an entry published to another channel refuses `channel mismatch`",
   ATTACH_REFUSAL.channelMismatch,
-  () => confirmAttach({ ...base, channel: "other-channel" }));
+  () => run({ ...base, channel: "other-channel" }));
 
 // ---- A4 — no artifact part --------------------------------------------------------------------
 await refuses("A4 a text-only entry refuses `no artifact part`",
   ATTACH_REFUSAL.noArtifactPart,
-  () => confirmAttach({ ...base, seq: 2 }));
+  () => run({ ...base, seq: 2 }));
 
 // ---- A5 — the part references a different digest -----------------------------------------------
 await refuses("A5 confirming a digest the entry does not carry refuses `digest mismatch`",
   ATTACH_REFUSAL.digestMismatch,
-  () => confirmAttach({ ...base, digest: OTHER_DIGEST }));
+  () => run({ ...base, digest: OTHER_DIGEST }));
 
 // ---- A2 + A6 — COLLAPSED, and the collapse is the assertion ------------------------------------
 // Two fixtures, ONE refusal. Asserting they produce the SAME name is the test; asserting each
 // produces "some refusal" would pass against a verb that distinguishes them, which is the leak.
 await refuses("A6 a digest with no possession row refuses `not authorized`",
   ATTACH_REFUSAL.notYours,
-  () => confirmAttach({ ...base, seq: 3 }));
+  () => run({ ...base, seq: 3 }, { async hasPossession() { return false; } }));
 await refuses("A2 an entry published by ANOTHER principal refuses with the SAME name — collapsed",
   ATTACH_REFUSAL.notYours,
-  () => confirmAttach({ ...base, seq: 4 }));
+  () => run({ ...base, seq: 4 }));
 
 // ---- A7 — ambiguous alias, ALLOWED to be distinct ----------------------------------------------
 // An infrastructure fault rather than a fact about the store, so naming it leaks nothing.
 await refuses("A7 two live ACL rows for the alias refuse `AmbiguousAclAlias`, distinctly",
   ATTACH_REFUSAL.ambiguousAlias,
-  () => confirmAttach({ ...base, seq: 5 }));
+  () => run({ ...base, seq: 5 }, { async liveLifecycleFor() { throw new Error("AmbiguousAclAlias"); } }));
 
 // ---- CONTROL — without this the refusals above are unfalsifiable --------------------------------
 {
   let reply: ConfirmAttachReply | undefined;
   let threw: unknown;
-  try { reply = await confirmAttach({ ...base, seq: 6 }); } catch (e) { threw = e; }
+  try { reply = await run({ ...base, seq: 6 }); } catch (e) { threw = e; }
   check("CONTROL a well-formed publish-then-confirm SUCCEEDS",
     threw === undefined && reply?.ok === true,
     threw !== undefined ? `threw: ${(threw as Error)?.message}` : reply);
+  check("CONTROL and it wrote exactly one attachment row", attachments.length === 1, attachments);
+  check("CONTROL recording the LIFECYCLE, never the alias — pin must not be satisfiable by a successor",
+    attachments[0]?.lc === LC, attachments[0]);
 }
 
 // ---- the vocabulary is closed and unambiguous --------------------------------------------------
