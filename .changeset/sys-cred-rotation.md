@@ -57,6 +57,15 @@ under `--detach`'s success output, and live connection eviction rides the same c
 booting would silently downgrade revocation to deny-new for the life of the mesh. The delivery daemon, which never
 loads the signer and so cannot read the record, compares the two creds against each other instead.
 
+The recovery is covered end-to-end as well as in unit form: a suite drives the packaged binary
+against a real broker, a real delivery daemon and a real manager, on a root whose `$SYS` pair is
+already past its horizon. It asserts the reported symptom (the daemon's membership feed does not
+start, and says which credential and which repair), that `down` + a plain `up` leaves both files
+byte-identical and the doctor red, and that `down` + `up --rotate-sys` clears it in the daemon that
+reported it. The survival claim is checked rather than asserted: an agent credential minted before
+the rotation still connects afterwards, the CHAT stream returns at the same sequence and count, and
+registry state written before the rotation reads back through the CLI after it.
+
 Diagnosis now names the cause instead of the symptom. An expired observer cred used to surface as a
 bare "Authorization Violation" in the delivery log and, one layer up, as a `membership-rw` adoption
 refused with "membership feed is not running" — neither of which mentions a credential. The daemon
