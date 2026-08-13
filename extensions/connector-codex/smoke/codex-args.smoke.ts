@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registry } from "@cotal-ai/core";
 import { codexConnector } from "../src/index.js";
+// connector-core by SOURCE path — see the parity cell below for why dist would be vacuous.
+import { eventChannel as coreEventChannel } from "../../connector-core/src/launch.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -192,7 +194,32 @@ try {
   check("variant support is declared", codexConnector.supportsModelVariant === true);
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));
-  check("event channel convention shared", codexConnector.eventChannel?.("My Agent") === "events.my-agent");
+  // PARITY, not correctness. This cell exists to catch connector-codex growing its OWN copy of the
+  // mapping; whether the mapping itself is right is `smoke:event-channel`'s job, beside the function.
+  //
+  // The reference is connector-core's SOURCE, deliberately. `codexConnector.eventChannel` arrives
+  // through `@cotal-ai/connector-core`, i.e. that package's `dist/` — so comparing it against a
+  // package-name import of the same thing would compare a value with itself and pass no matter what
+  // either side did. Against the source it also reddens on a stale `dist/`, which is a real skew.
+  //
+  // A hardcoded literal was what it asserted before, and the literal went stale the moment the
+  // channel mapping gained its collision suffix: the suite was red on the CI gate while the lane's
+  // own focused suites were green. Pinning behaviour to a constant copied out of the implementation
+  // is why. Found by fmae-rev-test, fmae-rev-eng and fmae-rev-wal.
+  for (const name of ["My Agent", "worker", "Worker", "worker-a67b04cd5c491d4d"]) {
+    check(
+      `event channel convention shared with connector-core (${JSON.stringify(name)})`,
+      codexConnector.eventChannel?.(name) === coreEventChannel(name),
+      { codex: codexConnector.eventChannel?.(name), core: coreEventChannel(name) },
+    );
+  }
+  // Non-vacuity: the two cells above would also pass if BOTH sides returned a constant. The mapping
+  // must actually distinguish the names it is given.
+  check(
+    "the shared mapping is a real mapping, not a constant",
+    new Set(["My Agent", "worker", "Worker"].map((n) => codexConnector.eventChannel?.(n))).size === 3,
+    ["My Agent", "worker", "Worker"].map((n) => codexConnector.eventChannel?.(n)),
+  );
 
   console.log(`\nCODEX ARGS SMOKE PASSED ✅  (${pass} checks)`);
 } finally {

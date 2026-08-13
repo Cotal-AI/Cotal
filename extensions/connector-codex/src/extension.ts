@@ -117,7 +117,7 @@ async function listCodexModels(): Promise<ModelCatalog> {
 export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
-  eventChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  eventChannel, // the shared `events.<name>` mapping (connector-core), exposed via the contract
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
