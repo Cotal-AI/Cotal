@@ -60,6 +60,7 @@ export * from "./canonical.js";
 export * from "./artifact.js";
 export * from "./artifact-chunk.js";
 export * from "./artifact-attach.js";
+export * from "./artifact-index.js";
 export * from "./parts.js";
 export * from "./schema-profile.js";
 export * from "./broker-floor.js";
