@@ -19,6 +19,17 @@ import { tmpdir } from "node:os";
 const SESSION = "cotal-herdr-soak";
 const CYCLES = Number(process.env.COTAL_HERDR_SOAK_CYCLES ?? 25);
 
+/** The agent payload is `sleep <SOAK_NONCE>`, and the nonce is what survivor-counting matches.
+ *
+ *  It has to be something that genuinely appears in a spawned process's command line. The earlier
+ *  version matched the AGENT NAME (`cotal-herdr-soak-agent`), which appears in no command line at
+ *  all — the real processes are `sleep 120` and the launcher `node …/cotal-herdr-launch-X/launch.mjs`. So the
+ *  survivor count was structurally incapable of ever being nonzero: a guaranteed-green check that
+ *  measured nothing. The nonce keeps the count scoped to THIS run, so a neighbouring lane's agents
+ *  on a shared machine still cannot be charged to it. */
+const SOAK_NONCE = `12${process.pid % 1000}`;
+const AGENT_TAG = `sleep ${SOAK_NONCE}`;
+
 let passed = 0;
 let failed = 0;
 function ok(label: string, val: unknown, detail = "") {
@@ -74,12 +85,17 @@ const srvDirs = (): number => readdirSync(tmpdir()).filter((e) => e.startsWith("
 const panes = (): number => (herdr.run(SESSION, ["pane", "list"]).panes as unknown[]).length;
 const workspaces = (): number => (herdr.run(SESSION, ["workspace", "list"]).workspaces as unknown[]).length;
 const tabs = (): number => (herdr.run(SESSION, ["tab", "list"]).tabs as unknown[]).length;
-/** Processes whose command line names OUR session — never a bare `sleep` match, which would count
- *  other agents' work on a shared machine. */
-const ourProcs = (): number => {
-  const out = execFileSync("sh", ["-c", `pgrep -f "cotal-herdr-soak-agent" | wc -l || true`], { encoding: "utf8" });
-  return Number(out.trim());
-};
+/** Processes whose command line names OUR agents — never a bare `sleep` match, which would count
+ *  other lanes' work on a shared machine.
+ *
+ *  Deliberately NOT `pgrep -f <needle>`: that puts the needle into the checker's own command line,
+ *  and on Linux pgrep then matches the `sh -c` running it, so the count never reaches zero and the
+ *  soak reds forever on a runtime that leaks nothing. `ps` is invoked with no pattern in argv and
+ *  the matching happens here, where nothing the check itself runs can satisfy it. */
+const ourProcs = (): number =>
+  execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })
+    .split("\n")
+    .filter((l) => l.includes(AGENT_TAG)).length;
 
 cleanup();
 cleaned = false;
@@ -104,11 +120,15 @@ let slowestCycleMs = 0;
 for (let i = 1; i <= CYCLES; i++) {
   const cycleStart = Date.now();
   const name = `cotal-herdr-soak-agent-${i}`;
-  const handle = runtime.spawn(name, { command: "sleep", args: ["120"], env: { CYCLE: String(i) } }, "/tmp");
+  const handle = runtime.spawn(name, { command: "sleep", args: [SOAK_NONCE], env: { CYCLE: String(i) } }, "/tmp");
   if (handle.status() !== "running") {
     ok(`cycle ${i}: agent came up`, false, `status=${handle.status()}`);
     break;
   }
+  // Positive control, once: prove the survivor instrument can SEE a live agent before the run
+  // ends by trusting it to report none. Without this, an instrument that matches nothing reports
+  // a clean "no agent processes survive" forever — which is exactly what the previous one did.
+  if (i === 1) ok("positive control: the survivor instrument can see a LIVE agent", ourProcs() >= 1, `${ourProcs()} seen`);
   handle.stop({ graceful: false });
   await handle.waitForExit!();
   const cycleMs = Date.now() - cycleStart;
@@ -126,7 +146,14 @@ ok("no workspaces accumulated", workspaces() === base.workspaces, `${workspaces(
 ok("no tabs accumulated", tabs() === base.tabs, `${tabs()} vs baseline ${base.tabs}`);
 ok("no launcher dirs accumulated", launcherDirs() === base.launchers, `${launcherDirs()} vs baseline ${base.launchers}`);
 ok("no server scratch dirs accumulated", srvDirs() === base.srv, `${srvDirs()} vs baseline ${base.srv}`);
-ok("no agent processes survive", ourProcs() === 0, `${ourProcs()} still running`);
+// Sampled over a bounded window, not once: the kills are asynchronous, so an instant read can
+// catch a process that has been signalled but not yet reaped.
+let noSurvivors = false;
+for (let i = 0; i < 40 && !noSurvivors; i++) {
+  noSurvivors = ourProcs() === 0;
+  if (!noSurvivors) await new Promise((r) => setTimeout(r, 50));
+}
+ok("no agent processes survive", noSurvivors, `${ourProcs()} still running`);
 ok("the session server is still healthy after the churn", herdr.serverRunning(SESSION));
 // A per-cycle leak usually shows up as monotonically rising latency long before it shows up as a
 // count, so the slowest cycle is asserted against a generous multiple of the mean.
