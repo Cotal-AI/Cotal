@@ -10,7 +10,7 @@ import { DELIVERY_CREDS_KEY, authDir, findCotalRoot, getSoleSpaceAuth, listSpace
 import { selfArgv } from "./self-exec.js";
 import { resolveSpace } from "./status.js";
 import { cotalPath } from "./paths.js";
-import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager } from "./manager-proc.js";
+import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
 
 const PID_PATH = () => cotalPath("delivery.pid");
 // The daemon's cred goes through the secret-store seam; the shared key (== the filename, so the
@@ -72,7 +72,7 @@ function oldHostingManagerVerdict(probe: LivenessProbe = probeLiveness): "stop-i
 /** Cutover preflight — the FIRST action, BEFORE the daemon can bind: stop any old Plane-3-hosting
  *  manager (live `manager.pid` without the delivery-aware marker) so it never double-binds the
  *  daemon's durables. A delivery-aware (this-build) manager is left running. No-op on a fresh install. */
-export function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiveness): void {
+export function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiveness, signal?: SignalFn): void {
   const verdict = oldHostingManagerVerdict(probe);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate")
@@ -83,7 +83,10 @@ export function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiven
     );
   if (verdict === "stop-it") {
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
-    stopManager();
+    // stopManager THROWS rather than reporting a stop it did not achieve (EPERM, or a process that
+    // outlived SIGTERM), so reaching the next line is the proof the old manager is gone. Letting that
+    // throw propagate is the point: the daemon must not start beside a manager still bound to Plane 3.
+    stopManager(probe, signal);
   }
 }
 

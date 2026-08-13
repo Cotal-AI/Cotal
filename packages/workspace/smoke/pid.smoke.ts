@@ -21,7 +21,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { livenessFromErrno, parsePid, probeLiveness } from "../src/pid.js";
@@ -141,6 +141,45 @@ try {
   check("the delivery cutover preflight REFUSES on an unattributable manager", preflightRefused !== undefined);
   check("it refuses BEFORE the daemon, naming double-binding as the reason", /double-bind/i.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
   check("the preflight leaves the manager pidfile untouched too", readFileSync(mgrPid, "utf8") === before);
+
+  // ── THE ORPHAN, which this PR's own EPERM fix made reachable ────────────────────────────────
+  // Resolving EPERM to `alive` is the headline fix. It also means the cutover preflight now
+  // RECOGNISES another user's live manager and tries to stop it. The old stopManager caught every
+  // signal failure as "already gone" and deleted the pidfile and marker regardless, so a process it
+  // was not permitted to signal was recorded as stopped while it kept running and kept its Plane-3
+  // bindings. A correct fix upstream reaching a latent destructive bug downstream is the worst
+  // shape available, and only a review with a kernel harness found it.
+  const { stopManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
+  const alive = () => "alive" as const;
+  const refuseSignal = (): never => {
+    const e = new Error("operation not permitted") as NodeJS.ErrnoException;
+    e.code = "EPERM";
+    throw e;
+  };
+  writeFileSync(mgrPid, `${process.pid}\n`);
+  writeFileSync(join(root, ".cotal", "manager.delivery-aware"), `${process.pid}\n`);
+  const beforeStop = readFileSync(mgrPid, "utf8");
+  let stopRefused: string | undefined;
+  try {
+    stopManager(alive, refuseSignal);
+  } catch (e) {
+    stopRefused = (e as Error).message;
+  }
+  check("stopManager REFUSES when the signal is rejected, rather than reporting a stop", stopRefused !== undefined);
+  check("the refusal explains EPERM means another user's LIVE process", /another user/i.test(stopRefused ?? ""), stopRefused?.slice(0, 80));
+  check("THE PIDFILE SURVIVES a refused stop (the orphan this prevents)", readFileSync(mgrPid, "utf8") === beforeStop);
+  check("the delivery-aware marker survives it too", existsSync(join(root, ".cotal", "manager.delivery-aware")));
+
+  // A signal that is ACCEPTED is still not a death. The record goes only on proven death.
+  let outlived: string | undefined;
+  try {
+    stopManager(alive, () => {}); // accepted, but the probe keeps saying alive
+  } catch (e) {
+    outlived = (e as Error).message;
+  }
+  check("stopManager REFUSES when the process outlives SIGTERM", outlived !== undefined);
+  check("and still leaves the pidfile in place", readFileSync(mgrPid, "utf8") === beforeStop);
+  check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), stopManager()) === "already-gone" && !existsSync(mgrPid), deadPid);
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });

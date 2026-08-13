@@ -132,19 +132,83 @@ export function ensureManager(
   return { running: true };
 }
 
-/** Stop the detached (pty) manager if we started one. Used when switching to the cmux-tab manager
- *  so the two don't both answer the control plane (queue-grouped requests would split between them). */
-export function stopManager(): void {
+/** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by
+ *  another user's process or by kernel policy, so the branch that handles it is otherwise unreachable
+ *  from a test. Production passes nothing. */
+export type SignalFn = (pid: number, signal: NodeJS.Signals) => void;
+
+/** What a stop actually achieved, because "void" let this function claim success it had not earned. */
+export type StopVerdict = "stopped" | "already-gone";
+
+/** Blocking sleep. Proving death needs to happen before the records are removed, and every caller of
+ *  this function is synchronous. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Stop the detached (pty) manager if we started one, and remove its records ONLY once it is gone.
+ *
+ *  THIS USED TO CATCH EVERY SIGNAL FAILURE AS "already gone" AND DELETE THE RECORDS ANYWAY. That was
+ *  survivable while `EPERM` was misread as dead, because the caller never got here: the cutover
+ *  preflight skipped a manager it thought was not running. Resolving `EPERM` to `alive` (the fix this
+ *  change exists for) makes the preflight recognise ANOTHER USER's live manager and call this, at
+ *  which point the old code sent a signal it was not permitted to send, swallowed the refusal, and
+ *  deleted the pidfile and marker of a process that was still running and still bound to Plane 3.
+ *  A correct fix upstream reaching a latent destructive bug downstream is the worst shape available,
+ *  so this refuses instead: records are removed only on proven death, never on a signal we could not
+ *  send or a death we could not confirm. Found by review, with a kernel seccomp proof. */
+export function stopManager(probe: LivenessProbe = probeLiveness, signal: SignalFn | undefined = undefined): StopVerdict {
+  const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH();
-  rmSync(DELIVERY_AWARE_MARKER(), { force: true }); // drop the marker with the pid (gone either way)
-  if (!existsSync(p)) return;
-  const pid = Number(readFileSync(p, "utf8").trim());
-  if (Number.isFinite(pid)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      /* already gone */
-    }
+  const marker = DELIVERY_AWARE_MARKER();
+  const clear = (): void => {
+    rmSync(marker, { force: true });
+    rmSync(p, { force: true });
+  };
+  if (!existsSync(p)) {
+    rmSync(marker, { force: true }); // a marker with no pid records nothing
+    return "already-gone";
   }
-  rmSync(p);
+  const pid = parsePid(readFileSync(p, "utf8"));
+  if (pid === undefined) {
+    clear(); // unattributable content is not a claim that something is running
+    return "already-gone";
+  }
+  const before = probe(pid);
+  if (before === "dead") {
+    clear();
+    return "already-gone";
+  }
+  if (before === "unknown")
+    throw new Error(
+      `refusing to stop manager pid ${pid}: its liveness cannot be determined (the kernel answered neither "running" nor "no such process"; a seccomp filter or LSM policy does this).\n` +
+        `The pidfile and delivery-aware marker are LEFT IN PLACE: deleting them would orphan a process that may still be bound to the control plane.\n` +
+        `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`.cotal/manager.pid\` if it is gone.`,
+    );
+  try {
+    send(pid, "SIGTERM");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") {
+      clear(); // died between the probe and the signal, which is an ordinary race and genuinely gone
+      return "already-gone";
+    }
+    throw new Error(
+      `refusing to stop manager pid ${pid}: the signal was rejected (${code ?? "unknown error"}).\n` +
+        `EPERM here means the process belongs to another user, so it is running and NOT ours to stop. The pidfile and marker are LEFT IN PLACE.\n` +
+        `NEXT: stop it as its owner, or remove \`.cotal/manager.pid\` if you are certain it is gone.`,
+    );
+  }
+  // The signal was accepted, which is not the same as the process being gone. Prove it before
+  // removing the record, bounded, because a record deleted while its process lives is the defect.
+  for (let i = 0; i < 40 && probe(pid) === "alive"; i++) sleepSync(50);
+  const after = probe(pid);
+  if (after !== "dead")
+    throw new Error(
+      `manager pid ${pid} accepted SIGTERM but was still ${after === "alive" ? "running" : "unattributable"} after 2s.\n` +
+        `The pidfile and marker are LEFT IN PLACE rather than recording a stop that did not happen.\n` +
+        `NEXT: check \`ps -p ${pid}\` and stop it directly if it is wedged.`,
+    );
+  clear();
+  return "stopped";
 }
