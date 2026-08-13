@@ -24,6 +24,9 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import { Objm } from "@nats-io/obj";
 import {
+  CotalEndpoint,
+  chatStream,
+  type CotalMessage,
   isReachable,
   setupSpaceStreams,
   deleteSpace,
@@ -241,6 +244,61 @@ try {
   check("setup REFUSES a store whose real bound is not its byte cap", capRefusal.includes("max_msgs"),
     capRefusal);
   await deleteSpace({ servers, space: capped });
+
+  // ---- the publish ack is the only addressable handle on what was just written ----------------
+  //
+  // The artifact plane's attach step names its own already-published message, and `seq` is the ONLY
+  // way to name it: JetStream's `MsgRequest` is `{seq}` or `{last_by_subj}` — there is no
+  // get-by-msgID, because the dedupe cache is a write-side filter rather than a read index. So this
+  // cell pins the property that step depends on: the number `multicastWithAck` hands back really
+  // does address the entry it just wrote.
+  //
+  // It drives the SHIPPED endpoint, not a re-implementation — a hand-rolled `js.publish` here would
+  // prove the NATS client works and say nothing about our code.
+  {
+    const ep = new CotalEndpoint({
+      servers,
+      space: SPACE,
+      card: { name: "acker", role: "publisher", kind: "agent" },
+      heartbeatMs: 500,
+      ttlMs: 2000,
+    });
+    ep.on("error", () => {}); // a torn-down space emits on close; not this cell's subject
+    try {
+      await ep.start();
+      const first = await ep.multicastWithAck("first", { channel: "general" });
+      const second = await ep.multicastWithAck("second", { channel: "general" });
+
+      check("multicastWithAck returns a real stream sequence", Number.isInteger(first.seq) && first.seq > 0, first.seq);
+      check("a later publish gets a higher sequence", second.seq > first.seq, [first.seq, second.seq]);
+      check("an ordinary publish is not flagged duplicate", first.duplicate === false, first.duplicate);
+
+      // The load-bearing one: read BACK by that seq and confirm it is the very message we sent.
+      // Anything weaker — that seq is a number, that it increments — would survive an off-by-one
+      // that makes the attach step confirm the WRONG entry, which is the failure this exists to
+      // catch.
+      // A FRESH connection, like `live()` above and for the same reason: the suite's `nc`/`jsm` were
+      // closed before this block, and reusing them dies with ClosedConnectionError rather than
+      // failing an assertion.
+      const rnc = await connect({ servers });
+      let round: CotalMessage | undefined;
+      try {
+        const stored = await (await jetstreamManager(rnc)).streams.getMessage(chatStream(SPACE), { seq: first.seq });
+        round = stored ? (JSON.parse(new TextDecoder().decode(stored.data)) as CotalMessage) : undefined;
+      } finally { await rnc.close(); }
+      check("the returned seq addresses the entry just published", round?.id === first.msg.id,
+        { wanted: first.msg.id, got: round?.id });
+      check("and it is that message's content, not merely its id", round?.parts?.[0]?.kind === "text"
+        && (round.parts[0] as { text?: string }).text === "first", round?.parts?.[0]);
+
+      // `multicast` still returns the message, unchanged: 155 call sites depend on it and this
+      // slice moved none of them.
+      const plain = await ep.multicast("plain", { channel: "general" });
+      check("multicast still returns the CotalMessage itself", typeof plain?.id === "string" && plain.channel === "general", plain);
+    } finally {
+      await ep.stop().catch(() => {});
+    }
+  }
 
   await deleteSpace({ servers, space: SPACE });
   const gone = await live();

@@ -35,6 +35,7 @@ import {
   type ConsumerMessages,
   type ConsumerInfo,
   type JsMsg,
+  type PubAck,
 } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 
@@ -1154,6 +1155,31 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
   ): Promise<CotalMessage> {
+    return (await this.multicastWithAck(text, opts)).msg;
+  }
+
+  /**
+   * {@link multicast}, plus the JetStream ack for the entry it just wrote.
+   *
+   * WHY THIS EXISTS, AND WHY IT IS NOT A NEW POWER. A publisher that must later name the stream
+   * entry it produced — the artifact plane confirming an attachment is the first such caller — has
+   * no way to do so today: `multicast` returns the message and the `PubAck` is discarded. The
+   * alternative considered and REJECTED was letting a caller SUPPLY the id (an `opts.id`), which
+   * changes the input contract, the wire, and the forgeability argument. This changes only what a
+   * caller LEARNS about something it already did: `seq` already exists, already crosses the wire,
+   * and is already in hand at the publish below.
+   *
+   * `seq` — NOT `msg.id` — is the addressable handle, because JetStream offers no get-by-msgID:
+   * `MsgRequest` is `{seq}` or `{last_by_subj}` (@nats-io/jetstream `jsapi_types.d.ts`). The dedupe
+   * cache is a write-side filter, not a read index.
+   *
+   * Deliberately NOT mirrored onto `unicast`/`anycast`: no caller needs it there, and a speculative
+   * API is a maintenance cost with no user.
+   */
+  async multicastWithAck(
+    text: string,
+    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
+  ): Promise<{ msg: CotalMessage; seq: number; duplicate: boolean }> {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
     // itself be a wildcard subscription like `team.>`).
@@ -1173,8 +1199,10 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
-    return msg;
+    const ack = await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
+    // The ack rides BESIDE the message, never on it: `CotalMessage` is the wire shape, and a `seq`
+    // welded onto it would ride every forward, quote and re-publish of that object.
+    return { msg, seq: ack.seq, duplicate: ack.duplicate };
   }
 
   /** Unicast: direct message to one specific instance. */
@@ -2020,10 +2048,14 @@ export class CotalEndpoint extends EventEmitter {
       : "endpoint not started";
   }
 
-  private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
+  /** Publish, returning the JetStream ack. The `seq` it carries is the ONLY addressable handle on
+   *  the resulting entry — `msgID` feeds the write-side dedupe cache and is not a read index — so a
+   *  caller that must later name what it wrote needs this ack, not `msg.id` (see
+   *  {@link multicastWithAck}). */
+  private async publishMsg(subject: string, msg: CotalMessage): Promise<PubAck> {
     if (!this.js) throw new Error(this.notLiveMsg());
     // msgID = message id → free server-side dedup across JetStream redelivery.
-    await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+    return await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
   }
 
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
