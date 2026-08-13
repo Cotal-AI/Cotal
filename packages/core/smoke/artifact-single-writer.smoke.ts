@@ -87,6 +87,7 @@ const MUST_NOT_WRITE = [
   "packages/core/src/artifact-index.ts",// key grammar only
   "packages/core/src/artifact-fetch.ts",// the read gate
   "packages/core/src/artifact-chunk.ts",// sizing
+  "packages/core/src/artifact-transfer.ts", // the planner — added when Step 5 landed, per the owed re-run
 ];
 for (const rel of MUST_NOT_WRITE) {
   const f = files.find((x) => x.endsWith(rel));
