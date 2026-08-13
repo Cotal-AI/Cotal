@@ -1,9 +1,9 @@
 /**
- * `$SYS` credential rotation smoke (issue #338) — the class-3 renewal that `renewal.ts` cannot do.
+ * `$SYS` credential rotation smoke (issue #338): the class-3 renewal that `renewal.ts` cannot do.
  *
  * `membership-observer.creds` and `connection-evictor.creds` carry a 30-day expiry and are
  * `rotation-renewed`: no resident process re-signs them. The bug this pins was that the only repair
- * the tooling named — "`cotal down` then a fresh `cotal up`" — did NOTHING: `up` mints the $SYS pair
+ * the tooling named ("`cotal down` then a fresh `cotal up`") did NOTHING: `up` mints the $SYS pair
  * only on the branch that CREATES the trust record, so re-upping an existing space reused the same
  * expired files and reported success, while the delivery daemon's membership feed stayed dead and
  * every `membership-rw` adoption was refused.
@@ -17,8 +17,8 @@
  *     the creds on disk. A writer that persisted the creds from a different (or pre-rotation) bundle
  *     would split them and hand the broker creds it will never honor.
  *  3. Live broker: started from the ROTATED config it REJECTS the pre-rotation observer, ACCEPTS
- *     both rotated $SYS creds, and still accepts a data-account cred minted BEFORE the rotation —
- *     the "your agents survive this" claim the repair copy makes, proven rather than asserted.
+ *     both rotated $SYS creds, and still accepts a data-account cred minted BEFORE the rotation,
+ *     which is the "your agents survive this" claim the repair copy makes, proven rather than asserted.
  *
  * Plus the copy-to-behavior link: `doctor auth`'s repair for an EXPIRED $SYS cred must name
  * `--rotate-sys`. That string regressing back to a bare `up` is the original bug, so it is a check.
@@ -101,7 +101,7 @@ async function accepts(creds: string): Promise<boolean> {
   }
 }
 
-const IDLE_PORT = await pickFreePort(); // nothing ever listens here — keeps `up`'s port-in-use branch out of the way
+const IDLE_PORT = await pickFreePort(); // nothing ever listens here, so `up`'s port-in-use branch stays out of the way
 
 /** Drive `up` and capture how it refused. Several of these refusals `process.exit(1)` rather than
  *  throw, and the default address would otherwise reach whatever broker happens to run on 4222, so
@@ -132,7 +132,7 @@ async function runUp(values: Record<string, unknown>): Promise<string> {
 
 /** Detached meshes this suite started and must tear down, whatever happens to the checks. `up
  *  --detach` leaves THREE processes: the broker (argv carries the root's `server.conf`) and a
- *  delivery daemon + manager, which the CLI re-execs from argv[1] with only `--space`/`--server` —
+ *  delivery daemon + manager, which the CLI re-execs from argv[1] with only `--space`/`--server`,
  *  so the root path alone does not match them and the server URL is what identifies them. */
 const detachedMeshes: Array<{ root: string; server: string }> = [];
 function stopDetached(): void {
@@ -164,7 +164,7 @@ function stopDetached(): void {
 /** Last-resort sweep: kill anything this suite started that is still alive.
  *
  *  It starts several brokers and one detached control plane, and a SIGTERM to a JetStream server is
- *  not always prompt — especially once the temp store has been removed underneath it. Everything this
+ *  not always prompt, especially once the temp store has been removed underneath it. Everything this
  *  suite spawns is identifiable from its own argv: a broker names one of this suite's temp roots, and
  *  the CLI re-execs its daemons from argv[1], which is this file. Both patterns are specific to this
  *  suite, so the sweep cannot reach another lane's broker on the same machine. Without it a failed run
@@ -174,8 +174,8 @@ function sweepSuiteProcesses(): void {
     const ps = execFileSync("ps", ["-eo", "pid,command"], { encoding: "utf8" });
     for (const line of ps.split("\n")) {
       // Two patterns, both specific to this suite. A BROKER names one of its temp roots. A detached
-      // DAEMON names no root at all — the CLI re-execs it from argv[1], so its command line is this
-      // file plus the subcommand — which is why the subcommand has to be part of the match: this
+      // DAEMON names no root at all: the CLI re-execs it from argv[1], so its command line is this
+      // file plus the subcommand, which is why the subcommand has to be part of the match. This
       // file's name ALONE also matches the tsx/pnpm wrappers running the suite, and killing those
       // kills the run itself (observed, twice).
       const isBroker = line.includes("cotal-sysrot-");
@@ -193,7 +193,7 @@ try {
   // ── stage the #338 state: a provisioned space whose $SYS creds are already dead ────────────────
   const auth = await createSpaceAuth(SPACE);
   const store = workspaceSecretStore(root);
-  await putSpaceAuth(store, auth); // strips the $SYS seed at rest — exactly what makes these unremintable
+  await putSpaceAuth(store, auth); // strips the $SYS seed at rest, exactly what makes these unremintable
   const deadAt = Math.floor(Date.now() / 1000) - 60;
   const preObserver = await mintMembershipObserverCreds(auth, newIdentity(), { expiresAt: deadAt });
   writeFileSync(obsPath, preObserver, { mode: 0o600 });
@@ -274,10 +274,10 @@ try {
 
   console.log("\n4b) the blast radius is broker-wide, so a multi-tenant root refuses");
   // A second tenant under the SAME broker operator. The rotation retires the system account for
-  // BOTH, and this root holds one $SYS cred pair pinned to one data account — so it must refuse
+  // BOTH, and this root holds one $SYS cred pair pinned to one data account, so it must refuse
   // rather than silently leave the neighbour unobservable. Guarded in the workspace export, not at
   // the CLI flag, so every caller hits it. (The guard reads the FS account records; that is why the
-  // export takes no SecretStore — an injected store cannot be enumerated, so it could not be
+  // export takes no SecretStore: an injected store cannot be enumerated, so it could not be
   // guarded, only appear to be.)
   const multiRoot = mkdtempSync(join(tmpdir(), "cotal-sysrot-multi-"));
   mkdirSync(join(multiRoot, ".cotal", "auth"), { recursive: true });
@@ -313,7 +313,7 @@ try {
   console.log("\n4e) a maintenance RE-ENTRY refuses, where the explicit --restore guard cannot see");
   // The `--restore` refusal only sees the explicit flag. A restore/resume re-entry arrives with
   // `restore` cleared and an `__*Attempt` set, and those paths can adopt a live listener and RETURN
-  // before `authSetup` — accepting the flag and rotating nothing. Both re-entry keys are checked.
+  // before `authSetup`, accepting the flag and rotating nothing. Both re-entry keys are checked.
   for (const key of ["__restoreAttempt", "__ordinaryResumeAttempt"]) {
     const genBefore = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
     const reentry = await runUp({ "rotate-sys": true, [key]: "attempt-1" });
@@ -324,7 +324,7 @@ try {
   console.log("\n4d) a MANIFEST-open mesh refuses too, not just the --open flag");
   // The flag-level guard cannot see this: openness comes from `broker.auth: false` inside the file,
   // which `upManifest` derives after entry. Left unguarded, `up -f open.yaml --rotate-sys` boots an
-  // open broker and exits 0 having rotated nothing — the silent-success class this change removes.
+  // open broker and exits 0 having rotated nothing: the silent-success class this change removes.
   // `--dry-run` still reaches the guard (it sits before the plan print), so this mutates nothing.
   writeFileSync(
     join(root, "open.yaml"),
@@ -335,7 +335,7 @@ try {
   check("`up -f <open manifest> --rotate-sys` refuses", manifestRefusal.includes("--rotate-sys") && manifestRefusal.includes("broker.auth: false"), manifestRefusal);
   check("the manifest refusal advanced no generation", ((await getSpaceAuth(store, SPACE))?.gen ?? 0) === genBeforeManifest);
 
-  console.log("\n5) live broker on the ROTATED config — the same cred, config the only variable");
+  console.log("\n5) live broker on the ROTATED config: the same cred, config the only variable");
   writeFileSync(confPath, serverConfig(rot.auth, [rot.auth], { transport: { kind: "plaintext" }, storeDir, port: PORT }));
   await startBroker();
   // Bind "came up on the ROTATED config" to IDENTITY, not to a TCP probe: `isReachable` with no
@@ -346,7 +346,7 @@ try {
   check("the ROTATED observer is accepted (so the broker really loaded the successor)", await accepts(obsAfter));
   check("the ROTATED evictor is accepted", await accepts(evAfter));
   // THE retirement check: the SAME healthy cred that connected in stage 1b, now refused. Nothing
-  // about the credential changed between the two connects — only the config the broker loaded.
+  // about the credential changed between the two connects; only the config the broker loaded.
   check("the healthy PRE-rotation observer is now REJECTED (retirement, not expiry)", !(await accepts(livePreObserver)));
   for (const [label, creds] of preRotation)
     check(`a ${label} cred minted BEFORE the rotation still connects (the survival claim, per class)`, await accepts(creds));
@@ -361,7 +361,7 @@ try {
   const goodEv = readFileSync(evPath, "utf8");
   const oldEv = await mintConnectionEvictorCreds(auth, newIdentity()); // healthy, RETIRED issuer
 
-  // (a) crash BEFORE either write: both creds stale, and mutually CONSISTENT — the case a
+  // (a) crash BEFORE either write: both creds stale, and mutually CONSISTENT: the case a
   //     file-vs-file comparison cannot see, which is why the record is the oracle.
   writeFileSync(obsPath, livePreObserver, { mode: 0o600 });
   writeFileSync(evPath, oldEv, { mode: 0o600 });
@@ -400,7 +400,7 @@ try {
 
   console.log("\n5d) a live broker for THIS ROOT blocks rotation, registry row or not");
   // The bypass: with no registry row, a bare `up --rotate-sys` finds the port busy, picks a FREE one
-  // and rotates — leaving the old broker on the retired config and a second one on the successor,
+  // and rotates, leaving the old broker on the retired config and a second one on the successor,
   // both over the same JetStream store. The pid file is the proof the registry cannot supply.
   const genBeforeLive = (await getSpaceAuth(store, SPACE))?.gen ?? 0;
   writeFileSync(join(root, ".cotal", "nats.pid"), String(process.pid)); // alive by construction
@@ -418,7 +418,7 @@ try {
   console.log("\n5e) an UNIDENTIFIED listener refuses the rotation instead of free-porting past it");
   // The out-of-band case: `nats-server -c <root>/.cotal/auth/server.conf` started by hand writes no
   // pidfile and no registry row, so both ownership records are empty and the rotation would step
-  // around it onto a free port — retiring the account that broker is still serving and opening its
+  // around it onto a free port, retiring the account that broker is still serving and opening its
   // JetStream store a second time. Only the fact that SOMETHING unidentified is answering can catch
   // it, so that has to refuse rather than relocate.
   await startBroker(); // stands in for the hand-started broker: reachable, unrecorded
@@ -515,7 +515,7 @@ try {
   };
   // `up --detach` returns once the listener answers, which is earlier than "ready to authenticate a
   // fresh credential" on a loaded machine. Retry the POSITIVE assertion only, and bound it: if the
-  // rotation were broken this cred would never be accepted, so waiting cannot manufacture a pass —
+  // rotation were broken this cred would never be accepted, so waiting cannot manufacture a pass;
   // it only stops the boot's timing from being mistaken for a rotation defect.
   const rotatedObs = readFileSync(join(liveRoot, ".cotal", SYSTEM_CREDS_FILES[0]), "utf8");
   let rotatedAccepted = false;
