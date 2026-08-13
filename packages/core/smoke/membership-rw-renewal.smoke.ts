@@ -47,7 +47,7 @@ const space = `member-rw-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const rogue = await createSpaceAuth(space); // a DIFFERENT operator, absent from server.conf → the broker refuses its signatures
 const dir = mkdtempSync(join(tmpdir(), "cotal-member-rw-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const startBroker = (): ChildProcess => spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 let srv = startBroker();
 

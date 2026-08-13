@@ -71,7 +71,7 @@ const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.see
 const dir = mkdtempSync(join(tmpdir(), "cotal-ctltrust-"));
 writeFileSync(
   join(dir, "server.conf"),
-  serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }),
+  serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }),
 );
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>

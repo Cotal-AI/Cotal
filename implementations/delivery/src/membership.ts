@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
+import { credsClaims, inspectCredHealth, startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, MEMBERSHIP_RW_CREDS_KEY, workspaceSecretStore } from "@cotal-ai/workspace";
 
 /**
@@ -22,7 +22,14 @@ import { findCotalRoot, MEMBERSHIP_RW_CREDS_KEY, workspaceSecretStore } from "@c
  * They are a static $SYS cred and non-secret config, respectively — the renewable rw kind is what 3b
  * migrates; the manager re-signs only it.
  */
-export async function startMembership(opts: { space: string; server: string }, store?: SecretStore): Promise<MembershipFeedHandle | undefined> {
+
+/** Why the feed is, or is not, running. `down` carries the DIAGNOSIS to the caller, because the
+ *  daemon's log line is not the only place it is needed: an adoption reply that says only "the feed is
+ *  not running" sends an operator hunting for a feed fault when the real one is an expired $SYS cred
+ *  three layers down (the failure reported in #338). Exactly one of the two members is set. */
+export type MembershipStart = { handle: MembershipFeedHandle; down?: undefined } | { handle?: undefined; down: string };
+
+export async function startMembership(opts: { space: string; server: string }, store?: SecretStore): Promise<MembershipStart> {
   const root = findCotalRoot();
   const dir = join(root, ".cotal");
   const obsPath = join(dir, "membership-observer.creds");
@@ -30,17 +37,66 @@ export async function startMembership(opts: { space: string; server: string }, s
   const secrets = store ?? workspaceSecretStore(root);
 
   const rw = await secrets.get(MEMBERSHIP_RW_CREDS_KEY);
-  if (rw === undefined || !existsSync(obsPath) || !existsSync(cfgPath)) {
-    console.error(
-      "• membership: scoped creds not provisioned here — broker-sourced graph membership disabled (the graph falls back to traffic-only). Provisioned on a fresh `cotal up`; a space created before this feature needs its auth regenerated. Delivery is unaffected.",
-    );
-    return undefined;
+  const missing = [
+    rw === undefined ? MEMBERSHIP_RW_CREDS_KEY : undefined,
+    existsSync(obsPath) ? undefined : "membership-observer.creds",
+    existsSync(cfgPath) ? undefined : "membership.json",
+  ].filter((f): f is string => f !== undefined);
+  if (missing.length) {
+    // Name the missing piece AND a repair that reaches it. `cotal up --rotate-sys` re-mints the $SYS
+    // pair — it holds a system-account signing seed for exactly that moment — but it writes neither
+    // the DATA-account rw cred nor the account-id config: those are written once, when a space is
+    // first provisioned. So a rotation repairs a missing OBSERVER and nothing else, and pointing a
+    // pre-feature space at one would send an operator through a stop/start that cannot help it.
+    const down =
+      missing.length === 1 && missing[0] === "membership-observer.creds"
+        ? "the $SYS observer cred is missing - re-mint it with `cotal down` then `cotal up --rotate-sys`"
+        : `the membership bundle is incomplete here (missing ${missing.join(", ")}) - a space created before broker-sourced membership gains the feed only when its auth is regenerated; \`cotal up --rotate-sys\` re-mints the $SYS pair but writes neither the rw cred nor the account id`;
+    console.error(`• membership: ${down} — the graph falls back to traffic-only. Delivery is unaffected.`);
+    return { down };
   }
 
   const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
   if (!accountId) {
-    console.error("• membership: .cotal/membership.json has no accountId — membership disabled (delivery unaffected)");
-    return undefined;
+    const down = ".cotal/membership.json has no accountId";
+    console.error(`• membership: ${down} — membership disabled (delivery unaffected)`);
+    return { down };
+  }
+
+  // Check the OBSERVER's own expiry before connecting. It is `rotation-renewed`, so unlike every
+  // renewable cred here nothing re-signs it: at its 30-day horizon the broker simply answers
+  // "Authorization Violation", which names neither the credential nor the repair. Reading the JWT
+  // costs nothing and turns the daemon's one loud line into the actual diagnosis — the difference
+  // between an operator finding this in minutes and finding it in a support thread.
+  const obsCreds = readFileSync(obsPath, "utf8");
+  // A TORN rotation is the other way this cred goes broker-dead without a byte of its own changing:
+  // `rotateSystemCreds` commits the trust record, then writes both $SYS creds, so a crash between the
+  // two leaves one file on the retired system account. The broker answers the same bare
+  // "Authorization Violation" either way. The daemon cannot ask the trust record which account is
+  // current — it deliberately never loads the signer — but it does not need to: the pair is written
+  // by one rotation, so two DIFFERENT issuers prove one of them is stale, with no signer read at all.
+  // (`doctor auth`, which legitimately holds the record, checks each file against it directly.)
+  const evPath = join(dir, "connection-evictor.creds");
+  if (existsSync(evPath)) {
+    let obsIss: string | undefined, evIss: string | undefined;
+    try {
+      obsIss = credsClaims(obsCreds).iss;
+      evIss = credsClaims(readFileSync(evPath, "utf8")).iss;
+    } catch { /* an unreadable file is the health check's case just below */ }
+    if (obsIss !== undefined && evIss !== undefined && obsIss !== evIss) {
+      const down = `the two $SYS creds are signed by DIFFERENT system accounts (observer ${obsIss.slice(0, 12)}…, evictor ${evIss.slice(0, 12)}…) - a system-account rotation did not finish, so one of them is broker-dead: re-run \`cotal down\` then \`cotal up --rotate-sys\` to land a complete generation`;
+      console.error(`! membership: ${down} — graph membership degraded, delivery unaffected`);
+      return { down };
+    }
+  }
+  const obs = inspectCredHealth(obsCreds);
+  if (obs.state === "expired" || obs.state === "unreadable") {
+    const down =
+      obs.state === "expired"
+        ? `the $SYS observer cred (${obsPath}) EXPIRED ${new Date((obs.exp ?? 0) * 1000).toISOString()} and the broker denies it - it is rotation-renewed, so nothing re-signs it: run \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data are untouched)`
+        : `the $SYS observer cred (${obsPath}) is unreadable (${obs.error})`;
+    console.error(`! membership: ${down} — graph membership degraded, delivery unaffected`);
+    return { down };
   }
 
   const intervalMs = Number(process.env.COTAL_MEMBERSHIP_INTERVAL_MS) || undefined; // test/ops override
@@ -49,7 +105,7 @@ export async function startMembership(opts: { space: string; server: string }, s
     space: opts.space,
     accountId,
     // Observer is rotation-renewed ($SYS): a static read — its renewal is a system rotation + restart.
-    observerCreds: readFileSync(obsPath, "utf8"),
+    observerCreds: obsCreds,
     // rw is class-2 standing-renewable: read through the store seam and renewed on a 75% timer that
     // preflight-proves each candidate the manager re-signs into the store (D5 slice 5). The daemon
     // never sees the signer; the manager owns the re-sign.
@@ -62,5 +118,5 @@ export async function startMembership(opts: { space: string; server: string }, s
     intervalMs,
   });
   console.log(`✓ membership feed up (broker-sourced channel membership) — space ${opts.space}`);
-  return handle;
+  return { handle };
 }

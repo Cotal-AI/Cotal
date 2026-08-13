@@ -18,6 +18,7 @@ import {
   removeMeshesByRoot,
   resolveSpace,
   rollbackRestore,
+  SYSTEM_CREDS_FILES,
   workspaceSecretStore,
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
@@ -270,8 +271,9 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // present and a re-run resolves THIS space, not the default.
     for (const f of [
       "manager.delivery-aware",
-      "membership-observer.creds",
-      "connection-evictor.creds",
+      // The $SYS pair by its ONE named source, shared with the rotation writer, so a file added to
+      // that class can never be minted-but-not-swept (the drift this list was already guarding).
+      ...SYSTEM_CREDS_FILES,
       "membership.json",
       "renewal.json",
     ]) rm(join(root, ".cotal", f), `.cotal/${f}`);

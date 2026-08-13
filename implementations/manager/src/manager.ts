@@ -15,6 +15,7 @@ import {
   deprovisionAgent,
   firstFreeName,
   idFromCreds,
+  inspectCredHealth,
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
@@ -35,8 +36,8 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -65,7 +66,6 @@ import {
   standaloneConnectOpts,
   STATIC_SLOT_PREFIX,
   rawDigest,
-  inspectCredHealth,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   newArtifactSigner,
   sessionsBucket,
@@ -935,6 +935,7 @@ export class Manager {
       // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
       // the `doctor auth --fix` writer too), so the results pass straight through.
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+      this.warnOnSystemCredExpiry();
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
       // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
@@ -1023,6 +1024,41 @@ export class Manager {
       console.error(`! credential renewal pass failed: ${(e as Error).message}`);
     } finally {
       release();
+    }
+  }
+
+  /** Warn, on every renewal pass, when a $SYS credential is at or past its renewal point.
+   *
+   *  The manager is the renewal owner for every credential it CAN re-sign, and these two are the ones
+   *  it cannot: they are `rotation-renewed`, so no resident process re-mints them and they simply die
+   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all —
+   *  it discovered the expiry as an "Authorization Violation" in the delivery log and a refused
+   *  membership adoption, weeks after the warning would have been actionable (#338). The pass runs
+   *  every half-TTL of the 24h class, so this repeats about twice a day for the ~7 days between the
+   *  renewal point and expiry: loud enough to be seen, bounded enough not to be noise.
+   *
+   *  Diagnostic only, and deliberately non-fatal: renewal is an operator action (`cotal down` then
+   *  `cotal up --rotate-sys`, which needs a broker restart), so the manager must report it, never
+   *  attempt it. An absent file is the unprovisioned space, reported by the daemon that needs it. */
+  private warnOnSystemCredExpiry(): void {
+    for (const file of SYSTEM_CREDS_FILES) {
+      const path = join(this.workspaceRoot, ".cotal", file);
+      if (!existsSync(path)) continue;
+      let health: CredHealth;
+      try {
+        health = inspectCredHealth(readFileSync(path, "utf8"));
+      } catch {
+        continue; // an unreadable $SYS file is the daemon's loud failure, not a renewal-pass crash
+      }
+      const when = health.exp ? new Date(health.exp * 1000).toISOString() : "an unknown date";
+      if (health.state === "expired")
+        console.error(
+          `! $SYS credential ${file} EXPIRED ${when} - the broker denies it, and NOTHING renews it in place (it is rotation-renewed). Live eviction and the membership feed stay down until: \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data survive)`,
+        );
+      else if (health.state === "near-expiry")
+        console.error(
+          `! $SYS credential ${file} expires ${when} and nothing renews it in place (it is rotation-renewed) - schedule: \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data survive)`,
+        );
     }
   }
 
@@ -3790,7 +3826,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
       lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(this.space));
@@ -3812,7 +3848,7 @@ export class Manager {
     const creds = await mintCreds(this.auth, identity, "endpoint-serve-executor", {
       endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
     });
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
@@ -3874,7 +3910,7 @@ export class Manager {
     {
       // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
-      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds }), maxReconnectAttempts: 0 });
+      const provNc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       try {
         // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
         // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
@@ -4313,7 +4349,7 @@ export class Manager {
       open: async (cred) => {
         // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
         // without its own credential is exactly the standing-writer shape this design removes.
-        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds }) : {};
+        const opts = this.auth ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
         return connect({ servers: this.servers ?? DEFAULT_SERVER, ...opts, maxReconnectAttempts: -1 });
       },
       revoke: async (credentialId) => {
@@ -4354,7 +4390,7 @@ export class Manager {
     try {
       let entries: { ref: GoalRef; iid: string }[] = [];
       const nc = this.auth
-        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner") }), maxReconnectAttempts: 0 })
+        ? await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
         : await connect({ servers: this.servers ?? DEFAULT_SERVER, maxReconnectAttempts: 0 });
       try {
         const kvm = new Kvm(nc);
@@ -4446,7 +4482,7 @@ export class Manager {
    *      SNAPSHOT IT ENUMERATED, so a sibling mint that observes the gate and stages a ledger row
    *      WITHOUT the observe/open/commit fence can be staged and released AFTER that enumerate and
    *      never be revoked. This layer is closed exactly where BOTH sibling mint sites
-   *      ({@link mintAndStageGoalWriter}, {@link mintAndStageSessionWriter}) route their stage
+   *      ({@link mintAndStageGoalWriter}, {@link mintAndStageSessionLedger}) route their stage
    *      through `commitSiblingIssuance` (the revision-pinned CAS that makes a losing mint release
    *      nothing), and open exactly where they do not — state the mechanism, never the branch.
    *   2. THE BARRIER WINDOW. A gate FREEZE neither kills this connection nor advances the epoch,
@@ -4799,7 +4835,7 @@ export class Manager {
     if (!this.auth) return;
     const identity = newIdentity();
     const creds = await mintCreds(this.auth, identity, "provisioner");
-    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     const slotRows: StaticManagedSlotRow[] = [];
     try {
       const jsm = await jetstreamManager(nc);

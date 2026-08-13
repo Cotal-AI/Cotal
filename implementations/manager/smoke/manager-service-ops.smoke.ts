@@ -94,7 +94,7 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 for (const n of ["w1", "w2", "w3", "wp1", "wp2", "m6pin"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const envFor = (o: LaunchOpts): Record<string, string> => ({
@@ -126,7 +126,7 @@ async function instrument(caps: Array<{ command: string; owner?: true }>) {
       ...(c.owner ? { target: { mode: "owner" as const, tOwner: DEV_OWNER } } : {}),
     })),
   });
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const principal = principalKey(DEV_OWNER, id.id).key;
   const call = (command: string, callArgs?: Record<string, unknown>, target?: { actor: string; lifecycleUid: string }) =>
     epCall(nc, space, { mode: "one" }, {
@@ -252,7 +252,7 @@ try {
     const credsPath = w2.secretPaths?.creds ?? join(authDir(workspaceRoot), "creds", `w2.${w2.lifecycleUid}.creds`);
     check("w2's lifecycle-keyed creds file exists", existsSync(credsPath), credsPath);
     const w2Creds = readFileSync(credsPath, "utf8");
-    const w2Nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: w2Creds }), maxReconnectAttempts: 0 });
+    const w2Nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: w2Creds, tls: false }), maxReconnectAttempts: 0 });
     const selfCaller: EpCaller = { owner: DEV_OWNER, actor: w2.id, uid: w2.lifecycleUid };
     const rSelf = await epCall(w2Nc, space, { mode: "one" }, {
       endpoint: MANAGER_ENDPOINT, command: "stop", contract: MANAGER_CONTRACTS.stop, caller: selfCaller,
@@ -436,7 +436,7 @@ try {
     const opUid = mintLifecycleUid();
     const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
     const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
-    const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds }), maxReconnectAttempts: 0 });
+    const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds, tls: false }), maxReconnectAttempts: 0 });
     const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });

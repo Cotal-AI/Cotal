@@ -54,6 +54,18 @@ export interface RawAuth {
 export interface Connection {
   server: string;
   space: string;
+  /** Whether this connection must REQUIRE TLS, rather than merely tolerate it.
+   *
+   *  NON-OPTIONAL on purpose, and it is the same reasoning as the broker's transport union. An
+   *  optional flag is omitted by default, and the default here is the dangerous one: a client with
+   *  no TLS requirement connects happily to a plaintext broker and sends its credentials in the
+   *  clear, including to an on-path attacker who forged the unauthenticated INFO. Every site that
+   *  builds a `Connection` must therefore SAY which it is, and the compiler asks.
+   *
+   *  Derive it from the resolved mesh record (`MeshEntry.tlsRequired`) or an explicit `cotals://`
+   *  link — never re-decide it per call site. Five places each deciding "is this mesh TLS" is four
+   *  chances to get it right and one to be silently wrong. */
+  tls: boolean;
   creds?: string;
   /** USER-MODE connect material (mode `"user"` only): the Cotal user bearer + the deny-all
    *  sentinel creds, exactly what `EndpointOptions.bearer`/`sentinelCreds` consume. Mutually
@@ -86,9 +98,20 @@ export interface Connection {
  *  `new CotalEndpoint({...})` instead of passing `creds:` directly, so a user-mode connection
  *  (bearer + sentinel) and a static/raw one (creds) ride the same call sites without each command
  *  re-learning the mode split. */
-export function endpointAuth(conn: Connection): { creds?: string; bearer?: string; sentinelCreds?: string } {
-  if (conn.bearer && conn.sentinelCreds) return { bearer: conn.bearer, sentinelCreds: conn.sentinelCreds };
-  return conn.creds !== undefined ? { creds: conn.creds } : {};
+/** The connect material for one resolved connection, spread straight into `CotalEndpoint` options
+ *  or a standalone helper.
+ *
+ *  `tls` rides along with the credentials DELIBERATELY. It used to be dropped here — this function
+ *  returned creds/bearer only — which meant every caller that spread `endpointAuth(conn)` got the
+ *  identity and silently lost the transport requirement. That is the failure with no symptom: the
+ *  connection still works against an honest TLS broker (the client upgrades on the server's INFO),
+ *  so nothing looks wrong until an on-path attacker forges an INFO without `tls_required` and
+ *  collects the credentials in the clear. Keeping the two together means a caller cannot take the
+ *  identity without also taking the requirement that protects it. */
+export function endpointAuth(conn: Connection): { creds?: string; bearer?: string; sentinelCreds?: string; tls?: boolean } {
+  const tls = conn.tls ? { tls: true as const } : {};
+  if (conn.bearer && conn.sentinelCreds) return { bearer: conn.bearer, sentinelCreds: conn.sentinelCreds, ...tls };
+  return conn.creds !== undefined ? { creds: conn.creds, ...tls } : { ...tls };
 }
 
 /** The ledger actor a HUMAN CLI connect runs as on a user-auth space (v1: one well-known name).
@@ -210,8 +233,11 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
       process.exit(1);
     }
     const creds = readFileSync(flags.creds, "utf8");
+    // An explicit `--creds` file is an off-registry connect: no mesh record, so no recorded TLS
+    // intent to inherit. It stays non-strict, and that is a real (documented) gap rather than a
+    // safe default - a `--creds` connect to a TLS broker still upgrades, but is downgradeable.
     await reachableOrExit(server, { creds });
-    return { server, space, creds };
+    return { server, space, tls: false, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
   // both is as deliberate as `--creds`, but an open broker has no creds to pass — connect bare,
@@ -230,8 +256,10 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
       );
       process.exit(1);
     }
+    // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
+    // is no intent to honour. Non-strict, same documented gap as `--creds`.
     await reachableOrExit(flags.server, {});
-    return { server: flags.server, space: flags.space };
+    return { server: flags.server, space: flags.space, tls: false };
   }
   const target = await resolveTargetOrExit({ server: flags.server, space: flags.space });
   // USER MODE is a HARD branch: it never mints from on-disk trust material (static creds DO work
@@ -277,8 +305,11 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
     }
   }
   await preflightOrExit(target, creds);
+  // THE REGISTRY-RESOLVED PATH, and the one that must inherit the recorded decision: if the mesh
+  // record says this broker is TLS-required, the connection REQUIRES it. This is the site whose
+  // omission had no symptom - it connects either way against an honest broker.
   return {
-    server: target.server, space: target.space, creds, auth: target.auth, root: target.root, source: target.source,
+    server: target.server, space: target.space, tls: target.tlsRequired, creds, auth: target.auth, root: target.root, source: target.source,
     ...(epCaller ? { epCaller } : {}),
   };
 }
@@ -351,6 +382,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
     return {
       server: target.server,
       space: target.space,
+      tls: target.tlsRequired,
       bearer,
       sentinelCreds,
       userAuth: ua,
@@ -370,7 +402,10 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
 export async function reachableOrExit(server: string, auth: RawAuth = {}): Promise<void> {
   const probe = await probeConnect(server, auth);
   if (probe.ok) return;
-  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server })));
+  // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
+  // of this: it is transport, not identity, and a TLS-only connection presents no credential.
+  const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
+  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth })));
   process.exit(1);
 }
 

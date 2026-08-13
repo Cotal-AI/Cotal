@@ -70,7 +70,7 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "agents", "worker.md"),
   `---\nname: worker\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n`,
 );
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 const kids: ChildProcess[] = [];
 const srv = spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });

@@ -60,7 +60,7 @@ const dir = mkdtempSync(join(tmpdir(), "cotal-sesswriter-fam-"));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
@@ -95,7 +95,7 @@ try {
 
   // Read the §13.1 revocation family over a scoped executor (the FAMILY + RENEWAL assertions).
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } });
-  const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds }), maxReconnectAttempts: 0 });
+  const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
   conns.push(execNc);
   const authKv = await new Kvm(execNc).open(epAuthBucket(space));
   const familyRows = async (): Promise<Array<{ holderPrincipal?: string; state?: string; credentialId?: string }>> => {
@@ -134,7 +134,7 @@ try {
   //    bucket. Raw STREAM.MSG.GET requests: an ALLOWED read returns a response (even "not found"); a
   //    DENIED read gets no responder → times out (the M7 broker-denial pattern). ─────────────────
   {
-    const swNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.sessionLedgerCreds! }), maxReconnectAttempts: 0 });
+    const swNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.sessionLedgerCreds!, tls: false }), maxReconnectAttempts: 0 });
     conns.push(swNc);
     const msgGet = async (bucket: string, key: string): Promise<boolean> => {
       // true = ALLOWED (a response arrived); false = DENIED (no responder / timeout).
