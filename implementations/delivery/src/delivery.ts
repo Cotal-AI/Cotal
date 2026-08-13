@@ -192,6 +192,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // Broker-sourced graph membership handle — declared BEFORE Plane-3 so the delivery-admin reload
   // hook below can close over it (it starts further down; the closure reads it live).
   let membership: MembershipFeedHandle | undefined;
+  // WHY the feed is down, carried from `startMembership` so the adoption refusal below names the real
+  // fault instead of its symptom. Without it, an expired $SYS observer cred surfaces to the operator
+  // only as "membership feed is not running" (#338).
+  let membershipDown: string | undefined;
 
   // Host Plane-3 (fan-out writer + trusted reader) AND serve the ctl.delivery runtime durable ops. The
   // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
@@ -204,8 +208,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
         // membership-rw.creds but the feed that must adopt it is not running), else n/a — a
         // delivery-only renewal must never be falsely failed by an unprovisioned feed.
         if (expected !== undefined)
-          throw new Error("membership feed is not running, but a membership generation was expected - nothing adopted");
-        return { skipped: "membership feed not running (nothing to reload)" };
+          throw new Error(
+            `membership feed is not running, but a membership generation was expected - nothing adopted${membershipDown ? `: ${membershipDown}` : ""}`,
+          );
+        return { skipped: `membership feed not running (nothing to reload)${membershipDown ? `: ${membershipDown}` : ""}` };
       }
       // Symmetric with delivery: claim broker acceptance (the preflight), not verified resident reauth.
       return { brokerAccepted: await membership.reloadRwCreds(expected), residentSwap: "best-effort" as const };
@@ -231,9 +237,11 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // Pass the INJECTED store (hosted KMS/Vault), NOT credsSrc.store — that one may be an FS store over
     // an arbitrary `--creds` path, whereas membership-rw lives under the workstation `.cotal/` key. With
     // no injected store, startMembership falls back to the workstation FS store.
-    membership = await startMembership({ space, server }, store);
+    // Fail-soft, but never fault-FORGETFUL: whichever way the feed fails to come up, keep the reason.
+    ({ handle: membership, down: membershipDown } = await startMembership({ space, server }, store));
   } catch (e) {
-    console.error(`! membership: failed to start (${(e as Error).message}) — graph membership degraded, delivery unaffected`);
+    membershipDown = (e as Error).message;
+    console.error(`! membership: failed to start (${membershipDown}) — graph membership degraded, delivery unaffected`);
   }
 
   let stopping = false;

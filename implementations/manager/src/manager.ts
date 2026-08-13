@@ -15,6 +15,7 @@ import {
   deprovisionAgent,
   firstFreeName,
   idFromCreds,
+  inspectCredHealth,
   loadAgentFile,
   loadCotalConfig,
   mintCreds,
@@ -35,8 +36,8 @@ import {
   CONTROL_AUTH_ADMIN,
   controlServiceSubject,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -65,7 +66,6 @@ import {
   standaloneConnectOpts,
   STATIC_SLOT_PREFIX,
   rawDigest,
-  inspectCredHealth,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   newArtifactSigner,
   sessionsBucket,
@@ -935,6 +935,7 @@ export class Manager {
       // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
       // the `doctor auth --fix` writer too), so the results pass straight through.
       writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+      this.warnOnSystemCredExpiry();
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
       // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
@@ -1023,6 +1024,41 @@ export class Manager {
       console.error(`! credential renewal pass failed: ${(e as Error).message}`);
     } finally {
       release();
+    }
+  }
+
+  /** Warn, on every renewal pass, when a $SYS credential is at or past its renewal point.
+   *
+   *  The manager is the renewal owner for every credential it CAN re-sign, and these two are the ones
+   *  it cannot: they are `rotation-renewed`, so no resident process re-mints them and they simply die
+   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all —
+   *  it discovered the expiry as an "Authorization Violation" in the delivery log and a refused
+   *  membership adoption, weeks after the warning would have been actionable (#338). The pass runs
+   *  every half-TTL of the 24h class, so this repeats about twice a day for the ~7 days between the
+   *  renewal point and expiry: loud enough to be seen, bounded enough not to be noise.
+   *
+   *  Diagnostic only, and deliberately non-fatal: renewal is an operator action (`cotal down` then
+   *  `cotal up --rotate-sys`, which needs a broker restart), so the manager must report it, never
+   *  attempt it. An absent file is the unprovisioned space, reported by the daemon that needs it. */
+  private warnOnSystemCredExpiry(): void {
+    for (const file of SYSTEM_CREDS_FILES) {
+      const path = join(this.workspaceRoot, ".cotal", file);
+      if (!existsSync(path)) continue;
+      let health: CredHealth;
+      try {
+        health = inspectCredHealth(readFileSync(path, "utf8"));
+      } catch {
+        continue; // an unreadable $SYS file is the daemon's loud failure, not a renewal-pass crash
+      }
+      const when = health.exp ? new Date(health.exp * 1000).toISOString() : "an unknown date";
+      if (health.state === "expired")
+        console.error(
+          `! $SYS credential ${file} EXPIRED ${when} - the broker denies it, and NOTHING renews it in place (it is rotation-renewed). Live eviction and the membership feed stay down until: \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data survive)`,
+        );
+      else if (health.state === "near-expiry")
+        console.error(
+          `! $SYS credential ${file} expires ${when} and nothing renews it in place (it is rotation-renewed) - schedule: \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data survive)`,
+        );
     }
   }
 
