@@ -15,7 +15,7 @@
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
 import { createHash } from "node:crypto";
-import type { McpServerSpec } from "@cotal-ai/core";
+import { assertValidName, type McpServerSpec } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -268,6 +268,18 @@ export function eventChannel(name: string): string {
   // one `-<16 hex>` more than its own preimage, so no unhashed name can land on a hashed image and
   // no hashed image can land on another. What remains is the digest bound, which is the honest
   // residual; the structural overlap is gone.
+  // AND the disjointness argument above has a PRECONDITION that was left implicit and was false:
+  // it assumes distinct names give distinct hash INPUTS. `createHash().update(string)` encodes UTF-8,
+  // which replaces every unpaired surrogate with U+FFFD — so `"\uD800"`, `"\uD801"` and `"\uFFFD"`
+  // hashed to ONE digest and shared one channel, and with it one publish grant and one event stream.
+  // Deterministic and constructible, not the truncated-digest residual this comment claimed. Found by
+  // fmae-rev-test with a broker-backed effect repro; confirmed by fmae-rev-eng and fmae-rev-wal.
+  //
+  // `assertValidName` now refuses such a name at the shared choke point, which also covers the launch
+  // environment mangling the name on its way to a child. It is re-asserted HERE rather than assumed,
+  // because this function derives an AUTHORIZATION value and must not depend on a caller having
+  // validated first — the shipped rule is reused, never a second copy of it that could drift.
+  assertValidName(name);
   const looksHashed = /-[0-9a-f]{16}$/.test(safe);
   return safe === name && !looksHashed
     ? `events.${safe}`
