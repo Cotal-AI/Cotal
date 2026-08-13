@@ -1,8 +1,8 @@
 /**
  * `cotal spawn` from any directory — the mesh registry + resolver + offline completion + the
- * connect preflight's stale-detection. Hermetic (no broker needed): COTAL_HOME is sandboxed to a
- * temp dir, "meshes" are recorded straight into the registry, and reachability is probed against a
- * closed port. Run: pnpm smoke:spawn-from-anywhere
+ * connect preflight's stale-detection. Hermetic (no broker needed): COTAL_HOME and the temp root
+ * are sandboxed, "meshes" are recorded straight into the registry, and reachability is probed
+ * against a closed port. Run: pnpm smoke:spawn-from-anywhere
  *
  * Covers every `resolveMeshTarget` source branch (0 / 1 / N+current / --space / local-project),
  * that completion lists the RESOLVED mesh's personas (not the cwd's) without opening the network,
@@ -13,28 +13,66 @@ import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
-// Sandbox the machine-home BEFORE touching the registry — homeCotalDir() reads COTAL_HOME per call,
-// so the real ~/.cotal is never touched.
-const home = mkdtempSync(join(tmpdir(), "cotal-home-"));
+// Isolate BOTH the machine-home AND the temp root before anything else. `findCotalRoot` walks to
+// `/` with no boundary, so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI;
+// `/Users/<you>/.cotal` when the suite's scratch sat under the home directory) captures every
+// "neutral" dir and the 0-mesh cell resolves as a local project instead of throwing.
+const scratch = makeScratch();
+// SETUP OWNERSHIP, in THREE guarded windows — home, the dynamic imports, the project fixtures.
+// Not one transaction: an earlier version of this comment said so and the code never did, which is
+// the false-claim class this branch keeps tripping over. What matters is coverage, and every one of
+// the three removes the scratch on failure, so no window can exit with it on disk. Measured: the
+// 2nd `mkdtempSync` at EIO and a thrown first dynamic import both leave nothing behind.
+const cleanScratch = (e: unknown): never => {
+  rmSync(scratch, { recursive: true, force: true });
+  throw new Error(`fixture setup failed (scratch removed): ${(e as Error).message}`, { cause: e });
+};
+let home!: string;
+try {
+  home = mkdtempSync(join(scratch, "home-"));
+} catch (e) { cleanScratch(e); }
 process.env.COTAL_HOME = home;
 
-const { probeConnect, createSpaceAuth } = await import("@cotal-ai/core");
-const {
-  authDir,
-  clearCurrent,
-  isWorkspaceTargetError,
-  loadMeshes,
-  meshesDir,
-  recordMesh,
-  removeMesh,
-  resolveMeshTarget,
-  saveSpaceAuth,
-  setCurrent,
-} = await import("@cotal-ai/workspace");
-const { spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js");
-const { listPersonas } = await import("../src/lib/personas.js");
-const { pruneStaleMeshes } = await import("../src/lib/meshes.js");
+// Typed against the modules they come from — `any` here would have bought cleanup by giving up
+// the compile-time checking this smoke exists to exercise.
+let probeConnect!: typeof import("@cotal-ai/core").probeConnect;
+let createSpaceAuth!: typeof import("@cotal-ai/core").createSpaceAuth;
+let authDir!: typeof import("@cotal-ai/workspace").authDir;
+let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
+let clearCurrent!: typeof import("@cotal-ai/workspace").clearCurrent;
+let isWorkspaceTargetError!: typeof import("@cotal-ai/workspace").isWorkspaceTargetError;
+let loadMeshes!: typeof import("@cotal-ai/workspace").loadMeshes;
+let meshesDir!: typeof import("@cotal-ai/workspace").meshesDir;
+let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
+let removeMesh!: typeof import("@cotal-ai/workspace").removeMesh;
+let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
+let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
+let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
+let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
+let spawnPersonaRef!: typeof import("../src/commands/spawn.js").spawnPersonaRef;
+let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
+let pruneStaleMeshes!: typeof import("../src/lib/meshes.js").pruneStaleMeshes;
+try {
+  ({ probeConnect, createSpaceAuth } = await import("@cotal-ai/core"));
+  ({
+    authDir,
+    findCotalRoot,
+    clearCurrent,
+    isWorkspaceTargetError,
+    loadMeshes,
+    meshesDir,
+    recordMesh,
+    removeMesh,
+    resolveMeshTarget,
+    saveSpaceAuth,
+    setCurrent,
+  } = await import("@cotal-ai/workspace"));
+  ({ spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
+  ({ listPersonas } = await import("../src/lib/personas.js"));
+  ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
+} catch (e) { cleanScratch(e); }
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -52,15 +90,23 @@ function project(label: string, personas: string[]): string {
   return root;
 }
 
-const projA = project("projA", ["reviewer", "researcher"]);
-const projB = project("projB", ["builder"]);
-const neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree
+// Same transaction: these mint more directories under the scratch and each can throw.
+let projA!: string, projB!: string, neutral!: string;
+try {
+  projA = project("projA", ["reviewer", "researcher"]);
+  projB = project("projB", ["builder"]);
+  neutral = mkdtempSync(join(tmpdir(), "cotal-neutral-")); // no .cotal up-tree (enforced by scratch)
+} catch (e) { cleanScratch(e); }
 const SERVER = "nats://127.0.0.1:4222";
 const DEAD = "nats://127.0.0.1:1"; // nothing listens here
 const entry = (space: string, root: string, server = SERVER) =>
   ({ space, server, root, mode: "open" as const, ts: "2026-06-22T00:00:00.000Z" });
 
 try {
+  // The sandbox is the fix; this check is the witness that it held (not a precondition operators
+  // have to satisfy). A poisoned os.tmpdir() must not reach here.
+  check("scratch has no .cotal ancestor", findCotalRoot(neutral) === neutral, findCotalRoot(neutral));
+
   // 0 meshes → a bare resolve fails with one sentence, not a crash.
   assert.throws(() => resolveMeshTarget(neutral), /no mesh running/);
   check("0 meshes: resolve throws 'no mesh running'", true);
@@ -237,6 +283,7 @@ try {
 
   console.log(`\nspawn-from-anywhere smoke: ${pass} checks passed`);
 } finally {
-  for (const d of [home, projA, projB, neutral]) rmSync(d, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
 }
-process.exit(0);
+// No `process.exit(0)`: it overrides any non-zero exitCode a cleanup path sets, so a leak or a
+// failed teardown would report green. Let the process exit on its own code.

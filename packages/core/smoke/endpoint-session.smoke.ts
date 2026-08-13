@@ -47,6 +47,7 @@ import {
   type SessionGrant, type SessionLedger, type SessionLedgerRow, type SessionRedemptionHooks,
   type SignerAnchor, type AnchorResolver,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -458,7 +459,7 @@ console.log("D. no standing EPS grant in any grant builder");
 
 // ---------- C. the rails over a real broker ----------
 console.log("C. rails: duplex windowed frames over a live broker");
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epsession-"));
 const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 try {

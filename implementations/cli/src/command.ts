@@ -1,4 +1,5 @@
 import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
+import { isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
   isExtensionStub,
@@ -201,6 +202,17 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       const msg = (e as Error).message.split(".")[0];
       console.error(c.red(`✗ ${msg}`));
       commandHelp(cmd);
+      process.exit(1);
+    }
+    // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
+    // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe
+    // rather than product copy, so falling through to the generic line below strips the removed
+    // fact and the action, leaving the operator a diagnosis they cannot act on. Rendering it HERE
+    // covers every path that lets one reach the boundary, not just the ones that happen to call an
+    // `…OrExit` helper.
+    if (isWorkspaceTargetError(e)) {
+      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
+      if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
       process.exit(1);
     }
     // Every other command failure (a broker permission denial, a missing --creds file, a failed

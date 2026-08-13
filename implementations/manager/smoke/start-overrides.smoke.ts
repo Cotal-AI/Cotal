@@ -61,6 +61,7 @@ const fakeHandle = (name: string): AgentHandle => ({
   // joined — same fake as manifest-launch.smoke.ts, so a successful spawn resolves "started".
   on: () => {},
   off: () => {},
+  waitForPresenceSnapshot: async () => {},
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 

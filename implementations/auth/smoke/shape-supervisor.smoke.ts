@@ -26,8 +26,9 @@ import { createSpaceAuth, ensureAuthorityStores, epAuthBucket, isReachable, serv
 import { Kvm } from "@nats-io/kv";
 import { assertAuthorityStreamShape, type AuthorityStreamCfg } from "../src/lifecycle-registry.js";
 import { openAuthorityClient, openSupervisedConnectReader } from "../src/authority-client.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
@@ -52,7 +53,7 @@ const space = `shapesup-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-shapesup-"));
 const conf = join(tmp, "server.conf");
-writeFileSync(conf, serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 let srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 
 const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };

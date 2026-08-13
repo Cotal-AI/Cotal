@@ -1,4 +1,5 @@
-import WebSocket from "ws";
+import type { NatsConnection } from "@nats-io/transport-node";
+import { openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type SessionGrant } from "@cotal-ai/core";
 import { c } from "../ui.js";
 
 /**
@@ -78,11 +79,34 @@ const lastIndexOfRe = (re: RegExp, s: string): number => {
 };
 
 /**
- * Drive a manager's attach endpoint from the terminal: raw-mode stdin streams to
- * the PTY, PTY output streams to stdout, and SIGWINCH-style resizes are forwarded.
- * The detach key (Ctrl-] by default, {@link detachKey}) detaches without killing the agent.
+ * A transport-agnostic terminal session. {@link attachClient} drives the terminal through this
+ * interface, so the SAME raw-mode / alt-screen / detach handling serves the mesh §13.6 session
+ * ({@link meshSessionTransport}). (The legacy loopback `ws://.../attach/` transport was removed with
+ * the P2 item 6 no-127.0.0.1 sweep.)
  */
-export function attachClient(url: string): Promise<void> {
+export interface TerminalTransport {
+  /** Fires once the transport is connected and ready to carry the terminal. */
+  onReady(cb: () => void): void;
+  /** Remote → local: terminal output bytes. */
+  onData(cb: (bytes: Buffer) => void): void;
+  /** The session ended: `err` on a transport error (rejects), else a clean detach/close (resolves),
+   *  with the peer's distinct end `reason` when it sent one. */
+  onEnd(cb: (err?: Error, reason?: string) => void): void;
+  /** Local → remote: keystroke bytes. */
+  send(bytes: Buffer): void;
+  /** Local → remote: terminal resize. */
+  resize(cols: number, rows: number): void;
+  /** Detach: signal the remote and stop locally. */
+  close(): void;
+}
+
+/**
+ * Drive a manager's attach session from the terminal: raw-mode stdin streams to the remote PTY,
+ * PTY output streams to stdout, and SIGWINCH-style resizes are forwarded. The detach key (Ctrl-]
+ * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic over the
+ * mesh §13.6 session.
+ */
+export function attachClient(transport: TerminalTransport): Promise<void> {
   // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
   // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
   let detach: ReturnType<typeof detachKey>;
@@ -93,7 +117,6 @@ export function attachClient(url: string): Promise<void> {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(url);
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw ?? false;
 
@@ -133,15 +156,15 @@ export function attachClient(url: string): Promise<void> {
     };
 
     const sendResize = () =>
-      ws.send(`r:${process.stdout.columns ?? 80},${process.stdout.rows ?? 24}`);
+      transport.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
     const onInput = (d: Buffer) => {
       if (d.length === 1 && d[0] === detach.byte) {
-        ws.close();
+        transport.close();
         return;
       }
       // Inline child: forward keystrokes raw (its wheel scrolls the local terminal, not the app).
       if (!altScreen) {
-        ws.send(d);
+        transport.send(d);
         return;
       }
       // Full-screen child: rewrite wheel reports to PageUp/PageDown, pass everything else through.
@@ -177,7 +200,7 @@ export function attachClient(url: string): Promise<void> {
         else out += m[0]; // other mouse (click/drag): forward raw so the TUI still gets it
         mouseBuf = rest.slice(m[0].length);
       }
-      if (out) ws.send(Buffer.from(out, "latin1"));
+      if (out) transport.send(Buffer.from(out, "latin1"));
     };
     const cleanup = () => {
       stdin.off("data", onInput);
@@ -190,7 +213,7 @@ export function attachClient(url: string): Promise<void> {
       stdin.pause();
     };
 
-    ws.on("open", () => {
+    transport.onReady(() => {
       // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
       // default label). Only on override, so the default case stays free of duplicate noise.
       if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));
@@ -200,17 +223,69 @@ export function attachClient(url: string): Promise<void> {
       process.stdout.on("resize", sendResize);
       stdin.on("data", onInput);
     });
-    ws.on("message", (data: Buffer) => {
+    transport.onData((data) => {
       trackAltScreen(data);
       process.stdout.write(data);
     });
-    ws.on("close", () => {
+    transport.onEnd((err) => {
       cleanup();
-      resolve();
-    });
-    ws.on("error", (e) => {
-      cleanup();
-      reject(e);
+      if (err) reject(err);
+      else resolve();
     });
   });
+}
+
+
+/**
+ * The mesh §13.6 SESSION transport: the item-6 replacement for the loopback WebSocket. Given a
+ * connection scoped to the session's eps rails and the redeemed grant, it opens the caller rail,
+ * asks the serving side to replay the reconstructed backlog (the `ready` handshake — PR #158 over
+ * the mesh), and speaks the core terminal-session frame codec. A `drop` frame is surfaced INLINE
+ * (never a silent loss); a peer `end`/close or a protocol fault ends the session with the distinct
+ * reason. No `127.0.0.1`, no bearer URL — the grant is holder-bound.
+ */
+export function meshSessionTransport(nc: NatsConnection, grant: SessionGrant): TerminalTransport {
+  let onDataCb: ((bytes: Buffer) => void) | undefined;
+  let onEndCb: ((err?: Error, reason?: string) => void) | undefined;
+  let onReadyCb: (() => void) | undefined;
+  let ended = false;
+  const fireEnd = (err?: Error, reason?: string): void => {
+    if (ended) return;
+    ended = true;
+    onEndCb?.(err, reason);
+  };
+
+  const rail = openSessionRail({
+    nc,
+    grant,
+    role: "caller",
+    onData: (data) => {
+      let frame;
+      try { frame = decodeTerminalFrame(data); } catch { return; } // garbled: the rail already surfaced it
+      if (frame.k === "data") onDataCb?.(Buffer.from(terminalFrameBytes(frame)));
+      else if (frame.k === "end") fireEnd(undefined, frame.reason);
+      else if (frame.k === "drop") onDataCb?.(Buffer.from(`\r\n[cotal: ${frame.bytes} bytes dropped - backpressure]\r\n`));
+    },
+    onClose: () => fireEnd(undefined, "peer-closed"),
+    onProtocolError: (reason) => fireEnd(new Error(`mesh session transport error: ${reason}`)),
+  });
+
+  // The caller's `out` subscription must be live before the serving side is asked to replay (EPS is
+  // at-most-once, no retention). flush() forces the SUB, then we send `ready` and go.
+  void nc.flush().then(() => {
+    if (ended) return;
+    try { rail.send({ k: "ready" }); } catch { /* broken/full: the onProtocolError path ends the session */ }
+    onReadyCb?.();
+  }).catch((e) => fireEnd(e as Error));
+
+  return {
+    onReady: (cb) => { onReadyCb = cb; },
+    onData: (cb) => { onDataCb = cb; },
+    onEnd: (cb) => { onEndCb = cb; },
+    send: (bytes) => { try { rail.send(encodeTerminalData(bytes)); } catch { /* interactive keystrokes are low-volume; a stuck window ends via the stall watchdog */ } },
+    // Guard degenerate geometry: the §13.6 codec rejects a non-positive dimension (a terminal
+    // reporting 0 during a transient) — never emit it (the serving side tolerates it regardless).
+    resize: (cols, rows) => { if (cols > 0 && rows > 0) { try { rail.send({ k: "resize", cols, rows }); } catch { /* advisory */ } } },
+    close: () => { rail.close(); fireEnd(undefined, "detached"); },
+  };
 }

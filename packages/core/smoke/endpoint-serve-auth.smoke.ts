@@ -63,7 +63,7 @@ const caller: EpCaller = { owner: "u_abc", actor: "worker", uid: UID };
 
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-epsauth-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const contract = compileContract({ root: { type: "object", properties: { n: { type: "number" } }, additionalProperties: false } });

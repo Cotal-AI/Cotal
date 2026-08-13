@@ -7,6 +7,31 @@
  * with the space streams is part of startAgent's contract now), a fake runtime, decode the minted
  * creds JWT.
  * Run with: pnpm smoke:manifest-launch
+ *
+ * ── READ THIS BEFORE ADDING A CHECK HERE ─────────────────────────────────────────────────────
+ * This suite reaches the handler through a PRIVATE CAST — `(mgr as unknown as {opLaunch(...)})
+ * .opLaunch(...)` below — so NO CONTRACT IS EVER APPLIED to what it passes. That is not a
+ * stylistic note; it produced a real escape. PR #317 added remote manifest deploy (an inline
+ * launch spec pushed over the control plane) and a check here asserting `opLaunch boots from an
+ * INLINE spec`. It passed. The feature was dead: `LAUNCH_INPUT_SCHEMA` is
+ * `additionalProperties:false` over exactly `{runId, name}`, so the ep door refuses the call
+ * before `opLaunch` ever runs. Main shipped a PASSING TEST FOR EXACTLY THE FEATURE THAT WAS
+ * BROKEN, and it could not catch the break because it tested one layer BELOW the contract that
+ * refuses the call. That is not a missing suite; it is a test whose green is meaningless for the
+ * property its name claims.
+ *
+ * Generalise it: any test that reaches past a boundary via a cast proves nothing about traffic
+ * that must CROSS that boundary. A door-enforced property needs a door-level suite —
+ * `manager-service-ops` / `manager-service-invoke`, which drive `A.call(...)` through the real ep
+ * door and are in `smoke:ci`.
+ *
+ * And the correlation, which is the generalisable half: every suite in this repo that invokes a
+ * handler through a cast (this one, `lifecycle-e2e`, `start-model-preflight`) is ALSO outside
+ * `smoke:ci`. The ungated set and the below-the-door set are the same set, so #317 was three
+ * independent misses — the feature had a test, the test sat below the contract, and it was
+ * ungated — each of which alone would have been survivable. When you gate a previously ungated
+ * suite, check FIRST whether it reaches its subject through the real door: an ungated suite has
+ * never had to be honest about that.
  */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,10 +110,12 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   provisionDmInbox: async () => {},
   provisionDlvInbox: async () => {},
   commitAcl: async () => {},
+  reissueAcl: async () => {},
   provisionTaskQueue: async () => {},
   // #159 B1 readiness race: on/off (event is only a wake) + getRoster reporting every managed agent joined.
   on: () => {},
   off: () => {},
+  waitForPresenceSnapshot: async () => {},
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 let seenVariant: string | undefined;
@@ -125,7 +152,9 @@ registry.register(recCon);
   const rej = await mgr.startAgent({ ...launchAgentToStartOpts(resolved, personaPath), prompt: "imperative override" });
   check("imperative prompt alongside resolved is rejected", rej.ok === false && /prompt/.test(rej.error ?? ""), JSON.stringify(rej));
 
-  const acl = credAcl(join(root, ".cotal", "auth", "creds", "scout.creds"));
+  // Lifecycle-keyed cred file (`<name>.<uid>.creds`) — the reply's uid names this incarnation's file.
+  const scoutUid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+  const acl = credAcl(join(root, ".cotal", "auth", "creds", `scout.${scoutUid}.creds`));
   check("read ACL = resolved allowSubscribe (general+ops+review)", ["general", "ops", "review"].every((ch) => acl.sub.some((s) => s.endsWith("." + ch))), acl.sub);
   check("post ACL = resolved allowPublish (general only)", acl.pub.some((s) => s.endsWith(".general")) && !acl.pub.some((s) => s.endsWith(".ops")), acl.pub);
 }
@@ -195,6 +224,13 @@ function writeSpec(name: string, body: unknown): string {
       name: "scout", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
       body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
       allowPublish: ["general"], personaPath: undefined, hash: "abc123",
+    }, {
+      // A NON-COLLIDING declared name. `scout` is already live from the startAgent test above, so
+      // under M6 it refuses (asserted below) — and the ledger-keying invariants that used to ride
+      // on the collision-numbered `scout-2` have to keep running somewhere, so they ride this.
+      name: "ranger", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
+      body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
+      allowPublish: ["general"], personaPath: undefined, hash: "abc123",
     }],
   };
   mkdirSync(join(root, ".cotal", "run"), { recursive: true });
@@ -211,18 +247,36 @@ function writeSpec(name: string, body: unknown): string {
   // pinned separately in smoke:own-agent-control (pure authorizeLaunch).
   const op = (a: Record<string, unknown>) =>
     (mgr as unknown as { opLaunch(a: Record<string, unknown>, c: string, admin: boolean): Promise<LaunchReply> }).opLaunch(a, "smoke-caller", true);
-  const reply = await op({ runId: runId2, name: "scout" });
+  // ── M6: A MANIFEST-DECLARED NAME IS A DECLARATION, NOT A REQUEST ──────────────────────────────
+  // `scout` is already live from the startAgent test above. This suite used to assert it
+  // COLLISION-NUMBERED to `scout-2`; that is pre-M6 behaviour and the expectation was stale, not
+  // the code. Collision-numbering a manifest-declared name makes `up -f` non-idempotent and sprawls
+  // agents, so a declared collision now REFUSES at accept. Breaking change against shipped main,
+  // declared as such. Asserted as the CONTRAST rather than as a bare refusal — the message must name
+  // the manifest-declared arm specifically, so this cannot pass on any old refusal.
+  const collide = await op({ runId: runId2, name: "scout" });
+  check("M6 a manifest-declared name colliding with a live incarnation REFUSES (never a silent -2)",
+    collide.ok === false && /hard-pinned \(manifest-declared\)/.test(String(collide.error ?? "")), collide);
+  check("M6 the refusal names the colliding name so an operator can act on it",
+    /"scout"|'scout'|\bscout\b/.test(String(collide.error ?? "")), collide.error);
+
+  // The ledger-keying invariants below are NOT about M6 and must keep running, so they ride a
+  // NON-COLLIDING declared name. Flipping the assertion above to "expect a refusal" and stopping
+  // there would have silently deleted all of them.
+  const reply = await op({ runId: runId2, name: "ranger" });
   check("opLaunch boots the resolved agent", reply.ok === true, reply.error);
-  // `scout` is already on the (fake) mesh from the startAgent test above, so it collision-numbers.
-  check("reply.name is the SPAWNED collision-numbered name (scout-2)", reply.ok && reply.data?.name === "scout-2", reply.ok && reply.data?.name);
-  check("reply carries the manifest requested name", reply.ok && reply.data?.requested === "scout");
+  check("reply.name is the declared name, taken exactly (no numbering when nothing collides)", reply.ok && reply.data?.name === "ranger", reply.ok && reply.data?.name);
+  check("reply carries the manifest requested name", reply.ok && reply.data?.requested === "ranger");
   check("reply carries runId + resolved hash for the ledger", reply.ok && reply.data?.runId === runId2 && reply.data?.hash === "abc123");
   check("reply carries the spawned nkey id", reply.ok && typeof reply.data?.id === "string" && (reply.data.id as string).length > 0);
-  check("creds are filed under the SPAWNED name (ledger-keying invariant)", existsSync(join(root, ".cotal", "auth", "creds", "scout-2.creds")));
+  // Lifecycle-keyed under the SPAWNED name: `ranger.<uid>.creds`.
+  const scout2Uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
+  const scout2Creds = join(root, ".cotal", "auth", "creds", `ranger.${scout2Uid}.creds`);
+  check("creds are filed under the SPAWNED name (ledger-keying invariant)", existsSync(scout2Creds));
   // The cred file's OWN nkey subject equals the reply id — the invariant `down -f` relies on to
   // verify a cred belongs to the recorded agent before deleting it (name+id ownership).
   {
-    const credText = readFileSync(join(root, ".cotal", "auth", "creds", "scout-2.creds"), "utf8");
+    const credText = readFileSync(scout2Creds, "utf8");
     const jwt = credText.split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
     const sub = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8")).sub;
     check("minted cred's JWT subject == the reply id (down -f cred-ownership check)", reply.ok && sub === reply.data?.id, { sub, id: reply.ok && reply.data?.id });
@@ -249,8 +303,14 @@ function writeSpec(name: string, body: unknown): string {
   check("inline spec runId mismatch rejected", mism.ok === false && /does not match/.test(mism.error ?? ""), mism.error);
   const evil = await op({ runId: runId3, name: "pusher", spec: { ...spec3, agents: [{ ...spec3.agents[0], name: "../evil" }] } });
   check("invalid inline spec rejected (unsafe agent name)", evil.ok === false);
+  // M6, and note what the OLD assertion was called: "is idempotent (collision-numbered spawn)". Its
+  // NAME wanted idempotence and its BODY asserted `pusher-2` — spawning a SECOND agent, which is the
+  // non-idempotent outcome. Re-pushing a manifest is the `up -f` case M6 exists for: it must not
+  // sprawl. So a re-push now REFUSES and no duplicate is created, which is what the assertion's own
+  // name was reaching for while testing the opposite.
   const again = await op({ runId: runId3, name: "pusher", spec: spec3 });
-  check("re-push of the same inline spec is idempotent (collision-numbered spawn)", again.ok === true && (again.data as { name?: string })?.name === "pusher-2", JSON.stringify(again));
+  check("M6 a re-push of the same inline spec REFUSES rather than sprawling a duplicate (`up -f` stays idempotent)",
+    again.ok === false && /hard-pinned \(manifest-declared\)/.test(String(again.error ?? "")), JSON.stringify(again));
 }
 
 // --- symlinked parent dir refused (writes can't escape the run tree) ----------------------------

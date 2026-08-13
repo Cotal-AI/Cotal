@@ -83,7 +83,7 @@ type LaunchSpec = import("@cotal-ai/core").LaunchSpec;
 type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn } = await import("node:child_process");
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -111,7 +111,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -148,7 +148,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
@@ -285,7 +286,7 @@ try {
     idpUrl: base,
   });
   jsDir = mkdtempSync(join(tmpdir(), "cotal-fsb-js-"));
-  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
+  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
@@ -519,7 +520,14 @@ try {
   check("replacement footprint exists after respawn (row + dm + dlv + acl)",
     fpS.row && fpS.dm.length > 0 && fpS.dlv.length > 0 && fpS.acl.length > 0, fpS);
   check("replacement holds a ROTATED ledger secret (its own mint authority, not the predecessor's)", typeof hash2 === "string" && hash2 !== hash1, { hash1, hash2 });
-  const replacementToken = readFileSync(join(credsDir, `${AGENT}.actor-token`), "utf8").trim();
+  // The manager files the actor token lifecycle-keyed (`<name>.<uid>.actor-token`); recover the
+  // successor's uid from disk (the retired predecessor's file is already gone) to read its token.
+  const succUid = (() => {
+    const re = new RegExp(`^${AGENT}\\.([a-z0-9]{26,32})\\.actor-token$`);
+    for (const f of readdirSync(credsDir)) { const m = re.exec(f); if (m) return m[1]; }
+    throw new Error(`no incarnation actor-token on disk for ${AGENT} in ${credsDir}`);
+  })();
+  const replacementToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, succUid).actorToken, "utf8").trim();
   // BARRIER 2 — lifecycle keying: the replacement's broker resources must be DISTINCT names from
   // the predecessor's, or any stale/replayed cleanup for the retired lifecycle can resolve to the
   // replacement's rows. Today the names collide exactly.

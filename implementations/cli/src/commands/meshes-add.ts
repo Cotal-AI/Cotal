@@ -151,6 +151,27 @@ export function candidateTarget(space: string, server: string, root: string, mod
     server,
     space,
     mode,
+    // A probe target for a registration that has not happened yet, so there is no recorded
+    // transport to honour and this stays non-strict. That reason stands on its own and is the
+    // whole justification.
+    //
+    // WHAT USED TO BE WRITTEN HERE WAS FALSE, and it is worth saying so rather than quietly
+    // deleting it. This comment claimed the scheme could not enforce because "`MeshEntry` cannot
+    // persist the intent" — a constraint removed three commits earlier by adding
+    // `MeshEntry.tlsRequired`. A dead premise was holding a live decision in place, and it is
+    // exactly why that field had no writers.
+    //
+    // The open question is now genuinely open: `tls://` is COSMETIC at the client (nats.js connects
+    // plaintext to `tls://host` with empty options; only the explicit `tls` option refuses), so an
+    // operator who types `tls://` today gets a record that resolves to a plaintext-tolerant client.
+    // Deriving `tlsRequired` from the scheme would make that typed intent real.
+    //
+    // It is deliberately NOT done in this change, for a reason that is true: it converts `meshes
+    // add tls://…` against a plaintext broker from a successful registration into a refusal. That
+    // is a behaviour change to this command's accept/refuse contract, it belongs with the dial-policy
+    // work being done in this file by another lane, and it is not one of the downgrades this branch
+    // exists to close. Tracked, owned, and not smuggled in beside them.
+    tlsRequired: false,
     ...(auth ? { auth } : {}),
     personaRoot: personaDir(root),
     source: "flag-server",
@@ -172,6 +193,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth`;
     case "stale-auth":
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
+    case "tls-trust":
+      return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
   }
 }
 

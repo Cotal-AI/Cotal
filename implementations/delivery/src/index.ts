@@ -19,6 +19,7 @@ const deliveryCommands: Command[] = [
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "tls", type: "boolean", description: "REQUIRE TLS to the broker - refuse to connect if it is not offered" },
       { name: "creds", type: "string", value: "<file>", description: "pre-minted scoped delivery cred" },
       { name: "shard", type: "string", value: "<n>", description: "shard index (N=1 only; non-zero is rejected)" },
       { name: "shards", type: "string", value: "<n>", description: "shard count (N=1 only; >1 is rejected)" },

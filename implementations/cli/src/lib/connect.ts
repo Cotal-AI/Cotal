@@ -3,6 +3,7 @@
 // so existing importers (and `connect.smoke.ts`) keep resolving them from this module unchanged.
 export {
   connectOrExit,
+  connectUserControlOrExit,
   endpointAuth,
   reachableOrExit,
   refuseStaticCredsForKnownUserAuthOrExit,

@@ -98,7 +98,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the interactive Claude handoff on a failed step (`1`; for CI) | off |
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr | off |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`) | off |
-| `COTAL_HOME` | workspace | Override the machine-home dir (`~/.cotal`), mainly for test sandboxing | `~/.cotal` |
+| `COTAL_HOME` | workspace | Override the machine-home dir for the **mesh registry only** (`meshes/`, `current-mesh`, onboard marker). Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
 
 > `--console-port` is a `cotal supervise` flag, not an environment variable; there is no
 > `COTAL_CONSOLE_PORT`.
@@ -138,6 +138,7 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `auth/space.<key>/` | One space's user-auth state (IdP pin, issuer keys, owner secret, callout account), present only when that space enables per-user auth. Keyed by the same case-safe hex encoding; pre-hex layouts (`auth/<space>/`) are renamed here on first touch |
 | `auth/creds/<name>.creds` | Per-agent minted NATS credentials |
 | `auth/server.conf` | Generated nats-server config for the broker. The core renderer accepts every space on the broker; `cotal up` currently orchestrates one space per root, so it renders that one space's account |
+| `broker-policy.json` | Durable broker **launch** policy (TLS-required cert/key path references, or plaintext). Survives `cotal down` so a bare re-`up` cannot silently drop TLS. Under the project root — **not** under `COTAL_HOME` |
 | `agents/<name>.md` | Persona / agent files ([Agent files](agent-files.md)) |
 | `manifests/<hash>.json` | Manifest-deploy ledger (records of `up -f` / `spawn -f` runs) |
 | `config.json` | Space-local connector config (the override layer above) |
@@ -153,9 +154,16 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 Cross-project machine state, so a `cotal spawn` from any directory can find a running mesh. Location:
 `~/.cotal` on POSIX, `%LOCALAPPDATA%\Cotal` on Windows; overridable with `COTAL_HOME`.
 
+`COTAL_HOME` overrides **this tree only** (registry + current pointer + onboard marker). It is not a
+full workstation sandbox. Broker launch policy, the JetStream store, pidfiles, and auth live under
+the **project** `.cotal/` found by walking up from the cwd ([Project: `.cotal/`](#project-cotal)
+above, including `broker-policy.json` on TLS meshes). A probe that sets `COTAL_HOME` alone and runs
+`cotal up --tls-cert …` from a directory whose walked root is the operator home still writes those
+project paths on the live machine.
+
 | Path | What it is |
 |---|---|
-| `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
+| `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode, TLS-required client intent when recorded); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
 | `current-mesh` | Default space a bare `cotal spawn` joins (set by `cotal use`) |
 | `onboarded.json` | First-run marker (with `ONBOARD_VERSION`) that flips setup between first-run and status-card |
 | the Claude plugin marketplace | The installed `cotal-mesh` plugin assets |

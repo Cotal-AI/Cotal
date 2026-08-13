@@ -12,6 +12,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
 import { standaloneConnectOpts } from "./streams.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
+import { liveKvEntries } from "./kv-scan.js";
 
 /** The declarative channel-config file read at `cotal up` to seed the registry. */
 export interface ChannelRegistryFile {
@@ -163,7 +164,7 @@ export async function seedChannelRegistry(opts: {
   sentinelCreds?: string;
   file: ChannelRegistryFile;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // The seed path is privileged (manager creds or open) so it may CREATE the bucket — this
     // makes `cotal channels` work on a space whose bucket wasn't pre-created (e.g. one set up
@@ -189,7 +190,7 @@ export async function ensureDefaultDeliveryClass(opts: {
   creds?: string;
   deliveryClass: DeliveryClass;
 }): Promise<boolean> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
     if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
@@ -214,7 +215,7 @@ export async function deleteChannels(opts: {
   sentinelCreds?: string;
   channels: string[];
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
     for (const channel of opts.channels) await kv.delete(channel);
@@ -235,7 +236,7 @@ export async function readChannelRegistry(opts: {
   bearer?: string;
   sentinelCreds?: string;
 }): Promise<ChannelRegistryFile> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // Read-only: never CREATE the bucket — a scoped read cred (operator) has no STREAM.CREATE, and a
     // read must not have the side effect of provisioning. `Kvm.open` binds lazily, so a never-seeded
@@ -244,16 +245,18 @@ export async function readChannelRegistry(opts: {
     const channels: Record<string, ChannelConfig> = {};
     let defaults: ChannelDefaults | undefined;
     try {
-      for await (const key of await kv.keys()) {
-        if (key === CHANNEL_DEFAULTS_KEY) {
-          defaults = await readChannelDefaults(kv);
+      // ONE pass: this was a `keys()` scan plus a per-key `get()`, so one round trip per channel.
+      for (const e of await liveKvEntries(kv)) {
+        if (e.key === CHANNEL_DEFAULTS_KEY) {
+          try { defaults = e.json<ChannelDefaults>(); } catch { /* garbled defaults — treat as unset */ }
           continue;
         }
-        const cfg = await readChannelConfig(kv, key);
+        let cfg: ChannelConfig | undefined;
+        try { cfg = e.json<ChannelConfig>(); } catch { /* skip undecodable */ }
         // Channel tokens such as `__proto__` are valid. Define an own data property instead of
         // invoking Object.prototype setters, while preserving the reader's normal-object shape.
         if (cfg)
-          Object.defineProperty(channels, key, {
+          Object.defineProperty(channels, e.key, {
             value: cfg,
             enumerable: true,
             configurable: true,

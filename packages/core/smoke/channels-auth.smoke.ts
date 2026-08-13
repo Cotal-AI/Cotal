@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, CotalEndpoint,
-  CONTROL_SELF_SERVICE, channelInAllow, principalKey, DEV_OWNER, mintLifecycleUid,
-  type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
+  principalKey, DEV_OWNER, mintLifecycleUid,
+  type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 
 // Auth-mode end-to-end test of the broker-enforced read-ACL path: proves the SCOPED agent creds
@@ -28,7 +28,7 @@ const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.te
 
 mkdirSync(storeDir, { recursive: true });
 const auth = await createSpaceAuth(space);
-writeFileSync(conf, serverConfig(auth, [auth], { port, storeDir }));
+writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir }));
 const fd = openSync(log, "w");
 const child = spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] });
 process.on("exit", () => child.kill("SIGTERM"));
@@ -67,28 +67,15 @@ const poster = new CotalEndpoint({ space, servers: server, creds: await mintCred
 poster.on("error", (e) => console.log("poster err:", e.message));
 await poster.start();
 
-// The supervisor serves the mediated join/leave op (what the manager does in prod): it
-// validates the requested set ⊆ the agent's allowSubscribe, then moves its bind-only chat filter.
+// 1d: the delivery daemon serves the mediated durableJoin/durableLeave ops on ctl.delivery directly
+// (startPlane3's serve loop below, ACL-checked via its callback) — the ops joinChannel/leaveChannel
+// target. It validates the channel ⊆ the agent's allowSubscribe and writes the lifecycle-keyed
+// (SPEC §13.1) membership. (The old `sup.serveControl(CONTROL_SELF_SERVICE)` stub duplicated this
+// real handler on the deleted manager tier; removed.)
 const allowSub = ["log", "general", "incident"];
 // One lifecycle uid for the single simulated agent (SPEC §13.1): its provision, creds, endpoint, and
 // every durable-name prediction share it. A same-alias respawn would mint a fresh one.
 const UID = mintLifecycleUid();
-sup.serveControl(CONTROL_SELF_SERVICE, async (req: ControlRequest) => {
-  const args = req.args ?? {};
-  const ch = typeof args.channel === "string" ? args.channel : "";
-  // Stage 4: a runtime durable join/leave goes to Plane-3 (durableJoin/durableLeave). Validate ⊆
-  // allowSubscribe (what the manager op does), then write membership with the privileged endpoint —
-  // membership rows are lifecycle-keyed (SPEC §13.1), so the join/leave carry the incarnation's uid.
-  if (req.op === "durableJoin") {
-    if (!channelInAllow(allowSub, ch)) return { ok: false, error: `"${ch}" outside allowSubscribe` };
-    return { ok: true, data: await dlv.durableJoinFor(req.from.id, ch, UID) };
-  }
-  if (req.op === "durableLeave") {
-    await dlv.durableLeaveFor(req.from.id, ch, UID, typeof args.generation === "number" ? args.generation : undefined);
-    return { ok: true, data: { channel: ch } };
-  }
-  return { ok: false, error: `unsupported op ${req.op}` };
-});
 
 await poster.multicast("log-hist", { channel: "log" });
 await poster.multicast("incident-hist", { channel: "incident" });

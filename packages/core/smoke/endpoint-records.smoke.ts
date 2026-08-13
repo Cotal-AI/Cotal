@@ -19,6 +19,7 @@ import {
   readRecord, readAtomicRecord, watchRecord, openRecordsBucket,
   type MergedRecord,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -158,7 +159,7 @@ const tK = recordStatusKey(RECORD_KINDS.svc, svcQ);
 }
 
 // ── the live half: CAS, merged read, head, watch ──
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-eprec-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

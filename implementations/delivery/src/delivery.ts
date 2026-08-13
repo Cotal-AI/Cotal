@@ -147,7 +147,14 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
-  if (!(await isReachable(server, { creds: latestCreds }))) {
+  // REQUIRE TLS when the operator said to. This daemon holds a STANDING credential and reconnects
+  // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
+  // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
+  // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
+  // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
+  // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
+  const tls = v.tls !== undefined;
+  if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
     process.exit(1);
   }
@@ -155,6 +162,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   const ep = new CotalEndpoint({
     space,
     servers: server,
+    ...(tls ? { tls: true } : {}),
     // The RELOAD seam (D5 slice 5 class 2): the endpoint re-invokes the source at 75% of each JWT's
     // lifetime and swaps the connection onto the re-signed file — bounded delivery creds renew with
     // no daemon restart. The explicit card.id pins the daemon's nkey across renewals.
@@ -271,7 +279,16 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   let lastReachable = Date.now();
   const brokerWatch = setInterval(() => {
     if (stopping) return;
-    void isReachable(server, { creds: latestCreds })
+    // THE SAME TRANSPORT AS EVERY OTHER DIAL IN THIS PROCESS. This poll carries `latestCreds` — a
+    // standing credential — and `isReachable` performs a real authenticated connect whenever creds
+    // are supplied, every 2 seconds, for the life of the daemon. It is the most repeated credential
+    // presentation in the system, and it was the one dial here that did not name its transport.
+    //
+    // The poll predates TLS and is identical on `main`, where nothing is encrypted and it is at
+    // least consistent. What is new is the ASYMMETRY: with the two dials above upgraded, an operator
+    // who enables TLS would get a protected main path and an unprotected watchdog. An inconsistent
+    // guarantee is worse than a uniformly absent one, because the operator now believes something.
+    void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
       .then((ok) => {
         if (ok) { lastReachable = Date.now(); return; }
         if (Date.now() - lastReachable > BROKER_GONE_MS) {

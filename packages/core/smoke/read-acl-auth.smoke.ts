@@ -61,7 +61,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const space = `read-acl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-readacl-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 const CHAT = chatStream(space);
@@ -101,7 +101,7 @@ try {
 
   // A scoped agent: read ACL = ["allowed"] only. The stub provisioner skips durable pre-create —
   // we only need the cred's grants, which is what nats-server enforces.
-  const noop = { commitAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+  const noop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed"], lifecycleUid: uid });

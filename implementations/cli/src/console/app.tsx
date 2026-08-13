@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
-import type { CotalEndpoint, Presence } from "@cotal-ai/core";
+import { DEV_OWNER, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
@@ -195,15 +195,24 @@ export function App({
     runCommand(line, ctx, !!canWrite);
   };
 
-  // Confirmed destructive action (kill only; space-delete is handled in the picker).
+  // Confirmed destructive action (kill only; space-delete is handled in the picker). Resolve the
+  // alias to its principal triple via the manager's `inspect` read, then `despawn` over the ep
+  // rails (1d: the manager's ctl door is gone). Any-mode reach - the console's operator stop is
+  // cross-agent; on an open mesh the broker enforces nothing, on an authed mesh the read-only
+  // console cred is cleanly denied (its stop never functioned there).
   const onConfirmed = () => {
     const c = confirm;
     setConfirm(null);
     if (c?.kind === "kill") {
-      void ep
-        .requestControl("manager", { op: "stop", args: { name: c.name } })
-        .then((r) => setNotice(r.ok ? `stopped ${c.name}` : `stop: ${r.error ?? "failed"}`))
-        .catch((e) => setNotice("stop: " + (e as Error).message));
+      void (async () => {
+        const info = await ep.invokeService("manager", "inspect", { name: c.name });
+        if (info.reply.ok !== true) return setNotice(`stop: ${info.reply.error?.message ?? info.reply.error?.code ?? "failed"}`);
+        const row = info.reply.data as { id: string; lifecycleUid: string };
+        const dot = row.id.indexOf(".");
+        const [owner, actor] = dot > 0 ? [row.id.slice(0, dot), row.id.slice(dot + 1)] : [DEV_OWNER, row.id];
+        const r = await ep.invokeService("manager", "despawn", undefined, { target: { mode: "any", owner, actor, lifecycleUid: row.lifecycleUid } });
+        setNotice(r.reply.ok === true ? `stopped ${c.name}` : `stop: ${r.reply.error?.message ?? r.reply.error?.code ?? "failed"}`);
+      })().catch((e) => setNotice("stop: " + (e as Error).message));
     }
   };
 

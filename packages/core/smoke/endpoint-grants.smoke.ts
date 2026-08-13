@@ -13,7 +13,7 @@ import {
   createSpaceAuth, mintCreds, newIdentity,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
-  epBaselineGrantRows, spawnCallerCapabilities, permissionsFor,
+  epBaselineGrantRows, spawnCallerCapabilities, operatorInstrumentCapabilities, permissionsFor,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
 
@@ -59,29 +59,53 @@ throws("caller owner/actor tokens are grammar-validated in grant rows too",
 throws("standing caller bundle refuses a handle-mode capability (redemption-minted only)",
   () => epCallerGrantRows("demo", [handleCap], caller));
 const bundle = epCallerGrantRows("demo", [spawnCap], caller);
-c("caller bundle: request + journal pub, reply-rail sub",
-  bundle.pub.length === 2 && bundle.sub.length === 1 && bundle.sub[0] === epCallerReplyGrantRow("demo", caller));
+c("caller bundle: request + journal pub, reply-rail + own-goal-progress sub (spawn is goal-bearing, P2 item 2)",
+  bundle.pub.length === 2 && bundle.sub.length === 2
+  && bundle.sub[0] === epCallerReplyGrantRow("demo", caller)
+  && bundle.sub[1] === epGoalProgressGrantRow("demo", "manager", caller));
 c("empty capability set mints nothing", JSON.stringify(epCallerGrantRows("demo", [], caller)) === '{"pub":[],"sub":[]}');
 
 // ── the Appendix-B baseline set ──
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
   baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
-c("baseline: delivery join/leave/list untargeted + manager stop self-mode, nothing else",
-  baseline.pub.length === 5
+c("baseline: delivery join/leave/list untargeted + manager stop self-mode + the ONE epc-subject-scoped store fetch, nothing else",
+  baseline.pub.length === 6
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
-  && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`),
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.stop.self.u_abc.cli.${UID}.*`)
+  // §13.7 store fetch rides the baseline (describe answers digests; a caller that may describe
+  // may fetch the schemas those digests name) — EXACTLY the epc-subject-scoped Direct Get form,
+  // never the bare/stream-wide row, and no epc PUBLISH row.
+  && baseline.pub.includes("$JS.API.DIRECT.GET.EPC_demo.cotal.demo.epc.>")
+  && baseline.pub.every((r) => !r.startsWith("cotal.demo.epc.")),
   JSON.stringify(baseline.pub));
 c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn)",
-  spawnCallerCapabilities("u_abc").length === 3
+c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 5
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*`);
+// The operator INSTRUMENT rollups (the 1c grant-migration table's admin row): the privileged
+// instrument is read + create + persona only (structurally barred from cross-agent reach, like its
+// ctl row); the admin instrument adds ANY-mode despawn/attach (tOwner "*": operator-policy-mintable
+// only, §13.2 - the broker grant IS the tier boundary) and the untargeted `manager.admin` family.
+c("the privileged instrument set: reads + spawn + define-persona, NOTHING targeted",
+  operatorInstrumentCapabilities("privileged").length === 6
+  && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,spawn,define-persona");
+const adminCaps = operatorInstrumentCapabilities("admin");
+c("the admin instrument set adds any-mode despawn/attach + the manager.admin family",
+  adminCaps.length === 16
+  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach"
+  && adminCaps.filter((cap) => cap.target?.mode === "any").every((cap) => (cap.target as { tOwner?: string }).tOwner === "*")
+  && ["purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((cmd) => adminCaps.some((cap) => cap.command === cmd && cap.target === undefined)));
+c("an any-mode instrument row spans the target owner (grant `*`), pinned to the caller triple",
+  epCallerGrantRows("demo", adminCaps.filter((cap) => cap.target?.mode === "any" && cap.command === "despawn"), caller).pub.join("|")
+  === `cotal.demo.ep.one.manager.despawn.any.*.u_abc.cli.${UID}.*`);
 
 // ── serve rows against the §13.9 matrix forms ──
 c("serve subscribe: queue-qualified class rail + plain scatter + exact instance, per command",

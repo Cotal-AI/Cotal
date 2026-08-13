@@ -32,6 +32,7 @@ import {
   type EpCaller, type GoalRef, type ParsedEpRequest, type GoalResultFact, type ActionContext,
   type Receipt, type ReceiptEmissionWiring, type ReceiptStoreContext,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -68,7 +69,7 @@ c("the per-goal progress topic carries the caller identity for mint-time read co
   epeSubject(SPACE, "manager", "i".repeat(26), 1, goalProgressTopic(ref("g1")))
     .endsWith(`.goal.u_abc.worker.${UID}.g1.progress`));
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epact-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 
@@ -474,7 +475,18 @@ try {
   await nc.close();
 } finally {
   broker.kill("SIGKILL");
-  await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
+  // Settle on every path the broker can take, including ALREADY-EXITED. Attaching once("exit")
+  // only after kill races: under load the child can fully exit before the listener is armed, the
+  // promise never settles, and tsx exits 13 with "Detected unsettled top-level await" after every
+  // assertion has already passed (reproduced: forced already-exited path → exit 13 + same warning).
+  await new Promise<void>((resolve) => {
+    if (broker.exitCode !== null || broker.signalCode !== null) return resolve();
+    const done = () => resolve();
+    broker.once("exit", done);
+    broker.once("error", done);
+    // Re-check after arming: exit may have fired between the null test and once().
+    if (broker.exitCode !== null || broker.signalCode !== null) resolve();
+  });
   rmSync(sd, { recursive: true, force: true });
 }
 

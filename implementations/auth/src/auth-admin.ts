@@ -34,19 +34,19 @@
  * sealed records scanner exactly like the boot resume; the lease read is a leader read, no
  * consumer-create anywhere; the requester credential is request + reply-inbox ONLY.
  */
-import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import type { Subscription } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
 import {
   CONTROL_AUTH_ADMIN,
   EpEnvelopeError,
-  MANAGER_LEASE_KEY,
   assertBoundedOwner,
   assertLifecycleToken,
-  managerBucket,
+  endpointToken,
+  epAuthBucket,
   principalKey,
   retirementFrontierStreams,
+  serveIssuanceGateKv,
   spacePrefix,
-  type ManagerLeaseInfo,
 } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
@@ -69,7 +69,11 @@ export function authAdminListenerGrants(space: string, connId: string): { publis
       // broker-bound to publish only its OWN `<owner>.<actor>` request subject.
       `${spacePrefix(space)}.ctl.${CONTROL_AUTH_ADMIN}.*.*.reply.>`,
       "$JS.API.INFO",
-      `$JS.API.STREAM.MSG.GET.KV_${managerBucket(space)}`,
+      // The ONE leader-served read the holder-check performs: the serve-issuance GATE (P2 item 3
+      // 3b-3), a point-get of `epgate.<endpoint>.<instanceId>` proving the requesting manager
+      // instance's serve grant is CURRENT (registration-record-derived, replacing the old
+      // name-derived manager-lease read). No consumer authority, no store writes.
+      `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`,
     ],
     subscribe: [`${spacePrefix(space)}.ctl.${CONTROL_AUTH_ADMIN}.*.*`, `_INBOX_${connId}.>`],
   };
@@ -79,27 +83,37 @@ export function authAdminListenerGrants(space: string, connId: string): { publis
 // the ONE grants source the D32 audit pins): publish exactly its own control subject + subscribe
 // its own reply subtree and inbox - request + reply ONLY.
 
-/** One rail request's CLOSED argument shape. */
+/** One rail request's CLOSED argument shape. `serve*` (P2 item 3 3b-3) declares the REQUESTING
+ *  manager instance's current serve identity so the holder check is registration-record-derived. */
 interface RetireArgs {
   owner: string;
   actor: string;
   lifecycleUid: string;
   opId: string;
+  serveEndpoint: string;
+  serveInstanceId: string;
+  serveEpoch: number;
 }
 
 function parseRetireArgs(raw: unknown): RetireArgs {
+  const shape = "{ owner, actor, lifecycleUid, opId, serveEndpoint, serveInstanceId, serveEpoch }";
   if (raw === null || typeof raw !== "object")
-    throw new EpEnvelopeError("failed-precondition", "retireLifecycle requires args { owner, actor, lifecycleUid, opId }");
+    throw new EpEnvelopeError("failed-precondition", `retireLifecycle requires args ${shape}`);
   const a = raw as Record<string, unknown>;
-  for (const k of Object.keys(a)) if (!["owner", "actor", "lifecycleUid", "opId"].includes(k))
+  for (const k of Object.keys(a)) if (!["owner", "actor", "lifecycleUid", "opId", "serveEndpoint", "serveInstanceId", "serveEpoch"].includes(k))
     throw new EpEnvelopeError("failed-precondition", `retireLifecycle args carry the unknown field "${k}" (closed shape)`);
-  if (typeof a.owner !== "string" || typeof a.actor !== "string" || typeof a.lifecycleUid !== "string" || typeof a.opId !== "string")
-    throw new EpEnvelopeError("failed-precondition", "retireLifecycle requires string args { owner, actor, lifecycleUid, opId }");
+  if (typeof a.owner !== "string" || typeof a.actor !== "string" || typeof a.lifecycleUid !== "string" || typeof a.opId !== "string" ||
+      typeof a.serveEndpoint !== "string" || typeof a.serveInstanceId !== "string" ||
+      typeof a.serveEpoch !== "number" || !Number.isInteger(a.serveEpoch) || a.serveEpoch < 0)
+    throw new EpEnvelopeError("failed-precondition", `retireLifecycle requires args ${shape} (serveEpoch a non-negative integer)`);
   return {
     owner: assertBoundedOwner(a.owner, "owner"),
     actor: assertBoundedOwner(a.actor, "actor"),
     lifecycleUid: assertLifecycleToken(a.lifecycleUid, "lifecycleUid"),
     opId: assertLifecycleToken(a.opId, "opId"),
+    serveEndpoint: endpointToken(a.serveEndpoint),
+    serveInstanceId: assertLifecycleToken(a.serveInstanceId, "serveInstanceId"),
+    serveEpoch: a.serveEpoch,
   };
 }
 
@@ -127,9 +141,11 @@ export async function openAuthAdminListener(opts: {
     grants: (id) => authAdminListenerGrants(space, id),
     log,
   });
-  let jsm: JetStreamManager;
+  let epAuthKv: import("@nats-io/kv").KV;
   try {
-    jsm = await jetstreamManager(client.nc);
+    // Bind the endpoint-auth bucket once for the 3b-3 serve-issuance-gate holder check (point-get,
+    // no consumer). Lazy bind (kvm.open) — the space's stores are pre-created at `cotal up`.
+    epAuthKv = await new Kvm(client.nc).open(epAuthBucket(space));
   } catch (e) {
     await client.close();
     throw e;
@@ -189,25 +205,25 @@ export async function openAuthAdminListener(opts: {
       return { ok: false, error: `op "${String(req.op)}" not supported on the auth admin service` };
     const args = parseRetireArgs(req.args);
 
-    // THE RAIL-TIME LEASE RE-CHECK (fresh, leader-served, fail-closed).
-    let lease: ManagerLeaseInfo | undefined;
+    // THE RAIL-TIME REGISTRATION RE-CHECK (fresh, leader-served, fail-closed) — P2 item 3 (3b-3):
+    // the requesting manager instance's SERVE GRANT must be current. Read the serve-issuance gate
+    // (registration-record-derived, REPLACING the old name-derived manager-lease holder check): the
+    // requester declares its (serveEndpoint, serveInstanceId, serveEpoch); an absent/retired gate means
+    // no registered instance, and a gate whose current processEpoch moved past the declared one means
+    // the requester was SUPERSEDED (a deposed predecessor after a restart) — refused as a full no-op.
+    // Every instance of one space shares the manager principal (the broker ACL already confines the
+    // requester to it), so ANY current instance's gate authorizes (accept any registered instance with
+    // a current serve grant — pin 5). The requester principal is still recorded on the audit line below.
+    let serveGate: Awaited<ReturnType<ReturnType<typeof serveIssuanceGateKv>["observe"]>>;
     try {
-      const m = await jsm.streams.getMessage(`KV_${managerBucket(space)}`, { last_by_subj: `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}` });
-      // A DEL/PURGE marker (a gracefully-stopped manager DELETES its lease) and a TTL-expunged
-      // row both read ABSENT — never parsed, never a crash-shaped refusal.
-      const op = m?.header?.get("KV-Operation");
-      lease = m === null || op === "DEL" || op === "PURGE" || m.data.length === 0
-        ? undefined
-        : (JSON.parse(dec.decode(m.data)) as ManagerLeaseInfo);
+      serveGate = await serveIssuanceGateKv(epAuthKv, space, { endpoint: args.serveEndpoint, instanceId: args.serveInstanceId }).observe();
     } catch (e) {
-      const code = (e as { code?: unknown })?.code;
-      if (code !== 10037) // 10037 = no message: a genuinely absent lease, handled below
-        return { ok: false, error: `the retirement request cannot be authorized right now: the space-manager lease could not be read (${e instanceof Error ? e.message : String(e)}). Nothing was applied - the agent is unchanged. NEXT: check the broker and retry the despawn.` };
+      return { ok: false, error: `the retirement request cannot be authorized right now: the manager serve-issuance gate could not be read (${e instanceof Error ? e.message : String(e)}). Nothing was applied - the agent is unchanged. NEXT: check the broker and retry the despawn.` };
     }
-    if (lease === undefined || typeof lease.holder !== "string")
-      return { ok: false, error: `no manager currently holds the space lease, so nothing may retire agents in "${space}". The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: start or recover the manager (\`cotal supervise\`), then retry the despawn.` };
-    if (lease.holder !== requester)
-      return { ok: false, error: `the requesting manager lost the space lease (it is held by ${lease.holder}), so this despawn was REFUSED as a FULL no-op - the agent is unchanged and still running, nothing was torn down. NEXT: recover the manager (\`cotal supervise\`), then retry the despawn under the current lease holder.` };
+    if (serveGate === null || serveGate.state === "retired")
+      return { ok: false, error: `no manager instance currently holds a serve registration for "${space}" (instance ${args.serveInstanceId} is ${serveGate === null ? "unregistered" : "retired"}), so nothing may retire agents. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: start or recover the manager (\`cotal supervise\`), then retry the despawn.` };
+    if (serveGate.processEpoch !== args.serveEpoch)
+      return { ok: false, error: `the requesting manager instance ${args.serveInstanceId} was SUPERSEDED (it registered at epoch ${args.serveEpoch}, the current serve grant is epoch ${serveGate.processEpoch}), so this despawn was REFUSED as a FULL no-op - the agent is unchanged and still running, nothing was torn down. NEXT: recover the manager (\`cotal supervise\`), then retry the despawn under the current serving instance.` };
 
     // IDEMPOTENCE (the four-outcome table, in operator vocabulary).
     const head = await readLifecycleHeadForOperation(opts.reg, args.owner, args.actor);

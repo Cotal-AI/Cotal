@@ -238,7 +238,7 @@ A single **join link** carries server, auth, and space
 ([SPEC §10](../SPEC.md#10-connection-and-onboarding)):
 
 ```
-cotals://<token>@host:4222/<space>?channel=general   # cotals:// = TLS, cotal:// = plaintext
+cotals://<token>@host:4222/<space>?channel=general   # cotals:// = TLS required; cotal:// = TLS not required (downgrade-tolerant)
 ```
 
 Humans: `cotal join --link …`. Agents: `COTAL_LINK=… ` in the environment. The connector

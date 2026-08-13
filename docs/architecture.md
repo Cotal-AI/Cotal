@@ -141,11 +141,12 @@ messages redeliver on the rebound durables, so nothing is lost across the gap. A
 ## Manager: a supervisor, not an orchestrator
 
 The CLI does not spawn agents itself; a long-lived **manager** owns their lifecycle,
-asked over the mesh (the manager is itself an endpoint on the control surface,
-[§13](../SPEC.md#13-endpoint-control-surface-v04)). It owns process
-lifecycle and config binding (start / stop / restart, binding env and policy) and has
-no say in what work the agents do. Agents coordinate laterally; the manager only births
-and configures them.
+asked over the mesh. The manager is not a privileged control plane: it is an ordinary
+service endpoint on the same `ep` rails as any other daemon
+([§13](../SPEC.md#13-endpoint-control-surface-v04)), holding only the capability rows its
+callers grant it. It owns process lifecycle and config binding (start / stop / restart,
+binding env and policy) and has no say in what work the agents do. Agents coordinate
+laterally; the manager only births and configures them.
 
 - **Off the message hot path.** Each agent self-connects to the mesh through its own
   connector. The manager owns processes in order to control them, but observes everything
@@ -154,30 +155,52 @@ and configures them.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
   docker for agent TUIs): **`pty`** ships built-in (the manager owns a pseudo-terminal;
   watch or type via `cotal attach`); **`tmux`**, **`cmux`**, and **`orca`** are extensions
-  that put each teammate in its own native terminal surface (explicit opt-ins that throw when the extension
-  isn't loaded, never a silent fallback); **byo** is the floor (a human's own terminal,
-  tracked via presence); **host** (Agent SDK, true mid-turn interrupt) is the documented
-  upgrade path ([roadmap](roadmap.md)).
-- **Control schema:** `start {role, name, agent, model?, variant?}` · `models {agent?,
-  refresh?}` · `stop {name, graceful?}` · `definePersona {name, persona, model?}` · `ps` ·
-  `status` · `attach` · `bind`, endpoint commands ([§13.5](../SPEC.md#135-verbs)) any
-  authorized node can send, policy-gated ([identity & auth](identity-and-auth.md)).
-- **Bounded spawn.** A synchronous gate caps concurrent + in-flight agents and a
-  minimum-lifetime floor bounds spawn↔despawn churn, so a capability-holding but
-  compromised peer cannot fork-bomb the host.
+  that put each teammate in its own native terminal surface (explicit opt-ins that throw
+  when the extension isn't loaded, never a silent fallback); **byo** is the floor (a
+  human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn
+  interrupt) is the documented upgrade path ([roadmap](roadmap.md)).
+- **Served commands.** `spawn` (an action, below), `stop`, `ps`, `status`, `attach`,
+  `models`, `definePersona`, and `bind` are endpoint commands
+  ([§13.5](../SPEC.md#135-verbs)) any authorized node can send, policy-gated
+  ([identity & auth](identity-and-auth.md)). A caller learns them off the wire with `cotal
+  describe manager`; nothing is compiled in.
+- **Spawn is an action.** Asking for an agent no longer blocks the caller while the process
+  comes up. The manager accepts a spawn **goal** ([§13.6](../SPEC.md#136-composites)) and
+  immediately returns the allocated identity (the agent's name, its `owner`/`actor`/`uid`
+  triple, a `goalId`, and the executor coordinate `{lifecycleUid, epoch}`); progress events
+  then report the launch until a terminal outcome. Presence within the readiness window is
+  `succeeded`, an early exit is `failed`, and the window passing with neither is
+  `uncertain`: a bounded, reconcilable outcome a later `ps` settles against the live roster,
+  never a silent hang.
+- **Bounded spawn.** A gate caps concurrent and in-flight agents and a minimum-lifetime
+  floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
+  fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
+  process launched, so a refused spawn leaves nothing behind.
 - **Declared env, not inherited.** Runtimes pass spawned children an explicit allow-list
   (PATH / HOME / locale / TERM + the model key + opted-in shared-server vars, forwarded by
   name), never `process.env`, so the operator's unrelated secrets stop bleeding into every
   agent. This closes env-var bleed; it does not prevent filesystem reads or exfiltration
   of the model key itself.
-- **Watching is two channels.** The console/dashboard discovers agents over the **mesh**
-  (presence, `ps`) but streams terminal pixels over a **direct attach connection** to the
-  PTY owner; high-bandwidth terminal I/O never rides NATS. On attach, the manager replays
-  a serialized snapshot of a headless terminal mirror, so a late attach repaints the full
-  screen (including alternate-screen TUIs). That direct connection binds and advertises the
-  broker's own host, so it reaches exactly as far as the mesh does (a manager on another
-  machine included), and the whole face is gated by a per-manager token handed out only over
-  the authenticated control plane.
+- **Instance addressing.** One space can hold more than one manager. Each keeps a stable
+  logical instance id across restarts and advances its process epoch when it comes back, so
+  peers address a specific manager without caring which process currently serves it. `cotal
+  spawn --on <instance>` pins one instance; an untargeted spawn rides class anycast and the
+  acceptance records which instance took it. `ps` and `status` scatter across every
+  registered instance and label a non-answering one unreachable, never dropping it.
+- **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
+  (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
+  one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
+  core-NATS session subjects scoped to the two parties, with backpressure surfaced as an
+  explicit drop notice rather than silent loss. That is also how attach reaches a manager on
+  another machine — through the broker, not by dialing the manager's own socket. A late
+  attach still repaints the full screen from a replayed snapshot of a headless terminal
+  mirror (including alternate-screen TUIs). If the manager restarts, its successor refuses
+  the old session and the client surfaces "manager restarted; re-attach".
+- **The manager's console face is a separate, credentialed surface.** The manager still
+  serves the browser console over local HTTP: the static page plus the roster, the live feed,
+  and the route that mints the browser's own session. It binds loopback unless the operator
+  says otherwise (`cotal supervise --console-host`), and every route that carries mesh data
+  or mints a credential requires the manager's console token.
 
 The result is that an agent can grow and shape its own team: ask for a teammate
 (`cotal_spawn`), mint a persona on the fly (`cotal_persona`), or tear one down
@@ -188,6 +211,7 @@ recovers the same lifecycle rather than minting a new one, so durables and crede
 on the lifecycle, not the reusable name ([SPEC §13.1](../SPEC.md#131-lifecycle-identity);
 [identity & auth](identity-and-auth.md)). Destructive space-wide operations (history purge)
 stay operator-only.
+
 
 ## Observers
 
