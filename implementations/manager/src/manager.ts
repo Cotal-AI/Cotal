@@ -3429,6 +3429,37 @@ export class Manager {
       if (entry.launch.variant && !connector.supportsModelVariant)
         return { ok: false, error: `${connector.name} connector does not support model variants (variant)` };
 
+      // EVENT-GRANT PREFLIGHT ON RESUME — refuse BEFORE buildLaunch, never after.
+      //
+      // A retained entry carries the `allowPublish` it was provisioned with AND its `events` bit.
+      // Adopting both unchecked is how a resume produces the same false-success launch the foreground
+      // spawn path used to: the agent comes back with `COTAL_EVENTS` armed and a credential that was
+      // never granted the event channel, so the broker denies every frame while `resume` reports
+      // success. The failure is silent by construction — nothing surfaces a denied publish to the
+      // operator who ran the resume.
+      //
+      // This is NOT connector cutover; it is the resume authority invariant the plan schedules
+      // (§8/§9). It reaches a state the spawn-path fix cannot: an inventory PRESERVED BEFORE that fix
+      // existed still carries the old grant list, so the hole outlives the fix on every machine that
+      // has a preserved cut on disk.
+      //
+      // Compared against the connector's OWN `eventChannel`, never a hardcoded prefix — the same
+      // rule the manager's spawn path follows, so the two cannot drift.
+      if (entry.launch.events === true) {
+        if (!connector.eventChannel)
+          return { ok: false, error: `${connector.name} connector does not support event publishing (events)` };
+        const required = connector.eventChannel(entry.name);
+        if (!(entry.launch.allowPublish ?? []).includes(required))
+          return {
+            ok: false,
+            error:
+              `retained agent ${entry.name} has events enabled but its preserved publish grant does not ` +
+              `include "${required}" — it was preserved before the event-channel grant existed. Resuming ` +
+              `would launch it with a mute event stream. Re-spawn it with --events, or resume it with ` +
+              `events off.`,
+          };
+      }
+
       let launchOptions: Record<string, unknown> | undefined;
       if (entry.launch.source.kind === "manifest") {
         const launchSource = entry.launch.source;

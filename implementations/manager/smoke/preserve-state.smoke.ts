@@ -477,6 +477,48 @@ let openInventory: ManagerResumeAgent;
   check("open resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("resume"), capturedLaunch?.lifecycleUid);
 }
 
+// ── RESUME MUST PREFLIGHT THE EVENT GRANT, NOT ADOPT IT UNCHECKED ──
+//
+// A retained entry carries both its provisioned `allowPublish` and its `events` bit. Adopting both
+// without checking produces the same false-success launch the foreground spawn path used to: the
+// agent returns with COTAL_EVENTS armed on a credential that was never granted the channel, the
+// broker denies every frame, and `resume` reports success. Nothing surfaces a denied publish to the
+// operator who ran it.
+//
+// This state is reachable ONLY on resume and outlives the spawn-path fix: an inventory preserved
+// BEFORE that fix existed still carries the old grant list, on every machine holding a preserved cut.
+// fmae-rev-test proved no fixture covered it — it inserted this very refusal and the whole suite
+// still passed. A refusal nothing reddens without is indistinguishable from no refusal.
+{
+  const eventsConnector: Connector = {
+    kind: "connector",
+    name: "preserve-events-connector",
+    eventChannel: (n: string) => `events.${n.toLowerCase()}`,
+    buildLaunch: (opts) => { capturedLaunch = opts; return { command: "true", args: [], env: {} }; },
+  };
+  registry.register(eventsConnector);
+
+  const entryWith = (allowPublish: string[]): ManagerResumeAgent => ({
+    ...openInventory,
+    launch: { ...openInventory.launch, connector: "preserve-events-connector", allowPublish, events: true },
+  });
+
+  // (a) events enabled, grant MISSING -> refuse, and name the channel so an operator can act
+  const denied = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith([])));
+  const deniedReply = denied.agents[0]?.reply;
+  check("resume REFUSES an events-enabled entry whose retained grant lacks the event channel",
+    deniedReply?.ok === false, JSON.stringify(denied));
+  check("and the refusal names the exact channel that is missing, not just 'invalid'",
+    /events\.worker/.test(String(deniedReply?.ok === false ? deniedReply.error : "")), deniedReply);
+
+  // (b) CONTROL — same entry WITH the grant proceeds. Without this, (a) would pass for a wrapper
+  // that refused every events-enabled resume, which is a different bug wearing the same green.
+  capturedLaunch = undefined;
+  const allowed = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith(["events.worker"])));
+  check("CONTROL: the same entry WITH the grant resumes, so the refusal is specific",
+    allowed.agents[0]?.reply?.ok === true && capturedLaunch?.events === true, JSON.stringify(allowed));
+}
+
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,
 // returns the exact same token, and can finalize without releasing cleanup early.
 {
