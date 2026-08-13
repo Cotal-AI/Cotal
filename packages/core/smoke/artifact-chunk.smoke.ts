@@ -173,6 +173,27 @@ try {
   check("C5c the SAME budget refuses at seq 10 — re-derived per call, not carried over",
     c5c instanceof MinimumChunkError, c5c instanceof Error ? c5c.message.slice(0, 90) : c5c);
 
+  // ---- C6: MAXIMALITY — the returned size is the LARGEST that fits, not merely one that does ---
+  //
+  // Everything above asks "does it fit". Nothing asked "is it the biggest that fits", and those are
+  // different questions: a binary search returning HALF the true boundary satisfies every cell in
+  // this file — the frame fits, the size is positive, the floor still fires, refusals still refuse —
+  // while every transfer on the mesh silently runs at a fraction of its intended throughput. A
+  // correct-but-suboptimal result is indistinguishable from a correct one in any test that only
+  // asks whether it fits, and because the failure is performance rather than correctness, nothing
+  // else in the system will ever complain about it.
+  //
+  // The budget here is deliberately mid-sized so the BUDGET is the binding constraint. At the roomy
+  // budget below, the search returns `maxRaw` and the cap is maxRaw — so `n + 1` there would probe
+  // a limit this cell is not about. Asserted against the RETURNED value, never a hardcoded size.
+  const tightBudget = 1000;
+  const n = fitChunk({ budget: tightBudget, frame: uploadFrame(0), maxRaw: 1 << 17 });
+  check("C6a the returned size fits the budget", frameBytes(uploadFrame(0), n) <= tightBudget,
+    { n, bytes: frameBytes(uploadFrame(0), n), tightBudget });
+  check("C6b one raw byte MORE does not fit — the size is maximal, not merely adequate",
+    frameBytes(uploadFrame(0), n + 1) > tightBudget,
+    { n, atN: frameBytes(uploadFrame(0), n), atNPlus1: frameBytes(uploadFrame(0), n + 1), tightBudget });
+
   // ---- CONTROL: a suite that only refuses is unfalsifiable ------------------------------------
   // A generous budget must produce a real, positive chunk size that actually fits.
   const roomy = 943_718;
