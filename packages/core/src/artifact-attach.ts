@@ -40,8 +40,6 @@ import type { AttachmentRow } from "./artifact-index.js";
  * fix.
  */
 export const ATTACH_REFUSAL = Object.freeze({
-  /** A1 — the `seq` names no entry in the chat stream. */
-  entryNotFound: "confirmAttach: no such stream entry",
   /** A3 — the confirm's `channel` disagrees with the entry's SUBJECT channel (never `msg.channel`). */
   channelMismatch: "confirmAttach: the entry was not published to that channel",
   /** A4 — the entry carries no `artifact` part. */
@@ -49,12 +47,12 @@ export const ATTACH_REFUSAL = Object.freeze({
   /** A5 — the part's digest is not the digest being confirmed. */
   digestMismatch: "confirmAttach: that entry references a different artifact",
   /**
-   * A2 + A6, COLLAPSED DELIBERATELY.
+   * A1 + A2 + A6, COLLAPSED DELIBERATELY — everything a caller can ask before proving it owns the
+   * entry.
    *
-   * "that entry is not yours" and "you do not possess that digest" are ONE refusal, because a
-   * caller who has proven nothing is not entitled to be told which stream entries exist, who wrote
-   * them, or which digests are in the store. Distinguishing them rebuilds the existence oracle the
-   * invisible-dedupe rule exists to close.
+   * "no such stream entry", "that entry is not yours" and "you do not possess that digest" are ONE
+   * refusal, because a caller who has proven nothing is not entitled to be told which stream
+   * entries exist, who wrote them, or which digests are in the store.
    *
    * The rule: **a refusal may distinguish states only when the caller has already proven
    * entitlement to the state being distinguished.** At fetch, the caller has passed the scope's
@@ -62,7 +60,21 @@ export const ATTACH_REFUSAL = Object.freeze({
    * to scoped statements. Here it would be a statement about the global store to someone entitled
    * to nothing.
    *
-   * Timing must not distinguish them either: both paths perform the possession read.
+   * `entryNotFound` USED TO BE A DISTINCT NAME AND IS GONE, and the reason is worth keeping. Under
+   * the superseded observe-attach design every check ran inside `fanOutMessage`, on a daemon AUDIT
+   * surface with no caller — seven distinct names leak nothing to nobody. §4.2.2 moved them onto
+   * `ControlReply.error` and gave every one an audience; the names were carried across unchanged.
+   * A separate "no such stream entry" let any delivery-ctl principal probe the chat stream's head
+   * position with no read ACL on any channel. The table said one thing, the entitlement rule above
+   * said another, and only the rule had been reviewed.
+   *
+   * THE ACCEPTED COST, stated so nobody rediscovers it as a bug: a LEGITIMATE caller whose entry
+   * was purged or aged out now gets `notYours` rather than "no such entry", which is misleading.
+   * That is priced deliberately — if the entry does not exist you cannot determine ownership, so
+   * you cannot safely distinguish, and the collapse is the only answer available rather than a
+   * policy preference.
+   *
+   * Timing must not distinguish these either — see the note at the sender check.
    */
   notYours: "confirmAttach: not authorized for that artifact",
   /**
@@ -138,15 +150,38 @@ export async function confirmAttach(
   deps: ConfirmAttachDeps,
 ): Promise<ConfirmAttachReply> {
   const entry = await deps.entryBySeq(args.seq);
-  if (entry === null) return { ok: false, error: ATTACH_REFUSAL.entryNotFound };
+  const parsed = entry === null ? null : parseSubject(entry.subject);
 
-  const parsed = parseSubject(entry.subject);
-  if (parsed === null || parsed.kind !== "chat")
-    return { ok: false, error: ATTACH_REFUSAL.entryNotFound };
+  // ---------------------------------------------------------------------------------------------
+  // THE COLLAPSE, AND IT IS FIRST FOR A REASON. Every distinction a caller could draw BEFORE
+  // proving it published this entry is one name.
+  //
+  // These checks used to run separately and each returned its own name, which was correct while
+  // they were daemon audit events with no caller. On `ControlReply.error` they have an audience,
+  // and a foreign caller could walk seqs to find which exist, enumerate channels, learn whether an
+  // entry carried an artifact, and confirm a digest it merely suspected — all on ANOTHER
+  // principal's entries, with no read ACL on the channel involved.
+  //
+  // `parsed.sender !== caller` rejects a DIFFERENT PRINCIPAL. It is useless against SUCCESSION —
+  // the subject carries an alias with no lifecycle, so a same-alias successor passes it trivially —
+  // and it is not the fence. The fence is the possession read below. Two different jobs, and if you
+  // are here to delete one as redundant, they are not.
+  // ---------------------------------------------------------------------------------------------
+  if (entry === null || parsed === null || parsed.kind !== "chat" || parsed.sender !== caller)
+    return { ok: false, error: ATTACH_REFUSAL.notYours };
+
+  // PAST THIS LINE the caller has proven it published this entry, so it is entitled to precise
+  // statements ABOUT ITS OWN ENTRY — which is what makes the fine-grained names below legitimate
+  // rather than an oracle. They exist so that deleting any one check reddens its own cell.
 
   // THE SUBJECT's channel, never `msg.channel`. The broker forge-locked the subject; the payload is
   // whatever the publisher wrote. Comparing the argument against the payload would let the CALLER
   // decide the scope, which is the caller-declared scope §4.1 refuses.
+  //
+  // THIS COMMENT WAS TRUE AND UNTESTED. Every fixture set the subject channel and `msg.channel` to
+  // the same value, so swapping `parsed.rest` for `entry.msg.channel` survived all eleven cells:
+  // the distinction the comment explains at length was invisible to the suite documenting it. There
+  // is now a fixture where the two DISAGREE.
   if (parsed.rest !== args.channel)
     return { ok: false, error: ATTACH_REFUSAL.channelMismatch };
 
@@ -164,18 +199,19 @@ export async function confirmAttach(
   }
 
   // ---------------------------------------------------------------------------------------------
-  // THE FENCE IS THE NEXT TWO LINES, AND IT IS NOT THE SENDER COMPARISON.
+  // THE FENCE. Not the sender comparison above — this line.
   //
   // `parsed.sender` is an ALIAS — `<owner>.<actor>`, with no lifecycle anywhere in the CHAT subject
-  // grammar. A same-alias successor therefore passes `parsed.sender === caller` TRIVIALLY. That
-  // comparison rejects a DIFFERENT PRINCIPAL and is useless against succession; the possession read
-  // below, resolved at the caller's LIVE lifecycle, is what stops a successor attaching bytes its
-  // predecessor put. Two different jobs, and only one of them is the fence.
+  // grammar — so a same-alias successor passes it TRIVIALLY. What stops a successor attaching bytes
+  // its predecessor put is that possession is resolved at the caller's LIVE lifecycle, and the
+  // successor never put them.
   //
-  // If you are here to delete one of these as redundant: they are not redundant, and the plan is
-  // not where you would have found that out.
+  // ON TIMING. A previous comment here claimed both refusal paths perform the possession read, and
+  // that was false: the foreign path short-circuits at the sender check and performs ZERO. With the
+  // collapse moved to the front that is now the DESIGN rather than a defect — a foreign caller is
+  // refused before any possession lookup, so there is no possession-read count to compare. The only
+  // callers reaching this line are owners of the entry, and they all do exactly one read.
   // ---------------------------------------------------------------------------------------------
-  if (parsed.sender !== caller) return { ok: false, error: ATTACH_REFUSAL.notYours };
   if (!(await deps.hasPossession(args.digest, caller, lifecycleUid)))
     return { ok: false, error: ATTACH_REFUSAL.notYours };
 

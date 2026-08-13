@@ -101,6 +101,54 @@ export interface AttachmentRow {
   createdAt: number;
 }
 
+/** The subset of a KV bucket this module needs to write an attachment row. */
+export interface AttachmentKv {
+  create(key: string, value: Uint8Array): Promise<number>;
+  get(key: string): Promise<{ operation?: string } | null>;
+}
+
+/**
+ * Write an attachment row INSERT-IF-ABSENT. Never an upsert, and the distinction is the whole
+ * lifetime-neutrality invariant rather than a storage preference.
+ *
+ * `confirmAttach` hands a fresh `createdAt` on EVERY call, including a repeat confirm of an entry
+ * already attached — it has no way to know whether the row exists without a read it deliberately
+ * does not perform. So if this upserted, a second confirm would REWRITE `createdAt`, and anything
+ * in §7 that ages a row from that timestamp has just had its clock refreshed. That turns any
+ * legitimate publisher into an unbounded-retention primitive without it ever calling `pin` — the
+ * exact failure `confirmAttach`'s own comment names, arriving through the storage layer instead of
+ * through the verb.
+ *
+ * The invariant does not live in `confirmAttach` at all: that verb is lifetime-neutral only if this
+ * function is. It was stated in a comment and enforced NOWHERE — a driven attack rewrote `createdAt`
+ * from 1000 to 9999 through an upserting dependency — which is why it is code now.
+ *
+ * WHY NOT A BARE `catch`. `kv.create` refuses on a live PUT (measured against nats-server), but it
+ * also fails for connection loss, a missing bucket, and a malformed key. Swallowing all of those as
+ * "already there" would report success while writing nothing, and mapping every throw to one
+ * meaning is the same defect as `liveLifecycleFor`'s bare catch. So a failure is confirmed against
+ * the store: if a live PUT is really there, the insert was correctly refused and this is a no-op; if
+ * it is not, the failure was something else and it is re-thrown.
+ */
+export async function putAttachmentIfAbsent(
+  kv: AttachmentKv,
+  digest: string,
+  channel: string,
+  row: AttachmentRow,
+): Promise<void> {
+  const key = attachmentKey(digest, channel);
+  try {
+    await kv.create(key, new TextEncoder().encode(JSON.stringify(row)));
+  } catch (e) {
+    const existing = await kv.get(key);
+    // Only a PUT is presence. DEL and PURGE are absence wearing an object — a tombstone here means
+    // the create failed for some OTHER reason and the row is genuinely gone, so this must not
+    // silently report success over it.
+    if (existing !== null && existing.operation === "PUT") return;
+    throw e;
+  }
+}
+
 /**
  * Read one possession row, EXACT KEY.
  *
