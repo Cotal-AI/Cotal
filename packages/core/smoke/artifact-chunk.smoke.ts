@@ -205,6 +205,41 @@ try {
     typeof ctl === "number" && Buffer.byteLength(uploadFrame(0)(ctl)) <= roomy,
     typeof ctl === "number" ? Buffer.byteLength(uploadFrame(0)(ctl)) : ctl);
 
+  // ---- C7: assertUploadFits' OVERSIZE branch, which no cell reached ----------------------------
+  //
+  // C4 above uses a BELOW-FLOOR budget, so it exits at the floor check and returns before the size
+  // check ever runs. `const actual = 0` — deleting the entire oversize arm — survived all thirteen
+  // cells. The two failures are deliberately distinct and must stay distinct: the floor says the
+  // transfer can NEVER proceed on this broker, the size says THIS call was sized wrong. Collapsing
+  // them reports an unrecoverable condition as a retryable one.
+  {
+    const roomy2 = 943_718;
+    // Above the floor by a wide margin, and the payload is far over it. So the floor check passes
+    // and control reaches the branch C4 could not.
+    let over: string = "ALLOWED IT";
+    try { assertUploadFits({ budget: roomy2, frame: uploadFrame(0), rawBytes: 4 * 1024 * 1024 }); }
+    catch (e) { over = `${(e as Error).name}:${(e as Error).message}`; }
+    check("C7a an oversize chunk on a ROOMY broker is refused by the size check, not the floor",
+      over.startsWith("Error:") && !over.startsWith("MinimumChunkError"), over);
+    check("C7b and the refusal names the actual framed size and the budget — not a bare rejection",
+      over.includes(String(roomy2)) && /frames to \d+ bytes/.test(over), over);
+    // The floor is genuinely passed here, so C7a cannot be satisfied by the floor firing early.
+    let floorOk = "";
+    try { assertUploadFits({ budget: roomy2, frame: uploadFrame(0), rawBytes: 1 }); floorOk = "ok"; }
+    catch (e) { floorOk = (e as Error).name; }
+    check("C7c (guard) one raw byte DOES fit this budget, so C7a passed the floor to get there",
+      floorOk === "ok", floorOk);
+  }
+
+  // ---- C8: fitChunk's maxRaw guard returns ZERO, and nothing checked the value -----------------
+  // `if (maxRaw < 1) return 0` was unguarded: mutating it to `return 999` survived, because C2 only
+  // ever examined the ERROR from a different fixture. A non-zero answer here would hand the caller a
+  // chunk size larger than the ceiling it just declared.
+  {
+    const z = fitChunk({ budget: 943_718, frame: uploadFrame(0), maxRaw: 0 });
+    check("C8 a maxRaw below one yields exactly zero, never a fabricated size", z === 0, z);
+  }
+
   await nc.close();
 } finally {
   // Only pids this suite recorded at creation — never a broad sweep.

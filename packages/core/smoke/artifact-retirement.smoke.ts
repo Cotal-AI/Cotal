@@ -29,7 +29,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, setupSpaceStreams, deleteSpace, deprovisionAgent,
-  possessionBucket, possessionKey, principalKey,
+  possessionBucket, possessionKey, principalKey, aclKey, aclBucket,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -60,7 +60,11 @@ try {
   const principal = principalKey(OWNER, ACTOR).key;
   const key = possessionKey(D, principal, LC_A);
 
-  // Write a possession row for the lifecycle about to be retired.
+  // Write a possession row for the lifecycle about to be retired, AND the lifecycle-keyed ACL row
+  // that retirement is supposed to take. The ACL row is the standing control: it is the thing
+  // `deprovisionAgent` actually removes (`streams.ts`, `deleteAcl`), so its disappearance is what
+  // distinguishes "retirement ran" from "retirement no-opped".
+  const aclRowKey = aclKey(principal, LC_A);
   {
     const nc = await connect({ servers });
     const kv = await new Kvm(nc).open(possessionBucket(SPACE));
@@ -68,6 +72,13 @@ try {
     const before = await kv.get(key);
     check("a possession row exists before retirement",
       before !== null && before.operation === "PUT", { key, op: before?.operation });
+
+    const acl = await new Kvm(nc).open(aclBucket(SPACE));
+    await acl.put(aclRowKey, new TextEncoder().encode(JSON.stringify({ allowSubscribe: ["general"] })));
+    const aclBefore = await acl.get(aclRowKey);
+    check("(control precondition) the lifecycle-keyed ACL row exists before retirement",
+      aclBefore !== null && aclBefore.operation === "PUT",
+      { aclRowKey, op: aclBefore?.operation });
     await nc.close();
   }
 
@@ -86,13 +97,28 @@ try {
       after !== null && after.operation === "PUT",
       { key, found: after === null ? "absent" : after.operation });
 
-    // The ACL row is lifecycle-keyed and retirement DOES take it. Asserted so this suite proves
-    // retirement actually ran, rather than passing because deprovisionAgent no-opped.
-    const jsm = await jetstreamManager(nc);
-    const names: string[] = [];
-    for await (const si of jsm.streams.list()) names.push(si.config.name);
-    check("(positive control) retirement really ran — the space still exists to be torn down",
-      names.includes(`KV_${possessionBucket(SPACE)}`), names.filter((n) => n.includes("artpossess")));
+    // ---- THE POSITIVE CONTROL, AND THE OLD ONE WAS VACUOUS ------------------------------------
+    //
+    // This cell used to assert that the possession BUCKET exists — which is true before retirement,
+    // true after it, and true if `deprovisionAgent` never ran at all. Replacing the call with
+    // `Promise.resolve()` survived every cell in this suite. Its comment named the right check ("so
+    // the suite proves retirement ran rather than passing because deprovisionAgent no-opped") and
+    // the code asserted the invariant itself: a right comment beside wrong code, which camouflages
+    // best from the author, who re-reads the intent and sees it confirmed.
+    //
+    // It also fooled an adversarial reviewer, who accepted that retirement had run on the separate
+    // evidence that the companion `deleteSpace` cell still worked — so the round that should have
+    // caught it supplied a second reason to believe it.
+    //
+    // The real control is the ACL row: lifecycle-keyed, and the thing deprovision actually deletes.
+    // Read as `operation === "PUT"`, never `!== null`, because a tombstone is not absence — that is
+    // the defect this very suite was written to close, and a control that repeated it would assert
+    // the presence of a deletion.
+    const acl = await new Kvm(nc).open(aclBucket(SPACE));
+    const aclAfter = await acl.get(aclRowKey);
+    check("POSITIVE CONTROL — retirement really RAN: the lifecycle-keyed ACL row is gone",
+      aclAfter === null || aclAfter.operation !== "PUT",
+      { aclRowKey, found: aclAfter === null ? "absent" : aclAfter.operation });
     await nc.close();
   }
 

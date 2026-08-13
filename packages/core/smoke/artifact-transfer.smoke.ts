@@ -1,5 +1,5 @@
 /**
- * The transfer planner re-derives per chunk — proven by what it FRAMES, not by what it returns.
+ * The transfer planner re-derives per chunk — and T5 is what makes the claim below true.
  *
  * A planner that sizes once and reuses returns entirely plausible numbers: every chunk "fits" the
  * budget it was measured against. It is wrong only about the envelope it is actually sent with, and
@@ -9,7 +9,7 @@
  * Run: pnpm smoke:artifact-transfer
  */
 import { planTransfer } from "../src/artifact-transfer.js";
-import { MinimumChunkError } from "../src/artifact-chunk.js";
+import { MinimumChunkError, fitChunk } from "../src/artifact-chunk.js";
 
 let ok = 0, fail = 0;
 const check = (name: string, pass: boolean, extra?: unknown) => {
@@ -106,6 +106,47 @@ console.log("transfer planner: per-call re-derivation\n");
   const repSizes = planTransfer({ totalBytes: 2000, budget: rep.budget, frame: rep.frame, maxRaw: 1 << 17 });
   check("T3 the reply direction carries MORE per chunk at the same budget — its envelope is smaller",
     repSizes[0] > upSizes[0], { upload: upSizes[0], reply: repSizes[0] });
+}
+
+// ---- T5 — WHAT IT FRAMES, which this suite's own header claimed and did not check ----------------
+//
+// The header above says the planner is "proven by what it FRAMES, not by what it returns". That was
+// FALSE: the spy records `seq` and nothing else, so no cell ever related a returned size to the
+// frame it was measured against. `take = Math.min(fit * 2, remaining)` — chunks at DOUBLE the fitted
+// size — survived all ten cells, including T1e, because the sum is still the payload no matter how
+// it is divided.
+//
+// A right comment beside wrong code, and the comment is this file's own thesis statement.
+//
+// Two distinct properties, deliberately separate cells: every chunk must FIT its own frame (the
+// safety property — an oversize chunk is rejected by the broker mid-transfer), and every chunk but
+// the last must be MAXIMAL (the progress property — a planner that under-fills wastes a round trip
+// per chunk and no fit-only check would notice).
+{
+  const BUDGET = 1000;
+  const s = spy(uploadFrame, BUDGET);
+  const sizes = planTransfer({ totalBytes: 4000, budget: s.budget, frame: s.frame, maxRaw: 1 << 17 });
+
+  const overs = sizes
+    .map((n, i) => ({ i, framed: Buffer.byteLength(uploadFrame(i)(n)), n }))
+    .filter((x) => x.framed > BUDGET);
+  check("T5a EVERY chunk's own frame fits the budget it was sized against",
+    overs.length === 0, overs.slice(0, 4));
+
+  // Maximality, checked against a FRESH fitChunk for the same seq — the returned size must be the
+  // answer, not merely an answer under it. The last chunk is excluded because it is bounded by what
+  // remains, not by the budget.
+  const shortfalls = sizes.slice(0, -1)
+    .map((n, i) => ({ i, n, fit: fitChunk({ budget: BUDGET, frame: uploadFrame(i), maxRaw: 1 << 17 }) }))
+    .filter((x) => x.n !== x.fit);
+  check("T5b and every chunk but the last is EXACTLY the fitted maximum",
+    shortfalls.length === 0, shortfalls.slice(0, 4));
+
+  // NON-EMPTY GUARDS, in these cells rather than borrowed. Both assertions above are `filter`s over
+  // a derived list and pass vacuously on an empty one — and the list is emptiest precisely when the
+  // planner has collapsed, which is the failure they were written for.
+  check("T5c (guard) the plan was non-trivial, so T5a/T5b examined something",
+    sizes.length > 1, sizes.length);
 }
 
 // ---- T4 — the floor still refuses mid-plan --------------------------------------------------------
