@@ -4607,6 +4607,7 @@ export class Manager {
         if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
           acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
           resolveAccept(acceptance);
+          terminalEntered = true; // not ours to settle; see the bind-loss claim below
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
         }
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
@@ -4619,6 +4620,14 @@ export class Manager {
           // (no second spawn). The throw unwinds to the finally, which releases this attempt's reserve.
           acceptance = this.goalAcceptances.get(goalId) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
           resolveAccept(acceptance);
+          // CLAIM THE TERMINAL WITHOUT COMMITTING ONE, exactly as `onTerminalDeferred` does: the goal
+          // belongs to the attempt that won the bind, and this one provisioned nothing. Without this
+          // the unwind below reaches the post-accept fallback with `terminalEntered` still false, and
+          // a loser that fails in one CAS round trip commits `failed` while the WINNER is still
+          // minting creds and waiting for readiness. First-terminal-fact-wins then makes that
+          // failure durable and the winner's real outcome loses the CAS: the caller reads a failed
+          // goal for an agent that started fine, with this abort's own message as the outcome.
+          terminalEntered = true;
           // Unwind the provision (the acceptance is already served); the code is discarded by the
           // caller (acceptance !== undefined), so it just aborts this attempt's side-effects.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already accepted; the cached acceptance is served`);
