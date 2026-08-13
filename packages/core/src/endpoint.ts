@@ -1196,11 +1196,18 @@ export class CotalEndpoint extends EventEmitter {
    * guaranteed.** Call once at startup, before any serialized append.
    *
    * **The ordering is a property of the stream's REPLICATION FACTOR, not of the deployment.**
-   * Measured on `nats-server 2.14.4`: a standalone R1 stream **and an R1 stream hosted inside a
-   * real 3-node cluster** both refuse a stale expectation with a CAS error; only an **R3** stream
-   * evaluates dedup first and answers a retry with `duplicate: true` instead. So "single node vs
-   * clustered" is the wrong axis, and a check written against cluster size would pass on exactly
-   * the deployment that breaks.
+   * A standalone R1 stream **and an R1 stream hosted inside a real 3-node cluster** both refuse a
+   * stale expectation with a CAS error; only an **R3** stream evaluates dedup first and answers a
+   * retry with `duplicate: true` instead. So "single node vs clustered" is the wrong axis, and a
+   * check written against cluster size would pass on exactly the deployment that breaks.
+   *
+   * **The evidence is `smoke:cas-preflight-cluster`, which records the server version it measured
+   * against — deliberately not a version named here.** An earlier revision cited one specific
+   * release, and nothing in this tree could re-derive that claim: the suites resolve `nats-server`
+   * from `PATH`, so they measure whichever binary the machine happens to have (Cotal-AI/Cotal#371).
+   * A hardcoded provenance ages into a statement about a machine that no longer exists; one the
+   * suite regenerates on every run cannot rot. The ordering is currently measured to hold on every
+   * version in the shipped range, and the suite is what keeps that true rather than this sentence.
    *
    * Every stream Cotal creates is `num_replicas: 1` — `createSpaceStreams` builds them from the
    * same `canonicalBackupStreamConfig` the restore path uses, so the property holds by

@@ -97,9 +97,41 @@ try {
   const r2 = await ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "two" }], id: randomUUID(), expectedLastSubjectSeq: r1.ack.seq });
   c("append at the current tip succeeds", r2.ack.seq === r1.ack.seq + 1, r2.ack);
 
+
   // ── in-window duplicate: same id, expectation refreshed to the tip ──
   const dup = await ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "two" }], id: r2.message.id, expectedLastSubjectSeq: r2.ack.seq });
   c("in-window duplicate is reported as duplicate, not stored twice", dup.ack.duplicate === true && dup.ack.seq === r2.ack.seq, dup.ack);
+
+  // ── THE RETRY ADJACENCY: same FROZEN id, same FROZEN NON-ZERO expectation. ──
+  //
+  // This is the emitter's real retry shape and the silent-event-loss path, and it sits deliberately
+  // beside the cell above so the difference is legible: that one REFRESHES the expectation to the
+  // tip and correctly gets `duplicate: true`; this one keeps the expectation FROZEN, which makes it
+  // stale the moment the first frame lands, and must therefore CAS-LOSE. On an R1 stream OCC is
+  // evaluated before the dedup cache, so a frozen retry can never legitimately answer `duplicate` —
+  // an ack that did would be body-blind and would drop a real frame as success.
+  //
+  // WHAT ITS ABSENCE COST, kept here so nobody folds it back into a zero-expectation variant. Every
+  // other CAS-loss cell in this file froze `expectedLastSubjectSeq: 0`, so the suite only ever
+  // fenced the FIRST publish onto an empty subject. A one-line regression keeping `expect` when
+  // `expected === 0` and omitting it otherwise left the suite at 20 passed, 0 failed while OCC was
+  // gone for every append after the first — two writers could interleave on one subject with the
+  // loser STORING instead of CAS-losing. Found by fmae-rev-test, reproduced by fmae-rev-wal,
+  // fmae-rev-eng, fmae-rev-sec and by me. The shipped code has always set the expectation, so this
+  // was never a live product defect; it was a GATE defect on the path the system lives in after
+  // bootstrap.
+  //
+  // A fresh-id stale-expectation cell also dies to that mutation, but it is the weaker subset: it
+  // proves the fence and not the ORDERING. This form proves both, so it is the one kept.
+  const frozenId = randomUUID();
+  const frozenE = dup.ack.seq;                       // non-zero, and the tip at this instant
+  const first = await ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "frozen-a" }], id: frozenId, expectedLastSubjectSeq: frozenE });
+  c("a frozen-id frame stores at the non-zero tip it expected", first.ack.seq === frozenE + 1 && first.ack.duplicate === false, first.ack);
+  await throws(
+    "a retry with the SAME frozen id and the SAME non-zero expectation is a CAS LOSS, never a duplicate ack",
+    () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "frozen-b-DIFFERENT-BODY" }], id: frozenId, expectedLastSubjectSeq: frozenE }),
+    (e) => isCasLoss(e),
+  );
 
   // ── a DIFFERENT principal does NOT race us: chatSubject puts the publisher's identity BEFORE
   //    the channel, so w2 writes its own subject whose tip is genuinely 0. The first draft of this
@@ -137,6 +169,17 @@ try {
   await throws("non-integer expectation refused", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 1.5 }), (e) => !isCasLoss(e));
   await throws("wildcard channel refused", () => ep.multicastExpecting({ channel: "events.>", parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
   await throws("empty parts refused", () => ep.multicastExpecting({ channel: CH, parts: [], id: randomUUID(), expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
+
+  // ── the CLASSIFIER PAIR, asserted directly rather than only through whatever the broker happens
+  //    to return. §5.4 classifies a CAS loss on the 10071/10164 pair via `isCasLoss`, never on
+  //    message text. Every live cell above happened to produce 10071 ONLY, so dropping 10164 from
+  //    the classifier left this suite fully green — the pair was documented and half-tested.
+  //    These two cells are the cheapest possible guard and they cost no broker round-trip. ──
+  c("isCasLoss classifies 10071 (wrong last sequence)", isCasLoss({ code: 10071 }));
+  c("isCasLoss classifies 10164 — the half the live path never exercised", isCasLoss({ code: 10164 }));
+  c("isCasLoss does NOT classify an unrelated JetStream code", !isCasLoss({ code: 10003 }));
+  c("isCasLoss is code-driven, not text-driven — a matching description alone is not a CAS loss",
+    !isCasLoss({ message: "wrong last sequence: 1" }));
 
   // ── ordinary multicast is UNTOUCHED: additive change, no existing caller behaves differently ──
   const plain = await ep.multicast("ordinary", { channel: CH });
