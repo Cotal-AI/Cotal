@@ -85,6 +85,20 @@ try {
   check("managerUp is FALSE for an unattributable pidfile", managerUp() === false);
   rmSync(mgrPid);
   check("managerUp is FALSE with no pidfile at all", managerUp() === false);
+
+  // The tri-state the boolean cannot express. `unknown` is deliberately absent here: no
+  // parsePid-accepted input produces one on a real kernel, and the note at the end says so rather
+  // than a cell pretending to cover it.
+  const { managerLiveness } = await import("../../../implementations/cli/src/lib/manager-proc.js");
+  const { deliveryLiveness } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
+  check("managerLiveness reports ABSENT with no pidfile (distinct from dead)", managerLiveness() === "absent");
+  writeFileSync(mgrPid, "not-a-pid\n");
+  check("managerLiveness reports ABSENT for unattributable content, never a pid to reason about", managerLiveness() === "absent");
+  writeFileSync(mgrPid, `${deadPid}\n`);
+  check("managerLiveness reports DEAD for a proven-dead pid", managerLiveness() === "dead", deadPid);
+  writeFileSync(mgrPid, `${process.pid}\n`);
+  check("managerLiveness reports ALIVE for a live pid", managerLiveness() === "alive");
+  check("deliveryLiveness reports DEAD for a proven-dead pid", (writeFileSync(delPid, `${deadPid}\n`), deliveryLiveness()) === "dead", deadPid);
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
@@ -92,7 +106,11 @@ try {
 
 console.log(`\nPID CONTRACT TESTS PASSED ✅  (${pass} checks)`);
 console.log(
-  "  NOTE, stated rather than implied: no cell here can kill a caller mutation on the `unknown`\n" +
+  "  NOTE, stated rather than implied: no cell here exercises `unknown`. It IS reachable on a real\n" +
+  "  kernel (a Linux seccomp SECCOMP_RET_ERRNO filter or an LSM policy answers kill(pid,0) with an\n" +
+  "  arbitrary errno without executing it; libuv preserves it), but not through any input this\n" +
+  "  process can supply, so the loud refusal in ensureManager/ensureDelivery is verified by a\n" +
+  "  seccomp BPF harness outside this suite, not here. Nor can any cell here kill a mutation on the\n" +
   "  DIRECTION (`=== \"alive\"` vs `!== \"dead\"`), because those differ only on `unknown` and no\n" +
   "  parsePid-accepted input produces one on a real kernel. Exercising it needs a syscall shim\n" +
   "  forcing an unfamiliar errno from kill(pid,0). That is how the defect was found, and it is the\n" +

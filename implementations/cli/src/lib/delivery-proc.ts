@@ -24,23 +24,25 @@ const credsStore = () => workspaceSecretStore(findCotalRoot());
  *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
 type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number };
 
-/** True if the delivery daemon we started for this folder is still running (pid file + liveness). */
-export function deliveryUp(): boolean {
+/** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
+ *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
+ *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
+ *  libuv preserves it), and both ways of folding it into a boolean fail silently. */
+export function deliveryLiveness(): "alive" | "dead" | "unknown" | "absent" {
   const p = PID_PATH();
-  if (!existsSync(p)) return false;
+  if (!existsSync(p)) return "absent";
   const pid = parsePid(readFileSync(p, "utf8"));
-  // PROOF REQUIRED. `alive` only: `dead` and `unknown` both read as NOT up. The two questions this
-  // contract answers pull in opposite directions and must not share a predicate:
-  //   destructive  ("may I delete this record?")  -> preserve on doubt, `!== "dead"` (see down.ts)
-  //   presence     ("is it up, may I skip starting one?") -> require proof, `=== "alive"`
-  // Getting this backwards here is not a near-miss: an `unknown` reported as UP is permanent (no
-  // retry can clear it), silent (the caller is told `running: true`), and unrecoverable, while the
-  // cost of the other direction is at worst a refused start. Reviewed against a live repro that
-  // wedged three ensureControlPlane retries against an unreachable manager.
-  // EPERM is unaffected either way: the contract already resolves it to `alive`, which is the
-  // actual defect this change exists to fix.
-  return pid !== undefined && probeLiveness(pid) === "alive";
+  if (pid === undefined) return "absent";
+  return probeLiveness(pid);
 }
+
+/** True only if the daemon is PROVABLY running. Callers that ACT on the answer take
+ *  {@link deliveryLiveness} instead; this cannot express "cannot tell". */
+export function deliveryUp(): boolean {
+  return deliveryLiveness() === "alive";
+}
+
+
 
 /** True when this folder runs an authed mesh — the only mode with a delivery daemon (Plane-3 needs the
  *  trusted reader; open dev mode is live-only). */
@@ -119,7 +121,17 @@ export async function ensureDelivery(o: Opts = {}): Promise<{ running: boolean }
   const creds = await mintCreds(auth, id, "delivery");
   const space = o.space ?? resolveSpace(process.cwd());
   const server = o.server ?? DEFAULT_SERVER;
-  if (!deliveryUp()) {
+  const deliveryState = deliveryLiveness();
+  // Same refusal as the manager: an unattributable pid must not be silently reused (a daemon
+  // reported running that is not there) nor silently replaced (two daemons on one fanout).
+  if (deliveryState === "unknown")
+    throw new Error(
+      `the recorded delivery daemon pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
+        `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +
+        `Cotal will not guess: reusing it would report a daemon that is not there, and starting a second would put two daemons on one fanout.\n` +
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/delivery.pid\` and re-run. If it is running, use it or stop it.`,
+    );
+  if (deliveryState !== "alive") {
     // The store's put hardens `.cotal/` first (the cred is born under a private ACL, no race) and
     // lands it atomically — same path and bytes as before the seam.
     await credsStore().put(DELIVERY_CREDS_KEY, creds);

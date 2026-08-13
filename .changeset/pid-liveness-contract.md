@@ -49,6 +49,20 @@ implementation. The suite also drives the CONVERTED CALLERS through real pidfile
 revision tested only the primitive and a reviewer inverted all five call sites without reddening a
 single check.
 
-Honest coverage limit, stated in the suite's own output: no cell can kill a caller mutation on the
-`unknown` direction, since the two predicates differ only there and no accepted input produces an
-`unknown` on a real kernel. That needs a syscall shim, which is how it was found.
+`unknown` is REACHABLE on a real kernel, not merely under a test shim. A Linux seccomp
+`SECCOMP_RET_ERRNO` filter, or an LSM policy through `security_task_kill()`, can answer
+`kill(pid, 0)` with an arbitrary errno without executing it, and libuv preserves it. Review proved
+this with a live seccomp BPF filter and no interposition. So both ways of folding the third state
+into a boolean are wrong, and both fail SILENTLY: preserving reports a control plane that is not
+there and no retry clears it, while requiring proof launches a second manager over one that may be
+live.
+
+`ensureManager` and `ensureDelivery` therefore REFUSE on `unknown`, loudly, naming the pid, naming
+seccomp/LSM as the expected cause inside sandboxes, and saying what to check. `managerLiveness` and
+`deliveryLiveness` expose the state the booleans cannot carry; `managerUp`/`deliveryUp` remain
+`=== "alive"` for display, with a doc note sending any caller that ACTS on the answer to the
+tri-state.
+
+Honest coverage limit, stated in the suite's own output rather than implied away: no cell here
+exercises `unknown`, because no `parsePid`-accepted input produces one from this process. The refusal
+is verified by a seccomp BPF harness outside the suite.

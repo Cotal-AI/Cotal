@@ -14,23 +14,30 @@ const PID_PATH = () => cotalPath("manager.pid");
  *  old hosting manager never double-binds `fanout`/`reader` against the new daemon. */
 const DELIVERY_AWARE_MARKER = () => cotalPath("manager.delivery-aware");
 
-/** True if the manager we started for this folder is still running (pid file + liveness). */
-export function managerUp(): boolean {
+/** The recorded manager's liveness, THREE-VALUED plus absent, because collapsing it to a boolean is
+ *  what made this dangerous. Both collapses are silent and both are wrong:
+ *    `!== "dead"`  -> an `unknown` reports UP forever; no retry clears it and nothing starts.
+ *    `=== "alive"` -> an `unknown` reports DOWN and a second manager launches onto a possibly-live one.
+ *  `unknown` is REACHABLE on a real kernel, not just under a test shim: a Linux seccomp filter
+ *  (`SECCOMP_RET_ERRNO`) or an LSM policy can return an arbitrary errno for `kill(pid, 0)` without
+ *  executing it at all, and libuv preserves it. Proven with a live seccomp BPF filter, not by
+ *  interposition. So the caller has to SEE the third state and refuse. */
+export function managerLiveness(): "alive" | "dead" | "unknown" | "absent" {
   const p = PID_PATH();
-  if (!existsSync(p)) return false;
+  if (!existsSync(p)) return "absent";
   const pid = parsePid(readFileSync(p, "utf8"));
-  // PROOF REQUIRED. `alive` only: `dead` and `unknown` both read as NOT up. The two questions this
-  // contract answers pull in opposite directions and must not share a predicate:
-  //   destructive  ("may I delete this record?")  -> preserve on doubt, `!== "dead"` (see down.ts)
-  //   presence     ("is it up, may I skip starting one?") -> require proof, `=== "alive"`
-  // Getting this backwards here is not a near-miss: an `unknown` reported as UP is permanent (no
-  // retry can clear it), silent (the caller is told `running: true`), and unrecoverable, while the
-  // cost of the other direction is at worst a refused start. Reviewed against a live repro that
-  // wedged three ensureControlPlane retries against an unreachable manager.
-  // EPERM is unaffected either way: the contract already resolves it to `alive`, which is the
-  // actual defect this change exists to fix.
-  return pid !== undefined && probeLiveness(pid) === "alive";
+  if (pid === undefined) return "absent"; // unattributable content is not a pid to reason about
+  return probeLiveness(pid);
 }
+
+/** True only if the manager is PROVABLY running. `unknown` is not up, and callers that would ACT on
+ *  that answer must use {@link managerLiveness} instead: this boolean cannot express the difference
+ *  between "not running" and "cannot tell", and acting on the difference is the whole point. */
+export function managerUp(): boolean {
+  return managerLiveness() === "alive";
+}
+
+
 
 /** True if the live manager carries a delivery-aware marker BOUND to its current pid (i.e. it's THIS
  *  build, non-hosting). Fail-closed: the marker stores the pid it was written for, and this requires it
@@ -104,7 +111,19 @@ export function startManagerDetached(
 export function ensureManager(
   o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
 ): { running: boolean } {
-  if (managerUp()) return { running: true };
+  const state = managerLiveness();
+  if (state === "alive") return { running: true };
+  // REFUSE, loudly, rather than pick a silent wrong answer. Reusing an unattributable pid wedges the
+  // control plane permanently (reported running, nothing reachable, no retry clears it); starting a
+  // second manager over one that may be live double-binds the plane. Neither is recoverable from
+  // here and both look like success, so this is the one case that must reach a human.
+  if (state === "unknown")
+    throw new Error(
+      `the recorded manager pid (${readFileSync(PID_PATH(), "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
+        `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +
+        `Cotal will not guess: reusing it would report a control plane that is not there, and starting a second manager could double-bind a live one.\n` +
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`.cotal/manager.pid\` and re-run. If it is running, use it or stop it.`,
+    );
   startManagerDetached(o);
   return { running: true };
 }
