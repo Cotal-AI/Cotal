@@ -23,7 +23,7 @@
  *
  * Run: pnpm smoke:event-wal
  */
-import { mkdtempSync, rmSync, writeFileSync, statSync, symlinkSync, readFileSync, constants } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, statSync, symlinkSync, constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -371,6 +371,63 @@ try {
   let refusedAdvance = false;
   try { await single.advanceCursorOnly("c5"); } catch { refusedAdvance = true; }
   c("the cursor cannot advance while a frame is pending", refusedAdvance);
+// ── CORRUPTION THIS SUITE'S FIXTURES NEVER BUILT ─────────────────────────────────────────────
+//    Every fixture above is written by the shipped code or hand-built as well-formed JSON, so two
+//    whole classes of real disk state had no representative here at all: BYTES that are not valid
+//    UTF-8, and a persisted field that is the right TYPE but violates the WIRE grammar. Both were
+//    accepted on reload by a file whose stated posture is that every unreadable state fails loud.
+//    Found by fmae-rev-test with real byte fixtures; confirmed by fmae-rev-eng and fmae-rev-wal.
+//
+//    Both fixtures below are derived from a document the SHIPPED code wrote and are then changed in
+//    exactly ONE respect — otherwise a refusal here could be some other malformation firing a
+//    different check, which is what happened on the first two attempts at reproducing this.
+{
+  const base = p();
+  const w = await EventWal.open(base, T);
+  await w.beginSend({ id: "id-c1", E: 0, seq: 1, sourceCursor: "cur-1" });
+  const canonical = readFileSync(base, "utf8");
+
+  // POSITIVE CONTROL: the unmodified document loads. Without it, both refusals below could be the
+  // fixture being wrong rather than the guard working.
+  await EventWal.open(base, EXISTS);
+  c("[control] the unmodified shipped-shape WAL still loads (so the refusals below mean something)", true);
+
+  // 1. ONE byte flipped to 0xff inside the epoch string. Node's default utf8 decoder substitutes
+  //    U+FFFD, which turns a corrupted file into a changed-but-parseable one — the identity bytes
+  //    recovery trusts would be the decoder's invention.
+  const bad = p();
+  const buf = Buffer.from(canonical, "utf8");
+  const epochAt = buf.indexOf(Buffer.from(String(JSON.parse(canonical).epoch).slice(0, 6)));
+  if (epochAt < 0) { c("[fixture] the epoch bytes were locatable for corruption", false, "not found"); }
+  else {
+    buf[epochAt] = 0xff;
+    writeFileSync(bad, buf);
+    await refuses("invalid UTF-8 bytes are REFUSED, never silently substituted with U+FFFD",
+      "the file is valid UTF-8", () => EventWal.open(bad, EXISTS));
+  }
+
+  // 2. The pending id changed to one the wire rejects — the same grammar `beginSend` enforces on
+  //    write. Adopting it at recovery would wedge every republish through `multicastExpecting`
+  //    forever: disk corruption converted into a permanent runtime failure instead of a refusal.
+  for (const badId of ["has.dots", "has space", "a".repeat(65), "has\nnewline"]) {
+    const f = p();
+    const doc = JSON.parse(canonical);
+    doc.pending.id = badId;
+    writeFileSync(f, JSON.stringify(doc));
+    await refuses(`a persisted pending.id the WIRE rejects is refused at open (${JSON.stringify(badId)})`,
+      "pending.id satisfies the wire id grammar", () => EventWal.open(f, EXISTS));
+  }
+
+  // CONTROL for the id rule: a VALID id in the same position must still load, or the cells above
+  // would pass for a guard that refuses every pending document.
+  const okFile = p();
+  const okDoc = JSON.parse(canonical);
+  okDoc.pending.id = "a-perfectly-valid_ID9";
+  writeFileSync(okFile, JSON.stringify(okDoc));
+  await EventWal.open(okFile, EXISTS);
+  c("[control] a WIRE-VALID pending.id still loads (the rule refuses bad ids, not all ids)", true);
+}
+
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

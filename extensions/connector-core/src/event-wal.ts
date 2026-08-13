@@ -210,6 +210,17 @@ function parseDoc(path: string, raw: string, threadId: string, principal: string
       throw new WalCorruptError(path, "pending.state is a known tag", String(p.state));
     if (typeof p.id !== "string" || p.id.length === 0)
       throw new WalCorruptError(path, "pending.id is a non-empty string", String(p.id));
+    // ...and it must satisfy the WIRE grammar, not merely be a string. `beginSend` validates with
+    // `assertIdToken` on the way IN; open accepted anything non-empty on the way OUT — so a corrupted
+    // or hand-edited id (`"has.dots"`) was ADOPTED at recovery and then rejected by
+    // `multicastExpecting` on every republish attempt. That turns disk corruption into a permanent
+    // runtime wedge instead of a refusal at open, which inverts this file's posture. Validated with
+    // the SHIPPED grammar rather than a second copy that could drift from it.
+    try {
+      assertIdToken(p.id, "event WAL pending.id");
+    } catch (e) {
+      throw new WalCorruptError(path, "pending.id satisfies the wire id grammar", (e as Error).message);
+    }
     if (!isSafeNonNegInt(p.E) || !isSafeNonNegInt(p.seq))
       throw new WalCorruptError(path, "pending E/seq are safe non-negative integers", JSON.stringify(p));
     if (typeof p.sourceCursor !== "string")
@@ -269,10 +280,25 @@ export class EventWal {
     opts: { threadId: string; principal: string; subjectMayExist: boolean },
   ): Promise<EventWal> {
     let raw: string | undefined;
+    let bytes: Buffer | undefined;
     try {
-      raw = await readFile(path, "utf8");
+      bytes = await readFile(path);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    if (bytes !== undefined) {
+      // FATAL UTF-8 — never `readFile(path, "utf8")`. Node's default decoder SUBSTITUTES U+FFFD for
+      // invalid bytes, so a corrupted file arrives as a changed-but-parseable document: a single raw
+      // 0xff inside the epoch string loaded cleanly with `epoch` silently rewritten. For a file whose
+      // whole posture is that every unreadable state fails loud, "quietly altered and accepted" is
+      // the one outcome it must not produce — the identity bytes recovery depends on would be the
+      // decoder's invention. `JsonlFileSource` in this same package already decodes fatally for
+      // exactly this class; this is that rule applied where it was missing, not a new one.
+      try {
+        raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        throw new WalCorruptError(path, "the file is valid UTF-8", "invalid UTF-8 bytes; refusing rather than substituting U+FFFD");
+      }
     }
 
     if (raw === undefined) {
