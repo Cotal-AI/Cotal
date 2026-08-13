@@ -23,6 +23,27 @@
  * Scope: suites in this lane's diff against `origin/main`. It deliberately does not police the whole
  * repo, where other packages may have reasons of their own.
  *
+ * **WHAT THIS GUARD DOES NOT COVER, stated here because its absence was read as coverage.** It
+ * checks that a suite imports its OWN package by source path. It says NOTHING about a
+ * **cross-package** dependency: a suite can import its own package from `../src/`, and that source
+ * can import a DIFFERENT first-party package by name, which resolves to that package's `dist/`.
+ * A mutation to the other package's source then reaches nothing, and the run is green for want of
+ * executing at all.
+ *
+ * That is not hypothetical. `event-channel.smoke.ts` imports `../src/launch.js` and passed this
+ * guard, while the rule it was asserting lived in `packages/core` and was reached through
+ * `@cotal-ai/core` — so deleting that rule at the source left every refusal cell green. Found by
+ * fmae-rev-test, on cells written one commit after this guard's own author described the hazard.
+ *
+ * The remedy for that case was not to widen this guard — the relationship is legitimate and common,
+ * and a check that banned it would collect exemptions until it meant nothing. It was to put the
+ * rule's cells beside the rule (`packages/core/smoke/valid-name.smoke.ts`, importing `../src/`) and
+ * to make the cross-package suite compare the executed rule against the source one, so a stale
+ * `dist/` fails a NAMED cell instead of passing silently.
+ *
+ * **The general form, which is the reason this paragraph exists at all: when you scope a guard,
+ * name the relationships it does not cover — inside the guard — or its coverage is read as total.**
+ *
  * Run: pnpm smoke:mutation-reachable
  */
 import { readFileSync, existsSync } from "node:fs";

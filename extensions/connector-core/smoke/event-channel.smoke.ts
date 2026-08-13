@@ -29,7 +29,37 @@
  *
  * Run: pnpm smoke:event-channel
  */
-import { eventChannel } from "../src/launch.js";
+// core by SOURCE path. `eventChannel` reaches this same rule through `@cotal-ai/core`, i.e. that
+// package's `dist/` — so without a source-side reference here there is nothing to compare the
+// executed rule against, and a deleted refusal stays green. See the staleness cell below.
+import { assertValidName as ruleFromSource } from "../../../packages/core/src/resolve.js";
+
+/**
+ * `../src/launch.js` is loaded DYNAMICALLY so a missing `@cotal-ai/core` build fails LEGIBLY.
+ *
+ * This suite used to be standalone: `launch.ts` imported core with `import type`, which is erased,
+ * so nothing here needed a build. Adding the shared name rule made that a RUNTIME import, and on a
+ * clean checkout `pnpm smoke:event-channel` then died mid-import with a bare
+ * `ERR_MODULE_NOT_FOUND .../packages/core/dist/index.js` — a stack trace about a missing file,
+ * for a suite documented as needing no build step. Reported by fmae-rev-test and fmae-rev-eng.
+ *
+ * A static import cannot be caught by the module that declares it, so the load is deferred and the
+ * failure is named. The prerequisite is real and is stated rather than hidden; what is fixed is
+ * that it now says which build is missing instead of leaving the reader to infer it.
+ */
+let eventChannel: (name: string) => string;
+try {
+  ({ eventChannel } = await import("../src/launch.js"));
+} catch (e) {
+  console.log(
+    "  x FAIL: @cotal-ai/core must be built before this suite runs.\n" +
+      "          `eventChannel` reuses core's `assertValidName` at RUNTIME, so this suite needs\n" +
+      "          core's dist/. Run `pnpm --filter @cotal-ai/core build` (or `pnpm build`) first.\n" +
+      `          underlying: ${(e as Error).message}`,
+  );
+  console.log("event-channel smoke: 0 passed, 1 failed");
+  process.exit(1);
+}
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -116,6 +146,27 @@ for (const n of [...CORPUS, ...CORPUS.map((n) => name(ch(n)))]) {
   all.set(chan, n);
 }
 c("the corpus AND its images together produce no shared channel", dup === "", dup);
+
+// ── STALENESS: the rule this suite EXECUTES must be the rule in core's SOURCE ────────────────
+//    `eventChannel` imports `assertValidName` from `@cotal-ai/core`, which resolves to that
+//    package's `dist/`. So every refusal cell below is graded against BUILT bytes, and a mutation
+//    to `packages/core/src/resolve.ts` left them all green — the defense could be deleted at the
+//    source and this file would not notice. Found by fmae-rev-test; confirmed by eng and wal.
+//
+//    The refusal cells cannot be made to execute core's source without duplicating the rule, which
+//    is the drift this design refuses everywhere else. So instead the DISAGREEMENT is made loud:
+//    compare the source rule against the rule actually invoked, and fail with a legible message
+//    rather than a green run over stale bytes.
+{
+  const verdict = (f: (n: string) => unknown, n: string): boolean => {
+    try { f(n); return true; } catch { return false; }
+  };
+  const probes = ["\uD800", "\uDC00", "A\uD800", "\uD800A", "\uDC00\uD800", "agent \uD83D\uDE00", "\uFFFD", "worker", "Ada Lovelace"];
+  const disagreed = probes.filter((n) => verdict(ruleFromSource, n) !== verdict((x) => eventChannel(x), n));
+  c("the rule `eventChannel` EXECUTES agrees with core's SOURCE rule (else core's dist is stale)",
+    disagreed.length === 0,
+    disagreed.length ? `disagree on ${JSON.stringify(disagreed)} — rebuild @cotal-ai/core; this suite grades its dist/` : undefined);
+}
 
 // ── UNPAIRED SURROGATES: the precondition the disjointness argument left implicit ─────────────
 //    The argument above assumes distinct names give distinct hash INPUTS. They do not.
