@@ -194,10 +194,20 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
     await credsStore().delete(DELIVERY_CREDS_KEY); // no pid recorded: no live daemon to strand
     return;
   }
-  const pid = parsePid(readFileSync(p, "utf8"));
+  const raw = readFileSync(p, "utf8").trim();
+  const pid = parsePid(raw);
   if (pid === undefined) {
-    await removeRecords(); // unattributable content is not a claim that something is running
-    return;
+    if (raw === "") {
+      await removeRecords(); // pre-protocol husk, nothing behind it
+      return;
+    }
+    // See the manager helper: unattributable content may front a live daemon, and clearing it here
+    // would also delete the standing credential of a process still using it.
+    throw new Error(
+      `the delivery pidfile at ${p} is unattributable (${JSON.stringify(raw)}): it may still front a running daemon nobody can identify.\n` +
+        `Refusing to remove it or its standing credential, and refusing to report a clean stop.\n` +
+        `NEXT: find and stop that process, then remove the file by hand.`,
+    );
   }
   const before = probe(pid);
   if (before === "dead") {

@@ -169,10 +169,24 @@ export function stopManager(probe: LivenessProbe = probeLiveness, signal: Signal
     rmSync(marker, { force: true }); // a marker with no pid records nothing
     return "already-gone";
   }
-  const pid = parsePid(readFileSync(p, "utf8"));
+  const raw = readFileSync(p, "utf8").trim();
+  const pid = parsePid(raw);
   if (pid === undefined) {
-    clear(); // unattributable content is not a claim that something is running
-    return "already-gone";
+    // An EMPTY pidfile is a pre-protocol husk with nothing behind it, and clearing it is safe. ANY
+    // OTHER unattributable content (garbled, fractional, out of range) may still front a LIVE
+    // process we cannot identify or signal, so removing it would orphan that process while
+    // reporting a clean stop. The contract at the top of pid.ts says such content is never a pid to
+    // delete a record against; this is that rule at the destructive end, matching down.ts:298-311
+    // and stopAuthService, which already refuse. My first version cleared it.
+    if (raw === "") {
+      clear();
+      return "already-gone";
+    }
+    throw new Error(
+      `the manager pidfile at ${p} is unattributable (${JSON.stringify(raw)}): it may still front a running process nobody can identify.\n` +
+        `Refusing to remove it or report a clean stop; the delivery-aware marker is preserved with it.\n` +
+        `NEXT: find and stop that process, then remove the file by hand.`,
+    );
   }
   const before = probe(pid);
   if (before === "dead") {

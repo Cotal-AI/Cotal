@@ -197,6 +197,35 @@ try {
   check("stopDelivery REFUSES a signal it cannot send, rather than reporting success", delRefused !== undefined);
   check("THE DELIVERY PIDFILE SURVIVES it", readFileSync(delPid, "utf8") === delBefore);
   check("the refusal says the credential was preserved, which is the strand it prevents", /credential are LEFT IN PLACE|standing credential/i.test(delRefused ?? ""), delRefused?.slice(0, 90));
+
+  // ── EMPTY vs MALFORMED, the inverse pair ────────────────────────────────────────────────────
+  // My first version cleared BOTH, which contradicts this file's own top-level contract: content
+  // parsePid rejects is unattributable and is never a record to delete against. An empty pidfile is
+  // a pre-protocol husk with nothing behind it; a garbled one may front a live process nobody can
+  // identify, and clearing it orphans that process under a clean-stop report.
+  writeFileSync(mgrPid, "not-a-pid\n");
+  writeFileSync(join(root, ".cotal", "manager.delivery-aware"), "not-a-pid\n");
+  let malformed: string | undefined;
+  try {
+    stopManager();
+  } catch (e) {
+    malformed = (e as Error).message;
+  }
+  check("stopManager REFUSES a malformed pidfile instead of clearing it", malformed !== undefined);
+  check("the malformed pidfile SURVIVES", existsSync(mgrPid));
+  check("and so does the marker beside it", existsSync(join(root, ".cotal", "manager.delivery-aware")));
+  writeFileSync(mgrPid, "");
+  check("an EMPTY pidfile IS cleared (a husk, not a claim)", stopManager() === "already-gone" && !existsSync(mgrPid));
+
+  writeFileSync(delPid, "garbled\n");
+  let delMalformed: string | undefined;
+  try {
+    await stopDelivery();
+  } catch (e) {
+    delMalformed = (e as Error).message;
+  }
+  check("stopDelivery REFUSES a malformed pidfile too", delMalformed !== undefined);
+  check("the malformed delivery pidfile SURVIVES", existsSync(delPid));
 } finally {
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
