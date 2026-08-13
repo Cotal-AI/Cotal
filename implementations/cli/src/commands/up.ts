@@ -195,7 +195,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       throw new Error("--restore cannot be combined with --file/-f or --channels");
     // A restore REINSTATES a trust root from an artifact; a rotation SUPERSEDES the one on disk.
     // Together they would restore a system account and retire it in the same command, leaving the
-    // operator unable to say which authority the mesh actually came up on — and the artifact's own
+    // operator unable to say which authority the mesh actually came up on, and the artifact's own
     // $SYS creds overwritten by the rotation before anyone verified the restore. Restore, verify,
     // then rotate as its own deliberate step.
     if (values["rotate-sys"])
@@ -232,7 +232,7 @@ export async function up(args: ParsedArgs): Promise<void> {
   // MAINTENANCE RE-ENTRY. `--restore` is refused with `--rotate-sys` above, but that guard only sees
   // the EXPLICIT flag: a restore/resume re-entry arrives with `restore` cleared and an `__*Attempt`
   // set, and an auto-recovered journal reaches the same place with no restore flag ever typed. Both
-  // re-entries then hit adopt-the-live-listener paths that RETURN before `authSetup` — so the flag
+  // re-entries then hit adopt-the-live-listener paths that RETURN before `authSetup`, so the flag
   // would be accepted, nothing would rotate, and the command would exit 0. That is the silent
   // success this whole change exists to remove, so it is refused here, before any attempt state is
   // read. A rotation is a stopped, fresh boot; a half-finished maintenance attempt is neither.
@@ -446,8 +446,8 @@ export async function up(args: ParsedArgs): Promise<void> {
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
-  // An open mesh has no operator, no system account, and no $SYS creds — there is nothing to rotate,
-  // so the request is a misunderstanding to name, never a silent no-op that reports success.
+  // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
+  // rotate; the request is a misunderstanding to name, never a silent no-op that reports success.
   if (values["rotate-sys"] && values.open) {
     throw new Error("--rotate-sys is for auth meshes: an open mesh (--open) has no system account or $SYS credentials to rotate");
   }
@@ -635,7 +635,7 @@ export async function up(args: ParsedArgs): Promise<void> {
       }
       // A rotation retires the system account this LIVE broker was started on, and only a broker
       // (re)started from the rewritten config carries the successor. Rotating under a running mesh
-      // would leave the record and the creds a generation ahead of the broker — every $SYS client
+      // would leave the record and the creds a generation ahead of the broker: every $SYS client
       // denied, with `doctor auth` reporting freshly-minted creds. Refuse with the two-step recipe.
       if (values["rotate-sys"]) {
         console.error(
@@ -759,7 +759,7 @@ export async function up(args: ParsedArgs): Promise<void> {
     // may be a `nats-server -c <root>/.cotal/auth/server.conf` started by hand, holding THIS root's
     // config and JetStream store while writing neither a pidfile nor a registry row. Rotating around
     // it retires the account it is still serving and opens its store a second time. Nothing available
-    // here can identify it — that is what unidentified means — so refuse instead of stepping past it.
+    // here can identify it (that is what unidentified means), so refuse instead of stepping past it.
     if (values["rotate-sys"]) {
       console.error(
         c.red(`✗ ${server} is answering and it is not this root's recorded mesh (${who})`) +
@@ -1657,7 +1657,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // The open-mesh refusal must be RE-STATED here, not only against the CLI `--open` flag: on this
   // path openness comes from the MANIFEST (`broker.auth: false`), which the flag-level guard cannot
   // see. Without it, `cotal up -f open.yaml --rotate-sys` boots an open broker, exits 0 and rotates
-  // nothing — a rotation ask answered with silent success, the exact failure class this change
+  // nothing: a rotation ask answered with silent success, the exact failure class this change
   // exists to remove. Before the dry-run print and before anything boots.
   if (opts.rotateSys && open)
     throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
@@ -2515,7 +2515,7 @@ async function authSetup(
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
     await provisionMembershipCreds(auth, cotalRoot()); // … so the observer can still be minted here (fresh-space only)
     // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
-    // the ASK is already satisfied — say so rather than rotating a one-second-old account, and never
+    // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.
     if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
   } else if (rotateSys) {
@@ -2524,7 +2524,7 @@ async function authSetup(
     // requested address, and any UNIDENTIFIED listener there (which refuses rather than free-porting
     // around a broker that may be serving this root's own server.conf and store). This one reads the
     // root's ownership records for a broker at an address nobody probed. It reports what those
-    // records say, not what the process table says — see its own comment for the residual — and fails
+    // records say, not what the process table says (see its own comment for the residual), and fails
     // CLOSED, so an ambiguous record refuses exactly like a live one.
     await assertRootBrokerStopped(cotalRoot());
     // Fails loud: a caller that swallowed this would boot the broker on the RETIRED system account
@@ -2537,11 +2537,11 @@ async function authSetup(
     );
     // Say exactly what is true. The retirement is CONFIG-LOAD-BOUND: an old cred dies against any
     // broker that loads the successor config, which is every broker started from this root from here
-    // on — but a stale nats-server still holding the pre-rotation config in memory would keep
+    // on, but a stale nats-server still holding the pre-rotation config in memory would keep
     // honoring it, so "now dead" without that qualifier oversells the guarantee.
     console.log(c.dim("  the data account, every agent cred and the JetStream store are untouched. The OLD $SYS creds are refused by any broker that loads this config; a stale broker still running the previous config would still honor them, so stop those first."));
-    // A full backup binds to the trust chain it was taken against — `rootChainCommitment` hashes the
-    // operator JWT and the system account, both of which just changed — so `cotal up --restore`
+    // A full backup binds to the trust chain it was taken against: `rootChainCommitment` hashes the
+    // operator JWT and the system account, both of which just changed, so `cotal up --restore`
     // refuses every full artifact taken before this moment. That is correct (it is a different trust
     // root), but it is only obvious to someone who has read the fingerprint code, and rotation is
     // now a routine 30-day act rather than a once-per-space event. Say it at the moment it becomes
@@ -2550,7 +2550,7 @@ async function authSetup(
   }
   // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
   // A rotation that committed the trust record and then died leaves them stale, unexpired, and
-  // broker-dead — and, crash-before-either-write, stale in a way that no comparison between the two
+  // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
   // FILES can see (they agree with each other; they just disagree with the record). This is the one
   // place holding both, on the one path that renders the config, so it is where the split is caught.
   //
@@ -2646,7 +2646,7 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
       process.kill(pid, 0); // signal 0 is a liveness probe, it signals nothing
       live = true;
     } catch (e) {
-      // EPERM means the process EXISTS and is not ours to signal — alive for this purpose.
+      // EPERM means the process EXISTS and is not ours to signal, i.e. alive for this purpose.
       live = (e as NodeJS.ErrnoException).code === "EPERM";
     }
     if (live)

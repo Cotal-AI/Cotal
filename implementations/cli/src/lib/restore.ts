@@ -339,7 +339,7 @@ async function validateManifest(
     if (!manifest.authority || JSON.stringify(manifest.authority) !== JSON.stringify(currentAuthority)) {
       // Name the LIKELIEST drift instead of leaving a bare hash mismatch. The commitment covers the
       // operator JWT, the system account and the data account; when the DATA account still matches,
-      // what moved is the broker half — and since `cotal up --rotate-sys` re-issues exactly those two
+      // what moved is the broker half, and since `cotal up --rotate-sys` re-issues exactly those two
       // on a 30-day cadence, "you rotated after taking this backup" is the common case, not an exotic
       // one. Without this the operator sees an opaque fingerprint mismatch on the artifact they were
       // counting on during a disaster.

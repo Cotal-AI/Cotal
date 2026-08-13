@@ -1,5 +1,5 @@
 /**
- * `$SYS` ROTATION E2E (issue #338) — the operator's whole recovery cycle, through the packaged
+ * `$SYS` ROTATION E2E (issue #338): the operator's whole recovery cycle, through the packaged
  * binary, against a real broker + a real delivery daemon + a real manager. Nothing here is staged in
  * process: every state transition is a `cotal` subprocess, and every assertion reads what that
  * subprocess left behind.
@@ -12,7 +12,7 @@
  *    feed does not come up, and what it logs is now the credential and the repair rather than a bare
  *    "Authorization Violation";
  *  - the NO-OP that shipped as the fix: `cotal down` + a plain `cotal up` rewrites neither $SYS file
- *    — byte-identical, still expired, doctor still red. This is the regression the branch exists to
+ *    leaves it byte-identical, still expired, doctor still red. This is the regression the branch exists to
  *    kill, so it is a check, not a comment;
  *  - the REPAIR: `cotal up --rotate-sys` clears the symptom in the daemon that reported it;
  *  - the SURVIVAL claim the repair copy makes to the operator. An agent credential minted before the
@@ -22,10 +22,10 @@
  *
  * Elapsed time is the one thing simulated: the $SYS pair is minted with a past `exp`, which is the
  * state a 30-day-old mesh reaches on its own. It is signed by the space's CURRENT system account, so
- * what the daemon and the doctor react to is expiry — not the torn-pair case, which is
+ * what the daemon and the doctor react to is expiry, not the torn-pair case, which is
  * `sys-rotation.smoke.ts` stage 6.
  *
- * NOTE: runs the BUILT dist — `pnpm build` first.
+ * NOTE: runs the BUILT dist, so `pnpm build` first.
  * Run: pnpm smoke:sys-rotation-e2e   (needs `nats-server` on PATH; local-only; ~60s)
  */
 import { randomUUID } from "node:crypto";
@@ -68,13 +68,13 @@ const survivors = (label: string): void => {
   const ps = execFileSync("ps", ["-eo", "pid,command"], { encoding: "utf8" })
     .split("\n")
     .filter((l) => (l.includes(SPACE) || l.includes(`-e2e-${RUN}-`)) && !l.includes("ps -eo"));
-  console.log(`  [debug] after ${label}: ${ps.length} live —\n${ps.map((l) => "      " + l.trim().slice(0, 150)).join("\n")}`);
+  console.log(`  [debug] after ${label}: ${ps.length} live:\n${ps.map((l) => "      " + l.trim().slice(0, 150)).join("\n")}`);
 };
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 const cotalJs = join(repoRoot, "bin", "dist", "cotal.js");
 if (!existsSync(cotalJs)) {
-  console.error(`no built CLI at ${cotalJs} — run \`pnpm build\` first`);
+  console.error(`no built CLI at ${cotalJs}; run \`pnpm build\` first`);
   process.exit(1);
 }
 
@@ -105,12 +105,12 @@ function cotal(args: string[], timeout = 120_000): { code: number | null; out: s
 }
 
 /** The delivery daemon appends across boots, so every read is of ONE boot's tail. Marked in DECODED
- *  characters, not bytes: the log is full of `✓`/`—`/`•`, so a `statSync().size` mark would slice a
+ *  characters, not bytes: the log is full of multibyte glyphs (`✓`, `•`), so a `statSync().size` mark would slice a
  *  UTF-8 string at the wrong place and silently eat the head of the tail. */
 const logSize = (): number => (existsSync(deliveryLog) ? readFileSync(deliveryLog, "utf8").length : 0);
 const logTail = (from: number): string => (existsSync(deliveryLog) ? readFileSync(deliveryLog, "utf8").slice(from) : "");
-/** The daemon starts a beat behind the CLI's exit. Wait for its membership VERDICT — up, degraded,
- *  or unprovisioned — which is the last thing it writes before installing its signal handlers. */
+/** The daemon starts a beat behind the CLI's exit. Wait for its membership VERDICT (up, degraded,
+ *  or unprovisioned), which is the last thing it writes before installing its signal handlers. */
 async function daemonTail(from: number, ms = 25_000): Promise<string> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -129,7 +129,7 @@ async function daemonTail(from: number, ms = 25_000): Promise<string> {
  *
  * A daemon SIGTERMed that young never completes the KV delete that releases its single-flight
  * delivery lease: the request does not settle, its own 2s hard-exit fallback fires first, and the
- * lease is left holding a live value for the rest of its 30s TTL — so the NEXT daemon refuses to
+ * lease is left holding a live value for the rest of its 30s TTL, so the NEXT daemon refuses to
  * bind ("a live lease already exists for shard 0") and the mesh comes back without Plane-3 delivery.
  *
  * This is a property of the daemon's shutdown path, not of anything here: it reproduces on an
@@ -144,7 +144,7 @@ async function settleThenDown(opts: { awaitManagerLease?: boolean } = {}): Promi
   // The MANAGER has the same shape of problem on its own lease, and it bites the boot AFTER the one
   // that was stopped. Its instance id is persisted, so a restart re-acquires the SAME per-instance
   // key; a manager whose predecessor did not release it refuses to start ("already serves space … -
-  // stop it first"), `up` still exits 0, and the mesh comes back with no manager at all — no renewal
+  // stop it first"), `up` still exits 0, and the mesh comes back with no manager at all: no renewal
   // pass runs, so `doctor auth` goes on grading a record from before the repair. Waiting out
   // MANAGER_LEASE_TTL_MS (10s) is what makes it deterministic. Also reproducible with no rotation
   // anywhere: three ordinary `up`/`down` cycles refuse on the third, and the same three with 12s
@@ -175,7 +175,7 @@ async function withJsm<T>(creds: string, fn: (jsm: Awaited<ReturnType<typeof jet
 }
 /** The CHAT stream's identity as the operator's data: how many messages, and where the log is. A
  *  stream that was recreated by the rotation would come back at sequence 0. (No role may
- *  `STREAM.MSG.GET` on CHAT — reads there are consumer-scoped by design — so the bytes are proven
+ *  `STREAM.MSG.GET` on CHAT, since reads there are consumer-scoped by design, so the bytes are proven
  *  through the registry instead, below.) */
 const chatState = (creds: string): Promise<{ messages: number; last_seq: number; first_ts: string }> =>
   withJsm(creds, async (jsm) => {
@@ -234,14 +234,14 @@ try {
   check("the message landed on the CHAT stream", chatBefore.messages > 0 && chatBefore.last_seq > 0, chatBefore);
 
   // ── 3) the repair the tooling used to advertise ────────────────────────────────────────────────
-  console.log("\n3) `down` + a plain `up` — the repair that shipped, and did nothing");
+  console.log("\n3) `down` + a plain `up`: the repair that shipped, and did nothing");
   const down1 = await settleThenDown();
   check("`cotal down` exits 0", down1.code === 0, down1.out.slice(-400));
   survivors("down 1");
   mark = logSize();
   const boot2 = cotal(["up", "--detach", "--space", SPACE, "--server", SERVERS]);
   check("a plain `cotal up` comes back", boot2.code === 0, boot2.out.slice(-500));
-  // Wait for THIS boot's daemon before the next `down` — see `settleThenDown` for why a
+  // Wait for THIS boot's daemon before the next `down`; see `settleThenDown` for why a
   // seconds-old daemon must not be stopped here.
   const tail2 = await daemonTail(mark);
   check("the plain re-up's daemon came up", /delivery daemon up/.test(tail2), tail2.slice(-400));
@@ -274,14 +274,14 @@ try {
   check("both are issued by the record's CURRENT system account", credsClaims(newObs).iss === rotated?.sys.pub && credsClaims(newEv).iss === rotated?.sys.pub, `${credsClaims(newObs).iss} / ${credsClaims(newEv).iss} vs ${rotated?.sys.pub}`);
   check("neither is expired any more", inspectCredHealth(newObs).state !== "expired" && inspectCredHealth(newEv).state !== "expired", `${inspectCredHealth(newObs).state} / ${inspectCredHealth(newEv).state}`);
 
-  // The symptom, cleared in the process that reported it — the same reader that said "did NOT start"
+  // The symptom, cleared in the process that reported it: the same reader that said "did NOT start"
   // above, so its silence there was a real reading rather than a broken probe.
   const tail3 = await daemonTail(mark);
   check("the daemon's membership feed IS up after the rotation", /membership feed up/.test(tail3), tail3.slice(-500));
   check("the daemon no longer reports a degraded membership feed", !/! membership:/.test(tail3), tail3.slice(-500));
   // Bounded, and only on the POSITIVE assertion. `doctor auth` also grades the last renewal record,
   // which still holds the pre-rotation adoption failure until the manager's first post-boot pass
-  // rewrites it — so this waits for that pass rather than for the rotation, which has already
+  // rewrites it, so this waits for that pass rather than for the rotation, which has already
   // happened. A red here at the deadline is a real finding: it would mean an operator sees a failed
   // doctor for as long as the record stays stale after a successful repair.
   const started = Date.now();

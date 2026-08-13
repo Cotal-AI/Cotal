@@ -35,7 +35,7 @@ filesystem while enforcing nothing for the tenants actually at risk.
 
 A rotation requires every broker for the root to be stopped, and three checks now say so: this root's
 recorded mesh at the requested address, anything unidentified answering there (which refuses instead
-of relocating to a free port), and the root's own ownership records — a live or unreadable `nats.pid`,
+of relocating to a free port), and the root's own ownership records: a live or unreadable `nats.pid`,
 or any recorded mesh for this root still reachable. Without them a lost registry row, or a
 `nats-server` started by hand against this root's `server.conf`, was enough to bypass the running-mesh
 refusal: `up` found the port busy, picked a free one, rotated, and left the old broker serving the
@@ -68,7 +68,7 @@ registry state written before the rotation reads back through the CLI after it.
 
 Diagnosis now names the cause instead of the symptom. An expired observer cred used to surface as a
 bare "Authorization Violation" in the delivery log and, one layer up, as a `membership-rw` adoption
-refused with "membership feed is not running" — neither of which mentions a credential. The daemon
+refused with "membership feed is not running", neither of which mentions a credential. The daemon
 checks the observer's own expiry before connecting and reports it, carries that reason into the
 adoption reply, and the manager warns on every renewal pass from the 75% point onward rather than
 letting the mesh discover the expiry at the horizon. `cotal doctor auth`, `evictPrincipal`,
@@ -76,5 +76,5 @@ letting the mesh discover the expiry at the horizon. `cotal doctor auth`, `evict
 because its bundle is incomplete rather than expired, the daemon now names the missing files and
 distinguishes the two cases: a missing `$SYS` observer is re-minted by a rotation, while a space
 predating broker-sourced membership is missing the rw cred and the account id as well, which a
-rotation does not write — so it is told the truth rather than sent through a stop/start that cannot
+rotation does not write, so it is told the truth rather than sent through a stop/start that cannot
 help it.
