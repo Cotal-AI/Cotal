@@ -159,11 +159,10 @@ export type SignalFn = (pid: number, signal: NodeJS.Signals) => void;
 /** What a stop actually achieved, because "void" let this function claim success it had not earned. */
 export type StopVerdict = "stopped" | "already-gone";
 
-/** Blocking sleep. Proving death needs to happen before the records are removed, and every caller of
- *  this function is synchronous. */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+/** Blocking sleep. DO NOT reintroduce this for death-waiting: it blocks the event loop, so a child
+ *  of this process is never reaped, remains a signalable zombie, and reads `alive` forever. That
+ *  turned `cotal up` + Ctrl-C into an exit-1 that left the broker running. Death-waits await. */
+// (sleepSync removed: see above.)
 
 /** Stop the detached (pty) manager if we started one, and remove its records ONLY once it is gone.
  *
@@ -176,7 +175,7 @@ function sleepSync(ms: number): void {
  *  A correct fix upstream reaching a latent destructive bug downstream is the worst shape available,
  *  so this refuses instead: records are removed only on proven death, never on a signal we could not
  *  send or a death we could not confirm. Found by review, with a kernel seccomp proof. */
-export function stopManager(probe: LivenessProbe = probeLiveness, signal: SignalFn | undefined = undefined): StopVerdict {
+export async function stopManager(probe: LivenessProbe = probeLiveness, signal: SignalFn | undefined = undefined): Promise<StopVerdict> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH();
   const marker = DELIVERY_AWARE_MARKER();
@@ -234,7 +233,9 @@ export function stopManager(probe: LivenessProbe = probeLiveness, signal: Signal
   }
   // The signal was accepted, which is not the same as the process being gone. Prove it before
   // removing the record, bounded, because a record deleted while its process lives is the defect.
-  for (let i = 0; i < 40 && probe(pid) === "alive"; i++) sleepSync(50);
+  // AWAIT, never a blocking sleep: this process spawned the manager, so the event loop must run
+  // for it to be reaped. A blocked loop leaves a zombie that still answers kill(pid,0).
+  for (let i = 0; i < 40 && probe(pid) === "alive"; i++) await new Promise((r) => setTimeout(r, 50));
   const after = probe(pid);
   if (after !== "dead")
     throw new Error(

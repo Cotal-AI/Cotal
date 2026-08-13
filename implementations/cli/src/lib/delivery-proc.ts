@@ -74,7 +74,7 @@ function oldHostingManagerVerdict(probe: LivenessProbe = probeLiveness): "stop-i
 /** Cutover preflight — the FIRST action, BEFORE the daemon can bind: stop any old Plane-3-hosting
  *  manager (live `manager.pid` without the delivery-aware marker) so it never double-binds the
  *  daemon's durables. A delivery-aware (this-build) manager is left running. No-op on a fresh install. */
-export function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiveness, signal?: SignalFn): void {
+export async function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
   const verdict = oldHostingManagerVerdict(probe);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate")
@@ -88,7 +88,7 @@ export function stopOldHostingManagerIfPresent(probe: LivenessProbe = probeLiven
     // stopManager THROWS rather than reporting a stop it did not achieve (EPERM, or a process that
     // outlived SIGTERM), so reaching the next line is the proof the old manager is gone. Letting that
     // throw propagate is the point: the daemon must not start beside a manager still bound to Plane 3.
-    stopManager(probe, signal);
+    await stopManager(probe, signal);
   }
 }
 
@@ -251,7 +251,7 @@ export async function stopDelivery(probe: LivenessProbe = probeLiveness, signal?
  *  first only to close the old-manager double-bind window and so freshly-spawned agents find the
  *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only). */
 export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean }> {
-  stopOldHostingManagerIfPresent();
+  await stopOldHostingManagerIfPresent();
   await ensureDelivery(o);
   return ensureManager(o);
 }

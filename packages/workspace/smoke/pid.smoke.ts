@@ -138,7 +138,7 @@ try {
   rmSync(join(root, ".cotal", "manager.delivery-aware"), { force: true }); // no marker: the old shape
   let preflightRefused: string | undefined;
   try {
-    stopOldHostingManagerIfPresent(stuck);
+    await stopOldHostingManagerIfPresent(stuck);
   } catch (e) {
     preflightRefused = (e as Error).message;
   }
@@ -165,7 +165,7 @@ try {
   const beforeStop = readFileSync(mgrPid, "utf8");
   let stopRefused: string | undefined;
   try {
-    stopManager(alive, refuseSignal);
+    await stopManager(alive, refuseSignal);
   } catch (e) {
     stopRefused = (e as Error).message;
   }
@@ -177,13 +177,13 @@ try {
   // A signal that is ACCEPTED is still not a death. The record goes only on proven death.
   let outlived: string | undefined;
   try {
-    stopManager(alive, () => {}); // accepted, but the probe keeps saying alive
+    await stopManager(alive, () => {}); // accepted, but the probe keeps saying alive
   } catch (e) {
     outlived = (e as Error).message;
   }
   check("stopManager REFUSES when the process outlives SIGTERM", outlived !== undefined);
   check("and still leaves the pidfile in place", readFileSync(mgrPid, "utf8") === beforeStop);
-  check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), stopManager()) === "already-gone" && !existsSync(mgrPid), deadPid);
+  check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), await stopManager()) === "already-gone" && !existsSync(mgrPid), deadPid);
 
   // ── THE SIBLING, which is worse: it deleted the CREDENTIAL before even attempting the signal ──
   // A refused stop therefore left a LIVE daemon still connected and still serving, with its pidfile
@@ -211,7 +211,7 @@ try {
   writeFileSync(join(root, ".cotal", "manager.delivery-aware"), "not-a-pid\n");
   let malformed: string | undefined;
   try {
-    stopManager();
+    await stopManager();
   } catch (e) {
     malformed = (e as Error).message;
   }
@@ -219,7 +219,7 @@ try {
   check("the malformed pidfile SURVIVES", existsSync(mgrPid));
   check("and so does the marker beside it", existsSync(join(root, ".cotal", "manager.delivery-aware")));
   writeFileSync(mgrPid, "");
-  check("an EMPTY pidfile IS cleared (a husk, not a claim)", stopManager() === "already-gone" && !existsSync(mgrPid));
+  check("an EMPTY pidfile IS cleared (a husk, not a claim)", (await stopManager()) === "already-gone" && !existsSync(mgrPid));
 
   writeFileSync(delPid, "garbled\n");
   let delMalformed: string | undefined;
@@ -263,7 +263,7 @@ try {
   writeFileSync(authPid, "not-a-pid\n");
   let authMalformed: string | undefined;
   try {
-    stopAuthService("main");
+    await stopAuthService("main");
   } catch (e) {
     authMalformed = (e as Error).message;
   }
@@ -275,7 +275,7 @@ try {
   writeFileSync(authPid, `${process.pid}\n`);
   let authOutlived: string | undefined;
   try {
-    stopAuthService("main", alive, () => {}); // accepted, but never dies
+    await stopAuthService("main", alive, () => {}); // accepted, but never dies
   } catch (e) {
     authOutlived = (e as Error).message;
   }

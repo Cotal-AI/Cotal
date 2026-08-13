@@ -15,10 +15,6 @@ import { spaceKey } from "@cotal-ai/workspace";
 import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
-/** Blocking sleep: proving death must happen before the record is removed, and this path is sync. */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
@@ -207,7 +203,7 @@ export async function ensureAuthService(opts: {
  *  that would make `process.kill` signal a whole process GROUP) is NEVER removed and fails loud -
  *  silently dropping it would orphan a live signer behind a torn/tampered pidfile while reporting a
  *  clean stop. */
-export function stopAuthService(space: string, probe: LivenessProbe = probeLiveness, signal?: SignalFn): void {
+export async function stopAuthService(space: string, probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
   if (!existsSync(p)) return;
@@ -237,7 +233,8 @@ export function stopAuthService(space: string, probe: LivenessProbe = probeLiven
   // pidfile gone. Same shape as the manager and delivery helpers; proven with a child that installs
   // a no-op SIGTERM handler. Preserve the record unless death is confirmed.
   const deadline = Date.now() + 15_000;
-  while (probe(pid) !== "dead" && Date.now() < deadline) sleepSync(100);
+  // AWAIT: same reaping hazard as stopManager. A blocked event loop never reaps the child.
+  while (probe(pid) !== "dead" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
   if (probe(pid) !== "dead")
     throw new Error(
       `auth-service (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile at ${p} was preserved rather than recording a stop that did not happen - check \`ps -p ${pid}\``,
