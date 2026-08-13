@@ -11,7 +11,7 @@
 import * as herdr from "./src/driver.js";
 import { HerdrRuntime, herdrRuntimeProvider, privateLauncher } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,16 +30,24 @@ let passed = 0;
 let failed = 0;
 /** Cells whose absence should be visible: a suite that silently skips a section reports the same
  *  green as one that proved everything, so the count is asserted against an expected floor. */
-const EXPECTED_MIN_CELLS = 96;
+const EXPECTED_MIN_CELLS = 98;
 
-function ok(label: string, val: unknown) {
+/** `extra` is printed only on failure — a red cell in CI is often the only artifact anyone sees,
+ *  so it should carry what was actually observed rather than just the claim that was violated. */
+function ok(label: string, val: unknown, extra?: unknown) {
   if (val) {
     console.log(`  ✓ ${label}`);
     passed++;
   } else {
-    console.error(`  ✗ FAIL: ${label}`);
+    console.error(`  ✗ FAIL: ${label}${extra === undefined ? "" : ` — ${String(extra)}`}`);
     failed++;
   }
+}
+
+/** Synchronous sleep: these checks poll around synchronous driver calls, so there is no event
+ *  loop to await on. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function throws(label: string, fn: () => unknown, pattern?: RegExp) {
@@ -653,6 +661,38 @@ console.log("\n── ensureServer leaks nothing on a throwing probe ──");
   // log fd, the scratch dir, and a detached server child that also kept the process alive.
   const leakDir = scratch("cotal-herdr-leakbin-");
   const stateFile = join(leakDir, "probe-count");
+  // A duration unique to this run, so a stray from a previous run (or a neighbouring lane on a
+  // shared machine) can never be counted as this one's leak.
+  const NONCE = `30${process.pid % 1000}`;
+
+  // Counting survivors must not go through `pgrep -f <pattern>`: that puts the needle into the
+  // CHECKER's own command line, and on Linux pgrep then matches the very `sh -c` running it —
+  // reporting exactly one phantom leak, forever, on a driver that leaks nothing. (macOS happened
+  // not to, which is why this only ever reddened in CI.) `ps` is invoked with NO pattern in argv
+  // and the matching is done here in JS, so nothing the check itself runs can satisfy it.
+  const strayCount = (): number =>
+    execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })
+      .split("\n")
+      .filter((l) => l.includes(`sleep ${NONCE}`)).length;
+
+  // A zero from an instrument that cannot see anything is not evidence. Prove it can see a stray
+  // before trusting it to report none.
+  const canary = spawn("sh", ["-c", `exec sleep ${NONCE}`], { detached: true, stdio: "ignore" });
+  canary.unref();
+  let sawCanary = false;
+  for (let i = 0; i < 40 && !sawCanary; i++) {
+    sawCanary = strayCount() >= 1;
+    if (!sawCanary) sleepSync(50);
+  }
+  ok("positive control: the stray-process instrument CAN see a detached stray", sawCanary);
+  try { process.kill(canary.pid!, "SIGKILL"); } catch { /* already gone */ }
+  let canaryGone = false;
+  for (let i = 0; i < 40 && !canaryGone; i++) {
+    canaryGone = strayCount() === 0;
+    if (!canaryGone) sleepSync(50);
+  }
+  ok("positive control: and it returns to zero once the stray is killed", canaryGone);
+
   writeFileSync(
     join(leakDir, "herdr"),
     `#!/bin/sh\n` +
@@ -661,7 +701,7 @@ console.log("\n── ensureServer leaks nothing on a throwing probe ──");
       `  n=$(cat ${JSON.stringify(stateFile)} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${JSON.stringify(stateFile)}\n` +
       `  if [ "$n" -le 1 ]; then echo "status: not running"; exit 0; else echo "forced probe failure" >&2; exit 23; fi\n` +
       `fi\n` +
-      `[ "$3" = "server" ] && { exec sleep 300; }\n` +
+      `[ "$3" = "server" ] && { exec sleep ${NONCE}; }\n` +
       `exit 1\n`,
     { mode: 0o755 },
   );
@@ -679,8 +719,14 @@ console.log("\n── ensureServer leaks nothing on a throwing probe ──");
   ok("a throwing status probe fails the provisioning loudly", threw);
   ok("no server scratch dir is left behind after the throw",
     readdirSync(tmpdir()).filter((e) => e.startsWith("cotal-herdr-srv-")).length === dirsBefore);
-  const strays = execFileSync("sh", ["-c", `pgrep -f "sleep 300" | wc -l || true`], { encoding: "utf8" }).trim();
-  ok(`no detached server child survives the throw (found ${strays})`, strays === "0");
+  // The kill is asynchronous, so sample over a bounded window rather than once: an instant read
+  // can catch a process that has been signalled but not yet reaped.
+  let clean = false;
+  for (let i = 0; i < 40 && !clean; i++) {
+    clean = strayCount() === 0;
+    if (!clean) sleepSync(50);
+  }
+  ok("no detached server child survives the throw", clean, `${strayCount()} still running`);
 }
 
 console.log("\n── session isolation ───────────────────────────");
