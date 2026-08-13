@@ -256,7 +256,20 @@ export function eventChannel(name: string): string {
   // injective, and one sentence claiming otherwise is all it takes for the next reader to believe
   // the stronger property. Rejecting unsafe names was the alternative and it is worse: it would break a naming
   // grammar the product documents as supported.
-  return safe === name
+  // THE TWO NAMESPACES MUST BE DISJOINT, and an earlier version's were not.
+  //
+  // Hashing only when `safe !== name` left the hashed image set reachable from the UNHASHED side:
+  // `"Worker"` maps to `events.worker-a67b04cd5c491d4d`, and `"worker-a67b04cd5c491d4d"` is itself a
+  // perfectly valid already-safe name that mapped to the SAME channel. A deterministic,
+  // constructible collision — nothing to do with digest length, and reachable by anyone who can read
+  // the algorithm and choose their own agent name. Found by fmae-rev-test.
+  //
+  // So a name that merely LOOKS like an image is hashed too. Every hashed channel ends in exactly
+  // one `-<16 hex>` more than its own preimage, so no unhashed name can land on a hashed image and
+  // no hashed image can land on another. What remains is the digest bound, which is the honest
+  // residual; the structural overlap is gone.
+  const looksHashed = /-[0-9a-f]{16}$/.test(safe);
+  return safe === name && !looksHashed
     ? `events.${safe}`
     : `events.${safe}-${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
 }
