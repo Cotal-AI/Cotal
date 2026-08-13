@@ -18,11 +18,27 @@
  * the discriminator is the stream's REPLICATION FACTOR, not whether a cluster is involved. A check
  * written against cluster size would pass on exactly the configuration that breaks.
  *
- * MUTATION LEDGER — predicted before the run:
- *   M1  make the check accept any replica count      -> MUST kill "R3 chat stream is REFUSED"
- *   M2  make the check assert on cluster presence    -> MUST kill "R1 stream inside a cluster is
- *                                                        ACCEPTED" (the row that disproves the
- *                                                        topology framing)
+ * MUTATION LEDGER — predicted before the run, then EXECUTED and corrected from what actually died.
+ * Baseline before each: 11 passed, 0 failed.
+ *
+ *   M1  make the check accept any replica count (`replicas !== 1` -> `false`)
+ *       predicted 1: "a chat stream at R3 is REFUSED by the shipped check"
+ *       ACTUAL    2: also "the refusal names the replica count". Obvious in hindsight and the
+ *       prediction was simply incomplete: when nothing throws, the captured message stays empty, so
+ *       the cell asserting the message CONTENT dies with the cell asserting the throw. Recorded
+ *       rather than tidied — a ledger that only ever matches its prediction is not being run.
+ *
+ *   M2  make the check assert on cluster PRESENCE instead of `num_replicas`
+ *       predicted 1: "R1 chat stream inside a cluster is ACCEPTED (topology is NOT the
+ *                     discriminator)" — and R3-REFUSED must STAY GREEN, which is the whole point:
+ *                     this defect passes the cell everyone looks at and breaks only the row that
+ *                     disproves the topology framing.
+ *       ACTUAL    2: the predicted cell died and R3-REFUSED did stay green, as designed. The second
+ *       death ("the refusal names the replica count") is an ARTIFACT OF THE MUTATION, not of the
+ *       defect class: the stand-in reported `num_replicas=99`, so the `/num_replicas=3/` regex could
+ *       not match. A faithful cluster-presence defect would preserve the real count and kill only
+ *       one cell. Called out because an extra kill is easy to bank as extra rigour when it is really
+ *       an artifact of how the mutation was written.
  *
  * Run: pnpm smoke:cas-preflight-cluster   (needs nats-server on PATH; starts 3 servers)
  */
