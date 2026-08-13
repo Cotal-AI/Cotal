@@ -111,7 +111,7 @@ const M = mgr as unknown as {
 /** The journal's own view: every credential row the slot names, for one lifecycle. */
 async function credRowsFor(alias: string, actor: string, uid: string): Promise<CredentialLedgerRow[]> {
   const creds = await mintCreds(auth, newIdentity(), "lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor, lifecycleUid: uid, alias } });
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kvm = new Kvm(nc);
     const t = staticLifecycleTransport(await kvm.open(recordsBucket(space)), await kvm.open(epAuthBucket(space)));

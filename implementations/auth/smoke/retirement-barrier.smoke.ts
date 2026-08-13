@@ -33,6 +33,7 @@ import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, type RetirementDeps, type PoolCleanerBind, type RetirementExecutorBind } from "../src/retirement-barrier.js";
 import { drainRepairPrincipals } from "../src/drain-repair.js";
 import { workPoolContext } from "@cotal-ai/core";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -63,7 +64,7 @@ const EVICT_OPTS = { maxWaitMs: 1500, settleMs: 200, maxVerifyRounds: 3 } as con
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 // #4 repro: the applier principal of scenario H's op, surfaced as a static-conf user whose CONNZ
 // `authorized_user` name maps back to `local.epapl_<hash>` (principalFromName splits the first
 // dash). A live connection under it models a repair bearer still connected when the barrier is

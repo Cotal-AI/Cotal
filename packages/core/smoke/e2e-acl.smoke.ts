@@ -64,7 +64,7 @@ async function rawPubDenied(creds: string, id: string, subject: string): Promise
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-e2e-"));
 const auth = await createSpaceAuth(space);
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 
 /** Write a real agent file and load it back — exercises the file → AgentDef path the launcher uses. */

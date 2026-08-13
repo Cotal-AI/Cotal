@@ -42,6 +42,7 @@ import {
   EP_ERROR_CODES, RESERVED_COMMANDS,
   type EpCaller, type RecordKindDef,
 } from "../src/index.js";
+import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -378,7 +379,7 @@ throws("a branded config with a post-mint deliver_subject refuses (family consum
   });
 
 // ── the resources + live behaviors (real broker) ──
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epbind-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 
@@ -542,7 +543,7 @@ try {
   // not a handler, must let the canonicalizer enqueue + leader-read while denying everyone else
   // the body-selected EPW read.
   {
-    const SPORT = 20000 + Math.floor(Math.random() * 40000);
+    const SPORT = await pickFreePort();
     const sd2 = mkdtempSync(join(tmpdir(), "cotal-epbind-auth-"));
     const canonRows = canonicalizerWorkGrants(SPACE, "manager");
     writeFileSync(join(sd2, "server.conf"), [

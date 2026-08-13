@@ -34,8 +34,9 @@ import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry
 import { credRowKey, finalizeAgentMint, markLedgerRowRevoked, stageAgentMint } from "../src/credential-ledger.js";
 import { authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
 import { ROOT_CREDENTIAL_TTL_MS } from "../src/root-credential.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -60,7 +61,7 @@ const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const tmp = mkdtempSync(join(tmpdir(), "cotal-denynew-"));
 const dir = join(tmp, "state");
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 
 const ISS = "https://auth.cotal.test";
@@ -71,7 +72,7 @@ const quiet = () => {};
 /** A user-mode connect attempt through the callout — the enforcement boundary under test. */
 async function tryConnect(bearer: string): Promise<"connected" | "denied"> {
   try {
-    const nc = await connect({ servers: SERVERS, reconnect: false, ...(standaloneConnectOpts({ bearer, sentinelCreds: callout.sentinelCreds }) as Partial<ConnectionOptions>) });
+    const nc = await connect({ servers: SERVERS, reconnect: false, ...(standaloneConnectOpts({ bearer, sentinelCreds: callout.sentinelCreds, tls: false }) as Partial<ConnectionOptions>) });
     await nc.close();
     return "connected";
   } catch (e) {

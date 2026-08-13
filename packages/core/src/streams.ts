@@ -120,6 +120,24 @@ export interface StandaloneAuth {
   creds?: string;
   bearer?: string;
   sentinelCreds?: string;
+  /** Whether this connection must REQUIRE TLS rather than merely tolerate it.
+   *
+   *  REQUIRED, and it is the point of the field. This helper is the STANDALONE connect path, and it
+   *  was derived from the endpoint path's auth half without its transport half: `authOpts`,
+   *  `probeConnect` and `RawAuth` all carry a TLS requirement, and this one did not. Every caller
+   *  of it therefore built connect options that carried the credentials and dropped the thing that
+   *  protects them in transit.
+   *
+   *  Made required rather than optional because the omitted case is the dangerous one. A client
+   *  with no TLS requirement still connects to a TLS broker — it upgrades the same socket once it
+   *  reads `tls_required` in the server's unauthenticated INFO — so nothing looks wrong until an
+   *  on-path attacker forges an INFO without it and collects the credentials in the clear. An
+   *  optional field would leave the seam LOOKING transport-aware while callers kept omitting it.
+   *
+   *  Note the honest limit of the compile error: smoke files are outside the tsconfigs, so the type
+   *  forces every TYPECHECKED caller to state a transport, not every caller. That is why
+   *  `standaloneConnectOpts` also throws at runtime — see there. */
+  tls: boolean;
 }
 
 /** Connection options for a privileged STANDALONE helper (`setupSpaceStreams`, `clearSpaceHistory`,
@@ -132,7 +150,23 @@ export interface StandaloneAuth {
  *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and a
  *  client-chosen inbox NONCE goes out as the connect `name` — the callout scopes `_INBOX_<nonce>.>`
  *  from it (the client cannot know its nkey pre-connect). Open mode (no auth) connects bare. */
-export function standaloneConnectOpts(auth: StandaloneAuth = {}): Record<string, unknown> {
+export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unknown> {
+  // The `= {}` default is deliberately GONE. It was the omission hole: it let a caller build
+  // connect options without ever naming a transport, and the result silently connected non-strict.
+  //
+  // The throw exists because the type alone does not reach far enough. Smoke files sit outside the
+  // tsconfigs, so 16 of this seam's 28 call sites are never typechecked - the compile error covers
+  // every TYPECHECKED caller, not every caller. Without this guard those would keep passing no
+  // transport and degrade to non-strict in silence, which is precisely the defect being fixed.
+  // Positioned BEFORE the options are built and before any connect: a guard only fences what comes
+  // after it.
+  if (auth?.tls === undefined)
+    throw new Error(
+      "standaloneConnectOpts requires an explicit `tls` boolean: pass `tls: true` to REQUIRE TLS, " +
+      "or `tls: false` for a plaintext broker. It has no default, because defaulting it would " +
+      "silently connect without the requirement that protects the credentials being passed.",
+    );
+  const tlsOpt = auth.tls ? { tls: {} } : {};
   if (auth.bearer !== undefined) {
     if (!auth.sentinelCreds)
       throw new Error("user-mode standalone connect requires sentinelCreds alongside the bearer");
@@ -142,14 +176,16 @@ export function standaloneConnectOpts(auth: StandaloneAuth = {}): Record<string,
       name: nonce,
       inboxPrefix: `_INBOX_${nonce}`,
       authenticator: [credsAuthenticator(new TextEncoder().encode(auth.sentinelCreds)), tokenAuthenticator(auth.bearer)],
+      ...tlsOpt,
     };
   }
   return auth.creds
     ? {
         authenticator: credsAuthenticator(new TextEncoder().encode(auth.creds)),
         inboxPrefix: `_INBOX_${idFromCreds(auth.creds)}`,
+        ...tlsOpt,
       }
-    : {};
+    : { ...tlsOpt };
 }
 
 /**
@@ -383,7 +419,7 @@ export async function setupSpaceStreams(opts: {
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
 }): Promise<void> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds }) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
@@ -439,7 +475,7 @@ export async function clearSpaceHistory(opts: {
   sentinelCreds?: string;
   includeDms?: boolean;
 }): Promise<ClearSpaceHistoryResult> {
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
@@ -468,7 +504,7 @@ export async function clearChannel(opts: {
 }): Promise<{ channel: string; purged: number }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
-  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts(opts) });
+  const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
     const { purged } = await jsm.streams.purge(chatStream(opts.space), {
@@ -509,7 +545,7 @@ export async function deprovisionAgent(opts: {
 }): Promise<void> {
   const nc = await connect({
     servers: opts.servers,
-    ...standaloneConnectOpts({ creds: opts.creds }),
+    ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     // This is a detached, fire-and-forget teardown — it must FAIL FAST, never hang, so the caller's
     // fail-loud `.catch` is load-bearing: no reconnect loop (a wedged broker rejects promptly instead of
     // looping silently) and a bounded initial connect. Without this a broker-down deprovision would sit

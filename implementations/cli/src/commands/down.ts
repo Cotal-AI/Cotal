@@ -647,7 +647,7 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(user ?? { creds: resolved.creds }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
@@ -690,7 +690,7 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await connect({
     servers: server,
-    ...standaloneConnectOpts(user ?? { creds: resolved.creds }),
+    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {

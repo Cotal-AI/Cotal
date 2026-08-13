@@ -70,7 +70,7 @@ const mkRoot = (tag: string, agentName: string): string => {
   saveSpaceAuth(authDir(r), auth); // each manager reloads the SAME space auth from its own root
   return r;
 };
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
 type MgrPriv = { managerInstanceId: string };
 const kids: ReturnType<typeof spawn>[] = [];
@@ -106,7 +106,7 @@ try {
   const callerUid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
   const callerCreds = await mintCreds(auth, callerId, "control-caller-privileged", { lifecycleUid: callerUid });
-  nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds }), maxReconnectAttempts: 0 });
+  nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
   const service = await resolveService(nc, SPACE, MANAGER_ENDPOINT, caller, { deadlineMs: 8_000 });
   const scatter = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 6_000 });
   const names = (iid: string): string[] =>

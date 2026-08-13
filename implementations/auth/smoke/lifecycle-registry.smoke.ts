@@ -39,6 +39,7 @@ import {
   tryReserveUid, reserveLifecycleUid, activateLifecycle, resumeActivation,
   observeGate, createGateFrozen, freezeGate, reopenGate, retireGate,
 } from "../src/lifecycle-registry.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -55,7 +56,7 @@ const enc = new TextEncoder();
 const headKey = (o: string, a: string) => recordAtomicKey(LIFECYCLE_HEAD, [o, a]);
 const uidKey = (u: string) => recordAtomicKey(UID_RESERVATION, [u]);
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-lifereg-"));
 // A conf broker with a full ADMIN user, a SCOPED mapping-reader user (records leader read +
 // the bind-time STREAM.INFO shape proof, §13.9; a CONNECTION-scoped inbox, never the

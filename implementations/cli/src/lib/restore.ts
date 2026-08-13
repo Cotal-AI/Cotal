@@ -337,8 +337,20 @@ async function validateManifest(
     validateBackupStreamState(record.state as unknown as Readonly<Record<string, unknown>>);
   }
   if (manifest.selection === "full" && flags["restore-only"] !== "registry") {
-    if (!manifest.authority || JSON.stringify(manifest.authority) !== JSON.stringify(currentAuthority))
-      throw new Error("backup authority fingerprint does not match current trust state");
+    if (!manifest.authority || JSON.stringify(manifest.authority) !== JSON.stringify(currentAuthority)) {
+      // Name the LIKELIEST drift instead of leaving a bare hash mismatch. The commitment covers the
+      // operator JWT, the system account and the data account; when the DATA account still matches,
+      // what moved is the broker half — and since `cotal up --rotate-sys` re-issues exactly those two
+      // on a 30-day cadence, "you rotated after taking this backup" is the common case, not an exotic
+      // one. Without this the operator sees an opaque fingerprint mismatch on the artifact they were
+      // counting on during a disaster.
+      const sameAccount = manifest.authority?.account !== undefined && manifest.authority.account === currentAuthority.account;
+      throw new Error(
+        sameAccount
+          ? "backup authority fingerprint does not match current trust state: the data account is unchanged, so the OPERATOR/SYSTEM half of the trust chain moved - this artifact predates a system-account rotation (`cotal up --rotate-sys`) and is bound to the retired chain. Restore it into a root holding that chain, or use a backup taken after the rotation."
+          : "backup authority fingerprint does not match current trust state",
+      );
+    }
   }
 }
 

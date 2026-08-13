@@ -39,6 +39,7 @@ import {
   type EpIssuanceBarrier, type EpVerbOp,
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
+import { pickFreePort } from "./_free-port.js";
 
 /** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
  *
@@ -263,7 +264,7 @@ const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: st
 }
 
 // ── live broker ──
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epserve-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 

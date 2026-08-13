@@ -65,7 +65,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-leasegrant-"));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); });
 
@@ -82,7 +82,7 @@ const lease = (instanceId: string) => ({ instanceId, holder, pid: 1, root: "/tmp
  *  on its subscription. That is a red rather than a false green, but it would break the
  *  discriminator: both arms denied, for a reason with nothing to do with the grant under test. */
 async function consumerBind(creds: string, bucket: string): Promise<"allowed" | "denied"> {
-  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds }), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(bucket);
     const b = kv as unknown as {
@@ -117,7 +117,7 @@ try {
   const supCreds = await mintCreds(auth, newIdentity(), "supervisor");
 
   console.log("CELL A - the shipped probe under a real supervisor credential");
-  const seedNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: supCreds }), maxReconnectAttempts: 0 });
+  const seedNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: supCreds, tls: false }), maxReconnectAttempts: 0 });
   // The fixture proves its own target before it reports on anything. Being pointed at another
   // broker looks identical to being refused by this one, and that is how this suite first failed.
   check("the fixture is talking to ITS OWN broker, not whatever is on the default port",

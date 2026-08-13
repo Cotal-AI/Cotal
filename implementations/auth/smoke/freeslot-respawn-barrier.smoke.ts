@@ -148,7 +148,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
@@ -285,7 +286,7 @@ try {
     idpUrl: base,
   });
   jsDir = mkdtempSync(join(tmpdir(), "cotal-fsb-js-"));
-  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
+  writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }

@@ -44,6 +44,21 @@ export interface MeshEntry {
    *  a manifest deploy — reads it back, or the attach face silently reverts to loopback and remote
    *  `cotal attach` dies. Absent means the operator never asked for exposure: loopback, as before. */
   attachHost?: string;
+  /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
+   *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
+   *  decision was recorded (and is what any record written before this field means).
+   *
+   *  It is deliberately a bare flag and NOT the cert or key paths. Those live in the broker launch
+   *  policy under the workspace root, because this record is machine-home state that feeds status
+   *  output, join links and mesh messages — none of which should carry a path to a private key.
+   *
+   *  Why the flag has to exist at all, rather than clients inferring TLS from the broker: a NATS
+   *  client that omits the requirement still CONNECTS to a TLS broker, by upgrading the same socket
+   *  once it reads `tls_required` in the server's INFO. But that INFO is unauthenticated plaintext,
+   *  so an on-path attacker can forge one without it — and a client with no requirement of its own
+   *  will then send its credentials in the clear. The flag is what turns "encrypted if the server
+   *  says so" into "encrypted or refuse". */
+  tlsRequired?: boolean;
   /** Who put this record here — and therefore what may take it out. `up` (the default, and what any
    *  record written without the field is) means THIS machine started the mesh: it is safe to drop
    *  on a liveness verdict or a local teardown, because `cotal up` writes it straight back.
@@ -95,11 +110,19 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
     ...(o.endpoints ? { endpoints: { ...(o.endpoints.url ? { url: o.endpoints.url } : {}) } } : {}) };
 }
 
-/** The cotal machine-home dir, overridable via `COTAL_HOME` so tests sandbox it and never touch the
- *  real one. POSIX: `~/.cotal`. Windows: `%LOCALAPPDATA%\Cotal` — the platform's place for per-user
- *  app state (a dotdir in the profile root is a Unix idiom; `%LOCALAPPDATA%` is already a per-user
- *  private dir, so secrets under it start owner-only). The single source of that path for the
- *  registry, the current pointer, and the onboard marker. */
+/** The cotal machine-home dir, overridable via `COTAL_HOME`.
+ *
+ *  WHAT THE OVERRIDE ENFORCES (and only this): the mesh registry (`meshes/`), the current-mesh
+ *  pointer, and the onboard marker resolve under this directory. POSIX default `~/.cotal`; Windows
+ *  `%LOCALAPPDATA%\Cotal`.
+ *
+ *  WHAT IT DOES NOT ENFORCE: project-root state. `cotal up`, broker launch policy
+ *  (`.cotal/broker-policy.json`), the NATS store, manager/delivery pidfiles, and auth material all
+ *  resolve via {@link findCotalRoot} (walk up from cwd for a `.cotal/`). Setting only `COTAL_HOME`
+ *  does not redirect those paths. A test or probe that sets `COTAL_HOME` and runs a real
+ *  `cotal up` from a tree whose walked root is the operator home can still write live operator
+ *  config. Sandbox the project root too (temp dir with its own `.cotal/`, and run the CLI with
+ *  `cwd` there) — or you have sandboxed the registry label, not the launch surface. */
 export function homeCotalDir(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
   if (process.platform === "win32" && process.env.LOCALAPPDATA)

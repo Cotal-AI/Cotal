@@ -238,7 +238,7 @@ A single **join link** carries server, auth, and space
 ([SPEC §10](../SPEC.md#10-connection-and-onboarding)):
 
 ```
-cotals://<token>@host:4222/<space>?channel=general   # cotals:// = TLS, cotal:// = plaintext
+cotals://<token>@host:4222/<space>?channel=general   # cotals:// = TLS required; cotal:// = TLS not required (downgrade-tolerant)
 ```
 
 Humans: `cotal join --link …`. Agents: `COTAL_LINK=… ` in the environment. The connector
@@ -254,6 +254,14 @@ credential's identity as its card id.
   running manager, which loads the trust bundle and self-mints its supervisor cred and
   renewals from it; a copied signing *seed* still stays valid for its identity until the
   signing key is rotated. Rotation remains the revocation lever for trust material.
+- **The two `$SYS` creds are renewed by rotation, not in place.** `membership-observer` and
+  `connection-evictor` are signed by the system-account seed, which is never persisted, so no
+  running process re-signs them: they carry a 30-day expiry and are renewed by issuing a new
+  system account (`cotal down` then `cotal up --rotate-sys`), which leaves the data account,
+  every agent cred and the store untouched but does invalidate earlier full backups (they bind to
+  the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the
+  membership feed and live eviction stop; `cotal doctor auth` and the manager warn from the 75%
+  point onward.
 - **Static agent creds are long-lived; the machinery's are not.** One-shot command creds
   expire in minutes and the standing daemon creds in 24h with the manager renewing them
   (`cotal doctor auth` is the one diagnosis and repair surface). But a static *agent*

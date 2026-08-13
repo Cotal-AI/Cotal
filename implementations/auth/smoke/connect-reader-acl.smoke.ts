@@ -26,8 +26,9 @@ import { ensureRootCredential } from "../src/root-credential.js";
 import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import { credRowKey, parseLedgerRow } from "../src/credential-ledger.js";
 import type { ValidatedUserToken } from "../src/token.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
@@ -43,7 +44,7 @@ const throwsSync = (fn: () => unknown): boolean => { try { fn(); return false; }
 const space = `rdacl-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-rdacl-"));
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");

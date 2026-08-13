@@ -37,8 +37,9 @@ import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, regi
 import { credRowKey, enumerateOperationIntents, parseLedgerRow, runAgentTakeoverBarrier, type EvictPrincipal } from "../src/credential-ledger.js";
 import { runAgentRetirementBarrier, type RetirementDeps } from "../src/retirement-barrier.js";
 import { makeLedgerScannerOverConnection } from "../src/ledger-scanner.js";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const PORT = 20000 + Math.floor(Math.random() * 40000);
+const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
@@ -57,7 +58,7 @@ const auth = await createSpaceAuth(space);
 const tmp = mkdtempSync(join(tmpdir(), "cotal-barpl-"));
 const dir = join(tmp, "state");
 mkdirSync(dir, { recursive: true });
-writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { port: PORT, storeDir: join(tmp, "js") }));
+writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
 
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");
