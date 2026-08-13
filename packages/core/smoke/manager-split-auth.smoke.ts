@@ -67,9 +67,13 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { assertEphemeralBroker } from "./_ephemeral-only.js";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
+// FIRST action, before any connection: this suite probes provisioner grants (incl. the #286
+// STREAM.UPDATE reconcile grant) and must only ever touch a throwaway broker it started itself.
+assertEphemeralBroker(SERVERS);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {

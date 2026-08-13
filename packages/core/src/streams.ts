@@ -325,7 +325,7 @@ export function fanoutDurableConfig(
  *  so the window is lowered in the SAME update. Idempotent (a matching bucket is skipped); reads back to
  *  prove the update took, else throws (no silent drift). The `provisioner` cred holds `STREAM.UPDATE` on
  *  exactly these three streams (see provision.ts). */
-async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<void> {
+export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<void> {
   const wantNs = nanos(ttlMs);
   const info = await jsm.streams.info(streamName);
   if (info.config.max_age === wantNs) return; // already at the intended TTL — no update
