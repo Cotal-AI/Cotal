@@ -258,7 +258,7 @@ complete. It found the following, and they are recorded here in its framing rath
 - Probes: M1 verb drive, M2 open-mode gate-bypass, M3 broker fence (9), M4 observer ghost,
   M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (7 asserted + 4 recorded)**.
 - Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
-  `packages/core/smoke/connection-lifecycle.smoke.ts` **34/34 at `b1b757f7`** (re-run today, rc=0 captured),
+  `packages/core/smoke/connection-lifecycle.smoke.ts` **39/39 at `e15b6e36`** (re-run today, rc=0 captured),
   `extensions/connector-core/smoke/connection-control.smoke.ts` **21/21 at `7dae9115`** (re-run, rc=0),
   `packages/core/smoke/request-strand.smoke.ts` **9/9 at `ffc18c46`** (was 7/7 before ARM 3 was added).
 - Mutations: MX1/MX2/MX3/MX4 killed on named cells with broker-side non-equivalence; **MX3a survived, as

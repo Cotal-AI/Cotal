@@ -2,7 +2,7 @@
 
 Base: the fix commit `325aaa50` + suite `3c1055e3`, worktree `/home/david/Cotal-wt-fm-meshctl`.
 Suite: `packages/core/smoke/connection-lifecycle.smoke.ts`, **20/20 green at base; 27/27 after ARM 3b;
-32/32 at `1821abff`; 34/34 at `b1b757f7`** after the per-arm entry preconditions — every number
+32/32 at `1821abff`; 34/34 at `b1b757f7`; 39/39 at `e15b6e36`** after the per-arm entry preconditions and the latch arm — every number
 re-run and re-read, none carried forward.
 
 **This line was stale until it was measured.** It read `27/27` while the suite had already grown to
@@ -207,6 +207,44 @@ is likewise unproven — no cell drives a failing `reassertPresence()` on that b
 
 ---
 
+## MX6 — remove `reconnect()`'s `transitionInFlight` latch  → **KILLED, on the flip**
+
+Mutant: delete the latch check, the set, and the `finally` clear from `reconnect()`. Nothing else.
+Predictions in `scratchpad/PREDICTIONS-MX6.md` before the run, including three refutation criteria.
+
+| cell | predicted | observed |
+|---|---|---|
+| `D2i` refuses `transition-in-progress` | **RED, and specifically `reason == "not-connected"`** | **RED — `reason: 'not-connected'`** |
+| `D2j` refuses `not-connected` | GREEN | GREEN |
+| `PRE-ARM 1/2/3`, ARM 1, ARM 3 | GREEN | GREEN — **38 passed, 1 failed, VOID 0** |
+
+**THE ASSERTION IS THE FLIP, AND THE FLIP IS WHAT WAS OBSERVED.** Not "a cell reddened" — the reason
+changed from `transition-in-progress` to exactly the wrong value the defect used to produce, with the
+original detail text intact:
+
+```
+outcome: 'refused',
+reason:  'not-connected',
+detail:  'this endpoint is already off the mesh - nothing to disconnect'
+```
+
+**That sentence is a demonstrable lie about a live endpoint.** The subject was connected and
+mid-reconnect; it was not off the mesh and there was something to disconnect. **This is why a refusal
+that names the wrong condition is worse than an unnamed error: a caller acting on it concludes
+"already off, nothing to do" and stops.**
+
+**`D2j` is what makes `D2i` mean anything.** It drives the SAME method and gets `not-connected`
+legitimately, so `D2i` passing on the fixed build is a **discrimination between two reachable
+reasons**, not a method that answers `transition-in-progress` to everything. Both refutation
+criteria that would have voided this result — `D2i` reddening with some *third* reason, or `D2j`
+reddening too — were written down first and neither fired.
+
+**And note what did NOT happen: no cascade and no VOID.** One arm's mutation produced exactly one
+red, with all three entry preconditions green. That is the arm-independence work from MX2-R paying
+for itself — under the old shared fixture this mutant would have been much harder to read.
+
+---
+
 ## What this record does NOT cover
 
 - **ARM 3 is core-API only.** A creds SOURCE is not a state `cotalToolSpecs` can construct
@@ -220,7 +258,7 @@ is likewise unproven — no cell drives a failing `reassertPresence()` on that b
   this file declared it fenced "for the queued case only, with that exact race undriven". ARM 3b
   drives it (hold a source call open, disconnect, release) and MX4 proves the cell detects it.
 - **No repo-wide suite was run.** No gate has been released to this lane. Scoped suites only:
-  `connection-lifecycle` **34/34** (re-run at tip `b1b757f7`), `connection-control` 21/21,
+  `connection-lifecycle` **39/39** (re-run at tip `e15b6e36`), `connection-control` 21/21,
   `request-strand` 9/9, `§7.2 gap` 7 asserted + 4 recorded.
   One honest gap in how the earlier 32/32 was read: its exit code was **not** captured — `PIPESTATUS`
   is a bashism and the shell here is `/bin/sh`, so it came back empty. The claim rests on the
