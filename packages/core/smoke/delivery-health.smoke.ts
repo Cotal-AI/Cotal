@@ -17,7 +17,7 @@
  *
  * Run: pnpm smoke:delivery-health   (no broker, no network)
  */
-import { assessDeliveryHealth, renderHealth, type DeliveryHealth, type HealthProbes, type HealthRefusal } from "../src/health.js";
+import { assessDeliveryHealth, fact, renderHealth, type DeliveryHealth, type HealthProbes, type HealthRefusal } from "../src/health.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean): void => {
@@ -184,10 +184,17 @@ console.log("\ndelivery-health assessment\n");
   check("the four constructed refusal conditions are each reachable BY NAME",
     ["no-responder", "lease-stale", "no-lease", "refused"].every((c) => seen.has(c)));
   check("and the serving arm is reachable, counted separately from the refusals", seen.has("SERVING"));
-  // Declared absent rather than quietly folded into a count: no seam in this suite produces a
-  // broker dial failure, so `unreachable` is NOT exercised here. Naming it is the point.
-  check("`unreachable` is NOT constructed by this suite — declared, not silently counted",
-    !seen.has("unreachable"));
+  // NOT MEASURED — `unreachable`. No seam in this suite produces a broker dial failure, so that arm
+  // has no producer and is not exercised here.
+  //
+  // This used to be a `check(!seen.has("unreachable"))` and that was wrong: it added a PASSING cell
+  // for proving a declared refusal has no producer. It would have stayed green forever while the arm
+  // stayed dead, and gone RED on the day someone finally implemented it — a known coverage gap
+  // wearing a checkmark, and a green whose meaning inverts. Documentation belongs in a comment; only
+  // desired behaviour belongs in a cell. Closing it needs a real wrapper that constructs
+  // `unreachable` from an actual broker-dial failure — a hand-built fixture would test the renderer,
+  // not reachability.
+  console.log("  · NOT MEASURED: `unreachable` has no producer in this suite (documented, not asserted)");
 }
 
 // ---- CLOCK SKEW: the age that could not be established. C1-C5, predicted in .lane/clamp-predictions.md
@@ -202,28 +209,48 @@ console.log("\ndelivery-health assessment\n");
     now: clockAt(now),
   };
   const h = await assessDeliveryHealth(0, TTL, DEADLINE, skewed);
-  const arm = refusalArm(h, "lease-stale");
+  const arm = refusalArm(h, "clock-fault");
 
+  // ---- FACT LEVEL: what `fact()` builds from two disagreeing clocks. Driven directly, because the
+  // ---- clock-fault refusal carries a skew rather than a HealthFact, so these are not reachable
+  // ---- through the verdict and would otherwise go untested.
+  const skewedFact = fact(123, "lease-kv", now + SKEW, now);
   // C1 — the whole point: the old clamp reported 0 here, and 0 is what a live round-trip produces.
   //
-  // The FIRST version of this cell was `arm?.lastHeartbeat.ageMs !== 0`, and the mutation run caught
-  // it PASSING under the restored clamp. With the clamp, the verdict is `serving`, so `refusalArm`
-  // returns undefined and `undefined !== 0` is true — the cell passed VACUOUSLY on the exact input it
-  // was written to catch. `?.` on an absent arm fails safe for a crash and fails OPEN for a claim.
-  // So: assert the arm EXISTS first, then assert the age. Both halves, or the cell proves nothing.
-  check("CLOCK-SKEW: evidence stamped in the future does not render as age 0",
-    arm !== undefined && arm.lastHeartbeat.ageMs !== 0);
+  // The FIRST version of this cell used `arm?.…` and the mutation run caught it PASSING under the
+  // restored clamp: the arm was absent, and `undefined !== 0` is true, so it passed VACUOUSLY on the
+  // exact input it was written to catch. `?.` on an absent arm fails safe for a crash and fails OPEN
+  // for a claim. Driving `fact()` directly removes the optional entirely.
+  check("CLOCK-SKEW: evidence stamped in the future does not render as age 0", skewedFact.ageMs !== 0);
   // C2 — it must say the age could not be established, not pick a number.
-  check("CLOCK-SKEW: the fact reports that its age could not be established",
-    arm?.lastHeartbeat.ageMs === null);
+  check("CLOCK-SKEW: the fact reports that its age could not be established", skewedFact.ageMs === null);
   // C3 — carry HOW FAR ahead, so the reader can act on it.
   check("CLOCK-SKEW: the fact carries the measured skew, so a reader can see how far ahead",
-    arm?.lastHeartbeat.clockSkewMs === SKEW);
+    skewedFact.clockSkewMs === SKEW);
+
+  // ---- VERDICT LEVEL ----
   // C4 — the half that matters: it must not sail through the TTL gate.
   check("CLOCK-SKEW: a lease whose writer clock is ahead REFUSES rather than passing the TTL gate",
-    h.serving === false && refusalOf(h) === "lease-stale");
-  check("CLOCK-SKEW: and the refusal NAMES the clock fault rather than claiming an ordinary stale heartbeat",
-    /CLOCK FAULT/.test(arm?.detail ?? "") && /FUTURE/.test(arm?.detail ?? ""));
+    h.serving === false);
+  // The condition itself must be TRUE, not merely a refusal with a truthful detail attached. This
+  // previously read `clock-fault` under a `lease-stale` discriminator: the detail told the truth
+  // while the machine-readable condition lied, and every consumer switching on `condition` got the
+  // lie. `lease-stale` asserts the age is KNOWN to exceed the TTL; this asserts age is NOT KNOWABLE.
+  check("CLOCK-SKEW: the machine-readable condition is clock-fault, NOT lease-stale",
+    refusalOf(h) === "clock-fault");
+  check("CLOCK-SKEW: the refusal carries the measured skew on the arm itself", arm?.skewMs === SKEW);
+  check("CLOCK-SKEW: and its detail names the direction of the fault",
+    /FUTURE/.test(arm?.detail ?? "") && /age/.test(arm?.detail ?? ""));
+
+  // ---- RENDER LEVEL: the cell whose absence let 35/35 pass over broken operator output ----
+  // `ageMs: number | null` does NOT force a consumer to narrow — TypeScript interpolates `null` into
+  // a template string silently, and `renderHealth` did exactly that, printing "heartbeat is nullms
+  // old" to an operator while every assertion above it passed. A type that permits the unsafe
+  // spelling is not a guard. Assert on what the operator actually SEES.
+  const rendered = renderHealth(h);
+  check("CLOCK-SKEW RENDER: the operator line contains no raw null", !/null/i.test(rendered));
+  check("CLOCK-SKEW RENDER: it names clock-fault and refuses",
+    /clock-fault/.test(rendered) && rendered.startsWith("CANNOT ESTABLISH HEALTH"));
 
   // C5 — INVERSE CONTROL. Same lease, sane clock. If this also refused, the arms could not differ
   // and C4 would prove nothing. This is the cell that makes the block meaningful.

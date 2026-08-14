@@ -86,6 +86,15 @@ export type HealthRefusal =
   | { condition: "no-lease"; shard: number; detail: string }
   /** A holder record exists but its heartbeat is older than the TTL that should have refreshed it. */
   | { condition: "lease-stale"; shard: number; lastHeartbeat: HealthFact<number>; detail: string }
+  /** The heartbeat's age CANNOT BE ESTABLISHED because the clocks disagree: the record is stamped
+   *  after the moment we read it, so no duration between them is meaningful.
+   *
+   *  Its own condition, and that is load-bearing. `lease-stale` asserts the heartbeat is KNOWN to be
+   *  older than the TTL; this asserts the opposite kind of fact — that age is NOT KNOWABLE from
+   *  these two clocks. Filing it under `lease-stale` made the machine-readable discriminator false
+   *  while only the free-text `detail` told the truth, and a `detail` cannot cure a wrong condition:
+   *  every consumer that switches on `condition` is a consumer that was lied to. */
+  | { condition: "clock-fault"; shard: number; skewMs: number; observedAt: number; detail: string }
   /** The lease claims a ready daemon, but the affirmative round-trip did not complete in time.
    *  THE INCIDENT'S SIGNATURE: a present-but-wedged daemon lands here, and lands here forever. */
   | { condition: "no-responder"; shard: number; deadlineMs: number; lastHeartbeat?: HealthFact<number>; detail: string }
@@ -111,11 +120,20 @@ export type DeliveryHealth =
     }
   | { serving: false; refusal: HealthRefusal };
 
+/** Render an age for an operator. `null` means the age could not be established, and it must SAY so
+ *  rather than interpolate.
+ *
+ *  This exists because `ageMs: number | null` does NOT force a consumer to narrow — TypeScript
+ *  interpolates `null` into a template string without complaint, and `renderHealth` was exactly that
+ *  consumer: it printed `heartbeat is nullms old` to an operator. A type that permits the unsafe
+ *  spelling is not a guard; only routing every render through here is. */
+const renderAge = (a: number | null): string => (a === null ? "an age that could not be established" : `${a}ms`);
+
 /** One-line operator rendering. Every branch names its condition and every fact shows its age, so
  *  no rendering of this type can read as "fine" when it is not. */
 export function renderHealth(h: DeliveryHealth): string {
   if (h.serving)
-    return `serving — daemon ${h.incarnation.value}, answered in ${h.respondedIn.value}ms, last heartbeat ${h.lastHeartbeat.ageMs}ms ago (source: ${h.lastHeartbeat.source})`;
+    return `serving — daemon ${h.incarnation.value}, answered in ${h.respondedIn.value}ms, last heartbeat ${renderAge(h.lastHeartbeat.ageMs)} ago (source: ${h.lastHeartbeat.source})`;
   const r = h.refusal;
   switch (r.condition) {
     case "unreachable":
@@ -123,10 +141,12 @@ export function renderHealth(h: DeliveryHealth): string {
     case "no-lease":
       return `CANNOT ESTABLISH HEALTH — no-lease: shard ${r.shard} has no holder record (${r.detail})`;
     case "lease-stale":
-      return `CANNOT ESTABLISH HEALTH — lease-stale: shard ${r.shard} heartbeat is ${r.lastHeartbeat.ageMs}ms old (${r.detail})`;
+      return `CANNOT ESTABLISH HEALTH — lease-stale: shard ${r.shard} heartbeat is ${renderAge(r.lastHeartbeat.ageMs)} old (${r.detail})`;
+    case "clock-fault":
+      return `CANNOT ESTABLISH HEALTH — clock-fault: shard ${r.shard} heartbeat is stamped ${r.skewMs}ms AFTER the moment it was read, so its age cannot be established (${r.detail})`;
     case "no-responder":
       return `CANNOT ESTABLISH HEALTH — no-responder: shard ${r.shard} did not answer within ${r.deadlineMs}ms${
-        r.lastHeartbeat ? `, though its lease heartbeat is only ${r.lastHeartbeat.ageMs}ms old` : ""
+        r.lastHeartbeat ? `, though its lease heartbeat is ${renderAge(r.lastHeartbeat.ageMs)} old` : ""
       } (${r.detail})`;
     case "refused":
       return `CANNOT ESTABLISH HEALTH — refused: ${r.read} (${r.detail})`;
@@ -194,22 +214,22 @@ export async function assessDeliveryHealth(
   // the `> ttlMs` comparison: the old clamp made a forward-skewed clock read as 0, which passes the
   // TTL gate and lets a lease of ANY age render as fresh. Narrowing is enforced by the type.
   //
-  // PROVISIONAL ARM PLACEMENT, flagged rather than decided: a clock fault is not the same fact as
-  // "the heartbeat is older than the TTL", and collapsing two conditions into one name is exactly
-  // what this union is not supposed to do. It rides `lease-stale` only because a blocking review
-  // finding against the union's closure is open and unruled, and inventing a sixth arm underneath
-  // that review would pre-empt it. The `detail` therefore names the ACTUAL condition, so no reader
-  // is told the wrong thing even while the arm is provisional.
+  // Its OWN condition, no longer riding `lease-stale`. The provisional placement was itself a
+  // defect: `lease-stale` asserts the heartbeat is KNOWN to be older than the TTL, while this
+  // asserts that age is NOT KNOWABLE from these clocks — the opposite kind of fact. Filing it under
+  // `lease-stale` left the machine-readable discriminator FALSE while only the free-text `detail`
+  // told the truth, and every consumer that switches on `condition` switches on the lie.
   if (heartbeat.ageMs === null)
     return {
       serving: false,
       refusal: {
-        condition: "lease-stale",
+        condition: "clock-fault",
         shard,
-        lastHeartbeat: heartbeat,
+        skewMs: heartbeat.clockSkewMs ?? 0,
+        observedAt: heartbeat.observedAt,
         detail:
-          `CLOCK FAULT: the lease heartbeat is stamped ${heartbeat.clockSkewMs}ms in the FUTURE, so its ` +
-          `age cannot be established and it cannot be shown to be within the ${ttlMs}ms TTL. ` +
+          `the lease heartbeat is stamped ${heartbeat.clockSkewMs}ms in the FUTURE relative to this read, ` +
+          `so no age can be derived from the two clocks and it cannot be shown to be within the ${ttlMs}ms TTL. ` +
           `Not treated as fresh: an age that could not be measured is a refusal, never a pass`,
       },
     };
