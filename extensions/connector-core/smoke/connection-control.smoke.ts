@@ -21,7 +21,7 @@
  * Needs `nats-server` on PATH. Local-only, loopback-only.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -44,6 +44,37 @@ const pickFreePort = (): Promise<number> =>
       s.close(() => res(p));
     });
   });
+
+// ---- SECOND ACTION: refuse to grade a stale build ---------------------------------------------
+// This suite imports the connector through RELATIVE source (`../src/agent.js` — tsx compiles it),
+// but core through the PACKAGE SPECIFIER `@cotal-ai/core`, which resolves to `packages/core/dist`.
+// `dist/` is gitignored, so it is invisible to `git status`, invisible to the porcelain sweep, and
+// a SHARED SIDE EFFECT ACROSS WORKTREES: another lane's build changes what this suite executes.
+//
+// A suite cannot distinguish "the source is right" from "the source was never run" — it reports the
+// same green for both. That makes a green without build provenance UNGRADED rather than passing,
+// and it is exactly how a mutation proof turns into a no-op: the mutant edits `src`, the suite
+// executes last week's `dist`, and the cell stays green for a reason that has nothing to do with
+// the code. So the check is a REFUSAL rather than a note in a runbook: a discipline is something a
+// tired operator skips, and this one had to be remembered before every single run.
+//
+// NOT fixed by pointing the import at `src/`: the published entry point resolves through `dist/`,
+// so that would trade a provenance gap for a coverage gap — green about code no user runs.
+const distStamp = statSync(join(import.meta.dirname, "../../../packages/core/dist/endpoint.js")).mtimeMs;
+const coreSrc = join(import.meta.dirname, "../../../packages/core/src");
+const newerThanDist = readdirSync(coreSrc, { recursive: true, withFileTypes: true })
+  .filter((d) => d.isFile() && d.name.endsWith(".ts"))
+  .map((d) => join(d.parentPath ?? coreSrc, d.name))
+  .filter((f) => statSync(f).mtimeMs > distStamp);
+if (newerThanDist.length)
+  throw new Error(
+    `REFUSING TO RUN: packages/core/dist is older than ${newerThanDist.length} source file(s) — ` +
+    `this suite would grade a build that does not contain them, and would report green for it. ` +
+    `Run \`./node_modules/.bin/tsc -p packages/core\` first.\n  stale vs: ` +
+    newerThanDist.slice(0, 5).map((f) => f.replace(`${coreSrc}/`, "")).join(", ") +
+    (newerThanDist.length > 5 ? `, +${newerThanDist.length - 5} more` : ""),
+  );
+console.log(`[provenance] core dist built at ${new Date(distStamp).toISOString()} — newer than every packages/core/src/*.ts`);
 
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
