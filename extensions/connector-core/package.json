@@ -30,6 +30,7 @@
     "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
+    "@ag-ui/core": "0.0.57",
     "@cotal-ai/core": "workspace:*"
   },
   "files": [
