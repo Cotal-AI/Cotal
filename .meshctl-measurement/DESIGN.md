@@ -37,8 +37,21 @@ Sections below that discuss re-target are retained for the follow-on and are mar
 
 ## 1. What authority does a self-connect carry, and where does it come from?
 
-**It carries no authority of its own. It re-presents a credential its launcher already handed it,
-and it never mints.**
+**It carries no authority of its own, because it takes no target. It returns to the mesh this
+session was launched against, with the credential SOURCE it was launched with, so it can ask for no
+scope the operator has not granted and can reach no other mesh.**
+
+**WITHDRAWN, and the withdrawal belongs in the headline rather than only in §5 where it started:
+"and it never mints" was FALSE.** A bearer- or creds-source session whose cached material has gone
+stale re-fetches it inside `connectAndBind` on the way back, which is a fresh mint. Found by review
+(`packages/core/src/endpoint.ts`, the staleness checks at the head of `connectAndBind`); the loose
+claim survived in the code comments, the tool text and the docs for several commits after §5 had
+already retracted it, and is corrected in all of them at `4deb2a19`.
+
+The re-read is not a hole in the design, it is **load-bearing**: it is exactly how a grant REVOKED
+while the agent was away comes back as a refusal instead of as a key that still works. The invariant
+that actually holds — and the one the required answer needs — is about **target and scope**, not
+about minting.
 
 This is forced by measurement, not preference:
 
@@ -57,8 +70,11 @@ This is forced by measurement, not preference:
 
 So the authority boundary is the **mint path**, not the connect call. The specification follows:
 
-> **A connection verb re-presents a credential the agent already holds. It never constructs one,
-> and it never reaches the workspace mint path (`mintCreds` / `provisionAgent` / `SpaceAuth`).**
+> ~~**A connection verb re-presents a credential the agent already holds. It never constructs one,
+> and it never reaches the workspace mint path (`mintCreds` / `provisionAgent` / `SpaceAuth`).**~~
+>
+> **SUPERSEDED — struck through, not deleted, so the correction below has something to be a
+> correction OF. Do not quote this as the invariant; the one that holds is in §1's headline.**
 
 **CORRECTED after adversarial review — the rule above, stated as a ban on function names, does not
 hold. Three paths obey its letter and still obtain freshly minted authority:**
@@ -109,8 +125,9 @@ shipped verbs cannot use. Shipping the grant ahead of the verb would be provisio
 for a capability that does not exist yet — the widest possible reading of "the right accesses set
 up", at exactly the moment the note argues for the narrowest.
 
-So the shipped grant is **one capability and zero new credentials**: the agent re-presents the boot
-credential it already holds, at the target it was already launched against.
+So the shipped grant is **one capability and no new credential source**: the agent re-presents the
+one it was launched with, at the target it was already launched against. It may re-read that source
+(above); it may never point it somewhere else.
 
 **A compromised agent reaches exactly the mesh a human already launched it on, and nothing else** —
 which is the required answer ("nothing it did not already hold"), enforced at the broker. Note the
@@ -166,6 +183,26 @@ different mechanism, and that should be its own lane.
 
 ## 2. What does refusal look like?
 
+**A refusal is a claim about the world, and it has to be true.** This is the part this lane got
+wrong in its own first implementation, twice, and it is worth stating before the type:
+
+- **A refusal that leaves an authenticated connection open is a security-relevant shape, not only a
+  lifecycle bug.** The caller's mental model after a refusal is "nothing happened", and something
+  did — a live, authenticated socket with no supervisor on it. A refused `connect()` used to do
+  exactly that (`connectAndBind` assigns the connection at the handshake and then does the fallible
+  binds). Fixed at `325aaa50`; driven with no injection at all, by restarting the same broker with
+  JetStream off, which is an ordinary operational event.
+- **A refusal must not assert a state it did not achieve.** `teardown-failed` used to tell the
+  caller "the announcement has been retracted" while the handle needed to send that retraction had
+  already been dropped — so an independent observer went on seeing a departed agent that was still
+  connected. That is this lane's own ghost class, inside this lane's own verb. The rule now: the
+  assertion is **derived from** the observed retraction (a broker revision) rather than **stated
+  alongside** an attempt at it.
+- **A refusal must name a condition the caller can act on, and name the right one.** A failure past
+  the handshake reported as `broker-unreachable` sends an operator to check a host that is up and
+  answering. `bind-failed` is classified from STATE — was the transport accepted? — never from
+  matching the error's wording.
+
 A **discriminated result**, never a boolean and never a silent no-op, so that "treat a refusal as
 success" is hard to write rather than the default:
 
@@ -187,8 +224,17 @@ type RefusalReason =
   | "shutting-down"            // the session is ending; do not start a transition
   | "transition-unconfirmed"   // §3's confirmation did not land — REQUIRED by §3
   | "teardown-failed"          // the transition published but the connection did not close
+  | "bind-failed"              // broker ACCEPTED the transport; the session would not bind
   | "in-flight-request";       // holds an unresolved request — see below
 ```
+
+**`bind-failed` was added by the repair, and it is the reason the first bullet above needs its own
+name.** "The broker did not answer" and "the broker answered, took the credential, and then the
+JetStream/KV bind failed" are different faults with different operators and different fixes, and
+only the second can leave a connection behind. It is derived from state — the transport was
+assigned — never from the error text, because the text-matching version reported a presence-write
+failure (which by definition happens over an accepted, authenticated connection) as
+`broker-unreachable`.
 
 **TWO REASONS ADDED after the evidence audit, both for conditions the SHIPPED scope can reach and
 neither of which had a name:**
@@ -460,7 +506,7 @@ the ledger should read that sentence first.
 **Why the feature is still sound, and it is a different argument from the one this note originally
 made.** The reason a missing enforcement point is tolerable here is that **these verbs cannot
 escalate**: `disconnect` REMOVES reach, and `connect` restores reach to the one target the agent was
-already launched against, using the credential it already holds. There is no authority for a broker
+already launched against, with the credential source it was launched with. There is no authority for a broker
 to enforce because none is being granted. The `[M]` broker-fence measurements (F1a-d, F2) still hold
 and still matter — they are what makes "returns to the same target" safe — but they are not what
 gates the verb.
@@ -482,8 +528,8 @@ lane's surface, and there it is a truthfulness bug rather than a hole.
 
 **The smallest grant that makes the feature useful is now the ONLY grant: `capabilities:
 [connection]`, and nothing else.** The agent disconnects and reconnects *itself* on the mesh it was
-launched against — the "go quiet deliberately, come back cleanly" case — re-presenting the boot
-credential it already holds. **It is worth naming that the smallest useful grant and the whole
+launched against — the "go quiet deliberately, come back cleanly" case — re-presenting the
+credential source it was launched with (§1: it may re-read that source; it may never re-point it). **It is worth naming that the smallest useful grant and the whole
 shipped grant have become the same thing**, which is the strongest form this section could take and
 a direct consequence of the split rather than a design flourish.
 
