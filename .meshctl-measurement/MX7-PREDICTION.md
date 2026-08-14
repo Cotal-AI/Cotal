@@ -695,3 +695,130 @@ exercising that relationship. **Named, not banked.**
 MX1–MX4 killed; MX6 on the flip; MX7b; MX8; MX8c; MX9 (dimension discrimination held);
 MX10 (found `A3d`); MX10b; **MX11 on `E8-pre`+`E10-pre`, with a prediction error about my own
 harness recorded**; MX7a blunt (superseded, kept); MX8b refuted (kept); MX3a and MX5 survivors.
+
+---
+
+# MX12 — prediction, written BEFORE the mutant runs
+
+Written `Fri Aug 14 09:28:23 PM UTC 2026`. Base `7c988779`, tree clean.
+
+## The last named-but-undriven guard
+
+`E11` is `E12`'s positive arm over the **witness's** collected list — a different universe from the
+inbox that MX10 emptied. It shares the list with `E12`, so the structure is right; it has never been
+shown to fall.
+
+## The mutant, and it is DELIBERATELY BROAD — stated up front
+
+`packages/core/src/endpoint.ts:3541` — channel messages are never dispatched:
+
+    this.emit("message", msg, delivery, { historical: false, kind: "channel" })
+    →   (deleted)
+
+**This is a shared site.** The witness and the subject both receive channel traffic through it, so
+this is not the surgical mutant MX7a taught me to prefer — and I am predicting the collateral rather
+than discovering it. A sharper mutant would empty only the witness, and none exists without editing
+the fixture, which would be mutating the test rather than the code.
+
+## Predicted cells, NAMED
+
+| Cell | Prediction |
+| --- | --- |
+| **`E11`** (in-ACL post witnessed) | **RED** — the point of the run. |
+| **`E12`** (no out-of-ACL post witnessed) | **GREEN, vacuously** — the pattern again. |
+| `E9`, `E10-univ` | **RED** — the subject's inbox is fed by the same dispatch. |
+| `E8`, `E10` | **GREEN, vacuously** |
+| `E8-pre`, `E10-pre` | **GREEN** — publishing still succeeds; only delivery is silenced. |
+| `A3d-univ` | **GREEN** — DMs dispatch at `:3810`/`:3873`, not `:3541`. |
+| `A3d` | **GREEN** |
+| open-mode cells | **GREEN** |
+
+Expected tally: **36 passed, 3 failed, 0 VOID, rc=1.**
+
+## What would REFUTE me
+
+1. **`E11` stays GREEN** — it is not a real positive arm.
+2. **`A3d-univ` reddens** — then DM delivery also flows through `:3541` and my reading of the three
+   dispatch sites is wrong.
+3. **`E8-pre`/`E10-pre` redden** — then this silences publishing too, the arm VOIDs, and the run
+   says nothing about `E11`.
+
+---
+
+# MX12 RESULT — VOID, NOT A SURVIVOR
+
+Read `Fri Aug 14 09:28:23 PM UTC 2026`. Observed: **39 passed, 0 failed, 0 VOID, rc=0** — the suite
+did not notice the mutant at all, and **every cell I predicted RED stayed green.**
+
+**That uniformity is the tell, and this time I checked before recording a survivor.** The mutant was
+confirmed present in `packages/core/dist/endpoint.js` (so not the stale-build trap), which left only
+one explanation: **the mutated line is not on a path this suite executes.**
+
+`:3541` is the **Plane-3 DURABLE delivery** loop (the DLV backstop), not the live channel path. I
+read `kind: "channel"` and assumed the channel dispatch; it is the *durable* channel dispatch.
+
+> **A mutant that is never reached is not a survivor. It is a VOID run**, and recording it as a
+> survivor would have said "the suite cannot detect silenced channel delivery" when what happened is
+> "the suite never ran that code."
+
+This is the distinction AGENTS.md draws — *a killed mutation shows the test depends on that code,
+not that a real entry point reaches it* — arriving from the other direction. **Banked as VOID.**
+
+# MX12b — prediction, written BEFORE the re-run
+
+Written `Fri Aug 14 09:29:41 PM UTC 2026`. Same claim, correct site: `packages/core/src/endpoint.ts:3873`,
+the LIVE dispatch (`durable: false`, "live = at-most-once, not acked").
+
+| Cell | Prediction |
+| --- | --- |
+| **`E11`** | **RED** — the point of the run. |
+| `E12` | **GREEN, vacuously** |
+| `E9`, `E10-univ` | **RED** — the subject's inbox is fed live too. |
+| `E8`, `E10` | **GREEN, vacuously** |
+| `E8-pre`, `E10-pre` | **GREEN** — publishing is untouched. |
+| `A3d-univ`, `A3d` | **UNCERTAIN — DECLARED AS SUCH.** I do not know whether DMs dispatch here or at `:3810`. If `A3d-univ` reddens, DMs share this path; if it stays green, they do not. **Either is informative; neither refutes the run.** I am not going to guess confidently twice in a row about a site I have not traced. |
+
+**REFUTED IF `E11` stays green** — then it is not a real positive arm. **Or if `E8-pre` reddens** —
+the mutant reaches publishing, the arm VOIDs, and the run says nothing.
+
+## MX12b RESULT — read at `Fri Aug 14 09:31:20 PM UTC 2026`
+
+**KILLED on the named cell. Observed 36 passed, 3 failed, 0 VOID, rc=1 — the predicted tally.**
+
+| Cell | Predicted | Observed |
+| --- | --- | --- |
+| **`E11`** | RED | **RED** — `{ witnessed: [], inPub: 'Sent to #general.' }` |
+| `E9`, `E10-univ` | RED | **RED** |
+| `E12`, `E8`, `E10` | GREEN, vacuously | **GREEN** |
+| `E8-pre`, `E10-pre` | GREEN | **GREEN** (criterion 3 did not fire) |
+| `A3d-univ`, `A3d` | **declared UNCERTAIN** | **GREEN — so DMs do NOT dispatch at `:3873`.** |
+
+**Non-equivalence: `witnessed: []` while the tool reports `Sent to #general.`** The post succeeded
+and nothing was delivered — which is what a positive arm exists to notice.
+
+**The declared uncertainty was resolved by the run rather than guessed before it.** Having just been
+wrong about `:3541`, predicting the DM path confidently would have been guessing twice; declaring it
+uncertain cost nothing and the answer arrived anyway.
+
+## ⚠️ A SECOND PROCESS FAILURE ON THIS RUN, RECORDED
+
+The first attempt at MX12b wrapped the emit in `if (false)`, which **broke type-checking** (control-flow
+narrowing made `parsed` possibly-null). `tsc` reported errors and I ran the suite anyway. It went red
+on the three predicted cells — **but the build was not clean, so the emitted JS was not necessarily
+what the mutation described, and I will not cite a result from a build that did not compile.**
+
+Worse, my check that the mutant reached `dist` grepped for the **comment**, and `tsc` strips comments
+on emit — so the check reported `0` and I nearly concluded the opposite of the truth. **A verification
+that cannot succeed is worse than none: it reports failure regardless of the fact.**
+
+Redone as an event rename (`"message"` → `"message-MX12b-SILENCED"`), which leaves types untouched:
+`tsc rc=0`, mutant confirmed in `dist` **by grepping the emitted code rather than a comment**. The
+result above is from that run only.
+
+## Ledger
+
+MX1–MX4 killed; MX6 on the flip; MX7b; MX8; MX8c; MX9; MX10 (found `A3d`); MX10b; MX11;
+**MX12 VOID — mutant never reached; MX12b killed `E11` on a clean build**; MX7a blunt (superseded);
+MX8b refuted (kept); MX3a and MX5 survivors.
+
+**Every guard and precondition in this suite has now been driven.**
