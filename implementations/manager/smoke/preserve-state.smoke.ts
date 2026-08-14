@@ -517,7 +517,11 @@ let openInventory: ManagerResumeAgent;
   const eventsConnector: Connector = {
     kind: "connector",
     name: "preserve-events-connector",
-    eventChannel: (n: string) => `events.${n.toLowerCase()}`,
+    // Keyed on the PRINCIPAL, like the real connectors: the resume preflight derives it from the
+    // RETAINED identity, never from `entry.name`. A name-keyed stub here would not just be stale,
+    // it would let this suite pass while the manager compared a name-shaped channel against a
+    // principal-shaped grant.
+    eventChannel: (p: { owner: string; actor: string }) => `events.${p.owner}.${p.actor}`,
     buildLaunch: (opts) => { capturedLaunch = opts; return { command: "true", args: [], env: {} }; },
   };
   registry.register(eventsConnector);
@@ -527,18 +531,27 @@ let openInventory: ManagerResumeAgent;
     launch: { ...openInventory.launch, connector: "preserve-events-connector", allowPublish, events: true },
   });
 
+  // The channel the preflight must derive: the dev owner plus the RETAINED actor, which for this
+  // fixture is the preserved open-mode id — a value that is nowhere in the agent's display name.
+  const RETAINED_CHANNEL = `events.${DEV_OWNER}.${openInventory.identity.mode === "open" ? openInventory.identity.id : ""}`;
+
   // (a) events enabled, grant MISSING -> refuse, and name the channel so an operator can act
   const denied = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith([])));
   const deniedReply = denied.agents[0]?.reply;
   check("resume REFUSES an events-enabled entry whose retained grant lacks the event channel",
     deniedReply?.ok === false, JSON.stringify(denied));
   check("and the refusal names the exact channel that is missing, not just 'invalid'",
-    /events\.worker/.test(String(deniedReply?.ok === false ? deniedReply.error : "")), deniedReply);
+    String(deniedReply?.ok === false ? deniedReply.error : "").includes(RETAINED_CHANNEL), deniedReply);
+  // The name must NOT be what it derived from. This is the anti-fallback cell on the resume path:
+  // a retained cut is the one place the display name is always at hand, so it is the likeliest
+  // place for a name-keyed derivation to survive a re-key.
+  check("the refusal names the retained PRINCIPAL, not the retained name",
+    !/events\.worker\b/.test(String(deniedReply?.ok === false ? deniedReply.error : "")), deniedReply);
 
   // (b) CONTROL — same entry WITH the grant proceeds. Without this, (a) would pass for a wrapper
   // that refused every events-enabled resume, which is a different bug wearing the same green.
   capturedLaunch = undefined;
-  const allowed = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith(["events.worker"])));
+  const allowed = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith([RETAINED_CHANNEL])));
   check("CONTROL: the same entry WITH the grant resumes, so the refusal is specific",
     allowed.agents[0]?.reply?.ok === true && capturedLaunch?.events === true, JSON.stringify(allowed));
 
@@ -548,7 +561,12 @@ let openInventory: ManagerResumeAgent;
   // would instead have REFUSED healthy resumes. The suite could not see it because every fixture
   // granted the exact literal; the fixture only built the case the implementation handled.
   // Found by fmae-rev-sec. These drive `channelInAllow`, the shipped matcher.
-  for (const grant of ["events.>", ">", "events.*"]) {
+  // `events.*` IS NO LONGER IN THIS LIST, and that is a real consequence rather than a fixture
+  // tweak. The principal is the dot-form `<owner>.<actor>`, so a channel is three tokens and a
+  // single-level `*` stops one short of it. An operator whose persona granted `events.*` was
+  // covered under the old flat `events.<name>` and is NOT covered now — asserted below rather than
+  // left for them to discover as a mute stream.
+  for (const grant of ["events.>", ">", `events.${DEV_OWNER}.>`]) {
     capturedLaunch = undefined;
     const wild = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith([grant])));
     check(`a WILDCARD grant "${grant}" covers the event channel and resumes`,
@@ -560,6 +578,13 @@ let openInventory: ManagerResumeAgent;
   const wrongWild = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith(["other.>"])));
   check("a wildcard that does NOT cover the event channel still refuses",
     wrongWild.agents[0]?.reply?.ok === false, JSON.stringify(wrongWild.agents[0]?.reply));
+
+  // The single-level wildcard, pinned as its own cell BECAUSE it used to cover. `events.*` matches
+  // exactly one token where the principal needs two, so it now refuses — the upgrade consequence
+  // stated as a fact a reader can act on instead of a surprise in the field.
+  const oneLevel = await managerWith((name) => fakeHandle(name)).resumePreserved(inventoryOf(entryWith(["events.*"])));
+  check("`events.*` no longer covers an event channel: the principal costs two segments, not one",
+    oneLevel.agents[0]?.reply?.ok === false, JSON.stringify(oneLevel.agents[0]?.reply));
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,
@@ -931,7 +956,11 @@ let openInventory: ManagerResumeAgent;
       // MUST use the events-capable connector: with `preserve-connector` the refusal comes from the
       // no-eventChannel branch and the credential check is never reached — the first cell would then
       // pass vacuously, which is exactly what the message cell caught.
-      launch: { ...entry.launch, connector: "preserve-events-connector", events: true, allowPublish: ["events.static-worker"] },
+      // The inventory claims a grant on the PRINCIPAL's channel — the shape the spawn path mints —
+      // while `retainedCreds` above was minted with no allowPublish at all. Claiming the old
+      // name-shaped `events.static-worker` would make the refusal ambiguous: the credential lacks
+      // that channel too, so the cell would pass without ever testing the principal derivation.
+      launch: { ...entry.launch, connector: "preserve-events-connector", events: true, allowPublish: [`events.${DEV_OWNER}.${identity.id}`] },
     };
     const denied = await claimManager.resumePreserved(inventoryOf(lying));
     const reply = denied.agents[0]?.reply;
@@ -946,7 +975,7 @@ let openInventory: ManagerResumeAgent;
     // and proof the decision was not following the credential at all.
     // The credential must live at the manager-owned path for this agent — a differently-named file
     // is refused by an earlier check and the cell would never reach the grant decision at all.
-    const grantingCreds = await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id), allowPublish: ["events.static-worker"] });
+    const grantingCreds = await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id), allowPublish: [`events.${DEV_OWNER}.${identity.id}`] });
     const grantingPath = credsPath;
     writeFileSync(grantingPath, grantingCreds, { mode: 0o600 });
     const reverseManager = managerWith((n) => fakeHandle(n));

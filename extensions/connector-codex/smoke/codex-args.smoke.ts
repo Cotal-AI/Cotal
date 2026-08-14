@@ -206,19 +206,29 @@ try {
   // channel mapping gained its collision suffix: the suite was red on the CI gate while the lane's
   // own focused suites were green. Pinning behaviour to a constant copied out of the implementation
   // is why. Found by fmae-rev-test, fmae-rev-eng and fmae-rev-wal.
-  for (const name of ["My Agent", "worker", "Worker", "worker-a67b04cd5c491d4d"]) {
+  // The probes are PRINCIPALS now, not names — including two that share a display name under
+  // different owners, which is the pair the old name-keyed mapping fused onto one channel.
+  const PRINCIPALS = [
+    { owner: "local", actor: "worker" },
+    { owner: "u_alice", actor: "worker" },
+    { owner: "local", actor: "Worker" },
+    { owner: "local", actor: "UCH5XZMUPEWFSIDHA3LMXEQ5UOUBGBKTYBPQRVEC72WJ2M3ZYTQNKIKR" },
+  ];
+  for (const p of PRINCIPALS) {
     check(
-      `event channel convention shared with connector-core (${JSON.stringify(name)})`,
-      codexConnector.eventChannel?.(name) === coreEventChannel(name),
-      { codex: codexConnector.eventChannel?.(name), core: coreEventChannel(name) },
+      `event channel convention shared with connector-core (${JSON.stringify(p)})`,
+      codexConnector.eventChannel?.(p) === coreEventChannel(p),
+      { codex: codexConnector.eventChannel?.(p), core: coreEventChannel(p) },
     );
   }
-  // Non-vacuity: the two cells above would also pass if BOTH sides returned a constant. The mapping
-  // must actually distinguish the names it is given.
+  // Non-vacuity: the cells above would also pass if BOTH sides returned a constant. The mapping must
+  // actually distinguish the principals it is given — and the discriminating pair is the two owners
+  // sharing one display name, since a mapping that had quietly reverted to name-keying would fuse
+  // exactly those two and still separate the rest.
   check(
     "the shared mapping is a real mapping, not a constant",
-    new Set(["My Agent", "worker", "Worker"].map((n) => codexConnector.eventChannel?.(n))).size === 3,
-    ["My Agent", "worker", "Worker"].map((n) => codexConnector.eventChannel?.(n)),
+    new Set(PRINCIPALS.map((p) => codexConnector.eventChannel?.(p))).size === PRINCIPALS.length,
+    PRINCIPALS.map((p) => codexConnector.eventChannel?.(p)),
   );
 
   console.log(`\nCODEX ARGS SMOKE PASSED ✅  (${pass} checks)`);

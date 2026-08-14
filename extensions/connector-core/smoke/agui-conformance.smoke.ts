@@ -17,16 +17,17 @@
  * multi-turn sequence, and assert two principals through one channel stay separate.
  *
  * ⚠️ READ THIS BEFORE TRUSTING THE FOURTH. **The separation asserted here is at the ENVELOPE layer
- * only, and it is NOT channel isolation.** At this commit `eventChannel` still keys on the display
- * name, and the plan carries a MEASURED repro of two valid principals both named `worker`
- * publishing to one `events.worker` and being co-mingled by an observer. Writing a cell here that
- * asserted two principals get two channels would fail; writing one that asserted they share one
- * would be worse — it would encode today's defect as correct, which this plan forbids by name
- * because this build has already been burned by exactly that. So this suite asserts only what is
- * true and will REMAIN true after the re-key: frames from two principals are attributable to their
- * own writers by the envelope they carry. **The channel-isolation half belongs to the commit that
- * keys on the principal-stable id, and does not exist yet.** Do not read the cell below as covering
- * it.
+ * only, and it is NOT channel isolation.** That scope has not changed, but its REASON has: this was
+ * written when `eventChannel` still keyed on the display name, so a cell asserting two principals
+ * get two channels would have failed, and one asserting they share a channel would have encoded the
+ * defect as correct. The re-key has since landed — the channel is now `events.<owner>.<actor>` —
+ * and channel isolation IS proven, at the authorities that enforce it rather than here:
+ * `event-channel.smoke.ts` (injective, by exhibiting the left inverse),
+ * `transcript-grant-acl.smoke.ts` (the minted credential names the principal, from a real spawn),
+ * and `foreground-event-grant.smoke.ts` (a real broker DENIES one principal's credential on
+ * another's channel). What this suite asserts is still only the envelope half: frames from two
+ * principals are attributable to their own writers by the envelope they carry. Do not read the cell
+ * below as covering the channel half — read the three suites named above.
  *
  * ## Mutation ledger — kill sets predicted BEFORE each run, as NAMED cells, and confirmed
  *
