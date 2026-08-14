@@ -167,8 +167,15 @@ export interface Connector extends Extension {
    *  not core. The manager calls it to grant the agent publish rights on its event channel at provision
    *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
    *  one source and can't drift. If `events` is requested for a connector that lacks this, the
-   *  manager fails loud rather than silently skipping the grant. */
-  eventChannel?(name: string): string;
+   *  manager fails loud rather than silently skipping the grant.
+   *
+   *  TAKES THE AGENT'S PRINCIPAL, NEVER ITS DISPLAY NAME. A name is a client-side handle, not an
+   *  identity: it is case-folded and separator-collapsed on its way to a subject, so distinct
+   *  principals fused onto one channel and therefore onto one publish grant. The principal is the
+   *  value every authority that enforces per-agent grants already checks against, so the caller must
+   *  mint it BEFORE deriving a channel — a spawn path that derives the channel ahead of the identity
+   *  it is granting to has no stable value to key on, and no fallback is offered. */
+  eventChannel?(principal: { owner: string; actor: string }): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager checks each is on PATH before spawning and fails with a clear error naming the

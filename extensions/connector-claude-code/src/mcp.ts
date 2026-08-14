@@ -21,7 +21,7 @@ import {
   MESH_FIRST_STEER,
 } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
-import { TranscriptMirror, eventChannel } from "./transcript.js";
+import { TranscriptMirror, eventChannelForSession } from "./transcript.js";
 
 /** Mirrors this session's transcript to `tr-<name>` — set in main() iff COTAL_EVENTS
  *  is on (buildLaunch sets it for managed sessions; personal sessions never mirror). */
@@ -46,7 +46,11 @@ async function main(): Promise<void> {
   agent.start(); // background connect with retry — never blocks tool serving
 
   if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? ""))
-    mirror = new TranscriptMirror(agent, eventChannel(config.name));
+    // Keyed on the endpoint's OWN principal, not `config.name` — the channel the broker will
+    // enforce a grant against is derived from the same identity the connection authenticates as,
+    // so the manager's grant and this publish cannot name different subjects. Throws (fatal, via
+    // main().catch) when the session has no stable identity to key on; see eventChannelForSession.
+    mirror = new TranscriptMirror(agent, eventChannelForSession(agent.ep));
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. Path + token come from the launch env (buildLaunch set them, and the hooks

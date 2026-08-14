@@ -31,7 +31,7 @@ const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
-  eventChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  eventChannel, // the shared `events.<owner>.<actor>` mapping (connector-core), via the contract
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch

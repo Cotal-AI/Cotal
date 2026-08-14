@@ -19,9 +19,9 @@ import type { MeshAgent } from "@cotal-ai/connector-core";
 const MAX_PREVIEW = 700; // tool results / user prompts — enough to see what happened
 const MAX_CHUNK = 6000; // chars per published message; batches split on entry boundaries
 
-// The `tr-<name>` convention now lives in connector-core (shared with the manager + opencode
-// connector). Re-exported here so existing imports (mcp.ts, index.ts) keep resolving.
-export { eventChannel } from "@cotal-ai/connector-core";
+// The `events.<owner>.<actor>` mapping lives in connector-core (shared with the manager + the
+// other connectors). Re-exported here so existing imports (mcp.ts, index.ts) keep resolving.
+export { eventChannel, eventChannelForSession } from "@cotal-ai/connector-core";
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;

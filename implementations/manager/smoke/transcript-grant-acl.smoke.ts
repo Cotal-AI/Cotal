@@ -1,10 +1,17 @@
 /**
- * Auth-mode transcript-grant smoke — proves the manager grants an agent publish rights on its OWN
- * transcript channel (whatever the resolved connector's `eventChannel(name)` returns) when
- * transcript mirroring is enabled, scopes the grant to exactly that channel, and FAILS LOUD when
- * transcript is requested for a connector that doesn't mirror. This catches manager-grant ↔
- * connector-publish-channel drift at the cred/ACL layer — which typecheck can't, since the manager now
- * sources the channel through the optional `Connector.eventChannel` contract method.
+ * Auth-mode event-grant smoke — proves the manager grants an agent publish rights on its OWN event
+ * channel (whatever the resolved connector's `eventChannel(principal)` returns) when events are
+ * enabled, scopes the grant to exactly that channel, and FAILS LOUD when events are requested for a
+ * connector that cannot emit. This catches manager-grant ↔ connector-publish-channel drift at the
+ * cred/ACL layer — which typecheck can't, since the manager sources the channel through the optional
+ * `Connector.eventChannel` contract method.
+ *
+ * IT ALSO GRADES THE ORDERING, which is the half a string comparison cannot reach. The channel keys
+ * on the agent's PRINCIPAL, and in static mode the actor half is an nkey that does not exist until
+ * `newIdentity()` runs inside the spawn. So a grant naming the minted id is proof that the
+ * derivation happens AFTER the mint; a grant naming the display name is proof it does not. The
+ * derivation used to sit at accept, before any identity existed, which is exactly why it keyed on
+ * the name and fused distinct principals onto one channel.
  *
  * Broker-backed: closure (i) provisions each spawn through a short-lived EPHEMERAL provisioner
  * connection (residual-2 — the DM/DLV consumer-create surface lives only for the spawn window, never as
@@ -78,9 +85,10 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   getRoster: () => [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
 };
 
-// The exact `tr-<name>` sanitizer the real connectors use (connector-core); the manager grants whatever
-// the connector returns, so a mirroring connector hands back this and a non-mirroring one omits the method.
-const tr = (n: string): string => `tr-${n.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+// The same mapping the real connectors expose (connector-core's `eventChannel`): the manager grants
+// whatever the connector returns, so an emitting connector hands back this and a non-emitting one
+// omits the method. Takes the PRINCIPAL — a name-keyed stub would not satisfy the contract type.
+const tr = (p: { owner: string; actor: string }): string => `events.${p.owner}.${p.actor}`;
 const base = { kind: "connector" as const, requires: ["node"], buildLaunch: (): LaunchSpec => ({ command: "true", args: [], env: {} }) };
 registry.register({ ...base, name: "smoke-mirror", eventChannel: tr } satisfies Connector);
 registry.register({ ...base, name: "smoke-nomirror" } satisfies Connector); // no eventChannel → doesn't mirror
@@ -97,8 +105,17 @@ try {
     check("spawn with events succeeds", reply.ok === true, reply);
     const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
     const pub = pubAcl(join(credsDir, `mirrorbot.${uid}.creds`));
-    check("auth-mode grant is EXACTLY what the connector's eventChannel returns, no drift", pub.some((s) => s.endsWith(`.${tr("mirrorbot")}`)), pub);
-    check("the granted channel is the connector's eventChannel, no drift", pub.some((s) => s.includes(`.${tr("mirrorbot")}`)), pub);
+    // The nkey the spawn minted for this agent — the actor half of its principal, unknowable before
+    // the spawn ran, which is what makes the next cell an ordering proof rather than a spelling one.
+    const minted = (mgr as unknown as { agents: Map<string, { id: string }> }).agents.get("mirrorbot")!.id;
+    const want = tr({ owner: DEV_OWNER, actor: minted });
+    check("auth-mode grant is EXACTLY what the connector's eventChannel returns, no drift",
+      pub.some((s) => s.endsWith(`.${want}`)), [pub, want]);
+    // THE ANTI-FALLBACK CELL, at the real entry point. If the derivation ever reverts to the display
+    // name — including as a fallback for some mode — the minted credential says so here, at the
+    // authority that enforces it, rather than in a unit that builds its own inputs.
+    check("the grant names the MINTED PRINCIPAL and the display name appears NOWHERE in it",
+      !pub.some((s) => (s.split(".chat.")[1] ?? "").includes("mirrorbot")), pub);
   }
 
   // 2 — transcript OFF: no transcript channel is granted (only the persona's own post ACL).
@@ -107,9 +124,8 @@ try {
     check("spawn without events succeeds", reply.ok === true && reply.data?.name === "mirrorbot-2", reply);
     const uid = reply.ok ? String((reply.data as { lifecycleUid?: string }).lifecycleUid ?? "") : "";
     const pub = pubAcl(join(credsDir, `mirrorbot-2.${uid}.creds`));
-    // Check the CHANNEL segment (after `.chat.<id>.`), not the whole subject — else the space name
-    // itself (here `tr-grant-…`) would false-match `.tr-`.
-    check("no event channel granted when events is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes(tr("mirrorbot"))), pub);
+    // Check the CHANNEL segment (after `.chat.<owner>.<actor>.`), not the whole subject.
+    check("no event channel granted when events is off", !pub.some((s) => (s.split(".chat.")[1] ?? "").includes("events.")), pub);
   }
 
   // 3 — transcript ON + a connector that does NOT mirror: fail loud, never a silently-skipped grant.

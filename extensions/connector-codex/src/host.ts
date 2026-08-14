@@ -53,7 +53,7 @@ import {
   formatInjection,
   fmtFrom,
   startControlServer,
-  eventChannel,
+  eventChannelForSession,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   type InboxItem,
@@ -333,10 +333,12 @@ export async function runCodexHost(): Promise<void> {
     }
   };
 
-  // Transcript mirror → `tr-<name>`, opt-in via COTAL_EVENTS (the connector sets it for
-  // `--transcript` spawns; the manager grants pub rights on the same channel).
+  // Event mirror → `events.<owner>.<actor>`, opt-in via COTAL_EVENTS (the connector sets it for
+  // `--events` spawns; the manager grants pub rights on the same channel). Keyed on the endpoint's
+  // OWN principal, never `config.name`, so the grant and the publish name one subject; throws when
+  // the session has no stable identity to key on (see eventChannelForSession).
   const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")
-    ? createTranscriptMirror(agent, eventChannel(config.name))
+    ? createTranscriptMirror(agent, eventChannelForSession(agent.ep))
     : undefined;
 
   // ---- the turn loop -------------------------------------------------------

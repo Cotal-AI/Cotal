@@ -2928,20 +2928,16 @@ export class Manager {
       name = this.uniqueName(identityName);
     }
     this.reserved.add(name);
-    // Transcript mirroring (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1) → grant the agent pub
-    // on its OWN transcript channel; auth-mode publish is default-deny, so without the grant the mirror's
-    // publish is rejected. Ask the resolved connector for the channel — the SAME one it publishes to, so
-    // the grant and the publish can't drift, and the literal stays out of core. Uses the spawned `name`
-    // (post-uniqueName) so the grant matches the actual identity. Mirroring is OPTIONAL per connector
-    // (like prompt): if it's requested for a connector that doesn't mirror, fail loud — never silently
-    // skip the grant (that would surface later as a confusing auth-mode publish rejection).
+    // Event publishing (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1) → grant the agent pub on its
+    // OWN event channel; auth-mode publish is default-deny, so without the grant the publish is
+    // rejected. Mirroring is OPTIONAL per connector (like prompt): if it's requested for a connector
+    // that doesn't emit, fail loud — never silently skip the grant (that would surface later as a
+    // confusing auth-mode publish rejection). The CAPABILITY check belongs here, at accept, before
+    // any provisioning; THE CHANNEL ITSELF CANNOT BE DERIVED YET — see the grant append below.
     const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
-    if (events) {
-      if (!connector.eventChannel) {
-        this.reserved.delete(name); // release the just-reserved name on this fail-fast path
-        return { ok: false, error: `connector "${connector.name}" does not support event publishing, but --events was requested` };
-      }
-      allowPublish = [...(allowPublish ?? []), connector.eventChannel(name)];
+    if (events && !connector.eventChannel) {
+      this.reserved.delete(name); // release the just-reserved name on this fail-fast path
+      return { ok: false, error: `connector "${connector.name}" does not support event publishing, but --events was requested` };
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
@@ -2984,6 +2980,15 @@ export class Manager {
       const agentTriple = this.userMode
         ? { owner: opts.owner ?? (spawner && parsePrincipalKey(spawner)?.owner.startsWith("u_") ? parsePrincipalKey(spawner)!.owner : DEV_OWNER), actor: name, uid: lifecycleUid }
         : { owner: DEV_OWNER, actor: identity.id, uid: lifecycleUid };
+      // THE EVENT GRANT IS DERIVED HERE, AFTER THE IDENTITY IS MINTED, and that ordering is the
+      // point rather than a detail. The channel keys on the agent's PRINCIPAL — `agentTriple`, the
+      // same allocated (owner, actor) every other authority checks against — so it cannot be
+      // computed at accept, where only the display name exists. It used to be, and keying on the
+      // name is what fused distinct principals onto one channel and therefore onto one grant.
+      // Asked of the resolved connector, never a literal, so the grant and the publish (which
+      // derives from the live endpoint's own principal) name one subject. The capability was
+      // already refused at accept, so `eventChannel` is present whenever `events` is set.
+      if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!(agentTriple)];
       await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
@@ -3491,7 +3496,16 @@ export class Manager {
       if (entry.launch.events === true) {
         if (!connector.eventChannel)
           return { ok: false, error: `${connector.name} connector does not support event publishing (events)` };
-        const required = connector.eventChannel(entry.name);
+        // The RETAINED principal, never `entry.name`. The channel keys on (owner, actor), and a
+        // resume must reproduce the channel the ORIGINAL spawn was granted — the name is not that
+        // value and, for a static agent, is not even in the credential. `entry.identity` is
+        // discriminated and already carries both halves: user mode names them; static mode holds
+        // the nkey it minted, under the dev owner it was minted with (the same derivation the
+        // roster's id uses).
+        const principal = entry.identity.mode === "user"
+          ? { owner: entry.identity.owner, actor: entry.identity.actor }
+          : { owner: DEV_OWNER, actor: entry.identity.id };
+        const required = connector.eventChannel(principal);
 
         // VERIFY THE CREDENTIAL, NOT THE INVENTORY'S CLAIM ABOUT IT.
         //

@@ -86,7 +86,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | auto-detect |
-| `COTAL_EVENTS` | connector session | Publish this session's agent events to `events.<name>` (`1`) | off |
+| `COTAL_EVENTS` | connector session | Publish this session's agent events to `events.<owner>.<actor>` (`1`) | off |
 | `COTAL_EVENTS_DEFAULT` | manager | Default event publishing for managed spawns (`1`) | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |

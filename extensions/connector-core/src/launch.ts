@@ -14,8 +14,7 @@
  * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
-import { createHash } from "node:crypto";
-import { assertValidName, type McpServerSpec } from "@cotal-ai/core";
+import { principalKey, type McpServerSpec } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -193,97 +192,82 @@ export function userAuthEnv(opts: {
   };
 }
 
-/** The per-agent EVENT channel: `events.<name>`, the name lowercased and reduced to subject-safe
- *  characters. The SINGLE source of this connector convention — connectors publish here (their
- *  plugin/runtime path AND their `Connector.eventChannel` method both call this), and the manager
- *  grants pub on it through that contract method. It lives in the connector layer, NOT core: an
- *  agent event stream is a connector feature, not the normative wire standard.
+/** The per-agent EVENT channel: `events.<owner>.<actor>` — keyed on the agent's PRINCIPAL. The
+ *  SINGLE source of this connector convention: connectors publish here (via
+ *  {@link eventChannelForSession}) and the manager grants pub on it through
+ *  `Connector.eventChannel`, so the grant and the publish cannot drift. It lives in the connector
+ *  layer, NOT core: an agent event stream is a connector feature, not the normative wire standard.
  *
  *  **Replaces `transcriptChannel()` and the `tr-<name>` convention outright** — abolished means
  *  replaced, not both running. The prefix moves from a glyph-line mirror to a namespace that can hold
- *  per-session sub-channels (`events.<name>.<session>`), which the flat old name could not: every
- *  session shared one channel and therefore one retention budget.
+ *  per-session sub-channels (`events.<owner>.<actor>.<session>`), which the flat old name could not:
+ *  every session shared one channel and therefore one retention budget.
  *
- *  **A grant on `events.<name>` does NOT cover `events.<name>.<session>`** — `patternCovers` is false
- *  in both directions between `a` and `a.>`, so a caller needing both must mint BOTH patterns.
+ *  **A grant on `events.<owner>.<actor>` does NOT cover `events.<owner>.<actor>.<session>`** —
+ *  `patternCovers` is false in both directions between `a` and `a.>`, so a caller needing both must
+ *  mint BOTH patterns.
  *
- *  **NOTHING MINTS THE DESCENDANT PATTERN TODAY, AND NOTHING EMITS ON ONE.** An earlier version of
- *  this comment said minting both "is the manager's job", which read as a description of existing
- *  behaviour; the manager appends only `eventChannel(name)`. Per-session sub-channels are a LATER
- *  step — no connector emits to one, so the absent grant is not a mute stream today. It becomes one
- *  the moment anything publishes to `events.<name>.<session>`, and the grant must be minted in the
- *  same change that starts emitting, not before and not after.
+ *  **NOTHING MINTS THE DESCENDANT PATTERN TODAY, AND NOTHING EMITS ON ONE.** Per-session
+ *  sub-channels are a LATER step; the grant must be minted in the same change that starts emitting,
+ *  not before and not after. Stated as an unbuilt future rather than a delegated duty because a
+ *  comment asserting another component's behaviour is a test nobody wrote.
  *
- *  This is stated as an unbuilt future rather than a delegated duty because a comment asserting
- *  another component's behaviour is a test nobody wrote — the third such overclaim found in this
- *  surface (the seal's window, the resume barrier's write direction, and this).
+ *  THE KEY IS THE PRINCIPAL BECAUSE THE DISPLAY NAME IS NOT AN IDENTITY. This function used to take
+ *  `name` and reduce it to `[a-z0-9_-]`, which FUSED distinct principals onto one channel:
+ *  `assertValidName` deliberately permits internal spaces and dots ("human display names like
+ *  'Ada Lovelace'"), so `Alice Bob`, `Alice.Bob`, `alice bob` and `alice-bob` all collapsed to
+ *  `events.alice-bob`, and case-folding collapsed `Alice` onto `alice` besides — 8 valid distinct
+ *  names measured onto 3 channels. That was an ISOLATION defect, not a cosmetic one: the publish
+ *  grant is minted FROM this value, so two distinct principals received the same grant and published
+ *  to the same subject. Neither de-duplication path caught it — foreground `uniqueMeshName` and the
+ *  manager's funnel both de-duplicate by exact roster NAME, never by resolved channel.
  *
- *  Sanitizer kept exact (illegal runs collapse to a single `-`), so a name that mapped to one channel
- *  under the old prefix maps to one channel under the new one. */
-export function eventChannel(name: string): string {
-  const safe = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
-  // COLLISION-RESISTANT — deliberately NOT called injective, because it is not.
-  //
-  // A truncated digest cannot guarantee that no two inputs share an output; it makes the chance
-  // negligible. Injective would require a REVERSIBLE encoding, and encoding both case and every
-  // separator into `[a-z0-9_-]` would turn `Ada Lovelace` into something no operator can read on a
-  // channel list — a real cost against a vanishing risk. So the trade is taken deliberately and the
-  // name says which property it has. An earlier version of this comment said "INJECTIVE", which
-  // claimed universally what the cells prove over a measured set: the exact overclaim class this
-  // function was being fixed for.
-  //
-  // THE BOUND, stated so it can be judged rather than trusted: 16 hex characters of SHA-256 = 64
-  // bits, and the digest only has to separate names that ALREADY share a sanitised form. Two such
-  // names collide at ~2^-64; the birthday bound within one sanitised group is ~2^32 names.
-  //
-  // The sanitiser alone is not even collision-resistant: `assertValidName` deliberately allows internal spaces and
-  // dots ("human display names like 'Ada Lovelace'", `resolve.ts:80-84`), so `Alice Bob`,
-  // `Alice.Bob`, `alice bob` and `alice-bob` all collapsed to `events.alice-bob` — and case-folding
-  // collapses `Alice` onto `alice` besides. Measured: 8 valid distinct names → 3 channels.
-  //
-  // That is an ISOLATION defect, not a cosmetic one. The publish grant is minted FROM this value
-  // (`manager.ts`, the `eventChannel` append), so two distinct principals received the same grant
-  // and published to the same subject — a per-agent stream silently shared. Spawn de-duplication
-  // does not catch it: both foreground `uniqueMeshName` and the manager's funnel de-duplicate by
-  // exact roster NAME, never by resolved channel. Found by fmae-rev-sec, reachability confirmed by
-  // fmae-rev-eng and measured here.
-  //
-  // A name that is ALREADY channel-safe maps unchanged, so nothing that works today moves. Only a
-  // name that the sanitiser would alter gains a short digest of the EXACT original — which is what
-  // makes collisions negligible rather than impossible, since the digest distinguishes precisely
-  // the inputs the sanitiser fused. NOT "injective" — that word appeared here in an earlier draft
-  // and contradicted this comment's own heading four lines up. A truncated digest cannot be
-  // injective, and one sentence claiming otherwise is all it takes for the next reader to believe
-  // the stronger property. Rejecting unsafe names was the alternative and it is worse: it would break a naming
-  // grammar the product documents as supported.
-  // THE TWO NAMESPACES MUST BE DISJOINT, and an earlier version's were not.
-  //
-  // Hashing only when `safe !== name` left the hashed image set reachable from the UNHASHED side:
-  // `"Worker"` maps to `events.worker-a67b04cd5c491d4d`, and `"worker-a67b04cd5c491d4d"` is itself a
-  // perfectly valid already-safe name that mapped to the SAME channel. A deterministic,
-  // constructible collision — nothing to do with digest length, and reachable by anyone who can read
-  // the algorithm and choose their own agent name. Found by fmae-rev-test.
-  //
-  // So a name that merely LOOKS like an image is hashed too. Every hashed channel ends in exactly
-  // one `-<16 hex>` more than its own preimage, so no unhashed name can land on a hashed image and
-  // no hashed image can land on another. What remains is the digest bound, which is the honest
-  // residual; the structural overlap is gone.
-  // AND the disjointness argument above has a PRECONDITION that was left implicit and was false:
-  // it assumes distinct names give distinct hash INPUTS. `createHash().update(string)` encodes UTF-8,
-  // which replaces every unpaired surrogate with U+FFFD — so `"\uD800"`, `"\uD801"` and `"\uFFFD"`
-  // hashed to ONE digest and shared one channel, and with it one publish grant and one event stream.
-  // Deterministic and constructible, not the truncated-digest residual this comment claimed. Found by
-  // fmae-rev-test with a broker-backed effect repro; confirmed by fmae-rev-eng and fmae-rev-wal.
-  //
-  // `assertValidName` now refuses such a name at the shared choke point, which also covers the launch
-  // environment mangling the name on its way to a child. It is re-asserted HERE rather than assumed,
-  // because this function derives an AUTHORIZATION value and must not depend on a caller having
-  // validated first — the shipped rule is reused, never a second copy of it that could drift.
-  assertValidName(name);
-  const looksHashed = /-[0-9a-f]{16}$/.test(safe);
-  return safe === name && !looksHashed
-    ? `events.${safe}`
-    : `events.${safe}-${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
+ *  The name-keyed version answered that with a sanitiser plus a truncated SHA-256 digest, and could
+ *  therefore only ever claim COLLISION-RESISTANCE — a defence that itself shipped two constructible
+ *  collisions (a name that looked like a hashed image; unpaired surrogates fusing under UTF-8
+ *  encoding). Keyed on the principal there is no lossy transform to defend: `assertValidOwnerToken`
+ *  is `[A-Za-z0-9_]+` and FAILS LOUD rather than rewriting, and `.` separates the two tokens that
+ *  cannot contain one. So distinct principals give distinct channels — INJECTIVE, by construction
+ *  rather than by digest length. The sanitiser, the digest, and the disjointness argument that
+ *  guarded them are deleted rather than carried forward.
+ *
+ *  THE DOT-FORM COSTS TWO SEGMENTS, deliberately. `principalKey().key` is `<owner>.<actor>`, so a
+ *  channel is three tokens and `events.<owner>.>` is expressible and means OWNER-WIDE — every actor
+ *  under one owner, not one agent's sessions. The single-token `name` form (`<owner>-<actor>`) would
+ *  avoid that, but the dot-form is the canonical serialization every authority that enforces
+ *  per-agent grants already checks against, and a second encoding of a principal is the drift this
+ *  design refuses everywhere else.
+ *
+ *  Validation is `principalKey`'s own, reused rather than re-implemented: this function derives an
+ *  AUTHORIZATION value and must not depend on a caller having validated first. */
+export function eventChannel(principal: { owner: string; actor: string }): string {
+  return `events.${principalKey(principal.owner, principal.actor).key}`;
+}
+
+/** The event channel for a LIVE session, derived from the endpoint's own principal — what the
+ *  broker will actually enforce against, never `config.name` and never the launch env.
+ *
+ *  REFUSES AN EPHEMERAL ACTOR LOUDLY, and that refusal is the whole point. An endpoint with neither
+ *  a declared `card.id` nor creds SELF-MINTS a random actor per process ({@link CotalEndpoint} dev
+ *  branch), so its channel would differ on every restart and could never match a grant minted in
+ *  advance. The tempting repair — fall back to the display name for that one mode — would reinstate
+ *  the fused-channel defect on the single path that has no credential to grade it against, which is
+ *  where it would live forever. So the mode fails closed: events are unavailable without a stable
+ *  identity, and the operator is told which.
+ *
+ *  Structurally typed rather than importing `CotalEndpoint`, so the three connectors' publish paths
+ *  and a test can drive the SAME refusal. */
+export function eventChannelForSession(
+  ep: { principal: { owner: string; actor: string }; actorIsEphemeral: boolean },
+): string {
+  if (ep.actorIsEphemeral)
+    throw new Error(
+      "events are not available for a session with a self-minted identity: this endpoint has no " +
+        "declared id and no credentials, so its actor is a fresh random token per process and its " +
+        "event channel could never match a grant. Launch it with an identity (an authed mesh, or " +
+        "an explicit id) to publish events.",
+    );
+  return eventChannel(ep.principal);
 }
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /

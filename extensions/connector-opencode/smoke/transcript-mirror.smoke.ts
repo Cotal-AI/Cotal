@@ -1,7 +1,7 @@
 /**
  * OpenCode transcript-mirror smoke (no test runner) — spins up its OWN nats-server, boots the plugin
  * with COTAL_EVENTS=1, fires real opencode bus events at its `event` hook, and asserts the
- * event-driven mirror publishes the agent's OWN assistant output to `tr-<name>` — end to end over a
+ * event-driven mirror publishes the agent's OWN assistant output to `events.<owner>.<actor>` — end to end over a
  * real mesh (a separate CotalEndpoint subscribes to the transcript channel and reads what lands).
  *
  * No model and no `opencode` binary: the mirror is fed purely by message.updated / message.part.updated
@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, DEV_OWNER } from "@cotal-ai/core";
 import type { CotalMessage, Delivery } from "@cotal-ai/core";
 import { eventChannel } from "@cotal-ai/connector-core";
 import { cotal } from "../src/plugin.js";
@@ -38,7 +38,11 @@ const servers = `nats://127.0.0.1:${PORT}`;
 const space = "octr";
 const SID = "ses_tr";
 const NAME = "Otto";
-const CHAN = eventChannel(NAME); // "tr-otto" — the shared connector-core convention
+// The channel keys on the session's PRINCIPAL, not its display name: `COTAL_ID` below pins the
+// endpoint's actor, and the plugin derives the channel from the endpoint it authenticates as. So the
+// watcher must subscribe to the principal's channel — if it still derived from `NAME` this suite
+// would subscribe to a channel nothing publishes to and time out, which is the drift it exists to catch.
+const CHAN = eventChannel({ owner: DEV_OWNER, actor: "otto" }); // "events.local.otto"
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-octr-"));
@@ -110,7 +114,7 @@ try {
   for (let i = 0; i < 50; i++) { if (sub.getRoster().some((p) => p.card.name === NAME)) break; await sleep(100); }
   check(`the opencode plugin came online (${NAME} live in the watcher roster)`, sub.getRoster().some((p) => p.card.name === NAME));
 
-  // (1) an assistant turn's text + tool parts are mirrored to tr-<name> on session.idle. Retry the turn
+  // (1) an assistant turn's text + tool parts are mirrored to the event channel on session.idle. Retry the turn
   //     until it lands: the agent connects in the BACKGROUND, so its presence can appear a beat before
   //     it can publish, and the mirror drops (by design) a turn it cannot send. Re-firing is idempotent
   //     (record/observe replace by key; idle rebuilds + flushes), so this just waits out the connect.
@@ -121,7 +125,7 @@ try {
     await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
     await waitForGot(1, 1000);
   }
-  check("assistant text is mirrored to tr-<name>", someGot("Did the thing."), got);
+  check("assistant text is mirrored to the principal's event channel", someGot("Did the thing."), got);
   check("tool call is mirrored as a one-liner", someGot("⚒ bash: ls -la"), got);
   check("tool output is mirrored (truncated)", someGot("→ a"), got);
   const afterTurn1 = got.length;

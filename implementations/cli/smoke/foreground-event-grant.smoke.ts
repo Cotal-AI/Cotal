@@ -39,27 +39,32 @@ const auth = await createSpaceAuth(space);
 const { servers, stop: stopBroker } = await bootBroker(auth);
 
 const NAME = "fg-bot";
+// The channel is keyed on the agent's PRINCIPAL, so the test connector takes one — the same shape
+// the contract now declares. A name-keyed stub here would type-error, which is the point of moving
+// the signature rather than validating a string.
 const connector: Pick<Connector, "name" | "eventChannel"> = {
   name: "fg-connector",
-  eventChannel: (n: string) => `events.${n.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`,
+  eventChannel: (p: { owner: string; actor: string }) => `events.${p.owner}.${p.actor}`,
 };
+const AGENT = { owner: "local", actor: "fgbot" };
+const OTHER = { owner: "local", actor: "otherbot" };   // a DIFFERENT principal on the same broker
 
-/** Mint a real credential from an ACL, then try to publish to the event channel. */
-async function publishes(allowPublish: string[] | undefined): Promise<"published" | "denied" | string> {
+/** Mint a real credential from an ACL, then try to publish to `channel`. */
+async function publishes(allowPublish: string[] | undefined, channel = connector.eventChannel!(AGENT)): Promise<"published" | "denied" | string> {
   const identity = newIdentity();
   const lifecycleUid = mintLifecycleUid();
   const creds = await mintCreds(auth, identity, "agent", { allowSubscribe: ["general"], allowPublish, lifecycleUid });
   const ep = new CotalEndpoint({
     space, servers, creds, lifecycleUid,
     card: { name: NAME, kind: "agent", id: identity.id },
-    channels: [connector.eventChannel!(NAME)],
+    channels: [channel],
     consume: false, registerPresence: false, watchPresence: false,
   });
   const errors: string[] = [];
   ep.on("error", (e: unknown) => errors.push(String((e as Error)?.message ?? e)));
   try {
     await ep.start();
-    await ep.multicast("a frame", { channel: connector.eventChannel!(NAME) });
+    await ep.multicast("a frame", { channel });
     await new Promise((r) => setTimeout(r, 400));   // let the broker answer before we judge
     await ep.stop();
   } catch (e) {
@@ -76,11 +81,20 @@ try {
   const persona = ["general"];
 
   // ── the shipped computation, events ON ──
-  const withEvents = foregroundAllowPublish(persona, true, connector, NAME);
+  const withEvents = foregroundAllowPublish(persona, true, connector, AGENT);
   check("the shipped computation adds the connector's OWN event channel",
-    (withEvents ?? []).includes(`events.${NAME}`), withEvents);
+    (withEvents ?? []).includes(`events.${AGENT.owner}.${AGENT.actor}`), withEvents);
   check("EFFECT: a credential minted from it PUBLISHES to the event channel",
     (await publishes(withEvents)) === "published", withEvents);
+
+  // ── THE ISOLATION PROPERTY, GRADED BY THE BROKER. This is what the re-key is for: the defect was
+  //    two distinct principals receiving one grant on one subject, and the only authority that can
+  //    settle whether they are actually separated is the one that enforces the grant. A cell
+  //    comparing two derived strings would pass for a mapping that produced two channels neither
+  //    credential could reach. ──
+  check("CROSS-PRINCIPAL EFFECT: this agent's credential is DENIED on another principal's channel",
+    (await publishes(withEvents, connector.eventChannel!(OTHER))) === "denied",
+    [withEvents, connector.eventChannel!(OTHER)]);
 
   // ── CONTROL: the pre-fix shape. Without this the cell above would pass for a broker that
   //    accepted everything, which is a different bug wearing the same green. ──
@@ -89,15 +103,29 @@ try {
 
   // ── events OFF and absent must not widen the grant: `--events` is opt-in, and a tri-state
   //    whose ABSENT arm silently granted would be the disclosure direction. ──
-  check("events off does not add the channel", (foregroundAllowPublish(persona, false, connector, NAME) ?? []).join() === persona.join());
-  check("events absent does not add the channel", (foregroundAllowPublish(persona, undefined, connector, NAME) ?? []).join() === persona.join());
+  check("events off does not add the channel", (foregroundAllowPublish(persona, false, connector, AGENT) ?? []).join() === persona.join());
+  check("events absent does not add the channel", (foregroundAllowPublish(persona, undefined, connector, AGENT) ?? []).join() === persona.join());
 
   // ── a connector that cannot emit fails loud rather than launching a mute stream ──
   let refused = "";
-  try { foregroundAllowPublish(persona, true, { name: "mute-connector" }, NAME); }
+  try { foregroundAllowPublish(persona, true, { name: "mute-connector" }, AGENT); }
   catch (e) { refused = (e as Error).message; }
   check("events on a connector with no eventChannel is REFUSED, naming the connector",
     /mute-connector/.test(refused) && /event publishing/.test(refused), refused || "did not throw");
+
+  // ── OPEN MODE: no minted identity, so no stable principal to key on. It REFUSES rather than
+  //    falling back to the display name — the fallback would reinstate the fused-channel defect on
+  //    the one path with no credential to grade it against, which is where it would live forever.
+  //    `undefined` is what the command body passes on that branch, so this drives the real arm. ──
+  let openRefused = "";
+  try { foregroundAllowPublish(persona, true, connector, undefined); }
+  catch (e) { openRefused = (e as Error).message; }
+  check("open mode (no minted identity) REFUSES --events, naming what is missing",
+    /stable identity/.test(openRefused) && /principal/.test(openRefused), openRefused || "did not throw");
+  // CONTROL, the inverse of the predicate: the same open-mode call with events OFF is untouched. A
+  // refusal that fired on the mode rather than on the request would break every open-mode spawn.
+  check("CONTROL: open mode without --events is unaffected",
+    (foregroundAllowPublish(persona, undefined, connector, undefined) ?? []).join() === persona.join());
 } finally {
   await stopBroker();
 }

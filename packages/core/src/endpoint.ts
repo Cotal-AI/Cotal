@@ -442,6 +442,12 @@ export class CotalEndpoint extends EventEmitter {
   private readonly owner: string;
   /** This endpoint's actor token (principal half 2) — the connection id in the dev default. */
   private readonly actor: string;
+  /** True when {@link actor} was SELF-MINTED at construction — a fresh random token, because the
+   *  card declared no actor and no id and no creds named one. Such a principal differs on every
+   *  restart, so nothing can be granted to it in advance and nothing durable may be keyed on it.
+   *  Exposed via {@link actorIsEphemeral} so a caller deriving a per-agent resource name can refuse
+   *  the mode instead of silently keying on a value that will not survive the process. */
+  readonly actorIsEphemeral: boolean;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
@@ -466,6 +472,9 @@ export class CotalEndpoint extends EventEmitter {
 
   constructor(opts: EndpointOptions) {
     super();
+    /** Did the dev/static branch fall through to a random connId? Set on every path that assigns
+     *  `connId` so the ephemeral verdict below can never read an unassigned value. */
+    let selfMintedConnId = false;
     this.space = opts.space;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
@@ -505,6 +514,10 @@ export class CotalEndpoint extends EventEmitter {
       }
       this.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
       this.sentinelCreds = opts.sentinelCreds;
+      // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
+      // them), never self-minted — the ephemeral value here is the inbox nonce, which is the
+      // connection id and not the principal.
+      this.actorIsEphemeral = false;
     } else {
       // DEV / STATIC. Connection identity precedence: an explicit card.id, else the creds' identity, else
       // a random (dash-free, valid-actor-token) id. When both an id and creds are given they MUST name the
@@ -518,15 +531,21 @@ export class CotalEndpoint extends EventEmitter {
           throw new Error("a creds source requires an explicit card.id (no cred to derive the identity from at construction)");
         this.credsSource = opts.creds;
         this.connId = opts.card.id;
+        selfMintedConnId = false;
       } else {
         const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
         if (opts.card.id && credId && opts.card.id !== credId)
           throw new Error(`card.id ${opts.card.id} != creds identity ${credId} - they must be the same nkey`);
         this.currentCreds = opts.creds;
+        selfMintedConnId = opts.card.id === undefined && credId === undefined;
         this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
       }
       this.owner = opts.card.owner ?? DEV_OWNER;
       this.actor = opts.card.actor ?? this.connId;
+      // The actor is EPHEMERAL only when it inherited a self-minted connId — a declared `card.actor`
+      // is stable even on an otherwise identity-less connection. Recorded here, at the one site the
+      // fallback fires, so no caller has to re-derive the precedence rule from the outside.
+      this.actorIsEphemeral = opts.card.actor === undefined && selfMintedConnId;
     }
     // The incarnation's lifecycle UID (SPEC §13.1). AUTH mode (JWT creds/bearer) REQUIRES the
     // launcher to supply it — the dm/dlv/chathist durable names must match the exact names the

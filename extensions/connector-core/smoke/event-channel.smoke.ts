@@ -1,59 +1,63 @@
 /**
- * `eventChannel` must not fuse distinct agent names onto one channel.
+ * `eventChannel` must give distinct principals distinct channels — and it is now keyed on the
+ * PRINCIPAL, not the display name.
  *
- * This lives in connector-core, beside the function, and imports `../src/launch.js` — a SOURCE path.
- * The cells were briefly in the manager's grant smoke importing `@cotal-ai/connector-core`, which
- * resolves to `dist/`: a mutation to the source then never reached the running code, and the suite
- * stayed green while the defence was gone. Same-package source imports keep mutation results honest
- * without depending on anyone remembering to build first.
+ * WHY IT IS AN ISOLATION PROPERTY, not naming hygiene. The publish grant is minted FROM this value,
+ * so two principals that share a channel share one grant on one subject: a per-agent event stream
+ * silently fused. Keyed on the name that happened for real — `assertValidName` deliberately permits
+ * internal spaces and dots ("human display names like 'Ada Lovelace'"), so `Alice Bob`, `Alice.Bob`,
+ * `alice bob` and `alice-bob` all collapsed to `events.alice-bob`, and case-folding collapsed
+ * `Alice` onto `alice` besides: 8 valid distinct names measured onto 3 channels. Neither
+ * de-duplication path caught it — foreground `uniqueMeshName` and the manager's funnel both compare
+ * exact roster NAMES, never resolved channels. Found by fmae-rev-sec, reachability confirmed by
+ * fmae-rev-eng.
  *
- * WHY IT IS AN ISOLATION PROPERTY, not naming hygiene. `assertValidName` DELIBERATELY permits
- * internal spaces and dots ("human display names like 'Ada Lovelace'"), and the publish grant is
- * minted from `eventChannel(name)` — so two distinct principals whose names sanitise alike received
- * the SAME grant on the SAME subject. Neither de-duplication path catches it: foreground and manager
- * both compare exact roster names, never resolved channels. Found by fmae-rev-sec; reachability
- * confirmed by fmae-rev-eng and measured here.
+ * WHAT CHANGED, AND WHY THE SUITE LOOKS SMALLER. The name-keyed version answered the fusion with a
+ * sanitiser plus a truncated SHA-256 digest, and could therefore only ever claim COLLISION-
+ * RESISTANCE. That defence shipped two constructible collisions of its own — a name that looked like
+ * a hashed image (`"Worker"` and the valid name `"worker-a67b04cd5c491d4d"` mapped to one channel),
+ * and unpaired surrogates fusing under UTF-8 encoding — and most of the old cells existed to guard
+ * the guard. Keyed on the principal there is no lossy transform left to defend: `owner` and `actor`
+ * are `[A-Za-z0-9_]+` and FAIL LOUD rather than being rewritten. So the claim gets stronger and the
+ * cells get fewer, which is the right direction only if the stronger claim is actually proven —
+ * hence the ROUND-TRIP cell below rather than another no-collision-over-a-chosen-set cell.
  *
- * THE FIRST FIX WAS ITSELF BROKEN, AND THE CELLS BELOW ARE WHY IT SURVIVED A ROUND. Hashing only
- * when the sanitiser would alter the name left the hashed image set reachable from the unhashed side:
- * `"Worker"` mapped to `events.worker-a67b04cd5c491d4d`, and the distinct, perfectly valid, already-
- * safe name `"worker-a67b04cd5c491d4d"` mapped to the SAME channel. Deterministic and constructible
- * by anyone who can read the algorithm — not the 2^-64 event the old header called its residual.
+ * INJECTIVE IS CLAIMED HERE, AND THE OLD HEADER REFUSED TO CLAIM IT. The difference is that a left
+ * inverse is exhibited: `parsePrincipalKey` recovers the exact (owner, actor) from the channel for
+ * every probe. A function with a left inverse is injective over its whole domain — that is a proof,
+ * where "these 10 inputs did not collide" was only evidence. If a future scheme reintroduces a lossy
+ * step, the round-trip breaks even when no two probes happen to collide.
  *
- * The cells missed it because every one of them fed a name from a set I had chosen for how it FUSES.
- * None fed the function's own OUTPUT back in. That is the standing question — *what real input state
- * does no fixture here build?* — and the answer was the one state the mapping generates itself. The
- * closure probe below is now mechanical over the whole corpus, so a future scheme cannot reintroduce
- * the overlap and stay green. Found by fmae-rev-test; confirmed independently by fmae-rev-eng and
- * fmae-rev-wal, which is why it is the discriminator rather than the fusing set.
+ * WHAT THIS SUITE DOES NOT PROVE: every cell builds its inputs by hand, so a killed mutation shows
+ * the cells depend on this code — NOT that a real entry point reaches it with a real principal. The
+ * grant paths (`manager.ts` spawn + resume, `foregroundAllowPublish`) are graded where they mint,
+ * not here.
  *
  * Run: pnpm smoke:event-channel
  */
-// core by SOURCE path. `eventChannel` reaches this same rule through `@cotal-ai/core`, i.e. that
-// package's `dist/` — so without a source-side reference here there is nothing to compare the
-// executed rule against, and a deleted refusal stays green. See the staleness cell below.
-import { assertValidName as ruleFromSource } from "../../../packages/core/src/resolve.js";
+// core by SOURCE path — the rule this suite compares against. `eventChannel` reaches the same rule
+// through `@cotal-ai/core`, i.e. that package's `dist/`, so without a source-side reference there is
+// nothing to compare the executed rule against and a deleted refusal stays green. See the staleness
+// cell below.
+import { assertValidOwnerToken as ruleFromSource, parsePrincipalKey } from "../../../packages/core/src/subjects.js";
 
 /**
  * `../src/launch.js` is loaded DYNAMICALLY so a missing `@cotal-ai/core` build fails LEGIBLY.
  *
- * This suite used to be standalone: `launch.ts` imported core with `import type`, which is erased,
- * so nothing here needed a build. Adding the shared name rule made that a RUNTIME import, and on a
- * clean checkout `pnpm smoke:event-channel` then died mid-import with a bare
- * `ERR_MODULE_NOT_FOUND .../packages/core/dist/index.js` — a stack trace about a missing file,
- * for a suite documented as needing no build step. Reported by fmae-rev-test and fmae-rev-eng.
- *
- * A static import cannot be caught by the module that declares it, so the load is deferred and the
- * failure is named. The prerequisite is real and is stated rather than hidden; what is fixed is
- * that it now says which build is missing instead of leaving the reader to infer it.
+ * `eventChannel` calls core's `principalKey` at RUNTIME, so this suite needs core's `dist/`. A static
+ * import cannot be caught by the module that declares it, so the load is deferred and the failure is
+ * named instead of surfacing as a bare `ERR_MODULE_NOT_FOUND` for a suite documented as needing no
+ * build step. Reported by fmae-rev-test and fmae-rev-eng against the previous runtime dependency.
  */
-let eventChannel: (name: string) => string;
+type Principal = { owner: string; actor: string };
+let eventChannel: (p: Principal) => string;
+let eventChannelForSession: (ep: { principal: Principal; actorIsEphemeral: boolean }) => string;
 try {
-  ({ eventChannel } = await import("../src/launch.js"));
+  ({ eventChannel, eventChannelForSession } = await import("../src/launch.js"));
 } catch (e) {
   console.log(
     "  x FAIL: @cotal-ai/core must be built before this suite runs.\n" +
-      "          `eventChannel` reuses core's `assertValidName` at RUNTIME, so this suite needs\n" +
+      "          `eventChannel` reuses core's `principalKey` at RUNTIME, so this suite needs\n" +
       "          core's dist/. Run `pnpm --filter @cotal-ai/core build` (or `pnpm build`) first.\n" +
       `          underlying: ${(e as Error).message}`,
   );
@@ -69,149 +73,172 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 /**
  * `eventChannel`, but a throw becomes a SENTINEL rather than a dead module.
  *
- * Without this, an over-broad refusal in the mapping kills this file at the first corpus name and
- * the run reports "something died at 'Alice Bob'" — not which property broke. A mutation that
- * refuses every name was caught that way, and the kill was real but illegible: the control cells
- * written to detect exactly that mutation never executed. A suite that crashes instead of failing
- * named cells reports that something died, not what.
+ * Without this, an over-broad refusal kills the file at the first probe and the run reports "something
+ * died at {local, worker}" — not which property broke. A mutation that refuses every principal was
+ * caught that way on the previous suite, and the kill was real but illegible: the control cells
+ * written to detect exactly that mutation never executed.
  */
-const ch = (name: string): string => {
-  try { return eventChannel(name); } catch (e) { return `THREW: ${(e as Error).message}`; }
+const ch = (p: Principal): string => {
+  try { return eventChannel(p); } catch (e) { return `THREW: ${(e as Error).message}`; }
 };
 
-// The set the OLD sanitiser fused: separators that collapse to `-`, and case that folds.
-const FUSING = ["Alice Bob", "Alice.Bob", "alice bob", "alice-bob", "ALICE_BOB", "a.b", "a b", "a-b", "worker", "Worker"];
-const seen = new Map<string, string>();
+// ── THE ISOLATION PROPERTY, over the principals the old key would have FUSED ──────────────────
+//    Every pair below shares a display name, a case-folding, or a separator-collapse with another —
+//    the exact inputs that produced 3 channels from 8 names. As principals they are distinct, so
+//    their channels must be distinct.
+const PRINCIPALS: Principal[] = [
+  { owner: "local", actor: "worker" },
+  { owner: "local", actor: "Worker" },            // case: fused onto `worker` under the old key
+  { owner: "u_alice", actor: "worker" },          // same name, DIFFERENT owner — the fused-grant case
+  { owner: "u_bob", actor: "worker" },
+  { owner: "local", actor: "alice_bob" },
+  { owner: "local", actor: "ALICE_BOB" },
+  { owner: "local", actor: "a" },
+  { owner: "local", actor: "UCH5XZMUPEWFSIDHA3LMXEQ5UOUBGBKTYBPQRVEC72WJ2M3ZYTQNKIKR" }, // a real nkey actor
+];
+const seen = new Map<string, Principal>();
 let collision = "";
-for (const n of FUSING) {
-  const chan = ch(n);
-  if (seen.has(chan)) collision = `${JSON.stringify(seen.get(chan))} and ${JSON.stringify(n)} both -> ${chan}`;
-  seen.set(chan, n);
+for (const p of PRINCIPALS) {
+  const chan = ch(p);
+  const prior = seen.get(chan);
+  if (prior) collision = `${JSON.stringify(prior)} and ${JSON.stringify(p)} both -> ${chan}`;
+  seen.set(chan, p);
 }
-// Named for what it PROVES. NOT "injective": a truncated digest is collision-RESISTANT, and a cell
-// called injective while testing ten inputs would be the overclaim this fix exists to remove.
-c("no two names from the known-fusing set share a channel", collision === "", collision);
-c(`the ${FUSING.length} fusing names map to ${FUSING.length} distinct channels`, seen.size === FUSING.length, seen.size);
+c("no two distinct principals share a channel", collision === "", collision);
+c(`the ${PRINCIPALS.length} probe principals map to ${PRINCIPALS.length} distinct channels`,
+  seen.size === PRINCIPALS.length, seen.size);
 
-// Already-safe names must map UNCHANGED, so nothing working today moves.
-c("an already-safe name is untouched", ch("worker") === "events.worker" && ch("alice-bob") === "events.alice-bob",
-  [ch("worker"), ch("alice-bob")]);
-// And the disambiguating suffix appears ONLY when the sanitiser would alter the name.
-c("a name the sanitiser would alter gains a suffix; one it would not, does not",
-  ch("Alice Bob") !== "events.alice-bob" && !ch("worker").includes("-"),
-  [ch("Alice Bob"), ch("worker")]);
+// THE REGRESSION CELL, pinned by literal so it cannot drift with the corpus above: one display name,
+// two owners, two channels. Under the old key these were ONE channel and therefore one publish
+// grant — the reported defect, stated as the thing that must never come back.
+c('two owners\' agents both named "worker" get DIFFERENT channels',
+  ch({ owner: "u_alice", actor: "worker" }) !== ch({ owner: "u_bob", actor: "worker" }),
+  [ch({ owner: "u_alice", actor: "worker" }), ch({ owner: "u_bob", actor: "worker" })]);
 
-// ── THE CLOSURE PROBE: the function's own output, fed back in as a name. ──────────────────────
-//    Every cell above draws from a set chosen for how it FUSES. This one draws from the mapping
-//    itself, which is the state no hand-picked fixture builds — and it is where the first fix broke.
-const name = (ch: string) => ch.slice("events.".length);
-
-// The exact reported case, pinned by literal so it can never drift with the corpus.
-c("the reported case: \"Worker\" and the valid name \"worker-a67b04cd5c491d4d\" are DIFFERENT channels",
-  ch("Worker") !== ch("worker-a67b04cd5c491d4d"),
-  [ch("Worker"), ch("worker-a67b04cd5c491d4d")]);
-
-// Generalised over the whole corpus: no image may be a fixed point, because an image is always a
-// valid name (`assertValidName` permits `[a-z0-9_-]`) and so is always something a principal can ask
-// to be called. One round is enough — a second round is the same question about a name in the image
-// set, which the disjointness cell below settles for all of them at once.
-const CORPUS = [...FUSING, "My Agent", "fm-agui", "a", "Ada Lovelace", "x_y", "A-B", "worker-a67b04cd5c491d4d"];
-let fixedPoint = "";
-for (const n of CORPUS) {
-  const chan = ch(n);
-  if (ch(name(chan)) === chan && name(chan) !== n) fixedPoint = `${JSON.stringify(n)} -> ${chan} <- ${JSON.stringify(name(chan))}`;
+// ── INJECTIVE, BY EXHIBITING THE LEFT INVERSE ────────────────────────────────────────────────
+//    This is the cell that upgrades "no collisions among probes" to a property of the whole domain:
+//    if (owner, actor) is recoverable from the channel, no two inputs can share an output. It also
+//    fails loudly for any future scheme that reintroduces case-folding or separator collapse, even
+//    on a probe set that happens not to collide.
+let lost = "";
+for (const p of PRINCIPALS) {
+  const chan = ch(p);
+  const back = parsePrincipalKey(chan.slice("events.".length));
+  if (!back || back.owner !== p.owner || back.actor !== p.actor)
+    lost = `${JSON.stringify(p)} -> ${chan} -> ${JSON.stringify(back)}`;
 }
-c("no channel is reachable from BOTH its own preimage and its own name (image/preimage overlap)",
-  fixedPoint === "", fixedPoint);
+c("the principal is RECOVERABLE from the channel (a left inverse ⇒ injective, not merely unfused)",
+  lost === "", lost);
 
-// The property that makes the above hold for every name rather than these: the two namespaces are
-// DISJOINT BY SHAPE. A hashed channel always ends in `-<16 hex>`; an unhashed one never does. Stated
-// as its own cell so a scheme that passed the probe by accident still has to satisfy the reason.
-const HASHED = /-[0-9a-f]{16}$/;
-let mixed = "";
-for (const n of CORPUS) {
-  const chan = ch(n);
-  const wasHashed = chan !== `events.${n.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
-  if (wasHashed !== HASHED.test(chan)) mixed = `${JSON.stringify(n)} -> ${chan} (hashed=${wasHashed}, shape=${HASHED.test(chan)})`;
+// ── THE IMAGE CANNOT RE-ENTER THE INPUT DOMAIN ───────────────────────────────────────────────
+//    The founding lesson of this suite: feed the function's own OUTPUT back into its fixtures. The
+//    previous scheme broke exactly there — its image set was reachable from the unhashed side. Here
+//    the whole class is structurally gone: an image's tail contains a `.`, and a `.` is not a legal
+//    actor, so no principal can name a channel this function already produced. Asserted rather than
+//    argued, because "the grammar makes it impossible" is the kind of claim that survives the change
+//    that makes it false.
+let reentered = "";
+for (const p of PRINCIPALS) {
+  const tail = ch(p).slice("events.".length);           // `<owner>.<actor>` — a produced image
+  if (!ch({ owner: p.owner, actor: tail }).startsWith("THREW:")) reentered = `${tail} was accepted as an actor`;
 }
-c("hashed and unhashed channels are distinguishable by shape, so neither can land in the other's set",
-  mixed === "", mixed);
+c("a produced channel's own key is REFUSED as an actor, so image and preimage cannot overlap",
+  reentered === "", reentered);
 
-// And the corpus as a whole still separates — the fusing-set cell, widened to include the images.
-const all = new Map<string, string>();
-let dup = "";
-for (const n of [...CORPUS, ...CORPUS.map((n) => name(ch(n)))]) {
-  const chan = ch(n);
-  if (all.has(chan) && all.get(chan) !== n) dup = `${JSON.stringify(all.get(chan))} and ${JSON.stringify(n)} both -> ${chan}`;
-  all.set(chan, n);
+// ── REFUSALS: each names WHICH rule fired, each with the inverse control ──────────────────────
+//    A cell that only checks "something threw" passes when the throw comes from an unrelated rule,
+//    which is how a guard gets credited for work it did not do. And a mapping broken so that it
+//    refuses EVERYTHING satisfies every refusal cell here — only the acceptance controls separate a
+//    guard that refuses because it is correct from one that refuses because it is broken.
+const refuses = (label: string, p: Principal, mustMention: RegExp) => {
+  let err: unknown;
+  try { eventChannel(p); } catch (e) { err = e; }
+  c(label, err instanceof Error && mustMention.test(err.message), err instanceof Error ? err.message : err);
+};
+
+const TOKEN_RULE = /invalid owner\/actor token/;
+// THE FALLBACK THAT MUST NOT EXIST. A display name in the actor slot is the exact shape a caller
+// would pass if it reverted to name-keying, and every property above depends on it being refused
+// rather than sanitised into something channel-safe.
+refuses("a display name with a SPACE is refused as an actor, naming the token rule",
+  { owner: "local", actor: "Ada Lovelace" }, TOKEN_RULE);
+refuses("a display name with a DOT is refused (it would forge an extra channel segment)",
+  { owner: "local", actor: "Alice.Bob" }, TOKEN_RULE);
+refuses("a `-` is refused in an actor (reserved as the principal name-form separator)",
+  { owner: "local", actor: "alice-bob" }, TOKEN_RULE);
+refuses("an empty actor is refused", { owner: "local", actor: "" }, TOKEN_RULE);
+refuses("an empty owner is refused", { owner: "", actor: "worker" }, TOKEN_RULE);
+refuses("a wildcard owner is refused (a grant must name one principal, never a subtree)",
+  { owner: "*", actor: "worker" }, TOKEN_RULE);
+// The JS/JSON boundary: `RegExp.test` coerces, so a number reaching an unguarded check stringifies,
+// matches, and is returned UN-coerced. Core guards it; this asserts the guard is on THIS path too.
+refuses("a non-string actor is refused rather than coerced",
+  { owner: "local", actor: 123 as unknown as string }, TOKEN_RULE);
+
+// THE CONTROLS — the inverse of the predicate under test.
+c("a well-formed principal is ACCEPTED and mapped", ch({ owner: "local", actor: "worker" }) === "events.local.worker",
+  ch({ owner: "local", actor: "worker" }));
+c("an underscore is legal in both halves (the token grammar allows it; only `-` and `.` do not)",
+  ch({ owner: "u_alice", actor: "code_reviewer" }) === "events.u_alice.code_reviewer",
+  ch({ owner: "u_alice", actor: "code_reviewer" }));
+
+// ── THE EPHEMERAL-ACTOR REFUSAL, and why it is not a formality ────────────────────────────────
+//    An endpoint with no declared id and no creds SELF-MINTS a random actor per process, which is a
+//    perfectly well-formed token — so the token rules above CANNOT catch it, and `eventChannel`
+//    would happily map it. The channel would simply differ on every restart and match no grant. The
+//    refusal therefore lives at the session surface, and this is the cell that stops "just fall back
+//    to the display name for that one mode" from ever being the repair.
+{
+  const EPHEMERAL = { principal: { owner: "local", actor: "e3b0c44298fc1c149afbf4c8996fb924" }, actorIsEphemeral: true };
+  let err: unknown;
+  try { eventChannelForSession(EPHEMERAL); } catch (e) { err = e; }
+  c("a session with a SELF-MINTED actor is refused, naming the missing identity",
+    err instanceof Error && /self-minted identity/.test(err.message), err instanceof Error ? err.message : err);
+  // The control is the same principal with the flag cleared: the refusal must come from the
+  // EPHEMERAL VERDICT, not from anything about the token — a guard that refused this principal
+  // either way would pass the cell above while breaking every real session.
+  c("CONTROL: the identical principal with a stable actor is ACCEPTED",
+    eventChannelForSession({ ...EPHEMERAL, actorIsEphemeral: false }) === `events.local.${EPHEMERAL.principal.actor}`,
+    eventChannelForSession({ ...EPHEMERAL, actorIsEphemeral: false }));
+  // And the stable path must agree with `eventChannel` rather than deriving its own channel — two
+  // derivations of one value is the drift this whole design refuses.
+  c("the session surface derives the SAME channel as the grant surface",
+    eventChannelForSession({ ...EPHEMERAL, actorIsEphemeral: false }) === ch(EPHEMERAL.principal));
+  // An ephemeral session must be refused BEFORE any token validation, so the refusal is legible for
+  // the mode rather than blaming the id. Asserted with an actor that would ALSO fail the token rule:
+  // if the order flipped, the message would name the token and this cell would catch it.
+  let both: unknown;
+  try { eventChannelForSession({ principal: { owner: "local", actor: "not a token" }, actorIsEphemeral: true }); }
+  catch (e) { both = e; }
+  c("the ephemeral refusal fires BEFORE token validation, so the message names the mode",
+    both instanceof Error && /self-minted identity/.test(both.message), both instanceof Error ? both.message : both);
 }
-c("the corpus AND its images together produce no shared channel", dup === "", dup);
 
-// ── STALENESS: the rule this suite EXECUTES must be the rule in core's SOURCE ────────────────
-//    `eventChannel` imports `assertValidName` from `@cotal-ai/core`, which resolves to that
-//    package's `dist/`. So every refusal cell below is graded against BUILT bytes, and a mutation
-//    to `packages/core/src/resolve.ts` left them all green — the defense could be deleted at the
-//    source and this file would not notice. Found by fmae-rev-test; confirmed by eng and wal.
-//
-//    The refusal cells cannot be made to execute core's source without duplicating the rule, which
-//    is the drift this design refuses everywhere else. So instead the DISAGREEMENT is made loud:
-//    compare the source rule against the rule actually invoked, and fail with a legible message
-//    rather than a green run over stale bytes.
+// ── STALENESS: the rule this suite EXECUTES must be the rule in core's SOURCE ─────────────────
+//    `eventChannel` imports `principalKey` from `@cotal-ai/core`, which resolves to that package's
+//    `dist/`. So every refusal cell above is graded against BUILT bytes, and a mutation to
+//    `packages/core/src/subjects.ts` would leave them all green — the defence could be deleted at the
+//    source and this file would not notice. The refusal cells cannot execute core's source without
+//    duplicating the rule, which is the drift this design refuses everywhere else, so instead the
+//    DISAGREEMENT is made loud. Found by fmae-rev-test on the previous suite; kept because the
+//    resolution hazard did not change when the rule did.
 {
   const verdict = (f: (n: string) => unknown, n: string): boolean => {
     try { f(n); return true; } catch { return false; }
   };
-  // EVERY rule the shared validator enforces, not just the surrogate one. The first version probed
-  // surrogates and well-formed names only, so it was a surrogate-rule staleness sentinel while its
-  // name claimed whole-rule agreement — deleting core's EMPTY-NAME refusal left it green. Found by
-  // fmae-rev-test. A cell's probe set is part of its claim, and this one's name outran it.
+  // EVERY rule the shared validator enforces, not just one. A cell's probe set is part of its claim:
+  // the previous version probed one rule while its name claimed whole-rule agreement, so deleting
+  // core's empty-token refusal left it green.
   const probes = [
-    "\uD800", "\uDC00", "A\uD800", "\uD800A", "\uDC00\uD800",      // unpaired surrogates
-    "", " ada ", "ada\nlovelace", "owner/name", "a\\b",             // empty / whitespace / newline / reserved
-    "agent \uD83D\uDE00", "\uFFFD", "worker", "Ada Lovelace",      // must be ACCEPTED
+    "", "a b", "a.b", "a-b", "*", ">", "a/b", "a\\b", "Ada Lovelace",   // must be REFUSED
+    "worker", "Worker", "u_alice", "a", "A1_2",                          // must be ACCEPTED
   ];
-  const disagreed = probes.filter((n) => verdict(ruleFromSource, n) !== verdict((x) => eventChannel(x), n));
+  const disagreed = probes.filter((n) =>
+    verdict(ruleFromSource, n) !== verdict((x) => eventChannel({ owner: "local", actor: x }), n));
   c("the rule `eventChannel` EXECUTES agrees with core's SOURCE rule (else core's dist is stale)",
     disagreed.length === 0,
     disagreed.length ? `disagree on ${JSON.stringify(disagreed)} — rebuild @cotal-ai/core; this suite grades its dist/` : undefined);
 }
-
-// ── UNPAIRED SURROGATES: the precondition the disjointness argument left implicit ─────────────
-//    The argument above assumes distinct names give distinct hash INPUTS. They do not.
-//    `createHash().update(string)` encodes UTF-8, which replaces every unpaired surrogate with
-//    U+FFFD, so three distinct valid names hashed to ONE digest and shared one channel — and with
-//    it one publish grant and one event stream. Found by fmae-rev-test, with a broker-backed repro
-//    showing two principals' frames arriving on the same channel; confirmed by eng and wal.
-//
-//    The corpus above could not have caught it: every string in it is well-formed. That is the
-//    standing question again — *what real input state does no fixture here build?* — and the answer
-//    was a whole class of strings I had not considered inputs at all.
-const refuses = (label: string, name: string, mustMention: RegExp) => {
-  let err: unknown;
-  try { eventChannel(name); } catch (e) { err = e; }
-  // Assert WHICH refusal fired. A cell that only checks "something threw" passes when the throw
-  // comes from an unrelated rule, which is how a guard gets credited for work it did not do.
-  c(label, err instanceof Error && mustMention.test(err.message), err instanceof Error ? err.message : err);
-};
-
-refuses("a lone HIGH surrogate is refused, naming the surrogate rule", "\uD800", /unpaired UTF-16 surrogate/);
-refuses("a lone LOW surrogate is refused", "\uDC00", /unpaired UTF-16 surrogate/);
-refuses("a high surrogate at end-of-string is refused (charCodeAt past the end is NaN)", "A\uD800", /unpaired UTF-16 surrogate/);
-refuses("a high surrogate followed by a non-surrogate is refused", "\uD800A", /unpaired UTF-16 surrogate/);
-
-// THE CONTROL, and it is the cell that stops the fix being worse than the defect: a WELL-FORMED
-// surrogate pair is a legitimate name — emoji and every astral character are encoded that way — and
-// must still map. A fix that refused all surrogates would pass every cell above while breaking
-// real names, which is precisely the "refuses because it is broken" failure a control exists to
-// separate from "refuses because it is correct".
-const emoji = "agent \uD83D\uDE00";           // U+1F600, a properly paired surrogate
-const emojiCh = ch(emoji);
-c("a WELL-FORMED surrogate pair (emoji) is still accepted and mapped", emojiCh.startsWith("events."), emojiCh);
-c("U+FFFD itself is a well-formed name and is still accepted", ch("\uFFFD").startsWith("events."), ch("\uFFFD"));
-// And the two must not be confused with each other: the replacement character is a real character,
-// not a marker for "something was rejected here".
-c("a name containing U+FFFD and a name containing an astral char are different channels",
-  ch("\uFFFD") !== emojiCh, [ch("\uFFFD"), emojiCh]);
 
 console.log(`event-channel smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

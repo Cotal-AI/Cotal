@@ -105,7 +105,7 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
 export const opencodeConnector: Connector = {
   kind: "connector",
   name: "opencode",
-  eventChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  eventChannel, // the shared `events.<owner>.<actor>` mapping (connector-core), via the contract
   requires: ["opencode"],
   supportsModelVariant: true,
   listModels: listOpenCodeModels,

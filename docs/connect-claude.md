@@ -220,7 +220,7 @@ with the adapter:
 
 ## Transcript mirror
 
-A managed session mirrors its own transcript onto a per-agent channel, **`events.<name>`**, so
+A managed session mirrors its own transcript onto a per-agent channel, **`events.<owner>.<actor>`**, so
 peers and cheap observer agents can read what the agent *actually* did: assistant text in
 full, tool calls as one-liners, results truncated, thinking omitted. Gated by
 `COTAL_EVENTS`, which is **off by default** — the manager sets it for a managed session only
@@ -228,6 +228,14 @@ when event publishing is enabled for that spawn (`COTAL_EVENTS_DEFAULT`, also of
 `--events`). A personal session with the plugin never mirrors. An `events.` channel is a regular channel (durable, listed by `cotal_channels`,
 readable on demand) with a rolling window, so long sessions age out early entries. In
 auth mode the launcher provisions publish rights for it alongside the agent's channels.
+
+The channel is keyed on the agent's **principal** (its `owner` and `actor`), not on its display
+name: a name is a client-side handle that several distinct agents can share once case and
+separators are folded into a subject token, and the publish grant is minted from this value — so
+name-keyed channels put two agents' events on one subject under one grant. That also means
+`--events` needs an authed mesh: an open-mode session mints no stable identity, so it is refused
+rather than published to a channel that changes on every launch. Find an agent's channel with
+`cotal channels` rather than constructing it from a name.
 
 ## Resume an existing session (fork, never hijack)
 

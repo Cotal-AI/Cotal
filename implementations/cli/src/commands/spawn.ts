@@ -11,6 +11,7 @@ import {
   loadCotalConfig,
   mintCreds,
   newIdentity,
+  DEV_OWNER,
   parseShareSelection,
   principalKey,
   mintLifecycleUid,
@@ -132,18 +133,34 @@ function personaItems(argv: string[]) {
  * Sourced from `connector.eventChannel`, never a hardcoded prefix, so foreground and manager cannot
  * drift. `events` is a tri-state and foreground treats absent as off, hence `=== true`.
  *
- * Throws when events are requested of a connector that cannot emit; the caller renders that.
+ * TAKES THE MINTED PRINCIPAL, and `undefined` MEANS THERE ISN'T ONE. The channel keys on
+ * (owner, actor), so this can only run after the mode's identity exists — which is why the call
+ * moved out of the flag-parsing block and into each provisioning branch. OPEN MODE MINTS NO
+ * IDENTITY: the spawned endpoint self-assigns a random actor per process, so its channel would
+ * differ on every launch and no grant could ever name it. That mode REFUSES `--events` rather than
+ * falling back to the display name — the fallback would put the fused-channel defect on the one
+ * path with no credential to grade it against.
+ *
+ * Throws when events are requested of a connector that cannot emit, or of a mode with no stable
+ * identity; the caller renders both.
  */
 export function foregroundAllowPublish(
   base: string[] | undefined,
   events: boolean | undefined,
   connector: Pick<Connector, "name" | "eventChannel">,
-  name: string,
+  principal: { owner: string; actor: string } | undefined,
 ): string[] | undefined {
   if (events !== true) return base;
   if (!connector.eventChannel)
     throw new Error(`${connector.name} connector does not support event publishing (--events)`);
-  return [...(base ?? []), connector.eventChannel(name)];
+  if (!principal)
+    throw new Error(
+      "--events needs an authed mesh: an open-mode session mints no stable identity, and the event " +
+        "channel is keyed on the agent's (owner, actor) principal - a channel derived from a " +
+        "per-process random actor could never match a grant. Run `cotal up --auth` (or --user-auth) " +
+        "for this space, or spawn without --events.",
+    );
+  return [...(base ?? []), connector.eventChannel(principal)];
 }
 
 /** Persona selection precedence shared by foreground and detached spawn. */
@@ -453,19 +470,25 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
   const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
-  try {
-    allowPublish = foregroundAllowPublish(allowPublish, events, connector, name);
-  } catch (e) {
+  // THE EVENT GRANT IS NOT APPENDED HERE, and it used to be. It keys on the agent's (owner, actor)
+  // principal, which none of the three modes has minted yet at this point — so each branch below
+  // appends it once its own identity exists, through the one shared `foregroundAllowPublish`, and
+  // open mode (which mints none) refuses. Deriving it here meant deriving it from the display name,
+  // which is what fused distinct principals onto one channel and one publish grant.
+  const failEvents = (e: unknown): never => {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
-  }
+  };
 
   if (target.mode === "user") {
     // USER mesh: the agent runs as a ledger-granted (owner, actor) principal under the LOGGED-IN
     // operator's owner — never a static identity (U10). Provisioning + grant + a one-shot bearer
     // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
     // dead auth plane.
-    ({ userAuth, cleanup: userCleanup } = await provisionUserForeground(target, name, ref, {
+    // The event grant is appended INSIDE, where the owner half of the principal is resolved (the
+    // actor is the agent's alias). It comes back out so the grant the provider mints and the
+    // COTAL_ALLOW_PUBLISH the child launches with are one list, not two derivations of one.
+    ({ userAuth, cleanup: userCleanup, allowPublish } = await provisionUserForeground(target, name, ref, {
       subscribe,
       allowSubscribe,
       allowPublish,
@@ -473,9 +496,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       capabilities: def.capabilities,
       lifecycleUid,
       liveOnly: values["live-only"] as boolean | undefined,
+      events,
+      connector,
     }));
   } else if (auth) {
     const identity = newIdentity();
+    // Static auth: the principal is the dev owner plus the freshly-minted nkey — minted on the line
+    // above, so the derivation has a stable id to key on. Appended BEFORE provisionAgent, which is
+    // what mints it into the credential.
+    try {
+      allowPublish = foregroundAllowPublish(allowPublish, events, connector, { owner: DEV_OWNER, actor: identity.id });
+    } catch (e) {
+      failEvents(e);
+    }
     const prov = new CotalEndpoint({
       space,
       servers: server,
@@ -513,6 +546,16 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     await materializeSecretToFile(secrets, agentCredsKey(name), credsPath);
     id = identity.id;
     provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
+  } else {
+    // OPEN MODE: no auth, no minted identity — the launched endpoint self-assigns its actor. Passing
+    // `undefined` is not a formality: it is the branch that REFUSES `--events`, loudly, at the CLI,
+    // before anything launches. Nothing is appended when events are off, so an open-mode spawn
+    // without the flag is untouched.
+    try {
+      allowPublish = foregroundAllowPublish(allowPublish, events, connector, undefined);
+    } catch (e) {
+      failEvents(e);
+    }
   }
 
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
@@ -643,8 +686,12 @@ async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean },
-): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void> }> {
+  opts: {
+    subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string;
+    capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean;
+    events?: boolean; connector: Pick<Connector, "name" | "eventChannel">;
+  },
+): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; allowPublish?: string[] }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
   const store = workspaceSecretStore(target.root);
@@ -657,6 +704,16 @@ async function provisionUserForeground(
   try {
     provider = resolveAuthProvider();
     owner = await provider.ownerForLogin({ store, dir, space });
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+  // THE PRINCIPAL EXISTS ONLY NOW: user mode's actor is the agent's alias, but its owner is the
+  // logged-in operator's, resolved on the line above. So the event grant is derived HERE — after the
+  // identity, never from the name alone — and the appended list is what both the grant below and the
+  // caller's launch env use, so the credential and the child cannot name different channels.
+  let allowPublish: string[] | undefined;
+  try {
+    allowPublish = foregroundAllowPublish(opts.allowPublish, opts.events, opts.connector, { owner, actor: name });
   } catch (e) {
     return fail((e as Error).message);
   }
@@ -677,7 +734,7 @@ async function provisionUserForeground(
       actor: name,
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
       allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe?.length ? opts.subscribe : ["general"]),
-      allowPublish: opts.allowPublish ?? [],
+      allowPublish: allowPublish ?? [],
       role: opts.role,
       parent: `${owner}.cli`,
       label: ref,
@@ -737,6 +794,8 @@ async function provisionUserForeground(
     });
     return {
       userAuth: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
+      // Back to the caller so the launch env carries exactly what the grant above minted.
+      allowPublish,
       // The foreground departure's half of the runtime-grant invariant: the caller runs this when
       // the agent process exits — revoke the row, shred the secret material, and retire the broker
       // footprint the durable provisioning above created (DM/DLV durables + ACL row), the same

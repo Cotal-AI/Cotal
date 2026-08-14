@@ -28,7 +28,7 @@ import {
   fmtFrom,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
-  eventChannel,
+  eventChannelForSession,
   type InboxItem,
 } from "@cotal-ai/connector-core";
 import type { Plugin, Hooks } from "@opencode-ai/plugin";
@@ -99,13 +99,15 @@ export const cotal: Plugin = async () => {
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
-  // Transcript mirror → `tr-<name>`: opt-in via COTAL_EVENTS (the connector's buildLaunch / the
-  // manager set it for managed sessions; a personal opencode never mirrors). EVENT-DRIVEN — fed from
-  // the OpenCode event hook below (message.updated → assistant roles, message.part.updated → parts)
-  // and flushed at session.idle, so it never re-reads the whole session. The manager grants this agent
-  // pub rights on the same `tr-<name>` channel.
+  // Event mirror → `events.<owner>.<actor>`: opt-in via COTAL_EVENTS (the connector's buildLaunch /
+  // the manager set it for managed sessions; a personal opencode never mirrors). EVENT-DRIVEN — fed
+  // from the OpenCode event hook below (message.updated → assistant roles, message.part.updated →
+  // parts) and flushed at session.idle, so it never re-reads the whole session. The manager grants
+  // this agent pub rights on the same channel, derived from the same principal this endpoint
+  // authenticates as rather than from `config.name`; throws when there is no stable identity to key
+  // on (see eventChannelForSession).
   const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")
-    ? createTranscriptMirror(agent, eventChannel(config.name))
+    ? createTranscriptMirror(agent, eventChannelForSession(agent.ep))
     : undefined;
 
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
