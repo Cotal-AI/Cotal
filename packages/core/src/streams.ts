@@ -326,8 +326,17 @@ export function fanoutDurableConfig(
  *  cred holds `STREAM.UPDATE` on exactly these three streams (see provision.ts).
  *
  *  WHAT THE READ-BACK PROVES, AND WHAT IT CANNOT. It proves the SERVER REPORTS the intended config: a
- *  no-op update, a silently clamped value, or a server that answers OK without changing anything is
- *  caught here and throws. It does NOT prove that file-store expiry is in force, and the distinction is
+ *  no-op update, a `max_age` that came back other than intended, or a server that answers OK without
+ *  changing anything is caught here and throws.
+ *
+ *  Say the guarantee at its exact width, because a previous phrasing ("the server reports the intended
+ *  config") claimed more than the code checks: what is verified is **`max_age` EXACTLY, and a
+ *  `duplicate_window` that does not violate the NATS constraint** — not the window we asked for. The
+ *  update sends `dupNs`, but the read-back only rejects a window ABOVE `max_age`; a server that
+ *  omitted it, zeroed it, or clamped it to some other smaller value passes. That is deliberate: any
+ *  window `<= max_age` is legal and harmless for a liveness bucket, and demanding exact equality would
+ *  turn a legitimate server-side clamp into a failed `cotal up`. The looser check is right; the
+ *  stronger sentence was not. It does NOT prove that file-store expiry is in force, and the distinction is
  *  not theoretical — on the supported floor (nats-server 2.12.1) the effect is applied in two places and
  *  only one of them is visible to us:
  *    - `stream.go` assigns the new in-memory `mset.cfg`, then calls `mset.store.UpdateConfig(cfg)` and
