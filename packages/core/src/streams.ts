@@ -335,17 +335,42 @@ export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: stri
   const after = await jsm.streams.info(streamName);
   if (after.config.max_age !== wantNs)
     throw new Error(`TTL reconcile failed for ${streamName}: max_age is ${after.config.max_age}ns, expected ${wantNs}ns (the STREAM.UPDATE did not take)`);
+  // Both fields are read back, not just the one we came for. On a CONFORMING server this cannot
+  // fail: NATS validates the whole StreamConfig (including `duplicate_window <= max_age`) and then
+  // applies it as ONE replacement — or one Raft stream assignment in cluster mode — so a partial
+  // apply that took `max_age` and dropped the window is not a supported outcome. The check exists
+  // because the read-back's whole purpose is to not depend on the server behaving as documented:
+  // verifying only the field we set would leave the guarantee resting on the same assumption it was
+  // written to remove. (Semantics confirmed at the NATS source rather than reasoned from our seam.)
+  if ((after.config.duplicate_window ?? 0) > wantNs)
+    throw new Error(`TTL reconcile left ${streamName} inconsistent: duplicate_window is ${after.config.duplicate_window}ns, which exceeds max_age ${wantNs}ns (a conforming server rejects this combination, so the update was applied partially)`);
   return { stream: streamName, fromMs: fromNs / 1e6, toMs: wantNs / 1e6 };
 }
 
-/** The TTL'd buckets and their intended `max_age`, in ONE place. Both the create path
- *  (`setupSpaceStreams`) and the upgrade path (`reconcileSpaceTtls`) read this list, so a bucket can
- *  never be TTL'd on one and forgotten on the other. NOT mode-gated: an open mesh carries the same
- *  three buckets and drifts identically. */
+/** The TTL'd buckets and their intended `max_age`, in ONE place — and the ONLY place any of them is
+ *  created.
+ *
+ *  Creation is DRIVEN from this list, not merely checked against it. That distinction is the whole
+ *  point: an earlier version had the reconcile paths read the list while `setupSpaceStreams` still
+ *  named each `kvm.create(..., { ttl })` separately, and claimed in this comment that a bucket could
+ *  therefore "never" be TTL'd on one path and forgotten on the other. It could — a fourth bucket
+ *  added at a create site would have been created with a TTL and never reconciled, which is #286's
+ *  shape exactly, recreated by the fix for it. (Caught in review; the claim was false when written.)
+ *  Now a TTL'd bucket cannot be created without appearing here, so it cannot be missed on upgrade.
+ *
+ *  NOT mode-gated: an open mesh carries the same buckets and drifts identically. */
 function ttlBuckets(space: string): ReadonlyArray<readonly [string, number]> {
   return [
+    // Presence (liveness): dead agents' records must age out, or the roster reports a despawned
+    // agent as live. Pre-created so agents, denied KV stream-create, can open it.
     [presenceBucket(space), PRESENCE_TTL_MS],
+    // Delivery-daemon single-flight lease + readiness: bucket-level TTL so a crashed holder's lease
+    // auto-expires and a fresh daemon can re-acquire. Lease keys only, `delivery`-cred write,
+    // world-readable (the non-gating delivery-health surface).
     [deliveryBucket(space), LEASE_TTL_MS],
+    // Manager singleton lease, same shape as the delivery lease. Pre-created so the long-lived
+    // supervisor can lease-bind OPEN-ONLY (closure (ii), residual 2) — it holds no STREAM.CREATE.
+    // Config matches `managerLeaseRegistry()`'s create-first exactly, so that path stays idempotent.
     [managerBucket(space), MANAGER_LEASE_TTL_MS],
   ] as const;
 }
@@ -397,11 +422,12 @@ export async function setupSpaceStreams(opts: {
   try {
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
-    // The presence + channels KV buckets are streams too — pre-create them so agents (denied
-    // KV stream-create) can open them. Idempotent. Presence is TTL'd (liveness); the channel
-    // registry is durable config, so no TTL.
+    // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
+    // them. Idempotent. The TTL'd ones come from `ttlBuckets` and ONLY from there, so a new one
+    // cannot be created on this path without also being reconciled on the upgrade path; the
+    // channel/members/acl registries below are durable config and carry no TTL.
     const kvm = new Kvm(nc);
-    await kvm.create(presenceBucket(opts.space), { ttl: PRESENCE_TTL_MS });
+    for (const [bucket, ttl] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl });
     await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${channelBucket(opts.space)}`));
     // Durable-membership registry (Plane-3): privileged-write, no TTL (durable config, like the
     // channel registry). Pre-created so the delivery daemon (and open-mode self) can OPEN it; agents
@@ -415,15 +441,6 @@ export async function setupSpaceStreams(opts: {
     // (only the latest record per agent matters) + a `max_bytes` cap (footprint bound). Pre-created so the
     // scoped writer holds no STREAM.CREATE. Idempotent.
     await kvm.create(membershipBucket(opts.space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
-    // Delivery-daemon single-flight lease + readiness bucket: bucket-level TTL (`max_age`) so a crashed
-    // holder's lease auto-expires and a fresh daemon can re-acquire. Holds ONLY lease keys, writable
-    // only by the `delivery` cred, world-readable (the non-gating delivery-health surface). Idempotent.
-    await kvm.create(deliveryBucket(opts.space), { ttl: LEASE_TTL_MS });
-    // Manager singleton-lease bucket (bucket-level TTL, like the delivery lease). PRE-CREATED here so the
-    // long-lived supervisor can lease-bind OPEN-ONLY (closure (ii), residual 2) — it holds no STREAM.CREATE.
-    // Config matches `managerLeaseRegistry()`'s create-first exactly, so that path stays idempotent until
-    // the supervisor profile drops bucket-create. Idempotent.
-    await kvm.create(managerBucket(opts.space), { ttl: MANAGER_LEASE_TTL_MS });
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces (Unit B) — and the up-time seed creates

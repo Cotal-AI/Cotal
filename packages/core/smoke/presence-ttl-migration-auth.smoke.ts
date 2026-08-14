@@ -136,6 +136,22 @@ try {
   check("STREAM.UPDATE accepted but NOT applied => reconcile THROWS (fails closed, no silent drift)", threw !== undefined);
   check("...and the throw names the stream and both max_age values", /KV_lying_broker/.test(threw?.message ?? "") && /did not take/.test(threw?.message ?? ""), threw?.message);
 
+  // The read-back checks BOTH fields, not only the one we set. A conforming server cannot leave
+  // `duplicate_window > max_age` — it validates the whole config and applies it as one replacement —
+  // but the read-back exists precisely so the guarantee does not rest on the server behaving as
+  // documented. Injected, because a real broker will not produce it: update "succeeds", max_age is
+  // right, and the window is left too large.
+  const partialApply = {
+    streams: {
+      info: (() => { let applied = false; return async () => { const c = { config: { max_age: applied ? nanos(PRESENCE_MS) : 0, duplicate_window: nanos(120_000) } }; applied = true; return c; }; })(),
+      update: async () => ({}),
+    },
+  } as unknown as Awaited<ReturnType<typeof jetstreamManager>>;
+  let partialErr: Error | undefined;
+  try { await reconcileBucketTtl(partialApply, "KV_partial_apply", PRESENCE_MS); } catch (e) { partialErr = e as Error; }
+  check("max_age applied but duplicate_window left ABOVE it => reconcile THROWS (partial apply refused)", partialErr !== undefined);
+  check("...and the throw names the window and the max_age it exceeds", /duplicate_window/.test(partialErr?.message ?? "") && /exceeds max_age/.test(partialErr?.message ?? ""), partialErr?.message);
+
   // Positive control for the two cells above: with the SAME injected seam, a broker whose update
   // genuinely takes must NOT throw. Without this, the fail-closed cell could be passing because the
   // seam throws unconditionally (a reconcile that always threw would satisfy it too).
