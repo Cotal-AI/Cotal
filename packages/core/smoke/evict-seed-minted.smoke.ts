@@ -42,7 +42,12 @@
  *
  * MUTATION PROOF — PREDICTED CELLS REGISTERED BEFORE THE MUTATIONS RAN (named, never a count).
  * The re-derivation of this suite is green, but green alone does not show the cells DEPEND on the
- * behaviour they name. Two mutations, each proven non-equivalent by an observable change:
+ * behaviour they name. TWO MUTATIONS WERE ATTEMPTED AND THEIR DISPOSITIONS DIFFER — one is a valid
+ * killed mutation, the other never ran and proved nothing. They are NOT a matched pair and must not
+ * be read as one:
+ *   M1 — VALID AND KILLED. Non-equivalent by an observable change (`kicked` >=1 -> 0).
+ *   M2 — INVALID / NOT PERFORMED. Never loaded, and its registered outcome was unobtainable in
+ *        every case. Non-equivalence was never established because the mutation never executed.
  *   M1 — `evict.ts` target filter neutered (`first.conns.filter(() => false)`), so the CONNZ scan
  *        attributes nothing. Non-equivalent: `kicked` goes >=1 -> 0 and the connections stay live.
  *        PREDICTED RED: A2 (its `kicked >= 1` clause), A3 (no kick lands, so the cid is UNCHANGED
@@ -53,9 +58,18 @@
  *        cid comparison are the clauses carrying that weight, and M1 is what proves it.
  *   M2 — `ledgerAuthorizeConnect` forced to allow. **INVALID / NOT PERFORMED. It proved NOTHING and
  *        must not be read as having validated the inverse control.** It failed twice over:
- *        (a) IT NEVER RAN. From a worktree, `node_modules/@cotal-ai/auth` resolves to the SHARED
- *            checkout, so both the mutation and its unconditional-throw positive control were
- *            unloaded — the throw left the suite green, which is how the deadness was caught.
+ *        (a) IT NEVER RAN. In the M2 artifact worktree (`/home/david/Cotal-wt-wc-smoke`),
+ *            `node_modules/@cotal-ai/auth` resolves to `/home/david/Cotal/implementations/auth` —
+ *            the SHARED checkout — so both the mutation and its unconditional-throw positive
+ *            control were unloaded; the throw left the suite green, which is how the deadness was
+ *            caught. THIS IS NOT A PROPERTY OF WORKTREES IN GENERAL, and saying so was this file's
+ *            own over-claim: measured on the same box at the same time, the review worktree
+ *            `/home/david/Cotal-wt-wc-rev-evict` resolves the SAME package LOCALLY, to
+ *            `/home/david/Cotal-wt-wc-rev-evict/implementations/auth`. Two worktrees, one box,
+ *            opposite resolutions.
+ *            THE REMEDY FOLLOWS FROM THAT, and it is the portable part: you cannot infer this from
+ *            "am I in a worktree". Before grading ANY cross-package mutation, RESOLVE THE MODULE
+ *            PATH AND PLANT A POSITIVE CONTROL — or rebuild and prove the changed artifact.
  *        (b) EVEN LOADED IT COULD NOT HAVE REDDENED B2. `calloutPermissions` performs a SECOND
  *            fresh `resolveAcl(t)` read (`implementations/auth/src/permissions.ts:55-64`) which
  *            independently refuses the deleted row. So the registered prediction "B2 reddens" was
