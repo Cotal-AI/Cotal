@@ -120,6 +120,21 @@ async function main() {
     !names(userUngranted).includes("cotal_disconnect"), names(userUngranted));
   check("G4 CONTROL: a granted user-mode session does (so G3's arms could differ)",
     names(userGranted).includes("cotal_disconnect"), names(userGranted));
+  // OPEN MODE — the third arm, and the one the design note used to describe wrongly.
+  // With neither `creds` nor `userAuth` there is no credential, no broker ACL and no grant system at
+  // all, so the gate admits the verbs WITHOUT `capabilities: [connection]`. That is deliberate:
+  // there is no grant to withhold, and the verbs re-present nothing and re-point nothing — an
+  // open-mode session disconnecting itself closes a socket that was never fenced in the first place.
+  // It is measured here rather than left as a reading, because DESIGN §5 asserted the opposite
+  // ("an agent without capabilities: [connection] sees none of these verbs") as an unqualified rule,
+  // and an unqualified rule with an unstated exception is how a grant story stops being true.
+  const openUngranted = { ...mk("open-ungranted", "worker"), capabilities: [] as string[] };
+  check("G5 an OPEN-MODE session with NO grant DOES see the verbs — the carve-out is real and deliberate",
+    names(openUngranted).includes("cotal_disconnect") && names(openUngranted).includes("cotal_connect"),
+    names(openUngranted));
+  check("G6 CONTROL: the SAME config with `creds` set hides them again (so G5 is open mode, not a broken fixture)",
+    !names({ ...openUngranted, creds: "/nonexistent/agent.creds" }).includes("cotal_disconnect"),
+    names({ ...openUngranted, creds: "/nonexistent/agent.creds" }));
 
   console.log("\n=== C1 CONTROL: a granted, connected agent disconnects itself ===");
   const before = seenBy(B, "subject-a");

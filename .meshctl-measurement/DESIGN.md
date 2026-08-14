@@ -581,7 +581,27 @@ a direct consequence of the split rather than a design flourish.
 Adding a mesh to an agent's reach is deferred, and when re-target returns it must be a separate,
 deliberate human act — never a side effect of granting `connection`.
 
-Default is **no grant**: an agent without `capabilities: [connection]` sees none of these verbs.
+Default is **no grant**: in **auth mode and user mode**, an agent without `capabilities: [connection]`
+sees none of these verbs. **[M — G1/G3, with G2/G4 as inverse controls]**
+
+**CORRECTED — this sentence used to end there, unqualified, and in that form it was FALSE.** There is
+a third mode and it does not behave that way:
+
+> **OPEN MODE (`!creds && !userAuth`) admits the verbs with NO capability at all** **[M — G5, with
+> G6 as its inverse control: the same config with `creds` set hides them again].**
+
+**That carve-out is deliberate, and it is not a hole — but it had to be stated rather than left for a
+reader to discover in the gate.** Open mode has no credential, no broker ACL and no grant system, so
+there is no grant to withhold; the verbs re-present nothing and re-point nothing, and a session
+disconnecting itself there closes a socket that was never fenced. **What was wrong was the document,
+not the gate.** An unqualified rule with an unstated exception is how a grant story stops being true,
+and §5 is the section a human reads to decide what to set up.
+
+**The gate's one genuinely load-bearing term is the `userAuth` one**, and it is worth naming because
+`canSpawn` lacks it: in user mode `creds` is undefined by construction, so a bare `!config.creds`
+test would take the permissive arm and hand the verbs to an ungranted authed session. Spawn survives
+that because the broker denies it at the wire; **a disconnect closes this client's own socket, which
+no broker can police, so this gate is the only gate** — hence G3.
 
 ---
 
