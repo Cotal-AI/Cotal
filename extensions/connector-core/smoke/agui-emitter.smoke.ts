@@ -153,6 +153,23 @@ type Rec = { run: string; msg: string; text: string } | { skip: true };
 
 const mapper = (r: Rec) => ("skip" in r ? null : { runId: r.run, events: turn(r.run, r.msg, r.text) });
 
+/**
+ * Run one fixture block, converting an UNEXPECTED CRASH into a named cell failure.
+ *
+ * A cell that reports is worth something; a suite that dies is worth nothing. When a mutation makes
+ * a read return no records, the very next line indexes into an empty array and the whole run ends
+ * with no summary and no progress marks — the harness then sees a red it cannot attribute, which is
+ * the same shape as a chain reporting zero graded lines. Guarding the CALL is not enough; a crash
+ * anywhere in a block must not silence the other blocks' cells.
+ */
+const block = async (name: string, fn: () => Promise<void>): Promise<void> => {
+  try {
+    await fn();
+  } catch (e) {
+    c(`${name} (block crashed)`, false, String(e));
+  }
+};
+
 const dir = mkdtempSync(join(tmpdir(), "agui-emitter-"));
 
 const fresh = async (name: string, opts?: { subjectMayExist?: boolean }) => {
@@ -177,7 +194,7 @@ const append = (path: string, ...recs: Rec[]) => {
 
 try {
   // ── THE PREFLIGHT RUNS, AND IT RUNS BEFORE ANYTHING PUBLISHES ────────────────────────────────
-  {
+  await block("THE PREFLIGHT RUNS, AND IT RUNS BEFORE ANYTHING PUBLISHES", async () => {
     const { wal, source } = await fresh("preflight-ok");
     const ep = new FakeEndpoint();
     const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
@@ -186,8 +203,8 @@ try {
       err: started.err?.message,
     });
     c("preflight:CONTROL-a-passing-preflight-does-not-block-the-emitter", started.value !== undefined, started.err?.message);
-  }
-  {
+  });
+  await block("THE PREFLIGHT RUNS, AND IT RUNS BEFORE ANYTHING PUBLISHES", async () => {
     const { wal, source } = await fresh("preflight-fails");
     const ep = new FakeEndpoint();
     ep.preflightError = new Error('stream "CHAT_main" reports num_replicas=3; serialized appends require 1.');
@@ -199,13 +216,13 @@ try {
     );
     // The refusal must assert WHICH refusal, and the emitter must not exist afterwards.
     c("preflight:nothing-was-published", ep.publishes.length === 0, ep.publishes);
-  }
+  });
 
   // ── THE ORDERING CELL: RECOVERY'S RE-PUBLISH IS INSIDE THE GUARD, NOT AFTER IT ────────────────
   //
   // A WAL holding a `sent_unacked` frame is the one state where the preflight's placement is
   // OBSERVABLE. With no pending frame, before-recovery and after-recovery are the same program.
-  {
+  await block("THE ORDERING CELL: RECOVERY'S RE-PUBLISH IS INSIDE THE GUARD, NOT AFTE", async () => {
     const { wal, source } = await fresh("preflight-before-recovery");
     await wal.beginSend({
       id: "frozen-id-1",
@@ -236,10 +253,10 @@ try {
       reread.pending?.state === "sent_unacked" && reread.pending.id === "frozen-id-1",
       reread.pending,
     );
-  }
+  });
 
   // ── THE WAL MUST BE THIS PRINCIPAL'S ──────────────────────────────────────────────────────────
-  {
+  await block("THE WAL MUST BE THIS PRINCIPAL'S", async () => {
     const { source } = await fresh("wrong-principal");
     const other = await EventWal.open(join(dir, "wrong-principal", "other.json"), {
       space: SPACE,
@@ -254,10 +271,10 @@ try {
       started.err !== undefined && /local\.bbb/.test(started.err.message) && /local\.aaa/.test(started.err.message),
       started.err?.message ?? "no throw",
     );
-  }
+  });
 
   // ── THE ORDINARY PATH: read, map, publish, fold ────────────────────────────────────────────────
-  {
+  await block("THE ORDINARY PATH: read, map, publish, fold", async () => {
     const { wal, source, src, walPath } = await fresh("happy");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -296,10 +313,10 @@ try {
     await attempt(() => em.pump());
     c("emit:the-next-publish-expects-the-ACK'd-sequence", ep.publishes[1]?.expectedLastSubjectSeq === 11, ep.publishes[1]);
     c("emit:seq-advances-by-one-per-frame", (ep.publishes[1]?.parts[0] as unknown as AguiFrame | undefined)?.seq === 2, ep.publishes[1]?.parts[0]);
-  }
+  });
 
   // ── `[P7]`: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR AND NOTHING ELSE ────────────────
-  {
+  await block("`[P7]`: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR AND NOTHING ", async () => {
     const { wal, source, src, walPath } = await fresh("p7");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -317,13 +334,13 @@ try {
         disk.frontier.sourceCursor !== before.sourceCursor,
       { pumped: p.value, before, after: disk.frontier },
     );
-  }
+  });
 
   // ── HALT: A DUPLICATE ACK ON A FIRST ATTEMPT ─────────────────────────────────────────────────
   //
   // We have never published this id, so a body WE DID NOT WRITE holds it. Folding its `ackSeq`
   // would advance the frontier and the source cursor past events that were never published.
-  {
+  await block("HALT: A DUPLICATE ACK ON A FIRST ATTEMPT", async () => {
     const { wal, source, src, walPath } = await fresh("dup-first");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -353,14 +370,14 @@ try {
     c("halt:the-frame-stays-pending-and-unacked", disk.pending?.state === "sent_unacked", disk.pending);
     c("halt:the-emitter-refuses-to-pump-again", (await attempt(() => em.pump())).err instanceof AguiEmitterHalted, "");
     c("halt:it-reports-itself-stopped", em.stopped === true, em.stopped);
-  }
+  });
 
   // ── HALT: A DUPLICATE ACK ON A RETRY — `[P5]` VIOLATED, AND THE MESSAGE MUST SAY SO ──────────
   //
   // The CONTROL that makes this cell mean something is the FIRST-attempt cell above: two halts that
   // both say "duplicate" prove nothing about which path produced them. These assert the DIFFERENT
   // diagnosis each one is supposed to carry.
-  {
+  await block("HALT: A DUPLICATE ACK ON A RETRY — `[P5]` VIOLATED, AND THE MESSAGE MU", async () => {
     const { source, walPath } = await fresh("dup-retry");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
     await wal.beginSend({
@@ -385,12 +402,12 @@ try {
     c("halt:the-retry-published-the-FROZEN-id-and-E", ep.publishes[0]?.id === "frozen-retry" && ep.publishes[0].expectedLastSubjectSeq === 0, ep.publishes[0]);
     const disk = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
     c("halt:the-retry-halt-leaves-the-frontier-at-zero-ON-DISK", disk.frontier.seq === 0 && disk.frontier.lastSubjectSeq === 0, disk.frontier);
-  }
+  });
 
   // ── CONTROL: THE SAME RECOVERY PATH SUCCEEDS ON A NON-DUPLICATE ACK ──────────────────────────
   //    A halt that fires because the guard is correct and one that fires because the path is broken
   //    look identical from the halting side. This is the inverse of the predicate under test.
-  {
+  await block("CONTROL: THE SAME RECOVERY PATH SUCCEEDS ON A NON-DUPLICATE ACK", async () => {
     const { source, walPath } = await fresh("retry-ok");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
     await wal.beginSend({
@@ -409,10 +426,10 @@ try {
       started.err === undefined && disk.pending === null && disk.frontier.seq === 1 && disk.frontier.lastSubjectSeq === 5,
       { err: started.err?.message, frontier: disk.frontier },
     );
-  }
+  });
 
   // ── HALT: A CAS LOSS ──────────────────────────────────────────────────────────────────────────
-  {
+  await block("HALT: A CAS LOSS", async () => {
     const { wal, source, src, walPath } = await fresh("cas");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -430,10 +447,10 @@ try {
         disk.frontier.sourceCursor === before.sourceCursor,
       { err: p.err?.message, before, onDisk: disk.frontier },
     );
-  }
+  });
 
   // ── A NETWORK ERROR IS NOT A HALT: "we do not know" is a state, and it is `sent_unacked` ──────
-  {
+  await block("A NETWORK ERROR IS NOT A HALT: 'we do not know' is a state, and it is ", async () => {
     const { wal, source, src, walPath } = await fresh("netfail");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -447,10 +464,10 @@ try {
       p.err !== undefined && !(p.err instanceof AguiEmitterHalted) && em.stopped === false && disk.pending?.state === "sent_unacked",
       { err: p.err?.message, stopped: em.stopped, pending: disk.pending?.state },
     );
-  }
+  });
 
   // ── PACKING (`[P8]`) ─────────────────────────────────────────────────────────────────────────
-  {
+  await block("PACKING (`[P8]`)", async () => {
     const measureOf = (ep: FakeEndpoint) => (f: AguiFrame) =>
       ep.encodedSize({ channel: "events.local.aaa", parts: [f as unknown as Part], id: "S".repeat(64), expectedLastSubjectSeq: Number.MAX_SAFE_INTEGER });
     const ep = new FakeEndpoint();
@@ -520,13 +537,13 @@ try {
     // packer that refuses everything.
     const justFits = packUnits({ threadId: THREAD, epoch: "e", firstSeq: 1, units: [u("r1", 1, "c1")], measure: measureOf(ep), limit: alone });
     c("pack:CONTROL-the-same-unit-fits-at-exactly-its-measured-size", justFits.length === 1, justFits.length);
-  }
+  });
 
   // ── SIZING IS AN UPPER BOUND, NOT AN ESTIMATE ────────────────────────────────────────────────
   //    The emitter measures at the longest admissible id and the widest admissible expectation,
   //    because neither is known while packing. This cell asserts the direction of the inequality:
   //    what is published must never be LARGER than what was measured.
-  {
+  await block("SIZING IS AN UPPER BOUND, NOT AN ESTIMATE", async () => {
     const { wal, source, src } = await fresh("sizing");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -534,7 +551,8 @@ try {
     append(src, { run: "r1", msg: "m1", text: "x".repeat(200) });
     ep.answers = [{ seq: 3, duplicate: false }];
     await attempt(() => em.pump());
-    const call = ep.publishes[0]!;
+    const call = ep.publishes[0];
+    if (!call) return c("sizing:a-frame-was-published-to-measure", false, ep.publishes);
     const published = ep.encodedSize({ channel: em.channel, parts: call.parts, id: call.id, expectedLastSubjectSeq: call.expectedLastSubjectSeq });
     const measured = ep.encodedSize({
       channel: em.channel,
@@ -544,7 +562,7 @@ try {
     });
     c("sizing:what-is-published-is-never-larger-than-what-was-measured", published <= measured, { published, measured });
     c("sizing:and-the-bound-is-not-vacuous", measured > published, { published, measured });
-  }
+  });
 
   // ── THE UPPER BOUND EARNS ITS KEEP AT THE CEILING, WHICH IS THE ONLY PLACE IT CAN ────────────
   //
@@ -558,7 +576,7 @@ try {
   // frames go out and both are under the ceiling. Under-measure by even the id difference and the
   // packer emits ONE frame that the broker instrument then REFUSES — which is the real failure,
   // because a refused publish after a durable `beginSend` is a wedged emitter, not a retry.
-  {
+  await block("THE UPPER BOUND EARNS ITS KEEP AT THE CEILING, WHICH IS THE ONLY PLACE", async () => {
     const { wal, source, src } = await fresh("ceiling");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -596,7 +614,7 @@ try {
       realBytes <= ep.maxPayload + 10,
       { realBytes, ceiling: ep.maxPayload },
     );
-  }
+  });
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
