@@ -137,6 +137,18 @@ whose announcement did not land is indistinguishable from a crash, which is prec
 we are buying. This mirrors the existing durable-leave posture, which already refuses to close a
 live read when its tombstone cannot be confirmed (`endpoint.ts:1592-1616`) **[R]**.
 
+**What counts as confirmation — normative, because this is the sentence that decides whether the
+guard is real.** Confirmation MUST be a **broker-side acknowledgement**: a server round-trip that
+proves the broker took the publish (a JetStream publish ack, or a `flush()` that has round-tripped
+on the same connection). A resolved local write, a returned promise from a fire-and-forget publish,
+or any check that can be satisfied by the client's own send buffer **does NOT count**.
+
+The reason is specific to this verb and not general caution: we are confirming a publish over *the
+very connection we are about to destroy*. A client-buffer "success" followed immediately by a
+teardown loses the message on the wire and reports it as sent — which would make this a fail-closed
+guard that closes on nothing, the exact defect class §3 exists to prevent. An implementation that
+confirms against anything other than the broker has not implemented this section.
+
 Note there are two supervisory views by construction: the manager holds an OS process handle and
 "the mesh observes its presence separately" (`runtime.ts:29`) **[R]**. A self-disconnect diverges
 them — the manager still reads `running`. The published transition is what keeps the divergence
