@@ -80,6 +80,7 @@
     "smoke:system-account-rotation": "tsx packages/core/smoke/system-account-rotation-auth.smoke.ts",
     "smoke:cutover-restart-eviction": "tsx packages/core/smoke/cutover-restart-eviction-auth.smoke.ts",
     "smoke:evict-live:auth": "tsx packages/core/smoke/evict-live-auth.smoke.ts",
+    "smoke:evict-seed-minted:auth": "tsx packages/core/smoke/evict-seed-minted.smoke.ts",
     "smoke:deprovision": "tsx packages/core/smoke/deprovision-agent-auth.smoke.ts",
     "smoke:attention": "tsx extensions/connector-core/smoke/attention.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
