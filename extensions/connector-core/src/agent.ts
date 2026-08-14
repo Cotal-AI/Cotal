@@ -5,11 +5,13 @@ import {
   normalizeMentions,
   subjectMatches,
   isConcreteChannel,
+  assertValidChannel,
   channelInAllow,
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  isPublishPermissionDenied,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -833,18 +835,89 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Define a persona and persist it as config (the manager's `definePersona` op writes
-   *  .cotal/agents/<name>.md). On success, announce it on the channel — the "send it out"
-   *  half — so peers see the new persona; `spawn(name)` then launches an agent wearing it. */
+   *  .cotal/agents/<name>.md). `spawn(name)` then launches an agent wearing it.
+   *
+   *  Writing is the whole job: announcing is OPT-IN via `announce`, and silence is the default.
+   *  This used to end in a bare `this.send(...)`, which has no channel argument, so
+   *  {@link Endpoint.multicast} resolved the destination as the caller's FIRST CONCRETE CHANNEL —
+   *  `general` for most personas, purely by list order. Nobody ever chose that: defining a review
+   *  panel sprayed one broadcast per seat into every peer's inbox on the mesh. `reply.ok` was the
+   *  send's ONLY gate, so a failed manager reply announced nothing — but a host-level tool retry
+   *  hit an idempotent overwrite, succeeded again, and announced the same persona twice. The text
+   *  was worse than the volume: "spawn it to bring it online" is an imperative addressed to
+   *  strangers, indistinguishable from an attempt to get unrelated agents to run someone else's
+   *  code, and it tripped a real provenance investigation.
+   *
+   *  So: no `announce` ⇒ no mesh traffic at all, and the definer already knows what it defined (the
+   *  reply says so, and `spawn` on a missing persona fails loud). With `announce` ⇒ that channel and
+   *  only that channel, never one inferred from ordering; post rights stay broker-enforced, so a
+   *  definer without them fails there loudly rather than falling back to `general`. The wording is a
+   *  statement of what the sender did, not an instruction to the reader — the sender's identity is
+   *  already on the envelope, so an attributed fact is what a peer can actually evaluate. */
   async definePersona(def: {
     name: string;
     prompt: string;
     model?: string;
-  }): Promise<ControlReply> {
+    announce?: string;
+  }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     this.assertConnected();
+    // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
+    // this is the API every host's tool surface funnels through, so a caller that reaches
+    // definePersona directly gets the same guarantee. `announce` present must mean EXACTLY that
+    // channel: `""` would otherwise be falsy and silently mean "absent" (a supplied destination
+    // that quietly publishes nowhere), and a wildcard or a name the subject layer rewrites
+    // (`lane/x` → `lane_x`) would publish somewhere the caller did not name. Failing before the
+    // write also means a bad destination costs nothing — the alternative is a persona on disk plus
+    // an error, which reads as "nothing happened" and invites a retry.
+    if (def.announce !== undefined) {
+      if (def.announce.trim() === "")
+        throw new Error("announce: empty channel — omit it to define silently, or name a concrete channel");
+      // `assertValidChannel` returns its input unchanged or THROWS — it never rewrites. An earlier
+      // version of this guard compared its return value against the input, which could not fire, and
+      // worse: the throw escaped carrying core's own wording, which the tool layer does not
+      // recognise as an argument error, so a bad channel was reported as "no manager reachable".
+      // Re-throw under the `announce:` prefix so the failure is attributed to the argument that
+      // actually caused it.
+      try {
+        assertValidChannel(def.announce);
+      } catch (e) {
+        throw new Error(`announce: ${(e as Error)?.message ?? String(e)}`);
+      }
+      if (!isConcreteChannel(def.announce))
+        throw new Error(`announce: "${def.announce}" is a wildcard — announce to one concrete channel`);
+    }
     // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
     const args = { name: def.name, model: def.model, persona: def.prompt };
     const reply = await this.managerInvoke("define-persona", args);
-    if (reply.ok) await this.send(`persona \`${def.name}\` is now available — spawn it to bring it online`);
+    if (!reply.ok || !def.announce) return reply;
+    // The persona IS saved by this point (the manager only replies ok after it writes the file), so
+    // a failed announcement must NOT be reported as a failed definition. Reporting it as one names
+    // the wrong remediation and invites a retry — and a retry that succeeds is the duplicate
+    // announcement this change exists to remove. Report the write as done and the post as failed.
+    try {
+      await this.send(
+        `defined persona \`${def.name}\` — in this workspace's persona catalog, spawnable with cotal_spawn`,
+        def.announce,
+      );
+    } catch (e) {
+      // WHY the outcome is classified rather than flattened to a string: only a denial ON THE
+      // PUBLISH proves the message did not go out. A chat publish rides JetStream request/PubAck,
+      // so a timeout, a reconnect — or a permission denial on the PubAck INBOX SUBSCRIPTION — all
+      // leave the stream possibly holding the message while we never saw the ack. Reporting any of
+      // those as "it did not go out, post it yourself" is how a caller posts the announcement a
+      // second time, which is the exact duplicate this change exists to remove.
+      //
+      // This used to ask `isPermissionDenied`, which is operation-agnostic by design (it separates
+      // denied from service-down, where the operation is irrelevant). Review proved against a live
+      // broker that a subscription denial rejects `js.publish()` with the message ALREADY STORED —
+      // so that question could not distinguish the one case that proves non-delivery from a case
+      // that proves nothing. Ask the narrower question instead, and fail toward "unknown".
+      return {
+        ...reply,
+        announceError: (e as Error)?.message ?? String(e),
+        announceOutcome: isPublishPermissionDenied(e) ? "denied" : "unknown",
+      };
+    }
     return reply;
   }
 
