@@ -309,9 +309,26 @@ try {
     findMesh("started-over")?.origin === "up", findMesh("started-over"));
   recordOurMeshForTest({ space: "ours-now", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
   check("…and still stamps `up` on a record it created", findMesh("ours-now")?.origin === "up", findMesh("ours-now"));
+  // The overlay ACCEPTANCE is the same class as origin and was not carried, so a no-op refresh
+  // silently erased a consent the operator had given. It is asserted beside origin because the two
+  // are the same rule: a refresh starts nothing, so it may not overwrite what only the operator
+  // knows. A `started` takeover MAY replace it — that launch really is the mesh now.
+  recordMesh({ space: "acked", server: LIVE, root, mode: "open", origin: "manual", unencryptedOverlay: true, ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "acked", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "refresh");
+  check("an `up` refresh keeps a recorded overlay acceptance", findMesh("acked")?.unencryptedOverlay === true, findMesh("acked"));
+  recordMesh({ space: "acked-taken", server: LIVE, root, mode: "open", origin: "manual", unencryptedOverlay: true, ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "acked-taken", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "started");
+  check("…but a launch that STARTED the broker may replace it", findMesh("acked-taken")?.unencryptedOverlay === undefined, findMesh("acked-taken"));
+  // The control for the pair above: a refresh must not INVENT an acceptance nobody gave.
+  recordMesh({ space: "never-acked", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  recordOurMeshForTest({ space: "never-acked", server: LIVE, root, mode: "open", ts: new Date().toISOString() }, "refresh");
+  check("…and a refresh never invents one", findMesh("never-acked")?.unencryptedOverlay === undefined, findMesh("never-acked"));
   removeMesh("refreshed");
   removeMesh("started-over");
   removeMesh("ours-now");
+  removeMesh("acked");
+  removeMesh("acked-taken");
+  removeMesh("never-acked");
 
   const listed = await run([]);
   check("list shows the offline registered mesh", listed.out.includes("remote-dead") && listed.out.includes("offline"), listed.out);
@@ -411,7 +428,7 @@ try {
   // suite can catch that: asserting the rules alone stayed green while `add <already-registered>`
   // silently overwrote a record and "point at a different folder" asked nothing.
   const { addWizard } = await import("../src/commands/meshes-wizard.js");
-  interface Asked { kind: "text" | "select" | "confirm"; message: string }
+  interface Asked { kind: "text" | "select" | "confirm"; message: string; initialValue?: boolean }
   /** A scripted terminal: answers in order, and records what it was asked. */
   const driver = (answers: unknown[]) => {
     const asked: Asked[] = [];
@@ -431,10 +448,114 @@ try {
         spinner: () => ({ start() {}, stop() {} }),
         async text(o: { message: string }) { asked.push({ kind: "text", message: o.message }); return nextAnswer(o.message) as string; },
         async select<T>(o: { message: string }) { asked.push({ kind: "select", message: o.message }); return nextAnswer(o.message) as T; },
-        async confirm(o: { message: string }) { asked.push({ kind: "confirm", message: o.message }); return nextAnswer(o.message) as boolean; },
+        async confirm(o: { message: string; initialValue?: boolean }) { asked.push({ kind: "confirm", message: o.message, initialValue: o.initialValue }); return nextAnswer(o.message) as boolean; },
       },
     };
   };
+
+  // 0. THE GUIDED OVERLAY CONSENT. It shipped as dead code: both early paths validated the address
+  // with acceptance withheld, so an overlay URL was refused before this question could be asked and
+  // the operator could never say yes to something the validator had already rejected. These cases
+  // exist because "the flag form works" is not the same claim as "the feature works", and this file
+  // is the one that holds the two front ends to the same behaviour.
+  const OVERLAY = "nats://100.64.0.1:4222"; // an overlay literal; nothing listens there
+  const declined = driver([false]);
+  // Declining sends the wizard back to the address prompt, which is correct behaviour and means the
+  // script runs out. That exhaustion IS the terminator here, and it doubles as proof the decline
+  // did not fall through into registration.
+  let declineReprompted = false;
+  try {
+    await addWizard({ server: OVERLAY }, root, declined.io as never);
+  } catch (e) {
+    declineReprompted = /asked more than the script answers/.test((e as Error).message);
+    if (!declineReprompted) throw e;
+  }
+  const consentAsk = declined.asked.find((a) => a.kind === "confirm" && /accepting that dependency/i.test(a.message));
+  check("the wizard ASKS before registering an unencrypted overlay", consentAsk !== undefined, declined.asked);
+  check("…and asks it DEFAULT-DENY, so Enter does not accept an unverifiable transport",
+    consentAsk?.initialValue === false, consentAsk);
+  check("…and declining returns to the address prompt rather than registering", declineReprompted, declined.asked);
+  check("…and writes nothing", loadMeshes().every((m) => m.server !== OVERLAY), loadMeshes());
+
+  // …and the ACCEPTING path, which is the half that proves consent is not printed and forgotten:
+  // say yes, take the "register it anyway" exit (nothing listens on an overlay literal here), and
+  // assert the WRITTEN record carries the acceptance. The wizard shipped asking a question whose
+  // answer reached no record at all, so a test that stops at "it asked" would pass over that.
+  const accepted = driver([
+    true,        // yes, accept the tunnel dependency  (the transport consent)
+    "anyway",    // no broker answered -> record it unverified
+    "overlaid",  // space name on that broker
+    true,        // register this mesh?
+  ]);
+  const acceptedOut = await addWizard({ server: OVERLAY, root }, root, accepted.io as never);
+  check("accepting the dependency carries the wizard through to a record", acceptedOut === true, accepted.asked);
+  check("…and the WRITTEN entry carries the acceptance, not just the prompt",
+    findMesh("overlaid")?.unencryptedOverlay === true, findMesh("overlaid"));
+  removeMesh("overlaid");
+
+  // …and the NEGATIVE CONTROLS, which are what make the acceptance mean something. Consent is
+  // evidence ABOUT A TARGET. A boolean that merely remembers the operator once said yes survives
+  // "use a different address", so accepting an overlay and finishing on loopback would record a
+  // consent nobody gave for the address actually written — and the field exists precisely to feed
+  // a future use-time fence, which would read it as authorization.
+  const switched = driver([
+    true,        // accept the dependency for the OVERLAY
+    "retype",    // …then change your mind and use a different address
+    LIVE,        // a loopback broker that really answers
+    "openmesh",  // space name
+    true,        // register
+  ]);
+  const switchedOut = await addWizard({ server: OVERLAY, root }, root, switched.io as never);
+  check("switching to a safe address after accepting still registers", switchedOut === true, switched.asked);
+  check("…and the record carries NO acceptance, because the final target needed none",
+    findMesh("openmesh") !== undefined && findMesh("openmesh")?.unencryptedOverlay === undefined, findMesh("openmesh"));
+  removeMesh("openmesh");
+
+  // …and the case the two cases above CANNOT reach: overlay A -> a DIFFERENT overlay B. Both cases
+  // above end on an address that needs no consent (a loopback), so both are satisfied by a wizard
+  // that merely CLEARS the acceptance when the address changes. Neither can tell that apart from a
+  // wizard that RE-ASKS for the new target — and re-asking is the actual guarantee, because B needs
+  // a consent of its own that only the operator can give. Mutating the binding
+  // (`ackedFor !== server` -> `ackedFor === undefined`) left the suite 105/105 green with the marker
+  // proving the weakened guard ran: the fixtures reached for the case the fix already handled, so
+  // the guard shipped unfenced. This case is the fence. Assert on the RECORDED PROMPTS rather than
+  // the outcome: under the weakened binding the second question is never asked, and an
+  // outcome-only assertion cannot tell "asked and consented" from "never asked".
+  const OVERLAY_B = "nats://100.64.0.2:4222"; // a DIFFERENT overlay literal, same unprotectable class
+  const reacked = driver([
+    true,        // accept the dependency for OVERLAY (A)
+    "retype",    // …then change your mind
+    OVERLAY_B,   // …to another address that ALSO cannot be protected
+    true,        // and consent AGAIN, for B this time — the prompt the binding exists to force
+    "anyway",    // nothing answers on an overlay literal -> record it unverified
+    "reacked",   // space name
+    true,        // register
+  ]);
+  // A wizard that skips B's question runs off the end of a script written for the correct flow, so
+  // catch that and let the prompt-count checks below report it — a throw here is the mutation's
+  // signature, not a reason to abort the file.
+  let reackedOut: boolean | undefined;
+  let reackedThrew: string | undefined;
+  try {
+    reackedOut = await addWizard({ server: OVERLAY, root }, root, reacked.io as never);
+  } catch (e) {
+    reackedThrew = (e as Error).message;
+  }
+  const consentAsks = reacked.asked.filter((a) => a.kind === "confirm" && /accepting that dependency/i.test(a.message));
+  check("changing one unprotectable address for another RE-ASKS the consent (a consent for A is not a consent for B)",
+    consentAsks.length === 2, { consentAsks: consentAsks.length, threw: reackedThrew, asked: reacked.asked });
+  check("…and the second question is asked DEFAULT-DENY too, so Enter cannot carry A's yes onto B",
+    consentAsks[1]?.initialValue === false, consentAsks[1]);
+  check("…and the record written for B carries B's own acceptance",
+    reackedOut === true && findMesh("reacked")?.unencryptedOverlay === true, { reackedOut, entry: findMesh("reacked"), threw: reackedThrew });
+  removeMesh("reacked");
+
+  // The same hole reached without any address change: a pre-seeded flag plus a loopback server.
+  const seededSafe = driver(["seeded-safe", true]);
+  const seededOut = await addWizard({ server: LIVE, root, allowUnencryptedOverlay: true } as never, root, seededSafe.io as never);
+  check("a pre-seeded acceptance does not attach itself to a loopback registration",
+    seededOut === true && findMesh("seeded-safe")?.unencryptedOverlay === undefined, findMesh("seeded-safe"));
+  removeMesh("seeded-safe");
 
   // 1. A name that came in on the command line must still hit the clash gate.
   recordMesh({ space: "taken", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });

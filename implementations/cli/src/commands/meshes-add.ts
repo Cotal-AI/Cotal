@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { probeConnect, type SpaceAuth } from "@cotal-ai/core";
+import { classifyJoinTarget, type JoinTarget } from "../lib/join-target.js";
 import {
   authDir,
   findCotalRoot,
@@ -33,6 +34,18 @@ import {
 export type Check<T> = { ok: true; value: T } | { ok: false; message: string };
 
 const bad = (message: string): Check<never> => ({ ok: false, message });
+
+/** The cost of the copy every "copy the mesh's auth here" recovery asks the operator to make.
+ *
+ *  It is one shared constant because there are five such instructions and the review found four of
+ *  them saying only "credentials". A directory that composes for an auth mesh carries the account
+ *  SIGNING SEED, so the machine holding it can mint any identity in the space: the honest word is
+ *  authority, not credentials, and the operator hears it at the moment they are told to copy
+ *  rather than only in a guide they may never open. */
+const CA_COST =
+  "\n  Note: that directory carries the space's account signing seed, so any machine holding it can mint" +
+  "\n  any identity in the space until the signing key is rotated and every credential re-minted. Copy it" +
+  "\n  only to machines you would trust with the whole mesh.";
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
 
 /** Is this path a directory? `existsSync` is not the question: a regular FILE named `.cotal` would
@@ -72,6 +85,40 @@ export function checkServer(raw: string): Check<string> {
   return good(raw);
 }
 
+/**
+ * May this machine send its credentials to that address?
+ *
+ * Registering a mesh is how a machine joins a broker it does not run, and every later command then
+ * dials that address with an agent credential in the CONNECT line. NATS sends the initial INFO in
+ * plaintext and unauthenticated, so an on-path attacker forges one that does not set
+ * `tls_required` and reads the credential; the client side is the only fence, and this build has
+ * no client-TLS surface yet. So the address itself is the gate. See {@link classifyJoinTarget} for
+ * the ranges and for why hostnames are refused even when they resolve somewhere permitted.
+ *
+ * This is a SAFETY rule, not a liveness check, which is why it sits with {@link checkServer} above
+ * the `--force` branch rather than inside it. `--force` exists to register a mesh that is *down*
+ * right now; it must not double as permission to ship credentials across an untrusted network,
+ * where there is nothing to verify later and no error to come back and fix.
+ */
+export function checkDialPolicy(server: string, allowUnencryptedOverlay = false): Check<JoinTarget> {
+  try {
+    // WHEN THE RECORD CAN CARRY TLS INTENT, THIS LINE CHANGES AND THIS COMMENT GOES.
+    // `tlsRequired` is a property of the connection this registration will produce, and no field
+    // records it yet; it arrives with the work that teaches the broker to serve TLS. Passing a
+    // hardcoded `false` is honest rather than lazy: today no dial can require TLS.
+    //
+    // What that means CONCRETELY: public addresses, ordinary private ranges and hostnames are
+    // refused outright. An overlay literal is refused TOO unless the operator passed the explicit
+    // opt-in, because a printed warning is not a fence — stderr is not read by scripts, and the
+    // warning was never persisted, so nothing repeated it at the dials that followed. With the
+    // opt-in it is permitted and returns a residual, which the caller both prints AND records as
+    // consent. When the TLS field exists this passes the record's real intent and the opt-in goes.
+    return good(classifyJoinTarget(server, { tlsRequired: false, allowUnencryptedOverlay }));
+  } catch (e) {
+    return bad(`✗ ${(e as Error).message}`);
+  }
+}
+
 /** Where this mesh's local trust + personas live. An explicit path must be an existing directory
  *  (the record's whole job is to point at `.cotal/auth` and `.cotal/agents` under it). With no
  *  flag, the nearest genuine project up-tree — and `findCotalRoot` returns its STARTING directory
@@ -101,7 +148,7 @@ export function checkMode(space: string, root: string, accounts: string[], flag:
     return bad(`✗ --mode user cannot be registered by hand - a user-auth space carries pinned IdP trust (issuer, audience, login URL) that only \`cotal up --user-auth\` establishes, in the root where its broker runs`);
   const mode = flag ?? (accounts.includes(space) ? "auth" : "open");
   if (mode === "auth" && !accounts.includes(space))
-    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open`);
+    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST);
   return good(mode);
 }
 
@@ -114,7 +161,7 @@ export function checkTrust(mode: MeshEntry["mode"], root: string, space: string)
   const auth = loadSpaceAuth(authDir(root), space);
   return auth
     ? good(auth)
-    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open`);
+    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open` + CA_COST);
 }
 
 /** Budget for the credless mode probe. Generous on purpose: a slow answer must not be read as "the
@@ -139,7 +186,7 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`);
   if (mode === "open" && enforces === "auth")
-    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth`);
+    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST);
   return good(undefined);
 }
 
@@ -190,7 +237,7 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the broker at ${server} rejected the credentials for "${space}" under ${authDir(root)} - re-mint them where the mesh runs, or check that --server points at that mesh`;
     case "open-wants-auth":
     case "registry-open-now-auth":
-      return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth`;
+      return `✗ the broker at ${server} requires auth, but nothing under ${authDir(root)} covers "${space}" - copy the mesh's account + creds there and re-run with --mode auth` + CA_COST;
     case "stale-auth":
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
     case "tls-trust":
