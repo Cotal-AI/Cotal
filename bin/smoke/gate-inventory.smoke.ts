@@ -38,6 +38,19 @@ const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
  */
 const UNGATED: Record<string, string> = {
   // Need external tooling no CI runner has.
+  // The one below is a DECISION and it is the uncomfortable kind, so it is written out rather than
+  // filed under the group heading. `agui-map` drives §3.1's mapping against a REAL Claude session
+  // JSONL from `~/.claude/projects/` and REFUSES to fall back to a hand-written fixture. That
+  // refusal is the suite's whole point: this lane's founding defect was a class whose contract was
+  // "never consume a partial record", and it survived a full mutation sweep because every fixture an
+  // author wrote happened to end on a record boundary. A fixture cannot establish the property, so a
+  // gateable version of this suite would be a version that no longer tests the thing.
+  // THE COST, STATED SO NOBODY HAS TO REDISCOVER IT: its pass count is NOT gate evidence, and citing
+  // one in a plan record makes it the fifteenth entry in this file's own "cited by pass count and run
+  // by nothing" list. Its input is the operator's session history, so a green here is a fact about
+  // one machine on one day.
+  "smoke:agui-map":
+    "maps a REAL ~/.claude/projects session JSONL and refuses a fixture by design; input is operator-local and irreproducible on a CI box",
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
