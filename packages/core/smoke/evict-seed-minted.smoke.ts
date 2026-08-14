@@ -40,7 +40,8 @@
  * with the same material. If the seed credential simply reconnects, eviction is a disconnect button
  * and not a revocation lever, and that distinction is the ruling.
  *
- * MUTATION PROOF — PREDICTED CELLS REGISTERED BEFORE THE MUTATIONS RAN (named, never a count).
+ * MUTATION PROOF — PREDICTED CELLS REGISTERED BEFORE THE MUTATION ATTEMPTS (named, never a count).
+ * "Attempts" rather than "ran" is deliberate and literal: only ONE of the two ever executed.
  * The re-derivation of this suite is green, but green alone does not show the cells DEPEND on the
  * behaviour they name. TWO MUTATIONS WERE ATTEMPTED AND THEIR DISPOSITIONS DIFFER — one is a valid
  * killed mutation, the other never ran and proved nothing. They are NOT a matched pair and must not
