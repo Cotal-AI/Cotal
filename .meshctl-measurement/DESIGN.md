@@ -795,6 +795,47 @@ ruling whose reasoning is not written down gets re-litigated by the next reader.
 
 ---
 
+## 7.9 RETIRED BLOCK — `rev2-meshctl-authority`, author departed, NOT re-derived
+
+Recorded `Fri Aug 14 08:47:16 PM UTC 2026` (`date -u`, read at the moment of writing), at tip
+`6b3f3340`. Retired on fm-orchestrator's ruling.
+
+**Status: RETIRED. Explicitly NOT "addressed."** I cannot name a commit that answered it, so I am
+not claiming one. *We stopped hearing about it* is not a resolution, and an unresolved objection
+from a departed reviewer decays into a permanent unexplained hold that the next reader cannot
+distinguish from a live one.
+
+**What it was.** `rev2-meshctl-authority` was this lane's security/authority review seat. It filed a
+BLOCK against tip `4deb2a19`. It was re-pinned forward twice (to `c7359c37`, then `1821abff`) and
+instructed to re-derive or clear the BLOCK at the new tip rather than carry it. It never did: the
+seat stopped responding and was subsequently confirmed dead — a DM to it returned
+`no peer "rev2-meshctl-authority" in space "main"`, the strong negative branch of that oracle
+(the mesh looked across hosts and did not find it), not a local census zero.
+
+**What it objected to — and the honest limit on this record.** I can attribute, with a source, only
+that the BLOCK was raised at `4deb2a19` and that the re-pin instruction named **its connect-state
+matrix and its drain arm** as the work to re-run. **The BLOCK's own reasoning is not recoverable
+from my records** — the seat's verdict body reached me through channels that are no longer in my
+context, and my inbox is empty. **So this retirement records the objection's existence and
+provenance, not its substance.** That is a worse record than a re-derivation would be, and it is
+the true one.
+
+**What has changed since `4deb2a19`: 27 commits** (`git log --oneline 4deb2a19..HEAD | wc -l`, at
+`6b3f3340` — not the "twelve" estimated when the seat was re-pinned; the measured number is used
+here). Among them, and load-bearing against anything an authority lens would likely have raised:
+`9ed04897` (discard a credential candidate whose fetch crossed a deliberate disconnect),
+`08a7f66c` (set the live status before the rebuild, and stop claiming a re-assert that failed),
+`e15b6e36` (the reconnect transition latch and its named reason), and `2592d2e8` / `6b3f3340` (the
+authed end-to-end arm and its mutation proof). **None of these is claimed as answering the BLOCK.**
+They are listed so a future reader can judge the gap themselves rather than inherit my guess.
+
+**What a re-derivation would owe, if one is ever commissioned:** the connect-state matrix and the
+drain arm at the current tip, with an explicit authority/escalation lens. Until then this lane's
+security-shaped review coverage rests on `rev2-meshctl-evidence`, which is a real lens and is not
+the same lens.
+
+---
+
 ## 8. Verification plan (for the build, not yet run)
 
 - Drive the **real** entry point — `cotalToolSpecs(...).run(...)`, as an MCP caller invokes it.
