@@ -109,7 +109,8 @@ A mesh running on another machine has no `cotal up` on this one, so register it 
 
 ```bash
 cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
-cotal meshes add optiplex --server nats://10.0.0.5:4222 --root ~/meshes/optiplex
+cotal meshes add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
+  --allow-unencrypted-overlay      # see below: an overlay address needs this
 cotal meshes rm optiplex
 ```
 
@@ -118,11 +119,57 @@ reports whether it is open or requires credentials, offers the spaces the folder
 credentials for, and shows the record before writing it. Scripts and agents keep the flag form -
 without a terminal nothing prompts.
 
-`--root` is the local folder holding that mesh's `.cotal/auth` (credentials you minted where it
-runs) and `.cotal/agents` (its personas); the mode is inferred from what that folder holds. The
+`--root` is the local folder holding that mesh's `.cotal/auth` and `.cotal/agents` (its personas);
+the mode is inferred from what that folder holds.
+
+**Know what you are copying.** For an authenticated mesh that folder carries the space's account
+**signing seed**, which is the authority to mint any identity in the space. A machine holding it
+is a certificate authority for the mesh rather than a client of it: anyone who reads it can
+impersonate any agent, read every retained channel and DM, change ACLs, and keep issuing
+themselves credentials. There is no per-machine revocation; undoing it means rotating the signing
+key and re-minting every credential in the space. Copy it only to machines you would trust with
+the whole mesh. `cotal mint` on its own does not substitute here: registering an `auth` mesh needs
+signing material that composes, which a minted user credential is not. The
 broker is probed before the record is written, so a bad address or a credential that mesh will not
 accept fails at registration rather than at your first `spawn` (`--force` records it without verifying —
 useful when the mesh is simply down right now).
+
+#### Which addresses you may register
+
+Registering a mesh is how this machine starts sending agent credentials to a broker it does not
+run, and this build has no way to demand an encrypted connection yet: NATS announces itself in
+plaintext before anyone authenticates, so an attacker on the path can pose as the broker and read
+the credential out of the connect. A `tls://` URL does not help, because it is the connect
+options, not the scheme, that make the client insist.
+
+So the address is the gate, and only two kinds are accepted:
+
+- **loopback** — `127.0.0.0/8` or `::1`, where nothing leaves the machine;
+- **your private overlay** — `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, but only with
+  `--allow-unencrypted-overlay`, because the protection is real only while the tunnel is running
+  and this command cannot check that for you.
+
+Everything else is refused, including ordinary private ranges like `10.x` and `192.168.x`: a
+café's wifi is a private network too, and being private is not the same as being yours. `--force`
+does not waive this — it exists for a mesh that is *down*, not for sending credentials somewhere
+unsafe.
+
+Hostnames are refused as well, even ones that resolve somewhere allowed, because then whoever
+answers the lookup would be choosing which machine receives your credentials. Pass the address
+itself. When serving the broker over TLS arrives, the client will verify the certificate's
+hostname and names become safe to use again.
+
+An overlay address is **refused unless you accept the dependency explicitly**, with
+`--allow-unencrypted-overlay`. The address is not the guarantee: it is protected while the tunnel
+is up, and if the tunnel is down that range is ordinary carrier-grade NAT and whoever answers the
+dial receives your credentials. Only you can know which it is, so the command asks you to say so.
+Your acceptance is recorded on the mesh entry rather than printed and forgotten. The guided form
+asks the same question instead of taking the flag, and the flag disappears once the broker can be
+served over TLS.
+
+This gate is on **registration**. `cotal join --creds --server <url>` deliberately takes an
+explicit connection at face value and does not consult the registry, so it is not covered — join
+that way only to an address you would have registered.
 
 Records added this way are removed only by something that names them. A mesh this machine started
 can be dropped on a hunch — a failed liveness probe, a `cotal down` in its project — because
