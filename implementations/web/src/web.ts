@@ -114,9 +114,15 @@ export async function web(args: ParsedArgs): Promise<void> {
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
   // control. Instead pre-mint ONE scoped `channel-purger` cred for the only write path (channel delete
-  // = filtered CHAT purge + a channel-registry key delete) and let the seed fall out of scope here, so
-  // it isn't reachable from the request handlers. `--creds` / open mode have no seed → the connection
-  // creds carry the purge rights.
+  // = filtered CHAT purge + a channel-registry key delete), then EXPLICITLY narrow the `Connection`
+  // the request handlers close over so it no longer carries `auth` (see the drop below, just after
+  // the mint). `--creds` / open mode have no seed → the connection creds carry the purge rights.
+  //
+  // This paragraph used to say the seed "falls out of scope here". IT DID NOT: `conn` stayed in
+  // scope for the whole function and the delete path referenced it inside the handler, so the seed
+  // was reachable from the request handlers for as long as this comment claimed it was not. The
+  // mitigation is now performed rather than described — the correction is stated instead of quietly
+  // overwritten, because a comment that was wrong once is worth flagging to whoever reads it next.
   //
   // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
   // fresh-checked at every mint and every connect) — standing via a bearer SOURCE so the tap
@@ -143,6 +149,26 @@ export async function web(args: ParsedArgs): Promise<void> {
     process.once("exit", () => releasePid(pidPath));
   }
   const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
+
+  // THE SEED IS DROPPED HERE, AND THIS IS THE LINE THAT MAKES THE CLAIM ABOVE TRUE.
+  //
+  // The header above has always said the account seed "isn't reachable from the request handlers".
+  // It was NOT true: `conn` is bound at the top of `web()` and was referenced INSIDE
+  // `handleRequest` (the `userViewAuth(conn, …)` call on the delete path), so the handler closed
+  // over the whole `Connection` — including `conn.auth`, the `SpaceAuth` carrying the broker
+  // operator seed and the account seed/signingSeed that can mint ANY identity or role. The
+  // mitigation was described in a comment and never implemented; that gap is what D3 recorded.
+  //
+  // The last use of `conn.auth` is the line above, so from this point the handler needs a
+  // Connection WITHOUT it. `userViewAuth` reads only `bearer`/`userAuth`/`root`/`space` and never
+  // touches `auth`, so nothing downstream loses anything. `auth` is optional on `Connection`, so
+  // the narrowed value is still a `Connection` and the compiler keeps it that way.
+  //
+  // HONEST LIMIT, so this is not read as more than it is: this is DEFENSE IN DEPTH, not a claim of
+  // unexploitability. An attacker with code execution in this process can reach the heap, where
+  // lexical scope means nothing. What it does buy is that the DOCUMENTED mitigation is now real,
+  // and that a future edit reaching for `conn` inside the handler has to notice this line first.
+  const { auth: _accountSeedIsNotForRequestHandlers, ...connForHandlers } = conn;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -301,7 +327,7 @@ export async function web(args: ParsedArgs): Promise<void> {
         // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
         // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.
         const result = user
-          ? await userViewAuth(conn, "channel-purger").then((p: UserViewAuth) =>
+          ? await userViewAuth(connForHandlers, "channel-purger").then((p: UserViewAuth) =>
               clearChannel({ servers: server, space, channel, bearer: p.bearer, sentinelCreds: p.sentinelCreds }),
             )
           : await clearChannel({ servers: server, space, channel, creds: purgeCreds });
