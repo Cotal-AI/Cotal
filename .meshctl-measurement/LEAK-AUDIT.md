@@ -211,5 +211,19 @@ checked before being reported as one.
 - **Coverage is over the terms supplied**, which is exactly the property the coverage count reports.
   `172/172` means every supplied term was verified scannable — not that the supply was complete.
 - **Committed artifacts only.** Mesh messages this lane has already sent are not recoverable from
-  the tree and were not scanned.
+  the tree and were not scanned. ⚠️ **And that bound is larger than "messages I typed", because
+  presence activity is auto-authored mesh traffic that no scanner covers and no author reviews.**
+  Both hook connectors publish a tool call's *most salient input* —
+  `i.command ?? i.file_path ?? i.path ?? i.url ?? …`, i.e. a shell command line or a filesystem
+  path — into the presence record:
+
+  | Connector | Site | When |
+  | --- | --- | --- |
+  | `connector-claude-code/src/hooks.ts:30,179,192` | 1 of 5 `safeStatus` calls | only `waiting` — blocked on a permission prompt |
+  | `connector-hermes/src/hermes-hooks.ts:19,22,37,41` | `setStatus("working", pendingTool)` | **every tool call** |
+
+  **The hermes path is the wider of the two** — the Claude Code connector emits free text only when
+  a session is blocked, hermes emits it on every call. **A seat therefore publishes strings it never
+  wrote, from a surface this audit does not cover**, and a path is exactly the shape a boundary term
+  takes. Reported to fm-orchestrator; **not this lane's to change**, and no fix is proposed here.
 - **No claim about any other lane.** The method is shareable; the result is this lane's alone.
