@@ -105,7 +105,9 @@
  * RE-GRADED UNDER THE ENUMERATION — all `[B]`, all KILLED on the cell named:
  *   M10 remove `channel` from `ORIGIN_RULE` -> `split:the-real-session-DOES-open-runs-without-a-synthetic-opener`
  *   M11 make `task-notification` open a run -> `split:a-task-notification-opens-NO-run`
- *   M12 make an absent origin open a run    -> `mechanism:an-ABSENT-origin-opens-no-run-even-carrying-promptSource`
+ *   M12 make an absent origin open a run    -> **RE-AIMED.** Its cell was retired when the
+ *       absent-origin table landed — see M17, which is the same claim at the record the new rule
+ *       cannot open: origin-less with NO `promptSource` at all.
  *   M13 drop the compaction exclusion       -> `mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not`
  *
  * **AND THE MASKING IS GONE, which is the result worth reading.** Under the old `promptSource` gate,
@@ -131,11 +133,53 @@
  *   mutation that quietly breaks a second call site and a kill you then attribute to the first.
  *   Narrowed to a two-line anchor including the CONTENT call, and it killed.
  *
+ * THE ABSENT-ORIGIN TABLE — graded on `[B]`, all four KILLED on the cell named, all four PREDICTED:
+ *   M16 `sdk: "sdk"` -> `sdk: null`     -> `mechanism:an-sdk-prompt-opens-a-run-REGARDLESS-of-entrypoint`
+ *   M17 origin-less + no `promptSource` returns `"sdk"`
+ *                                       -> `mechanism:an-origin-less-record-with-NO-promptSource-opens-no-run`
+ *   M18 `diagnose()` always returns null -> `diagnose:a-session-whose-prompts-were-ALL-REFUSED-says-THAT-instead`
+ *   M19 both `diagnose()` zeroes share one sentence
+ *                                       -> `diagnose:the-two-zeroes-do-NOT-produce-the-same-sentence`
+ *
+ *   M16 is `sdk: null` and not a deletion ON PURPOSE. Deleting the key makes the value unmeasured,
+ *   so the mapper THROWS and the suite dies before the cell — red, and the wrong red. `null` keeps
+ *   the value known and flips only the answer, which is the thing under test.
+ *
+ *   **M19 was the one I expected to survive** and said so before running it: the two sentence cells
+ *   above it discriminate on substrings, which is the defence-in-depth shape that makes an outcome
+ *   cell prove neither mechanism. It killed. The prediction was wrong and the wrong prediction is
+ *   worth more than the kill — it is the reason the cell exists at the mechanism rather than at the
+ *   outcome, and the reason it is safe to trust now.
+ *
+ * BUILD PROVENANCE — graded by a CONTROL, not by a mutation, and the difference is stated rather
+ * than filed under one heading. Staleness was PLANTED (`touch connector-core/src/agui.ts`) before
+ * the guard was trusted: rc=1, zero cells executed, refusal naming the package and both timestamps.
+ * An unfired guard and an absent guard are otherwise indistinguishable.
+ *
+ * WHICH ARTIFACT RAN — established by EXECUTION, not by reading import lines. `connector-core/dist`
+ * renamed away: the mapper fails `ERR_MODULE_NOT_FOUND`. `packages/core/dist` renamed away: it fails
+ * again, and the failing importer is `connector-core/dist/config.js` — **a transitive crossing that
+ * no audit of this file's imports could have seen.** Both restored; tree clean after. The three
+ * relevant symlinks all resolve inside this worktree, so no other lane's build can change what runs
+ * here — measured with `readlink -f`, not inherited.
+ *
  * **EVERY ROW IN THIS LEDGER NOW CARRIES A VERDICT** — the ones that are not kills (M1, M3, M8, M9)
  * are explained above rather than dropped. **That is a claim about the ROWS, not about the cells:**
  * it says no mutation was written and left unrun, NOT that every cell in this file has been shown
  * to depend on the code it names. A cell with no mutation aimed at it is still ungraded, and the
  * `UNMEASURED:` cell is additionally unmeasured — a different defect from an ungraded one.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * THE DENOMINATOR, stated because every "88 sessions" claim in this file rests on it.
+ *
+ * The session set is every `*.jsonl` file one level inside a directory of `~/.claude/projects`, on
+ * this machine, at the time of the sweep: **88 files, 129,910 records.** A session is counted if it
+ * parses line-by-line as JSON; unparseable lines are skipped, whole files are not. **Nothing outside
+ * that shape is counted, and a session stored differently would be invisible to it in exactly the
+ * way a `*.ts`-only search is invisible to a JS renderer.** Every count below — `entrypoint` × 2
+ * values, `promptSource: "sdk"` × 21, absent × 66, `"system"`-on-absent-origin × 0 — is a claim
+ * about that set and not about the harness in general.
+ * ---------------------------------------------------------------------------------------------
  *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
