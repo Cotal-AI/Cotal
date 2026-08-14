@@ -1414,6 +1414,25 @@ export class CotalEndpoint extends EventEmitter {
     return m.json<ControlReply>();
   }
 
+  /** AFFIRMATIVE delivery liveness: round-trip to the daemon's own `ctl.delivery` responder and
+   *  resolve only if it ANSWERS. Throws on no-responder or timeout — both are refusals, never an
+   *  inference of health.
+   *
+   *  **Any reply counts, including an error reply.** The question is not "did the daemon like this
+   *  request" but "is the daemon answering at all", and an error reply is proof that it is. Treating
+   *  a well-formed refusal as a liveness failure would make the probe report an outage during
+   *  ordinary rejections.
+   *
+   *  Rides the EXISTING `listMemberships` op rather than a new served command, so it needs no
+   *  addition to {@link BASELINE_DELIVERY_COMMANDS} and no widening of any agent's grant — the
+   *  smallest signal that still requires the daemon to produce a message. INTERIM: a dedicated
+   *  `health` op would let the reply carry the daemon's incarnation and uptime, which this cannot;
+   *  that trade (a wider grant baseline for a richer reply) is a deliberate open decision, not an
+   *  oversight. Identity/age facts come from the lease meanwhile. */
+  async requestDeliveryHealthProbe(timeoutMs = 2000): Promise<void> {
+    await this.requestDelivery("listMemberships", { lifecycleUid: this.ownLifecycleUid ?? "health-probe" }, timeoutMs);
+  }
+
   /** Send a PRIVILEGED delivery-admin request to the server-side delivery daemon and await its reply
    *  (the D5 rail-split: `reloadCreds` now, the eviction executor next). Same bounded-reply shape as
    *  {@link requestDelivery}; the cred layer is the real gate — only the manager's supervisor profile

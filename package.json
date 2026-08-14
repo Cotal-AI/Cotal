@@ -316,7 +316,8 @@
     "smoke:queue-win": "tsx implementations/manager/smoke/queue-win-distribution.smoke.ts",
     "smoke:instrument-instance-pin": "tsx implementations/manager/smoke/instrument-instance-pin.smoke.ts",
     "smoke:cli-seat-locality": "tsx implementations/manager/smoke/cli-seat-locality.smoke.ts",
-    "smoke:delivery-health": "tsx packages/core/smoke/delivery-health.smoke.ts"
+    "smoke:delivery-health": "tsx packages/core/smoke/delivery-health.smoke.ts",
+    "smoke:delivery-health-live": "tsx implementations/delivery/smoke/delivery-health-live.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
