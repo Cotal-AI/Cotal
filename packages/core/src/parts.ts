@@ -45,13 +45,28 @@
  * by a miss, and it is the more tempting error, because it makes the finding look bigger.**
  * Excluded deliberately; the exclusion is evidence and is recorded rather than dropped.
  *
- * **A separate class, named because it is the instrument rather than the product:**
- * `packages/core/smoke.ts` and `packages/core/smoke-auth.ts` render a non-text part as `""`
- * **explicitly** — four sites. They are harnesses, not reader-facing surfaces, so they are not part
- * of the seven. But it means **core's own suite cannot see a part that vanishes**: a cell asserting
- * on received text passes identically whether the non-text part arrived or was dropped. Left as
- * found and flagged here rather than changed, because widening this commit into the suite that
- * grades it is how a fix stops being reviewable.
+ * **A separate class, named because it is the instrument rather than the product: the SUITES render
+ * a non-text part as `""` too — 23 sites across 20 files**, spanning `packages/core`'s own smoke
+ * suites, the CLI's, the codex and opencode connectors', and `bin/smoke`. They are harnesses, not
+ * reader-facing surfaces, so they are not part of the seven. But it means **the suites cannot see a
+ * part that vanishes**: a cell asserting on received text passes identically whether the non-text
+ * part arrived or was dropped. Left as found and flagged here rather than changed, because widening
+ * this commit into the suites that grade it is how a fix stops being reviewable.
+ *
+ * ⚠️ **THAT NUMBER WAS FIRST WRITTEN HERE AS "FOUR", AND THE WAY IT WAS WRONG IS THE POINT.** The
+ * sweep that produced it piped through `grep -v "/smoke/"` — **an exclusion that removed exactly the
+ * population being counted.** The habit is sound (test files are noise when you are sweeping for a
+ * product defect) and it was carried, unexamined, into the one sweep whose subject was the tests.
+ *
+ * > ***An exclusion inherited from the previous sweep is a filter nobody re-justified. Check what a
+ * > sweep DROPS against what it is looking for, not against what the last one was looking for.***
+ *
+ * **Second correction, from the same re-run:** on these seats `grep` is a **shell function** wrapping
+ * ugrep with `--ignore-files`, so a bare `grep -r` is blind to everything gitignored. Two-arm control:
+ * one marker in a tracked file and one in a gitignored file is found **once** by bare `grep -r` and
+ * **twice** by `/usr/bin/grep -r`. **The three-call-site count above is unaffected and was re-derived
+ * both ways** — pinned `/usr/bin/grep` and `git grep` agree exactly — because those files are all
+ * tracked. **Sweeps that conclude an ABSENCE want the pinned binary or `git grep`.**
  */
 import type { Part } from "./types.js";
 
