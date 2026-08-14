@@ -12,10 +12,31 @@
 # function, not the surface.
 set -u
 
+pass=0; fail=0   # declared BEFORE the trap: with `set -u`, an exit before these are set
+                 # would make the trap that reports the incomplete run itself fail.
 ART="${ART_DIR:?}"; mkdir -p "$ART"
-trap 'rc=$?; echo "$rc" > "$ART/finding5-repair.rc"; echo "trap $(date -u +%H:%M:%SZ) rc=$rc" > "$ART/finding5-repair.marker"; cleanup' EXIT
 
-pass=0; fail=0
+# EXPECTED CELL COUNT, pinned. An early `exit` (a refusal, a dead planted pid, a failed build guard)
+# ends the run with every cell that DID run reporting PASS — and "0 FAIL" reads as a clean run to
+# anything grepping for failures. The count is checked from the EXIT trap as well as at the end, so
+# an abort cannot skip the check that would have caught the abort.
+# This is a count and this lane distrusts counts: it is safe here ONLY because every cell is also
+# asserted by name above. It detects a TRUNCATED run, and it is not evidence that anything passed.
+EXPECTED_CELLS=31
+finish() {
+  rc=$?
+  ran=$((pass + fail))
+  if [ "$ran" -ne "$EXPECTED_CELLS" ]; then
+    echo "FAIL SUITE INCOMPLETE — ran $ran of $EXPECTED_CELLS cells (rc=$rc). This is NOT a clean run."
+    rc=1
+  fi
+  echo "$rc" > "$ART/finding5-repair.rc"
+  echo "trap $(date -u +%H:%M:%SZ) rc=$rc ran=$ran/$EXPECTED_CELLS" > "$ART/finding5-repair.marker"
+  cleanup
+  exit "$rc"
+}
+trap finish EXIT
+
 ck() { if [ "$2" -eq 0 ]; then pass=$((pass+1)); echo "  PASS  $1"; else fail=$((fail+1)); echo "  FAIL  $1"; fi; }
 
 # R0 is asserted HERE, on EVERY capture, not once at the end. The previous version overwrote $ROW in
