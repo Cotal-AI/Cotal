@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { connect } from "@nats-io/transport-node";
 import { fitChunk, frameBytes, assertUploadFits, MinimumChunkError } from "../src/artifact-chunk.js";
+import { planTransfer } from "../src/artifact-transfer.js";
 import { isReachable } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { stopBrokerAndClean } from "./_stop-broker.js";
@@ -232,13 +233,36 @@ try {
       floorOk === "ok", floorOk);
   }
 
-  // ---- C8: fitChunk's maxRaw guard returns ZERO, and nothing checked the value -----------------
-  // `if (maxRaw < 1) return 0` was unguarded: mutating it to `return 999` survived, because C2 only
-  // ever examined the ERROR from a different fixture. A non-zero answer here would hand the caller a
-  // chunk size larger than the ceiling it just declared.
+  // ---- C8: fitChunk REFUSES a sub-one ceiling, and this cell used to REQUIRE the livelock --------
+  //
+  // It read: `check("C8 a maxRaw below one yields exactly zero", z === 0)`. That was written to stop
+  // a fabricated size being returned, which was a real concern — but it pinned the ONE value the
+  // sole caller cannot survive. `planTransfer` does `take = Math.min(fit, remaining)` and
+  // `remaining -= take`, so a fit of 0 never decrements: the number C8 demanded is the number that
+  // makes the plan loop forever. **A passing cell holding a defect in place**, the third in this
+  // slice after the fetch cell requiring two refusal names to differ and the flat-`true` possession
+  // double that made the fence untestable.
+  //
+  // The original concern is kept, not discarded: C8b still pins that no size is fabricated, because
+  // "it throws" and "it returns something sane" are different guarantees and only one of them was
+  // ever at issue.
   {
-    const z = fitChunk({ budget: 943_718, frame: uploadFrame(0), maxRaw: 0 });
-    check("C8 a maxRaw below one yields exactly zero, never a fabricated size", z === 0, z);
+    let threw: unknown;
+    try { fitChunk({ budget: 943_718, frame: uploadFrame(0), maxRaw: 0 }); }
+    catch (e) { threw = e; }
+    check("C8 a maxRaw below one is REFUSED, never answered with the zero its caller cannot survive",
+      threw instanceof RangeError, threw);
+    check("C8b and the refusal names maxRaw rather than the budget — the budget here is ample",
+      threw instanceof RangeError && threw.message.includes("maxRaw") && !threw.message.includes("943718"),
+      (threw as Error)?.message);
+    // C8c — THE CONSEQUENCE, asserted directly rather than trusted from the comment. Without this,
+    // C8 proves a throw and nobody has shown the thing the throw prevents. A bounded timer, because
+    // the failure being guarded is non-termination and a cell that hangs cannot report it.
+    let planThrew: unknown;
+    try { planTransfer({ totalBytes: 10, budget: () => 943_718, frame: () => uploadFrame(0), maxRaw: 0 }); }
+    catch (e) { planThrew = e; }
+    check("C8c planTransfer PROPAGATES it instead of looping forever on a zero-sized chunk",
+      planThrew instanceof RangeError, planThrew);
   }
 
   await nc.close();

@@ -67,7 +67,24 @@ export function fitChunk(opts: { budget: number; frame: FrameBuilder; maxRaw: nu
   // reporting success.
   const floor = frameBytes(frame, 1);
   if (floor > budget) throw new MinimumChunkError(budget, floor);
-  if (maxRaw < 1) return 0;
+  // ZERO IS NOT AN ANSWER THIS FUNCTION MAY GIVE, and returning it here contradicted the paragraph
+  // twelve lines above — "POSITIVE PROGRESS IS >= 1 RAW BYTE … this throws rather than returning 0"
+  // — which then held only for the budget floor and not for this path.
+  //
+  // The consequence is in `planTransfer`, its sole caller: `take = Math.min(fit, remaining)` and
+  // `remaining -= take`, so a fit of 0 never decrements and the plan loop never terminates. It is a
+  // caller declaring a ceiling below one byte, which is a caller bug, and the only two things this
+  // function can do about it are refuse loudly or hang the process. A cell REQUIRED the 0 —
+  // `C8` — so the livelock was pinned in place by a passing test, which is the third time in this
+  // slice a green cell held a defect still.
+  //
+  // NOT `MinimumChunkError`, though it was the obvious reach. That error means "one raw byte does
+  // not fit the BUDGET", which is false here — the budget may be enormous and the caller simply
+  // asked for less than a byte. Reusing it would map two unrelated causes onto one name and send an
+  // operator to look at the wrong number, which is the same defect this file records `liveLifecycleFor`
+  // committing with its bare catch.
+  if (maxRaw < 1)
+    throw new RangeError(`fitChunk: maxRaw must be at least 1, got ${maxRaw} (a ceiling below one byte cannot make progress)`);
   if (frameBytes(frame, maxRaw) <= budget) return maxRaw;
 
   // MEASURED, not estimated, and not a formula: each probe serializes the caller's ACTUAL frame and
