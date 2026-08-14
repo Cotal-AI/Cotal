@@ -4033,6 +4033,43 @@ function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
   });
 }
 
+/** Bounded TCP reachability on a socket we OWN: does a handshake to `server` complete within
+ *  `timeoutMs`? Deliberately narrower than {@link tcpInfoProbe} — it asks only whether the
+ *  transport can be reached, never whether NATS is speaking there, so the TLS-first listener that
+ *  `tcpInfoProbe` reports false for still passes this gate and goes on to a real connect.
+ *
+ *  It exists because `connect()` cannot be trusted to release a connection it never established.
+ *  `@nats-io/transport-node`'s `NodeTransport.dial()` keeps its socket in a local until the
+ *  handshake resolves (`this.socket = await this.dial(hp)`), so `this.socket` is STILL UNDEFINED
+ *  when the client's own connect timeout wins the race in `protocol.ts`'s `dial` and the catch
+ *  calls `transport.close()` — whose teardown is `this.socket?.destroy()`, i.e. a destroy of
+ *  nothing. Against an address that BLACKHOLES (SYN unanswered) rather than REFUSES (RST), the
+ *  socket is orphaned in libuv until the OS SYN timeout, and the process cannot exit for minutes
+ *  after the probe already returned its answer. That is issue #389, and it is upstream: nothing a
+ *  caller passes (`reconnect: false`, `timeout`) reaches the orphan. Our socket, our `destroy()`,
+ *  on every exit path — never an `unref`/force-exit, which would hide the symptom and a future
+ *  real hang with it. */
+function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let socket: ReturnType<typeof createConnection> | undefined;
+    let done = false;
+    const finish = (dialable: boolean) => {
+      if (done) return;
+      done = true;
+      try { socket?.destroy(); } catch { /* already gone */ }
+      resolve(dialable);
+    };
+    let host: string, port: number;
+    try { ({ host, port } = hostPort(server)); } catch { return resolve(false); }
+    socket = createConnection({ host, port });
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => finish(true));
+    socket.on("timeout", () => finish(false)); // blackhole: SYN unanswered inside our deadline
+    socket.on("error", () => finish(false)); // refused / reset / DNS failure
+    socket.on("close", () => finish(false));
+  });
+}
+
 /** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext
  *  liveness check ({@link tcpInfoProbe}): it reads the server's pre-auth `INFO` greeting and closes
  *  WITHOUT authenticating, so a live broker (open OR auth — INFO precedes auth) returns true while
@@ -4085,10 +4122,21 @@ export async function probeConnect(
   server: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<ProbeResult> {
+  const timeoutMs = opts.timeoutMs ?? 1000;
+  const started = Date.now();
+  // Reach the address on a socket we own BEFORE handing it to `connect()`, which orphans the
+  // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389).
+  // This cannot change any verdict: every address that gets past here had to complete a TCP
+  // handshake for `connect()` to have gotten anywhere either, and a gate failure is routed through
+  // the SAME classification the catch uses — so a locally-dead cred is still `stale-auth` and not
+  // silently downgraded to `unreachable` by the address being dark. The cost is one extra
+  // handshake on the reachable path; the deadline below is the REMAINDER of the budget, because
+  // `connect()`'s own `timeout` always covered its handshake too.
+  if (!(await tcpDialable(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
   try {
     const nc = await connect({
       servers: server,
-      timeout: opts.timeoutMs ?? 1000,
+      timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
       maxReconnectAttempts: 0,
       ...authOpts(opts),
@@ -4096,21 +4144,29 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    // A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) —
-    // and that is knowable LOCALLY, without the network, so it is decided FIRST, before the error
-    // type. On the wire the broker's rejection and the socket close race: a slow CI/Windows handshake
-    // can surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError,
-    // which used to misclassify a dead cred. Reading the cred removes that timing dependency entirely,
-    // so the classification is deterministic. Unreadable content falls through to the wire truth (no
-    // false stale diagnosis from garbage).
-    if (typeof opts.creds === "string") {
-      try {
-        if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
-      } catch { /* not introspectable — keep the wire truth */ }
-    }
-    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
-    // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
-    if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
-    return { ok: false, reason: "unreachable" };
+    return classifyProbeFailure(e, opts);
   }
+}
+
+/** Why a {@link probeConnect} attempt did not end in `ok`. Shared by the pre-connect reachability
+ *  gate and the connect catch so both classify identically — the gate must never turn a diagnosable
+ *  credential death into a bare `unreachable` just because the address went dark.
+ *
+ *  A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) — and
+ *  that is knowable LOCALLY, without the network, so it is decided FIRST, before the error type. On
+ *  the wire the broker's rejection and the socket close race: a slow CI/Windows handshake can
+ *  surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError, which
+ *  used to misclassify a dead cred. Reading the cred removes that timing dependency entirely, so the
+ *  classification is deterministic. Unreadable content falls through to the wire truth (no false
+ *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect. */
+function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
+  if (typeof opts.creds === "string") {
+    try {
+      if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
+    } catch { /* not introspectable — keep the wire truth */ }
+  }
+  if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
+  // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
+  if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
+  return { ok: false, reason: "unreachable" };
 }
