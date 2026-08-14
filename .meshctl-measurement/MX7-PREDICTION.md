@@ -488,3 +488,110 @@ principals the mint serves rather than the subject's alone.
 MX1–MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`; MX8c on `E8`+`E10`;
 **MX9 on `E12`, with the dimension-discrimination claim held**; MX7a blunt (superseded, kept);
 **MX8b refuted my prediction and is kept as the reason MX8c exists**; MX3a and MX5 survivors.
+
+---
+
+# MX10 — prediction, written BEFORE the mutant runs
+
+Written `Fri Aug 14 09:21:50 PM UTC 2026`. Base `8aef90e8`, tree clean.
+
+## The claim under test — a guard, not a property
+
+`E9` and `E10-univ` exist to stop `E8` and `E10` passing against an empty universe. **Both were
+reasoned into place, not driven.** That is the same weight I gave `m3-fence`'s import inspection
+before driving it, and I said so in the report rather than banking it.
+
+This mutant does not simulate a *product* defect. It empties the universe on purpose — the exact
+condition the guards claim to catch — and asks whether they actually catch it.
+
+## The mutant
+
+`extensions/connector-core/src/agent.ts:499` — `peekInbox` returns nothing:
+
+    peekInbox(scope = "all"): InboxItem[] { ...real body... }
+    →
+    peekInbox(scope = "all"): InboxItem[] { return []; }
+
+## Predicted cells, NAMED — and the vacuous passes are the POINT
+
+| Cell | Prediction | Why it matters |
+| --- | --- | --- |
+| **`E9`** (in-ACL post delivered) | **RED** | The positive arm falls. This is the guard working. |
+| **`E10-univ`** (this snapshot is live) | **RED** | Same, for the later snapshot. |
+| **`E8`** (out-of-ACL read denied) | **GREEN — VACUOUSLY** | Nothing is in the inbox, so nothing forbidden is either. |
+| **`E10`** (subtree denied) | **GREEN — VACUOUSLY** | Same. |
+| `E11`, `E12` | **GREEN** | They read the witness's collected list, not the inbox. |
+| `A3d` (open mode: nothing delivered while disconnected) | **GREEN — VACUOUSLY** | Also an inbox absence assertion. **Its positive arm is elsewhere in the suite, not in its own read — flagged here rather than fixed mid-mutation.** |
+| every other open-mode cell | **GREEN** | |
+
+Expected tally: **36 passed, 2 failed, 0 VOID, rc=1.**
+
+## What would REFUTE me
+
+1. **`E9` or `E10-univ` stays GREEN.** The guard does not detect an empty universe and is decorative
+   — the thing I would have shipped on reasoning alone.
+2. **`E8` or `E10` reddens.** Then they are not pure absence assertions and my account of why they
+   need guarding is wrong.
+3. **`E11`/`E12` redden.** The mutant is wider than `peekInbox` and the run says less than claimed.
+
+## Non-equivalence
+
+The interesting evidence here is **not** a red cell — it is **two red guards standing next to two
+green absences**. If that pattern appears, the fleet precondition is demonstrated rather than
+asserted: an absence-heavy suite without a positive arm reports success on nothing at all.
+
+---
+
+# MX10 RESULT — read at `Fri Aug 14 09:23:01 PM UTC 2026`
+
+**KILLED on both named guards, and the vacuous passes appeared exactly where predicted.**
+
+Observed: **36 passed, 2 failed, 0 VOID, rc=1** — the predicted tally.
+
+| Cell | Predicted | Observed |
+| --- | --- | --- |
+| `E9` | RED | **RED** — `Inbox empty — no new messages.` |
+| `E10-univ` | RED | **RED** — same |
+| `E8` | GREEN, vacuously | **GREEN** |
+| `E10` | GREEN, vacuously | **GREEN** |
+| `E11`, `E12` | GREEN | **GREEN** (they read the witness list, not the inbox) |
+| `A3d` | GREEN, vacuously | **GREEN** |
+
+**Non-equivalence is the PATTERN, not any single cell: two red guards standing next to two green
+absences.** The fleet precondition is demonstrated rather than asserted — an absence-heavy suite
+without a positive arm in the same read reports success on nothing at all.
+
+**The guards were reasoned into place and are now driven.** That distinction is the whole reason
+this mutant was run; I had flagged both as unproven in the report rather than banking them.
+
+## ⚠️ AND IT FOUND ONE — `A3d`
+
+Predicted green-vacuously and **flagged in the prediction rather than fixed mid-mutation**: `A3d`
+("nothing is delivered live while disconnected") is an absence assertion in the OPEN-mode arm whose
+positive arm was elsewhere in the suite, not in its own read. **It went green against an empty
+universe.** Fixed at the commit above with `A3d-univ`, which must be taken *before* the disconnect
+because that is the only moment the read can be shown to work.
+
+# MX10b RESULT — the same mutant against the repaired suite
+
+**Re-run to confirm the new guard is not decorative either.** Prediction: `A3d-univ` RED alongside
+`E9` and `E10-univ`; the three absences (`A3d`, `E8`, `E10`) green; `E11`/`E12` untouched.
+**REFUTED IF `A3d-univ` survives an empty inbox** — then it is the same reasoning-only guard it
+replaced.
+
+**Observed `Fri Aug 14 09:25:20 PM UTC 2026`: 36 passed, 3 failed, 0 VOID, rc=1.**
+
+**`A3d-univ` RED**, alongside `E9` and `E10-univ`. The three absences (`A3d`, `E8`, `E10`) green;
+`E11`/`E12` untouched. **Not refuted: the new guard falls on an empty universe, so it is a control
+rather than a comment.**
+
+**Three red guards, three green absences.** Every absence assertion in this suite that reads the
+inbox now has a positive arm in the same read, and each of those arms has been shown to fall.
+Restored, rebuilt, suite back to **39 passed, 0 failed, 0 VOID, rc=0**.
+
+## Ledger
+
+MX1–MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`; MX8c on `E8`+`E10`;
+MX9 on `E12` with dimension-discrimination held; **MX10 on `E9`+`E10-univ`, which also FOUND `A3d`
+passing vacuously; MX10b on the repaired `A3d-univ`**; MX7a blunt (superseded, kept); **MX8b
+refuted my prediction and is kept as the reason MX8c exists**; MX3a and MX5 survivors.
