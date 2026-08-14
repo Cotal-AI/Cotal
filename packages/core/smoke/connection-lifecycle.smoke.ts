@@ -10,6 +10,15 @@
  * construct (MeshAgent passes static creds bytes). So this suite proves the METHODS behave, and
  * makes no claim that a tool caller can reach arm 3 at all — for arm 3 that claim would be false.
  *
+ * ARM INDEPENDENCE, and why this suite has a THIRD outcome. The arms share one broker and its
+ * connection counters are global, so a mutation that breaks an early arm used to redden cells in the
+ * later ones. Those reds were worthless: a red cell downstream of a broken fixture cannot tell
+ * "the mutation broke this arm too" apart from "this arm never had a fair run". Each arm therefore
+ * declares a NAMED ENTRY PRECONDITION for the fixture it needs — ARM 1 goes further and BUILDS its
+ * own subject rather than inheriting ARM 2's — and if that precondition fails the arm's cells are
+ * recorded VOID rather than failed. "Green elsewhere" is this suite's central mutation-adequacy
+ * claim, and it is only worth stating when the elsewhere is known to have run on a clean fixture.
+ *
  * WHAT EACH ARM MEASURES, AND WHAT WOULD HAVE REFUTED IT — written before any result is cited:
  *
  * ARM 1  A refused `connect()` must leave NOTHING live.
@@ -86,9 +95,31 @@ const awaitExit = (p: ReturnType<typeof spawn>, ms = 4000): Promise<void> =>
     if (p.exitCode !== null || p.signalCode !== null) return res();
     p.once("exit", () => res()); setTimeout(res, ms);
   });
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, voided = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+
+/** ── ARM INDEPENDENCE ───────────────────────────────────────────────────────────────────────────
+ *  The arms share one broker, and the broker's connection counters are GLOBAL. That once cost this
+ *  suite a real claim: under MX2 an early arm's failure left the fixture in a state the later arms
+ *  assume away, so cells in ARM 1 and ARM 3 reddened too. Those extra reds proved NOTHING — a red
+ *  cell downstream of a broken fixture cannot distinguish "the mutation broke this arm too" from
+ *  "this arm never had a fair run". One observation, two worlds, and "green elsewhere" is the
+ *  central mutation-adequacy argument this suite exists to make.
+ *
+ *  So each arm now opens with a NAMED ENTRY PRECONDITION describing the fixture it requires, and
+ *  its substantive cells run through `armCheck`. If the precondition fails, the arm's cells are
+ *  recorded **VOID — not evaluated**, never as passes and never as failures. VOID is the honest
+ *  third outcome: it says the arm was never fairly run, which is exactly what a cascade means. */
+const contaminated = new Set<string>();
+const precondition = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
+  else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
+};
+const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (contaminated.has(arm)) { voided++; console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
+  check(name, cond, extra);
 };
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
@@ -127,7 +158,8 @@ const stopBroker = async (): Promise<void> => {
   srv = undefined;
 };
 
-let mgr: CotalEndpoint | undefined, obs: CotalEndpoint | undefined, a: CotalEndpoint | undefined, c: CotalEndpoint | undefined;
+let mgr: CotalEndpoint | undefined, obs: CotalEndpoint | undefined, a: CotalEndpoint | undefined,
+    b: CotalEndpoint | undefined, c: CotalEndpoint | undefined;
 try {
   await startBroker(true);
 
@@ -168,19 +200,25 @@ try {
 
   // ══ ARM 2 — a teardown-failed refusal must not claim a retraction it never sent ═══════════════
   console.log("\n=== ARM 2: teardown-failed ===");
+  // ARM 2 runs FIRST and inherits nothing, so its precondition is the cheapest of the three — but
+  // it is stated rather than assumed, because "the first arm cannot be contaminated" stops being
+  // true the moment someone reorders the arms.
+  precondition("ARM 2", "the subject is connected, not self-disconnected, and visible to the observer",
+    (a as any).nc !== undefined && a.isSelfDisconnected() === false && seen()?.status !== undefined,
+    { hasNc: (a as any).nc !== undefined, self: a.isSelfDisconnected(), seen: seen() });
   const liveNc = (a as any).nc;
   const realDrain = liveNc.drain.bind(liveNc);
   liveNc.drain = () => Promise.reject(new Error("injected drain failure"));
   const d2 = await a.disconnect("arm2");
-  check("D2a it refuses as THAT refusal — teardown-failed, not a generic error",
+  armCheck("ARM 2", "D2a it refuses as THAT refusal — teardown-failed, not a generic error",
     d2.outcome === "refused" && (d2 as any).reason === "teardown-failed", d2);
-  check("D2b the retraction is reported only if it was SENT (a broker revision came back)",
+  armCheck("ARM 2", "D2b the retraction is reported only if it was SENT (a broker revision came back)",
     d2.outcome === "refused" && /HAS been retracted/.test((d2 as any).detail), d2);
   // The cell that matters, and the one that reddens on the defect: the OBSERVER's view.
   await wait(1200);
-  check("D2c the observer does NOT see the subject offline — the announcement really was retracted",
+  armCheck("ARM 2", "D2c the observer does NOT see the subject offline — the announcement really was retracted",
     seen()?.status !== "offline", seen());
-  check("D2d and the endpoint is not stranded in a third state (connection still held, not self-disconnected)",
+  armCheck("ARM 2", "D2d and the endpoint is not stranded in a third state (connection still held, not self-disconnected)",
     (a as any).nc !== undefined && a.isSelfDisconnected() === false,
     { hasNc: (a as any).nc !== undefined, self: a.isSelfDisconnected() });
 
@@ -188,52 +226,85 @@ try {
   liveNc.drain = realDrain; // restore on the CAPTURED object: under a mutant that drops the handle
   // early, `this.nc` may be gone, and a harness that crashes there hides the cells after it.
   const d2ok = await a.disconnect("arm2-control");
-  check("D2e CONTROL: the same disconnect now SUCCEEDS (so D2a's refusal was the fault, not the path)",
+  armCheck("ARM 2", "D2e CONTROL: the same disconnect now SUCCEEDS (so D2a's refusal was the fault, not the path)",
     d2ok.outcome === "disconnected", d2ok);
-  check("D2f CONTROL: and the observer DOES see offline (so D2c could have failed)",
+  armCheck("ARM 2", "D2f CONTROL: and the observer DOES see offline (so D2c could have failed)",
     await until(() => seen()?.status === "offline"), seen());
 
   // ══ ARM 1 — a refused connect() must leave nothing live ══════════════════════════════════════
   console.log("\n=== ARM 1: refused connect leaves nothing live ===");
-  // The broker's connection counters are GLOBAL. Retire every other endpoint first so that what
-  // they report is attributable to the subject and to nothing else — otherwise the manager and the
-  // observer reconnecting after the restart below would both raise the cumulative count (making the
-  // control pass for the wrong reason) and hold the current count above zero (making D1b fail for
-  // the wrong reason). Their work is done: only ARM 2 needed the observer.
+  // ARM 1 BUILDS ITS OWN SUBJECT INSTEAD OF INHERITING ARM 2's.
+  // It does need "an endpoint connected earlier and now deliberately off" — a state a fresh
+  // environment cannot produce — but it does NOT need ARM 2's endpoint to be the one in that state.
+  // Under MX2 that inheritance is precisely what went wrong: ARM 2's control disconnect refused, so
+  // ARM 1 began with a live connection where it had assumed none, and its cells reddened for a
+  // reason that had nothing to do with the code ARM 1 exists to test.
+  // `b` is provisioned, connected and cleanly disconnected HERE, while JetStream is still on and the
+  // manager is still alive to provision it.
+  const bId = newIdentity();
+  const uidB = mintLifecycleUid();
+  const bCreds = await provisionAgent(mgr!, auth, bId, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uidB });
+  b = new CotalEndpoint({
+    space, servers: SERVERS, creds: bCreds,
+    card: { id: bId.id, name: "subject-arm1", kind: "agent" },
+    channels: ["general"], lifecycleUid: uidB, heartbeatMs: 400, ttlMs: 3000,
+  });
+  b.on("error", () => { /* this arm breaks its connection on purpose */ });
+  await b.start();
+  const dB = await b.disconnect("arm1-setup");
+
+  // The broker's connection counters are GLOBAL. Retire every other endpoint so that what they
+  // report is attributable to `b` and to nothing else — otherwise the manager and the observer
+  // reconnecting after the restart below would both raise the cumulative count (making the control
+  // pass for the wrong reason) and hold the current count above zero (making D1b fail for the wrong
+  // reason). Their work is done: only ARM 2 needed the observer, and ARM 2 is over.
+  await a!.stop(); a = undefined;
   await obs!.stop(); obs = undefined;
   await mgr!.stop(); mgr = undefined;
   await stopBroker();
   await startBroker(false); // same accounts, same port, JetStream OFF — a natural post-dial failure
+  let settle = (await varz()).current;
+  for (let i = 0; i < 30 && settle !== 0; i++) { await wait(100); settle = (await varz()).current; }
+  // THE ENTRY PRECONDITION. Everything ARM 1 assumes, asserted rather than inherited: its own
+  // subject really is deliberately off, and the global counters really do speak about it alone.
+  // If this fails, ARM 1's cells go VOID — the fixture was wrong before its code ever ran.
+  precondition("ARM 1",
+    "ARM 1's OWN subject is deliberately off holding no connection, and nothing else is live at the broker",
+    dB.outcome === "disconnected" && (b as any).nc === undefined && b.isSelfDisconnected() === true && settle === 0,
+    { setupDisconnect: dB.outcome, hasNc: (b as any).nc !== undefined, self: b.isSelfDisconnected(), current: settle });
+
   const before1 = await varz();
-  const r1 = await a.connect();
-  check("D1a it refuses as bind-failed — the broker answered, so 'broker-unreachable' would be a lie",
+  const r1 = await b.connect();
+  armCheck("ARM 1", "D1a it refuses as bind-failed — the broker answered, so 'broker-unreachable' would be a lie",
     r1.outcome === "refused" && (r1 as any).reason === "bind-failed", r1);
   const after1 = await varz();
-  check("D1-ctl CONTROL: the broker's CUMULATIVE count ROSE — it accepted an authenticated connection, so this is a post-dial failure and not an auth rejection",
+  armCheck("ARM 1", "D1-ctl CONTROL: the broker's CUMULATIVE count ROSE — it accepted an authenticated connection, so this is a post-dial failure and not an auth rejection",
     after1.total > before1.total, { before: before1, after: after1 });
   let current1 = (await varz()).current;
   for (let i = 0; i < 30 && current1 !== 0; i++) { await wait(100); current1 = (await varz()).current; }
-  check("D1b nothing is left live at the broker after the refusal", current1 === 0, { current: current1 });
+  armCheck("ARM 1", "D1b nothing is left live at the broker after the refusal", current1 === 0, { current: current1 });
   // The in-process half of D1b, and the sharper of the two: the defect kept the connection ON THE
   // ENDPOINT, where disconnect() then refused `not-connected` over a live socket.
-  check("D1c the endpoint holds no connection and is still deliberately off, not in a third state",
-    (a as any).nc === undefined && a.isSelfDisconnected() === true,
-    { hasNc: (a as any).nc !== undefined, self: a.isSelfDisconnected() });
+  armCheck("ARM 1", "D1c the endpoint holds no connection and is still deliberately off, not in a third state",
+    (b as any).nc === undefined && b.isSelfDisconnected() === true,
+    { hasNc: (b as any).nc !== undefined, self: b.isSelfDisconnected() });
 
   console.log("\n--- INVERSE CONTROL: with JetStream restored, the SAME call succeeds ---");
   await stopBroker();
   await startBroker(true);
-  const r1ok = await a.connect();
-  check("D1d CONTROL: connect() through the same path SUCCEEDS (so D1a's refusal was the bind, not the verb)",
+  const r1ok = await b.connect();
+  armCheck("ARM 1", "D1d CONTROL: connect() through the same path SUCCEEDS (so D1a's refusal was the bind, not the verb)",
     r1ok.outcome === "connected", r1ok);
-  check("D1e CONTROL: and the broker now shows a live connection (so D1b could have failed)",
+  armCheck("ARM 1", "D1e CONTROL: and the broker now shows a live connection (so D1b could have failed)",
     (await varz()).current > 0, await varz());
 
   // ══ ARM 3 — credential renewal must not outlive a deliberate disconnect ══════════════════════
   // CORE-LEVEL ONLY. A creds SOURCE is not something the connector can construct, so this proves
   // the endpoint contract and says nothing about what a tool caller can reach.
   console.log("\n=== ARM 3: credential renewal does not outlive a deliberate disconnect (core API only) ===");
-  await a!.stop(); a = undefined; // same reason as above: the counters must speak about `c` alone
+  // Same reason as above: the counters must speak about `c` alone. ARM 1 left `b` CONNECTED (D1d),
+  // so retiring it here is what makes ARM 3's baseline attributable rather than merely plausible.
+  await b!.stop(); b = undefined;
   const TTL = 4; // renewal arms at 75% ⇒ ~3s
   const cid = newIdentity();
   let mints = 0;
@@ -258,25 +329,32 @@ try {
   });
   c.on("error", () => { /* renewal failures are reported, not thrown */ });
   await c.start();
-  check("setup: the creds-source endpoint fetched once before its first connect", mints === 1, mints);
+  // THE ENTRY PRECONDITION for ARM 3. Its endpoint is its own, but the BROKER is still shared, and
+  // every cell below is a cumulative-counter delta — so what needs asserting is that `c` is the only
+  // thing live at the broker. Without this, "no new connection while it is off" is equally explained
+  // by an earlier arm's endpoint having been retired at the right moment.
+  const live3 = (await varz()).current;
+  precondition("ARM 3",
+    "the creds-source endpoint fetched once before its first connect, and it is the ONLY endpoint live at the broker",
+    mints === 1 && live3 === 1, { mints, current: live3 });
   const d3 = await c.disconnect("arm3");
-  check("D3a it disconnects cleanly", d3.outcome === "disconnected", d3);
+  armCheck("ARM 3", "D3a it disconnects cleanly", d3.outcome === "disconnected", d3);
   const mintsAtOff = mints;
   const before3 = await varz();
   await wait(TTL * 1000 + 1500); // well past the 75% arm point
-  check("D3b the credential source is NOT called while the endpoint is deliberately off",
+  armCheck("ARM 3", "D3b the credential source is NOT called while the endpoint is deliberately off",
     mints === mintsAtOff, { at: mintsAtOff, now: mints });
-  check("D3c the broker sees NO new connection while it is off — the renewal preflight did not dial",
+  armCheck("ARM 3", "D3c the broker sees NO new connection while it is off — the renewal preflight did not dial",
     (await varz()).total === before3.total, { before: before3.total, after: (await varz()).total });
 
   console.log("\n--- INVERSE CONTROL: after connect(), renewal really is armed and really does dial ---");
   const before3c = await varz();
   const r3 = await c.connect();
-  check("D3d CONTROL: it comes back", r3.outcome === "connected", r3);
+  armCheck("ARM 3", "D3d CONTROL: it comes back", r3.outcome === "connected", r3);
   const mintsAtOn = mints;
-  check("D3e CONTROL: the timer re-armed — the source is called AGAIN without another connect()",
+  armCheck("ARM 3", "D3e CONTROL: the timer re-armed — the source is called AGAIN without another connect()",
     await until(() => mints > mintsAtOn, TTL * 1000 + 2000), { atOn: mintsAtOn, now: mints });
-  check("D3f CONTROL: and the broker's cumulative count rose (so D3c could have failed)",
+  armCheck("ARM 3", "D3f CONTROL: and the broker's cumulative count rose (so D3c could have failed)",
     (await varz()).total > before3c.total, { before: before3c.total, after: (await varz()).total });
 
   // ══ ARM 3b — the CROSSING: a source call already in flight when the disconnect lands ══════════
@@ -291,17 +369,17 @@ try {
   const held = await until(() => release !== undefined, TTL * 1000 + 3000);
   check("setup: a renewal is HELD inside its source call (the state a fresh run cannot produce)", held, { mints });
   const d3b = await c.disconnect("arm3b");
-  check("D3g it disconnects while that renewal is mid-flight", d3b.outcome === "disconnected", d3b);
+  armCheck("ARM 3", "D3g it disconnects while that renewal is mid-flight", d3b.outcome === "disconnected", d3b);
   const before3b = await varz();
   release!(); // the crossing: the held call now returns, past every earlier fence
   await wait(2000);
-  check("D3h the crossed renewal does NOT dial the broker — the candidate is discarded unproven",
+  armCheck("ARM 3", "D3h the crossed renewal does NOT dial the broker — the candidate is discarded unproven",
     (await varz()).total === before3b.total, { before: before3b.total, after: (await varz()).total });
-  check("D3i and it did not re-arm behind the disconnect", c.isSelfDisconnected() === true, { self: c.isSelfDisconnected() });
+  armCheck("ARM 3", "D3i and it did not re-arm behind the disconnect", c.isSelfDisconnected() === true, { self: c.isSelfDisconnected() });
 
   console.log("\n--- INVERSE CONTROL: the same held call, WITHOUT a disconnect, DOES dial ---");
   const r3b = await c.connect();
-  check("D3j CONTROL: it comes back", r3b.outcome === "connected", r3b);
+  armCheck("ARM 3", "D3j CONTROL: it comes back", r3b.outcome === "connected", r3b);
   holdNext = true;
   release = undefined;
   const held2 = await until(() => release !== undefined, TTL * 1000 + 3000);
@@ -312,7 +390,7 @@ try {
     for (let i = 0; i < 40; i++) { if ((await varz()).total > before3j.total) return true; await wait(100); }
     return false;
   })();
-  check("D3k CONTROL: released with the endpoint CONNECTED, the renewal DOES reach the broker (so D3h could have failed)",
+  armCheck("ARM 3", "D3k CONTROL: released with the endpoint CONNECTED, the renewal DOES reach the broker (so D3h could have failed)",
     dialled, { before: before3j.total, after: (await varz()).total });
 
   // ── D3l/D3m — does DISCARDING leave anything worse than it fixes? ─────────────────────────────
@@ -337,18 +415,23 @@ try {
   check("setup: the CACHED credential really is past its own exp at the moment of the return (D3m's premise, measured rather than derived from the TTL)",
     cachedExpMs > 0 && cachedExpMs < Date.now(), { cachedExpMs, now: Date.now() });
   const r3c = await c.connect();
-  check("D3l after a DISCARDED renewal and a gap past the cached credential's expiry, connect() still comes back",
+  armCheck("ARM 3", "D3l after a DISCARDED renewal and a gap past the cached credential's expiry, connect() still comes back",
     r3c.outcome === "connected", r3c);
-  check("D3m CONTROL: it came back by RE-FETCHING (the cached credential was treated as stale) — without this, D3l is equally explained by a credential that never expired",
+  armCheck("ARM 3", "D3m CONTROL: it came back by RE-FETCHING (the cached credential was treated as stale) — without this, D3l is equally explained by a credential that never expired",
     mints > mintsBeforeReturn, { before: mintsBeforeReturn, after: mints });
 
-  console.log(`\nCONNECTION-LIFECYCLE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+  // VOID is reported separately and never folded into either column. A voided arm is not a pass
+  // (nothing was proven) and not a failure (nothing was disproven) — it is a run that did not
+  // happen, and a suite that hides that behind a green total is lying by arithmetic.
+  const voidNote = voided ? `, ${voided} VOID — arms: ${[...contaminated].join(", ")}` : "";
+  console.log(`\nCONNECTION-LIFECYCLE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed${voidNote})`);
+  if (voided) console.log(`  ⊘ ${voided} cell(s) were NOT EVALUATED: their arm's entry precondition failed, so their colour would not have been evidence.`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  for (const ep of [c, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
+  for (const ep of [c, b, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
   await stopBroker(); // await the exit BEFORE removing the scratch it is running out of
   rmSync(dir, { recursive: true, force: true });
 }
