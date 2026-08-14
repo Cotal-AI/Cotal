@@ -126,22 +126,50 @@ user account's ledger lifecycle claim, and the code calls it "the control surfac
 the grant" (`:271-273`). The `--creds` path looks the most privileged and is the least
 account-bound.
 
+## 9. In-flight replies and the presence lease **[M — M5]**
+
+`requestControl` issues `nc.request(..., {noMux, reply})`, so the reply subject AND the timeout timer
+both live on the connection. Rebuilt mid-flight, the call **never settled inside 20s despite its own
+5000ms deadline**; the uninterrupted control resolved at 600ms through the identical path. Fixed —
+see `packages/core/smoke/request-strand.smoke.ts`.
+
+A graceful `stop()` **marks** the presence entry `offline` rather than deleting it, best-effort
+inside a try/catch (`endpoint.ts:1123-1153`). So a crash leaves the last status standing until TTL.
+
+## 10. Durable membership under a self-disconnect **[M — M6, 4/4]**
+
+A self-disconnect leaves the Plane-3 membership OPEN; only an explicit leave closes it. Controls:
+the backstop delivers while the agent is up (C1); a post after an explicit `durableLeave` is not
+delivered (C2). **Scope: this covers ONE directly-created membership and a direct privileged
+tombstone. It does not cover multi-membership cleanup, partial failure, concurrent reopen, or
+re-target through the agent's own credential.** See DESIGN §7.2 for the saga this does not close.
+
 ## Not measured
-- The user/bearer branch driven live (needs the auth service and a login). The table above is a
-  code read, not a measurement — the weakest claim here.
-- Leases and claims held by an agent at disconnect.
-- Durable (Plane-3) membership under a self-disconnect. These probes ran open-mode/live-only, so the
-  durable backstop was absent throughout. Note that `packages/core/smoke/delivery-leave-tombstone.smoke.ts`
-  already proves the adjacent property that a durable *leave* tombstones even after ACL narrowing.
-- No repo suite was run. These are four scoped probes: an M1 verb drive, an M2 open-mode
-  gate-bypass, an M3 broker-fence suite (9 checks), and an M4 observer-ghost drive.
+- The user/bearer branch driven live (needs the auth service and a login). The connect-branch table
+  above is a code read, not a measurement — the weakest claim here.
+- Leases and claims held by an agent at disconnect. (In-flight *replies* ARE now measured — §9.)
+- Multi-membership close, partial-close failure, and concurrent reopen during a close scan (§7.2 of
+  the design). M6 covers the single-membership case only.
+- A confirmed causal presence transition — no probe drives one; M4 drives today's best-effort stop.
+- **No repo suite was run.** These are six scoped probes: M1 verb drive, M2 open-mode gate-bypass,
+  M3 broker fence (9 checks), M4 observer ghost, M5 lease/in-flight, M6 durable membership (4/4);
+  plus the committed regression suite `packages/core/smoke/request-strand.smoke.ts` (7/7,
+  2/2 mutations killed on named cells).
 
 ## Reproduction
-From the main checkout (the worktree has no `node_modules`, and this program does not run
-`pnpm install`):
+
+The probes import core via a relative path, so they exercise **the tree they sit in**. Run them from
+a checkout with `node_modules` reachable (this program never runs `pnpm install`).
+
+**Trap worth knowing:** `extensions/connector-core/node_modules/@cotal-ai/core` is a RELATIVE symlink.
+If you symlink a whole `node_modules` into a worktree, that link resolves to the **main checkout's**
+core — so a probe can silently test unpatched source. Point it at the worktree explicitly.
 
 ```
 node_modules/.bin/tsx packages/core/meshctl-m3-fence.smoke.ts
+node_modules/.bin/tsx packages/core/meshctl-m5-lease.mts
+node_modules/.bin/tsx packages/core/meshctl-m6-durable.smoke.ts
+node_modules/.bin/tsx packages/core/smoke/request-strand.smoke.ts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m1-probe.mts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m2-gate.mts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m4-probe.mts

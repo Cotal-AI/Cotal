@@ -1,6 +1,6 @@
 # Design note: agent-driven mesh connection control
 
-Base `7f1d9b27`. Every claim marked **[M]** is measured — see `RESULTS.md` and the probes beside
+Base `7cc74f50`. Every claim marked **[M]** is measured — see `RESULTS.md` and the probes beside
 it. Claims marked **[R]** are code reads, and are called out as such wherever they carry weight.
 
 The ask: let an agent connect itself to a mesh, disconnect, and re-target through its own
@@ -341,9 +341,10 @@ the `fm-health` seam (§3).
   the four connect branches. **Trigger, written down as required: if any revision of this design has
   a connection verb call into `packages/workspace/src/connect.ts`, this leg becomes required and
   must be driven live before that revision ships.**
-- **No repo suite has been run and no gate has been requested.** All evidence is five scoped probes:
+- **No repo suite has been run and no gate has been requested.** All evidence is six scoped probes:
   M1 verb drive, M2 open-mode gate bypass, M3 broker fence (9/9), M4 observer ghost, M5
-  lease/in-flight.
+  lease/in-flight, M6 durable membership (4/4). Plus the committed regression suite
+  `packages/core/smoke/request-strand.smoke.ts` (7/7, 2/2 mutations killed on named cells).
 
 ### 7.1 Durable membership under a self-disconnect — measured **[M — M6, 4/4]**
 
@@ -360,7 +361,17 @@ broker with a real delivery daemon:
 Both controls hold, so the arms could differ. **A self-disconnect leaves the durable membership
 open; only an explicit leave closes it.**
 
-This splits the design cleanly rather than complicating it:
+**SCOPE OF THIS MEASUREMENT — narrowed after review, because my `[M — M6]` heading was too broad.**
+M6 supports exactly two propositions: *one directly-created membership survives
+`CotalEndpoint.stop()`*, and *a direct privileged tombstone prevents a later post*. It does **not**
+drive multi-membership cleanup, a partial failure, a concurrent reopen, or re-target. Its C2 calls
+`dlv.durableLeaveFor(...)` privileged and direct, omitting the expected generation, so it does not
+exercise the **agent's own** `durableLeave` request path (whose handler requires a finite generation
+plus lifecycleUid). **So M6 is NOT evidence that a re-target verb can close old memberships through
+its own credential.** That remains an unmeasured design requirement.
+
+This splits the design rather than complicating it — **but the "cleanly" in the first draft was
+wrong, and §7.2 is why:**
 
 - **disconnect → reconnect: keep the membership.** Replaying what you missed is the backstop's
   entire purpose, and this is the behaviour that makes a deliberate "go quiet, come back" useful.
@@ -373,6 +384,41 @@ Observation, not claimed as a defect: `leaveChannel` returns early on
 `!this.channels.includes(channel)` (`:1600`), so a membership created server-side without a live
 subscription cannot be closed through it. Server-side memberships are plausibly the daemon's to
 manage, so this is recorded for the reviewer rather than asserted.
+
+### 7.2 BLOCKER — there is no lifecycle-level close-and-fence, so re-target's cleanup is a saga
+
+Raised by adversarial review and **accepted**. §7.1 makes "close the old memberships" a required
+step of re-target; the operations available cannot do it safely:
+
+- **Per-channel, not per-lifecycle.** `durableLeave` closes ONE membership and each tombstone commits
+  independently (`endpoint.ts:2471-2479, 3042-3050`; `members.ts:93-127`). With memberships A and B,
+  A can commit and B fail — leaving the source session **up but silently downgraded to live-only on
+  A**. There is no such outcome in §2.
+- **Rollback is not lossless.** A tombstone fixes a `leaveCursor`; a rejoin opens a *newer generation*
+  with a fresh `joinCursor`. Messages in the gap fall outside both intervals (`members.ts:93-127,
+  212-229`). **"Just rejoin what you closed" cannot restore continuous durable coverage** — so a
+  partial failure is not undoable, only reportable.
+- **Even a fully successful scan is racy.** `listMemberships` is a snapshot; a `durableJoin` can
+  reopen a membership after it, and the per-generation stale-leave guard deliberately protects the
+  newer rejoin from the older leave. The boot-join reconciler also retries until membership exists
+  (`endpoint.ts:2347-2362, 3109-3163`). So close-all can complete and an old-mesh membership still be
+  open at teardown.
+- **Ordering against §3 is unspecified, and both orders are wrong.** Close-before-transition makes
+  partial degradation invisible; transition-before-close republishes the "announced a disconnect that
+  had not happened" lie.
+
+**Consequences for the design, adopted:**
+1. §2 gains **`partial-membership-close`**, and the outcome MUST carry the **closed and still-open
+   channel sets** — a partial close is a terminal reportable state, not a retryable one, because it
+   cannot be rolled back losslessly.
+2. Re-target needs a **fence on the source lifecycle** (admission closed so nothing can rejoin during
+   the scan) — the same latch shape §2 already needs for in-flight requests. Without a fence the scan
+   races the reconciler.
+3. **Honest statement of where this leaves the feature:** disconnect→reconnect is unaffected and
+   ships. **Re-target's membership cleanup cannot be made atomic with today's primitives**, so either
+   re-target ships with an explicit, reported partial state, or a lifecycle-level close-and-fence
+   operation is built first. **That is a scope decision for fm-orchestrator, not one I should quietly
+   make inside an implementation.**
 
 ---
 
