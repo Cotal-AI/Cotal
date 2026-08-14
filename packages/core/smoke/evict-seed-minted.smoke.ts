@@ -138,9 +138,18 @@ const ledgerDir = mkdtempSync(join(tmpdir(), "cotal-evictseed-ledger-"));
 const ownerU = deriveOwnerToken(SECRET, "idp-subject-bearer-arm");
 const ACL = { allowSubscribe: ["general"], allowPublish: ["general"] };
 const bearerRow = grantActor(ledgerDir, { owner: ownerU, actor: "bearerarm", scope: [], ...ACL });
+// A SECOND bearer actor that is granted and NEVER revoked. It exists only to make B2 falsifiable
+// (see cell B3): B2 claims the bearer is refused a fresh connection BECAUSE the ledger's deny-new
+// boundary read its revocation. The mutation that would have proven that (forcing
+// `ledgerAuthorizeConnect` to allow) is UNRUNNABLE from a worktree — the edited file is never
+// loaded, proven by a positive control in which an unconditional `throw` at the top of that
+// function still left the suite green. So the same question is asked by varying the INPUT instead
+// of the code, which needs no mutation and touches no shared checkout.
+const keepRow = grantActor(ledgerDir, { owner: ownerU, actor: "keeparm", scope: [], ...ACL });
 
 const issuer = createUserTokenIssuer({ issuer: ISS, key: await generateSigningKey() });
 const bearerB = await issuer.issue({ owner: ownerU, space, actor: "bearerarm", scope: [], lifecycleUid: bearerRow.lifecycleUid, ttlSec: 300 });
+const bearerKeep = await issuer.issue({ owner: ownerU, space, actor: "keeparm", scope: [], lifecycleUid: keepRow.lifecycleUid, ttlSec: 300 });
 
 let calloutNc: NatsConnection | undefined, observerNc: NatsConnection | undefined,
   evictorNc: NatsConnection | undefined, ncA: NatsConnection | undefined, ncB: NatsConnection | undefined;
@@ -292,6 +301,50 @@ try {
   check(
     "A4: after eviction, the SEED-MINTED credential RECONNECTS with the same material — eviction ends a connection, it does not revoke the credential",
     seedReconnected === true, { seedReconnected, seedReconnectErr },
+  );
+
+  // ---------- B3 — IS B2 A MEASUREMENT, OR A CONSTANT? ----------
+  // B2 asserts a revoked bearer is REFUSED a fresh connection. On its own that is compatible with a
+  // duller explanation: that NO bearer can reconnect here — a stale issuer, a dead callout after the
+  // earlier evictions, an inbox-prefix collision — in which case B2 would be true for a reason that
+  // has nothing to do with revocation, and the whole "the ledger's deny-new boundary bites, and it
+  // has no seed-mode arm" contrast would be an artefact.
+  //
+  // So a SECOND bearer, granted and NEVER revoked, is driven through the SAME eviction path and
+  // asked to reconnect. This is the input-varying twin of the mutation that could not run.
+  //
+  // PREDICTION REGISTERED BEFORE THE RUN: B3 GREEN — the never-revoked bearer reconnects.
+  // WHAT WOULD REFUTE ME: B3 RED. That would mean bearers cannot reconnect here for reasons
+  // unrelated to revocation, B2 would be a constant rather than a measurement, and the inverse
+  // control would carry NO information — report a broken control, never a finding.
+  const nonceK = `ibx${randomUUID().replace(/-/g, "")}`;
+  const ncK = await connect({
+    servers: SERVERS,
+    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearerKeep)],
+    maxReconnectAttempts: 0, timeout: 4000, name: nonceK, inboxPrefix: `_INBOX_${nonceK}`,
+  });
+  const principalK = principalKey(ownerU, "keeparm").key;
+  const evictedK = await evictDeniedPrincipal(observerNc, evictorNc, auth.account.pub, principalK, EVICT_OPTS);
+  try { await ncK.close(); } catch { /* closing */ }
+
+  let keepReconnected = false;
+  let keepReconnectErr = "";
+  let ncK2: NatsConnection | undefined;
+  try {
+    const nonceK2 = `ibx${randomUUID().replace(/-/g, "")}`;
+    ncK2 = await connect({
+      servers: SERVERS,
+      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearerKeep)],
+      maxReconnectAttempts: 0, timeout: 4000, name: nonceK2, inboxPrefix: `_INBOX_${nonceK2}`,
+    });
+    keepReconnected = !ncK2.isClosed();
+  } catch (e) { keepReconnectErr = (e as Error)?.message ?? String(e); }
+  if (ncK2) await ncK2.close();
+
+  check(
+    "B3 control: a granted, NEVER-REVOKED bearer evicted through the SAME path DOES reconnect — so B2's refusal is caused by the REVOCATION and is a measurement, not a constant",
+    keepReconnected === true && evictedK.kicked >= 1,
+    { keepReconnected, keepReconnectErr, evictedK },
   );
 
   console.log(`\n  principal A (seed-minted): ${principalA}`);
