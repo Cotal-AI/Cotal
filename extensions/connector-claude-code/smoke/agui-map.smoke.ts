@@ -102,6 +102,19 @@
  *       half that walks 5938 real records. **Neither is sufficient alone and the pair is stated as
  *       a pair** — the same shape as the `[P5]` probe composing with `smoke:cas-preflight-cluster`.
  *
+ * RE-GRADED UNDER THE ENUMERATION — all `[B]`, all KILLED on the cell named:
+ *   M10 remove `channel` from `ORIGIN_RULE` -> `split:the-real-session-DOES-open-runs-without-a-synthetic-opener`
+ *   M11 make `task-notification` open a run -> `split:a-task-notification-opens-NO-run`
+ *   M12 make an absent origin open a run    -> `mechanism:an-ABSENT-origin-opens-no-run-even-carrying-promptSource`
+ *   M13 drop the compaction exclusion       -> `mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not`
+ *
+ * **AND THE MASKING IS GONE, which is the result worth reading.** Under the old `promptSource` gate,
+ * M9 SURVIVED: the compaction record was excluded twice over, so removing either check changed
+ * nothing. Under the enumeration its `origin.kind` is `channel`, which now opens a run, so the
+ * compaction marker is the ONLY thing refusing it — and M13 kills. **The same mutation flipped from
+ * equivalent to lethal because the surrounding rule changed, not because the cell did.** A kill set
+ * is a property of the code as it stands, and this pair is the demonstration.
+ *
  * **⚠️ THE HUMAN ARM IS DECLARED-UNMEASURED.** Every capture available contains ZERO human-typed
  * prompts — `~/.claude/history.jsonl` reports 0 for all three sessions and 0 for this project — so
  * `UNMEASURED:a-spec-shaped-human-prompt-opens-a-run-attributed-human` drives a record built from
