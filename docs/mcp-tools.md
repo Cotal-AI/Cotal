@@ -316,11 +316,11 @@ Deliberately take this session OFF the mesh, announcing the departure first so a
 
 *return to the mesh*
 
-Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential it already holds — it targets no new mesh and obtains no new authority. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.
+Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential this session was launched with — it takes no target, so it asks for no access you did not already have and cannot reach another mesh. It re-reads your grant as it stands NOW, so access revoked while you were away comes back as a refusal rather than silently still working. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.
 
 - **Side-effect:** puts you back on the mesh; peers see you online again.
 - **Available:** only with `capabilities: [connection]`.
-- Takes no target: it returns to the mesh this session was launched against, re-presenting the credential it already holds, so it obtains no new authority and can reach no mesh you were not already on. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.
+- Takes no target: it returns to the mesh this session was launched against, with the credential source it was launched with, so it asks for no access you did not already have and can reach no mesh you were not already on. It re-reads that credential when the cached one is stale, which is how a grant revoked while you were away comes back as a refusal rather than as a key that still works. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.
 
 No arguments.
 

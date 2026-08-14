@@ -48,6 +48,9 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `launchOptions` | map | Opaque per-connector launch options forwarded **raw** to the harness (Claude flags, OpenCode agent config; Hermes and pi have no option surface and fail loud). A CLI `--opt key=value` overrides a key set here. See [run a mesh](run-a-mesh.md#spawning-agents). |
 | `capabilities` | string[] | Control-plane capabilities minted into the cred. `spawn` grants the privileged control subject (spawn / named stop / persona definition), default-deny when absent, enforced by the broker, not a handler. On a per-user-auth mesh, `role:<r>` additionally lets the agent delegate role `r` when spawning ([identity & auth](identity-and-auth.md)); `admin` is never a persona capability. `connection` lets the agent manage its own mesh connection (`cotal_disconnect` / `cotal_connect`) — see below, because it is enforced differently from the others. |
 
+| `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
+| *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. The connector-owned keys are the exception: `connector`, `model`, `variant`, and `host` (the machine the session runs on) are overlaid from the live session, so a file cannot declare a harness or a host it is not on. |
+
 ### `capabilities: [connection]` — a policy control, not a broker grant
 
 `connection` is the odd one out and it is worth knowing why before you grant it.
@@ -58,11 +61,14 @@ without `spawn` is denied at the wire even if something hands it the tool. `conn
 police a socket the client chooses to close. The gate is the connector's tool surface: without the
 capability the verbs are simply absent from the session.
 
-That is sound here only because **these verbs reach nothing new**. Disconnect *removes* reach;
-connect restores reach to the mesh the agent was already launched against, using the credential it
-already holds. There is no authority to enforce because none is granted. So unlike `spawn`, this is
-not a security boundary you are opening — it is an operational policy you are setting, and the
-question it answers is:
+That is sound here only because **these verbs ask for nothing new**. Disconnect *removes* reach.
+Connect takes no target: it returns to the mesh the agent was launched against, with the credential
+source it was launched with. It is *not* true that it never mints — a session whose credential has
+gone stale re-reads it on the way back, which is exactly how access revoked while the agent was
+away comes back as a refusal instead of as a key that still works. What is true is the part that
+matters: it can ask for no scope the operator has not granted, and can reach no other mesh. So
+unlike `spawn`, this is not a security boundary you are opening — it is an operational policy you
+are setting, and the question it answers is:
 
 > **may this agent take itself out of its supervisor's reach, and put itself back?**
 
@@ -70,8 +76,6 @@ A disconnected agent is unreachable to **every** mesh peer, including whoever su
 it returns on its own. Its process keeps running and whoever controls that process still controls
 it. Grant `connection` to agents that have a reason to go deliberately quiet; withhold it from
 agents you need to be able to reach at all times. It is absent by default.
-| `owner` | string | **Policy, not content**: set once by `definePersona` (owner = creator); only the owner (or admin) may redefine the file over the wire. Never write it by hand. |
-| *(any other key)* | string | Kept verbatim in `meta` so a connector can read its own launcher hints without core knowing them. The connector-owned keys are the exception: `connector`, `model`, `variant`, and `host` (the machine the session runs on) are overlaid from the live session, so a file cannot declare a harness or a host it is not on. |
 
 The three channel verbs on one card, with the common recipes:
 [Channels & permissions](channels-and-permissions.md). Attention semantics (`quiet` /
