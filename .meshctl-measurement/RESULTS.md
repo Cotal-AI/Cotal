@@ -259,10 +259,23 @@ complete. It found the following, and they are recorded here in its framing rath
   M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (7 asserted + 4 recorded)**.
 - Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
   `packages/core/smoke/connection-lifecycle.smoke.ts` **39/39 at `e15b6e36`** (re-run today, rc=0 captured),
-  `extensions/connector-core/smoke/connection-control.smoke.ts` **21/21 at `7dae9115`** (re-run, rc=0),
+  `extensions/connector-core/smoke/connection-control.smoke.ts` **39 passed / 0 failed / 0 VOID at
+  `0a2a4ae6`** (run `Fri Aug 14 09:44:58 PM UTC 2026`, rc=0, ephemeral loopback broker under an
+  exclusivity ack; **counted in three columns, not one — passes, failures and VOIDs are never summed,
+  and the run additionally printed 1 RECORDED observation which is not a pass**),
   `packages/core/smoke/request-strand.smoke.ts` **9/9 at `ffc18c46`** (was 7/7 before ARM 3 was added).
-- Mutations: MX1/MX2/MX3/MX4 killed on named cells with broker-side non-equivalence; **MX3a survived, as
-  predicted**.
+- Mutations, on named cells with broker-side non-equivalence: **MX1/MX2/MX4 killed; MX6, MX7b, MX8,
+  MX8c, MX9, MX10, MX10b, MX11, MX12b killed; MX12 VOID (mutant never reached — the Plane-3 durable
+  path, not the live one); MX8b REFUTED its own prediction and is kept as the reason MX8c exists;
+  MX7a superseded as too blunt; MX3a and MX5 survived, as predicted.** Full ledger:
+  `.meshctl-measurement/MX7-PREDICTION.md`.
+
+**⚠️ AND THE DRIFT THIS SECTION WAS WRITTEN TO PREVENT RECURRED IN THIS SECTION.** The line above read
+`21/21 at 7dae9115` while the suite had grown to 39 cells and moved 6 commits — the *same* failure,
+in the *same* list, immediately below the paragraph explaining it. **Writing down the lesson did not
+stop me repeating it; re-deriving the number from a run did.** The count is only trustworthy on the
+run that produced it, and the fix is to stamp it at write time from a log, never from memory of the
+last edit.
 
 **Why the first two lines now carry different hashes.** This list previously stamped every suite with
 `ffc18c46` and reported the lifecycle suite as **20/20**, then **27/27**, while the suite had grown to
