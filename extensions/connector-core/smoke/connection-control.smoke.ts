@@ -487,6 +487,123 @@ async function main() {
     console.log(`  ▸ RECORDED (not asserted) — what the caller is told when it posts outside its publish ACL:\n` +
       `      isError=${outPub.isError === true}  text=${JSON.stringify(String(outPub.text).slice(0, 200))}`);
 
+    // ---- E14–E18: THE DM / ANYCAST REACH, AND THE SPACE FENCE — DRIVEN, NOT READ ----------------
+    // §7 item 2 of the design note has been a CODE READING for three rounds ("the DM and anycast
+    // paths are not driven"). This is that gap closed. It is here rather than in its own suite
+    // because it needs exactly this fixture: a seat holding a NARROW grant, on a broker that is
+    // proven to be enforcing auth (EX), with an independent witness.
+    //
+    // PREDICTIONS, WRITTEN BEFORE THE RUN — and they are the OPPOSITE of the channel case, which is
+    // why they are worth driving rather than assuming from E12:
+    //   P1 (E14) the subject CAN DM a peer it holds no grant of any kind about — DELIVERED.
+    //   P2 (E15) the subject CAN anycast a role it holds no grant about — DELIVERED.
+    //   P3 (E18) the subject CANNOT reach the same verbs in ANOTHER SPACE — DENIED.
+    // Read from `provision.ts:1078-1080`: the post ACL is per-channel default-deny, but the DM and
+    // anycast publish grants are `inst.*.*.<o>.<a>` and `svc.*.<o>.<a>` — WILDCARD over destination,
+    // pinned only on the SENDER's own owner+actor. If that reading is right, the fence on the
+    // peer-to-peer verbs is the SPACE, not the peer, and `allowPublish` does not bound them at all.
+    //
+    // REFUTED IF: the DM or the anycast is denied (then peer reach IS ACL-fenced and the reading is
+    // wrong), or the foreign-space publish SUCCEEDS (then the credential is not space-bounded and
+    // the design note's central claim — "nothing it did not already hold" — is unachievable as
+    // specified). P1/P2 are POSITIVE assertions, so a dead probe fails them rather than passing
+    // them for the wrong reason; they need no absence control. P3 is a denial, so it gets one.
+    const strId = newIdentity();
+    const strUid = mintLifecycleUid();
+    const strEp = new CotalEndpoint({
+      space: aspace, servers: ASERVER,
+      creds: await provisionAgent(mgrEp, sauth, strId, {
+        subscribe: ["secret"], allowSubscribe: ["secret"], allowPublish: ["secret"],
+        lifecycleUid: strUid, role: "stranger",
+      }),
+      card: { id: strId.id, name: "authed-stranger", kind: "endpoint" },
+      lifecycleUid: strUid, role: "stranger",
+      // registerPresence so the subject can RESOLVE it by name: `agent.dm(to)` is a roster lookup,
+      // and a resolution failure would read as an authority result if the two were not told apart.
+      channels: ["secret"], consume: true, registerPresence: true, watchPresence: false,
+    });
+    const strangerSaw: string[] = [];
+    strEp.on("message", (m: any, d: any, meta: any) => {
+      strangerSaw.push(`${meta?.kind}:${m.parts.map((p: any) => (p.kind === "text" ? p.text : "")).join("")}`);
+      d.ack();
+    });
+    await strEp.start();
+    await sleep(2000);
+
+    // The subject and the stranger share NOTHING: disjoint subscribe, disjoint allowPublish, no
+    // common channel. E12 in this same run proves the subject cannot post one word to `#secret` —
+    // the stranger's only channel. So any reach established below is reach the CHANNEL ACL denies.
+    const sawStranger = (S.getRoster?.() as any[] | undefined)?.some?.(
+      (p: any) => (p.name ?? p.card?.name) === "authed-stranger",
+    );
+    precondition("AUTHED", "E14-pre the subject can RESOLVE the stranger by name (so a DM failure below would be an AUTHORITY result, not a lookup miss)",
+      sawStranger === true, { sawStranger, roster: (S.getRoster?.() as any[] | undefined)?.map?.((p: any) => p.name ?? p.card?.name) });
+
+    const dmSpec = authedSpecs.find((s: any) => s.name === "cotal_dm")!;
+    const anySpec = authedSpecs.find((s: any) => s.name === "cotal_anycast")!;
+    const dmOut = await dmSpec.run(S, cfgAuthed, { to: "authed-stranger", text: "DM-TO-UNGRANTED-PEER" });
+    const anyOut = await anySpec.run(S, cfgAuthed, { role: "stranger", text: "ANYCAST-TO-UNGRANTED-ROLE" });
+    await sleep(2500);
+
+    armCheck("AUTHED", "E14 the subject CAN DM a peer it shares no channel and holds no grant about — witnessed AT THE RECIPIENT, not self-reported",
+      strangerSaw.some((w) => w.includes("DM-TO-UNGRANTED-PEER")), { strangerSaw, dmOut: dmOut.text, isError: dmOut.isError });
+    armCheck("AUTHED", "E15 the subject CAN anycast a role it holds no grant about — witnessed at the role's server",
+      strangerSaw.some((w) => w.includes("ANYCAST-TO-UNGRANTED-ROLE")), { strangerSaw, anyOut: anyOut.text, isError: anyOut.isError });
+
+    // E16 — THE ASYMMETRY AS ONE ASSERTION. E12 and E14 each measure half of it, and a reader who
+    // saw only one would draw the wrong conclusion about what `allowPublish` bounds. Asserting the
+    // conjunction means the finding cannot survive either half changing.
+    armCheck("AUTHED", "E16 THE ASYMMETRY: the SAME seat in the SAME instant is denied one word to #secret and delivered a DM to that channel's only member — `allowPublish` bounds broadcast, not peer reach",
+      !witnessed.some((w) => w.includes("PUB-OUT-OF-ACL")) && strangerSaw.some((w) => w.includes("DM-TO-UNGRANTED-PEER")),
+      { deniedToSecret: !witnessed.some((w) => w.includes("PUB-OUT-OF-ACL")), dmDelivered: strangerSaw.some((w) => w.includes("DM-TO-UNGRANTED-PEER")) });
+
+    // E17/E18 — CAN THE CREDENTIAL BE RE-TARGETED AT ANOTHER SPACE? This is the design note's
+    // central question driven rather than argued: a self-connect verb that accepts a space is only
+    // safe if the CREDENTIAL, not the client, refuses the spaces the agent was not granted.
+    //
+    // NOT reachable through the tool: `cotal_dm` addresses a peer in the agent's own space and has
+    // no space parameter, so the fence cannot be probed from there. Driven ONE LAYER DOWN, at the
+    // endpoint, and labelled as such — but that is the RIGHT layer for this question: a client-side
+    // check is exactly what a re-target verb would have to not depend on.
+    const retarget = async (space: string): Promise<{ outcome: string; detail: string }> => {
+      const ep = new CotalEndpoint({
+        space, servers: ASERVER, creds: subCreds,
+        card: { id: subId.id, name: "authed-subject-retarget", kind: "endpoint" },
+        lifecycleUid: subUid,
+        channels: [], consume: false, registerPresence: false, watchPresence: false,
+      });
+      ep.on("error", () => { /* expected on the denied arm */ });
+      try {
+        const started = await Promise.race([
+          ep.start().then(() => "ok" as const).catch((e: Error) => ({ err: e.message })),
+          sleep(10000).then(() => "hung" as const),
+        ]);
+        if (started === "hung") return { outcome: "INCONCLUSIVE", detail: "connect gave no verdict in 10s" };
+        if (typeof started === "object") return { outcome: "connect-refused", detail: started.err };
+        const pub = await Promise.race([
+          ep.multicast("RETARGET-PROBE", { channel: "general" }).then(() => "ok" as const).catch((e: Error) => ({ err: e.message })),
+          sleep(10000).then(() => "hung" as const),
+        ]);
+        if (pub === "hung") return { outcome: "INCONCLUSIVE", detail: "publish gave no verdict in 10s" };
+        if (typeof pub === "object") return { outcome: "publish-refused", detail: pub.err };
+        return { outcome: "PERMITTED", detail: "the publish was accepted by the broker" };
+      } finally {
+        try { await ep.stop(); } catch { /* nothing to unwind */ }
+      }
+    };
+    // CONTROL FIRST, and it is a real one: the arms differ ONLY in the space string, run through the
+    // identical constructor with the IDENTICAL credential. If both came back refused, E18 would be
+    // proving that this probe is broken, not that the credential is bounded.
+    const ownSpace = await retarget(aspace);
+    const otherSpace = await retarget("meshctl-elsewhere");
+    console.log(`     └─ re-target own space "${aspace}" → ${ownSpace.outcome}: ${ownSpace.detail}`);
+    console.log(`     └─ re-target other space "meshctl-elsewhere" → ${otherSpace.outcome}: ${otherSpace.detail}`);
+    armCheck("AUTHED", "E17 CONTROL: the same credential through the same constructor DOES reach its OWN space (so E18 is a bounded credential, not a broken probe)",
+      ownSpace.outcome === "PERMITTED", ownSpace);
+    armCheck("AUTHED", "E18 THE FENCE: the same credential re-pointed at ANOTHER space is refused by the BROKER — a self-connect cannot widen which space the agent reaches, whatever the client asks for",
+      otherSpace.outcome === "connect-refused" || otherSpace.outcome === "publish-refused", otherSpace);
+
+    await strEp.stop();
     await S.stop();
     await obsEp.stop();
     await mgrEp.stop();
