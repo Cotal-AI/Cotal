@@ -264,9 +264,37 @@ better than a sample can:**
 
 **That is a PROSE STATUS I authored by hand, naming a tip from hours earlier** — `1821abff`, against
 a then-current `30ab2e0e`. **The hooks set status on every transition** (`idle` on Stop, `working`
-on PreToolUse, `waiting` on Notification). **Had the auto-publish path fired even once during the
-candidate window, it would have overwritten this string.** It did not. **So the connector's status
-hooks have not run for this seat at all**, and the three candidate commands were never published.
+on PreToolUse, `waiting` on Notification). **Had the auto-publish path fired even once while that
+string stood, it would have overwritten it.** It did not.
+
+### ⚠️ That argument was stated too widely, and the correction needed timestamps
+
+I first wrote that **"the hooks have not run for this seat at all"**. fm-meshctl-2: *"an overwrite
+argument is last-writer-wins — it can only exclude writers AFTER the last write you know about. The
+overwrite you are treating as proof of absence is also the mechanism that would destroy the
+evidence."* **Correct. That was a universal drawn from one surviving artifact** — the same shape as
+the tautological guard and the un-provenanced table already withdrawn in this document.
+
+**Settled by the two timestamps it turns on, both in my own transcript:**
+
+    19:46:43Z  seat starts (first record in the transcript)
+    19:47:15Z  a peer's roster read       -> my activity field EMPTY  (32s into the session)
+    19:48:14Z  I SET the prose status     ("HEAD 1821abff …")         (91s in)
+    21:07:36Z  candidate 1   (Bash command carrying a guarded term)
+    21:08:41Z  candidate 2
+    21:53:21Z  candidate 3
+    22:38:36Z  I overwrite the prose myself
+
+> **All three candidates fall strictly inside the interval where the hand-typed prose stood
+> unchanged — 19:48:14Z to 22:38:36Z, nearly three hours. Any hook publish in that window would have
+> replaced it. So the three candidates were never published.** That claim is established.
+
+**What is NOT established, and is withdrawn:** *"the hooks have never run for this seat."* The only
+window that argument cannot cover is **19:47:15Z → 19:48:14Z — 59 seconds**, and a peer sampled it
+empty at second 32. **No candidate command exists in that window** (the first is over an hour
+later), so the gap is real but empty. *Stated rather than closed, because the difference between
+"the conclusion I need holds" and "the sentence I wrote holds" is exactly what this section is
+about.*
 
 **The honest bound, restated:** *not "unverifiable" — verifiable in principle by any peer, sampled
 clean at one instant by a peer, and argued clean across the whole window by the staleness of my own
@@ -345,7 +373,7 @@ mean.** `CLEAN 12/12` over the tree is a statement about **the tree**. The three
 | --- | --- | --- | --- |
 | committed artifacts, commits, branch, diff | yes | yes | **CLEAN 12/12** |
 | mesh messages sent | no | yes, from the transcript | **1 of 41 dirty** |
-| presence activity | no | **not by me — but by any peer** | 3 candidates, **argued unpublished**: my field held a hand-written status from hours earlier, which any hook firing would have overwritten |
+| presence activity | no | **not by me — but by any peer** | 3 candidates, **established unpublished**: all three fall inside a 2h50m interval in which a hand-typed status stood unchanged, and any hook firing would have replaced it |
 
 > **A verdict is only as wide as its corpus, and the corpus that is easiest to scan is the one
 > where the leak was least likely.** *The version-controlled surface is reviewed, diffed and
