@@ -88,6 +88,8 @@ import {
   AguiVocabularyError,
   COTAL_CUSTOM_EVENTS,
   aguiFrame,
+  isAguiFramePart,
+  parseAguiFrame,
   reasoningMessageContent,
   reasoningMessageEnd,
   reasoningMessageStart,
@@ -416,6 +418,57 @@ try {
   b.accept(runStarted({ threadId: "sess-beta", runId: "turn-1", timestamp: TS }));
 } catch (e) { interleaveRefused = e instanceof AguiVocabularyError; }
 c("two principals' runs interleaved into one stream do NOT look well-formed", interleaveRefused);
+
+// ---------------------------------------------------------------------------------------------
+// THE CONSUMER-SIDE VALIDATOR. This is the renderers' enforcement point, and it exists because the
+// obvious one does not: `implementations/web/tsconfig.json` excludes `src/web` from `tsc` and the
+// build copies it into `dist` verbatim, so that renderer is plain JavaScript no compiler reads.
+// A contract expressed as types has NO ENFORCEMENT POINT on it. So the contract is a function, and
+// these cells are what a consumer is entitled to rely on.
+// ---------------------------------------------------------------------------------------------
+const good = aguiFrame({ threadId: "t", runId: "r", epoch: "e", seq: 0, events: turn(1) });
+
+// ROUTING vs VALIDITY — the two answers that must never fuse. A consumer sharing a channel meets
+// parts that are not its business constantly; it meets a malformed frame as a defect.
+c("route:a-text-part-is-NOT-an-agui-frame", isAguiFramePart({ kind: "text", text: "hello" }) === false);
+c("route:a-real-frame-IS-one", isAguiFramePart(good) === true);
+c("route:the-routing-check-NEVER-throws-on-junk", (() => {
+  for (const junk of [null, undefined, 0, "", [], { kind: 7 }, { nokind: true }])
+    if (typeof isAguiFramePart(junk) !== "boolean") return false;
+  return true;
+})());
+
+c("validate:a-well-formed-frame-passes-through-unchanged", parseAguiFrame(good) === good);
+// EACH REFUSAL NAMES ITS OWN FIELD, through the same `refuses` helper the bracket cells use — a
+// validator that threw one message for every defect would tell a renderer author nothing, and "it
+// refused" is the same observation whichever field was wrong.
+refuses("validate:a-protocol-SKEW-is-refused-and-says-so",
+  () => parseAguiFrame({ ...good, protocol: "ag-ui/9.9.9" }), /protocol mismatch/);
+refuses("validate:an-empty-threadId-is-refused-BY-NAME",
+  () => parseAguiFrame({ ...good, threadId: "" }), /threadId/);
+refuses("validate:a-negative-seq-is-refused-BY-NAME",
+  () => parseAguiFrame({ ...good, seq: -1 }), /seq/);
+refuses("validate:an-EMPTY-events-array-is-refused",
+  () => parseAguiFrame({ ...good, events: [] }), /at least one event/);
+refuses("validate:an-UNRECOGNISED-event-type-is-refused-rather-than-skipped",
+  () => parseAguiFrame({ ...good, events: [{ type: "SOME_FUTURE_EVENT" }] }), /unrecognised type/);
+// And the routing/validity boundary from the other side: something that never claimed to be a frame
+// must be refused by pointing at the ROUTING check, not with a field complaint.
+refuses("validate:a-non-frame-is-refused-by-pointing-at-the-ROUTING-check",
+  () => parseAguiFrame({ kind: "text", text: "x" }), /isAguiFramePart/);
+// THE CONTROL FOR THE WHOLE REFUSAL BLOCK, and it is the inverse predicate: every type the
+// vocabulary DOES define must survive the same check. Without it, "unknown types are refused" is
+// satisfied by a validator that refuses everything — which is what every cell above would also pass.
+c("validate:CONTROL-every-defined-event-type-is-accepted-by-the-same-check", (() => {
+  for (const t of Object.values(AGUI_EVENT_TYPE)) {
+    try {
+      parseAguiFrame({ ...good, events: [{ type: t }] });
+    } catch {
+      return false;
+    }
+  }
+  return true;
+})(), { types: Object.values(AGUI_EVENT_TYPE).length });
 
 console.log(`agui-conformance smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

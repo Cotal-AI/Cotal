@@ -456,6 +456,85 @@ export function aguiFrame(opts: {
   };
 }
 
+/**
+ * **THE CONSUMER-SIDE ENFORCEMENT POINT.** `aguiFrame` above validates on the way OUT; this pair
+ * validates on the way IN, and they are separate functions because they are separate trust domains.
+ *
+ * It exists because the renderers cannot enforce a contract expressed as TypeScript types.
+ * `implementations/web/tsconfig.json` carries `"include": ["src"]` with `"exclude": ["src/web"]`,
+ * and the build copies `src/web` into `dist` verbatim — so the renderer is plain JavaScript that
+ * `tsc` never reads. A prose contract with no enforcement point is the defect, so the contract ships
+ * as **a function a consumer executes**, not as a shape a consumer is trusted to have read.
+ *
+ * **THE TWO ANSWERS ARE DIFFERENT AND MUST NOT BE FUSED.** "This part is not mine" is a routing
+ * decision a consumer makes constantly and quietly — every non-frame part on a channel it also
+ * reads. "This part claims to be mine and is malformed" is a defect that must be LOUD. One function
+ * returning `null` for both would make a version skew look exactly like someone else's message, and
+ * a renderer would show an empty pane for a stream it is actively failing to parse. So:
+ * {@link isAguiFramePart} answers the routing question with a boolean and never throws, and
+ * {@link parseAguiFrame} answers the validity question and throws with the field named.
+ */
+export function isAguiFramePart(part: unknown): boolean {
+  return typeof part === "object" && part !== null && (part as { kind?: unknown }).kind === AGUI_FRAME_KIND;
+}
+
+/**
+ * Validate an incoming frame, or throw {@link AguiVocabularyError} naming the field that failed.
+ *
+ * Call it only on a part {@link isAguiFramePart} accepted. Everything after that check is a defect
+ * rather than a routing outcome, including an unknown `protocol` — **a version skew must fail loud
+ * rather than render partially**, because a consumer that drops the fields it does not recognise
+ * shows a confidently incomplete transcript, which is worse than showing nothing.
+ *
+ * It deliberately does NOT check bracketing. A frame is not guaranteed to be self-bracketed — an
+ * oversized frame splits on event boundaries — so the unit that must balance is the writer's stream,
+ * and {@link AguiBrackets} is the machine for that, fed frame after frame. A validator demanding a
+ * frame balance on its own would forbid a split the plan mandates.
+ */
+export function parseAguiFrame(part: unknown): AguiFrame {
+  if (!isAguiFramePart(part))
+    throw new AguiVocabularyError(
+      `not an AG-UI frame: expected kind ${JSON.stringify(AGUI_FRAME_KIND)}, got ` +
+        `${JSON.stringify((part as { kind?: unknown } | null)?.kind ?? null)}. Route with ` +
+        `isAguiFramePart before calling this.`,
+    );
+  const f = part as Record<string, unknown>;
+
+  if (f.protocol !== AGUI_PROTOCOL)
+    throw new AguiVocabularyError(
+      `AG-UI protocol mismatch: this consumer understands ${JSON.stringify(AGUI_PROTOCOL)}, the ` +
+        `frame declares ${JSON.stringify(f.protocol ?? null)}. Refusing rather than rendering the ` +
+        `fields that happen to still parse.`,
+    );
+
+  for (const field of ["threadId", "runId", "epoch"] as const)
+    if (typeof f[field] !== "string" || (f[field] as string).length === 0)
+      throw new AguiVocabularyError(`frame ${field} must be a non-empty string`);
+
+  if (!Number.isSafeInteger(f.seq) || (f.seq as number) < 0)
+    throw new AguiVocabularyError(
+      `frame seq must be a non-negative safe integer, got ${JSON.stringify(f.seq ?? null)}`,
+    );
+
+  if (!Array.isArray(f.events) || f.events.length === 0)
+    throw new AguiVocabularyError("a frame must carry at least one event");
+
+  const known = new Set<string>(Object.values(AGUI_EVENT_TYPE));
+  f.events.forEach((e, i) => {
+    if (typeof e !== "object" || e === null)
+      throw new AguiVocabularyError(`frame events[${i}] is not an object`);
+    const t = (e as { type?: unknown }).type;
+    if (typeof t !== "string" || !known.has(t))
+      throw new AguiVocabularyError(
+        `frame events[${i}] carries an unrecognised type ${JSON.stringify(t ?? null)}. A renderer ` +
+          `must refuse an event it cannot display rather than skip it: a skipped event is a hole ` +
+          `in a transcript that still looks complete.`,
+      );
+  });
+
+  return part as AguiFrame;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Sizing and splitting (plan §5.2).
 //
