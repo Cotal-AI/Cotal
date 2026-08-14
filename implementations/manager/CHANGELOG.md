@@ -1,5 +1,124 @@
 # @cotal-ai/manager
 
+## 0.18.0
+
+### Minor Changes
+
+- 0ab9b4d: Move the auth plane's retirement rail off the retired `ctl` surface onto the endpoint subjects
+
+  The auth plane served its generic "retire a lifecycle" operation on
+  `ctl.auth-admin.<owner>.<actor>`, a rail the spec retires in full and states must
+  not be handled. Rows written onto a deleted rail are defects rather than
+  exceptions to it, so the rail moves to
+  `ep.one.auth.retire-lifecycle.handle.<target triple>.<caller triple>.<nonce>`
+  instead of the cut growing a carve-out.
+
+  Two things get stronger on the way. The reply is now derived from the parsed
+  request, so there is no argument through which a caller- or payload-supplied
+  reply target could arrive; and the request and reply planes are disjoint, so the
+  listener credential cannot express a request subject at all. The per-despawn
+  requester credential now pins both its caller triple and exactly one target
+  incarnation, so a leaked requester cannot be re-aimed at another lifecycle.
+
+  Serve-time authorization additionally requires that the serve registration a
+  request names belongs to the requesting principal. The previous two-token
+  subject could not express the caller beyond a recyclable alias, so the rail
+  accepted any registered instance's registration. This is alias-level binding:
+  the registration is keyed by an id that is stable across restarts and carries no
+  lifecycle uid, so a same-principal predecessor presenting the current epoch is
+  still accepted.
+
+  The spec rows also described an authorization mechanism the implementation had
+  already replaced, and now describe what ships.
+
+  This is a subject-plane migration, not a completed endpoint migration. The rail
+  carries the endpoint subjects but still exchanges the pre-v0.4 request and reply
+  bodies, registers no service record, serves no `describe`, and has no contract
+  artifact — so a generic endpoint client can neither discover nor invoke the
+  command. That gap is tracked separately, with the acceptance test being that a
+  generic client can do both. The one acceptance-path hole is closed here rather
+  than deferred: the request carries an id, the reply echoes it, and a reply that
+  does not echo is refused, so a wrong-id success cannot clear a retirement hold.
+
+  The requester's grant pins its target with the `handle` mode, which is normatively
+  redemption-minted. This path is not: there is no issuer-signed artifact, no
+  redemption step, and no lineage — the row is built directly from the minting
+  manager's coordinates under root authority. It is used because it is the only
+  target mode that can pin an exact incarnation, and the serve-time handler
+  re-checks that triple against the current mapping. This is a documented
+  deviation, not compliant handle semantics, and it is stated at the mint site and
+  in the ownership matrix row. It resolves with the same tracked work as the
+  envelope, since the mode and the envelope are one wire-conformance surface.
+
+- 208ad1f: Add a guarded way out of an issuance gate left frozen by a crashed manager restart.
+
+  When a manager restart is killed between deregistration and the successor's completion, the
+  endpoint's issuance gate is left frozen under a registration operation whose holder no longer
+  exists. Failing closed there is correct — it is what stops two incarnations serving at once — but
+  until now nothing could lift it, so every subsequent restart failed the same way and the only exits
+  were driving the internals by hand or discarding state.
+
+  `cotal reconcile-gate` verifies the freeze-holder is gone, logs what it found, and then completes
+  the dead operation exactly as the interrupted restart would have: revoke the credential family,
+  verify-evict its holders, and reopen the gate at the unchanged coordinate with the generation
+  advanced by one. It is a CLI command rather than a verb on the manager endpoint because the state
+  it repairs is precisely "the manager cannot complete registration" — an endpoint-served repair
+  would be unreachable exactly when it is needed.
+
+  The affirmative check required a read half that did not exist. The only principal-scoped liveness
+  was fused with the KICK inside `evictPrincipal`, so using it as a precheck would have killed a live
+  holder before anything could refuse on its behalf. This adds a read-only `principalLiveness`
+  delivery-admin verb (observer credential only, closed query, a reply bound to the exact principal
+  asked about) reporting `live` / `gone` / `unknown` with scan completeness kept separate. Its sweep
+  is the strict one the plane-liveness oracle already used — full reply validation plus the
+  single-server proof — now extracted and shared by both, so a probe can never be laxer than the
+  repair it authorizes.
+
+  Every refusal names its condition (`holder-alive`, `holder-unknown`, `liveness-unestablishable`,
+  `not-frozen`, `wrong-op-kind`, `no-gate`, `eviction-unverified`, `raced`). A timeout is
+  unknowability rather than death, the probe is a precondition on top of the barrier's own verified
+  eviction rather than a replacement for it, and there is no force flag and no path that discards
+  gate state.
+
+  Two defects in the shared `$SYS` scan surface were found while proving this and are fixed here,
+  because the guarded command is only as good as the observation it stands on.
+
+  A paginated CONNZ sweep could read a **lost later page as sweep-complete**. The first page comes
+  back full with more promised, the next round is silent or answers with an empty page while its own
+  total still says there is more, and the loop treated that as the end of the data. Since "complete
+  sweep, principal not found" is the definition of verified-gone, a connection living on the page that
+  was never delivered read as absent — so verified eviction could report gone for a principal that was
+  alive. Both the read-only observation and the scan/kick/re-scan primitive had the same shape, which
+  also meant the two of them were not the independent checks they looked like. A sweep now tracks
+  which servers still owe it a page and fails closed when one stops delivering; a sweep that genuinely
+  finishes across several pages still concludes gone, so nothing wedges.
+
+  The delivery daemon's `$SYS` sweeps were **not bound to the account it serves**. All three
+  delivery-admin executors resolved their scan account from the working directory at request time, and
+  the detached daemon inherits its launcher's directory for life — so a daemon started from a tree
+  that resolves a different mesh root would sweep a foreign account and answer a confident, wrong
+  "gone". The root is now pinned once at start, and the account read from disk is cross-checked
+  against the account the daemon's own credential authenticates as.
+
+- b519e73: Add the Herdr integration: a new `@cotal-ai/herdr` extension with a self-registering `herdr` Runtime provider that spawns managed agents into panes of a dedicated named Herdr session (`cotal-<space>`), where the Herdr server owns them — so they survive the manager's terminal going away. Requires herdr >= 0.8.0, enforced by a version check rather than a bare binary probe, so an older herdr reports the runtime as unavailable instead of advertising it and then failing every spawn.
+
+  Each agent gets its own workspace and name-labeled tab by default (`COTAL_HERDR_LAYOUT=split` folds them into one shared tab). A spawn is `workspace create` + `pane run "exec …"`, then a bounded wait on the real process table — `pane run` types into a shell, so a delivered keystroke is not proof that anything started. The `exec` is load-bearing: without it the pane's shell outlives the agent and no exit could be proven. Lifecycle is keyed by Herdr's stable `terminal_id` with the public pane id re-resolved per operation off the session-wide pane inventory; creds ride an owner-only launcher script, never herdr's command line or its native `--env` (which lands in pane scrollback); every CLI call is scoped with `--session`.
+
+  Spawned agents do not appear in Herdr's Agents sidebar: 0.8.0 reserves that registry for recognized agent kinds attached to an existing pane, so an arbitrary launcher is never one. They are identified by tab label and a `cotal` metadata token on the pane.
+
+  The CLI lists `herdr` among the official runtimes (`cotal runtimes`, `cotal ext add @cotal-ai/herdr`), and CI now installs herdr so the extension's smoke suite actually gates rather than silently skipping.
+
+### Patch Changes
+
+- Updated dependencies [0ab9b4d]
+- Updated dependencies [208ad1f]
+- Updated dependencies [665b378]
+- Updated dependencies [4d14037]
+- Updated dependencies [f6b8b27]
+- Updated dependencies [d361951]
+  - @cotal-ai/core@0.18.0
+  - @cotal-ai/workspace@0.18.0
+
 ## 0.17.0
 
 ### Minor Changes
