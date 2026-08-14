@@ -119,9 +119,14 @@ try {
   check("already-correct bucket SKIPS the update (no STREAM.UPDATE issued at all)", skipped && updateCalls === 0, { updateCalls });
 
   // ---- the read-back FAILS CLOSED (ratified review condition (a)) --------------------------------
-  // The guarantee is not "we sent an UPDATE", it is "the TTL is now in force". A broker that accepts
-  // the UPDATE and does not apply it (an older server, a silently-clamped value, a future config
-  // rejection that still answers OK) would otherwise leave the bucket unexpired while `cotal up`
+  // The guarantee is not "we sent an UPDATE" — but it is NOT "the TTL is now in force" either, which
+  // is what this comment used to claim. Enforcement cannot be established from the config the server
+  // reports back: a metadata-write fault leaves the in-memory config updated, `STREAM.INFO` answering
+  // from it, and the store running with no expiry (reproduced live in review; see the tracking issue,
+  // and `presence-ttl-expiry-open.smoke.ts` for the behavioural proof on a healthy server). What this
+  // cell guards is the weaker, real guarantee: **the reported config did not silently stay wrong.** A
+  // broker that accepts the UPDATE and reports the OLD value (an older server, a config rejection that
+  // still answers OK) would otherwise leave the bucket unexpired while `cotal up`
   // reported success — the #286 defect restored, now wearing a passing gate. A live broker will not
   // produce that state on demand, so it is INJECTED: `update` resolves OK, the read-back still reports
   // the old max_age. The reconcile MUST throw. This is the cell that dies if the throw becomes a log.
