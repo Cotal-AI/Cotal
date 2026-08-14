@@ -14,6 +14,7 @@
  * D5 adds the first credential-death primitive: profile-classified user-JWT lifetimes. Full revocation,
  * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
+import { ttlBuckets } from "./streams.js";
 import { join } from "node:path";
 import {
   decode,
@@ -1627,8 +1628,14 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
- *  DM/DLV (it creates the bind-only mailbox but never reads it), NO STREAM.DELETE/PURGE/UPDATE/MSG.DELETE
- *  (it provisions, it does not tear down or tamper). KV value-writes are scoped to exactly the two
+ *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY four streams and no others:
+ *  the three TTL'd KV buckets (presence + the two leases, #286 — an existing bucket's `max_age` cannot be
+ *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it) and the records store.
+ *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
+ *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
+ *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
+ *  scoped to exactly the two
  *  registries provisioning touches: the read-ACL bucket (`commitAcl`) and the channel registry (seed). */
 function provisionerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
@@ -1646,7 +1653,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     recordsBucket, epAuthBucket, sessionsBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
-  // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.
+  // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.
   // The §13.7 CONTRACT store (EPC) joins the list for the static manager's start-time
   // `ensureContractStore` (P2 item 1, 1c): create-or-verify only — the provisioner holds no
   // artifact-publish grant on it (publication rides the scoped endpoint-serve executor).
@@ -1668,6 +1675,20 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
+  // #286: STREAM.UPDATE on EXACTLY the three TTL'd KV streams (presence + the two leases). `kvm.create`
+  // never updates an existing bucket's config, so a bucket created by a cotal that predates the `max_age`
+  // TTL keeps NO expiry forever — dead presence records (and stale leases) never age out. `setupSpaceStreams`
+  // reconciles their `max_age` via STREAM.UPDATE at every `cotal up`, which needs this grant. Scoped to these
+  // three streams only — the durable streams (chat/dm/task/inbox/dlv, channel/members/acl/membership
+  // registries) are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
+  // denial; this widening is provisioning-only.
+  // Derived from the SAME inventory that creates and reconciles them, not a third hand-kept copy.
+  // Review found this list was the last independent one: a fourth TTL'd bucket added to `ttlBuckets`
+  // would be created and reconciled correctly and then die on a permissions violation here, because
+  // the grant never learned about it. Same defect one seam out — a bucket the code knows to maintain
+  // and the credential is not allowed to.
+  const ttlStreams = ttlBuckets(space).map(([bucket]) => `KV_${bucket}`);
+  const streamReconcile = ttlStreams.map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // DM/DLV/TASK durable pre-create (bind-only mailboxes): both the new-API CREATE and legacy DURABLE.CREATE
   // forms (the client's consumer-add path varies by version), plus INFO (the add returns ConsumerInfo).
   // NO MSG.NEXT/MSG.GET/ACK — the provisioner creates the consumer but MUST NOT read its body.
@@ -1681,6 +1702,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
       allow: [
         "$JS.API.INFO",
         ...streamSetup,
+        ...streamReconcile,
         ...consumerCreate,
         // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
         // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).
