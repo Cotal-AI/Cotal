@@ -3,7 +3,7 @@
 "@cotal-ai/cli": minor
 ---
 
-Artifact plane S3: close the code review's nine must-lands.
+Scope the artifact fetch gate, and make attach refusals and lifetimes honest.
 
 The fetch gate no longer branches on a global blob probe. `FetchGateDeps.blobExists` is
 still there but is now reachable only after a new scope-local `scopeRecord(digest, scope)`
