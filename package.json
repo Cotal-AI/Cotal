@@ -45,6 +45,7 @@
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
     "smoke:codex-dist": "tsx extensions/connector-codex/smoke/codex-dist.smoke.ts",
     "smoke:web-harness": "tsx implementations/web/smoke/harness.smoke.ts",
+    "smoke:observer-cannot-publish": "tsx packages/core/smoke/observer-cannot-publish.smoke.ts",
     "smoke:codex-installed": "pnpm --filter cotal-ai... build && tsx extensions/connector-codex/smoke/codex-installed.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
     "smoke:codex-tui-live": "tsx extensions/connector-codex/smoke/codex-tui-live.smoke.ts",
