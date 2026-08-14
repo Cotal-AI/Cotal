@@ -130,8 +130,26 @@ publish grant is the compromise this lane spent the evening proving does not cur
 ## 7. Open, and owed
 
 1. **The row-3 measurement above** — does a route-less `cotal_send` reject or resolve? Blocking.
-2. **Whether `cotal_dm` has the same shape as `cotal_send`.** Not checked. A DM to a peer on a lane
-   the seat cannot reach may fail differently, and the assignment came from a wrong-lane *post*.
+2. ~~**Whether `cotal_dm` has the same shape as `cotal_send`.** Not checked.~~ **ANSWERED — by code
+   reading, not by driving it, and the answer improves this note's standing rather than extending
+   it.** `cotal_dm` (`tool-specs.ts:360-375`) does **not** have `cotal_send`'s shape. It already
+   contains the pattern proposed above:
+
+   - **A typed, discriminated refusal**: `AmbiguousPeerError` is caught as a *class*, and its message
+     names the target, enumerates the candidates with their ids and statuses, and tells the caller
+     the exact next action (`re-send with the instance id`).
+   - **A second condition that is named but NOT typed**: `no peer "<name>" in space "<space>"` —
+     which this lane used tonight as a genuine negative signal — arrives as a *string* inside the
+     generic `Couldn't DM: <message>` branch. A caller cannot branch on it without matching text.
+
+   **So the repo already grades this on a three-point scale, on one verb**: typed refusal
+   (`AmbiguousPeerError`) → named-but-untyped (`no peer`) → unnamed (`cotal_send`, which does not
+   check at all). **The proposal in §1–§2 is not a new idea; it is `AmbiguousPeerError`'s treatment
+   applied to routing.** That is a much easier thing to argue for, and it means the design should
+   follow that class's shape rather than invent one.
+
+   **Caveat, held deliberately:** this is a code reading. I have not driven either DM branch, and
+   this lane has spent the evening on the difference between those two things.
 3. **Peer-to-peer tasking refusal is a DIFFERENT refusal** (*"asked by anyone other than my manager"*)
    and is not designed here. It shares the reporting requirement in §4 and nothing else; conflating
    the two would produce a reason vocabulary where `no-route` and `not-my-manager` are the same
