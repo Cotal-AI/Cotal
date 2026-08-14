@@ -13,6 +13,13 @@
  *   offline/departed. It is CONFIRMED if B still reports A present with a live status.
  *   Q3 is the inverse control: if B's roster ALSO fails to drop A after a clean stop(), then the
  *   roster is simply stale and Q1 proves nothing about self-silencing specifically.
+ *
+ * NO BUILD-PROVENANCE REFUSAL HERE, DELIBERATELY — NOT AN OVERSIGHT. The connector suite refuses to
+ * run when `packages/core/dist` is older than its source, because it is a standing suite someone
+ * runs on a tired evening. This file is the RECORD OF A RUN, not a suite: it does not live where it
+ * executes, and reproducing it is already a deliberate copy step (see RESULTS.md § Reproduction).
+ * A guard on a file that cannot be run by accident guards nothing. Rebuild core first and record the
+ * build time beside the result, as the re-derivation of `Fri Aug 14 08:53-08:55 PM UTC 2026` did.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";

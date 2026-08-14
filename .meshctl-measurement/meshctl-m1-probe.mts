@@ -16,6 +16,13 @@
  *   Claim A is FALSE if run() reports a successful leave and joinedChannels() goes empty.
  * INVERSE CONTROL: leaving a NON-last channel through the same path must succeed — otherwise a
  *   "refusal" I observe could just be a broken probe.
+ *
+ * NO BUILD-PROVENANCE REFUSAL HERE, DELIBERATELY — NOT AN OVERSIGHT. The connector suite refuses to
+ * run when `packages/core/dist` is older than its source, because it is a standing suite someone
+ * runs on a tired evening. This file is the RECORD OF A RUN, not a suite: it does not live where it
+ * executes, and reproducing it is already a deliberate copy step (see RESULTS.md § Reproduction).
+ * A guard on a file that cannot be run by accident guards nothing. Rebuild core first and record the
+ * build time beside the result, as the re-derivation of `Fri Aug 14 08:53-08:55 PM UTC 2026` did.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
