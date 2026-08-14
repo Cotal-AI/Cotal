@@ -169,6 +169,23 @@ else
   fail=$((fail+1)); echo "  FAIL  R12 the unknown arm could not be built — NOT a pass, the state is UNMEASURED"
 fi
 
+# ---- R13: the row must not read the pidfile a SECOND time ---------------------------------------
+# This one is STRUCTURAL and says so. The defect it guards is a race — the record rewritten between
+# a display read and the probe's read, so the row names a pid it did not probe — and this suite
+# cannot construct that timing reliably. A cell that pretends to catch a race it cannot schedule
+# would be worse than one that admits what it checks.
+#
+# So it asserts the property that makes the race impossible instead: `managerRow` derives pid AND
+# state from one call. Written as an absence, so it reddens if a second read is reintroduced.
+# A grep is weak evidence and its failure mode is silence, hence the positive control below.
+SETUP_TS="$REPO/implementations/cli/src/commands/setup.ts"
+ROW_FN=$(awk '/^function managerRow/{f=1} f{print} f&&/^}/{exit}' "$SETUP_TS")
+[ -n "$ROW_FN" ]; ck "R13-control managerRow was actually FOUND in setup.ts (an empty extract passes every absence check)" $?
+printf '%s' "$ROW_FN" | grep -qE 'readFileSync|MANAGER_PID_PATH'; [ $? -ne 0 ]
+ck "R13 managerRow does not read the pidfile itself — pid and state come from ONE call" $?
+printf '%s' "$ROW_FN" | grep -q 'managerLivenessSnapshot'
+ck "R13a managerRow derives both from managerLivenessSnapshot (the positive half of R13)" $?
+
 # ---- cardinality: every state above actually produced a capture ---------------------------------
 # Guards what this refactor could break: if an arm stopped calling `capture`, its R0 cell would simply
 # vanish and the suite would still print all-green. The count is checked here BECAUSE each state is
