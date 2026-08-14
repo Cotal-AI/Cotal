@@ -385,3 +385,106 @@ distinguishes a cell that was challenged from a cell that was merely present whi
 MX1, MX2, MX3, MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`;
 **MX8c on `E8` + `E10` with delivery-level non-equivalence**; MX7a blunt (superseded, kept);
 **MX8b REFUTED my prediction and is kept as the reason MX8c exists**; MX3a and MX5 survivors.
+
+---
+
+# MX9 — prediction, written BEFORE the mutant runs
+
+Written `Fri Aug 14 09:18:02 PM UTC 2026`. Base `47363bfa`, tree clean.
+
+## The claim under test
+
+`E12` says the publish grant did not widen across a self-reconnect. It is currently exactly where
+`E8` and `E10` each were before their mutants: green, and unproven.
+
+**And there is a second claim here that MX8c cannot settle: that these cells DISCRIMINATE
+DIMENSIONS.** If the read cells also redden under a publish widening, then the suite has four cells
+that all watch "something got wider" and none that says *what*.
+
+## The mutant
+
+`packages/core/src/provision.ts:1063` — the post ACL, default-deny:
+
+    const allowPublish = opts.allowPublish ?? [];
+    →
+    const allowPublish = [">"];
+
+## Predicted cells, NAMED
+
+| Cell | Prediction |
+| --- | --- |
+| **`E12`** (cannot post outside its ACL) | **RED** — the widened grant now carries `#secret`. |
+| `E11` (in-ACL post witnessed) | **GREEN** — a wider publish ACL still contains `general`. |
+| **`E8`, `E10`** (read side) | **GREEN** — this widens what it may SAY, not what it may hear. |
+| `E8-pre`, `E10-pre`, `E9`, `EX`, `E0` | **GREEN** |
+| every open-mode cell (21) | **GREEN** |
+
+Expected tally: **36 passed, 1 failed, 0 VOID, rc=1.**
+
+## What would REFUTE me
+
+1. **`E12` stays GREEN.** The cell does not detect a widened publish grant and is decorative —
+   the MX8b outcome repeating on a third cell.
+2. **`E8` or `E10` reddens.** Then the read and publish cells do NOT discriminate dimensions, and
+   claiming "the publish half is now covered" would be claiming a distinction the suite cannot make.
+   **This is the interesting one**, and it is why the read cells are predicted explicitly rather
+   than waved through as "unaffected".
+3. **`E11` reddens.** The mutant broke the witness rather than the property; void for `E12`.
+4. **Any open-mode cell reddens.** Not confined to the credentialed path.
+
+## Non-equivalence
+
+Observable as **witnessed delivery**: under the mutant `#secret:PUB-OUT-OF-ACL` should appear in the
+witness's collected list — the subject's own words on a channel it was never admitted to.
+
+---
+
+# MX9 RESULT — read at `Fri Aug 14 09:19:20 PM UTC 2026`
+
+**KILLED on the named cell, and the discrimination claim HELD.**
+
+Observed: **36 passed, 1 failed, 0 VOID, rc=1** — exactly the predicted tally.
+
+| Cell | Predicted | Observed |
+| --- | --- | --- |
+| **`E12`** | RED | **RED** |
+| `E11` | GREEN | **GREEN** |
+| **`E8`, `E10`** | GREEN | **GREEN** |
+| `E8-pre`, `E10-pre`, `E9`, `EX`, `E0` | GREEN | **GREEN** |
+| every open-mode cell (21) | GREEN | **GREEN** |
+
+**Non-equivalence as witnessed delivery:**
+
+    witnessed: [ '#general:PUB-IN-ACL', '#secret:PUB-OUT-OF-ACL' ]
+    outPub:    'Sent to #secret.'
+
+**The subject's own words on a channel it was never admitted to**, and the tool cheerfully reporting
+`Sent to #secret.` — which is worth noting on its own: on the publish side a widened grant produces
+no client-visible symptom at all. The caller is told it succeeded, because it did.
+
+## Criterion 2 is the one that mattered, and it held
+
+`E8` and `E10` **stayed green under a publish widening**, and `E12` stayed green under both
+subscribe widenings (MX8, MX8c). **The cells discriminate DIMENSIONS, not merely "something got
+wider."** Without this run the suite could have had four cells that all redden together, and
+"the publish half is now covered" would have been a distinction the suite could not actually make.
+
+## The mint gap, restated with what is now measured
+
+Across MX8 / MX8c / MX9 the **reconnect** half is covered in three independent shapes:
+
+| Widening | Caught by | Mutant |
+| --- | --- | --- |
+| read, by name (`*`) | `E8` | MX8 |
+| read, by shape (`>`) | `E8` + `E10` | MX8c |
+| **publish (`>`)** | **`E12`** | **MX9** |
+
+**Still NOT covered:** cross-space widening after a reconnect (`m3-fence` F1b covers another space's
+wildcard **at mint time** only), and every one of these mutants widens the grant for **all**
+principals the mint serves rather than the subject's alone.
+
+## Ledger
+
+MX1–MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`; MX8c on `E8`+`E10`;
+**MX9 on `E12`, with the dimension-discrimination claim held**; MX7a blunt (superseded, kept);
+**MX8b refuted my prediction and is kept as the reason MX8c exists**; MX3a and MX5 survivors.
