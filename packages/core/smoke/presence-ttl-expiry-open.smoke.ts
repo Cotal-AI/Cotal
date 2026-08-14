@@ -18,8 +18,14 @@
  * An earlier version of this comment said no check at that seam could close it. That was FALSE and a
  * reviewer disproved it live: `$JS.API.STREAM.SNAPSHOT`'s initiation response false-greens like INFO,
  * but the STREAMED archive's first `meta.inf` entry carries `fs.cfg` — the store's own rolled-back
- * config — so a store-side detector exists and this repo already has `downloadStreamSnapshot` and a
- * per-stream-scoped snapshot grant. It is not used here because its cost scales with bucket size and a
+ * config — so a store-side detector exists, and this repo has `downloadStreamSnapshot` plus a
+ * per-stream-scoped snapshot grant MODEL. Not an existing capability for these buckets, and the
+ * distinction is load-bearing: `assertBackupStream` runs every scope through
+ * `canonicalBackupStreamConfig`, which accepts only the durable registries (channel / acl / members)
+ * among KV buckets and THROWS for presence, delivery and manager. So a detector would need a new exact
+ * scope or a widening of the reconcile credential to whole-body snapshot authority over liveness data
+ * — which is why "the grant already exists" would be the wrong summary. It is not used here because
+ * that authority question is unsettled, its cost scales with bucket size, and a
  * snapshot carries the bucket's records; that is a design decision recorded in the tracking issue, not
  * an impossibility. The distinction matters: "we priced this and declined it" survives someone finding
  * the snapshot path later; "nothing can see it" does not.
