@@ -21,7 +21,7 @@
  *
  * Needs `nats-server` on PATH. Run: pnpm smoke:presence-ttl-refresh-cli
  */
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { connect, nanos } from "@nats-io/transport-node";
@@ -165,10 +165,44 @@ try {
 
   console.log(`\nPRESENCE-TTL-REFRESH-CLI SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {
+  // TEARDOWN, rewritten after this suite leaked EIGHT brokers in one evening.
+  //
+  // The original swallowed `cotal down`'s failure with a `.catch`, fell back to killing the MANAGER
+  // (which is not the broker), and then removed the scratch unconditionally. That last step is the
+  // one that did the damage: `rm -rf` does not stop a process, it orphans it with a deleted cwd —
+  // the surviving `nats-server` holds a port and a JetStream store, and the directory that named it
+  // is gone, so nothing can attribute it afterwards. Measured: eight of them alive 9-15 minutes
+  // later, only identifiable because /proc still remembered the deleted path.
+  //
+  // So: stop it, PROVE it stopped, and only then delete. If it did not stop, keep the scratch —
+  // its `.cotal` holds the pidfiles that are the only way to find what is still running.
+  let meshStopped = !upAttempted;
   if (upAttempted) {
-    const down = await cotal(["down", "--space", SPACE], 60_000).catch(() => undefined);
-    if (!down || down.status !== 0) await killManagerAtRoot(root).catch(() => 0);
+    // `cotal down` re-resolves its root from cwd. Without our own anchor it could signal a mesh this
+    // suite never started, which is worse than not tearing down at all.
+    if (!existsSync(join(root, ".cotal"))) {
+      console.error(`  ! refusing \`cotal down\`: ${root} owns no .cotal, so the child would resolve elsewhere and could signal processes this suite never started`);
+    } else {
+      const down = await cotal(["down"], 60_000);
+      // A timeout, a signal death and a launch failure all resolve here too — an unchecked await
+      // would read every one of them as a successful stop.
+      if (down.launchError || down.timedOut || down.signal) console.error(`  ! \`cotal down\` did not run cleanly: ${down.launchError ?? (down.timedOut ? "timed out" : String(down.signal))}`);
+      else if (down.status !== 0) console.error(`  ! \`cotal down\` exited ${down.status}: ${down.out.slice(-300)}`);
+      else meshStopped = true;
+    }
+    if (!meshStopped) { try { await killManagerAtRoot(root); } catch { /* reported below */ } }
   }
-  rmSync(scratch, { recursive: true, force: true });
+  // Independent of what `down` CLAIMED: no broker may still be holding this fixture's scratch.
+  // Exact-name matched, and matched to OUR scratch — never a bare name sweep, which on this box
+  // would reach other lanes' ephemeral brokers.
+  const survivors = execFileSync("bash", ["-c", `for p in $(pgrep -x nats-server 2>/dev/null); do c=$(readlink /proc/$p/cwd 2>/dev/null); case "$c" in ${scratch}*) echo $p;; esac; done`], { encoding: "utf8" }).trim();
+  if (survivors) {
+    meshStopped = false;
+    console.error(`  ! broker(s) still alive under this fixture after teardown: ${survivors.split("\n").join(", ")}`);
+    for (const p of survivors.split("\n")) { try { process.kill(Number(p), "SIGKILL"); } catch { /* already gone */ } }
+    console.error(`  ! SIGKILLed them; the scratch is preserved so the leak stays attributable`);
+  }
+  if (meshStopped) rmSync(scratch, { recursive: true, force: true });
+  else { process.exitCode = 1; console.error(`  ! PRESERVING ${scratch}: its .cotal holds the pidfiles needed to find anything still running`); }
 }
-process.exit(fail === 0 ? 0 : 1);
+process.exit(fail === 0 && !process.exitCode ? 0 : 1);
