@@ -68,6 +68,10 @@
  *       -> KILLED `source:resuming-from-record-k-yields-exactly-the-records-after-k`
  *   M4  [A] drop the `origin.kind === "human"` test from the prompt rule
  *       -> KILLED `defect-B:so-the-rule-AS-SPECIFIED-opens-no-run-on-THIS-real-session`
+ *       **STALE: that cell no longer exists.** The A/B split replaced the `defect-B:*` block, so
+ *       this row grades a suite that is gone. Kept visible rather than deleted, because a ledger
+ *       row silently outliving its cell is exactly the drift this header warns about — and it is
+ *       re-run below as M8 against what replaced it.
  *   M5  [A] make the constructor spread its input (`...o`)
  *       -> KILLED `mechanism:the-event-constructor-DROPS-an-unknown-key`
  *   M6  [B] drop `TOOL_CALL_END` — graded on B because A carries too few tool blocks for the cell
@@ -75,9 +79,25 @@
  *   M7  [B] make the RESULT name an id no START opened
  *       -> KILLED `real:every-RESULT-names-a-toolCallId-that-a-START-opened`
  *
- * **NOT YET GRADED, said rather than left to look covered:** no mutation has been aimed at the
- * `defect-B` cells on `[B]`, and none at the bracket cell on either arm. Both are pending the §3.1
- * ruling, which may rewrite what they assert.
+ *   M8  [B] open a run on any string-content entry (drop the `promptSource` test)
+ *       -> PREDICTED to kill `split:every-run-opened-came-from-a-promptSource-bearing-record`
+ *          [PENDING EXECUTION — this row is a prediction, not a verdict]
+ *   M9  [B] drop the compaction-summary exclusion
+ *       -> PREDICTED to SURVIVE, as a redundancy rather than a hole.
+ *          [PENDING EXECUTION — this row is a prediction, not a verdict] The compaction summary carries
+ *       no `promptSource` either, so the run-opening test already excludes it on every capture
+ *       available and the positive marker is a second mechanism guarding the same outcome. It is
+ *       KEPT — a harness that starts stamping `promptSource` on compaction records would make it
+ *       load-bearing overnight — but **no cell here proves it works**, and claiming otherwise would
+ *       repeat M1 exactly. Graded by nothing; said so rather than left to look covered.
+ *
+ * **⚠️ THE HUMAN ARM IS DECLARED-UNMEASURED.** Every capture available contains ZERO human-typed
+ * prompts — `~/.claude/history.jsonl` reports 0 for all three sessions and 0 for this project — so
+ * `UNMEASURED:a-spec-shaped-human-prompt-opens-a-run-attributed-human` drives a record built from
+ * §3.1's measurement rather than read from a file. **It grades the code path, not the harness's real
+ * shape. A green here must NOT be read as "human prompts work."**
+ *
+ * **ALSO NOT GRADED:** no mutation aimed at the bracket cell on either arm.
  *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
@@ -227,76 +247,137 @@ c("session:is-a-multi-turn-session-with-tool-use", (() => {
 })(), { types: [...typeHist] });
 
 // ---------------------------------------------------------------------------------------------
-// PART 2 — THE DEFECT, ASSERTED RATHER THAN DESCRIBED, AND SCOPED TO THE SESSIONS IT ACTUALLY HITS.
+// PART 2 — RUN-OPENING AND ATTRIBUTION ARE TWO PREDICATES, AND THIS BLOCK ASSERTS THE SPLIT.
 //
-// §3.1's prompt rule is `origin.kind === "human"`. An earlier revision of this block asserted, flatly
-// and for every session, that no user entry carries `origin.kind` and so THE ENTIRE SESSION MAPS TO
-// NOTHING. **That is false, and a real session is what falsified it:** on a 5938-record INTERACTIVE
-// session with 892 user entries the field is present and the rule selects normally. The defect is
-// real but it is HEADLESS-ONLY (`claude -p`), where provenance rides `promptSource: "sdk"` instead.
+// HISTORY, kept because the cells only make sense against it. §3.1 opened a run only on
+// `origin.kind === "human"`, which made one provenance predicate do two jobs: a turn started by a
+// peer produced NO RUN, so an agent-driven session mapped to nothing at all. Three real sessions
+// (5938 / 30 / 1088 records) contain ZERO human-typed prompts — confirmed independently by
+// `~/.claude/history.jsonl`, which records typed prompts by a different mechanism and reports 0 for
+// all three — so on this fleet's workload the connector emitted nothing.
 //
-// So the arm is DETECTED from the session rather than assumed, and each arm asserts the outcome that
-// belongs to it. A cell that fails because it met the other kind of session is not a finding, it is
-// a cell that did not say what it was about — and it would have read as "the mapper is broken" for
-// whoever ran it next.
+// That is a COVERAGE gap, not a bad token: §3.1's own session measured `kind:"human"` 44 times
+// beside 3068 `kind:"channel"` injections, so the predicate does select on a session containing
+// what it selects. Ruled: run-opening keys on `promptSource` PRESENT — a positive marker, present
+// on all 67 mesh deliveries and both sdk prompts, absent on all 824 tool results and on the
+// compaction summary — and provenance becomes a FIELD (`cotal.turnSource`), never a gate.
+//
+// **AND THE REPAIR THAT WAS NOT TAKEN, recorded so nobody re-derives it:** "origin absent = human"
+// selects 825 of the interactive session's 892 user entries, because in a Claude session `user` is
+// also the role of a TOOL RESULT. The one non-tool-result among those 825 is a context-compaction
+// summary, so the true human count is 0 and the predicate over-matches by 825 — a flood that would
+// have looked like the connector working.
 // ---------------------------------------------------------------------------------------------
-// Exactly one synthetic record in the whole suite, declared here because PART 2 needs it as a
-// control and PART 3 needs it as a crutch. It is what §3.1 says a prompt looks like — and the
-// measurement below is that no real record in either session shape looks like this.
+// Exactly one synthetic record in the whole suite. It carries BOTH `origin.kind:"human"` and
+// `promptSource:"typed"`, which is the shape §3.1 measured 44 of — not a shape invented here.
 const OPENER: ClaudeEntry = {
   type: "user",
   uuid: "synthetic-opener",
   timestamp: "2026-08-14T21:00:00.000Z",
   origin: { kind: "human" },
+  promptSource: "typed",
   message: { content: "open the run" },
 };
 
 const asSpecified = createClaudeMapper({ threadId: THREAD, mintRunId: mint, now: () => 0 });
 const asSpecifiedUnits = entries.map((e) => asSpecified.map(e)).filter((u) => u !== null);
-// The observed `origin.kind` values, reported so a failure names the vocabulary it actually met.
-// These are KEY/ENUM names, never content — rule 2 still holds.
+// Observed vocabularies, reported so a failure names what it actually met. KEY/ENUM names only.
 const originKinds = [...new Set(entries.map((e) => (e.origin === undefined ? "<absent>" : `kind=${String(e.origin.kind)}`)))].sort();
-const humanOrigin = entries.filter((e) => e.origin?.kind === "human").length;
-const ARM = entries.every((e) => e.origin === undefined) ? "HEADLESS" : "INTERACTIVE";
+const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>"))].sort();
 
-c(`defect-B:arm-is-${ARM}-by-measurement-not-assumption`, entries.length > 0, {
-  userEntries: typeHist.get("user") ?? 0,
-  originKinds,
-});
-
-// THE DEFECT, AND IT IS NOT HEADLESS-ONLY. Measured on both real shapes: an interactive session of
-// 5938 records with 892 user entries carries `origin` on 67 of them and every one is
-// `kind:"channel"` (a Cotal mesh delivery). `kind:"human"` occurs ZERO times in either shape, so
-// §3.1's rule selects nothing and a real session maps to NO events at all.
-//
-// Pinned rather than repaired: what the rule SHOULD key on is a design ruling, and inventing one
-// here would put a guess in the connector and a green cell on top of it.
-c("defect-B:NO-user-entry-in-this-real-session-carries-origin.kind===human", humanOrigin === 0, {
-  humanOrigin,
-  userEntries: typeHist.get("user") ?? 0,
-});
-c("defect-B:so-the-rule-AS-SPECIFIED-opens-no-run-on-THIS-real-session", asSpecified.openRun() === null, { originKinds });
-c("defect-B:and-the-WHOLE-real-session-maps-to-nothing", asSpecifiedUnits.length === 0, {
+c("split:the-real-session-DOES-open-runs-without-a-synthetic-opener", asSpecifiedUnits.length > 0, {
   units: asSpecifiedUnits.length,
   records: entries.length,
+  originKinds,
+  promptSources,
 });
 
-// CONTROL — the inverse of the predicate. Without it, all three cells above are equally satisfied by
-// a mapper whose prompt rule is broken outright, and "opens no run" would prove nothing about
-// `origin.kind`. Feed the ONE thing the spec says a prompt looks like and require a run to open.
-c("control:the-mapper-DOES-open-a-run-on-an-origin.kind===human-entry", (() => {
+// THE NEGATIVE TWIN. Without it, "opens runs" is satisfied by a mapper that opens one on every
+// record — which is precisely the 825-over-match, and nothing above could fail that way.
+c("split:a-tool-result-opens-NO-run", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  return m.map(OPENER) !== null && m.openRun() !== null;
+  const before = m.openRun();
+  const unit = m.map({
+    type: "user",
+    uuid: "tool-result-entry",
+    timestamp: "2026-08-14T21:00:02.000Z",
+    message: { content: [{ type: "tool_result", tool_use_id: "toolu_never_started", content: "x" }] },
+  } as ClaudeEntry);
+  return before === null && m.openRun() === null && unit === null;
+})());
+
+// And the same claim over the REAL population rather than one hand-built record: every run opened
+// across the session must come from a record carrying `promptSource`. A count is not enough here —
+// the mapper could open the right NUMBER of runs off the wrong records.
+c("split:every-run-opened-came-from-a-promptSource-bearing-record", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  let opens = 0;
+  for (const e of entries) {
+    const was = m.openRun();
+    m.map(e);
+    const now2 = m.openRun();
+    if (now2 !== null && now2 !== was) {
+      opens += 1;
+      if (e.promptSource === undefined) return false;
+      if (e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) return false;
+    }
+  }
+  return opens > 0;
+})(), { userEntries: typeHist.get("user") ?? 0 });
+
+// ATTRIBUTION IS CARRIED, and it is the half that used to be a gate.
+c("split:every-RUN_STARTED-carries-a-cotal.turnSource", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  const starts = entries.flatMap((e) => m.map(e)?.events ?? []).filter((e) => e.type === "RUN_STARTED");
+  return starts.length > 0 && starts.every((s) => typeof (s as { cotal?: { turnSource?: string } }).cotal?.turnSource === "string");
+})());
+
+// FAILS LOUD on an unseen provenance — asserted as a REFUSAL, and asserting WHICH refusal. A
+// mapper that threw on everything would satisfy a bare "it threw", so the message is matched and a
+// control requires the same path to SUCCEED on a provenance that is known.
+c("split:an-unseen-origin.kind-REFUSES-rather-than-guessing", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  try {
+    m.map({ ...OPENER, uuid: "future-harness", origin: { kind: "telepathy" } } as ClaudeEntry);
+    return false;
+  } catch (err) {
+    return /unrecognised origin\.kind/.test((err as Error).message);
+  }
+})());
+c("control:a-KNOWN-origin.kind-on-the-same-path-does-NOT-refuse", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  try {
+    return m.map({ ...OPENER, uuid: "known-origin", origin: { kind: "channel" } } as ClaudeEntry) !== null;
+  } catch {
+    return false;
+  }
+})());
+
+// ⚠️ THE HUMAN ARM IS DECLARED-UNMEASURED. Every capture available contains zero human-typed
+// prompts, so this cell drives a record built from §3.1's measurement rather than read from a file.
+// It grades the code path and NOT the harness's real shape, and saying so is the point: a green
+// here must not be read as "human prompts work".
+c("UNMEASURED:a-spec-shaped-human-prompt-opens-a-run-attributed-human", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  const unit = m.map(OPENER);
+  const start = unit?.events.find((e) => e.type === "RUN_STARTED");
+  return (start as { cotal?: { turnSource?: string } } | undefined)?.cotal?.turnSource === "human";
 })());
 
 // ---------------------------------------------------------------------------------------------
-// PART 3 — the same real records, with ONE synthetic entry in front to open a run.
+// PART 3 — the real records, read straight through. THE CRUTCH IS GONE.
 //
-// This is the compensation for defect (B) and it is a declared crutch, not a fixture: exactly one
-// record is synthetic (a prompt carrying `origin.kind: "human"`, which is what the spec says a
-// prompt looks like), and the other 30 are the real session's own bytes. When the prompt rule is
-// ruled on, this block loses its synthetic head and reads the file straight through.
+// This block used to prepend one synthetic prompt because nothing in a real session could open a
+// run. The comment promised it would "lose its synthetic head" once the prompt rule was ruled on;
+// the rule is ruled and the head is removed, so every event below now comes from the session's own
+// bytes and nothing else. A declared crutch that outlives its reason stops being declared and
+// starts being a fixture.
 // ---------------------------------------------------------------------------------------------
 const run = (opts?: { reasoning?: boolean }): { runId: string; events: AguiEvent[] }[] => {
   let n = 0;
@@ -306,7 +387,7 @@ const run = (opts?: { reasoning?: boolean }): { runId: string; events: AguiEvent
     now: () => 0,
     ...(opts?.reasoning ? { reasoning: true } : {}),
   });
-  return [OPENER, ...entries].map((e) => m.map(e)).filter((u): u is { runId: string; events: AguiEvent[] } => u !== null);
+  return entries.map((e) => m.map(e)).filter((u): u is { runId: string; events: AguiEvent[] } => u !== null);
 };
 
 const units = run();
@@ -493,7 +574,7 @@ c("real:the-majority-of-this-session-maps-to-nothing", (() => {
 c("real:the-LAST-run-of-the-session-is-still-open-at-EOF", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `r-${(n += 1)}`, now: () => 0 });
-  for (const e of [OPENER, ...entries]) m.map(e);
+  for (const e of entries) m.map(e);
   return m.openRun() !== null;
 })());
 

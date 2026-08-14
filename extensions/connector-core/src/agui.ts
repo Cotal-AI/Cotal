@@ -154,6 +154,19 @@ export interface CotalMeta {
   isError?: boolean;
   /** Subagent linkage. Deliberately NOT `parentRunId`, which is retry/edit lineage. */
   delegation?: { agentId: string; toolCallId: string };
+  /**
+   * WHAT BEGAN THIS RUN. Attribution, and deliberately NOT a gate on run-opening.
+   *
+   * Run-opening ("did a turn begin?") and attribution ("who began it?") are two questions, and an
+   * earlier revision used one provenance predicate to answer both — so a turn started by a peer
+   * produced no run at all, and an agent-driven session mapped to nothing. Provenance ANNOTATES;
+   * it does not SELECT. A run with `"channel"` attribution is still a run.
+   *
+   * `"unknown"` is never written by the mapper: an unrecognised provenance FAILS LOUD instead, so a
+   * future harness value produces an error rather than a confident wrong attribution. It exists for
+   * consumers that must render something for a producer which did not set the field.
+   */
+  turnSource?: "human" | "channel" | "notification" | "sdk" | "unknown";
   /** What was cut to fit the wire, and how big it was. Set only by the sizing path. */
   truncated?: { field: string; originalBytes: number };
 }

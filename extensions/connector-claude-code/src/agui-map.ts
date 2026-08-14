@@ -117,12 +117,67 @@ export interface ClaudeEntry {
   timestamp?: string;
   isSidechain?: boolean;
   origin?: { kind?: string };
+  /** Present on every SUBMITTED prompt and absent on tool results — the run-opening discriminator. */
+  promptSource?: string;
+  /** The harness's own compaction record. A string-content `user` entry that is not a turn. */
+  isCompactSummary?: boolean;
+  isVisibleInTranscriptOnly?: boolean;
   message?: {
     id?: string;
     stop_reason?: string | null;
     content?: string | ClaudeBlock[];
   };
 }
+
+/**
+ * ATTRIBUTION — what began a run, for a record already established to BE a turn.
+ *
+ * The vocabularies are closed on purpose. Everything here was read off a real session or off
+ * `plans/agui-events.md` §3.1's own measurement; nothing is anticipated. When a harness release adds
+ * a value, this throws, and that is the intended outcome: **a provenance field's entire product is
+ * an external observer's belief about who caused something, so the unknown case must fail loud
+ * rather than resolve to a plausible guess.** `CotalMeta.turnSource` carries `"unknown"` for
+ * producers that never set the field — the mapper never writes it.
+ */
+const ORIGIN_ATTRIBUTION: Record<string, "human" | "channel" | "notification"> = {
+  human: "human",
+  channel: "channel",
+  "task-notification": "notification",
+};
+/** `typed`/`queued` are §3.1's measured human values; `sdk` is headless; `system` rides an origin. */
+const PROMPT_SOURCE_ATTRIBUTION: Record<string, "human" | "sdk" | null> = {
+  typed: "human",
+  queued: "human",
+  sdk: "sdk",
+  system: null, // carries no attribution of its own — `origin.kind` is authoritative for these
+};
+
+const attribute = (entry: ClaudeEntry): "human" | "channel" | "notification" | "sdk" => {
+  const kind = entry.origin?.kind;
+  if (kind !== undefined) {
+    const fromOrigin = ORIGIN_ATTRIBUTION[kind];
+    if (fromOrigin === undefined)
+      throw new Error(
+        `agui-map: unrecognised origin.kind ${JSON.stringify(kind)} on entry ${entry.uuid ?? "<no uuid>"} — ` +
+          `refusing to attribute a run to a provenance this mapper has never seen. Add it to ` +
+          `ORIGIN_ATTRIBUTION deliberately, with a measurement, rather than letting it default.`,
+      );
+    return fromOrigin;
+  }
+  const src = entry.promptSource;
+  if (src === undefined || !(src in PROMPT_SOURCE_ATTRIBUTION))
+    throw new Error(
+      `agui-map: unrecognised promptSource ${JSON.stringify(src)} on entry ${entry.uuid ?? "<no uuid>"} ` +
+        `with no origin.kind — refusing to guess what began this run.`,
+    );
+  const fromSource = PROMPT_SOURCE_ATTRIBUTION[src];
+  if (fromSource === null)
+    throw new Error(
+      `agui-map: promptSource ${JSON.stringify(src)} carries no attribution of its own and entry ` +
+        `${entry.uuid ?? "<no uuid>"} has no origin.kind to supply one.`,
+    );
+  return fromSource;
+};
 
 /** A content block. Same reasoning as above: shape-tolerant, read narrowly. */
 export interface ClaudeBlock {
@@ -241,13 +296,31 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
         return events.length > 0 && open !== null ? { runId: open, events } : null;
       }
 
-      // A prompt — and ONLY when `origin.kind === "human"` (§3.1). Everything else with string
-      // content is injected rather than authored: peer/mesh messages, task notifications,
-      // local-command caveats, resumed-session summaries. Re-emitting those would republish facts
-      // the mesh already carries onto a channel with a different read ACL. See gap (B): on a
-      // headless session this branch is never taken, and the smoke asserts that rather than hiding
-      // it.
-      if (typeof content !== "string" || entry.origin?.kind !== "human") return null;
+      if (typeof content !== "string") return null;
+
+      // NOT A TURN, EXCLUDED BY A POSITIVE MARKER rather than by falling through. A compaction
+      // summary is a string-content `user` entry the harness writes to itself; it is the single
+      // non-tool-result `user` entry in a 5938-record session, so anything that selects by absence
+      // picks it up. Naming it is what stops it being "the one that got through".
+      if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) return null;
+
+      // (A) RUN-OPENING — "did a turn begin?" — keyed on `promptSource` PRESENT.
+      //
+      // A turn-initiating input opens a run whatever authored it. An external observer asks what
+      // work this agent did and what triggered it, not whether a person typed it, so a mesh-driven
+      // turn is a run like any other. Measured, `promptSource` is present on every submitted prompt
+      // (67 mesh + 2 sdk) and absent on all 824 tool results and on the compaction summary, so it
+      // discriminates exactly along the boundary that matters — and it is a POSITIVE marker, not an
+      // absence, so an unrecognised record shape cannot default into being a turn.
+      if (entry.promptSource === undefined) return null;
+
+      // (B) ATTRIBUTION — "what began it?" — a field on the run, never a gate on it.
+      //
+      // FAILS LOUD on anything unrecognised. A new harness version, a new origin, a renamed prompt
+      // source: all produce an error here rather than a confident wrong attribution. For a value
+      // whose entire product is an observer's belief about who caused this, the unknown case must
+      // not resolve to a guess.
+      const turnSource = attribute(entry);
 
       const prior = closeOpenRun(ts);
       const runId = opts.mintRunId();
@@ -265,7 +338,7 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
             threadId: opts.threadId,
             runId,
             timestamp: ts,
-            cotal: { runIdSource: "connector", ...arrivalMeta },
+            cotal: { runIdSource: "connector", turnSource, ...arrivalMeta },
           }),
           textMessageStart({ messageId, timestamp: ts, role: "user", ...(arrivalMeta ? { cotal: arrivalMeta } : {}) }),
           textMessageContent({ messageId, delta: content, timestamp: ts }),
