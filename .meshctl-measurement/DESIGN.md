@@ -19,29 +19,42 @@ memberships on the source mesh (§7.1), and **today's primitives cannot do that 
 tombstones are per-channel and commit independently, rollback is not lossless, and a close-all scan
 races the boot-join reconciler.
 
-The first draft proposed shipping re-target anyway behind a reported `partial-membership-close`
-outcome. **That was wrong, and the reason it was wrong is the reason this lane exists.** Its
-ordinary failure mode is a source mesh silently downgraded to live-only on some channels — clean at
-the presence plane and a lie at the delivery plane, in the one place a roster cannot show it. That
-is the same ghost class this lane was created to close, and **reporting the partial state does not
-repair it; it only attaches a better error message to the same broken state.**
+> ~~The first draft proposed shipping re-target anyway behind a reported `partial-membership-close`
+> outcome. **That was wrong, and the reason it was wrong is the reason this lane exists.** Its
+> ordinary failure mode is a source mesh silently downgraded to live-only on some channels — clean at
+> the presence plane and a lie at the delivery plane, in the one place a roster cannot show it. That
+> is the same ghost class this lane was created to close, and **reporting the partial state does not
+> repair it; it only attaches a better error message to the same broken state.**~~
+>
+> **STRUCK — REFUTED BY MEASUREMENT at `1e8ecd84` (`meshctl-72-gap.smoke.ts`, 11/11). Kept struck
+> rather than deleted so the correction has something to be a correction of; the next reader would
+> otherwise re-propose exactly this.** The claim's second half — that the interval is unrecoverable —
+> is **false on replay-enabled channels**. Chat history is a **separate JetStream stream** from
+> Plane-3 membership, so the interval outlives the membership and **a live join backfills it**
+> (`cotal_join` → `agent.joinChannel` → `ep.joinChannel`), which is the ordinary act an agent
+> performs on arrival. `Q1` (a durable re-join replays it) fails; `Q2b` (the caller's own path
+> recovers it) holds; `ARM C` bounds it — on a **replay-disabled** channel the interval is simply
+> gone. Ruled by fm-orchestrator on that measurement, in its own words: *"the second clause is
+> false… I am not going to pretend my ruling survived."*
 
-So `partial-membership-close` appears in this note as **the reason re-target is deferred, never as
-its shipped behaviour**. Re-target returns as a follow-on once a lifecycle-level close-and-fence
-primitive exists. The split costs the shipped scope nothing: disconnect→reconnect never depended on
-membership closure — it deliberately *keeps* the membership (§7.1).
+**THE SURVIVING REASON FOR THE DEFERRAL, AND IT IS NARROWER THAN THE ONE ABOVE.** The struck
+paragraph bundled two different concerns. Only the second survives:
+
+- ~~**(a) the agent loses an interval it cannot recover**~~ — **refuted, above.**
+- **(b) channels that FAIL to close stay open on the abandoned mesh**, accruing deliveries for an
+  agent that is never coming back. **This is a leak on the SOURCE, not a gap for the agent, and no
+  amount of re-joining fixes it because the agent is gone.** No probe on this lane touches it. **This
+  alone is why re-target is deferred.**
+
+Re-target returns as a follow-on once a lifecycle-level close-and-fence primitive exists. The split
+costs the shipped scope nothing: disconnect→reconnect never depended on membership closure — it
+deliberately *keeps* the membership (§7.1).
+
+**Residue to name in the result when re-target does ship: the `replay-disabled` case and the
+`failed-to-close` case. NEVER the recoverable one** — naming a recoverable gap as residue would be
+the same overclaim in the opposite direction.
 
 Sections below that discuss re-target are retained for the follow-on and are marked **[DEFERRED]**.
-
-**⚠️ THE PARAGRAPH ABOVE IS PARTLY REFUTED BY THIS LANE'S OWN LATER MEASUREMENT, AND THAT BELONGS AT
-THE TOP RATHER THAN BURIED IN §7.2.** "Silently downgraded to live-only" was measured
-(`meshctl-72-gap.smoke.ts` @ `1e8ecd84`, 11/11) and it **overstates the harm on replay-enabled
-channels**: chat history is a separate JetStream stream from Plane-3 membership, so a live join
-backfills the missed interval — the ordinary act an agent performs on arrival. It is **exact on
-replay-disabled channels**, where the interval is gone with no path back. The deferral's disposition
-below **stands until fm-orchestrator rules on that measurement**; it is flagged here because a scope
-argument that outlives its evidence is how a deferral becomes permanent by inertia. Full result and
-its bounds: §7.2.
 
 ---
 
@@ -675,8 +688,9 @@ ruling whose reasoning is not written down gets re-litigated by the next reader.
 > re-fetchable by the caller. Measured above: **(1) fails, (2) holds on replay-enabled channels
 > through `cotal_join`'s backfill, and fails on replay-disabled ones.**
 >
-> This is recorded here rather than acted on unilaterally: **the disposition below stays as written
-> until the orchestrator rules on the measurement.** But it is recorded *at the bullet it refutes*,
+> **RULED (fm-orchestrator), on this measurement.** The deferral's stated reason is refuted for (a)
+> and **re-target stays deferred on (b) — the failed-to-close leak — alone**; §0 carries the strike.
+> The split is NOT reversed yet: the next probe owed is (b). But it is recorded *at the bullet it refutes*,
 > because a note that keeps a superseded rationale while its own probe sits elsewhere is how a
 > deferral outlives its reason. The honest residue for a future re-target is the **replay-disabled**
 > case and the **failed-to-close** case — not the recoverable one.
