@@ -38,6 +38,35 @@ all," which is a far more serious defect. **I have not measured it — the box i
 hold for another lane and this needs a broker.** It is the first thing to drive when the hold lifts.
 **Nothing below should be read as settled until that row is.**
 
+## 0b. ⚠️ WHY THIS SURVIVED: EVERYONE WHO COULD NOTICE IT HOLDS A GRANT TOO WIDE TO HIT IT
+
+Measured on my own account while posting a release notice, `Fri Aug 14 09:37:39 PM UTC 2026`
+(`cotal_orientation`):
+
+    read: #general, #fix.fm-meshctl, #review.fm-meshctl
+    may join (read ACL): #>
+    post: #>
+
+**A feature-manager holds `post: #>`** — the full-subtree publish grant, the exact shape MX8c used
+as its "total compromise" mutant. **I cannot hit the route defect from this account no matter what I
+am asked to deliver, because every destination is within my grant.**
+
+That is the explanation for the defect's survival, and it generalises past this bug:
+
+> **The population at risk is exactly the least-privileged seats, and every account that would
+> naturally test the behaviour is too privileged to reach it.** A manager writing the tasking, a
+> manager reviewing the output, and a manager reproducing the complaint all hold `#>`. The failure
+> is reachable only from the seats nobody debugs *from*.
+
+**This is the same shape as the survey finding one level up** — a review seat that cannot execute the
+package it reviews produces "could not reproduce", and nobody re-tests it. Here the asymmetry runs
+the other way: the privileged observer cannot reproduce the *failure*, so it reads as not existing.
+
+**Practical consequence for §7's owed measurement:** the route-less `cotal_send` behaviour **cannot
+be measured from this account**. It needs a deliberately narrow `allowPublish` on a test subject —
+which the connection-control suite's authed arm already builds (`allowPublish: ["general"]`, driven
+as `E12`). **The fixture for the owed measurement already exists; only the assertion is missing.**
+
 ## 1. What a seat should be able to ask
 
 One question, asked about a destination rather than about itself:
