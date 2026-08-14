@@ -547,15 +547,15 @@ registry.
 
 ```bash
 cotal ps [--on <instance>] [--space <s>]
-cotal stop --name <n> [--space <s>]
-cotal attach --name <n> [--space <s>]
+cotal stop --name <n> [--on <instance>] [--space <s>]
+cotal attach --name <n> [--on <instance>] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
-| `--on <instance>` | class scatter | `ps`: pin to one manager instance id (multi-manager space) |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space) |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
@@ -567,6 +567,21 @@ renders each managed agent's last credential-refresh outcome, fail-closed.
   the records registry, merges every registered instance's agents grouped and attributed per
   instance, and a non-answering instance is shown `unreachable` (never silently omitted).
   `--on <instance>` pins the read to one exact instance id instead.
+
+**`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
+manager actually running it, and the class queue does not know which one that is. So on a
+static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
+address that instance directly. You do not need `--on` for this — it happens by default.
+
+`--on <instance>` remains the override, for when you already know where the seat lives or the
+lookup itself is degraded. It is also the **only** route on a **user-auth mesh**: a ledger-scoped
+bearer does not hold the registry-read rows the lookup needs, so there the verbs stay on the class
+queue unless you pin them yourself.
+
+If the seat is found on no reachable instance, the error says so — how many managers answered, and
+which ones did not — rather than reporting a bare `no agent <name>`. That distinction matters
+because a single manager cannot tell "hosted elsewhere" from "does not exist": it answers
+`not-found` for both.
 - **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
   read against the manager's in-memory roster, owner-filtered). It does **not** report other
   manager instances, and it cannot tell you that one is down — an unreachable manager is absent

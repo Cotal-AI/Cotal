@@ -60,6 +60,12 @@ export interface ContractStoreContext {
   readonly space: string;
 }
 
+/** A per-operation artifact read memo: `digest hex -> the in-flight or settled read`. Scoped to ONE
+ *  logical operation against ONE store context (e.g. a single {@link resolveService}); it is not a
+ *  process cache and holds no bound state. Passed to {@link fetchContractClosure} so the closure
+ *  walks of one operation neither re-read nor concurrently duplicate the same artifact. */
+export type ArtifactMemo = Map<string, Promise<Uint8Array | undefined>>;
+
 interface StoreResources { js: JetStreamClient; jsm: JetStreamManager; }
 
 /** The resources, unreachable from the context token itself. A structural look-alike never
@@ -330,7 +336,7 @@ export async function fetchContractClosure(
   ctx: ContractStoreContext,
   closureDigestRef: string,
   extractRefs: (bytes: Uint8Array, digestHex: string) => string[],
-  opts: { maxArtifacts?: number; walkBudgetMs?: number } = {},
+  opts: { maxArtifacts?: number; walkBudgetMs?: number; artifactMemo?: ArtifactMemo } = {},
 ): Promise<{ manifest: ContractClosureManifest; artifacts: Map<string, Uint8Array> }> {
   resources(ctx); // brand-check (resources unused here; the delegated publish/fetch use them)
   const max = opts.maxArtifacts ?? CONTRACT_CLOSURE_MAX_ARTIFACTS;
@@ -356,8 +362,26 @@ export async function fetchContractClosure(
     try { return await Promise.race([p, deadline]); } finally { clearTimeout(timer); }
   };
 
+  // One RESOLVE reaches the same artifact from many closures (a shared void input, a common error
+  // shape), and re-reading it is pure caller->broker RTT. The memo dedupes those reads, including
+  // ones still IN FLIGHT — concurrent walks asking for the same digest share one request. It is
+  // safe precisely because the store is content-addressed: `fetchContractArtifact` verifies on read
+  // (recomputing the digest, checking both the last message and the create-only winner), so bytes
+  // admitted under a digest stay verified under that same digest. The memo carries no bound state —
+  // every §13.7 bound below is still counted per walk, so sharing it across walks changes no limit.
+  const getArtifact = (hex: string): Promise<Uint8Array | undefined> => {
+    const memo = opts.artifactMemo;
+    if (!memo) return fetchContractArtifact(ctx, hex);
+    const hit = memo.get(hex);
+    if (hit) return hit;
+    const p = fetchContractArtifact(ctx, hex);
+    p.catch(() => {}); // a walk may abandon this read on a budget abort; never surface it as unhandled
+    memo.set(hex, p);
+    return p;
+  };
+
   const closureHex = contractRefToHex(closureDigestRef);
-  const manifestBytes = await raceBudget(fetchContractArtifact(ctx, closureHex), `the manifest fetch for ${closureHex}`);
+  const manifestBytes = await raceBudget(getArtifact(closureHex), `the manifest fetch for ${closureHex}`);
   if (manifestBytes === undefined)
     throw new EpEnvelopeError("failed-precondition", `the closure manifest ${closureHex} is not published; a closure digest names its manifest artifact (SPEC 13.7)`);
   const manifest = parseClosureManifest(assertCanonicalArtifactBytes(manifestBytes, `the manifest ${closureHex}`), `the manifest ${closureHex}`);
@@ -381,7 +405,7 @@ export async function fetchContractClosure(
     if (out.has(hex)) continue; // cycle/diamond-safe (after the depth bound)
     if (out.size >= max)
       throw new EpEnvelopeError("failed-precondition", `the contract closure exceeds the ${max}-artifact bound; a truncated closure never verifies as complete (SPEC 13.7)`);
-    const bytes = await raceBudget(fetchContractArtifact(ctx, hex), `the fetch of ${hex}`);
+    const bytes = await raceBudget(getArtifact(hex), `the fetch of ${hex}`);
     if (bytes === undefined)
       throw new EpEnvelopeError("failed-precondition", `the closure references artifact ${hex} but it is not published; a closure is fetched all-or-nothing (SPEC 13.7)`);
     totalBytes += bytes.length;

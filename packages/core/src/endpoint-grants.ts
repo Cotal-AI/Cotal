@@ -267,6 +267,28 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): Ep
   return caps;
 }
 
+/** The SAME tier set, pinned to ONE instance — the issuance `--on <instanceId>` was always meant to
+ *  get. These instruments are ONE-SHOT, minted per control call, and the resolve that chose the
+ *  instance runs BEFORE the mint, so the exact id can be handed down and the emitter's
+ *  `if (cap.instanceId)` branch produces exactly `ep.inst.<endpoint>.<iid>.<command>` for THIS
+ *  invocation and nothing else. No wildcard instance is minted anywhere, which is what keeps the
+ *  `inst-route-grant` boundary intact: instance addressing stays with the per-invocation operator
+ *  instruments that already hold it, and a plain, spawn-capable, or observer credential still gets
+ *  no instance route at all.
+ *
+ *  `describe` is included EXPLICITLY. The baseline describe row is class-rail only
+ *  ({@link epDescribeAllGrantRow}), so without this the pinned RESOLVE that must precede a pinned
+ *  invoke is refused at the broker — and refused invisibly, because the client renders that refusal
+ *  as a describe timeout. Here it is a concrete endpoint+instance capability, not the normative
+ *  wildcard form, so the exact-arity discipline of the caller grammar is preserved. */
+export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin", instanceId: string): EpCapability[] {
+  assertLifecycleToken(instanceId, "instanceId"); // fail loud at mint on a malformed id, never widen a subject
+  return [
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe", instanceId },
+    ...operatorInstrumentCapabilities(tier).map((cap) => ({ ...cap, instanceId })),
+  ];
+}
+
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability
  *  rollup into `pub.allow`, and the caller's reply rail into `sub.allow` — ALWAYS present (the
  *  baseline implies the reply read even when no per-capability rows are minted). The §13.7

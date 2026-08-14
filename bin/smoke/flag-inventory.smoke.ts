@@ -132,9 +132,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   runtimes: { flags: [], positionals: false },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
-  stop: { flags: [...TARGET, "name:string"], positionals: false },
+  stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   ps: { flags: [...TARGET, "on:string"], positionals: false },
-  attach: { flags: [...TARGET, "name:string"], positionals: false },
+  attach: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   deliver: {
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped

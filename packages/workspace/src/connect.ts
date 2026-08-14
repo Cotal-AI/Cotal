@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  instancePinnedInstrumentCapabilities,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -218,7 +219,7 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
-export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise<Connection> {
+export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string } = {}): Promise<Connection> {
   if (flags.creds) {
     const space = flags.space ?? DEFAULT_SPACE;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
@@ -298,7 +299,19 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile): Promise
     const identity = newIdentity();
     if (instrument) {
       const uid = mintLifecycleUid();
-      creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid });
+      // `--on <instanceId>`: pin THIS one-shot instrument to the instance the resolve already
+      // chose, so it is issued the exact `ep.inst.<endpoint>.<iid>.<command>` rows for this
+      // invocation. Without it the instrument holds only class-rail rows, every instance-addressed
+      // request is refused at the broker, and the client renders that refusal as a describe
+      // timeout — so `--on` reads as an unresponsive manager rather than an unminted grant. The
+      // capability SHAPE is core's to define; this site only decides that a pin was asked for.
+      // Only the two control-caller tiers take it: `deployer` mints through a different arm that
+      // does not consume endpoint capabilities, so pinning it here would silently do nothing.
+      const tier = role === "control-caller-admin" ? "admin" : "privileged";
+      const pinned = opts.instanceId !== undefined && role !== "deployer"
+        ? instancePinnedInstrumentCapabilities(tier, opts.instanceId)
+        : undefined;
+      creds = await mintCreds(target.auth, identity, role, { lifecycleUid: uid, ...(pinned ? { endpointCapabilities: pinned } : {}) });
       epCaller = { owner: DEV_OWNER, actor: identity.id, uid };
     } else {
       creds = await mintCreds(target.auth, identity, role);
