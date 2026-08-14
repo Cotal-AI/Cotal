@@ -42,6 +42,8 @@ import {
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   CONTROL_AUTH_ADMIN,
+  artifactBucket,
+  objectStoreStream,
   chatStream,
   dmStream,
   taskStream,
@@ -1322,7 +1324,7 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  face-b tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
  *  → invoke the manager's `ps` + any-mode `despawn` over the ep rails to politely stop the managed
  *  agents → `deleteChannels`
- *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 12 space streams/buckets).
+ *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 13 space streams/buckets).
  *  So it reads state, CALLS admin control, deletes channels, and deletes streams — but NEVER reads a
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
  *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
@@ -1334,12 +1336,15 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
   const ep = instrumentEpRows(space, pr, "admin");
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
-  // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 buckets); each needs
-  // INFO (jsm existence) + DELETE. This is the ONLY cred that holds STREAM.DELETE (face-b isolated here).
+  // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 KV buckets + the
+  // artifact object store = 13); each needs INFO (jsm existence) + DELETE. This is the ONLY cred that
+  // holds STREAM.DELETE (face-b isolated here). This list and deleteSpace()'s own array must agree:
+  // a stream in one and not the other is either an undeletable leak or a grant for nothing.
   const del = [
     CHAT, dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
     PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
     `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
+    objectStoreStream(artifactBucket(space)),
   ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
@@ -1651,7 +1656,15 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // start-time ensure over this provisioner. Create-or-verify only (idempotent, fail-loud on drift);
   // the provisioner holds no value-write on any of them (goal facts ride the scoped goal-writer cred).
   const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName].map((f) => f(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), ...endpointStreams, ...buckets].flatMap((s) => [
+  // The artifact Object Store joins the list: `setupSpaceStreams` creates it, and under auth mode the
+  // provisioner is the cred doing that creating. Its backing stream is `OBJ_<bucket>` - named
+  // explicitly, because `$O.<bucket>.>` is outside the `cotal.<space>.>` grammar and no space-prefix
+  // grant reaches it. CREATE + INFO only: the provisioner never publishes an object, never creates a
+  // consumer on it, and never deletes it. That confinement is load-bearing rather than tidy - the
+  // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
+  // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
+  const OBJ = objectStoreStream(artifactBucket(space));
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), OBJ, ...endpointStreams, ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);

@@ -35,7 +35,7 @@ try {
   writeFileSync(pidPath, String(m1.pid));
   await wait(100);
   check("live manager.pid with NO marker → not delivery-aware", managerUp() === true && managerHasDeliveryMarker() === false);
-  stopOldHostingManagerIfPresent();
+  await stopOldHostingManagerIfPresent();
   await wait(400);
   check("preflight STOPS an unmarked (old hosting) manager + clears its pid", !alive(m1.pid!) && !existsSync(pidPath));
 
@@ -45,7 +45,7 @@ try {
   writeFileSync(markerPath, String(m2.pid));
   await wait(100);
   check("live manager.pid WITH a matching marker → delivery-aware", managerHasDeliveryMarker() === true);
-  stopOldHostingManagerIfPresent();
+  await stopOldHostingManagerIfPresent();
   await wait(300);
   check("preflight LEAVES a delivery-aware manager running", alive(m2.pid!) === true && existsSync(pidPath));
 

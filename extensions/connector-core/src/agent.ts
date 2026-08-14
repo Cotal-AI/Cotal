@@ -14,6 +14,7 @@ import {
   type EpVerbTarget,
   type ControlReply,
   type Delivery,
+  partsToText,
   type MessageMeta,
   type Presence,
   type PresenceStatus,
@@ -431,9 +432,7 @@ export class MeshAgent extends EventEmitter {
    *  remains a payload display label. Shared by live ingest and
    *  focus recall ({@link recallAmbient}). */
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
-    const text = m.parts
-      .map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data)))
-      .join(" ");
+    const text = partsToText(m.parts);
     return {
       id: m.id,
       ts: m.ts,

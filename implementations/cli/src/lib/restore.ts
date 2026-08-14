@@ -37,6 +37,7 @@ import {
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
   type PersistentConsumerCheckpoint,
+  ensureArtifactStore,
 } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock,
@@ -535,6 +536,14 @@ async function createOmittedInfrastructure(
     await kvm.create(membershipBucket(space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
+    // The artifact Object Store is EXCLUDED from the backup artifact, which does not mean restore
+    // ignores it: the assertion below covers `excluded` too, so a restored space must come back
+    // with an EMPTY store rather than none. Excluding a stream and forgetting to recreate it is the
+    // failure that only appears at restore - the one moment nobody is watching for a new defect.
+    // Create-or-verify (not a bare create): a restore target that already holds a drifted store must
+    // refuse rather than adopt it, which matters more here than at setup - a restore is exactly when
+    // an operator is least able to tell an inherited config from a fresh one.
+    await ensureArtifactStore(nc, space);
     for (const stream of [...create, ...excluded]) await jsm.streams.info(stream);
     // The normal listener is exposed only over a complete space: assert the exact stream inventory
     // (restored + created + excluded transient) before the coordinator may write commit intent.
