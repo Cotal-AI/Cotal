@@ -22,7 +22,7 @@ ART="${ART_DIR:?}"; mkdir -p "$ART"
 # an abort cannot skip the check that would have caught the abort.
 # This is a count and this lane distrusts counts: it is safe here ONLY because every cell is also
 # asserted by name above. It detects a TRUNCATED run, and it is not evidence that anything passed.
-EXPECTED_CELLS=31
+EXPECTED_CELLS=32
 finish() {
   rc=$?
   ran=$((pass + fail))
@@ -61,7 +61,20 @@ capture() { ROW=$(card); echo "    row| $ROW"
 # Setting HOME is the fix; this witness is the CELL, because an env var is a claim and a witness is
 # a measurement.
 HOST_HOME="$HOME"
-witness() { find "$1" -printf '%T@ %s %p\n' 2>/dev/null | sort | sha256sum | cut -d' ' -f1; }
+# NEVER `2>/dev/null` IN A CHECK. The first version of this function suppressed stderr, and that is
+# the exact defect that nearly hid this finding from me: `find` here is `bfs`, it REJECTED a
+# `-newermt '3 hours ago'` argument with rc 1, the redirect swallowed the error, and an empty result
+# read as "nothing was modified" — in the check meant to verify a finding against me.
+# Suppressing stderr converts "could not check" into "checked and clean", and BOTH reads would
+# return the hash of empty input, so the comparison passes VACUOUSLY. The failure must be loud and
+# it must not compare equal to a real answer, hence the sentinel plus the explicit cell below.
+witness() {
+  errf=$(mktemp); out=$(find "$1" -printf '%T@ %s %p\n' 2>"$errf"); rc=$?
+  if [ "$rc" -ne 0 ] || [ -s "$errf" ]; then
+    printf 'WITNESS-FAILED rc=%s %s' "$rc" "$(tr '\n' ' ' < "$errf" | cut -c1-160)"; rm -f "$errf"; return 0
+  fi
+  rm -f "$errf"; printf '%s' "$out" | sort | sha256sum | cut -d' ' -f1
+}
 W_BEFORE=$(witness "$HOST_HOME/.agents")
 
 NODE=/home/david/.nvm/versions/node/v22.23.2/bin/node
@@ -128,7 +141,17 @@ echo "$ROW" | grep -q 'start:'; [ $? -ne 0 ]; ck "R2b alive-row-offers-no-start-
 # ---- DEAD: same file, pid proven gone -----------------------------------------------------------
 kill -9 "$SLEEP_PID" 2>/dev/null
 i=0; while kill -0 "$SLEEP_PID" 2>/dev/null && [ $i -lt 25 ]; do sleep 0.2; i=$((i+1)); done
-kill -0 "$SLEEP_PID" 2>/dev/null && { echo "REFUSING: planted pid still alive"; exit 93; }
+# Three outcomes, not two. `kill -0` failing is not proof of death: EPERM means the process EXISTS
+# and is not ours to signal, and folding that into "dead" would run the dead-arm against a live
+# process. Only ESRCH proves gone; anything else is a refusal that names its condition.
+KERR=$(mktemp)
+if kill -0 "$SLEEP_PID" 2>"$KERR"; then
+  echo "REFUSING: planted pid $SLEEP_PID is still alive"; rm -f "$KERR"; exit 93
+elif ! grep -qi 'no such process' "$KERR"; then
+  echo "REFUSING: cannot establish that pid $SLEEP_PID is gone — kill(2) said: $(tr '\n' ' ' < "$KERR")"
+  rm -f "$KERR"; exit 93
+fi
+rm -f "$KERR"
 capture dead
 echo "$ROW" | grep -q 'not running' && echo "$ROW" | grep -q 'start:'
 ck "R5 dead-pid-still-says-not-running-AND-still-offers-the-start-hint (INVERSE CONTROL)" $?
@@ -224,7 +247,13 @@ CTRL_AFTER=$(witness "$HOME_D")
 ck "R9-control the witness DETECTS a change (else R9 is vacuous, not clean)" $?
 
 W_AFTER=$(witness "$HOST_HOME/.agents")
-[ "$W_BEFORE" = "$W_AFTER" ]
+# Two WITNESS-FAILED sentinels compare EQUAL, so "unchanged" must be established before it is
+# believed. This is the 94/95 split in a shell cell: "I checked and it is clean" and "I could not
+# check" must never render alike.
+case "$W_BEFORE$W_AFTER" in *WITNESS-FAILED*) wok=1 ;; *) wok=0 ;; esac
+[ "$wok" -eq 0 ]
+ck "R9-usable the witness actually produced a reading both times (not a could-not-check sentinel)" $?
+[ "$wok" -eq 0 ] && [ "$W_BEFORE" = "$W_AFTER" ]
 ck "R9 hermetic: the operator's real ~/.agents was NOT modified by this run" $?
 
 echo ""
