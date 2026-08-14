@@ -315,10 +315,24 @@ async function main() {
     });
     await mgrEp.start();
 
+    // Consuming under auth means owning lifecycle-keyed broker resources, so the witness needs its
+    // own uid and a credential minted against it (SPEC 13.1) — it cannot borrow the subject's.
+    const obsId = newIdentity();
+    const obsUid = mintLifecycleUid();
     const obsEp = new CotalEndpoint({
-      space: aspace, servers: ASERVER, creds: await mintCreds(sauth, newIdentity(), "operator"),
-      card: { name: "authed-observer", kind: "endpoint" },
-      channels: [], consume: false, registerPresence: false, watchPresence: true,
+      space: aspace, servers: ASERVER,
+      creds: await provisionAgent(mgrEp, sauth, obsId, {
+        subscribe: ["general", "secret"], allowSubscribe: ["general", "secret"],
+        allowPublish: ["general", "secret", "team.>"], lifecycleUid: obsUid, role: "observer",
+      }),
+      card: { id: obsId.id, name: "authed-observer", kind: "endpoint" },
+      lifecycleUid: obsUid,
+      channels: ["general", "secret"], consume: true, registerPresence: false, watchPresence: true,
+    });
+    const witnessed: string[] = [];
+    obsEp.on("message", (m: any, d: any) => {
+      witnessed.push(`#${m.channel}:${m.parts.map((p: any) => (p.kind === "text" ? p.text : "")).join("")}`);
+      d.ack();
     });
     await obsEp.start();
     const authedSeen = (): { status?: string; activity?: string } | undefined => {
@@ -333,7 +347,8 @@ async function main() {
     // it produced a subject that authenticated fine and then span forever on
     // `Permissions Violation for Publish to "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker"`.
     const subCreds = await provisionAgent(mgrEp, sauth, subId, {
-      subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: subUid, role: "worker",
+      subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+      lifecycleUid: subUid, role: "worker",
     });
     // An AUTHED connector session: real creds bytes, the launcher's lifecycle uid, and the grant.
     const cfgAuthed: any = {
@@ -419,6 +434,27 @@ async function main() {
     const afterSub = await inboxSpec.run(S, cfgAuthed, { peek: true });
     armCheck("AUTHED", "E10 a SUBTREE grab outside the ACL is denied after the reconnect too — the return did not widen the credential by shape either",
       !afterSub.text.includes("PROBE-SUBTREE"), afterSub.text.slice(0, 300));
+
+    // E11/E12 — THE PUBLISH SIDE, WHICH E8 AND E10 STRUCTURALLY CANNOT SEE. Both of those measure
+    // what the subject can RECEIVE, so a credential that came back able to POST anywhere would pass
+    // them both. A widened publish grant is the louder half of the compromise: a read leak is
+    // information, a write leak is an agent speaking on channels it was never admitted to.
+    //
+    // Driven entirely through the REAL tool for both arms, and that is the finding as much as the
+    // cells are: `cotal_send` carries NO client-side publish gate (`tool-specs.ts:343` — straight to
+    // `agent.send`), unlike the read side where `cotal_join`'s ACL check exists. So the broker is
+    // the ONLY fence here, and nothing needed bypassing to ask it.
+    //
+    // REFUTED IF the out-of-ACL post is witnessed (the return widened the publish grant), or if the
+    // in-ACL post is NOT witnessed (dead probe — the witness was never receiving).
+    const sendSpec = authedSpecs.find((s: any) => s.name === "cotal_send")!;
+    const inPub = await sendSpec.run(S, cfgAuthed, { text: "PUB-IN-ACL", channel: "general" });
+    const outPub = await sendSpec.run(S, cfgAuthed, { text: "PUB-OUT-OF-ACL", channel: "secret" });
+    await sleep(1800);
+    armCheck("AUTHED", "E11 CONTROL: the subject's IN-ACL post IS witnessed at the broker (so E12's silence is a denial, not a dead witness)",
+      witnessed.some((w) => w.includes("PUB-IN-ACL")), { witnessed, inPub: inPub.text });
+    armCheck("AUTHED", "E12 the subject still CANNOT post outside its publish ACL after the self-reconnect — the return did not widen what it may SAY, only what it may hear was checked before",
+      !witnessed.some((w) => w.includes("PUB-OUT-OF-ACL")), { witnessed, outPub: outPub.text });
 
     await S.stop();
     await obsEp.stop();
