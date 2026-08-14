@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
 import {
+  canonicalRoot,
   findMesh,
   getCurrent,
   homeCotalDir,
@@ -352,7 +353,15 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // mode, not DEFAULT_SERVER: a project started with `--server …:4333` must spawn against :4333,
     // and a recorded OPEN mesh must not mint creds off stale `.cotal/auth` left on disk. Fall back
     // to the local default only when nothing is recorded for this root.
-    const rootMatches = meshes.filter((m) => resolve(m.root) === resolve(root));
+    //
+    // Matched via `canonicalRoot`, not `resolve`: a recorded root is whatever spelling `cotal up`
+    // or `cotal meshes add --root` was given, so the SAME directory reaches us under several names
+    // (a symlinked path an operator typed, `/var` → `/private/var`, a Windows 8.3 short name).
+    // `resolve` normalizes separators and `..`/`.` but does NOT collapse a symlink, so it reads a
+    // recorded project as UNRECORDED — discarding the recorded server and mode and falling through
+    // to `DEFAULT_SERVER` below, silently. `mesh-registry.ts` states the rule on `meshesForRoot`:
+    // "a raw `===` silently misses". This is the same rule, one predicate, not a second spelling.
+    const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
     // A broker that runs several spaces records one entry per space, all under this same root. With no
     // `--space` to pick one, `.find()` would silently resolve whichever sorted first; name the tenants
     // and refuse instead (the same posture as `soleSpaceOf` for an unrecorded multi-space root).
@@ -368,8 +377,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the
     // exact silent-wrong-mesh outcome this feature exists to prevent).
+    // Same predicate as the match above, and for the same reason in the opposite direction: under
+    // `resolve` our OWN record, spelled differently, reads as a DIFFERENT root — so a project whose
+    // mesh is recorded at the default port is told that mesh belongs to someone else.
     const onDefault = meshes.find(
-      (m) => m.server === DEFAULT_SERVER && resolve(m.root) !== resolve(root),
+      (m) => m.server === DEFAULT_SERVER && canonicalRoot(m.root) !== canonicalRoot(root),
     );
     if (onDefault)
       throw new MeshTargetError(
