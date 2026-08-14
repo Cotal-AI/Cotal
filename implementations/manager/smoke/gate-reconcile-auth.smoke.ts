@@ -342,6 +342,7 @@ try {
     };
     const row = (p: string) => ({ cid: 1000 + Math.floor(Math.random() * 1000), tags: [`principal:${p}`] });
     const pg = (conns: unknown[], total: number) => ({ server: { id: "SERVER_A" }, data: { server_id: "SERVER_A", total, connections: conns } });
+    const pgAt = (conns: unknown[], total: number, offset: number) => ({ server: { id: "SERVER_A" }, data: { server_id: "SERVER_A", total, offset, connections: conns } });
 
     const lost = await observePrincipalLiveness(rounds([[pg([row(principalKey(DEV_OWNER, "filler").key)], 2)], []]), "ACC", VICTIM, pageOpts);
     check("LOST PAGE: page0 full + page1 SILENT is an UNDER-REPORT, not an ending — unknown, sweepComplete:false (never a false `gone`)",
@@ -359,6 +360,19 @@ try {
     const done = await observePrincipalLiveness(rounds([[pg([row(principalKey(DEV_OWNER, "filler").key)], 2)], [pg([row(principalKey(DEV_OWNER, "filler2").key)], 2)]]), "ACC", VICTIM, pageOpts);
     check("LOST PAGE inverse control: a COMPLETE multi-page sweep with the victim nowhere still reads GONE (no permanent wedge)",
       done.state === "gone" && done.sweepComplete === true, done);
+
+    // ANSWERING IS NOT DELIVERING. A narrower sibling of the lost page, found on re-review of the
+    // first fix: a server that owes the rest of its data can reply with a WELL-FORMED EMPTY page
+    // while its own `total` still says there is more. That is not an ending, but it cleared the
+    // debt exactly as silence used to — so the sweep called itself complete on page 0's rows alone.
+    // An owed server now discharges its debt only by handing data over, or by showing there is
+    // none left (`offset >= total`).
+    const emptyMid = await observePrincipalLiveness(rounds([[pgAt([row(principalKey(DEV_OWNER, "filler").key)], 3, 0)], [pgAt([], 3, 1)]]), "ACC", VICTIM, pageOpts);
+    check("EMPTY MID-PAGE: an owed server answering with an empty page while offset < total is an UNDER-REPORT (answering is not delivering)",
+      emptyMid.state === "unknown" && emptyMid.sweepComplete === false, emptyMid);
+    const legitEnd = await observePrincipalLiveness(rounds([[pgAt([row(principalKey(DEV_OWNER, "filler").key)], 1, 0)], [pgAt([], 1, 1)]]), "ACC", VICTIM, pageOpts);
+    check("EMPTY MID-PAGE inverse control: an empty page at offset >= total is a legitimate END — still GONE (the rule demands progress, not data that does not exist)",
+      legitEnd.state === "gone" && legitEnd.sweepComplete === true, legitEnd);
 
     // THE SECOND GUARD SHARED THE SAME HOLE. The design says the probe is a precondition ON TOP OF
     // the barrier's verified eviction — but belt-and-braces is worthless if both are the same belt.

@@ -144,8 +144,9 @@ async function scanLive(
         }
         conns.push({ cid: c.cid, serverId, principal });
       }
-      deliveredThisRound.add(serverId);
       const total = r.data?.total ?? 0;
+      // Same progress rule as `livenessSweep`: answering is not delivering (see there).
+      if (cs.length > 0 || offset >= total) deliveredThisRound.add(serverId);
       if (cs.length >= opts.pageLimit && offset + cs.length < total) {
         fullPageSomewhere = true;
         owesAfterThisRound.add(serverId);
@@ -461,18 +462,22 @@ async function livenessSweep(
           ...(principal === null ? {} : { principal }),
         });
       }
-      deliveredThisRound.add(serverId);
       const total = r.data.total;
+      // PROGRESS, not merely a reply: a server that owes the rest of its data discharges that debt
+      // only by handing some over (`cs.length > 0`) or by showing there is none left to hand
+      // (`offset >= total`). An empty page at an offset still short of `total` answers without
+      // delivering, and accepting it as an ending clears the debt exactly as silence used to.
+      if (cs.length > 0 || offset >= total) deliveredThisRound.add(serverId);
       if (cs.length >= opts.pageLimit && offset + cs.length < total) {
         fullPageSomewhere = true;
         owesAfterThisRound.add(serverId);
       }
     }
-    // THE LOST-PAGE CHECK. A server that said "there is more" and then failed to deliver a
-    // well-formed page has not ended its data — it has gone silent mid-pagination, and its
-    // remaining connections were never seen. Reading that as the end is how a sweep that MISSED a
-    // live connection reports itself COMPLETE, and a complete-and-absent sweep is exactly what
-    // authorizes `gone`. Fail closed: the observation is an under-report, not an ending.
+    // THE LOST-PAGE CHECK. A server that said "there is more" and then failed to deliver the rest
+    // has not ended its data — it has stopped mid-pagination, and its remaining connections were
+    // never seen. Reading that as the end is how a sweep that MISSED a live connection reports
+    // itself COMPLETE, and a complete-and-absent sweep is exactly what authorizes `gone`. Fail
+    // closed: the observation is an under-report, not an ending.
     for (const s of owed) if (!deliveredThisRound.has(s)) lostPage = true;
     owed = owesAfterThisRound;
     if (!fullPageSomewhere) break;
