@@ -17,7 +17,7 @@ The assignment was framed as:
 | --- | --- | --- |
 | A seat cannot discover its publish grant | **FALSE.** It is surfaced to the seat as `access.post` | `extensions/connector-core/src/orientation.ts:112` (`post: config.allowPublish`) — every seat is told to run `cotal_orientation` first |
 | `cotal_send` checks the grant | **TRUE — it does not.** Straight to `agent.send`; `allowPublish` is never referenced in `agent.ts` | `tool-specs.ts:343`, and a repo-wide grep of `agent.ts` |
-| Using the only route fails silently | **PROBABLY NOT SILENT — pending measurement.** Chat publishes go through `await this.js.publish(...)`, a JetStream call that awaits an ack, so a denied publish should REJECT and surface as `Couldn't send: <nats error>` | `packages/core/src/endpoint.ts:2544`; `tool-specs.ts:347` |
+| Using the only route fails silently | **NOT SILENT — MEASURED, see §0a.** The call rejects; the caller gets `isError=true`. But the text is the raw transport error, so the *condition* is still unnamed | `E13`, driven `Fri Aug 14 09:44:58 PM UTC 2026` |
 
 **So the gap is real but it is not the one described.** The information exists and is already in front
 of the seat. What is missing is narrower and, I think, more interesting:
@@ -27,16 +27,63 @@ of the seat. What is missing is narrower and, I think, more interesting:
 2. **There is no way to ask a question about a DESTINATION.** A seat can read a list; it cannot ask
    *"can I deliver to `review.fm-x`?"* and get an answer it can branch on.
 3. **The failure, when it comes, is a transport error and not a named refusal.** `Couldn't send:
-   <permissions violation>` is not something a caller can distinguish from a broker outage — and
+   <permissions violation>` — the string is measured (§0a); the *indistinguishable from a broker
+   outage* half is reasoning, since I never drove the outage arm to compare against — and
    this lane has already shipped a fix for a refusal that named the wrong condition, on exactly that
    argument.
 
-**⚠️ OWED MEASUREMENT, BLOCKING THE CENTRAL CLAIM.** Row 3 above says *probably*. Whether a
-route-less `cotal_send` rejects or resolves is the hinge of this whole note: if it rejects, the
-design is "name the refusal better"; if it resolves, the design is "there is no failure signal at
-all," which is a far more serious defect. **I have not measured it — the box is under an exclusivity
-hold for another lane and this needs a broker.** It is the first thing to drive when the hold lifts.
-**Nothing below should be read as settled until that row is.**
+## 0a. THE OWED MEASUREMENT, NOW DRIVEN — IT REJECTS, SO THE NOTE'S SCOPE HOLDS
+
+Driven `Fri Aug 14 09:44:58 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
+`0a2a4ae6`, under an exclusivity ack from fm-orchestrator. Suite:
+`extensions/connector-core/smoke/connection-control.smoke.ts`, **39 passed / 0 failed / 0 VOID,
+rc=0**, against an ephemeral loopback broker (`nats://127.0.0.1:44043`, asserted not the live host
+as the run's first action; core `dist` provenance asserted as its second).
+
+`E13` is **RECORDED, NOT ASSERTED** — I did not know which way it should go, and still hold that
+asserting either direction would have asserted a conclusion I had not established. The observation,
+verbatim from the run:
+
+    ▸ RECORDED (not asserted) — what the caller is told when it posts outside its publish ACL:
+        isError=true  text="Couldn't send: Permissions Violation for Publish to
+        \"cotal.meshctl-authed.chat.local.UBLQV57KEXVB6FEWSTC4GEMFNTLWG6OPFVO6UBP2GHPSRLV4HXOOUEAZ.secret\""
+
+**This is the better of the two outcomes.** The hinge resolves toward *"name the refusal better"*,
+not toward *"there is no failure signal at all."* Everything below §0 is now standing on a measured
+row rather than a probable one, and the note's scope is unchanged.
+
+It is trustworthy because it is not an isolated print: the same run's `E12` asserts the message was
+**not witnessed at the broker**, and `E11` asserts the subject's in-ACL post over the *same* witness
+list **was** — so the denial is a denial, not a dead observer. `E13` is only the caller's-eye view of
+an event two other cells already pinned from outside.
+
+### ⚠️ But the observation carries a second finding I did not predict
+
+**Two different renderings of this one denial exist at the same instant, and the caller is handed the
+worse one.** Also from the run, one line above `E13`:
+
+    [cotal-connector] endpoint error: NATS permission denied: cannot publish "…secret"
+      - check this endpoint's ACLs (a denied peer looks "absent" rather than blocked)
+
+That text **names the condition** (`check this endpoint's ACLs`) and even warns about the exact
+confusion this lane has been chasing all night (*a denied peer looks "absent" rather than blocked*).
+**It goes to the endpoint error channel. The tool caller never sees it.** What the caller gets is
+`Couldn't send: Permissions Violation for Publish to "<internal NATS subject>"`.
+
+So the defect is sharper than "the refusal is unnamed":
+
+1. **The good message already exists and is already written.** This is not a gap needing new
+   diagnosis — it is a routing problem between two surfaces in the same process.
+2. **The caller's version leaks internals and names nothing actionable.** It quotes a wire subject
+   containing the endpoint's lifecycle UID; it never says *`#secret`*, never says *publish ACL*, and
+   cannot be branched on.
+3. **It remains indistinguishable from a broker outage at the call site**, which is the original
+   claim in row 3 — surviving the measurement intact, just for a narrower reason than "silence."
+
+**Held as measured for `cotal_send` on a chat channel only.** Not measured: the DM path, the anycast
+path, or a publish denied while the broker is genuinely unreachable (which is the arm that would
+prove the two are *actually* indistinguishable rather than merely looking alike — the string I would
+need to compare against is not one I have driven).
 
 ## 0b. ⚠️ WHY THIS SURVIVED: EVERYONE WHO COULD NOTICE IT HOLDS A GRANT TOO WIDE TO HIT IT
 
@@ -62,10 +109,12 @@ That is the explanation for the defect's survival, and it generalises past this 
 package it reviews produces "could not reproduce", and nobody re-tests it. Here the asymmetry runs
 the other way: the privileged observer cannot reproduce the *failure*, so it reads as not existing.
 
-**Practical consequence for §7's owed measurement:** the route-less `cotal_send` behaviour **cannot
-be measured from this account**. It needs a deliberately narrow `allowPublish` on a test subject —
-which the connection-control suite's authed arm already builds (`allowPublish: ["general"]`, driven
-as `E12`). **The fixture for the owed measurement already exists; only the assertion is missing.**
+**Practical consequence, and it is how §0a got driven:** the route-less `cotal_send` behaviour
+**cannot be measured from this account**. It needs a deliberately narrow `allowPublish` on a test
+subject — which the connection-control suite's authed arm already builds (`allowPublish:
+["general"]`, driven as `E12`). **The fixture already existed; only the observation was missing, and
+adding it cost one print.** A blocker that dissolved into a print, found by reading my own grant
+before posting a message.
 
 ## 0c. THE OUTBOUND TWIN — and it is outside the grant system entirely
 
@@ -221,7 +270,13 @@ publish grant is the compromise this lane spent the evening proving does not cur
 
 ## 7. Open, and owed
 
-1. **The row-3 measurement above** — does a route-less `cotal_send` reject or resolve? Blocking.
+1. ~~**The row-3 measurement above** — does a route-less `cotal_send` reject or resolve? Blocking.~~
+   **DRIVEN, §0a: it REJECTS** (`isError=true`), so the note's scope holds. **What replaces it as
+   owed is narrower and I am naming it rather than closing the item:** §0a's claim that the refusal
+   is *indistinguishable from a broker outage* is still a code-shaped argument — I have the denial
+   string and I do **not** have the outage string, so I have not actually compared them. Driving a
+   publish against a broker taken down mid-run would settle it. Until then that phrase is reasoning,
+   not measurement, and is marked so where it appears.
 2. ~~**Whether `cotal_dm` has the same shape as `cotal_send`.** Not checked.~~ **ANSWERED — by code
    reading, not by driving it, and the answer improves this note's standing rather than extending
    it.** `cotal_dm` (`tool-specs.ts:360-375`) does **not** have `cotal_send`'s shape. It already
