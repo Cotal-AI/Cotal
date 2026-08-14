@@ -28,6 +28,34 @@
  * keys on the principal-stable id, and does not exist yet.** Do not read the cell below as covering
  * it.
  *
+ * ## Mutation ledger — kill sets predicted BEFORE each run, as NAMED cells, and confirmed
+ *
+ * Counts are deliberately absent. A kill-set header written as a NUMBER goes stale silently every
+ * time a cell is added, and this lane inherited three such headers that had drifted from 3 to 22,
+ * from 2 to 3, and from 3 to 26. Names do not drift; if a named cell stops existing, the reader
+ * knows to re-measure rather than trusting an integer that still looks plausible.
+ *
+ * | # | Mutation, in `src/agui.ts` | Predicted, and confirmed |
+ * | --- | --- | --- |
+ * | M10 | drop `role: "reasoning"` from `reasoningMessageStart` | `reasoningMessageStart parses under its real schema` |
+ * | M11 | `aguiFrame` accepts an empty `events` array | `a frame with no events is refused …` |
+ * | M12 | `RUN_FINISHED` stops refusing dangling opens | `closing a run with a tool call still open is refused` |
+ * | M13 | `openId` drops its already-open check | `re-opening a messageId that is already open is refused` AND `a provider id reused across two observations is refused as a re-open` |
+ * | M14 | the CUSTOM gate accepts any name | `an undeclared CUSTOM name is refused rather than emitted` |
+ *
+ * All five landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the code
+ * that runs), all five killed exactly their predicted set and nothing else, and the restore was
+ * verified by a clean `git status` plus a return to the baseline tally.
+ *
+ * **M10 is the one worth keeping.** It is not a hypothetical: the constructor really did omit
+ * `role`, and this suite caught it on its first execution. The mutation re-introduces a defect that
+ * actually shipped in the first draft, which is the strongest form this proof takes.
+ *
+ * **What these mutations do NOT prove.** Every cell here builds its own input by hand — no connector
+ * calls these constructors yet, because nothing emits. So a killed mutation shows the cells DEPEND
+ * on this code; it does not show a real entry point REACHES it. That half is owed by the connector
+ * cutover and is not claimed here.
+ *
  * Run: pnpm smoke:agui-conformance
  */
 import {
