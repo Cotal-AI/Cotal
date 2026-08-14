@@ -30,27 +30,47 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** Every file under `dir` ending in `ext`, recursively. Empty for a missing tree. */
-function allFiles(dir: string, ext: string): string[] {
+/** The source extensions that COMPILE TO `.js`, and therefore the ones a build must emit for.
+ *
+ * `.tsx` is here because leaving it out was a real hole, not a hypothetical one: the guarded CLI
+ * ships 20 `.tsx` files (`implementations/cli/src/console/app.tsx` among them), `"view.tsx"
+ * .endsWith(".ts")` is FALSE, and so a fifth of the package was invisible to both the staleness
+ * comparison and the completeness check. A `.tsx` edited after its output, and a `.tsx` whose output
+ * was deleted outright, both read as `current`. Found in review with a live two-source `tsc`
+ * fixture.
+ *
+ * Kept as a named list rather than a loose suffix test because that is exactly how the hole got in:
+ * one extension was written in three places and nobody was counting. */
+const SOURCE_EXTS = [".ts", ".tsx"] as const;
+
+/** Every file under `dir` whose name ends in any of `exts`, recursively. Empty for a missing tree. */
+function allFiles(dir: string, exts: readonly string[]): string[] {
   if (!existsSync(dir)) return [];
   const out: string[] = [];
   const walk = (d: string): void => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith(ext)) out.push(p);
+      else if (exts.some((x) => e.name.endsWith(x))) out.push(p);
     }
   };
   walk(dir);
   return out;
 }
 
+/** The `.js` a given source is expected to compile to: swap its extension, keep its relative path. */
+function outputFor(srcPath: string, srcRoot: string, pkgDir: string): string {
+  const rel = srcPath.slice(srcRoot.length + 1);
+  const ext = SOURCE_EXTS.find((x) => rel.endsWith(x));
+  return join(pkgDir, "dist", `${rel.slice(0, rel.length - (ext?.length ?? 0))}.js`);
+}
+
 /** The extreme mtime under `dir` for files matching `ext`, and the file that carried it.
  *  Returns undefined for a missing or empty tree — "no evidence" is a distinct answer from "old",
  *  and the caller must not be able to confuse them. */
-function extreme(dir: string, ext: string, pick: "newest" | "oldest"): { path: string; mtimeMs: number } | undefined {
+function extreme(dir: string, exts: readonly string[], pick: "newest" | "oldest"): { path: string; mtimeMs: number } | undefined {
   let best: { path: string; mtimeMs: number } | undefined;
-  for (const p of allFiles(dir, ext)) {
+  for (const p of allFiles(dir, exts)) {
     const { mtimeMs } = statSync(p);
     const better = !best || (pick === "newest" ? mtimeMs > best.mtimeMs : mtimeMs < best.mtimeMs);
     if (better) best = { path: p, mtimeMs };
@@ -73,7 +93,7 @@ export function buildStaleness(pkgDir: string): BuildStaleness {
   // it — while the package the caller MEANT to check goes unexamined and the suite runs anyway.
   if (!existsSync(pkgDir))
     return { condition: "no-package", pkg: pkgDir, detail: `no such directory: ${pkgDir} — the guard cannot examine it, so nothing about its build has been established` };
-  const src = extreme(join(pkgDir, "src"), ".ts", "newest");
+  const src = extreme(join(pkgDir, "src"), SOURCE_EXTS, "newest");
   // The OLDEST output, not the newest. Comparing newest-to-newest fails OPEN on a PARTIAL build:
   // with `src/a.ts` newer than a stale `dist/a.js`, one unrelated fresh `dist/b.js` makes the
   // package look current — exactly the state an interrupted or errored build leaves behind. Found
@@ -82,7 +102,7 @@ export function buildStaleness(pkgDir: string): BuildStaleness {
   // the newest source (measured on implementations/cli). A package that legitimately ships an
   // output it does not rewrite would read as permanently stale — the verdict names the exact file,
   // so that shows up as a diagnosable false positive rather than a silent pass.
-  const dist = extreme(join(pkgDir, "dist"), ".js", "oldest");
+  const dist = extreme(join(pkgDir, "dist"), [".js"], "oldest");
   if (!src) return { condition: "no-source", pkg: pkgDir, detail: `no .ts files under ${join(pkgDir, "src")}` };
   if (!dist) return { condition: "never-built", pkg: pkgDir, detail: `no .js files under ${join(pkgDir, "dist")} — this package has never been built, so a suite driving it measures nothing` };
 
@@ -94,9 +114,9 @@ export function buildStaleness(pkgDir: string): BuildStaleness {
   // `.d.ts` sources are skipped: they are declarations and emit no `.js`, so requiring one would
   // make every package with an ambient declaration permanently incomplete.
   const srcRoot = join(pkgDir, "src");
-  const missing = allFiles(srcRoot, ".ts")
+  const missing = allFiles(srcRoot, SOURCE_EXTS)
     .filter((p) => !p.endsWith(".d.ts"))
-    .map((p) => ({ srcPath: p, expected: join(pkgDir, "dist", `${p.slice(srcRoot.length + 1, -3)}.js`) }))
+    .map((p) => ({ srcPath: p, expected: outputFor(p, srcRoot, pkgDir) }))
     .find(({ expected }) => !existsSync(expected));
   if (missing)
     return {

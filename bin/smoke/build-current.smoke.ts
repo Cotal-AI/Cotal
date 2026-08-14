@@ -160,6 +160,45 @@ stamp(join(dts, "src", "env.d.ts"), T);
 stamp(join(dts, "dist", "a.js"), T + 60_000);
 check("EXEMPTION: a .d.ts source is not expected to have a .js output", buildStaleness(dts).condition === "current");
 
+// .tsx — the extension the guard could not see. `"view.tsx".endsWith(".ts")` is FALSE, so 20 files
+// of the package this guard exists to protect were invisible to BOTH the staleness comparison and
+// the completeness check. Found in review with a live two-source `tsc` build. Both forms are kept,
+// because they failed independently: a .tsx newer than its output, and a .tsx with no output at all.
+const tsxStale = join(root, "tsx-stale-pkg");
+mkdirSync(join(tsxStale, "src"), { recursive: true });
+mkdirSync(join(tsxStale, "dist"), { recursive: true });
+stamp(join(tsxStale, "src", "a.ts"), T);
+stamp(join(tsxStale, "dist", "a.js"), T + 120_000);
+stamp(join(tsxStale, "dist", "view.js"), T + 60_000);   // output …
+stamp(join(tsxStale, "src", "view.tsx"), T + 180_000);  // … older than its .tsx source
+check("TSX: a .tsx source newer than its output is `stale`, not invisible",
+  buildStaleness(tsxStale).condition === "stale");
+check("TSX: the stale verdict names the .tsx file, so the guard is visibly looking at it",
+  (() => { const v = buildStaleness(tsxStale); return v.condition === "stale" && v.srcPath.endsWith("view.tsx"); })());
+const tsxMissing = join(root, "tsx-missing-pkg");
+mkdirSync(join(tsxMissing, "src"), { recursive: true });
+mkdirSync(join(tsxMissing, "dist"), { recursive: true });
+stamp(join(tsxMissing, "src", "a.ts"), T);
+stamp(join(tsxMissing, "src", "view.tsx"), T);
+stamp(join(tsxMissing, "dist", "a.js"), T + 60_000);    // view.js was never emitted
+const tsxMiss = buildStaleness(tsxMissing);
+check("TSX: a .tsx with no output at all is `incomplete-build`", tsxMiss.condition === "incomplete-build");
+check("TSX: the expected output is view.JS, not view.tsx.js — the extension is swapped, not appended",
+  tsxMiss.condition === "incomplete-build" && tsxMiss.expected.endsWith(join("dist", "view.js")));
+// INVERSE: a fully built mixed package must still pass, or the wider net has simply broken the guard.
+const tsxOk = join(root, "tsx-ok-pkg");
+mkdirSync(join(tsxOk, "src"), { recursive: true });
+mkdirSync(join(tsxOk, "dist"), { recursive: true });
+stamp(join(tsxOk, "src", "a.ts"), T);
+stamp(join(tsxOk, "src", "view.tsx"), T);
+stamp(join(tsxOk, "dist", "a.js"), T + 60_000);
+stamp(join(tsxOk, "dist", "view.js"), T + 60_000);
+check("TSX INVERSE: a fully built .ts + .tsx package is `current`", buildStaleness(tsxOk).condition === "current");
+// The real package is the reason this matters: it SHIPS .tsx, so if the wider net were wrong here
+// the arm below would go red on a package that is genuinely built.
+check("TSX REAL: the cli package ships .tsx and is still classified without a false `incomplete-build`",
+  buildStaleness(cliPkg).condition !== "incomplete-build");
+
 // A MISSING package must not be dressed up as a build fact. Before this split, a typo'd path
 // returned `no-source` and refused with "run pnpm build" — an instruction that cannot fix it, while
 // the package the caller meant to check went unexamined and unmentioned.
@@ -192,7 +231,7 @@ check("EXIT 95: no arguments exits 95, not 0 — a guard called with nothing mus
 // PIN THE COUNT. `pass` climbing while a cell silently stops running is a green that describes a
 // smaller suite than the one it names — and nothing in "32 passed, 0 failed" says how many were
 // supposed to run. Update this deliberately when adding a cell.
-const EXPECTED_CELLS = 32;
+const EXPECTED_CELLS = 38;
 if (pass + fail !== EXPECTED_CELLS) {
   fail++;
   console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);
