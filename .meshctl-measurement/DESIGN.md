@@ -214,14 +214,7 @@ the `fm-health` seam (§3).
 
 ## 7. Declared gaps
 
-- **Durable (Plane-3) membership under a self-disconnect is UNMEASURED.** Probes ran open-mode /
-  live-only, so the durable backstop was absent throughout. *What changes if it does not tombstone:*
-  a disconnected agent would keep a durable membership open, the trusted reader would keep
-  transferring to its DLV inbox, and the "disconnect" would be a lie at the delivery plane while
-  looking clean at the presence plane — a second ghost class, in the one place we cannot see it from
-  the roster. The adjacent property (a durable *leave* tombstones even after ACL narrowing) is
-  already proven by `packages/core/smoke/delivery-leave-tombstone.smoke.ts` **[R]**, which is
-  encouraging but is not the same assertion. Measured alongside the build.
+- ~~Durable membership under a self-disconnect is unmeasured.~~ **NOW MEASURED — see §7.1.**
 - **The user/bearer connect branch is a code read, not a measurement.** The design makes it
   non-load-bearing: a verb that never touches the mint path does not rest on the differences between
   the four connect branches. **Trigger, written down as required: if any revision of this design has
@@ -230,6 +223,35 @@ the `fm-health` seam (§3).
 - **No repo suite has been run and no gate has been requested.** All evidence is five scoped probes:
   M1 verb drive, M2 open-mode gate bypass, M3 broker fence (9/9), M4 observer ghost, M5
   lease/in-flight.
+
+### 7.1 Durable membership under a self-disconnect — measured **[M — M6, 4/4]**
+
+`durableLeaveChannel` has exactly two call sites — `leaveChannel` (`endpoint.ts:1613`) and
+`closeRefusedMembership` (`:3064`). `stop()` (`:1123-1153`) calls neither. Driven against an auth
+broker with a real delivery daemon:
+
+| arm | result |
+| --- | --- |
+| C1 backstop delivers to a durable member not live-subscribed, while UP (**control**) | delivered |
+| post made while the agent was **disconnected**, read after it returns | **delivered — membership survived** |
+| C2 post after an explicit `durableLeave` (**control**) | not delivered |
+
+Both controls hold, so the arms could differ. **A self-disconnect leaves the durable membership
+open; only an explicit leave closes it.**
+
+This splits the design cleanly rather than complicating it:
+
+- **disconnect → reconnect: keep the membership.** Replaying what you missed is the backstop's
+  entire purpose, and this is the behaviour that makes a deliberate "go quiet, come back" useful.
+- **re-target: the verb MUST explicitly close durable memberships on the old mesh before leaving.**
+  Otherwise the old mesh accumulates deliveries forever for an agent that is never returning — a
+  disconnect that is clean at the presence plane and a lie at the delivery plane, in the one place a
+  roster cannot show it. This is now a required step of re-target, not a caveat.
+
+Observation, not claimed as a defect: `leaveChannel` returns early on
+`!this.channels.includes(channel)` (`:1600`), so a membership created server-side without a live
+subscription cannot be closed through it. Server-side memberships are plausibly the daemon's to
+manage, so this is recorded for the reviewer rather than asserted.
 
 ---
 
