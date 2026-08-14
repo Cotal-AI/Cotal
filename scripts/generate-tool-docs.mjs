@@ -95,10 +95,11 @@ const ANNOTATIONS = {
       "self-despawn (no name) is granted to all; stopping a *named* peer rides the spawn capability's owner-mode reach (your own owner's agents only)",
   },
   cotal_persona: {
-    effect: "writes a persona file via the manager (becomes spawnable)",
+    effect: "writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`",
     availability: "capability-gated like cotal_spawn",
     notes:
-      "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy.",
+      "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. " +
+      "Defining is silent by default — `announce` is the only way it emits, and then only to the channel you name.",
   },
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",

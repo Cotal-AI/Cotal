@@ -1,13 +1,23 @@
+import { connect } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
 import {
   isReachable,
+  epAuthBucket,
+  mintCreds,
+  newIdentity,
+  standaloneConnectOpts,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   registry,
   type Command,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { authDir, findCotalRoot, soleSpaceOf } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, getSpaceAuth, loadManagerInstanceIdentity, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
+import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
+import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
+import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
@@ -166,8 +176,69 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   await new Promise<void>(() => {});
 }
 
-/** The manager's one command: the `supervise` daemon runner. Self-registered on import; the
- *  `cotal` binary resolves it from the registry. */
+/**
+ * `cotal reconcile-gate` — the guarded exit from an issuance gate left FROZEN by a crashed
+ * re-registration whose freeze-holder is dead (#391).
+ *
+ * WHY THIS IS A CLI COMMAND AND NOT AN ADMIN VERB ON THE MANAGER ENDPOINT: the wedged state IS
+ * "the manager cannot complete registration", so anything the manager endpoint serves is
+ * unreachable in exactly the state it would exist to repair. This runs operator-locally against
+ * the auth KV and the delivery daemon, needing nothing from the wedged endpoint.
+ *
+ * Read-only until the guard passes: it observes and probes before it constructs the barrier.
+ */
+async function runReconcileGate(args: ParsedArgs): Promise<void> {
+  const v = args.values as Values;
+  const space = spaceFor(v);
+  const servers = v.server ?? DEFAULT_SERVER;
+  const endpoint = v.endpoint ?? MANAGER_ENDPOINT;
+  const root = findCotalRoot();
+
+  // The instanceId is the manager's PERSISTED identity by default — the same one the crashed
+  // incarnation registered under. An explicit --instance covers a non-manager endpoint.
+  const instanceId = v.instance ?? loadManagerInstanceIdentity(root, space)?.instanceId;
+  if (!instanceId)
+    throw new Error(`no persisted manager instance identity under ${root} for space "${space}" — pass --instance <id> for a non-manager endpoint`);
+
+  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
+  if (!auth)
+    throw new Error(`no space auth for "${space}" here — run this on the mesh root that holds the space's auth material`);
+
+  console.error(c.dim(`• reconciling the ${endpoint} issuance gate for ${instanceId} on ${servers} (space ${space})`));
+
+  const identity = newIdentity();
+  const creds = await mintCreds(auth, identity, "endpoint-serve-executor", {
+    endpointServeExecutor: { endpoint, instanceId },
+  });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const kv = await new Kvm(nc).open(epAuthBucket(space));
+    const report = await reconcileEndpointGate({
+      kv, space, endpoint, instanceId,
+      probeHolder: makeManagerHolderLivenessProbe({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
+      evict: makeManagerEndpointEvictor({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
+      log: (l) => console.error(`  ${l}`),
+    });
+    console.log(
+      c.green(`✓ ${endpoint}/${instanceId}: gate reopened at generation ${report.reopenedAtGeneration}`) +
+        ` (processEpoch unchanged at ${report.before.processEpoch}; ${report.revoked.length} credential(s) revoked, ${report.evicted.length} holder(s) verify-evicted). Start the manager to let its normal takeover run.`,
+    );
+  } catch (e) {
+    // A refusal is the DESIGNED outcome for every state this does not repair, so it prints the
+    // condition by name — an operator must never have to guess which guard fired.
+    if (e instanceof GateReconcileRefused) {
+      console.error(c.red(`✗ refused (${e.condition}): ${e.message}`));
+      process.exitCode = 2;
+      return;
+    }
+    throw e;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** The manager's commands: the `supervise` daemon runner, and the guarded `reconcile-gate` repair.
+ *  Self-registered on import; the `cotal` binary resolves them from the registry. */
 const managerCommands: Command[] = [
   {
     kind: "command",
@@ -193,6 +264,20 @@ const managerCommands: Command[] = [
       return typeof runtime === "string" && runtime !== "pty" ? [{ kind: "runtime", name: runtime }] : [];
     },
     run: (args) => runManager(args, "auto"),
+  },
+  {
+    kind: "command",
+    name: "reconcile-gate",
+    group: "Manager",
+    summary:
+      "reconcile an issuance gate left frozen by a crashed re-registration - verifies the freeze-holder is gone, then completes the dead op (refuses if it is alive or unprovable) [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]",
+    flags: [
+      { name: "space", type: "string", value: "<s>", description: "space to reconcile in (default: this folder's auth space)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "endpoint", type: "string", value: "<e>", description: `endpoint whose gate is frozen (default: ${MANAGER_ENDPOINT})` },
+      { name: "instance", type: "string", value: "<id>", description: "instance id (default: this folder's persisted manager instance)" },
+    ],
+    run: runReconcileGate,
   },
 ];
 

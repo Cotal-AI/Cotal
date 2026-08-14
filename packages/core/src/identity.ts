@@ -68,6 +68,35 @@ export function jwtFromCreds(creds: string): string | undefined {
   return creds.match(/BEGIN NATS USER JWT-----\s*([\s\S]*?)\s*------END NATS USER JWT/)?.[1].trim();
 }
 
+/** The ACCOUNT a creds file authenticates as.
+ *
+ *  `iss` is NOT the answer, and assuming it was is a live-verified mistake: when a user JWT is
+ *  signed by an account SIGNING key (which every credential this repo mints is), `iss` carries the
+ *  SIGNING key and the account identity lives in `nats.issuer_account`. Comparing `iss` to an
+ *  account public key rejects every correctly-configured mesh. So: `nats.issuer_account` when
+ *  present, falling back to `iss` for a JWT signed directly by the account identity key.
+ *
+ *  This exists so a process can cross-check its own tenancy against material it read off DISK.
+ *  A daemon that resolves its scan target from a file (`membership.json`) has no way, without
+ *  this, to notice it is reading a DIFFERENT tenant's file than the one it authenticates as — and
+ *  a complete, well-formed sweep of the wrong account is indistinguishable from "the principal is
+ *  gone". Fail-closed: no JWT block, or no usable `iss`, throws rather than returning a value a
+ *  caller might compare loosely. */
+export function accountFromCreds(creds: string): string {
+  const jwt = jwtFromCreds(creds);
+  if (!jwt) throw new Error("creds: no NATS user JWT block found - cannot determine the issuing account");
+  const payload = jwt.split(".")[1];
+  if (!payload) throw new Error("creds: the NATS user JWT is not a three-part token - cannot determine the issuing account");
+  let claims: unknown;
+  try { claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); }
+  catch (e) { throw new Error(`creds: the NATS user JWT payload does not decode (${(e as Error).message}) - cannot determine the issuing account`); }
+  const c = claims as { iss?: unknown; nats?: { issuer_account?: unknown } } | null;
+  const account = typeof c?.nats?.issuer_account === "string" ? c.nats.issuer_account : c?.iss;
+  if (typeof account !== "string" || !/^A[A-Z2-7]{55}$/.test(account))
+    throw new Error("creds: the NATS user JWT names no issuing account in account-nkey form (neither `nats.issuer_account` nor `iss`) - cannot determine the issuing account");
+  return account;
+}
+
 /** A non-secret GENERATION token for a credential: SHA-256 of its compact USER JWT.
  *
  *  The JWT, not the whole creds envelope, on purpose. The JWT is exactly what the broker is

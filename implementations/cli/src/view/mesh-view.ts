@@ -8,7 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, EndpointRef, Presence, PresenceStatus } from "@cotal-ai/core";
-import { deliveryOf, chatWildcard } from "@cotal-ai/core";
+import { deliveryOf, chatWildcard, partsToText } from "@cotal-ai/core";
 
 // ---- the model the surfaces render -----------------------------------------
 
@@ -105,7 +105,7 @@ const HISTORY_LIMIT = 50; // per-channel prefill depth
 const DM_LOG_CAP = 1000; // raw DMs retained for the roll-up
 
 function bodyText(msg: CotalMessage): string {
-  return msg.parts.map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ");
+  return partsToText(msg.parts);
 }
 
 function sortRoster(r: Presence[]): Presence[] {

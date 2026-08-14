@@ -244,6 +244,44 @@ try {
   check("a malformed marked DLV entry does not stop later durable delivery", await until(() =>
     got.some((g) => g.text === "after-malformed-dlv")), got);
 
+  // ARTIFACT PART, CLOSED LOOP. `isMessagePart` gates `isCotalMessage`, which gates the Plane-3
+  // delivery frame — so a core part kind the validator does not know is not a schema detail: the
+  // durable backstop TERMINATES the message and the loss surfaces nowhere near the feature that
+  // added the part. `artifact` is a BARE kind (no dot), so before it had its own arm it fell
+  // through to the reverse-DNS extension regex and failed. This is the only check that proves the
+  // real validator on the real delivery path accepts it; a unit test over a re-implemented
+  // predicate would pass with the arm deleted.
+  const artifactId = randomUUID();
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify({
+      id: artifactId, ts: Date.now(), space, from: poster.card, channel: "review",
+      parts: [
+        { kind: "text", text: "artifact-part-survives" },
+        { kind: "artifact", name: "r.html", mediaType: "text/html", size: 12, digest: `sha256:${"a".repeat(64)}` },
+      ],
+    }),
+    { msgID: artifactId },
+  );
+  check("a message carrying an `artifact` part survives the Plane-3 frame validator", await until(() =>
+    got.some((g) => g.text === "artifact-part-survives" && g.ch === "review")), got);
+
+  // And the guard is a GUARD, not a rubber stamp: a malformed digest is not a reference to
+  // anything, so it must be refused at the frame rather than admitted to fail later as a
+  // "missing artifact" — a refusal that would blame the store for a malformed message.
+  const badArtifactId = randomUUID();
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify({
+      id: badArtifactId, ts: Date.now(), space, from: poster.card, channel: "review",
+      parts: [{ kind: "artifact", name: "r.html", mediaType: "text/html", size: 12, digest: "sha256:nothex" }],
+    }),
+    { msgID: badArtifactId },
+  );
+  check("an `artifact` part with a malformed digest terminates at the frame", await until(() =>
+    agentErrors.filter((message) => message.includes("malformed versioned DLV entry terminated")).length >= 2),
+    agentErrors);
+
   // a second post arrives too (steady-state fan-out, seq > activationFence)
   await poster.multicast("second", { channel: "review" });
   check("steady-state fan-out delivers a later post", await until(() => got.some((g) => g.text === "second")));

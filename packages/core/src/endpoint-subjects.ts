@@ -216,6 +216,17 @@ export function deriveReplySubject(
   });
 }
 
+/** The AUTH plane's endpoint name (#350). The plane serves the GENERIC "retire a lifecycle"
+ *  operation here after §13.11's hard cut retired the `ctl` rail it used to serve on; the rows
+ *  that served it on `ctl.auth-admin` were spec defects written onto a deleted rail. Single-label,
+ *  single-owner, no owner tokens in the subject — the `manager` / `delivery` precedent. */
+export const AUTH_ENDPOINT = "auth";
+/** The one command the auth endpoint serves. The operation was already generic — "retire a
+ *  lifecycle (owner, actor, lifecycleUid)" — so it maps 1:1 with no vocabulary invention. It rides
+ *  authz mode `handle` (arity 3), the exact argument tuple it takes: `owner`/`any` resolve against
+ *  the CURRENT mapping, which is the wrong semantics for retiring a NAMED incarnation. */
+export const EP_CMD_RETIRE_LIFECYCLE = "retire-lifecycle";
+
 // ---- serve / read filters (§13.2, §13.9) ----------------------------------------------------
 
 /** The class rail's canonical queue group: the endpoint-name token. Serve subscriptions to the

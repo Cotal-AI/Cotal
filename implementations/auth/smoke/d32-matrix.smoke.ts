@@ -33,7 +33,7 @@ import {
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
   recordReaderConfig, recordsKvStreamName, readerBindGrants,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
-  createSpaceAuth, mintCreds, newIdentity, permissionsFor, DEV_OWNER,
+  createSpaceAuth, mintCreds, newIdentity, permissionsFor, DEV_OWNER, mintLifecycleUid,
   type EpCapability,
 } from "@cotal-ai/core";
 import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
@@ -599,21 +599,55 @@ c("the agent's control-surface reach is exactly its caller rows + the Appendix-B
   && untrusted.agent.sub.filter((r) => r.includes(".ep.reply.")).every((r) => gen["caller"].subscribe.includes(r)));
 
 // ---- 4. the #29 piece-3 rail profiles: requester mint + listener, pinned EXACTLY ---------------
-console.log("4. the auth-admin rail profiles (piece 3)");
+// The rail moved off `ctl.auth-admin` onto the `ep` surface (#350: §13.11's hard cut is normative
+// and admits no carve-out). Every literal below is spelled out in the GRAMMAR rather than built by
+// calling the same helper the code calls — a matrix audit that asks the builder whether it agrees
+// with itself proves nothing. The uids are minted so the arity and token classes are real.
+console.log("4. the auth endpoint rail profiles (piece 3)");
 {
-  const req = decode(await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { owner: "local", actor: "mgr0" } }));
-  c("the retirement-requester mint is EXACTLY request + own-reply + inbox (no store reads, no executing right)",
-    JSON.stringify(req.pub) === JSON.stringify([`cotal.${S}.ctl.auth-admin.local.mgr0`])
-    && req.sub.length === 2 && req.sub[0] === `cotal.${S}.ctl.auth-admin.local.mgr0.reply.>` && req.sub[1]!.startsWith("_INBOX_"),
+  const T = { owner: "local", actor: "w1", lifecycleUid: mintLifecycleUid() };
+  const CALLER = { owner: "local", actor: "mgr0", uid: mintLifecycleUid() };
+  const req = decode(await mintCreds(auth, newIdentity(), "retirement-requester", {
+    retirementRequester: { ...CALLER, target: T },
+  }));
+  c("the retirement-requester mint is EXACTLY its own request subject + own reply-plane filter + inbox (no store reads, no executing right)",
+    JSON.stringify(req.pub) === JSON.stringify([
+      `cotal.${S}.ep.one.auth.retire-lifecycle.handle.${T.owner}.${T.actor}.${T.lifecycleUid}.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`,
+    ])
+    && req.sub.length === 2
+    && req.sub[0] === `cotal.${S}.ep.reply.*.*.*.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`
+    && req.sub[1]!.startsWith("_INBOX_"),
     req);
-  const listener = authAdminListenerGrants(S, CONN);
-  c("the auth-admin listener grant is EXACTLY REPLY-ONLY publish + $JS.API.INFO + the ONE serve-gate read + inbox (no bare request subject → no self-forge)",
+  c("the requester's TARGET is grant-pinned: it cannot ask to retire a DIFFERENT incarnation (the handle triple is literal, only the nonce wildcards)",
+    req.pub.length === 1 && req.pub[0]!.includes(`.handle.${T.owner}.${T.actor}.${T.lifecycleUid}.`)
+    && (req.pub[0]!.match(/\*/g) ?? []).length === 1 && req.pub[0]!.endsWith(".*"));
+  const RESP = { instanceId: mintLifecycleUid(), epoch: 0 };
+  const listener = authAdminListenerGrants(S, CONN, RESP);
+  c("the auth listener grant is EXACTLY reply-plane publish + $JS.API.INFO + the ONE serve-gate read + inbox, subscribing only the queue-qualified class rail",
     JSON.stringify(listener) === JSON.stringify({
-      publish: [`cotal.${S}.ctl.auth-admin.*.*.reply.>`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_auth_${S}`],
-      subscribe: [`cotal.${S}.ctl.auth-admin.*.*`, `_INBOX_${CONN}.>`],
+      publish: [`cotal.${S}.ep.reply.auth.${RESP.instanceId}.0.*.*.*.*`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_auth_${S}`],
+      subscribe: [`cotal.${S}.ep.one.auth.retire-lifecycle.> auth`, `_INBOX_${CONN}.>`],
     }), listener);
-  c("the listener publish CANNOT reach a bare request subject (self-forge closed): no grant matches ctl.auth-admin.<owner>.<actor> without a .reply. segment",
-    !listener.publish.some((r) => /\.ctl\.auth-admin\.(\*|>)/.test(r) && !r.includes(".reply.")));
+  // THIS CELL EXISTS BECAUSE ITS PREDECESSOR WAS VACUOUS: it asserted a PLAIN subject row while its
+  // own name claimed "queue-qualified", and passed 55/55 asserting the opposite of what it said.
+  // The class rail's whole protection is that no credential may PLAIN-subscribe it (a plain row
+  // sees every request's nonce), so the qualification is the security property, not a formatting
+  // detail — and a runtime `queue:` option does not substitute: it binds the process, not the cred.
+  c("the class-rail subscribe row is QUEUE-QUALIFIED (the NATS `<subject> <queue>` form) — a plain row would see every nonce",
+    listener.subscribe.some((r) => r.startsWith(`cotal.${S}.ep.one.auth.`) && / auth$/.test(r))
+    && !listener.subscribe.some((r) => r.startsWith(`cotal.${S}.ep.one.`) && !r.includes(" ")));
+  c("the class-rail grant is PER-COMMAND, never a cross-command endpoint wildcard",
+    !listener.subscribe.some((r) => r.startsWith(`cotal.${S}.ep.one.auth.>`)));
+  // The self-forge closure SURVIVES the rail change, in the stronger form the ep grammar allows:
+  // on `ctl` the request and reply shared one subtree, so the check was "no publish row reaches a
+  // bare request subject". Here the planes are disjoint, so the equivalent is that no publish row
+  // touches the REQUEST plane at all.
+  c("the listener publish CANNOT reach a request subject (self-forge closed by the GRAMMAR): every non-JS row is on the ep.reply plane",
+    listener.publish.filter((r) => !r.startsWith("$JS.")).every((r) => r.startsWith(`cotal.${S}.ep.reply.`))
+    && !listener.publish.some((r) => /\.ep\.(one|all|inst)\./.test(r)));
+  c("the listener's reply publish is instance- and epoch-PINNED (only the caller suffix spans)",
+    listener.publish.some((r) => r.startsWith(`cotal.${S}.ep.reply.auth.${RESP.instanceId}.0.`))
+    && !listener.publish.some((r) => /\.ep\.reply\.(\*|>)/.test(r)));
   c("the listener holds NO consumer authority and NO KV write anywhere",
     listener.publish.every((r) => !r.includes("CONSUMER.") && !r.startsWith("$KV.")));
 }

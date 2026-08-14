@@ -14,6 +14,7 @@
  * D5 adds the first credential-death primitive: profile-classified user-JWT lifetimes. Full revocation,
  * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
+import { ttlBuckets } from "./streams.js";
 import { join } from "node:path";
 import {
   decode,
@@ -41,7 +42,8 @@ import {
   controlServiceSubject,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
-  CONTROL_AUTH_ADMIN,
+  artifactBucket,
+  objectStoreStream,
   chatStream,
   dmStream,
   taskStream,
@@ -70,13 +72,13 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import {
-  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities,
+  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, epRequestGrantRows,
   operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
-import { epsSubject } from "./endpoint-subjects.js";
+import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -541,13 +543,22 @@ export interface MintOpts {
    *  never a peer's, never the role-shared `svc_<role>`, and structurally never a same-alias
    *  successor's (its names carry a different uid). Ignored by every other profile. */
   deprovisionTarget?: DeprovisionTarget;
-  /** `retirement-requester` profile only: the REQUESTING principal (the current space-manager's
-   *  own `owner`/`actor`) whose auth-admin control subject the credential may publish. The
-   *  subject IS the attribution (SPEC 13.2 `CONTROL_AUTH_ADMIN`): the auth service's rail
-   *  compares the subject-attributed principal against the FRESH space-manager lease holder, so
-   *  a requester minted by a manager that later lost its lease is refused AT THE RAIL. Ignored
-   *  by every other profile. */
-  retirementRequester?: { owner: string; actor: string };
+  /** `retirement-requester` profile only: the REQUESTING CALLER TRIPLE (the current space-manager's
+   *  own `owner`/`actor`/`uid`) whose auth-endpoint request subject the credential may publish, and
+   *  whose reply rail it may read. The subject IS the attribution: the auth plane's rail derives
+   *  the caller principal from the subject the broker admitted, and refuses unless the serve
+   *  registration the request names belongs to THAT principal — so a requester cannot be authorized
+   *  by another instance's registration.
+   *
+   *  The `uid` is why this carries a triple and not the pre-#350 `{owner, actor}` pair: the `ctl`
+   *  rail's two-token subject could express only a recyclable alias, while the `ep` caller triple
+   *  is `<owner>.<actor>.<uid>` and the grant pins all three. Ignored by every other profile. */
+  retirementRequester?: {
+    owner: string; actor: string; uid: string;
+    /** The ONE incarnation this credential may ask to retire. It rides the SUBJECT as the
+     *  `handle` target, so the grant pins it: a leaked requester cannot be re-aimed. */
+    target: { owner: string; actor: string; lifecycleUid: string };
+  };
   /** `lifecycle-executor` profile only (Unit B, the static §13.1 executor): the ONE incarnation
    *  whose lifecycle-state keys this credential may write — the head `lifecycle.<owner>.<actor>`,
    *  the reservation `uid.<lifecycleUid>`, the gate `gate.<lifecycleUid>`, the ledger family
@@ -871,14 +882,53 @@ export function permissionsFor(
     return deprovisionerPermissions(space, pr, opts.deprovisionTarget);
   }
   if (profile === "retirement-requester") {
-    // Ephemeral request+reply on the auth-admin rail (#29 piece 3): publish EXACTLY the
-    // requester's own control subject + subscribe its own reply subtree and inbox. No store
-    // reads, no barrier/scanner/plane authority - the requester only asks; the auth plane
-    // holds every executing right and re-checks the lease at serve time.
-    if (!opts.retirementRequester)
-      throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester ({owner, actor} of the requesting manager)");
-    const req = controlServiceSubject(space, CONTROL_AUTH_ADMIN, opts.retirementRequester.owner, opts.retirementRequester.actor);
-    return { pub: { allow: [req] }, sub: { allow: [`${req}.reply.>`, `_INBOX_${pr.connId}.>`] } };
+    // Ephemeral request+reply on the AUTH ENDPOINT rail (#29 piece 3; moved off `ctl` by #350):
+    // publish EXACTLY this caller triple's own request subject for the ONE target it names +
+    // subscribe its own reply-plane filter and inbox. No store reads, no barrier/scanner/plane
+    // authority - the requester only asks; the auth plane holds every executing right and
+    // re-checks the serve registration at serve time.
+    // Validate the WHOLE shape, not just its presence. Each of these is a subject token: a missing
+    // one would otherwise surface as a raw "cannot read properties of undefined" from deep inside
+    // the subject builder, which tells the operator nothing about WHICH field it owes. The `target`
+    // arrived with #350 (the handle triple moved into the subject), so a caller written against the
+    // pre-#350 `{owner, actor}` shape lands here — and must be told exactly that.
+    const rr = opts.retirementRequester;
+    if (!rr)
+      throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester ({owner, actor, uid, target} of the requesting manager)");
+    for (const [k, v] of [["owner", rr.owner], ["actor", rr.actor], ["uid", rr.uid]] as const)
+      if (typeof v !== "string" || v.length === 0)
+        throw new Error(`permissionsFor: retirement-requester requires opts.retirementRequester.${k} (the caller triple is <owner>.<actor>.<uid>; since #350 the rail carries the CALLER's uid, not a two-token alias)`);
+    if (!rr.target || typeof rr.target.owner !== "string" || typeof rr.target.actor !== "string" || typeof rr.target.lifecycleUid !== "string")
+      throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester.target ({owner, actor, lifecycleUid} of the ONE incarnation this credential may retire) - since #350 the handle target rides the SUBJECT and is grant-pinned, so it can no longer be supplied in the request body");
+    const { owner, actor, uid, target } = rr;
+    const caller = { owner, actor, uid };
+    // DEVIATION FROM `handle`'s NORMATIVE PROVENANCE, stated where the row is minted (SPEC
+    // 1314-1319, 1838-1863). `handle` is normatively REDEMPTION-MINTED: its triple is pinned at
+    // redemption from an ISSUER-SIGNED capability artifact, and the mode carries attenuation
+    // (`effective = presenter-cred INTERSECT handle.grants INTERSECT issuer-authority`), conferral
+    // through the trusted auth service, and ledgered `sourceChain` lineage.
+    // THIS PATH HAS NONE OF THAT: there is NO issuer-signed artifact, NO redemption step and NO
+    // sourceChain. The row is built directly from the manager's own coordinates under root
+    // authority. It is used because `handle` is the ONLY mode with arity 3 - every other mode
+    // resolves against the CURRENT mapping, which is the wrong semantics for retiring a NAMED
+    // incarnation - and because the reader-facing invariant ("the validator re-checks only
+    // currency") IS honoured: the auth handler fresh-checks the triple against the lifecycle
+    // mapping and refuses a stale incarnation.
+    // What is genuinely absent is delegation lineage and artifact revocation. There is no
+    // independent issuer/holder boundary on this one-shot path whose revocation would change this
+    // requester's authority, which is why the deviation is accepted rather than papered over with
+    // a manufactured artifact. NAMED RESIDUAL: Cotal #399 tracks making this genuinely
+    // redemption-shaped if real artifact semantics are ever intended.
+    // The `handle` target is grant-pinned, so this credential can ask to retire the ONE
+    // incarnation it was minted for and nothing else - the same confinement the pre-#350 grant got
+    // from naming an exact `ctl` subject, now covering the TARGET as well as the caller. The nonce
+    // is the only wildcard token (§13.9): a bounded per-request suffix, not an addressing widening.
+    const rows = epRequestGrantRows(space, {
+      endpoint: AUTH_ENDPOINT,
+      command: EP_CMD_RETIRE_LIFECYCLE,
+      target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
+    }, caller);
+    return { pub: { allow: rows }, sub: { allow: [epCallerReplyFilter(space, caller), `_INBOX_${pr.connId}.>`] } };
   }
   if (profile === "endpoint-evictor") {
     // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
@@ -1322,7 +1372,7 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  face-b tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
  *  → invoke the manager's `ps` + any-mode `despawn` over the ep rails to politely stop the managed
  *  agents → `deleteChannels`
- *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 12 space streams/buckets).
+ *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE all 13 space streams/buckets).
  *  So it reads state, CALLS admin control, deletes channels, and deletes streams — but NEVER reads a
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
  *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
@@ -1334,12 +1384,15 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
   const ep = instrumentEpRows(space, pr, "admin");
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
-  // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 buckets); each needs
-  // INFO (jsm existence) + DELETE. This is the ONLY cred that holds STREAM.DELETE (face-b isolated here).
+  // deleteSpace() deletes EVERY stream + KV bucket setup creates (5 streams + 7 KV buckets + the
+  // artifact object store = 13); each needs INFO (jsm existence) + DELETE. This is the ONLY cred that
+  // holds STREAM.DELETE (face-b isolated here). This list and deleteSpace()'s own array must agree:
+  // a stream in one and not the other is either an undeletable leak or a grant for nothing.
   const del = [
     CHAT, dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
     PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
     `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
+    objectStoreStream(artifactBucket(space)),
   ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
@@ -1622,8 +1675,14 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
- *  DM/DLV (it creates the bind-only mailbox but never reads it), NO STREAM.DELETE/PURGE/UPDATE/MSG.DELETE
- *  (it provisions, it does not tear down or tamper). KV value-writes are scoped to exactly the two
+ *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY four streams and no others:
+ *  the three TTL'd KV buckets (presence + the two leases, #286 — an existing bucket's `max_age` cannot be
+ *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it) and the records store.
+ *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
+ *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
+ *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
+ *  scoped to exactly the two
  *  registries provisioning touches: the read-ACL bucket (`commitAcl`) and the channel registry (seed). */
 function provisionerPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
@@ -1641,7 +1700,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     recordsBucket, epAuthBucket, sessionsBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
-  // the client's existence checks). NO DELETE/PURGE/UPDATE — provisioning never tears a stream down.
+  // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.
   // The §13.7 CONTRACT store (EPC) joins the list for the static manager's start-time
   // `ensureContractStore` (P2 item 1, 1c): create-or-verify only — the provisioner holds no
   // artifact-publish grant on it (publication rides the scoped endpoint-serve executor).
@@ -1651,10 +1710,32 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // start-time ensure over this provisioner. Create-or-verify only (idempotent, fail-loud on drift);
   // the provisioner holds no value-write on any of them (goal facts ride the scoped goal-writer cred).
   const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName].map((f) => f(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), ...endpointStreams, ...buckets].flatMap((s) => [
+  // The artifact Object Store joins the list: `setupSpaceStreams` creates it, and under auth mode the
+  // provisioner is the cred doing that creating. Its backing stream is `OBJ_<bucket>` - named
+  // explicitly, because `$O.<bucket>.>` is outside the `cotal.<space>.>` grammar and no space-prefix
+  // grant reaches it. CREATE + INFO only: the provisioner never publishes an object, never creates a
+  // consumer on it, and never deletes it. That confinement is load-bearing rather than tidy - the
+  // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
+  // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
+  const OBJ = objectStoreStream(artifactBucket(space));
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, epcStreamName(space), OBJ, ...endpointStreams, ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
+  // #286: STREAM.UPDATE on EXACTLY the three TTL'd KV streams (presence + the two leases). `kvm.create`
+  // never updates an existing bucket's config, so a bucket created by a cotal that predates the `max_age`
+  // TTL keeps NO expiry forever — dead presence records (and stale leases) never age out. `setupSpaceStreams`
+  // reconciles their `max_age` via STREAM.UPDATE at every `cotal up`, which needs this grant. Scoped to these
+  // three streams only — the durable streams (chat/dm/task/inbox/dlv, channel/members/acl/membership
+  // registries) are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
+  // denial; this widening is provisioning-only.
+  // Derived from the SAME inventory that creates and reconciles them, not a third hand-kept copy.
+  // Review found this list was the last independent one: a fourth TTL'd bucket added to `ttlBuckets`
+  // would be created and reconciled correctly and then die on a permissions violation here, because
+  // the grant never learned about it. Same defect one seam out — a bucket the code knows to maintain
+  // and the credential is not allowed to.
+  const ttlStreams = ttlBuckets(space).map(([bucket]) => `KV_${bucket}`);
+  const streamReconcile = ttlStreams.map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // DM/DLV/TASK durable pre-create (bind-only mailboxes): both the new-API CREATE and legacy DURABLE.CREATE
   // forms (the client's consumer-add path varies by version), plus INFO (the add returns ConsumerInfo).
   // NO MSG.NEXT/MSG.GET/ACK — the provisioner creates the consumer but MUST NOT read its body.
@@ -1668,6 +1749,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
       allow: [
         "$JS.API.INFO",
         ...streamSetup,
+        ...streamReconcile,
         ...consumerCreate,
         // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
         // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).

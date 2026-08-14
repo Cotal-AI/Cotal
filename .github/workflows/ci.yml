@@ -106,6 +106,16 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Install tmux
         run: tmux -V || (sudo apt-get update && sudo apt-get install -y tmux)
+      # smoke:runtime includes smoke:herdr, which exits 0 with a SKIPPED notice when herdr is
+      # absent. Without this step the whole herdr suite is a silent no-op on every run — which is
+      # exactly how a driver incompatible with current stable herdr passed CI green.
+      - name: Install herdr
+        run: |
+          set -euo pipefail
+          HERDR_VERSION=v0.8.0
+          curl -fsSL "https://github.com/herdrdev/herdr/releases/download/${HERDR_VERSION}/herdr-linux-x86_64" -o /tmp/herdr
+          sudo install -m 0755 /tmp/herdr /usr/local/bin/herdr
+          herdr --version
       - name: Build
         run: pnpm build
       # Broker-free boundary/preflight guards + the live target-resolution / spawn-from-anywhere /
@@ -114,8 +124,17 @@ jobs:
         run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
       - name: Manager lifecycle e2e (real broker + real agents)
         run: pnpm smoke:lifecycle-e2e
-      - name: Runtime smoke tests (tmux)
+      - name: Runtime smoke tests (tmux, orca, herdr)
         run: pnpm smoke:runtime
+      # Accumulation is invisible to a single-shot suite: a per-cycle leak of a pane, workspace,
+      # launcher dir or process only shows up over many spawn/stop cycles, which is what a
+      # long-lived manager actually does.
+      - name: herdr endurance soak (spawn/stop churn, leak deltas)
+        run: pnpm smoke:herdr:soak
+      # The integration the unit suite cannot reach: real broker + real Manager + a real agent in
+      # presence, then SIGKILL the manager to prove the agent outlives it.
+      - name: herdr e2e (real broker + manager + agent, manager-kill survival)
+        run: pnpm smoke:herdr-e2e:live
       - name: cmux launcher secret-hygiene smoke
         run: pnpm smoke:cmux
       - name: OpenCode cooperative-stop smoke test
