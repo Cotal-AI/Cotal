@@ -43,26 +43,41 @@
  * (whether the sequence a real session produces is well-formed).
  *
  * MUTATION LEDGER — verdicts as NAMES, never counts, and **this header goes stale silently every
- * time a cell is added, so re-measure before trusting it**. Run with `COTAL_AGUI_SESSION` set to the
- * headless capture; all restores verified by the tool and the tree measured clean afterwards.
+ * time a cell is added, so re-measure before trusting it**. All restores verified by the tool, and
+ * the tree swept clean afterwards with an instrument first proven able to see dirt (plant → detect
+ * → remove); "clean" is also what a blind sweep returns.
  *
- *   M1  pass `signature` into `reasoningMessageContent`      -> **SURVIVED**, and that is recorded
+ * **THE ARM IS PART OF EACH VERDICT.** `[A]` is the 30-record headless capture, `[B]` the
+ * 5938-record interactive one. A kill on `[A]` says little about a cell whose subject barely occurs
+ * there: the tool-call and bracket cells see a handful of blocks on `[A]` and hundreds on `[B]`, so
+ * grading them on `[A]` alone would have been the "green list you choose" mistake in miniature.
+ *
+ *   M1  [A] pass `signature` into `reasoningMessageContent`  -> **SURVIVED**, and that is recorded
  *       rather than deleted: the constructor returns an explicit field literal (`agui.ts:882`), so
  *       an unknown ARGUMENT key cannot reach the output at all. The outcome cell was riding a
  *       barrier it did not assert. It is why `mechanism:*` exists, and M1 stays in the ledger
  *       because a survivor that produced a fix is the most useful line in it.
- *   M1b put the signature into `cotal` instead (the real channel — passed through by reference)
+ *   M1b [A] put the signature into `cotal` instead (the real channel — passed by reference)
  *       -> KILLED `real:no-signature-KEY-is-emitted-by-any-event-of-a-real-session`
- *   M2  skip thinking blocks that carry a signature
+ *   M2  [A] skip thinking blocks that carry a signature
  *       -> KILLED `real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature`
- *   M3  force the read offset to 0 -> **WRONG-RED**, not a kill: the seal is verified at the cursor
- *       offset (`durable-source.ts:206`), so it threw before reaching the cell. Red is not proof.
- *   M3b make each record's cursor point at its own START instead of its end
+ *   M3  [A] force the read offset to 0 -> **WRONG-RED**, not a kill: the seal is verified at the
+ *       cursor offset (`durable-source.ts:206`), so it threw before reaching the cell it named.
+ *       Red is not proof, and the tool refusing to score it is the only reason that is known.
+ *   M3b [A] make each record's cursor point at its own START instead of its end
  *       -> KILLED `source:resuming-from-record-k-yields-exactly-the-records-after-k`
- *   M4  drop the `origin.kind === "human"` test from the prompt rule
+ *   M4  [A] drop the `origin.kind === "human"` test from the prompt rule
  *       -> KILLED `defect-B:so-the-rule-AS-SPECIFIED-opens-no-run-on-THIS-real-session`
- *   M5  make the constructor spread its input (`...o`)
+ *   M5  [A] make the constructor spread its input (`...o`)
  *       -> KILLED `mechanism:the-event-constructor-DROPS-an-unknown-key`
+ *   M6  [B] drop `TOOL_CALL_END` — graded on B because A carries too few tool blocks for the cell
+ *       to be doing work -> KILLED `real:every-tool_use-block-became-a-START-ARGS-END-triple`
+ *   M7  [B] make the RESULT name an id no START opened
+ *       -> KILLED `real:every-RESULT-names-a-toolCallId-that-a-START-opened`
+ *
+ * **NOT YET GRADED, said rather than left to look covered:** no mutation has been aimed at the
+ * `defect-B` cells on `[B]`, and none at the bracket cell on either arm. Both are pending the §3.1
+ * ruling, which may rewrite what they assert.
  *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
