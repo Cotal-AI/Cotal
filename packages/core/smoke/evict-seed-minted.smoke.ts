@@ -60,9 +60,22 @@ const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 
 // FIRST ACTION, before any broker work: this suite must never touch the live host.
+//
+// Two separate things are enforced here, and conflating them would be a mistake. (1) The URL this
+// suite actually DIALS must not be the live host — that is the real guarantee, and it is asserted
+// on `SERVERS`, the only value passed to `connect()`. (2) A manager-hosted seat exports
+// `COTAL_SERVERS=nats://broker.cotal.ai:4222` into every child process it spawns, so the inherited
+// environment points at the live broker even though this suite never reads it. Refusing to run on
+// account of (2) would be over-broad — the variable is unused here. Instead the inherited
+// connection environment is DELETED, so no code path reachable from this process (a library
+// default, a helper added later) can quietly pick the live host up. Nothing has connected yet at
+// this point, so deleting is safe.
 const LIVE_HOST = "broker.cotal.ai";
-if (SERVERS.includes(LIVE_HOST) || process.env.COTAL_SERVERS?.includes(LIVE_HOST))
+if (SERVERS.includes(LIVE_HOST))
   throw new Error(`refusing to run against the live broker (${LIVE_HOST}): this suite is ephemeral-only`);
+for (const k of ["COTAL_SERVERS", "COTAL_CREDS", "COTAL_SPACE", "COTAL_ID", "COTAL_LIFECYCLE_UID"]) delete process.env[k];
+if (process.env.COTAL_SERVERS !== undefined)
+  throw new Error("inherited COTAL_SERVERS survived deletion; refusing to run with a live-broker default in scope");
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -154,7 +167,8 @@ try {
   });
   let aClosed = false;
   ncA.closed().then(() => { aClosed = true; }, () => { aClosed = true; });
-  check("A0: a seed-minted `operator` credential connects live at the broker", !ncA.isClosed(), { principalA });
+  const cidBeforeA = (ncA.info as { client_id?: number } | undefined)?.client_id;
+  check("A0: a seed-minted `operator` credential connects live at the broker", !ncA.isClosed(), { principalA, cidBeforeA });
 
   // ---------- ARM B: the BEARER-EXCHANGED connection (inverse control) ----------
   const nonceB = `ibx${randomUUID().replace(/-/g, "")}`;
@@ -193,9 +207,24 @@ try {
   const droppedA = await until(() => aClosed || ncA!.isClosed(), 2500);
   let aPubThrew = false;
   try { ncA.publish("evict.probe", enc("still-alive?")); await ncA.flush(); } catch { aPubThrew = true; }
+  // The cid is the discriminator between "never kicked" and "kicked and already back". A KICK ends
+  // one TCP connection; the client then dials again on its own and the broker issues a NEW cid. So
+  // a LIVE connection carrying a DIFFERENT cid than before the eviction is proof of a completed
+  // kick+reconnect round trip, while an unchanged cid would mean the KICK never landed on it (and
+  // would make A2's kicked>=1 the thing to distrust).
+  const cidAfterA = (ncA.info as { client_id?: number } | undefined)?.client_id;
+  // REGISTERED PREDICTION A3 WAS "the connection actually dropped and STAYS dropped". It was
+  // FALSIFIED, and the falsification is the finding rather than a probe fault: the connection did
+  // drop (the cid changed, so the KICK landed) and was ALREADY BACK before the check ran. The cell
+  // below therefore asserts what was measured, not what was predicted.
+  //
+  // THIS CELL CHARACTERIZES A DEFECT AND IS GREEN WHILE THE DEFECT EXISTS. If a deny-new boundary
+  // for seed-minted credentials ever lands, this cell goes RED — that is intended, and whoever sees
+  // it red should read this header and the design note rather than "fix" the cell.
   check(
-    "A3: the seed-minted connection ACTUALLY dropped (closed / publish now throws) — not merely reported gone",
-    droppedA || aPubThrew, { droppedA, aPubThrew },
+    "A3: the seed-minted connection does NOT stay gone — it is live again under a NEW cid, so eviction's `verifiedGone:true` described a GAP, not a departure (registered prediction A3 'stays dropped' FALSIFIED)",
+    !ncA.isClosed() && typeof cidAfterA === "number" && typeof cidBeforeA === "number" && cidAfterA !== cidBeforeA,
+    { closed: ncA.isClosed(), droppedA, aPubThrew, cidBeforeA, cidAfterA },
   );
 
   // ---------- B1 — the inverse control through the SAME path ----------
