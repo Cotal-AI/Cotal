@@ -1,0 +1,103 @@
+/**
+ * REFUSE to measure a stale build.
+ *
+ * Any suite that reaches code through a PACKAGE SPECIFIER runs `dist/`, not `src/`: the CLI resolves
+ * `@cotal-ai/cli` through its package `main` (`./dist/index.js`) and there is no `paths` alias to
+ * source. `dist/` is gitignored, so it carries no provenance at all — and a suite cannot tell "the
+ * source is right" from "the source was never run". It reports the same green for both.
+ *
+ * That was measured, not theorised: two consecutive runs of a live CLI cell suite reported 10 passed
+ * / 0 failed while the rendered output came from a source version that had already been replaced. It
+ * surfaced only because the stale value happened to be visible text that disagreed with the file on
+ * disk. Had it been behaviour, the suite would have been green about a program nobody had built.
+ *
+ * A build is also a SHARED side effect: several worktrees exist on one machine, and one lane's
+ * `pnpm build` changes what another lane's live suite executes without touching a tracked file. So
+ * `git status` — the sweep every lane runs — cannot see this.
+ *
+ * This refuses rather than warns, and it refuses BEFORE the suite measures anything. A discipline is
+ * something a tired person skips; a refusal is not. And it names WHICH condition failed, because a
+ * bare "build check failed" is the same defect this directory's suites exist to catch.
+ *
+ * Deliberately NOT solved by pointing suites at `src/`: the published entry point resolves through
+ * `dist/`, so a suite reading source would be green about code no user ever runs — trading a
+ * provenance gap for a coverage gap.
+ */
+import { readdirSync, statSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+/** The newest mtime under `dir` for files matching `ext`, and the file that carried it.
+ *  Returns undefined for a missing or empty tree — "no evidence" is a distinct answer from "old",
+ *  and the caller must not be able to confuse them. */
+function newest(dir: string, ext: string): { path: string; mtimeMs: number } | undefined {
+  if (!existsSync(dir)) return undefined;
+  let best: { path: string; mtimeMs: number } | undefined;
+  const walk = (d: string): void => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(ext)) {
+        const { mtimeMs } = statSync(p);
+        if (!best || mtimeMs > best.mtimeMs) best = { path: p, mtimeMs };
+      }
+    }
+  };
+  walk(dir);
+  return best;
+}
+
+export type BuildStaleness =
+  | { condition: "current"; pkg: string }
+  | { condition: "never-built"; pkg: string; detail: string }
+  | { condition: "no-package"; pkg: string; detail: string }
+  | { condition: "no-source"; pkg: string; detail: string }
+  | { condition: "stale"; pkg: string; detail: string; srcPath: string; distPath: string; behindMs: number };
+
+/** Compare one package's newest `src/**\/*.ts` against its newest `dist/**\/*.js`. */
+export function buildStaleness(pkgDir: string): BuildStaleness {
+  // A path that does not exist is NOT a fact about a build. Reporting it as `no-source` would hand
+  // a typo'd package path a confident build verdict and a `pnpm build` instruction that cannot fix
+  // it — while the package the caller MEANT to check goes unexamined and the suite runs anyway.
+  if (!existsSync(pkgDir))
+    return { condition: "no-package", pkg: pkgDir, detail: `no such directory: ${pkgDir} — the guard cannot examine it, so nothing about its build has been established` };
+  const src = newest(join(pkgDir, "src"), ".ts");
+  const dist = newest(join(pkgDir, "dist"), ".js");
+  if (!src) return { condition: "no-source", pkg: pkgDir, detail: `no .ts files under ${join(pkgDir, "src")}` };
+  if (!dist) return { condition: "never-built", pkg: pkgDir, detail: `no .js files under ${join(pkgDir, "dist")} — this package has never been built, so a suite driving it measures nothing` };
+  if (src.mtimeMs > dist.mtimeMs)
+    return {
+      condition: "stale", pkg: pkgDir,
+      srcPath: src.path, distPath: dist.path,
+      behindMs: Math.round(src.mtimeMs - dist.mtimeMs),
+      detail: `${src.path} is newer than the newest build output ${dist.path}`,
+    };
+  return { condition: "current", pkg: pkgDir };
+}
+
+/** REFUSE (throw) unless every named package's build is at least as new as its source.
+ *  Call this as the FIRST action of any suite that drives a package-specifier entry point. */
+export function assertBuildCurrent(pkgDirs: readonly string[]): void {
+  if (pkgDirs.length === 0)
+    throw new Error("assertBuildCurrent: REFUSING — called with no packages. A check over an empty set passes vacuously, which is the failure mode this exists to prevent.");
+  for (const dir of pkgDirs) {
+    const s = buildStaleness(dir);
+    if (s.condition === "current") continue;
+    // A missing package is a broken CALL, not a stale build. It gets its own prefix so the caller
+    // can stop for the right reason: `pnpm build` is the wrong instruction and following it would
+    // leave the real package still unchecked.
+    if (s.condition === "no-package")
+      throw new Error(
+        `CANNOT CHECK: ${s.detail}\n` +
+        `  This is NOT a verdict about any build. Nothing has been established about the package\n` +
+        `  you intended to check — fix the path passed to assertBuildCurrent, then re-run.`,
+      );
+    throw new Error(
+      `REFUSING TO MEASURE: build is not current for ${s.pkg} (${s.condition}).\n` +
+      `  ${s.detail}\n` +
+      (s.condition === "stale" ? `  source is ${s.behindMs}ms newer than the build\n` : "") +
+      `  This suite drives the package entry point, which resolves through dist/, so it would be\n` +
+      `  measuring a build of a DIFFERENT source than the one in the tree.\n` +
+      `  NEXT: pnpm build, then re-run.`,
+    );
+  }
+}

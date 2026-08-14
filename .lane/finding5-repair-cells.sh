@@ -49,6 +49,19 @@ card() { ( cd "$PROJ" || exit 91
   | grep -aA3 " manager " | tr '\n' ' ' | sed 's/│//g; s/  */ /g'; }
 
 echo "finding5 scope-1 repair cells  $(date -u +%H:%M:%SZ)"
+# SECOND FIRST-ACTION, beside the broker assertion: REFUSE a stale build. This suite drives the CLI
+# entry point, which resolves through `dist/` (package `main`), and `dist/` is gitignored. Two runs
+# of this very script once reported 10/0 green against a build of a source version already replaced.
+# 94 and 95 are read SEPARATELY: 94 is a verdict about the build, 95 means the guard itself could
+# not run. Collapsing them would let a broken guard print a confident claim about a build it never
+# examined — the same defect, one level up.
+"$NODE" "$TSX" "$REPO/bin/smoke/assert-build-current.ts" "$REPO/implementations/cli"
+BC=$?
+case "$BC" in
+  0) ;;
+  94) echo "REFUSING TO MEASURE: the build is not current (above). Run pnpm build, then re-run."; exit 94 ;;
+  *)  echo "REFUSING TO MEASURE: the build-current guard did not run (rc=$BC). NOT a build verdict."; exit 95 ;;
+esac
 # onboard once so every later run is a fast repeat that renders the card
 ( cd "$PROJ"; unset COTAL_SERVERS COTAL_SERVER COTAL_CREDS COTAL_SPACE COTAL_NAME
   COTAL_HOME="$HOME_D" XDG_CONFIG_HOME="$CFG_D" COTAL_SKIP_ASSIST=1 \
