@@ -183,6 +183,39 @@ tombstone. It does not cover multi-membership cleanup, partial failure, concurre
 re-target through the agent's own credential.** See DESIGN §7.2 for the saga this does not close.
 
 ## Not measured
+
+**ADDED AFTER AN ADVERSARIAL AUDIT OF THIS LIST ITSELF.** `rev2-meshctl-evidence` was asked to check
+this section for *omissions* rather than for what it contained, on the principle that **an
+honest-looking list missing an item is the most misleading artifact in the tree** — it reads as
+complete. It found the following, and they are recorded here in its framing rather than mine:
+
+- **NO PROBE OR SUITE EVER SENDS AN MCP REQUEST.** Every one of them calls `spec.run(...)` directly.
+  The real dispatch path — `registerCotalTools` wrapping `spec.run` (`extensions/connector-core/src/tools.ts:23-36`)
+  — **is never exercised, and no host is involved.** Direct `run` proves the handler is reachable in
+  a test; it does **not** prove a real MCP caller reaches it. **This lane has repeatedly described
+  its probes as driving "the real entry point". That is true relative to internal helpers and FALSE
+  relative to an actual MCP host**, and both halves belong in the same sentence.
+- **No AUTHED session drives the new verbs.** The connector happy path uses an **open-mode**
+  hand-built fixture; the auth and user configs appear only in the visibility arms (G1-G6). So the
+  verbs are measured end-to-end **only in the mode with no credential and no broker ACL**.
+- **No tool-path proof that `cotal_disconnect` preserves durable membership**, nor that
+  `cotal_connect` replays it. M6 uses `stop()` plus privileged direct membership calls; the connector
+  suite never asserts that off-mesh channel traffic replays after the return.
+- **Tool-level refusals are unmeasured for most of the vocabulary**: `transition-unconfirmed`,
+  `transition-in-progress`, `shutting-down`, `in-flight-request`, and the broker/auth/expired/source
+  failures. The connector suite covers `not-connected` and `already-connected` only; the rest are
+  driven at the core API, which is a different caller.
+- **A failing `reassertPresence()` is unmeasured on both branches it now reports** — the refused
+  disconnect and the successful connect. See MX5: that fix is unproven by mutation.
+- **§7.2(b) does not assert the exact `+5 / +0`** (C2 asserts only `closed < open`), **does not
+  observe presence expiry** (it is inferred from a sleep), and **drives no failed close or re-target**
+  — it abandons an already-open membership, which is a narrower mechanism than the section it supports.
+- **§7.2's caller-path claim is not driven through `cotal_join`** — the probe calls
+  `CotalEndpoint.joinChannel` directly — and the replay-off arm never attempts a re-join at all.
+- **M5 drives only `requestControl`**, twice. `requestDelivery`, `requestDeliveryAdmin` and the spawn
+  rail are untouched, and the "permanent" hang is an observation bounded at 20s, not a proof of
+  permanence. The correction that "spawn rejects rather than strands" is a **[R]**.
+
 - The user/bearer branch driven live (needs the auth service and a login). The connect-branch table
   above is a code read, not a measurement — the weakest claim here.
 - Leases and claims held by an agent at disconnect. (In-flight *replies* ARE now measured — §9.)
