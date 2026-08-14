@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/connector-core": minor
+"@cotal-ai/core": minor
 ---
 
 `cotal_persona`: defining a persona no longer announces on the mesh by default
@@ -24,6 +25,14 @@ knew nothing about, from a principal they had no relationship with.
   `allowPublish` — not as a failed definition, which named the wrong fix and invited a retry that
   posted the duplicate.
 
-The announcement was never how peers discovered a persona: it named one and nothing else, and a peer
-joining afterwards never saw it. Discovery is the catalog — `cotal personas list` / `show` read it
-directly within a workspace — plus `cotal_spawn` failing loud on a name that does not exist.
+No durable or deliberately-consultable read path is removed: `cotal personas list` / `show` read the
+catalog directly within a workspace, and `cotal_spawn` still fails loud on a name that does not
+exist. What is lost is unsolicited awareness of a bare name — real discovery, but incidental,
+incomplete (no prompt, model, or role) and invisible to anyone who joined later.
+
+`@cotal-ai/core` gains `isPublishPermissionDenied`, a public helper beside `isPermissionDenied` that
+is true only for a typed permission violation whose `operation` is `"publish"`. `isPermissionDenied`
+is deliberately operation-agnostic — it separates a denial from a missing service, where the
+operation is irrelevant — so it cannot answer "did this message get stored?". A JetStream publish is
+request/PubAck, and a denial on the reply-inbox *subscription* rejects `js.publish()` while the
+stream may already hold the message. Callers that report delivery must ask the narrower question.

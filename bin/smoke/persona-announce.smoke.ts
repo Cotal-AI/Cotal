@@ -41,6 +41,14 @@
  *      definer with read-but-not-post rights on the lane. The file is on disk, the result says so,
  *      it points at `allowPublish`, and it tells the caller not to re-run — because the retry is
  *      exactly where the duplicate announcement came from.
+ *   7. AN UNCONFIRMED POST IS NOT A DENIED ONE (cell 6). A send that fails for any reason other
+ *      than a proven publish denial leaves delivery UNKNOWN, and the result must say so rather
+ *      than assert non-delivery — asserting it is what sends a caller to post a duplicate.
+ *   8. A PUBACK-INBOX SUBSCRIPTION DENIAL IS UNKNOWN, NOT DENIED (cell 7). Review proved on a live
+ *      broker that such a denial rejects `js.publish()` while the stream already holds the message,
+ *      so "permission denied" alone cannot mean "did not go out" — only a denial on the PUBLISH
+ *      can. Cell 5 is this cell's positive control: it drives a REAL publish denial and requires
+ *      REFUSED, so a narrowing that stopped matching would redden there rather than pass here.
  *
  * Run: pnpm smoke:persona-announce   (needs nats-server + node on PATH; boots its own broker)
  */

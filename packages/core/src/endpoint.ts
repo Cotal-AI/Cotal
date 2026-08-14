@@ -3983,8 +3983,11 @@ export function isPermissionDenied(e: unknown): boolean {
   return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
 }
 
-/** True ONLY for a denial on a **publish** — the single case that proves the message never reached
- *  the server. {@link isPermissionDenied} deliberately does not look at the operation: it exists to
+/** True ONLY for a denial on a **publish** — the single case that proves the message was never
+ *  ACCEPTED or stored. (Not "never reached the server": the server necessarily received enough of
+ *  it to reject it. The distinction matters precisely here, because this helper exists to separate
+ *  provably-not-stored from possibly-stored, and the looser phrasing overstates the very thing
+ *  being measured.) {@link isPermissionDenied} deliberately does not look at the operation: it exists to
  *  separate "denied" from "service down", and that answer is the same either way. The operation
  *  matters enormously to a caller that reports *delivery*, because a JetStream publish is
  *  request/PubAck and the subscription half is the reply inbox — a denial THERE rejects

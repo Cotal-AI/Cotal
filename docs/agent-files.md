@@ -98,10 +98,11 @@ slot, so a peer cannot grant itself a capability by redefining a file.
 and then it goes to that channel only. A peer that did not ask for the persona has no way
 to judge whether spawning it is wanted, and a broadcast soliciting spawns from an
 unfamiliar principal is a thing a peer should be suspicious of, so announcing belongs on
-the channel your team is working on rather than `general`. Nor did the broadcast carry
-discovery: it names the persona and nothing else, and a peer that joins later never sees
-it. The catalog is what peers read — `cotal personas list` within a workspace — and
-`cotal_spawn` on a name that does not exist fails loud.
+the channel your team is working on rather than `general`. Announcing did carry a little
+discovery — a bare name, to whoever happened to be listening — but nothing durable: no
+prompt, model, or role, and a peer joining later never saw it. No path a peer can
+deliberately consult is affected: `cotal personas list` reads the catalog within a
+workspace, and `cotal_spawn` on a name that does not exist fails loud.
 
 The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it
 reads and writes the same files directly, offline, no mesh ([CLI](cli.md)).
