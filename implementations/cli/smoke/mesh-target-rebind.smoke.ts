@@ -77,6 +77,18 @@
  *      PREDICTED GREEN: every ARM A cell — at the moment ARM A resolves, ONE record exists, so a
  *      predicate that matches everything still matches exactly that one. A widening mutant is
  *      invisible to ARM A on its own, which is precisely why the negative control is not optional.
+ *
+ * INDEPENDENT SECOND REGISTRATION, AND THE ERROR IN IT — kept because it is evidence, not noise.
+ * Two seats were writing this worktree for a few minutes and both registered predictions before
+ * mutating. The other registration lived in a root-level `.mutation-prediction-rebind.md`
+ * (commit `1a5d047a`); it has been removed so this block is the single registration, and it would
+ * otherwise have shipped as a stray file. It agreed on M1 — the same five ARM A POST cells, red,
+ * and it declined to predict the ARM B cells rather than guess — but it got M2 WRONG, asserting
+ * both mutants were "non-equivalent by construction" and predicting a named ARM B cell would
+ * redden. None did. The prediction was wrong, not the suite: it reasoned about the site in
+ * isolation instead of about whether the site is reachable with a non-vacuous conjunct.
+ * That failure is why the equivalence above was found at all, so it is recorded rather than
+ * dropped. M1 was independently run twice, on two seats, with the same red set.
  * ---------------------------------------------------------------------------------------------
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
