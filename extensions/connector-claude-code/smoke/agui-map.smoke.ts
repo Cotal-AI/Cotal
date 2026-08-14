@@ -121,7 +121,21 @@
  * §3.1's measurement rather than read from a file. **It grades the code path, not the harness's real
  * shape. A green here must NOT be read as "human prompts work."**
  *
- * **ALSO NOT GRADED:** no mutation aimed at the bracket cell on either arm.
+ * BRACKETING — graded on `[B]`, both KILLED `real:the-WHOLE-real-sequence-brackets`:
+ *   M14 assistant text emits CONTENT with no START
+ *   M15 assistant text emits START with no END
+ *
+ *   M15 first came back **ERROR, not a verdict**: `textMessageEnd({ messageId, timestamp: ts }),`
+ *   appears twice (user and assistant), and the tool **refused an ambiguous target rather than
+ *   mutating both**. Worth a line, because the wrong outcome there is not a false red — it is a
+ *   mutation that quietly breaks a second call site and a kill you then attribute to the first.
+ *   Narrowed to a two-line anchor including the CONTENT call, and it killed.
+ *
+ * **EVERY ROW IN THIS LEDGER NOW CARRIES A VERDICT** — the ones that are not kills (M1, M3, M8, M9)
+ * are explained above rather than dropped. **That is a claim about the ROWS, not about the cells:**
+ * it says no mutation was written and left unrun, NOT that every cell in this file has been shown
+ * to depend on the code it names. A cell with no mutation aimed at it is still ungraded, and the
+ * `UNMEASURED:` cell is additionally unmeasured — a different defect from an ungraded one.
  *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
