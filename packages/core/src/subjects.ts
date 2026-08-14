@@ -477,12 +477,22 @@ export function patternInAllow(allow: string[], pattern: string): boolean {
 // as silence. This is the same shape as refusing `--events` in a mode with no stable identity: a
 // surface must not degrade its input while leaving its claim intact.
 //
-// `patternCovers` is deliberately NOT the test here, and the difference is not pedantic.
-// `patternCovers` asks CONTAINMENT ("is every channel matched by X also matched by Y"); this asks
-// INTERSECTION ("does X match ANY principal-keyed channel at all"). They disagree on exactly the
-// grant the re-key was designed to make expressible: `patternCovers("events.u_a.>", "events.*.*")`
-// is false in both directions, yet `events.u_a.>` is live and owner-wide. Reaching for the nearest
-// existing helper would therefore have refused the one capability the two-token key exists to buy.
+// THE QUESTION ASKED HERE IS INTERSECTION, NOT CONTAINMENT: "does this grant match ANY
+// principal-keyed channel at all", not "is every channel matched by X also matched by Y". Those are
+// genuinely different questions, and they disagree on the grant the re-key was designed to make
+// expressible — `patternCovers("events.u_a.>", "events.*.*")` is false in both directions, yet
+// `events.u_a.>` is live and owner-wide. A guard that asked containment against a WILDCARD target
+// would refuse the one capability the two-token key exists to buy.
+//
+// BUT THAT DIFFERENCE IS NOT OBSERVABLE AT THIS CALL SITE, and an earlier version of this comment
+// implied it was ("`patternCovers` is deliberately NOT the test here"). The target below is always
+// a witness built by `channelFor`, which is always CONCRETE, and over a concrete subject
+// containment and intersection coincide. Swapping `subjectMatches` for `patternCovers` here is an
+// EQUIVALENT mutation: it was run, and every cell stayed green because no input can separate them.
+// So the reason `subjectMatches` is used is the honest one — it is the shipped matcher the broker's
+// own rule is expressed in — and not that the alternative would misbehave here. The distinction is
+// load-bearing for the SHAPE of the question, which is why the witness is concrete in the first
+// place; it is not load-bearing for this line's choice of helper.
 
 /** A WITNESS subject that `pattern` matches and that `channelFor` would really build — or `undefined`
  *  when no such subject exists, i.e. the grant is mute against every principal-keyed channel.
@@ -528,7 +538,15 @@ export function principalChannelWitness(
 
   const rest = tokens.slice(prefix.length);
   if (rest.length === 1 && rest[0] === ">") return confirm(WITNESS_OWNER, WITNESS_ACTOR);
-  if (rest.length !== 2) return undefined; // one token short (the flat old form) or one too deep
+  // REDUNDANT, AND SAID SO RATHER THAN LEFT TO LOOK LOAD-BEARING. This rejects the wrong arities —
+  // one token short (the flat pre-principal form) or one too deep — but `confirm()` below already
+  // rejects every one of them by a second route: `channelFor` throws on a token that cannot be an
+  // owner or actor, and `subjectMatches` disagrees when the pattern is deeper than the witness.
+  // Deleting this line was run as a mutation and the suite stayed green, because no input separates
+  // the two mechanisms. It is kept for legibility — the arity is the whole point of the guard and
+  // reading it here beats inferring it from what `channelFor` happens to throw on — but nothing
+  // below it is protected by it alone, and no cell can be written that would be.
+  if (rest.length !== 2) return undefined;
   return confirm(
     rest[0] === "*" ? WITNESS_OWNER : rest[0],
     rest[1] === "*" || rest[1] === ">" ? WITNESS_ACTOR : rest[1],

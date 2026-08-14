@@ -75,7 +75,23 @@
  *       cannot disagree. The intersection/containment distinction this guard is built on is real,
  *       but it is not observable at THIS call site, so no mutation here can expose it. A cell that
  *       does would have to compare the two helpers on a WILDCARD target directly.
- * Whichever way these land, the actual verdicts are recorded rather than the predictions retold.
+ * ACTUAL VERDICTS, run at 36bf2751 against `packages/core/src/subjects.ts`, 4 of 4 as amended:
+ *   G1 KILLED   red, and named `FAIL: mute:single-token-wildcard`.
+ *   G2 SURVIVED as predicted. EQUIVALENT MUTANT — recorded as such and NOT as a coverage gap,
+ *              because the two are different things and the second invites someone to "fix" it by
+ *              writing a cell that cannot exist. The arity check is annotated at the source as
+ *              redundant rather than deleted; see the note on that line for why it stays.
+ *   G3 KILLED   red, and named `FAIL: foreign:untouched`.
+ *   G4 SURVIVED as predicted. EQUIVALENT MUTANT. The comment that claimed the containment /
+ *              intersection difference was operative at that call site has been corrected at the
+ *              source: it is operative for the SHAPE of the question, not for that line's choice of
+ *              helper, and a comment asserting something outside its own function is a test nobody
+ *              wrote. G2 and G4 are retired from this kill set — an equivalent mutant is not
+ *              evidence in either direction, and leaving them listed would let a later reader
+ *              inherit two "unproven" cells that no test can ever close.
+ * WHAT STILL HOLDS AFTER RETIRING TWO: G1 is the mutation that matters, because a uniformly
+ * permissive guard is the realistic failure and it is killed by the MUTE and witness-absent arms
+ * while leaving LIVE and FOREIGN green. G3 is the one an outcome-based suite cannot see.
  *
  * Run: pnpm smoke:event-grant-mute
  */
