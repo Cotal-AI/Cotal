@@ -158,5 +158,50 @@ check("accepts a 0-byte size", isArtifactPart({ ...good, size: 0 }));
   check("the rendering carries the name and size", rendered.includes("r.html") && rendered.includes("12 bytes"), rendered);
 }
 
+// ---- NO PART RENDERS AS NOTHING ------------------------------------------------------------
+//
+// The block above proved the ARTIFACT kind no longer vanishes. It did not prove the general rule,
+// and the general rule is the one that will matter for the NEXT kind somebody adds: the else-branch
+// produced output for a case it did not handle, so an unknown extension kind rendered as the empty
+// string exactly as an artifact once did.
+//
+// Why this is asserted here rather than left to whoever adds a kind: the previous consolidation was
+// produced by a sweep that MATCHED THE EXPRESSION, and it missed two surfaces carrying independent
+// copies plus a third that drops non-text parts by FILTERING them, which no grep for
+// `JSON.stringify(p.data)` can find. Fixing the shared renderer is the only move that does not
+// depend on having found every copy.
+{
+  const ext = { kind: "some.future-kind", payload: { a: 1 } } as unknown as Parameters<typeof partsToText>[0][number];
+
+  const alone = partsToText([ext]);
+  check("an UNKNOWN extension kind does not render as nothing", alone.length > 0, JSON.stringify(alone));
+  check("...and the marker NAMES the kind, so a reader knows which renderer is missing",
+    alone.includes("some.future-kind"), alone);
+
+  // The mixed case is what made this dangerous rather than merely wrong: the message renders, looks
+  // fine, and is missing a part, with only a stray separator to show for it.
+  const mixed = partsToText([{ kind: "text", text: "see:" }, ext]);
+  check("in a MIXED message the unknown part survives beside the text",
+    mixed.includes("see:") && mixed.includes("some.future-kind"), mixed);
+
+  // A `data` part carrying no `data` hits the identical vanishing act, and it is a CORE kind — so
+  // it is covered here rather than discovered later as the second instance of a fixed bug.
+  const emptyData = partsToText([{ kind: "data", data: undefined }]);
+  check("a `data` part with NO data does not render as nothing", emptyData.length > 0, JSON.stringify(emptyData));
+  check("...and it is DISTINGUISHABLE from an unrenderable kind",
+    emptyData !== alone && !emptyData.includes("no renderer"), emptyData);
+
+  // CONTROLS, and they are the inverse predicate: the kinds this function DOES render must be
+  // unchanged. Without them every assertion above is satisfied by a renderer that emits a marker
+  // for everything, which would be a worse regression than the one being fixed.
+  check("CONTROL: a text part still renders exactly its text",
+    partsToText([{ kind: "text", text: "hello" }]) === "hello");
+  check("CONTROL: a data part still renders its JSON",
+    partsToText([{ kind: "data", data: { x: 1 } }]) === '{"x":1}');
+  check("CONTROL: an artifact part still renders its own shape, not the unknown-kind marker",
+    partsToText([good]).startsWith("[artifact ") && !partsToText([good]).includes("no renderer"),
+    partsToText([good]));
+}
+
 console.log(`\nartifact-contract: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
