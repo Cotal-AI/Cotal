@@ -56,6 +56,27 @@
  *       `live:owner-wide` and `live:all` while leaving the exact-principal cells green. Kept because
  *       it is the plausible wrong implementation, not one invented to fit a test that already passed.
  *
+ * AMENDED PREDICTIONS, registered before the run and deliberately NOT agreeing with the four above.
+ * The G1-G4 set was written by the author of the guard; re-deriving it against the code rather than
+ * against the intent changes two of the four, and the disagreement is itself the finding:
+ *   G1  KILLED, on `FAIL: mute:single-token-wildcard`. Unchanged.
+ *   G2  predicted SURVIVED, NOT killed. The arity check is not the only thing refusing those
+ *       shapes. With it removed, `confirm()` still refuses every MUTE entry by a second route:
+ *       `channelFor` THROWS on a token that cannot be an owner/actor (`events.alice-bob`,
+ *       `events`), and `subjectMatches` disagrees for the over-deep one (witness
+ *       `events.u_alice.worker` is not matched by `events.u_alice.worker.session1`). Two mechanisms
+ *       prevent one outcome, so a cell asserting the OUTCOME proves neither — the defence-in-depth
+ *       trap, arrived at from the other side. If this survives, the arity check needs a cell that
+ *       discriminates it from `confirm()`, or it is redundant and should go.
+ *   G3  KILLED, on `FAIL: foreign:untouched`. Unchanged.
+ *   G4  predicted SURVIVED as an EQUIVALENT MUTANT, and if so it is not a valid mutation at all.
+ *       The witness is always a CONCRETE subject, and over a concrete target containment and
+ *       intersection COINCIDE — `patternCovers(g, concrete)` and `subjectMatches(g, concrete)`
+ *       cannot disagree. The intersection/containment distinction this guard is built on is real,
+ *       but it is not observable at THIS call site, so no mutation here can expose it. A cell that
+ *       does would have to compare the two helpers on a WILDCARD target directly.
+ * Whichever way these land, the actual verdicts are recorded rather than the predictions retold.
+ *
  * Run: pnpm smoke:event-grant-mute
  */
 // core by SOURCE path: the rule under test lives in core, and the connector reaches it through that
