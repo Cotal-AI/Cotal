@@ -130,53 +130,38 @@ export interface ClaudeEntry {
 }
 
 /**
- * ATTRIBUTION — what began a run, for a record already established to BE a turn.
+ * (A) RUN-OPENING and (B) ATTRIBUTION in one table, because they are one enumeration read two ways:
+ * a `null` means "known, and NOT a turn"; a string means "a turn, attributed thus".
  *
- * The vocabularies are closed on purpose. Everything here was read off a real session or off
- * `plans/agui-events.md` §3.1's own measurement; nothing is anticipated. When a harness release adds
- * a value, this throws, and that is the intended outcome: **a provenance field's entire product is
- * an external observer's belief about who caused something, so the unknown case must fail loud
- * rather than resolve to a plausible guess.** `CotalMeta.turnSource` carries `"unknown"` for
- * producers that never set the field — the mapper never writes it.
+ * **ENUMERATED, NEVER INFERRED.** Every key here was read off a real session or off
+ * `plans/agui-events.md` §3.1's own measurement. `task-notification` is harness plumbing and is
+ * named as not-a-turn rather than left to fall through — the distinction between "we decided no"
+ * and "nothing matched" is the whole difference between a rule and an accident.
+ *
+ * An `origin.kind` outside this table THROWS. A provenance field's entire product is an external
+ * observer's belief about who caused something, so a value a future harness adds must produce an
+ * error rather than a confident wrong attribution. `CotalMeta.turnSource` carries `"unknown"` for
+ * producers that never set the field; the mapper never writes it.
  */
-const ORIGIN_ATTRIBUTION: Record<string, "human" | "channel" | "notification"> = {
+const ORIGIN_RULE: Record<string, "human" | "channel" | null> = {
   human: "human",
-  channel: "channel",
-  "task-notification": "notification",
-};
-/** `typed`/`queued` are §3.1's measured human values; `sdk` is headless; `system` rides an origin. */
-const PROMPT_SOURCE_ATTRIBUTION: Record<string, "human" | "sdk" | null> = {
-  typed: "human",
-  queued: "human",
-  sdk: "sdk",
-  system: null, // carries no attribution of its own — `origin.kind` is authoritative for these
+  channel: "channel", // a peer/mesh delivery IS a turn — the one change from §3.1
+  "task-notification": null, // known, and deliberately not a turn
 };
 
-const attribute = (entry: ClaudeEntry): "human" | "channel" | "notification" | "sdk" => {
+const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | null => {
   const kind = entry.origin?.kind;
-  if (kind !== undefined) {
-    const fromOrigin = ORIGIN_ATTRIBUTION[kind];
-    if (fromOrigin === undefined)
-      throw new Error(
-        `agui-map: unrecognised origin.kind ${JSON.stringify(kind)} on entry ${entry.uuid ?? "<no uuid>"} — ` +
-          `refusing to attribute a run to a provenance this mapper has never seen. Add it to ` +
-          `ORIGIN_ATTRIBUTION deliberately, with a measurement, rather than letting it default.`,
-      );
-    return fromOrigin;
-  }
-  const src = entry.promptSource;
-  if (src === undefined || !(src in PROMPT_SOURCE_ATTRIBUTION))
+  // ABSENT origin is not a turn, and is not an error either: 81 such entries in §3.1's measurement
+  // are local-command caveats, heartbeats and resumed-session summaries. Absence is a known shape,
+  // so it is answered here rather than by the throw below.
+  if (kind === undefined) return null;
+  if (!(kind in ORIGIN_RULE))
     throw new Error(
-      `agui-map: unrecognised promptSource ${JSON.stringify(src)} on entry ${entry.uuid ?? "<no uuid>"} ` +
-        `with no origin.kind — refusing to guess what began this run.`,
+      `agui-map: unrecognised origin.kind ${JSON.stringify(kind)} on entry ${entry.uuid ?? "<no uuid>"} — ` +
+        `refusing to decide whether it begins a run, or to attribute one to a provenance this mapper ` +
+        `has never seen. Add it to ORIGIN_RULE deliberately, with a measurement.`,
     );
-  const fromSource = PROMPT_SOURCE_ATTRIBUTION[src];
-  if (fromSource === null)
-    throw new Error(
-      `agui-map: promptSource ${JSON.stringify(src)} carries no attribution of its own and entry ` +
-        `${entry.uuid ?? "<no uuid>"} has no origin.kind to supply one.`,
-    );
-  return fromSource;
+  return ORIGIN_RULE[kind]!;
 };
 
 /** A content block. Same reasoning as above: shape-tolerant, read narrowly. */
@@ -304,23 +289,26 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // picks it up. Naming it is what stops it being "the one that got through".
       if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) return null;
 
-      // (A) RUN-OPENING — "did a turn begin?" — keyed on `promptSource` PRESENT.
+      // (A) RUN-OPENING — "did a turn begin?" — an ENUMERATION, never an inference.
       //
-      // A turn-initiating input opens a run whatever authored it. An external observer asks what
-      // work this agent did and what triggered it, not whether a person typed it, so a mesh-driven
-      // turn is a run like any other. Measured, `promptSource` is present on every submitted prompt
-      // (67 mesh + 2 sdk) and absent on all 824 tool results and on the compaction summary, so it
-      // discriminates exactly along the boundary that matters — and it is a POSITIVE marker, not an
-      // absence, so an unrecognised record shape cannot default into being a turn.
-      if (entry.promptSource === undefined) return null;
-
-      // (B) ATTRIBUTION — "what began it?" — a field on the run, never a gate on it.
+      // A turn-initiating input opens a run whatever authored it: an external observer asks what
+      // work this agent did and what triggered it, not whether a person typed it. So `"channel"` —
+      // a peer/mesh delivery — opens a run exactly as `"human"` does. That is the only change from
+      // §3.1, whose table sent every non-human origin to nothing and therefore emitted NOTHING on an
+      // agent-driven session.
       //
-      // FAILS LOUD on anything unrecognised. A new harness version, a new origin, a renamed prompt
-      // source: all produce an error here rather than a confident wrong attribution. For a value
-      // whose entire product is an observer's belief about who caused this, the unknown case must
-      // not resolve to a guess.
-      const turnSource = attribute(entry);
+      // **KEYED ON `origin.kind`, NOT ON `promptSource`, and the difference is a category error I
+      // made first.** `promptSource` is present on every submitted prompt in the captures available,
+      // so a partition of those captures suggests it as the discriminator — but the captures contain
+      // no `task-notification` and no local-command caveats, and §3.1's own measurement does:
+      // `task-notification` × 5 and 81 absent-origin entries (caveats, heartbeats, resumed-session
+      // summaries), all of which carry `promptSource: "system"` too. **A predicate inferred from a
+      // partition is bounded by that partition's categories**, and this one would have opened runs
+      // on harness plumbing. `promptSource` is corroboration; it is not the gate.
+      //
+      // Anything not enumerated FAILS LOUD — including a value a future harness adds.
+      const turnSource = runOpeningAttribution(entry);
+      if (turnSource === null) return null;
 
       const prior = closeOpenRun(ts);
       const runId = opts.mintRunId();

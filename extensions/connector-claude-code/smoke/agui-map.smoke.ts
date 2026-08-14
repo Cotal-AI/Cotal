@@ -91,6 +91,8 @@
  *       No outcome cell over a real session can ever discriminate this pair.
  *   M8b [B] same mutation, graded against a record only the run-opening test can refuse
  *       -> KILLED `mechanism:promptSource-ALONE-excludes-a-record-the-compaction-marker-does-not`
+ *       **STALE — that cell is gone.** `promptSource` is no longer the gate, so the record it
+ *       used (origin `channel`, no `promptSource`) now correctly OPENS a run. Re-graded as M12.
  *   M9b [B] same mutation, graded against a stamped compaction record the run-opening test admits
  *       -> KILLED `mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not`
  *
@@ -294,12 +296,27 @@ const asSpecifiedUnits = entries.map((e) => asSpecified.map(e)).filter((u) => u 
 const originKinds = [...new Set(entries.map((e) => (e.origin === undefined ? "<absent>" : `kind=${String(e.origin.kind)}`)))].sort();
 const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>"))].sort();
 
-c("split:the-real-session-DOES-open-runs-without-a-synthetic-opener", asSpecifiedUnits.length > 0, {
-  units: asSpecifiedUnits.length,
-  records: entries.length,
-  originKinds,
-  promptSources,
-});
+// Whether this session contains anything the enumeration opens a run on. Computed once, here,
+// because both the population cells below and PART 3 are unassertable without it.
+const OPENERS = entries.filter((e) => {
+  const k = e.origin?.kind;
+  return k === "human" || k === "channel";
+}).length;
+
+if (OPENERS === 0) {
+  c("ARM:this-session-contains-NO-run-opening-record — the population cells are NOT assertable", true, {
+    records: entries.length,
+    originKinds,
+    promptSources,
+  });
+} else {
+  c("split:the-real-session-DOES-open-runs-without-a-synthetic-opener", asSpecifiedUnits.length > 0, {
+    units: asSpecifiedUnits.length,
+    records: entries.length,
+    originKinds,
+    promptSources,
+  });
+}
 
 // THE NEGATIVE TWIN. Without it, "opens runs" is satisfied by a mapper that opens one on every
 // record — which is precisely the 825-over-match, and nothing above could fail that way.
@@ -319,7 +336,7 @@ c("split:a-tool-result-opens-NO-run", (() => {
 // And the same claim over the REAL population rather than one hand-built record: every run opened
 // across the session must come from a record carrying `promptSource`. A count is not enough here —
 // the mapper could open the right NUMBER of runs off the wrong records.
-c("split:every-run-opened-came-from-a-promptSource-bearing-record", (() => {
+if (OPENERS > 0) c("split:every-run-opened-came-from-a-promptSource-bearing-record", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   let opens = 0;
@@ -348,16 +365,35 @@ c("split:every-run-opened-came-from-a-promptSource-bearing-record", (() => {
 // So each mechanism gets a record only IT can exclude. These two records are synthetic and that is
 // the point: no capture contains them, which is precisely why the population cells cannot
 // discriminate the pair.
-c("mechanism:promptSource-ALONE-excludes-a-record-the-compaction-marker-does-not", (() => {
+c("mechanism:an-ABSENT-origin-opens-no-run-even-carrying-promptSource", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  // No `promptSource`, and NOT a compaction record — only the run-opening test can refuse this.
+  // The headless shape exactly: a submitted prompt with `promptSource` and NO origin. Only the
+  // enumeration can refuse this, and it must — `promptSource` is corroboration, not the gate.
   const unit = m.map({
     type: "user",
-    uuid: "no-prompt-source",
+    uuid: "absent-origin",
     timestamp: "2026-08-14T21:00:03.000Z",
-    origin: { kind: "channel" },
-    message: { content: "not a submitted prompt" },
+    promptSource: "sdk",
+    message: { content: "a headless prompt" },
+  } as ClaudeEntry);
+  return unit === null && m.openRun() === null;
+})());
+
+// SECOND NEGATIVE TWIN. `task-notification` is enumerated as KNOWN-and-not-a-turn, so it must be
+// refused BY NAME rather than by falling through — the distinction between "we decided no" and
+// "nothing matched" is the difference between a rule and an accident, and only a cell can tell them
+// apart from outside.
+c("split:a-task-notification-opens-NO-run", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  const unit = m.map({
+    type: "user",
+    uuid: "task-notification-entry",
+    timestamp: "2026-08-14T21:00:05.000Z",
+    origin: { kind: "task-notification" },
+    promptSource: "system",
+    message: { content: "harness plumbing" },
   } as ClaudeEntry);
   return unit === null && m.openRun() === null;
 })());
@@ -380,7 +416,7 @@ c("mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not
 })());
 
 // ATTRIBUTION IS CARRIED, and it is the half that used to be a gate.
-c("split:every-RUN_STARTED-carries-a-cotal.turnSource", (() => {
+if (OPENERS > 0) c("split:every-RUN_STARTED-carries-a-cotal.turnSource", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   const starts = entries.flatMap((e) => m.map(e)?.events ?? []).filter((e) => e.type === "RUN_STARTED");
@@ -441,6 +477,29 @@ const run = (opts?: { reasoning?: boolean }): { runId: string; events: AguiEvent
   });
   return entries.map((e) => m.map(e)).filter((u): u is { runId: string; events: AguiEvent[] } => u !== null);
 };
+
+// ⚠️ A SESSION WITH NO RUN-OPENING RECORD CANNOT ASSERT ANY OF PART 3, AND THAT IS NAMED HERE
+// RATHER THAN SKIPPED SILENTLY.
+//
+// Under the enumeration, a run opens on `origin.kind ∈ {human, channel}` only. A HEADLESS session
+// (`claude -p`) carries NO `origin` on any record — measured, all 30 of them — so it opens nothing
+// and every `real:*` cell below would fail for one upstream reason, reporting thirteen findings that
+// are one fact. `promptSource: "sdk"` is present on its two prompts and is corroboration, not the
+// gate, so it does not rescue them.
+//
+// **This is the headless gap, reinstated by the corrected rule and RAISED rather than patched.**
+// Whether an sdk-submitted prompt opens a run is a spec decision; inventing a third enumeration
+// member here would be the same error twice over. Until it is ruled, this arm asserts the fact it
+// can assert — that the session opens nothing and therefore maps to nothing — and declares the rest
+// unassertable. A green on this arm must NOT be read as "the mapping works on a headless session".
+if (OPENERS === 0) {
+  c("ARM:and-so-it-maps-to-nothing — PART 3 IS UNASSERTABLE ON THIS SESSION, not passing", run().length === 0);
+  console.log(
+    `agui-map smoke: ${pass} passed, ${fail} failed  ` +
+      `[session: ${SESSION.split("/").pop()}, ${entries.length} records — HEADLESS ARM: no run-opening record, PART 3 not run]`,
+  );
+  process.exit(fail === 0 ? 0 : 1);
+}
 
 const units = run();
 const events = units.flatMap((u) => u.events);
