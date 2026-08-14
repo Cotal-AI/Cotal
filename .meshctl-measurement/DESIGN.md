@@ -141,6 +141,22 @@ With (2) removed, the honest value proposition is narrower than this note origin
 process the rule is a guard against mistakes, not a security boundary. That is still worth shipping.
 It is not what the first draft said.
 
+**The persona-file attack I pointed a hostile reviewer at does NOT work through `cotal_persona`, and
+the negative result is recorded because I would have recorded a positive one.** I suspected the
+connector's own `cotal_persona` tool could write policy into `.cotal/agents/<name>.md` — the file
+§5 makes the grant surface — and so let an agent grant itself a capability. It cannot: the published
+schema is closed over name/persona/model (`manager-service-contract.ts:211-214`), and the handler
+creates content-only records or preserves existing policy (`manager.ts:5055-5094`) **[R]**. The
+repo's own smoke already treats persona input as untrusted and names schema closure as the
+protection (`smoke/persona-input-closed.smoke.ts`).
+
+What remains open is a **direct same-UID filesystem write** to the catalog, which a later launch
+would honour (`manager.ts:2891-2911,3063-3072`) **[R]**. That adds nothing to the threat model
+already stated: a process that can write the persona catalog can also read the trust material and
+mint itself any ACL **[M — F3]**, which is strictly more. **But it does mean the persona file must
+not be described as an operator-authenticated boundary** — it is operator-authored configuration,
+trusted because the process is trusted, not because anything verifies its provenance.
+
 Anything stronger would need OS-level separation between the agent process and the trust material,
 which is out of this lane's scope. **This note does not claim the fence stops an agent that has
 already read the trust material.** If the surrounding system wants that property, it needs a
@@ -336,6 +352,38 @@ process.** That asymmetry is the strongest argument for the confirmed-transition
 announcement is the last thing a mesh supervisor will ever hear from it, so it must not be
 best-effort.
 
+### What this feature actually costs, named rather than buried
+
+Adversarial review put this as sharply as it can be put and it is right, so it is recorded here in
+its own words rather than softened: **with re-target deferred, the net-new power is a sanctioned,
+indefinite, self-initiated loss of supervision.** The supporting facts are the lane's own:
+
+- The OS process keeps running while every mesh peer loses reach; process control and mesh presence
+  are separate by construction (`runtime.ts:28-40`) **[R]**.
+- This is materially stronger than "go quiet": leaving every channel preserves DM reach **[M — F3]**,
+  a disconnect does not.
+- Durable memberships stay open across it by design (§7.1) **[M — M6]**, so an indefinitely
+  disconnected agent keeps accumulating owed delivery.
+- The confirmed transition improves OBSERVABILITY. It provides no RECALL. A supervisor learns the
+  agent left; it gains no way to bring it back.
+
+**This is a real cost and it is not mine to accept on the human's behalf.** Three things bound it,
+and none of them is "the grant stops a hostile agent":
+
+1. **It adds no reach.** Nothing here lets an agent see or touch anything new (§1). The risk class
+   is availability and supervision, not escalation — a different question from the one §1 answers.
+2. **The capability is a policy control the operator sets per persona** (§5), so an agent that
+   should never do this simply never has the verb.
+3. **A hostile same-user process never needed the verb.** It could always close its own connection.
+   What this ships is the *sanctioned, announced* form of something already possible unannounced —
+   which is an argument that it improves the observable case, not that it is free.
+
+**The open question I am explicitly NOT deciding: should a disconnect be bounded** (auto-return
+after N minutes) **or recallable out of band**? Both would blunt the cost. Both are also new
+mechanism beyond this lane's scope, and inventing either here would be exactly the "specify what you
+have not measured" habit this note keeps catching itself in. **Flagged for the human as a scope
+decision, with the cost stated so the decision is informed.**
+
 **[DEFERRED — §0]** A re-target is a disconnect plus a connect and inherits both halves. It cannot
 be done in place: space, servers, credentials and `connId` are all constructor-pinned **[R —
 `endpoint.ts:445`, `821-855`]**, so re-targeting builds a *new* endpoint. Retained for the follow-on.
@@ -372,12 +420,48 @@ process handle and the mesh target no longer disagree about where the agent belo
 
 **The grant, named as a grant:**
 
-- `capabilities: [connection]` on the persona — the right to call these verbs at all. This mirrors
-  the existing `capabilities: [spawn]` gate, which is enforced in the credential layer and not only
-  in the tool list **[R]**, so the verbs are absent from an ungranted agent's surface rather than
-  present-and-failing. **This `[R]` is load-bearing and is being independently attacked** — if
-  `spawn` turns out to be gated only by tool-list construction, the mirror is false and this
-  section's default-deny story is weaker than written. Recorded as a risk, not resolved.
+- `capabilities: [connection]` on the persona — the right to call these verbs at all.
+
+**THE MIRROR CLAIM WAS FALSE AND IS WITHDRAWN.** This section previously said the grant "mirrors
+the existing `capabilities: [spawn]` gate, which is enforced in the credential layer and not only in
+the tool list". Adversarial review refuted it with citations and it does not survive:
+
+- minting adds endpoint rows only for `spawn` and `admin` (`provision.ts:1164-1176`) **[R]**;
+- user-mode provisioning drops every capability except `spawn`, `admin` and `role:*`
+  (`manager.ts:2123-2127`) **[R]**;
+- connector capabilities are launcher/file/env data, never recovered from a signed grant
+  (`config.ts:39-44,189-200`) **[R]**.
+
+So `connection` never reaches a signed grant, and **there is no credential-layer enforcement point
+for it. The tool-list gate is the only gate.**
+
+**AND IT CANNOT BE OTHERWISE — this is the part worth stating rather than treating as a gap to close
+later. A disconnect closes this client's own socket. A broker can police what a credential reaches;
+it cannot police a socket the client chooses to close.** No grant design, however well built, makes
+`disconnect` broker-enforceable. Anyone proposing to "fix" this by threading `connection` through
+the ledger should read that sentence first.
+
+**Why the feature is still sound, and it is a different argument from the one this note originally
+made.** The reason a missing enforcement point is tolerable here is that **these verbs cannot
+escalate**: `disconnect` REMOVES reach, and `connect` restores reach to the one target the agent was
+already launched against, using the credential it already holds. There is no authority for a broker
+to enforce because none is being granted. The `[M]` broker-fence measurements (F1a-d, F2) still hold
+and still matter — they are what makes "returns to the same target" safe — but they are not what
+gates the verb.
+
+**So the grant is an OPERATIONAL POLICY CONTROL, not a security boundary, and it must be documented
+as one.** It expresses "this agent is allowed to manage its own connection", it is honoured by a
+conforming client, and a non-conforming same-user process ignores it exactly as it ignores every
+other client-side rule (§1's threat model, unchanged). Calling it a credential-layer gate would
+claim a property it does not have — the specific error this note has now made twice.
+
+**One consequence, fixed in code rather than noted:** the gate must not have a permissive arm. In
+user mode `config.creds` is undefined by construction, so a `!config.creds` test takes the
+permissive branch and an ungranted user-mode session would see the verbs. `spawn` survives that flaw
+because the broker denies it at the wire; `connection` has no such backstop, so for these verbs the
+flaw would be the whole gate. Gated on `(!creds && !userAuth)` instead, with G3/G4 covering both
+arms. **The same blind spot exists in `canSpawn` and is REPORTED, not patched here** — it is another
+lane's surface, and there it is a truthfulness bug rather than a hole.
 - ~~`meshes: [...]`~~ — **DEFERRED with re-target (§0).** No second credential is provisioned.
 
 **The smallest grant that makes the feature useful is now the ONLY grant: `capabilities:
