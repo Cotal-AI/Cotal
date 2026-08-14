@@ -39,6 +39,7 @@ import {
   epgateKey, parseEndpointGate, mintLifecycleUid,
 } from "@cotal-ai/core";
 import { putSpaceAuth, saveManagerInstanceIdentity, workspaceSecretStore } from "@cotal-ai/workspace";
+import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 // ---------------------------------------------------------------------------
@@ -248,6 +249,44 @@ try {
     const r = runCli(["reconcile-gate", "--space", space, "--server", SERVERS]);
     check("CLI (re-run): refuses `not-frozen` on the gate it just reopened — no second repair", r.code === 2 && /refused \(not-frozen\)/.test(r.err),
       { code: r.code, err: r.err.slice(-500) });
+  }
+
+  // ---- CELL 5: THE ORACLE MUST BE LOOKING AT THE RIGHT ACCOUNT --------------------------------
+  // The cells above all run with the CLI and the daemon co-located on one correctly-seeded root —
+  // the happy path, and therefore blind to the failure that matters here. The daemon's $SYS sweeps
+  // resolve an ACCOUNT, and a COMPLETE, well-formed sweep of the WRONG account is indistinguishable
+  // from "the principal is gone": a confident, healthy-looking answer that authorizes revoking and
+  // evicting a live family. Found by adversarial review; these pin the two guards that close it.
+  {
+    const cwdBefore = process.cwd();
+    try {
+      process.chdir(ROOT); // so the root-drift guard is satisfied and the TENANCY guard is what speaks
+      const foreignAccount = `A${"B".repeat(55)}`;
+      let tenancyErr = "";
+      try {
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: foreignAccount }, principalKey(DEV_OWNER, "whoever").key);
+      } catch (e) { tenancyErr = (e as Error).message; }
+      check("TENANCY: disk material naming a different account than the daemon authenticates as REFUSES (never a confident sweep of a foreign tenant)",
+        /names account/.test(tenancyErr) && tenancyErr.includes(foreignAccount), tenancyErr);
+
+      // The control: the correctly-seeded root does NOT refuse — the guard must reject the wrong
+      // tenant, not every tenant.
+      let okErr = "";
+      try {
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub }, principalKey(DEV_OWNER, "whoever").key);
+      } catch (e) { okErr = (e as Error).message; }
+      check("TENANCY control: the correctly-seeded root is accepted and answers (the guard rejects the wrong tenant, not all of them)", okErr === "", okErr);
+
+      // And the root itself cannot drift between requests: resolving from a different cwd refuses
+      // rather than silently reading another workspace's membership.json.
+      process.chdir(cwdBefore);
+      let driftErr = "";
+      try {
+        await executePrincipalLiveness(SERVERS, { root: ROOT, expectedAccount: auth.account.pub }, principalKey(DEV_OWNER, "whoever").key);
+      } catch (e) { driftErr = (e as Error).message; }
+      check("ROOT DRIFT: a request-time root different from the daemon's start root REFUSES (the scan account cannot follow process.cwd())",
+        /is not the one this daemon started in/.test(driftErr), driftErr);
+    } finally { process.chdir(cwdBefore); }
   }
 
   console.log(`\nGATE-RECONCILE CLI E2E ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
