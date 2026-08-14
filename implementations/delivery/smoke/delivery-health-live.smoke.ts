@@ -28,8 +28,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint, createSpaceAuth, idFromCreds, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, assessDeliveryHealth, LEASE_TTL_MS, type DeliveryHealth,
+  setupSpaceStreams, LEASE_TTL_MS,
 } from "@cotal-ai/core";
+// REACHES AROUND core's `exports` map ON PURPOSE, and this import is a TRIPWIRE rather than a smell
+// to be tidied away. `health.js` is deliberately not exported from `@cotal-ai/core`: it has no
+// consumer, and publishing an unread shape freezes it without serving anyone. This relative path
+// works only because tsx resolves source directly; the package specifier would not resolve, since
+// core's `exports` map lists only `.` and `./session-browser`.
+//
+// SO: if this file ever NEEDS the package specifier, that is the signal the type has acquired a real
+// consumer and should be exported properly — with a changeset. Do not "fix" this by adding a
+// `./health` subpath; that publishes the same shape at a different specifier and buys nothing.
+import { assessDeliveryHealth, type DeliveryHealth } from "../../../packages/core/src/health.js";
 import { pickFreePort } from "./_free-port.js";
 
 let pass = 0, fail = 0;

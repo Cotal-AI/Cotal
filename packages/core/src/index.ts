@@ -42,7 +42,12 @@ export * from "./acls.js";
 export * from "./membership-feed.js";
 export * from "./evict.js";
 export * from "./lease.js";
-export * from "./health.js";
+// `./health.js` is DELIBERATELY NOT EXPORTED. It has no consumer: measured across every `src/` file
+// in the repo, nothing reads `HealthFact` — not core, not the CLI, not delivery. Publishing a shape
+// nobody reads freezes it without serving anyone, and this type proved that concretely: its first
+// real stress test forced a breaking change (`ageMs: number` -> `number | null`). Adding an export
+// later is a non-breaking one-line change; removing one is a breaking change. Re-export it when a
+// real consumer exists, and write the changeset then.
 export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
