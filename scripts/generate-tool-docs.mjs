@@ -104,7 +104,19 @@ const ANNOTATIONS = {
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",
     availability: "always",
-    notes: "The tool result is authoritative over any prose about the outcome.",
+    notes: "The tool result is authoritative over any prose about the outcome. Refuses while you are deliberately disconnected — use `cotal_connect` for that, so the recovery path cannot quietly reverse a state you chose.",
+  },
+  cotal_disconnect: {
+    effect: "takes you off the mesh; peers see you offline",
+    availability: "only with `capabilities: [connection]`",
+    notes:
+      "Not the same as leaving every channel: DMs still reach you there, and not here. Durable channel membership is KEPT, so the backstop replays what you missed when you return — an indefinite disconnect keeps accruing messages owed to you. Reversible by YOU and only by you: no mesh peer can pull you back, so the announcement is the last thing a mesh supervisor hears from you (whoever controls your process still does). Refuses rather than going dark quietly if the departure cannot be confirmed at the broker, if requests are awaiting a reply, or if a transition is already running.",
+  },
+  cotal_connect: {
+    effect: "puts you back on the mesh; peers see you online again",
+    availability: "only with `capabilities: [connection]`",
+    notes:
+      "Takes no target: it returns to the mesh this session was launched against, re-presenting the credential it already holds, so it obtains no new authority and can reach no mesh you were not already on. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.",
   },
 };
 

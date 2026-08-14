@@ -190,6 +190,22 @@ type RefusalReason =
   | "in-flight-request";       // holds an unresolved request — see below
 ```
 
+**TWO REASONS ADDED after the evidence audit, both for conditions the SHIPPED scope can reach and
+neither of which had a name:**
+
+- **`credential-source-unavailable`** — a user-mode `bearerCmd` that will not execute, or a static
+  credential file that will not read. §1 establishes that a connect re-reads its credential source
+  every time, so this is reachable on every connect; §2 previously offered only `broker-unreachable`,
+  `auth-rejected` and `credential-expired`, and **a source that fails BEFORE anything is dialled is
+  none of those.** Collapsing it into `broker-unreachable` sends an operator to inspect a broker
+  that is up and answering, when the fault is in the launcher.
+- **`connected` now carries `denied: string[]`** rather than a new refusal. The broker can accept
+  the transport and refuse part of the requested read set — **this lane's own F1d measured exactly
+  that** — so a bare `connected` overstates the session and the caller believes it is listening
+  where it is not. But it is not a refusal either: the connection is up and the agent is reachable,
+  so refusing would be its own lie. **The honest shape is a success that names its shortfall**, and
+  the tool surface renders it as `PARTIAL:` with the channels the broker refused.
+
 **`durable-membership-unclosed` and `partial-membership-close` are NOT in this union**, and their
 absence is deliberate. Both are re-target-only conditions (§7.1, §7.2), and re-target is deferred
 (§0), so **the shipped scope cannot reach either.** This applies the same principle that removed

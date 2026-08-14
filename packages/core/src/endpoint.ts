@@ -311,6 +311,11 @@ export type ConnectionRefusal =
   | "auth-rejected"
   /** The held credential is stale. A different fix again — re-mint, don't re-dial. */
   | "credential-expired"
+  /** The credential SOURCE failed before anything was dialled — a user-mode `bearerCmd` that could
+   *  not be executed, or a static credential file that could not be read. Distinct from all three
+   *  broker-side failures above, and the distinction is the point: nothing was contacted, so the
+   *  operator should look at the launcher, not at the broker or the grant. */
+  | "credential-source-unavailable"
   /** Already on the mesh. Distinct from success: silently succeeding hides a caller's bad model. */
   | "already-connected"
   /** Already off the mesh. Same reasoning, other direction. */
@@ -333,7 +338,12 @@ export type ConnectionRefusal =
  *  That is why the tool boundary additionally maps a refusal to the host's error channel — the
  *  union is for the caller, the error flag is for the host, and both are required. */
 export type ConnectionOutcome =
-  | { outcome: "connected"; space: string; channels: string[] }
+  /** `denied` carries the channels the broker refused. A connect that came back with a live
+   *  transport but only PART of its requested read set is not a clean success, and reporting bare
+   *  "connected" would overstate the session — the caller would believe it is listening where it is
+   *  not. It is also not a refusal: the connection IS up and the agent IS reachable, so refusing
+   *  would be its own lie. It gets reported, with the shortfall named. */
+  | { outcome: "connected"; space: string; channels: string[]; denied: string[] }
   | { outcome: "disconnected"; space: string; cause: string }
   | { outcome: "refused"; reason: ConnectionRefusal; detail: string };
 
@@ -345,6 +355,11 @@ const refusal = (reason: ConnectionRefusal, detail: string): ConnectionOutcome =
 function classifyConnectFailure(e: unknown): ConnectionRefusal {
   if (e instanceof UserAuthenticationExpiredError) return "credential-expired";
   const m = ((e as Error)?.message ?? String(e)).toLowerCase();
+  // Credential SOURCE first: a bearer command that would not run, or a creds file that would not
+  // read, never reached the broker at all. Classified before the broker cases because otherwise a
+  // launcher fault reports as "the host is down" and sends an operator to the wrong system.
+  if (m.includes("bearer") || m.includes("enoent") || m.includes("credential source") || m.includes("spawn "))
+    return "credential-source-unavailable";
   if (m.includes("authorization violation") || m.includes("auth") || m.includes("permissions violation")) return "auth-rejected";
   if (m.includes("expired")) return "credential-expired";
   return "broker-unreachable";
@@ -1336,7 +1351,14 @@ export class CotalEndpoint extends EventEmitter {
       this.status = "idle";
       this.activity = undefined;
       await this.reassertPresence();
-      return { outcome: "connected", space: this.space, channels: [...this.channels] };
+      // Report the read set the broker ACTUALLY granted, not the one that was asked for.
+      const denied = [...this.chatSubDenied];
+      return {
+        outcome: "connected",
+        space: this.space,
+        channels: this.channels.filter((c) => !this.chatSubDenied.has(c)),
+        denied,
+      };
     } catch (e) {
       // Failed to get back on. Restore the self-disconnected state rather than leaving the endpoint
       // in a third state that is neither deliberately-off nor live.

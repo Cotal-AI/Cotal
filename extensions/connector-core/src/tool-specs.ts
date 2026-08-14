@@ -62,7 +62,12 @@ function renderOutcome(r: ConnectionOutcome): ToolResult {
       `Disconnected from "${r.space}" ✓ (cause: ${r.cause}). Peers now see you offline. You will receive nothing until you call cotal_connect — ` +
         `no peer can bring you back. Durable channel membership was kept, so you will be given what you missed when you return.`,
     );
-  return ok(`Connected to "${r.space}" ✓ on #${r.channels.join(", #") || "(no channels)"}. Anything sent while you were away is replayed from the durable backstop.`);
+  const base = `Connected to "${r.space}" ✓ on #${r.channels.join(", #") || "(no channels)"}. Anything sent while you were away is replayed from the durable backstop.`;
+  // A live transport with only part of the requested read set is reported, never rounded up to a
+  // clean success — the caller would otherwise believe it is listening on channels it is not.
+  return r.denied.length
+    ? ok(`${base}\n\nPARTIAL: the broker refused your subscription to #${r.denied.join(", #")}, so you are NOT receiving those. You are connected and reachable; this is a grant problem, not a connection problem.`)
+    : ok(base);
 }
 
 /** One Cotal tool, independent of any host's tool API. */

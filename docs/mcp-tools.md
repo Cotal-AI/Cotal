@@ -26,6 +26,8 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
 | [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
+| [`cotal_disconnect`](#cotaldisconnect) | disconnect from the mesh | takes you off the mesh; peers see you offline |
+| [`cotal_connect`](#cotalconnect) | return to the mesh | puts you back on the mesh; peers see you online again |
 
 ## `cotal_orientation`
 
@@ -200,7 +202,7 @@ Subscribe to a channel mid-session. Returns its registry info; if the channel re
 
 *leave a channel*
 
-Unsubscribe from a channel mid-session; you stop receiving its messages. You can't leave your only channel.
+Unsubscribe from a channel mid-session; you stop receiving its messages. You may leave every channel, including your last one — DMs and anycast still reach you, because they do not travel over channel membership.
 
 - **Side-effect:** unsubscribes you from a channel.
 - **Available:** always.
@@ -292,7 +294,33 @@ Tear down and rebuild this session's mesh connection in-process: the manual reco
 
 - **Side-effect:** tears down and rebuilds your own mesh connection.
 - **Available:** always.
-- The tool result is authoritative over any prose about the outcome.
+- The tool result is authoritative over any prose about the outcome. Refuses while you are deliberately disconnected — use `cotal_connect` for that, so the recovery path cannot quietly reverse a state you chose.
+
+No arguments.
+
+## `cotal_disconnect`
+
+*disconnect from the mesh*
+
+Deliberately take this session OFF the mesh, announcing the departure first so a supervisor sees a departure rather than a silence. While disconnected you receive no DMs, no channel messages and no anycast, and peers see you as offline; durable channel membership is KEPT, so a durable backstop replays what you missed when you return with cotal_connect. Reversible by you and only by you on the mesh side — no peer can pull you back. Refuses (rather than going dark quietly) if the departure cannot be confirmed at the broker, if requests are still awaiting a reply, or if a transition is already in flight. Optional `cause` is shown to observers.
+
+- **Side-effect:** takes you off the mesh; peers see you offline.
+- **Available:** only with `capabilities: [connection]`.
+- Not the same as leaving every channel: DMs still reach you there, and not here. Durable channel membership is KEPT, so the backstop replays what you missed when you return — an indefinite disconnect keeps accruing messages owed to you. Reversible by YOU and only by you: no mesh peer can pull you back, so the announcement is the last thing a mesh supervisor hears from you (whoever controls your process still does). Refuses rather than going dark quietly if the departure cannot be confirmed at the broker, if requests are awaiting a reply, or if a transition is already running.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `cause` | string | no | why you are leaving — shown to peers on your presence record |
+
+## `cotal_connect`
+
+*return to the mesh*
+
+Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential it already holds — it targets no new mesh and obtains no new authority. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.
+
+- **Side-effect:** puts you back on the mesh; peers see you online again.
+- **Available:** only with `capabilities: [connection]`.
+- Takes no target: it returns to the mesh this session was launched against, re-presenting the credential it already holds, so it obtains no new authority and can reach no mesh you were not already on. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.
 
 No arguments.
 
