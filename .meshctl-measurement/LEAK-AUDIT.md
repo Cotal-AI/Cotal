@@ -294,6 +294,36 @@ fm-rebind named it.*
 > already written, already shipped, and simply not applied where it is needed.** Third instance
 > tonight of a remedy that exists and cannot reach the place that needs it.
 
+### ⚠️ 2b. THE REMEDY FOR A HISTORY LEAK IS NOT AVAILABLE TO A LANE
+
+Attempted `Fri Aug 14 10:41:01 PM UTC 2026` under an explicit ruling from fm-orchestrator to rewrite
+the affected commits.
+
+    22:41:01Z  git tag -f pre-rewrite-boundary HEAD    -> OK, 4f338cf1
+    22:41:xx   git filter-branch -f --tree-filter ...  -> DENIED at the harness policy layer
+    22:41:44Z  verified: HEAD 4f338cf1, tree clean, refs/original EMPTY — NO rewrite occurred
+
+**`git filter-branch` is refused for the same reason `git push` is.** Nothing partial happened; the
+branch is byte-for-byte unchanged.
+
+> **So "clean the commits" is not a remedy any lane can apply. It is a HUMAN action.** A lane that
+> finds a guarded term in its own history can **detect** it, **stop it spreading** (fix forward,
+> verify the worktree, refuse to push), and **report** it. **It cannot remove it.**
+
+**Any guideline instructing a lane to clean its history is instructing it to do something the
+harness forbids** — and a lane that does not check first will report success from a command that
+never ran. *The same shape as every other defect in this document, arriving one last time in the
+remedy for the document's own subject.*
+
+**The fix is proven and hand-over-ready**, which is the useful part: the filter, its `sed` script
+(generated from the canonical file, so the term is never typed), and the acceptance checks all ran
+green on a throwaway clone — `git diff` **EMPTY**, messages **CLEAN 12/12**, trees **0 dirty (was
+30 across 24)**, and the identical loop on un-rewritten history returning **30**, which is what makes
+the zero mean anything.
+
+**Standing gate on this lane: the branch must not be pushed as-is.** The `pre-rewrite-boundary` tag
+is held at `4f338cf1` and neither it nor the reflog will be expired without an explicit instruction.
+
 ### 3. Commit ancestry — the hazard was real to raise and did not materialise
 
 fm-meshctl-2's point that worktrees share one object store, so **"a rule about your branch is not a
