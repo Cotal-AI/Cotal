@@ -131,11 +131,49 @@ echo "$ROW" | grep -q '✓'; [ $? -ne 0 ]; ck "R7c unattributable-row-carries-no
 echo "$ROW" | grep -q 'action recommended'
 ck "R11 the capture still includes the WRAPPED continuation line (INVERSE CONTROL for R10)" $?
 
+# ---- UNKNOWN: the kernel answers kill(2) with neither success nor ESRCH nor EPERM ---------------
+# The fifth state cannot be reached by any pidfile content — `parsePid` rejects anything outside
+# 1..0x7fffffff, so an out-of-range pid renders `unattributable`. It needs KERNEL POLICY. The helper
+# installs a seccomp filter returning EIO for SYS_kill only and then execs the CLI, so the branch is
+# driven the way an LSM or sandbox policy would drive it in production, not by interposition.
+# The preregistered matrix claimed all five states; without this arm four were exercised and the
+# fifth was asserted by prose. Found in review.
+UNKNOWN_BIN="$REPO/.lane/unknown-arm/kill-eio"
+if [ ! -x "$UNKNOWN_BIN" ]; then
+  ( cd "$REPO/.lane/unknown-arm" && cc -O2 -o kill-eio kill-eio.c ) >/dev/null 2>&1
+fi
+if [ -x "$UNKNOWN_BIN" ]; then
+  # CONTROL FIRST: prove the filter is actually in force in THIS environment. Without it, an
+  # `unknown` row could be produced by something else entirely and the arm would credit seccomp.
+  KEIO=$("$UNKNOWN_BIN" "$NODE" -e 'try{process.kill(process.pid,0);console.log("NONE")}catch(e){console.log(e.code)}' 2>/dev/null)
+  [ "$KEIO" = "EIO" ]; ck "R12-control the seccomp filter makes kill(2) return EIO (got: ${KEIO:-<nothing>})" $?
+  KNORM=$("$NODE" -e 'try{process.kill(process.pid,0);console.log("NONE")}catch(e){console.log(e.code)}' 2>/dev/null)
+  [ "$KNORM" = "NONE" ]; ck "R12-inverse without the filter kill(2) SUCCEEDS (got: ${KNORM:-<nothing>})" $?
+
+  echo 1 > "$PIDFILE"    # a pid that certainly exists; the filter decides the answer, not the pid
+  ROW=$( ( cd "$PROJ" || exit 91
+    unset COTAL_SERVERS COTAL_SERVER COTAL_CREDS COTAL_SPACE COTAL_NAME
+    HOME="$HOME_D" COTAL_HOME="$HOME_D" XDG_CONFIG_HOME="$CFG_D" COTAL_SKIP_ASSIST=1 \
+      timeout 240 "$UNKNOWN_BIN" "$NODE" "$TSX" "$CLI" setup 2>&1 ) | sed 's/\x1b\[[0-9;]*m//g' \
+    | awk '/ manager /{f=1} f{ if ($0 ~ /^│[[:space:]]*│[[:space:]]*$/) exit; print }' \
+    | tr '\n' ' ' | sed 's/│//g; s/  */ /g' )
+  echo "    row| $ROW"
+  rows_seen=$((rows_seen+1))
+  echo "$ROW" | grep -q 'cannot establish'; ck "R12 unknown-kernel-answer says cannot establish" $?
+  echo "$ROW" | grep -q 'neither running nor no-such-process'; ck "R12a unknown names WHICH condition failed (not a bare 'unknown')" $?
+  echo "$ROW" | grep -q 'start:'; [ $? -ne 0 ]; ck "R12b unknown offers NO start hint (a start here is the double-launch)" $?
+  echo "$ROW" | grep -q '✓'; [ $? -ne 0 ]; ck "R12c unknown carries no green tick" $?
+  echo "$ROW" | grep -q 'does not hold a pid'; [ $? -ne 0 ]
+  ck "R12d unknown is NOT rendered as unattributable (the two conditions stay distinct)" $?
+else
+  fail=$((fail+1)); echo "  FAIL  R12 the unknown arm could not be built — NOT a pass, the state is UNMEASURED"
+fi
+
 # ---- cardinality: every state above actually produced a capture ---------------------------------
 # Guards what this refactor could break: if an arm stopped calling `capture`, its R0 cell would simply
 # vanish and the suite would still print all-green. The count is checked here BECAUSE each state is
 # asserted individually above; on its own a count would be the weak assertion this lane keeps refusing.
-[ "$rows_seen" -eq 4 ]; ck "R0-count all 4 rendered states were captured (saw $rows_seen)" $?
+[ "$rows_seen" -eq 5 ]; ck "R0-count all 5 rendered states were captured (saw $rows_seen)" $?
 
 # ---- HERMETICITY: the operator's real home was not touched --------------------------------------
 # SENSITIVITY CONTROL FIRST. Without it, `witness` returning the same hash twice is equally
