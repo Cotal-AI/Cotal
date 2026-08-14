@@ -340,7 +340,16 @@ export function fanoutDurableConfig(
  *  see that, because every field we can read comes from the config that DID get updated. Closing it needs
  *  either a behavioural proof that records actually age out (see `presence-ttl-expiry-open.smoke.ts`,
  *  which proves enforcement on a healthy server) or an upstream fix that propagates the store error.
- *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement. */
+ *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement.
+ *
+ *  CONSEQUENCE OF READING FIRST, which follows from the same split and is worth naming because the
+ *  skip is deliberate: once `STREAM.INFO` reports the intended `max_age`, later reconciles see no
+ *  drift and issue no update, so a bucket left unenforced by a metadata-write fault is not retried
+ *  for as long as that server process lives. It is not lost, though — the persisted metadata is the
+ *  ground truth, so a restart makes `INFO` report the old value again and the next reconcile repairs
+ *  it. The read-first skip is still right (it keeps a healthy repeat `cotal up` to reads and no
+ *  writes); this is the case where it defers a repair rather than dropping one. Reproduced live
+ *  against 2.12.1 during review — see the tracking issue. */
 export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<TtlReconciled | undefined> {
   const wantNs = nanos(ttlMs);
   const info = await jsm.streams.info(streamName);
