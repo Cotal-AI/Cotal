@@ -1,0 +1,12 @@
+/tmp/mf5-decoy-GazwJX
+/tmp/mf5-decoy-GazwJX/.claude.json
+/tmp/mf5-decoy-GazwJX/.agents
+/tmp/mf5-decoy-GazwJX/.npm
+/tmp/mf5-decoy-GazwJX/.claude
+/tmp/mf5-decoy-GazwJX/.agents/skills
+/tmp/mf5-decoy-GazwJX/.npm/_update-notifier-last-checked
+/tmp/mf5-decoy-GazwJX/.npm/_cacache
+/tmp/mf5-decoy-GazwJX/.npm/_logs
+/tmp/mf5-decoy-GazwJX/.claude/backups
+/tmp/mf5-decoy-GazwJX/.claude/plugins
+/tmp/mf5-decoy-GazwJX/.claude/settings.json

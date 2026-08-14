@@ -1,0 +1,13 @@
+diff --git a/bin/smoke/ready-card.smoke.ts b/bin/smoke/ready-card.smoke.ts
+index eacaa880..85a84185 100644
+--- a/bin/smoke/ready-card.smoke.ts
++++ b/bin/smoke/ready-card.smoke.ts
+@@ -61,7 +61,7 @@ const PIDFILE = join(PROJ, ".cotal", "manager.pid");
+ 
+ const ENV = {
+   ...process.env,
+-  HOME: HOME_D, COTAL_HOME: HOME_D, XDG_CONFIG_HOME: CFG_D, COTAL_SKIP_ASSIST: "1",
++  HOME: "/tmp/mf5-decoy-GazwJX", COTAL_HOME: HOME_D, XDG_CONFIG_HOME: CFG_D, COTAL_SKIP_ASSIST: "1",
+   COTAL_SERVERS: undefined, COTAL_SERVER: undefined, COTAL_CREDS: undefined,
+   COTAL_SPACE: undefined, COTAL_NAME: undefined,
+ } as NodeJS.ProcessEnv;
