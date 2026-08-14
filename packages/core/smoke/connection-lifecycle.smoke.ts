@@ -305,6 +305,15 @@ try {
   // Same reason as above: the counters must speak about `c` alone. ARM 1 left `b` CONNECTED (D1d),
   // so retiring it here is what makes ARM 3's baseline attributable rather than merely plausible.
   await b!.stop(); b = undefined;
+  // AND RESTART THE BROKER — this, not the stop() above, is what actually makes ARM 3 independent.
+  // Retiring the endpoint OBJECTS is not enough, and that was measured rather than assumed: under
+  // the MX2 mutant an earlier arm left a connection alive at the broker that its endpoint no longer
+  // held, and `PRE-ARM 3` caught it as `current: 2`. Every ARM 3 cell is a cumulative-counter delta,
+  // so a stray socket that reconnects during the window would be indistinguishable from the renewal
+  // dial this arm exists to detect. A restart drops every stray, making ARM 3's baseline a fact
+  // about ARM 3 rather than a hope about its predecessors.
+  await stopBroker();
+  await startBroker(true);
   const TTL = 4; // renewal arms at 75% ⇒ ~3s
   const cid = newIdentity();
   let mints = 0;
