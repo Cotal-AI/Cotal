@@ -67,7 +67,7 @@ for (const host of LIVE_HOSTS) {
     process.exit(1);
   }
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(COTAL_SERVER|NATS_URL|COTAL_BROKER)$/.test(k) && typeof v === "string" && v.includes(host)) {
+    if (/^(COTAL_SERVER|COTAL_SERVERS|NATS_URL|COTAL_BROKER)$/.test(k) && typeof v === "string" && v.includes(host)) {
       console.error(`✗ REFUSING TO RUN: ${k}="${v}" names the live host "${host}". Ephemeral brokers from scratch dirs only.`);
       process.exit(1);
     }
