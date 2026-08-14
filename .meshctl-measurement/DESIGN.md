@@ -43,8 +43,30 @@ paragraph bundled two different concerns. Only the second survives:
 - ~~**(a) the agent loses an interval it cannot recover**~~ — **refuted, above.**
 - **(b) channels that FAIL to close stay open on the abandoned mesh**, accruing deliveries for an
   agent that is never coming back. **This is a leak on the SOURCE, not a gap for the agent, and no
-  amount of re-joining fixes it because the agent is gone.** No probe on this lane touches it. **This
-  alone is why re-target is deferred.**
+  amount of re-joining fixes it because the agent is gone. This alone is why re-target is deferred.**
+
+  > **MEASURED AND CONFIRMED** — `meshctl-72b-leak.smoke.ts` @ `c7359c37`, 5/5. Durable-join, abandon
+  > the agent, let its presence TTL lapse at the broker: **B1 nothing closes the membership** (no
+  > reaper, no lease expiry, no presence-driven eviction), and **B2 the delivery stream grew by 5 for
+  > 5 posts** with the member gone. **C2 is what carries it:** after an explicit `durableLeave` the
+  > same five posts grew it by **0**, so the growth is attributable to the open membership rather
+  > than to messages having been published. Refutation conditions were set before the run and the
+  > bias ran toward finding a leak; neither fired.
+  >
+  > **THE COMPLICATION, recorded because it cuts against the reading it supports.** The abandonment
+  > in that probe is an ordinary `stop()`, **not** a re-target — so **this leak class already exists
+  > on main for any agent that never comes back** (a crash, a despawn, a container that went away).
+  > Re-target does not *create* it. Two honest readings follow, and choosing between them is a scope
+  > judgement rather than a measurement:
+  > - re-target is **not uniquely blocked** by (b), since the shipped scope already lives with it; or
+  > - re-target **turns an exceptional failure into a designed one** — today the leak happens when
+  >   something goes wrong; a re-target verb makes it the ordinary outcome of a supported operation.
+  >   **A leak you ship on purpose is a different object from one you tolerate as a fault**, even
+  >   when the mechanism is identical.
+  >
+  > Separately and outliving this lane's scope question: **an abandoned durable membership accrues
+  > forever with nothing to reap it.** That is a standing property of the delivery plane, not caused
+  > by anything built here, and it needs an owner.
 
 Re-target returns as a follow-on once a lifecycle-level close-and-fence primitive exists. The split
 costs the shipped scope nothing: disconnect→reconnect never depended on membership closure — it
