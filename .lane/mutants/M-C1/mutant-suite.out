@@ -1,0 +1,54 @@
+
+manager-claim — the six-row decision table
+
+  ✓ ROW1: an attributed status reply claims `serving`
+  ✓ ROW1: `serving` is the only claim that sets serving=true
+  ✓ ROW1: the serving detail carries the ATTRIBUTION (which instance answered)
+  ✓ ROW1: the serving detail carries the round trip that produced it
+  ✓ ROW1: uptime is attributed to the RESPONDER's clock, not restated as a local time
+  ✓ ROW1: an answering manager is serving even with NO local pid record
+  ✓ ROW2: a live local process with no reply is `wedged`, NOT serving
+  ✓ ROW2: wedged is not green
+  ✓ ROW2: wedged offers NO start hint — a second manager would contend with the live one
+  ✓ ROW2: wedged is NOT collapsed into `absent`
+  ✓ ROW3: broker unreachable with local=alive is `cannot-establish`
+  ✓ ROW3: broker unreachable with local=dead is `cannot-establish`
+  ✓ ROW3: broker unreachable with local=unknown is `cannot-establish`
+  ✓ ROW3: broker unreachable with local=absent is `cannot-establish`
+  ✓ ROW3: broker unreachable with local=unattributable is `cannot-establish`
+  ✓ ROW3: an unreachable broker never earns a start hint, even with no local process
+  ✓ ROW3: the detail says the BROKER was unreachable, not that the manager is down
+  ✓ ROW4: a refusal claims `refused`
+  ✓ ROW4: a refusal is NOT absence
+  ✓ ROW4: a refusal earns no start hint — something is serving
+  ✓ ROW5: local `unknown` with no reply is `cannot-establish`
+  ✓ ROW5: local `unattributable` with no reply is `cannot-establish`
+  ✓ ROW5: neither earns a start hint — the record may front a process nobody can identify
+  ✓ ROW5: the two are told apart by their detail, not collapsed
+  ✓ ROW6: dead local + no reply is `absent`
+  ✓ ROW6: absent local + no reply is `absent`
+  ✓ ROW6: THIS is where the start hint is earned
+  ✗ FAIL: PIN: a reply from another instance is `misattributed`
+  ✓ PIN: a sibling's affirmative reply is NOT serving
+  ✗ FAIL: PIN: it is not absence either, so no start hint over a live sibling
+  ✗ FAIL: PIN: the detail names BOTH ids so an operator can see the mismatch
+  ✓ no-auth is `cannot-establish`, not `absent` — nothing was asked
+  ✓ no-auth earns NO start hint
+  ✓ malformed-reply is `cannot-establish`, not serving
+  ✓ no-identity with no local process IS absent (nothing recorded, nothing answered)
+  ✓ no-identity with a LIVE local process is not absent — a process exists we cannot address
+  ✓ MATRIX: every combination produces a claim (40 combinations)
+  ✓ PROPERTY: serving=true ONLY when the health read was `serving`
+  ✗ FAIL: PROPERTY: a start hint is offered ONLY when nothing answered AND no local process exists
+  ✓ PROPERTY: nothing that is serving also offers a start hint
+  ✓ PROPERTY: every claim carries a non-empty detail — no bare condition names
+  ✓ INVERSE: the start hint IS reachable (else the property above passes by never granting it)
+  ✓ INVERSE: `serving` IS reachable
+  ✓ REACHABLE: some combination produces `serving`
+  ✓ REACHABLE: some combination produces `wedged`
+  ✓ REACHABLE: some combination produces `absent`
+  ✓ REACHABLE: some combination produces `refused`
+  ✗ FAIL: REACHABLE: some combination produces `misattributed`
+  ✓ REACHABLE: some combination produces `cannot-establish`
+
+manager-claim: 44 passed, 5 failed

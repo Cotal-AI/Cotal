@@ -1,0 +1,14 @@
+[2mbaseline: pnpm smoke:manager-claim[0m
+[32mbaseline green[0m (49 progress marks)
+
+[2m────────────────────────────────────────────────────────[0m
+implementations/cli/src/lib/manager-health.ts:   if (health.condition === "unattributed")⏎    r
+[2m  mutated 1× · running: pnpm smoke:manager-claim[0m
+
+[2m════════════════════════════════════════════════════════[0m
+[32mKILLED      [0m implementations/cli/src/lib/manager-health.ts:   if (health.condition === "unattributed")⏎    r
+  [2mred, and named: PIN: a reply from another instance is `misattributed` · 44 marks (baseline 49)[0m
+
+[32mAll 1 mutation(s) killed. The suite discriminates.[0m
+[2mScope: this proves the suite DEPENDS on the mutated code. It does not prove a real entry
+point reaches that code — if the test builds its inputs by hand, prove that separately.[0m
