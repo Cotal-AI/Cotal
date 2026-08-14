@@ -25,18 +25,35 @@ const DELIVERY_AWARE_MARKER = () => cotalPath("manager.delivery-aware");
  *  (`SECCOMP_RET_ERRNO`) or an LSM policy can return an arbitrary errno for `kill(pid, 0)` without
  *  executing it at all, and libuv preserves it. Proven with a live seccomp BPF filter, not by
  *  interposition. So the caller has to SEE the third state and refuse. */
-export function managerLiveness(probe: LivenessProbe = probeLiveness): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
+export function managerLiveness(probe: LivenessProbe = probeLiveness): ManagerLiveness {
+  return managerLivenessSnapshot(probe).state;
+}
+
+export type ManagerLiveness = "alive" | "dead" | "unknown" | "absent" | "unattributable";
+
+/** The liveness state TOGETHER WITH the pid it was derived from, read ONCE.
+ *
+ *  A caller that wants to display the pid must not read the pidfile a second time. Two reads can
+ *  straddle a rewrite (a manager restarting, an `ensure` path replacing the record) and the caller
+ *  then prints "pid A" beside a state established by probing pid B — **a fact rendered without the
+ *  observation that produced it, which is the exact defect this whole surface exists to catch.**
+ *  Found in review of the ready-card repair, in the repair itself.
+ *
+ *  This does not make the read atomic against a concurrent writer; nothing here can. It makes the
+ *  reported pid and the reported state come from THE SAME BYTES, which is the only claim the caller
+ *  is entitled to make: *this is the pid I probed*, not *this is the pid on disk now*. */
+export function managerLivenessSnapshot(probe: LivenessProbe = probeLiveness): { state: ManagerLiveness; pid: number | undefined; raw: string } {
   const p = PID_PATH();
-  if (!existsSync(p)) return "absent";
+  if (!existsSync(p)) return { state: "absent", pid: undefined, raw: "" };
   const raw = readFileSync(p, "utf8").trim();
-  if (raw === "") return "absent"; // a pre-protocol husk: nothing is behind it
+  if (raw === "") return { state: "absent", pid: undefined, raw }; // a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
   // ensure paths OVERWRITE it and launch a replacement, which is the same defect as deleting it:
   // that record may front a live process nobody can identify. `absent` means no pidfile (or an
   // empty husk); corrupt content is its own state and every action path must refuse on it.
-  if (pid === undefined) return "unattributable";
-  return probe(pid);
+  if (pid === undefined) return { state: "unattributable", pid: undefined, raw };
+  return { state: probe(pid), pid, raw };
 }
 
 /** True only if the manager is PROVABLY running. `unknown` is not up, and callers that would ACT on

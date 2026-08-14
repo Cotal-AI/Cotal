@@ -18,6 +18,31 @@ trap 'rc=$?; echo "$rc" > "$ART/finding5-repair.rc"; echo "trap $(date -u +%H:%M
 pass=0; fail=0
 ck() { if [ "$2" -eq 0 ]; then pass=$((pass+1)); echo "  PASS  $1"; else fail=$((fail+1)); echo "  FAIL  $1"; fi; }
 
+# R0 is asserted HERE, on EVERY capture, not once at the end. The previous version overwrote $ROW in
+# each arm and tested `[ -n "$ROW" ]` after the last one, so it proved only that the FINAL capture was
+# non-empty while its name claimed "the manager row is never omitted" across all states. That is
+# quantifier vacuity — not an empty set, but one state standing in for every state. Found in review.
+rows_seen=0
+capture() { ROW=$(card); echo "    row| $ROW"
+  rows_seen=$((rows_seen+1))
+  [ -n "$ROW" ]; ck "R0[$1] the manager row is present in the '$1' state (silence is the failure mode, not a pass)" $?
+  # OVER-CAPTURE BOUND. The previous extractor was `grep -A3` and pulled in the card's hint block.
+  # For the ABSENCE cells that direction is safe (a stray match reddens), but R2/R3/R7a assert
+  # PRESENCE — so neighbouring text matching one of those phrases would be a FALSE PASS. Raised in
+  # review as brittleness; it is worse than brittle for three of the cells.
+  echo "$ROW" | grep -q 'start the mesh'; [ $? -ne 0 ]
+  ck "R10[$1] the capture stops at the row and does not swallow the hint block" $?; }
+
+# HERMETICITY. Captured BEFORE anything overrides HOME, so this is the operator's real home.
+# Earned: an earlier version of this harness set COTAL_HOME/XDG_CONFIG_HOME but NOT HOME, and a real
+# run wrote `→ wrote cross-vendor skills: /home/david/.agents/skills` — a scratch test mutating the
+# operator's actual home. Found in review, then confirmed against my own runs by file mtime.
+# Setting HOME is the fix; this witness is the CELL, because an env var is a claim and a witness is
+# a measurement.
+HOST_HOME="$HOME"
+witness() { find "$1" -printf '%T@ %s %p\n' 2>/dev/null | sort | sha256sum | cut -d' ' -f1; }
+W_BEFORE=$(witness "$HOST_HOME/.agents")
+
 NODE=/home/david/.nvm/versions/node/v22.23.2/bin/node
 REPO=/home/david/Cotal-wt-fm-health
 TSX="$REPO/node_modules/tsx/dist/cli.mjs"; CLI="$REPO/bin/cotal.ts"
@@ -44,9 +69,10 @@ cleanup() {
 # on line three. A cell that reads only part of the surface measures only part of the surface.
 card() { ( cd "$PROJ" || exit 91
   unset COTAL_SERVERS COTAL_SERVER COTAL_CREDS COTAL_SPACE COTAL_NAME
-  COTAL_HOME="$HOME_D" XDG_CONFIG_HOME="$CFG_D" COTAL_SKIP_ASSIST=1 \
+  HOME="$HOME_D" COTAL_HOME="$HOME_D" XDG_CONFIG_HOME="$CFG_D" COTAL_SKIP_ASSIST=1 \
     timeout 240 "$NODE" "$TSX" "$CLI" setup 2>&1 ) | sed 's/\x1b\[[0-9;]*m//g' \
-  | grep -aA3 " manager " | tr '\n' ' ' | sed 's/│//g; s/  */ /g'; }
+  | awk '/ manager /{f=1} f{ if ($0 ~ /^│[[:space:]]*│[[:space:]]*$/) exit; print }' \
+  | tr '\n' ' ' | sed 's/│//g; s/  */ /g'; }
 
 echo "finding5 scope-1 repair cells  $(date -u +%H:%M:%SZ)"
 # SECOND FIRST-ACTION, beside the broker assertion: REFUSE a stale build. This suite drives the CLI
@@ -64,7 +90,7 @@ case "$BC" in
 esac
 # onboard once so every later run is a fast repeat that renders the card
 ( cd "$PROJ"; unset COTAL_SERVERS COTAL_SERVER COTAL_CREDS COTAL_SPACE COTAL_NAME
-  COTAL_HOME="$HOME_D" XDG_CONFIG_HOME="$CFG_D" COTAL_SKIP_ASSIST=1 \
+  HOME="$HOME_D" COTAL_HOME="$HOME_D" XDG_CONFIG_HOME="$CFG_D" COTAL_SKIP_ASSIST=1 \
   timeout 240 "$NODE" "$TSX" "$CLI" setup --yes ) >/dev/null 2>&1
 
 # ---- ALIVE: an unrelated live pid (the defect-B state) ------------------------------------------
@@ -72,7 +98,7 @@ setsid sleep 900 & SLEEP_PID=$!
 sleep 0.3
 echo "$SLEEP_PID" > "$PIDFILE"
 echo "planted live non-manager pid $SLEEP_PID"
-ROW=$(card); echo "    row| $ROW"
+capture alive
 echo "$ROW" | grep -q '✓'; [ $? -ne 0 ]; ck "R4 unrelated-live-pid-never-claimed-running (no ✓ on the manager row)" $?
 echo "$ROW" | grep -q "$SLEEP_PID" && echo "$ROW" | grep -q 'manager.pid'; ck "R2 alive-row-names-its-source (pid AND the pidfile path)" $?
 echo "$ROW" | grep -q 'serving not checked'; ck "R3 alive-row-says-serving-not-checked" $?
@@ -82,25 +108,48 @@ echo "$ROW" | grep -q 'start:'; [ $? -ne 0 ]; ck "R2b alive-row-offers-no-start-
 kill -9 "$SLEEP_PID" 2>/dev/null
 i=0; while kill -0 "$SLEEP_PID" 2>/dev/null && [ $i -lt 25 ]; do sleep 0.2; i=$((i+1)); done
 kill -0 "$SLEEP_PID" 2>/dev/null && { echo "REFUSING: planted pid still alive"; exit 93; }
-ROW=$(card); echo "    row| $ROW"
+capture dead
 echo "$ROW" | grep -q 'not running' && echo "$ROW" | grep -q 'start:'
 ck "R5 dead-pid-still-says-not-running-AND-still-offers-the-start-hint (INVERSE CONTROL)" $?
 
 # ---- ABSENT: no pidfile at all ------------------------------------------------------------------
 rm -f "$PIDFILE"
-ROW=$(card); echo "    row| $ROW"
+capture absent
 echo "$ROW" | grep -q 'not running' && echo "$ROW" | grep -q 'start:'
 ck "R6 absent-pidfile-still-says-not-running-AND-still-offers-the-start-hint (INVERSE CONTROL)" $?
 
 # ---- UNATTRIBUTABLE: the file holds something that is not a pid ---------------------------------
 printf 'not-a-pid-at-all\n' > "$PIDFILE"
-ROW=$(card); echo "    row| $ROW"
+capture unattributable
 echo "$ROW" | grep -q 'cannot establish'; ck "R7a unattributable-pidfile-says-cannot-establish" $?
 echo "$ROW" | grep -q 'start:'; [ $? -ne 0 ]; ck "R7 unattributable-pidfile-offers-NO-start-hint" $?
 echo "$ROW" | grep -q '✓'; [ $? -ne 0 ]; ck "R7c unattributable-row-carries-no-green-tick" $?
+# INVERSE CONTROL FOR R10: bounding the capture must not truncate it. This row WRAPS — the card
+# breaks it as "… · no" / "action recommended" — so a phrase that exists only on the continuation
+# line proves the extractor still takes the whole logical row. Without this, R10 could be satisfied
+# by an extractor that stopped at the first line and R7a would still pass on line one.
+echo "$ROW" | grep -q 'action recommended'
+ck "R11 the capture still includes the WRAPPED continuation line (INVERSE CONTROL for R10)" $?
 
-# ---- the row is never SILENT: every state above rendered a manager row --------------------------
-[ -n "$ROW" ]; ck "R0 the manager row is never omitted (silence is the failure mode, not a pass)" $?
+# ---- cardinality: every state above actually produced a capture ---------------------------------
+# Guards what this refactor could break: if an arm stopped calling `capture`, its R0 cell would simply
+# vanish and the suite would still print all-green. The count is checked here BECAUSE each state is
+# asserted individually above; on its own a count would be the weak assertion this lane keeps refusing.
+[ "$rows_seen" -eq 4 ]; ck "R0-count all 4 rendered states were captured (saw $rows_seen)" $?
+
+# ---- HERMETICITY: the operator's real home was not touched --------------------------------------
+# SENSITIVITY CONTROL FIRST. Without it, `witness` returning the same hash twice is equally
+# consistent with "nothing changed" and "witness cannot see changes at all" — and over a directory
+# that does not exist it would return the hash of empty input in BOTH reads and pass vacuously.
+CTRL_BEFORE=$(witness "$HOME_D")
+printf 'sensitivity\n' > "$HOME_D/.witness-probe"
+CTRL_AFTER=$(witness "$HOME_D")
+[ "$CTRL_BEFORE" != "$CTRL_AFTER" ]
+ck "R9-control the witness DETECTS a change (else R9 is vacuous, not clean)" $?
+
+W_AFTER=$(witness "$HOST_HOME/.agents")
+[ "$W_BEFORE" = "$W_AFTER" ]
+ck "R9 hermetic: the operator's real ~/.agents was NOT modified by this run" $?
 
 echo ""
 echo "repair cells: $pass passed, $fail failed"

@@ -14,7 +14,7 @@ import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
-import { MANAGER_PID_PATH, managerLiveness } from "../lib/manager-proc.js";
+import { managerLivenessSnapshot } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { cotalPath } from "../lib/paths.js";
 
@@ -362,13 +362,16 @@ function webInstalled(): boolean {
  *  as the age of the observation, which is the conflation this surface exists to avoid. */
 function managerRow(cmd: string): { marker: string; text: string } {
   const start = `start: ${cmd} up, or: ${cmd} supervise`;
-  const path = MANAGER_PID_PATH();
   // Named relative, not absolute. The source must be unambiguous, but this is a one-glance card and
   // an absolute path wraps it across three lines — measured, with a real scratch root. `.cotal/` is
   // the name the operator already knows, and it is unambiguous because the card is rooted here.
   const src = ".cotal/manager.pid";
-  const pid = existsSync(path) ? readFileSync(path, "utf8").trim() : "";
-  switch (managerLiveness()) {
+  // ONE read. Reading the pid separately from the probe lets this row print a pid it did not probe
+  // when the record is rewritten between the two reads — a fact rendered without the observation
+  // that produced it. That is the defect this card exists to catch, and the first version of this
+  // repair contained it. Found in review.
+  const { state, pid } = managerLivenessSnapshot();
+  switch (state) {
     case "alive":
       return { marker: dim("·"), text: `local process present (pid ${pid} · ${src}) · serving not checked` };
     case "dead":
