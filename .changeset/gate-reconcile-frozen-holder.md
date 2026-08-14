@@ -33,3 +33,23 @@ Every refusal names its condition (`holder-alive`, `holder-unknown`, `liveness-u
 unknowability rather than death, the probe is a precondition on top of the barrier's own verified
 eviction rather than a replacement for it, and there is no force flag and no path that discards
 gate state.
+
+Two defects in the shared `$SYS` scan surface were found while proving this and are fixed here,
+because the guarded command is only as good as the observation it stands on.
+
+A paginated CONNZ sweep could read a **lost later page as sweep-complete**. The first page comes
+back full with more promised, the next round is silent or answers with an empty page while its own
+total still says there is more, and the loop treated that as the end of the data. Since "complete
+sweep, principal not found" is the definition of verified-gone, a connection living on the page that
+was never delivered read as absent — so verified eviction could report gone for a principal that was
+alive. Both the read-only observation and the scan/kick/re-scan primitive had the same shape, which
+also meant the two of them were not the independent checks they looked like. A sweep now tracks
+which servers still owe it a page and fails closed when one stops delivering; a sweep that genuinely
+finishes across several pages still concludes gone, so nothing wedges.
+
+The delivery daemon's `$SYS` sweeps were **not bound to the account it serves**. All three
+delivery-admin executors resolved their scan account from the working directory at request time, and
+the detached daemon inherits its launcher's directory for life — so a daemon started from a tree
+that resolves a different mesh root would sweep a foreign account and answer a confident, wrong
+"gone". The root is now pinned once at start, and the account read from disk is cross-checked
+against the account the daemon's own credential authenticates as.
