@@ -27,8 +27,10 @@ of the seat. What is missing is narrower and, I think, more interesting:
 2. **There is no way to ask a question about a DESTINATION.** A seat can read a list; it cannot ask
    *"can I deliver to `review.fm-x`?"* and get an answer it can branch on.
 3. **The failure, when it comes, is a transport error and not a named refusal.** `Couldn't send:
-   <permissions violation>` — the string is measured (§0a); the *indistinguishable from a broker
-   outage* half is reasoning, since I never drove the outage arm to compare against — and
+   <permissions violation>` — the string is measured (§0a). ~~*and is indistinguishable from a
+   broker outage*~~ **STRUCK — driven and REFUTED, §0d: the outage arm returns `Couldn't send:
+   timeout`, which a caller can trivially tell apart. What survives is narrower: neither string
+   names a condition the caller can act on.** And
    this lane has already shipped a fix for a refusal that named the wrong condition, on exactly that
    argument.
 
@@ -77,13 +79,48 @@ So the defect is sharper than "the refusal is unnamed":
 2. **The caller's version leaks internals and names nothing actionable.** It quotes a wire subject
    containing the endpoint's lifecycle UID; it never says *`#secret`*, never says *publish ACL*, and
    cannot be branched on.
-3. **It remains indistinguishable from a broker outage at the call site**, which is the original
-   claim in row 3 — surviving the measurement intact, just for a narrower reason than "silence."
+3. ~~**It remains indistinguishable from a broker outage at the call site.**~~ ⚠️ **STRUCK — I drove
+   it and I was wrong. See §0d.**
 
-**Held as measured for `cotal_send` on a chat channel only.** Not measured: the DM path, the anycast
-path, or a publish denied while the broker is genuinely unreachable (which is the arm that would
-prove the two are *actually* indistinguishable rather than merely looking alike — the string I would
-need to compare against is not one I have driven).
+**Held as measured for `cotal_send` on a chat channel only.** Not measured: the DM path or the
+anycast path.
+
+## 0d. ⚠️ I DROVE MY OWN CENTRAL CLAIM AND IT IS REFUTED
+
+Driven `Fri Aug 14 10:24:53 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
+`8c9c57f3`, under an exclusivity ack, by `.meshctl-measurement/meshctl-m8-outage.smoke.ts` —
+**committed unrun beforehand with four outcomes pre-declared**, so no result could be back-fitted to
+the sentence it was testing. **5 passed / 0 failed / 0 hung.**
+
+Same seat, same in-ACL channel, only the broker changed:
+
+    DENIAL : Couldn't send: Permissions Violation for Publish to "cotal.<space>.chat.local.<uid>.secret"
+    OUTAGE : Couldn't send: timeout
+
+> **Pre-declared outcome 1. A caller can trivially tell these apart. The claim is REFUTED and the
+> sentence is struck from every place it appeared, not softened in any of them.**
+
+**The two controls are what make this mean anything.** The seat **did** publish in-ACL while the
+broker was up — without that, the outage failure is equally explained by *"this seat could never
+publish"*, and the comparison would have been between two denials. And the broker was **asserted
+unreachable** before the outage arm ran, rather than assumed dead from having sent a signal.
+
+**I published the direction I expected to be wrong in before running.** Reading
+`notLiveMsg()` (`endpoint.ts:2535`), which returns `"reconnecting - try again shortly"`, moved my
+prior against my own sentence, and I said so on the channel first. *The observed string was neither
+that one nor the permission text — it was a bare `timeout` — so the pre-registration was right about
+the direction and wrong about the mechanism.*
+
+### What does NOT survive my refutation
+
+Stated explicitly so the sentence is not quietly rescued in narrower clothes:
+
+- **DEAD:** "a caller cannot distinguish a denial from an outage." Simply false.
+- **ALIVE, and it was always the better complaint:** **neither string names a condition the caller
+  can act on.** `Couldn't send: timeout` names a *symptom*, not a cause — it does not say the broker
+  is unreachable, and it offers no next action. The denial text names no channel and no ACL.
+- **ALIVE:** the two-renderings finding (`FINDING-denial-rendering.md`) is untouched by this. It
+  never depended on the two being confusable with each other.
 
 ## 0b. ⚠️ WHY THIS SURVIVED: EVERYONE WHO COULD NOTICE IT HOLDS A GRANT TOO WIDE TO HIT IT
 
@@ -271,12 +308,11 @@ publish grant is the compromise this lane spent the evening proving does not cur
 ## 7. Open, and owed
 
 1. ~~**The row-3 measurement above** — does a route-less `cotal_send` reject or resolve? Blocking.~~
-   **DRIVEN, §0a: it REJECTS** (`isError=true`), so the note's scope holds. **What replaces it as
-   owed is narrower and I am naming it rather than closing the item:** §0a's claim that the refusal
-   is *indistinguishable from a broker outage* is still a code-shaped argument — I have the denial
-   string and I do **not** have the outage string, so I have not actually compared them. Driving a
-   publish against a broker taken down mid-run would settle it. Until then that phrase is reasoning,
-   not measurement, and is marked so where it appears.
+   **DRIVEN, §0a: it REJECTS** (`isError=true`), so the note's scope holds. ~~The follow-on claim
+   that the refusal is *indistinguishable from a broker outage* is still a code-shaped argument and
+   needs the outage string to settle.~~ **ALSO DRIVEN, §0d — and REFUTED. `Couldn't send: timeout`
+   versus a permissions violation: a caller can trivially tell them apart. Both halves of this item
+   are now measured, one confirmed and one killed, and nothing here is owed.**
 2. ~~**Whether `cotal_dm` has the same shape as `cotal_send`.** Not checked.~~ **ANSWERED — by code
    reading, not by driving it, and the answer improves this note's standing rather than extending
    it.** `cotal_dm` (`tool-specs.ts:360-375`) does **not** have `cotal_send`'s shape. It already

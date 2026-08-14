@@ -17,7 +17,8 @@ broken*, which is how this lane first read it.
 ## Scope, stated rather than inherited from a glob
 
 49 trees. Enumerated from `git worktree list` **plus** `~/Cotal-wt-*`, `~/cotal-worktrees/*`,
-`~/[REDACTED-BOUNDARY-TERM]/cotal-wt/*`, `/tmp/*cotal*`, and the principal `~/Cotal`; deduplicated by
+a `cotal-wt/*` tree under the box's secondary projects directory, `/tmp/*cotal*`, and the principal
+`~/Cotal`; deduplicated by
 `readlink -f`; each confirmed to be a real checkout by the presence of `packages/core`. `/tmp/*Cotal*`
 matched nothing and was checked separately rather than assumed.
 
