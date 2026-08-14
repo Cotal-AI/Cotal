@@ -203,13 +203,28 @@ const refusalNaming = (fn: () => unknown, needle: string): string => {
 // ── Code POINTS, not code units: a lone surrogate is not well-formed UTF-16 ────────────────────────
 //    This branch already refuses ill-formed names at the wire; a splitter that manufactured one here
 //    would produce a frame the wire layer is obliged to reject.
+//    SWEPT ACROSS MANY CEILINGS ON PURPOSE, AND THIS IS THE SECOND TIME THIS SUITE HAS BEEN CAUGHT
+//    ASSERTING SOMETHING ITS ARMS COULD NOT DISTINGUISH. The first version pinned ONE ceiling. Under
+//    a code-UNIT slice, whether a surrogate pair is halved depends on the PARITY of the cut index —
+//    an even cut is well-formed by luck. The single ceiling happened to land even, so the broken
+//    implementation produced well-formed output and the mutation SURVIVED a cell named for exactly
+//    that defect. A negative control is only a control if its arms CAN differ. Sweeping consecutive
+//    byte ceilings walks the cut index through both parities, so at least one lands odd and the
+//    difference becomes observable. State the refutation up front: if a code-unit slice ever passes
+//    this loop, the sweep is too narrow and the cell is decoration again.
 {
-  const original = "😀".repeat(2000); // every character is a surrogate PAIR
-  const frames = splitFrames({ ...ID, firstSeq: 0, events: [text("m1", original)], measure, limit: 600 });
-  const cut = (flatten(frames)[0] as unknown as Record<string, unknown>).delta as string;
-  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut);
-  c("truncate:no-lone-surrogate", !lone, JSON.stringify(cut.slice(-4)));
-  c("truncate:surrogate-result-fits", measure(frames[0]!) <= 600);
+  const original = "😀".repeat(2000); // every character is a surrogate PAIR (2 code units)
+  const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  let malformedAt: number | undefined;
+  let overLimitAt: number | undefined;
+  for (let limit = 600; limit < 640; limit++) {
+    const frames = splitFrames({ ...ID, firstSeq: 0, events: [text("m1", original)], measure, limit });
+    const cut = (flatten(frames)[0] as unknown as Record<string, unknown>).delta as string;
+    if (loneSurrogate.test(cut) && malformedAt === undefined) malformedAt = limit;
+    if (measure(frames[0]!) > limit && overLimitAt === undefined) overLimitAt = limit;
+  }
+  c("truncate:no-lone-surrogate", malformedAt === undefined, `first malformed at limit ${malformedAt}`);
+  c("truncate:surrogate-result-fits", overLimitAt === undefined, `first over-limit at ${overLimitAt}`);
 }
 
 // ── An oversized event with NO truncatable field is REFUSED, naming why ────────────────────────────
