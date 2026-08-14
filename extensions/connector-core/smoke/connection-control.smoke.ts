@@ -405,6 +405,21 @@ async function main() {
     armCheck("AUTHED", "E8 an out-of-ACL read is STILL denied after the self-reconnect — the credential came back no wider than it left",
       !seenMsgs.text.includes("PROBE-OUT-OF-ACL"), seenMsgs.text.slice(0, 300));
 
+    // E10 — THE SUBTREE SHAPE, WHICH E8 DOES NOT COVER. `m3-fence` proves the wildcard escalations
+    // are denied AT MINT TIME; nothing re-asked the question AFTER a reconnect, and "one concrete
+    // channel is still denied" does not generalise to "a subtree grab is still denied". A credential
+    // that came back with `team.>` would satisfy E8 and be a total read compromise of that subtree.
+    // Same construction as E8, deliberately: bypass the client gate, publish first, assert delivery.
+    await S.joinChannel("team.>").catch(() => { /* a denied bind is one of the ways this can be refused */ });
+    await sleep(600);
+    const subPost = await obsEp.multicast("PROBE-SUBTREE", { channel: "team.secret" }).catch((e: Error) => e);
+    precondition("AUTHED", "E10-pre the subtree post was actually PUBLISHED, so there is something to withhold",
+      !(subPost instanceof Error) && !!subPost, subPost instanceof Error ? subPost.message : subPost);
+    await sleep(1500);
+    const afterSub = await inboxSpec.run(S, cfgAuthed, { peek: true });
+    armCheck("AUTHED", "E10 a SUBTREE grab outside the ACL is denied after the reconnect too — the return did not widen the credential by shape either",
+      !afterSub.text.includes("PROBE-SUBTREE"), afterSub.text.slice(0, 300));
+
     await S.stop();
     await obsEp.stop();
     await mgrEp.stop();
