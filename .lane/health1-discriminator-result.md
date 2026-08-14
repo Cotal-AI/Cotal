@@ -38,7 +38,7 @@ live agents. They are live-and-empty, not dead.
 |---|---|---|---|
 | R1 | a failing id matches a roster manager id | **NO** — roster at 11:52Z held `local.UATRJAG…`, `local.UBGXP2JT…`, `local.UDJIWHE5…`; neither failing id is among them | (A) survives |
 | R2 | two invocations produce the SAME failing id | **NO** — the two ids differ | (A) survives |
-| R3 | the failing id is the CALLER'S OWN connection id | **YES — by construction, from the source of the exact artifact that produced it** | **(B) IS DEAD** |
+| R3 | the failing id is the CALLER'S OWN connection id | **NOT MET AS PREREGISTERED — see the correction below** | see below |
 | R4 | all distinct and none a manager's | yes, but recorded in advance as too weak to settle anything | not cited as proof |
 
 ### R3, established from the installed artifact's own source
@@ -118,3 +118,76 @@ with no manager, and is where the cell goes.
   `Skills (.agents) 1/1 out of date · cotal setup`). fm-orchestrator measured `cotal setup` to
   perform announced WRITES. A read-only status card routing an operator to a writing command is
   adjacent to HEALTH-2 and is recorded here rather than acted on.
+
+---
+
+# CORRECTION — after independent review by `fmh-rev-health`
+
+Verdict posted on `#review.fm-health` at review-worktree HEAD `cf8075d3`. Three of its four findings
+are ACCEPTED and CHANGE this document. I re-derived each in source before accepting it rather than
+taking the seat at face value. The corrections are made HERE, in place, rather than argued away.
+
+## C1 — R3 was NOT met as preregistered. My table said YES. That was an overclaim.
+
+R3 as registered in `8333f0c5` required the failing id to be matched against the caller's own
+connection id **captured from the same run**, and said in the same commit that it "must be captured
+… and not inferred". I then marked it YES on the strength of a MECHANICAL source trace and recorded
+the empirical arm as unrun in the prose below it.
+
+**Marking a condition met by a different observation than the one registered is exactly the move
+pre-registration exists to prevent**, and putting the caveat in the prose while leaving YES in the
+table does not cure it. The table now reads NOT MET.
+
+What I actually hold is: a mechanical proof, from the installed artifact's own `dist`, that the
+control subject can be built from nothing but the caller's own principal. That is strong evidence
+**for the mechanism** and it is NOT the registered observation.
+
+## C2 — arm 2 does not carry the weight I put on it.
+
+I wrote that arm 2 "refutes (B) independently". The seat is right that it does not, at that weight:
+
+- Arm 2 changed **both the artifact and the rail**, and ran **later**. It shows the three recorded
+  managers answered the CURRENT ep scatter at 11:55Z.
+- It cannot show that the earlier `ctl` request took no split path.
+- **"All three are live" does not exclude an ordinary describe/invoke split BETWEEN LIVE
+  RESPONDERS.** `packages/core/src/endpoint-invoke.ts:311-327` says so in its own comment: the
+  describe and the invoke are separate trips through the same queue and routinely land on different
+  instances in a multi-instance space.
+
+So the split-queue PHENOMENON is not refuted, and I should not have written that it was. My own
+spawn of the review seat then hit exactly that split between two LIVE managers, which is the
+narrower phenomenon surviving in front of me.
+
+## C3 — what survives, and on what evidence
+
+**The narrow diagnosis stands: HEALTH-1 is version skew.** It is carried by the installed-source
+chain plus the directly observed obsolete `ctl` subject in the failure text — **not** by the
+independence claim I made for arm 2. Hypothesis (A) is supported as the mechanism of the printed id.
+
+**The correct scope of the claim:** this discriminator narrows HEALTH-1 away from a split queue as
+ITS cause. It does not refute split queues globally, and I have now observed one live.
+
+## C4 — THE CURRENT TREE HAS THE SAME DISEASE. My "residue" framing was wrong.
+
+I wrote above that in the current tree "that specific text is structurally gone". That is true of
+the text and **false of the defect**, and the seat caught it. Re-derived by me at `cf8075d3`:
+
+- `packages/core/src/endpoint-invoke.ts:311-327` — `describeBound` throws `failed-precondition` when
+  a DIFFERENT live instance wins the second queue trip. **A manager answered.** That is affirmative
+  evidence of liveness.
+- `implementations/cli/src/lib/control.ts:243-245` — `askManagerEp`'s `catch (e)` wraps **every**
+  throw, that one included, into `no manager reachable on the ep rails (…)`.
+
+**So the current CLI can report "no manager reachable" in the moment immediately after a manager
+answered it.** It is a false RED rather than a false green, and it is the same defect: the claim
+does not match the input. An operator is told the control plane is absent when what actually
+happened is that two live managers split a queue.
+
+This is LIVE in our tree, it is squarely this lane's, and it is now a first-class item rather than a
+residue. The design note is amended accordingly.
+
+## What did NOT change
+
+The ordering is sound and the seat confirmed it independently: `8333f0c5` IS an ancestor of
+`cf8075d3`, and I re-ran `git merge-base --is-ancestor` myself rather than accept the report.
+HEALTH-1 remains out of scope as a defect of ours; the skew is the release cut's to fix.
