@@ -27,7 +27,7 @@ import { mkdtempSync, rmSync, writeFileSync, readdirSync, readlinkSync } from "n
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { probeConnect } from "../src/endpoint.js";
+import { isReachable, probeConnect } from "../src/endpoint.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REFUSING = "nats://127.0.0.1:1"; // closed loopback port: answers RST
@@ -153,6 +153,33 @@ try {
       after.sockets - before.sockets === 0, { before: before.sockets, after: after.sockets });
     check(`${label}: no live socket handles left in the loop after ${N} probes`,
       after.handles === 0, { handles: after.handles });
+  }
+
+  // -------------------------------------------------------------------------
+  // isReachable is the OTHER function built to be pointed at addresses that may not answer, so it
+  // has the same risk profile. Its credless branch was always safe — it uses the owned-socket
+  // tcpInfoProbe — but its with-creds branch reaches the same connect() and leaked the same way.
+  // Both branches are asserted: the safe one so a future change cannot quietly route it into the
+  // leaky path, the fixed one because it is the defect. A dummy credential is enough to select the
+  // branch; the address never answers, so cred validity has no bearing on whether a socket is
+  // orphaned. The verdict is `false` either way, which is the point — it was never the wrong
+  // answer, only the wrong resource behaviour.
+  // -------------------------------------------------------------------------
+  console.log("\nisReachable: the same door, both branches");
+  const DUMMY_CREDS = "-----BEGIN NATS USER JWT-----\nnot.a.jwt\n------END NATS USER JWT------\n";
+  for (const [branch, opts] of [
+    ["credless", { timeoutMs: TIMEOUT_MS }],
+    ["with creds", { timeoutMs: TIMEOUT_MS, creds: DUMMY_CREDS }],
+  ] as const) {
+    await settle();
+    const before = census();
+    const out: boolean[] = [];
+    for (let i = 0; i < N; i++) out.push(await isReachable(BLACKHOLE, opts));
+    await settle();
+    const after = census();
+    check(`isReachable (${branch}): a blackholing address is not reachable`, out.every((r) => r === false), out);
+    check(`isReachable (${branch}): socket fds returned to baseline after ${N} calls (leaked 0)`,
+      after.sockets - before.sockets === 0, { before: before.sockets, after: after.sockets });
   }
 
   // -------------------------------------------------------------------------
