@@ -611,6 +611,29 @@ disconnecting itself there closes a socket that was never fenced. **What was wro
 not the gate.** An unqualified rule with an unstated exception is how a grant story stops being true,
 and §5 is the section a human reads to decide what to set up.
 
+**THE REACHABILITY LEG — because severity assigned from a mechanism alone is not severity.**
+The permissive arm exists. The question that decides how much it matters is *which real callers land
+on it, and what can they then do*:
+
+- **On an authed mesh: NOTHING lands on it. [M]** Measured on the 17 live connector sessions running
+  on this box at the time of writing, read from `/proc/<pid>/environ` rather than from config:
+  **every one carries `COTAL_CREDS`**, so every one takes the restrictive arm. Not one is open mode.
+  (Incidentally: none carries `connection` in `COTAL_CAPABILITIES` either — the ones with any
+  capability have `spawn` — so on this mesh **no live session can even see these verbs.**)
+- **The launcher only omits creds for an open mesh. [R]** `manager.ts:3019-3021`: *"In auth mode,
+  mint the agent's creds… Open mesh → no creds."* So a session reaches the permissive arm **exactly
+  when the mesh itself has no auth** — it is not a state an authed mesh can be coaxed into.
+- **And in that world there is no grant to bypass.** Open mode has no credential and no broker ACLs
+  **[M — F7]**, so the connection verbs confer no reach the session did not already have.
+
+**SEVERITY, therefore: LOW, and it is a documentation defect rather than an authority defect.** The
+verbs are ungated precisely where gating them would protect nothing. **The one residual worth naming
+is not authority but SUPERVISION:** in an open mesh an agent can take itself off the mesh without a
+grant, which is the "go dark" capability. **§3 is what bounds it** — the disconnect is announced and
+confirmed before teardown, so a deliberate departure stays distinguishable from a crash. **An
+ungated ability to leave observably is a different object from an ungated ability to leave silently**,
+and only the second would have been a defect worth the name.
+
 **The gate's one genuinely load-bearing term is the `userAuth` one**, and it is worth naming because
 `canSpawn` lacks it: in user mode `creds` is undefined by construction, so a bare `!config.creds`
 test would take the permissive arm and hand the verbs to an ungranted authed session. Spawn survives
