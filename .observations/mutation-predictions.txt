@@ -1,0 +1,28 @@
+# Predictions recorded BEFORE mutating. Named cells, never a count.
+# git status must be clean before each mutation; git is the recovery.
+
+M1 — swallow a denied read into an absence:
+   in assessDeliveryHealth, the catch around readLease returns the `no-lease`
+   refusal instead of `refused`. This is the historical defect shape.
+   MUST REDDEN (named):
+     - REFUSED: the refusal is named refused specifically
+     - REFUSED: it is NOT the no-lease refusal — a denial must never render as an absence
+     - REFUSED: the refusal names which read failed and why
+     - all five distinct conditions are actually reachable
+   MUST STAY GREEN:
+     - every WEDGED cell, every STALE cell, every NO-LEASE cell, all serving cells
+     - no verdict is undefined
+     - the state matrix is populated (guards the vacuous-every trap)
+
+M2 — trust the lease instead of the responder (THE D2 DEFECT):
+   in assessDeliveryHealth, when the lease is fresh and ready, return serving
+   WITHOUT awaiting probe(). This is exactly what the current surface does.
+   MUST REDDEN (named):
+     - WEDGED: a ready, freshly-renewed lease with no responder REFUSES
+     - WEDGED: the refusal is named no-responder specifically
+     - WEDGED: the refusal carries the deadline it waited
+     - WEDGED: the refusal still reports the fresh heartbeat (1000ms) — the two facts disagree, and that IS the finding
+     - WEDGED: the detail names that the lease claimed ready
+     - all five distinct conditions are actually reachable
+   MUST STAY GREEN:
+     - all serving cells, every STALE cell, every NO-LEASE cell, every REFUSED cell
