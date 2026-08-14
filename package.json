@@ -193,7 +193,7 @@
     "smoke:manager-restart-fence": "tsx implementations/manager/smoke/manager-restart-fence.smoke.ts",
     "smoke:manager-coexist": "tsx implementations/manager/smoke/manager-coexist.smoke.ts",
     "smoke:goal-sibling-race": "tsx implementations/manager/smoke/goal-sibling-race.smoke.ts",
-    "smoke:persona-announce": "pnpm --filter @cotal-ai/connector-core build && tsx bin/smoke/persona-announce.smoke.ts",
+    "smoke:persona-announce": "pnpm --filter cotal-ai... build && tsx bin/smoke/persona-announce.smoke.ts",
     "smoke:manager-reconcile-ownership": "tsx implementations/manager/smoke/manager-reconcile-ownership.smoke.ts",
     "smoke:manager-name-claim": "tsx implementations/manager/smoke/manager-name-claim.smoke.ts",
     "smoke:manager-on-route": "tsx implementations/manager/smoke/manager-on-route.smoke.ts",
