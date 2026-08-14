@@ -50,11 +50,15 @@
  * REAL ENTRY POINT: `cotalToolSpecs(...).run(...)` — the same call `registerCotalTools` makes.
  * Not `agent.send`, not `ep.multicast`.
  *
- * ⚠️ STATUS AT COMMIT: **NEVER RUN.** Written while waiting on an exclusivity ack for the broker;
- * committed unrun so the arms and the refutation criterion are on record BEFORE any result exists,
- * rather than written up afterwards to fit one. Typechecks clean (0 errors attributable to this
- * file; `tsc -p packages/core` and `tsc -p extensions/connector-core` both rc=0). **No result from
- * this probe may be cited until this notice is replaced by a run stamp.**
+ * ✅ RUN STAMP: driven `Fri Aug 14 10:24:53 PM UTC 2026` at tip `8c9c57f3`, under an exclusivity ack,
+ * against an ephemeral loopback broker on port 37827. **5 passed / 0 failed / 0 hung, rc=0.**
+ *   DENIAL : Couldn't send: Permissions Violation for Publish to "cotal.<space>.chat.local.<uid>.secret"
+ *   OUTAGE : Couldn't send: timeout
+ * **PRE-DECLARED OUTCOME 1 — the author's own claim is REFUTED and struck from the design note.**
+ * (Committed UNRUN at `2a318c4f` with all four outcomes fixed in advance, so nothing here was
+ * back-fitted to the result. The pre-registration was right about the direction and wrong about the
+ * mechanism: the expected string was `notLiveMsg()`'s "reconnecting - try again shortly"; the actual
+ * one is a bare `timeout`.)
  *
  * Run: tsx .meshctl-measurement/meshctl-m8-outage.smoke.ts   (needs nats-server on PATH; local only)
  */

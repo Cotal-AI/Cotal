@@ -80,7 +80,8 @@ at the same time.
 ## The audit result
 
 Terms were **derived from this box** rather than from memory: every non-Cotal project directory
-under `~` and `~/Desktop/projects`, expanded one level. **172 candidate terms.** The list stayed in a
+under `~` and the box's secondary projects directory, expanded one level. **172 candidate terms.**
+The list stayed in a
 scratch directory and is not reproduced here.
 
 | Surface | Coverage | Terms hitting | Verdict |

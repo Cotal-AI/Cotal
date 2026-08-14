@@ -103,8 +103,11 @@ that surface.
 - **Measured for `cotal_send` on a chat channel only.** The DM and anycast paths are not driven.
 - **`describeStatusError` was read, not driven.** That it has one call site is a grep result; that
   the send path *cannot* reach it is inference from the call graph, not a measurement.
-- **The "indistinguishable from a broker outage" claim is REASONING, not measurement.** I have the
-  denial string and I do **not** have the outage string, so I have never compared them. Settling it
-  needs a publish against a broker taken down mid-run.
+- ~~**The "indistinguishable from a broker outage" claim is REASONING, not measurement.**~~
+  **DRIVEN AND REFUTED** (`meshctl-m8-outage.smoke.ts`, `Fri Aug 14 10:24:53 PM UTC 2026`): the
+  outage arm returns `Couldn't send: timeout`, which a caller can trivially tell apart from a
+  permissions violation. **This finding never depended on the two being confusable and is untouched
+  by the refutation** — what it argues is that the caller's text names no actionable condition,
+  which the outage string independently confirms: `timeout` is a symptom, not a cause.
 - **The leaked lifecycle UID is reported as an information-exposure smell, not as a vulnerability.**
   What an attacker could do with a seat's lifecycle UID is not measured here.
