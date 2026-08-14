@@ -272,3 +272,116 @@ Something does now.
 MX1, MX2, MX3, MX4 killed; MX6 killed on the flip; MX7b killed on the named cell; **MX8 killed on
 the named cell, with delivery-level non-equivalence**; MX7a killed bluntly (superseded, kept);
 MX3a and MX5 survivors.
+
+---
+
+# MX8b — prediction, written BEFORE the mutant runs
+
+Written `Fri Aug 14 09:12:45 PM UTC 2026`. Base `fc457043`, tree clean.
+
+## Why re-run a mutant that already died
+
+MX8 killed `E8`. **`E10` is a NEW cell and inherits nothing from that.** A cell that watches a grant
+which happens to be narrow is indistinguishable from one that would notice it widening, and `E10`
+is currently in exactly the state `E8` was in before MX8 — green, and unproven. Same mutant, so the
+two cells are compared on identical ground rather than on two different widenings.
+
+## The mutant
+
+Identical to MX8: `packages/core/src/provision.ts:1064`
+
+    const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"];
+    →
+    const allowSubscribe = ["*"];
+
+## Predicted cells, NAMED
+
+| Cell | Prediction |
+| --- | --- |
+| `E8` | **RED** (reproduces MX8) |
+| **`E10`** | **RED** — the widened credential now serves `team.secret` |
+| `E8-pre`, `E10-pre` | **GREEN** — the poster is unaffected by the subject's grant |
+| `E9` | **GREEN** — a wider ACL still contains `general` |
+| `EX`, `E0` | **GREEN** |
+| every open-mode cell (21) | **GREEN** |
+
+Expected tally: **33 passed, 2 failed, 0 VOID, rc=1.**
+
+## What would REFUTE me
+
+1. **`E10` stays GREEN while `E8` reddens.** Then `E10` does not detect widening — most likely
+   because `["*"]` is a single-token wildcard that does not cover `team.secret`, in which case
+   **`E10` is watching a shape this mutant cannot produce and needs a different mutant, not a pass.**
+   This is the live one: `*` and `>` are not the same wildcard in NATS, and I am predicting RED
+   partly to find out.
+2. **`E10-pre` reddens.** The subtree post never published; the cell denied nothing and the run is
+   void for `E10`.
+3. **Any open-mode cell reddens.** The mutation is not confined to the credentialed path.
+
+## Non-equivalence
+
+As with MX8, must be observable as **delivery**: `PROBE-SUBTREE` should appear in the subject's own
+inbox under the mutant.
+
+---
+
+# MX8b RESULT — read at `Fri Aug 14 09:13:38 PM UTC 2026`
+
+## ⚠️ REFUTED. Criterion 1 fired — the one I said was live.
+
+Observed: **34 passed, 1 failed, 0 VOID.** Predicted 33/2.
+
+**`E8` reddened. `E10` STAYED GREEN.**
+
+The reason is the one I wrote down before running rather than after: **`*` and `>` are not the same
+wildcard.** `*` matches a single token, so a credential widened to `["*"]` does **not** cover
+`team.secret`. **The mutant cannot produce the shape `E10` watches**, so `E10`'s green says nothing
+about `E10`.
+
+**This is the failure mode this whole exercise is about, caught on my own new cell.** `E10` was
+green, it was green for a reason unrelated to the property, and had I stopped at MX8b I would have
+reported "the subtree cell is mutation-proven" on the strength of a run in which **it was never
+challenged.** A pass under a mutant that cannot reach the cell is not evidence — **it is the
+vacuous pass wearing a mutation proof's clothes.**
+
+Criterion 2 (`E10-pre` reddens) did not fire — the subtree post published fine. Criterion 3 did not
+fire — all 21 open-mode cells green.
+
+# MX8c RESULT — read at `Fri Aug 14 09:14:32 PM UTC 2026`
+
+**The mutant that CAN reach the cell: `allowSubscribe = [">"]` — a full-subtree grab.**
+
+Observed: **33 passed, 2 failed, 0 VOID, rc=1** — the tally MX8b predicted, finally on a mutant that
+could produce it.
+
+| Cell | Observed |
+| --- | --- |
+| `E8` | **RED** |
+| **`E10`** | **RED** |
+| `E8-pre`, `E10-pre`, `E9`, `EX`, `E0` | **GREEN** |
+| every open-mode cell (21) | **GREEN** |
+
+**Non-equivalence as DELIVERY, for both cells:**
+
+    [#secret authed-observer]      PROBE-OUT-OF-ACL
+    [#general authed-observer]     PROBE-IN-ACL
+    [#team.secret authed-observer] PROBE-SUBTREE
+
+**`PROBE-SUBTREE` is in the subject's inbox.** A message from a subtree the clean build denies,
+delivered to it, because the credential came back holding `>`.
+
+## What the pair establishes that neither run alone would
+
+`E8` and `E10` **fail for different widenings**: `E8` catches a name-shaped widening (`["*"]` was
+enough), `E10` needs a shape-shaped one (`[">"]`). **That is the argument for keeping both** — a
+single cell would have missed whichever widening it was not built for, and MX8b is the proof that
+this is a real gap rather than a tidy story.
+
+**Kept in the record, refutation and all.** The wrong prediction is the useful half: it is what
+distinguishes a cell that was challenged from a cell that was merely present while a mutant ran.
+
+## Ledger
+
+MX1, MX2, MX3, MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`;
+**MX8c on `E8` + `E10` with delivery-level non-equivalence**; MX7a blunt (superseded, kept);
+**MX8b REFUTED my prediction and is kept as the reason MX8c exists**; MX3a and MX5 survivors.
