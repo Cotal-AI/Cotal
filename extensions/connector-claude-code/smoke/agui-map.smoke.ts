@@ -327,6 +327,49 @@ c("split:every-run-opened-came-from-a-promptSource-bearing-record", (() => {
   return opens > 0;
 })(), { userEntries: typeHist.get("user") ?? 0 });
 
+// ⚠️ THE TWO EXCLUSIONS MASK EACH OTHER, AND THE CELLS ABOVE CANNOT SEE IT.
+//
+// Measured, not reasoned: deleting the `promptSource` test SURVIVED, and so did deleting the
+// compaction-summary test. Neither is a hole — on every capture available, each string-content
+// `user` entry either carries `promptSource` (all 67 mesh deliveries) or is the compaction summary,
+// so **whichever check you remove, the other still excludes exactly the same records.** Two
+// mechanisms preventing one outcome means a cell asserting the outcome proves NEITHER, and an
+// equivalent mutant is the one case where a blind cell and an absent mutation are indistinguishable.
+//
+// So each mechanism gets a record only IT can exclude. These two records are synthetic and that is
+// the point: no capture contains them, which is precisely why the population cells cannot
+// discriminate the pair.
+c("mechanism:promptSource-ALONE-excludes-a-record-the-compaction-marker-does-not", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  // No `promptSource`, and NOT a compaction record — only the run-opening test can refuse this.
+  const unit = m.map({
+    type: "user",
+    uuid: "no-prompt-source",
+    timestamp: "2026-08-14T21:00:03.000Z",
+    origin: { kind: "channel" },
+    message: { content: "not a submitted prompt" },
+  } as ClaudeEntry);
+  return unit === null && m.openRun() === null;
+})());
+
+c("mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  // Carries `promptSource` AND an attributable origin, so the run-opening test would admit it. This
+  // is the future the marker exists for: a harness that starts stamping compaction records.
+  const unit = m.map({
+    type: "user",
+    uuid: "stamped-compaction",
+    timestamp: "2026-08-14T21:00:04.000Z",
+    origin: { kind: "channel" },
+    promptSource: "system",
+    isCompactSummary: true,
+    message: { content: "a compaction summary the harness stamped" },
+  } as ClaudeEntry);
+  return unit === null && m.openRun() === null;
+})());
+
 // ATTRIBUTION IS CARRIED, and it is the half that used to be a gate.
 c("split:every-RUN_STARTED-carries-a-cotal.turnSource", (() => {
   let n = 0;
