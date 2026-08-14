@@ -110,5 +110,9 @@ five sites are proven and only three are. The honest statement: **the fences are
   renewal arm. `rev2-meshctl-authority` refuted that reachability itself, unprompted, and I am not
   re-asserting it.
 - **Arm independence.** MX2 showed the three arms share a fixture. Not fixed.
+- **The in-flight crossing is now CLOSED, and that limitation is withdrawn.** An earlier version of
+  this file declared it fenced "for the queued case only, with that exact race undriven". ARM 3b
+  drives it (hold a source call open, disconnect, release) and MX4 proves the cell detects it.
 - **No repo-wide suite was run.** No gate has been released to this lane. Scoped suites only:
-  `connection-lifecycle` 20/20, `connection-control` 19/19, `request-strand` 9/9.
+  `connection-lifecycle` **27/27**, `connection-control` 19/19, `request-strand` 9/9,
+  `§7.2 gap` 11/11.
