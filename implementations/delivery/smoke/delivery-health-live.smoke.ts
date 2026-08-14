@@ -67,11 +67,23 @@ let daemon: ChildProcess | undefined;
 let daemonExited = false;
 let observer: CotalEndpoint | undefined;
 
-/** Await a child's real exit before its scratch is removed — never rm out from under a live process. */
-const awaitExit = (c: ChildProcess | undefined): Promise<void> =>
+/** Await a child's real exit before its scratch is removed — never rm out from under a live process.
+ *
+ *  This RETURNS WHAT IT ESTABLISHED rather than just resolving. The previous version resolved on a
+ *  5000ms `setTimeout` whether or not the child had exited, and the caller then deleted the scratch:
+ *  a timeout inference standing in for affirmative exit, inside the suite whose entire thesis is
+ *  that timeout inference is a REFUSAL and not a pass. Measured consequence of that seam on this
+ *  box: a `cotal deliver` tree and its ephemeral broker from an earlier run of THIS suite were still
+ *  serving 1h43m later (pids reparented to init, scratch intact), because the parent died before its
+ *  cleanup and nothing ever established otherwise. */
+type ExitOutcome = "already-gone" | "exited" | "TIMED-OUT";
+const awaitExit = (c: ChildProcess | undefined, boundMs = 5000): Promise<ExitOutcome> =>
   !c || c.exitCode !== null || c.signalCode !== null
-    ? Promise.resolve()
-    : new Promise((r) => { c.once("exit", () => r()); setTimeout(() => r(), 5000); });
+    ? Promise.resolve("already-gone" as const)
+    : new Promise((r) => {
+        const t = setTimeout(() => r("TIMED-OUT"), boundMs);
+        c.once("exit", () => { clearTimeout(t); r("exited"); });
+      });
 
 /** Is the process GROUP recorded at creation still alive? `kill -0` — existence, nothing more.
  *  Deliberately the WEAK signal, so the wedged cell can show it passing while delivery is dead.
@@ -91,10 +103,55 @@ const signalGroup = (pid: number | undefined, sig: NodeJS.Signals): void => {
   try { process.kill(-pid, sig); } catch { /* already gone */ }
 };
 
+/** Wait for the GROUP to actually become absent, bounded, and report whether it did.
+ *
+ *  `awaitExit` resolves on the group LEADER's "exit" event, but `groupAlive` asks about the whole
+ *  GROUP — and the leader's descendants are reparented and reaped a few milliseconds later, during
+ *  which a zombie is still a group member that `kill(-pgid, 0)` answers for. Reading the two at that
+ *  instant made the "really gone" cell FLAKY BY CONSTRUCTION.
+ *
+ *  Measured at `1e2e4435` by `.lane/groupalive-race-probe.mts`, 12 rounds: 8 raced (the cell would
+ *  have failed), `daemonExited` false 0 times, and the group cleared after ~4-5ms every time, never
+ *  past 1s. Both registered refutation conditions held, so this is a reaping race and not a survivor
+ *  being papered over. The bound is 2000ms — ~400x the observed clearance — so exhausting it means
+ *  something is genuinely still alive, and that is REFUSED rather than waited away. */
+const awaitGroupGone = async (pid: number | undefined, boundMs = 2000): Promise<boolean> => {
+  const deadline = Date.now() + boundMs;
+  while (Date.now() < deadline) {
+    if (!groupAlive(pid)) return true;
+    await wait(5);
+  }
+  return !groupAlive(pid);
+};
+
+/** The daemon's environment, with every inherited COTAL_* CONNECTION variable DELETED.
+ *
+ *  A process that launches agents may export `COTAL_SERVERS` — pointing at a REAL broker — into
+ *  every child it spawns, and this suite spawns a real delivery daemon as a child. That has been
+ *  observed in practice, not merely imagined.
+ *
+ *  The daemon is passed an explicit `--server`, and `runDelivery` resolves `v.server ?? DEFAULT_SERVER`
+ *  (`implementations/delivery/src/delivery.ts:147`), so the flag does win today. But that leaves the
+ *  single most dangerous thing on this box resting entirely on one `??` in a file this suite does not
+ *  own: one refactor to env-precedence and this suite runs a delivery daemon against production.
+ *  Deleting the variables removes the dependency instead of documenting it. `DEFAULT_SERVER` is a
+ *  hardcoded loopback (`packages/core/src/endpoint.ts:135`), so the fallback is safe by construction. */
+const daemonEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env, COTAL_DELIVERY_BROKER_GONE_MS: "600000" };
+  for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete env[k];
+  return env;
+};
+
+/** Spawned through `_fixture-daemon.mts`, NOT as `cotal deliver`, so a supervisor that identifies
+ *  the delivery daemon by pattern-matching the process table cannot mistake this fixture for a
+ *  production daemon — such a matcher keys on the command path and carries no space discriminator.
+ *  See that file's header. The daemon function under test is identical (`runDelivery`); only the
+ *  composition root and the argv differ. */
+const FIXTURE_ENTRY = join(import.meta.dirname, "_fixture-daemon.mts");
 const startDaemon = (): ChildProcess => {
-  const c = spawn("pnpm", ["cotal", "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
+  const c = spawn("pnpm", ["exec", "tsx", FIXTURE_ENTRY, space, SERVERS, credsPath], {
     cwd: repoRoot, stdio: "ignore", detached: true,
-    env: { ...process.env, COTAL_DELIVERY_BROKER_GONE_MS: "600000" },
+    env: daemonEnv(),
   });
   created.daemon = c.pid;
   daemonExited = false;
@@ -166,8 +223,14 @@ try {
   // ---- daemon-gone: SIGKILL, so the graceful lease release NEVER runs. The lease left behind is
   // ---- residue written by a process that no longer exists.
   signalGroup(created.daemon, "SIGKILL");
-  await awaitExit(daemon);
-  check("daemon-gone: the daemon process is really gone", !groupAlive(created.daemon) && daemonExited);
+  const killOutcome = await awaitExit(daemon);
+  const groupGone = await awaitGroupGone(created.daemon);
+  // Both conjuncts are now established AFFIRMATIVELY, each with its own bound, rather than read at
+  // the single instant the leader's exit event fired. Asserted separately so a failure names WHICH
+  // fact could not be established instead of collapsing two into one red.
+  check("daemon-gone: the leader's exit was OBSERVED, not inferred from a timeout", killOutcome === "exited");
+  check("daemon-gone: the whole process GROUP is confirmed absent", groupGone);
+  check("daemon-gone: the daemon process is really gone", groupGone && daemonExited);
 
   const leaseAfterKill = await observer.readDeliveryLease(0);
   const ageAfterKill = leaseAfterKill ? Date.now() - leaseAfterKill.since : Infinity;
@@ -214,11 +277,33 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).message);
   process.exitCode = 1;
 } finally {
+  // SIGCONT first: a SIGSTOPped group never processes the SIGKILL that follows.
   signalGroup(created.daemon, "SIGCONT"); signalGroup(created.daemon, "SIGKILL");
-  await awaitExit(daemon);
+  const daemonOut = await awaitExit(daemon);
+  const daemonGroupGone = await awaitGroupGone(created.daemon);
   try { await observer?.stop(); } catch { /* broker may be gone */ }
   try { if (created.srv) process.kill(created.srv, "SIGKILL"); } catch { /* gone */ }
-  await awaitExit(srv);
-  // Only now, with both children confirmed exited, is the scratch safe to remove.
-  rmSync(dir, { recursive: true, force: true });
+  const srvOut = await awaitExit(srv);
+
+  // THE SCRATCH IS DELETED ONLY ON AFFIRMATIVE EVIDENCE THAT NOTHING IS STILL USING IT.
+  // Anything else is REFUSED and NAMED, and the directory is LEFT IN PLACE — deleting it would rm
+  // out from under a live process and destroy the only evidence of what leaked. An orphan holding an
+  // intact scratch is recoverable; an orphan whose scratch was deleted under it is not.
+  const unattributable: string[] = [];
+  if (daemonOut === "TIMED-OUT") unattributable.push(`daemon exit not observed within the bound (outcome=${daemonOut})`);
+  if (!daemonGroupGone) unattributable.push(`daemon process GROUP ${created.daemon} still alive`);
+  if (srvOut === "TIMED-OUT") unattributable.push(`nats-server exit not observed within the bound (outcome=${srvOut})`);
+
+  if (unattributable.length === 0) {
+    rmSync(dir, { recursive: true, force: true });
+  } else {
+    fail++;
+    process.exitCode = 1;
+    console.error(`\n  ✗ TEARDOWN REFUSES to delete ${dir} — cannot establish that it is unused:`);
+    for (const why of unattributable) console.error(`      · ${why}`);
+    console.error(`    Scratch left in place deliberately. Inspect, then remove by exact pid.`);
+    // The summary line above was printed before this ran, so say plainly that it no longer holds.
+    // A printed "OK" over a non-zero exit is the same dishonesty this suite exists to refuse.
+    console.error(`\n  DELIVERY-HEALTH-LIVE SMOKE: THE VERDICT PRINTED ABOVE IS SUPERSEDED — teardown failed, exit code is 1.`);
+  }
 }
