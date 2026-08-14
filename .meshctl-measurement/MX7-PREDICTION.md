@@ -595,3 +595,103 @@ MX1–MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`; MX8c on 
 MX9 on `E12` with dimension-discrimination held; **MX10 on `E9`+`E10-univ`, which also FOUND `A3d`
 passing vacuously; MX10b on the repaired `A3d-univ`**; MX7a blunt (superseded, kept); **MX8b
 refuted my prediction and is kept as the reason MX8c exists**; MX3a and MX5 survivors.
+
+---
+
+# MX11 — prediction, written BEFORE the mutant runs
+
+Written `Fri Aug 14 09:26:19 PM UTC 2026`. Base `0f9443b0`, tree clean.
+
+## The claim under test
+
+`E8-pre` and `E10-pre` assert the out-of-ACL messages were **actually published**, so a poster that
+was itself denied cannot let `E8`/`E10` pass having denied nothing. **Both are undriven** — the same
+weight MX10 just showed is worth nothing twice over. Named in my own report before this run.
+
+## The mutant
+
+`packages/core/src/endpoint.ts:1618` — `multicast` returns without publishing:
+
+    async multicast(...) { ...real body... }
+    →
+    async multicast(...) { return undefined as any; }
+
+The fixture's poster is a `CotalEndpoint`, so this silences every probe post while leaving the
+subject's own `agent.send` path (`E11`/`E12`) untouched.
+
+## Predicted cells, NAMED
+
+| Cell | Prediction |
+| --- | --- |
+| **`E8-pre`**, **`E10-pre`** | **RED** — nothing was published, which is exactly what they exist to catch. |
+| `E9`, `E10-univ` | **RED** — their in-ACL probe was posted by the same call. |
+| `E8`, `E10` | **GREEN, vacuously** — nothing forbidden arrived because nothing arrived. |
+| `E11`, `E12` | **GREEN** — the subject posts via `agent.send`, not `multicast`. |
+| `A3d`, `A3d-univ` | **GREEN** — DMs, not multicast. |
+| every other open-mode cell | **GREEN** |
+
+Note the preconditions are counted with `pass`, so a red one reports as `FAIL PRE-AUTHED` **and
+VOIDs every AUTHED cell after it**. Expected: `E8-pre` fails first, so `E8`, `E10-pre`, `E10-univ`,
+`E10`, `E11`, `E12` all report **VOID** rather than green.
+
+Expected tally: **31 passed, 1 failed, 6 VOID, rc=1.**
+
+## What would REFUTE me
+
+1. **`E8-pre` stays GREEN** — it does not detect an unpublished probe and is decorative.
+2. **`E11`/`E12` redden rather than VOID** — the mutant is wider than `multicast`.
+3. **Any open-mode cell reddens** — not confined to the authed fixture.
+
+## Non-equivalence
+
+The interesting evidence is that **`E8` and `E10` never get to report at all**: the VOID harness
+converts what would have been two vacuous greens into two cells that visibly did not run. **A
+precondition that fires is worth more than an absence that passes.**
+
+---
+
+# MX11 RESULT — read at `Fri Aug 14 09:27:43 PM UTC 2026`
+
+**KILLED on both named preconditions. None of the three refutation criteria fired.**
+
+Observed: **31 passed, 2 failed, 6 VOID, rc=1.** Predicted 31 / **1** / 6.
+
+| Cell | Predicted | Observed |
+| --- | --- | --- |
+| `E8-pre` | RED | **RED** |
+| `E10-pre` | VOID | **RED** |
+| `E9`, `E8`, `E10-univ`, `E10`, `E11`, `E12` | VOID | **VOID** (all six) |
+| every open-mode cell | GREEN | **GREEN** |
+
+## The off-by-one, and it is a fact about my harness I did not know
+
+I predicted `E10-pre` would report VOID once `E8-pre` contaminated the arm. It reported **RED**,
+because **`precondition()` does not consult `contaminated` — only `armCheck()` does.** A second
+precondition still runs and still reports after the first has failed.
+
+**That is the right behaviour and I had not realised it was the behaviour**: you want every failed
+entry condition named, not just the first, or a fixture with three broken preconditions reports one
+and hides two. But my prediction was wrong about my own instrument, which is the same species of
+error as reading an import line instead of resolving it. **Recorded rather than reconciled.**
+
+## Non-equivalence
+
+**The evidence is that `E8` and `E10` never reported at all.** Under MX10 those two cells passed
+vacuously; here the VOID harness converts them into cells that visibly did not run. **A precondition
+that fires is worth more than an absence that passes** — the same defect surfaces as `⊘` instead of
+`✓`, which is the difference between a suite that hides a broken fixture and one that announces it.
+
+`E11`/`E12` VOIDed rather than reddening, confirming criterion 2 did not fire: the mutant reached
+`multicast` and not the subject's `agent.send` path.
+
+## Still not driven
+
+`E11`'s role as `E12`'s positive arm — the **witness's** universe, as opposed to the inbox's. It
+shares the `witnessed` list with `E12`, so the structure is right, and MX11 VOIDed both rather than
+exercising that relationship. **Named, not banked.**
+
+## Ledger
+
+MX1–MX4 killed; MX6 on the flip; MX7b; MX8; MX8c; MX9 (dimension discrimination held);
+MX10 (found `A3d`); MX10b; **MX11 on `E8-pre`+`E10-pre`, with a prediction error about my own
+harness recorded**; MX7a blunt (superseded, kept); MX8b refuted (kept); MX3a and MX5 survivors.
