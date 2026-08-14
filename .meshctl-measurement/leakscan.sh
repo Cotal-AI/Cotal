@@ -3,15 +3,18 @@
 #
 # Method (not a wordlist). Three defects this is built to be incapable of:
 #   1. terms read as REGEX -> a term that is not a valid regex, or whose regex meaning differs
-#      from its literal, is SILENTLY NEVER SCANNED. Fixed with -F, and PROVEN per-term by feeding
-#      each term a document containing exactly itself (self-match control).
+#      from its literal, is SILENTLY NEVER SCANNED. Fixed with -F, and proven by a MODE CONTROL
+#      (metacharacter canary) -- NOT by a per-term self-match, which under -F is a tautology that
+#      cannot fail for any input. Driven: 10/10 pathological terms pass it under -F, 4/5 fail
+#      under regex, so it had content only in the mode this scanner does not run in.
 #   2. comment/blank lines scanned as terms -> junk patterns, and one stray `#` matches everything.
 #      Stripped, and every dropped line is checked for being term-shaped before it is discarded.
 #   3. a clean verdict indistinguishable from "never looked" -> distinct refusal codes, and the
 #      coverage count is printed BESIDE the verdict. A bare "clean" is not an output this emits.
 #
 # Exit codes:  0 clean (with coverage)   1 LEAK   93 zero terms parsed   95 terms file unreadable
-#              94 a term failed its own self-match control (instrument is lying about coverage)
+#              94 a control failed (mode control, or a directional control) -- coverage is not claimable
+#              92 the scan ERRORED and did not complete -- there is no verdict
 set -u
 TERMS=${1:?usage: leakscan.sh <terms-file> <path...>}
 shift
@@ -33,35 +36,52 @@ fi
 N=$(grep -c . "$WORK/terms" 2>/dev/null); N=${N:-0}
 [ "$N" -gt 0 ] || { echo "REFUSED(93): zero terms parsed from $TERMS"; exit 93; }
 
-# SELF-MATCH CONTROL, per term: a document containing exactly this term must match it.
-# This exercises the property relied on (literal matching), not merely that grep is alive.
-UNCOVERED=0
-while IFS= read -r t; do
-  [ -n "$t" ] || continue
-  printf '%s\n' "$t" > "$WORK/self"
-  if ! grep -qF -- "$t" "$WORK/self"; then
-    echo "REFUSED(94): term fails its own self-match -- it is NOT being scanned"
-    UNCOVERED=$((UNCOVERED+1))
-  fi
-done < "$WORK/terms"
-[ "$UNCOVERED" -eq 0 ] || { echo "REFUSED(94): $UNCOVERED/$N terms uncovered"; exit 94; }
+# MODE CONTROL (metacharacter canary). Replaces a per-term self-match test that was a TAUTOLOGY:
+# under -F every string matches itself BY CONSTRUCTION, so that test could not fail for any input.
+# Driven: 10/10 pathological terms passed it under -F; 4/5 failed under regex. It had content only
+# in the mode this scanner does not run in.
+#
+# The canary instead exercises the property actually relied on -- that `.` is a LITERAL here.
+# `a.c` must NOT match the document `abc`. Under -F it does not; under any regex mode it does.
+GREP_MODE=${LEAKSCAN_FORCE_REGEX:-F}   # set LEAKSCAN_FORCE_REGEX=E to prove this control non-vacuous
+
+# PROVENANCE. Which grep ran is part of the verdict, not trivia: BRE/ERE blindness differs by
+# implementation, and on this box the interactive `grep` is a shell FUNCTION wrapping a different
+# binary with --ignore-files, which can skip files a scan was asked to read. Named in the output.
+GREP_IMPL=$(grep --version 2>&1 | head -1)
+printf 'abc\n' > "$WORK/canary-doc"
+if grep -q"$GREP_MODE" -- 'a.c' "$WORK/canary-doc" 2>/dev/null; then
+  echo "REFUSED(94): MODE CONTROL FAILED -- 'a.c' matched 'abc', so terms are being read as REGEX."
+  echo "             Coverage cannot be claimed: a term whose regex meaning differs from its"
+  echo "             literal is silently unscanned and the scan would still report clean."
+  exit 94
+fi
 
 # NEGATIVE CONTROL: a document guaranteed to contain no term must come back clean.
 printf 'zzz neutral control document zzz\n' > "$WORK/neg"
-if grep -qFf "$WORK/terms" "$WORK/neg"; then
+if grep -q"$GREP_MODE"f "$WORK/terms" "$WORK/neg"; then
   echo "REFUSED(94): negative control matched -- the term set matches arbitrary text"; exit 94
 fi
 
 # POSITIVE CONTROL: a document built from the terms themselves must come back LEAK.
-if ! grep -qFf "$WORK/terms" "$WORK/terms"; then
+if ! grep -q"$GREP_MODE"f "$WORK/terms" "$WORK/terms"; then
   echo "REFUSED(94): positive control did not match -- the scan cannot detect a present term"; exit 94
 fi
 
-HITS=$(grep -rnFf "$WORK/terms" "$@" 2>/dev/null || true)
+# THE SCAN. rc is captured, NOT swallowed with `|| true`: grep returns 0=hits, 1=no hits, >=2=ERROR.
+# A single invalid-regex term aborts the WHOLE scan, and `|| true` turns that abort into an empty
+# HITS and a CLEAN verdict -- zero terms examined, indistinguishable from a real clean. Measured:
+# one term `c++core` under -E aborted a 4-term scan entirely. That is refusal 92, never a clean.
+HITS=$(grep -rn"$GREP_MODE"f "$WORK/terms" "$@" 2>/dev/null); RC=$?
+if [ "$RC" -ge 2 ]; then
+  echo "REFUSED(92): the scan ERRORED (grep rc=$RC) -- it did not complete, so there is no verdict."
+  echo "             grep: $GREP_IMPL"
+  exit 92
+fi
 if [ -n "$HITS" ]; then
-  echo "LEAK -- coverage $N/$N terms, all self-match-verified:"
+  printf 'LEAK -- coverage %s/%s terms BY CONSTRUCTION (literal mode), mode control held.\n       grep: %s\n' "$N" "$N" "$GREP_IMPL"
   printf '%s\n' "$HITS" | sed 's/^/    /'
   exit 1
 fi
-echo "CLEAN -- coverage $N/$N terms, each self-match-verified; both controls held."
+printf 'CLEAN -- coverage %s/%s terms BY CONSTRUCTION (literal mode); mode control and both directional controls held.\n        grep: %s\n' "$N" "$N" "$GREP_IMPL"
 exit 0
