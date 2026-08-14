@@ -25,6 +25,59 @@
  *
  * Imports are by relative SOURCE path, not package name: a `@cotal-ai/*` import resolves to
  * `dist/`, so a mutation of `src` would be reported SURVIVED by a suite that never loaded it.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * MUTATION PROOF — PREDICTED CELLS, REGISTERED HERE BEFORE THE MUTANTS WERE APPLIED
+ *
+ * A prediction written after the run is a description. These are named cells, not a count, and
+ * each mutant is argued NON-EQUIVALENT (or, for M2, argued EQUIVALENT) before it is run.
+ * Every run rebuilds (`tsc -p packages/core` then `tsc -p packages/workspace`) so that a stale
+ * `dist/` cannot mask or fake a result, even though this suite reaches the target through `src`.
+ *
+ * M1 — the match predicate at `mesh-target.ts` reverted to the pre-fix spelling:
+ *        `canonicalRoot(m.root) === canonicalRoot(root)`  ->  `resolve(m.root) === resolve(root)`
+ *      NON-EQUIVALENT because the fixture's recorded root is a symlink spelling of the live root:
+ *      `resolve` keeps the two apart, `canonicalRoot` collapses them.
+ *      PREDICTED RED (exactly these six):
+ *        - ARM A POST: resolution BINDS TO THE RECORD, not to the default port
+ *        - ARM A POST: the target's source is `local-recorded`, so the record is what answered
+ *        - ARM A POST: the RECORDED space is carried, not the default space
+ *        - ARM A POST: the record's `origin` rides along, so pruning knows who owns it
+ *        - ARM A POST: resolution did NOT silently retarget to DEFAULT_SERVER
+ *        - ARM B POST: it binds to our own record at the default port
+ *      PREDICTED GREEN, and named because it is the discriminating one:
+ *        - ARM B POST: resolution does NOT refuse our own mesh as a foreign one. It stays green
+ *          under M1: `onDefault` still compares with `canonicalRoot`, which excludes our own
+ *          record from the "foreign mesh" search. ARM B's LOUD refusal needs BOTH sites spelled
+ *          the old way, which is how the tree stood before this branch.
+ *        - both NEGATIVE CONTROL cells, every PRE cell, and both isolation cells.
+ *
+ * M2 — only the `onDefault` predicate reverted:
+ *        `canonicalRoot(m.root) !== canonicalRoot(root)`  ->  `resolve(m.root) !== resolve(root)`
+ *      PREDICTED: SURVIVED, 22/22, NO cell red — because the mutant is EQUIVALENT, argued here
+ *      in advance rather than excused afterwards. `onDefault` is reached only when `rootMatches`
+ *      is EMPTY (a non-empty `rootMatches` either returns at `recorded` or throws
+ *      `ambiguous-target`). Empty means no recorded entry canonicalizes to this root, so the
+ *      conjunct is vacuously true for every entry; and `resolve(a) === resolve(b)` implies
+ *      `canonicalRoot(a) === canonicalRoot(b)`, so the mutated conjunct is vacuously true as
+ *      well. Both spellings reduce to `meshes.find((m) => m.server === DEFAULT_SERVER)`.
+ *      So a SURVIVED here is NOT a weak suite: with the match predicate corrected, the second
+ *      half of the fix is a no-op, and the comment that presents it as ARM B's fix overstates it.
+ *      REFUTATION CONDITION, declared before the run: if ANY cell reddens under M2, this
+ *      equivalence argument is WRONG and is withdrawn rather than reworded.
+ *
+ * M3 — the match predicate WIDENED to `meshes.filter(() => true)`.
+ *      NON-EQUIVALENT, and the control for "the fix was widened, not corrected".
+ *      PREDICTED RED (exactly these three):
+ *        - ARM B POST: resolution does NOT refuse our own mesh as a foreign one
+ *        - ARM B POST: it binds to our own record at the default port
+ *        - NEGATIVE CONTROL: it is refused BECAUSE the default port is held by another mesh
+ *      (both become `ambiguous-target`: with the predicate always true, every recorded entry
+ *      matches every root, so the multi-space guard fires first.)
+ *      PREDICTED GREEN: every ARM A cell — at the moment ARM A resolves, ONE record exists, so a
+ *      predicate that matches everything still matches exactly that one. A widening mutant is
+ *      invisible to ARM A on its own, which is precisely why the negative control is not optional.
+ * ---------------------------------------------------------------------------------------------
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
