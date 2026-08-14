@@ -19,6 +19,13 @@
  * No broker: this grades CONSTRUCTION. The principal is decided in the constructor, before any
  * connection, which is also why a caller can refuse the mode before launching anything.
  *
+ * KILL SET, as names:
+ *   M4  pin the flag to `false` — kills "an endpoint with no id, no actor and no creds reports an
+ *       EPHEMERAL actor". This is the mutation the rest of the repo could not see, and the one that
+ *       would ship a silently unaddressable event channel.
+ *   M5  pin it to `true` — kills "a declared card.id makes the actor STABLE". The controls exist
+ *       for exactly this: a flag that refuses everything satisfies M4's cell perfectly.
+ *
  * Run: pnpm smoke:actor-ephemeral
  */
 import { CotalEndpoint, DEV_OWNER } from "../src/index.js";

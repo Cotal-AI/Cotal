@@ -33,6 +33,19 @@
  * grant paths (`manager.ts` spawn + resume, `foregroundAllowPublish`) are graded where they mint,
  * not here.
  *
+ * KILL SET, recorded as NAMES and deliberately with no counts — a count goes stale silently on
+ * every cell added, and this lane inherited three that had drifted while still reading as
+ * authoritative. Each mutation was predicted before it ran and killed exactly its predicted set:
+ *   M1  bypass `principalKey` and interpolate the halves raw — kills every refusal cell (space,
+ *       dot, `-`, empty actor, empty owner, wildcard owner, non-string), the image-re-entry cell,
+ *       and the staleness sentinel. Leaves the injectivity cells green, which is the point: a
+ *       mapping can be injective over well-formed inputs and still accept a display name.
+ *   M2  lowercase the key — the EXACT lossy step the old name-key had. Kills the round-trip cell
+ *       and the two separation cells. Kept because it is the defect that actually shipped, not one
+ *       imagined afterwards to fit a test that already passed.
+ *   M3  delete the ephemeral refusal — kills both `eventChannelForSession` refusal cells and
+ *       neither control, which is what separates "refuses because correct" from "refuses always".
+ *
  * Run: pnpm smoke:event-channel
  */
 // core by SOURCE path — the rule this suite compares against. `eventChannel` reaches the same rule

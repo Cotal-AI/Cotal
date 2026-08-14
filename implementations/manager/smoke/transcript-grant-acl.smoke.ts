@@ -18,6 +18,13 @@
  * a standing supervisor grant), so `startAgent` connects for real before minting. We boot our OWN
  * JWT-auth nats-server (collision-robust — see _boot-broker) + provision the space, let the real spawn
  * path run end to end, then DECODE the written creds JWT to read the minted publish ACL.
+ * KILL SET, as names — and this one reaches further than a unit's does. M6 re-keys the manager's
+ * grant on the display name (the forbidden fallback, in the principal's own shape so it stays a
+ * legal token and the mutant is non-equivalent); it kills "the grant names the MINTED PRINCIPAL and
+ * the display name appears NOWHERE in it". Because the input is a real `mgr.startAgent` call whose
+ * credential is decoded from disk, that kill shows a REAL ENTRY POINT reaches the derivation — not
+ * merely that a cell depends on it.
+ *
  * Run with: pnpm smoke:transcript-grant
  */
 import { randomUUID } from "node:crypto";

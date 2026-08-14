@@ -18,6 +18,15 @@
  * identically for exactly that kind of unrelated reason, which is the false-pair shape: nothing is
  * being varied because nothing under test is being reached.
  *
+ * KILL SET, as names: M7 deletes the open-mode refusal and kills "open mode (no minted identity)
+ * REFUSES --events, naming what is missing".
+ *
+ * WHAT THAT KILL DOES NOT COVER, stated so a green here is not read as more than it is: this suite
+ * calls `foregroundAllowPublish` directly. It proves the shipped computation refuses, and it proves
+ * a real broker enforces the separation the computation produces. It does NOT prove the command
+ * body passes `undefined` on its open-mode branch — that line has no test, and a change routing
+ * open mode into some other principal would leave this suite green.
+ *
  * Run: pnpm smoke:foreground-event-grant   (boots its own nats-server)
  */
 import { randomUUID } from "node:crypto";
