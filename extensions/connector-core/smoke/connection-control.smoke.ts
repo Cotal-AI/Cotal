@@ -432,6 +432,12 @@ async function main() {
       !(subPost instanceof Error) && !!subPost, subPost instanceof Error ? subPost.message : subPost);
     await sleep(1500);
     const afterSub = await inboxSpec.run(S, cfgAuthed, { peek: true });
+    // E10 is an ABSENCE assertion, and it reads a DIFFERENT snapshot than E9's positive arm — so
+    // E9 cannot vouch for this one. An absence is trivially true against an empty universe: if this
+    // read returned nothing at all, E10 would pass having observed nothing. The positive arm has to
+    // live in the same snapshot as the absence it guards.
+    armCheck("AUTHED", "E10-univ CONTROL: THIS inbox read is non-empty and still shows the in-ACL message (so E10's absence is measured against a live universe)",
+      afterSub.text.includes("PROBE-IN-ACL"), afterSub.text.slice(0, 300));
     armCheck("AUTHED", "E10 a SUBTREE grab outside the ACL is denied after the reconnect too — the return did not widen the credential by shape either",
       !afterSub.text.includes("PROBE-SUBTREE"), afterSub.text.slice(0, 300));
 
