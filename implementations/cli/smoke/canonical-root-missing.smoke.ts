@@ -199,6 +199,15 @@ async function main(): Promise<void> {
   check("...so `resolve`-equal does NOT imply `canonicalRoot`-equal, and the unqualified claim is FALSE",
     resolveAgrees === true && canonicalAgrees === false,
     `resolve-equal=${resolveAgrees} canonical-equal=${canonicalAgrees}`);
+  // CORROBORATED ON A SECOND SUBSTRATE, by review, and deliberately NOT added as a cell here.
+  // The construction above and the reviewer's first one are the same topology (a user symlink
+  // escaping its parent), so they are one construction measured twice, not two. It then built a
+  // genuinely different one: `/proc/self/cwd/../<sib>/file` — the KERNEL's cwd symlink rather than
+  // one we created — against its own `resolve()`. Measured `resolve-equal=true`,
+  // `canonical-equal=false`, the same refutation from a link this suite did not make.
+  // Not a cell because `/proc` is Linux-only and this suite must not go red on a platform where
+  // the refutation is still true but the substrate is absent. Recorded so the corroboration is not
+  // lost with the reviewer's scratch file.
 
   // ---- WOULD-HAVE-REFUTED, stated as a cell so it cannot be claimed after the fact -------------
   // If `canonicalRoot` had thrown on ANY missing-root case above, the fix would have been withdrawn
