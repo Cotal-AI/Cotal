@@ -87,6 +87,95 @@ export type ManagerHealth =
 /** Every fact this surface reports carries where it came from. */
 const sourceFor = (server: string, instanceId: string): string => `manager status @ ${server} (instance ${instanceId})`;
 
+/** The local pid evidence, as `managerLivenessSnapshot()` reports it. */
+export type LocalManagerEvidence = "alive" | "dead" | "unknown" | "absent" | "unattributable";
+
+/**
+ * What the card is entitled to claim, given local process evidence AND an affirmative health read.
+ *
+ * PURE ON PURPOSE. The decision is the part an operator acts on, so it is separated from the I/O
+ * that feeds it and every row can be constructed deterministically — including the rows a live
+ * broker makes expensive or racy to reach. A cell that has to schedule a wedge to check what the
+ * card SAYS about a wedge is testing two things and proving neither.
+ *
+ * `startHint` is the field with teeth: it is the only output that tells an operator to LAUNCH
+ * something, and a hint offered over a manager that is merely unreachable is how a second stack gets
+ * started against a live one. It is earned in exactly one shape and denied everywhere else.
+ */
+export interface ManagerClaim {
+  /** `serving` is the ONLY affirmative claim. */
+  claim: "serving" | "wedged" | "absent" | "refused" | "misattributed" | "cannot-establish";
+  /** Is the manager provably answering? Never true unless an attributed reply arrived. */
+  serving: boolean;
+  /** May the card tell the operator to start a manager? */
+  startHint: boolean;
+  /** Which condition failed, in the operator's words. Never a bare "unknown". */
+  detail: string;
+}
+
+/**
+ * The six-row decision table. ORDER IS LOAD-BEARING and each branch says why it comes where it does.
+ */
+export function managerClaim(local: LocalManagerEvidence, health: ManagerHealth): ManagerClaim {
+  // 1. An attributed affirmative reply. The only route to green, and it does not consult the local
+  //    pid at all: a manager that ANSWERS is serving whether or not this root recorded its pid.
+  if (health.condition === "serving")
+    return {
+      claim: "serving", serving: true, startHint: false,
+      detail: `answered in ${health.rttMs}ms as instance ${health.report.instanceId} (runtime ${health.report.runtime}, ${health.report.agentCount} agent(s), up ${health.report.uptimeMs}ms by its own clock)`,
+    };
+
+  // 2. Before any "nothing answered" reasoning: something DID answer, and it was the wrong manager.
+  //    Placed here because its reply is affirmative and would otherwise be mistaken for ours, and
+  //    because treating it as absence would invite starting a manager over a live sibling.
+  if (health.condition === "unattributed")
+    return {
+      claim: "misattributed", serving: false, startHint: false,
+      detail: `a manager answered but identified itself as ${health.replied}, not this root's ${health.expected} — that reply is true about a different process`,
+    };
+
+  // 3. A refusal is an ANSWER: something is serving and declined. Never absence, never a start hint.
+  if (health.condition === "refused")
+    return { claim: "refused", serving: false, startHint: false, detail: `the manager refused the health read: ${health.detail}` };
+
+  // 4. The broker was never reached, so the manager is not implicated. Calling it down here would
+  //    blame the wrong component and recommend the wrong repair.
+  if (health.condition === "unreachable")
+    return { claim: "cannot-establish", serving: false, startHint: false, detail: `the broker could not be reached, so nothing has been established about the manager: ${health.detail}` };
+
+  // 5. We could not even ask. Distinct from every answer above and from silence below.
+  if (health.condition === "no-auth" || health.condition === "malformed-reply")
+    return { claim: "cannot-establish", serving: false, startHint: false, detail: health.detail };
+
+  // 6. Local evidence we cannot attribute outranks the remaining remote silence: a record we cannot
+  //    read may front a live process nobody can identify, and a start hint over it is the
+  //    double-launch. Checked before the absent case for exactly that reason.
+  if (local === "unknown" || local === "unattributable")
+    return {
+      claim: "cannot-establish", serving: false, startHint: false,
+      detail: local === "unknown"
+        ? "the kernel answered neither running nor no-such-process for the recorded pid, and no manager answered — ownership of that process cannot be established"
+        : "the pid record does not hold a pid, and no manager answered — that record may front a live process nobody can identify",
+    };
+
+  // 7. Nothing answered, and a local process IS present: the wedge. This is the incident shape —
+  //    the process exists, the health read gets nothing, and the old card called it running.
+  //    Explicitly no start hint: the process is alive and a second one would contend with it.
+  if (local === "alive")
+    return {
+      claim: "wedged", serving: false, startHint: false,
+      detail: `a local process is present but no manager answered the health read — it is not serving, and starting another would contend with it`,
+    };
+
+  // 8. Nothing answered and no local process. ONLY here is the hint earned.
+  return {
+    claim: "absent", serving: false, startHint: true,
+    detail: health.condition === "no-identity"
+      ? "no manager is recorded for this root and none answered"
+      : "no local process and no manager answered",
+  };
+}
+
 /**
  * Ask THE manager pinned to `instanceId` whether it is serving, within `timeoutMs`.
  *
