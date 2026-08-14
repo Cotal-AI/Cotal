@@ -132,6 +132,19 @@ async function main() {
   const later = seenBy(B, "subject-a");
   check("A3 still offline after the self-heal's retry window elapsed", later?.status === "offline", later);
   check("A3b and the agent itself agrees it is deliberately off", A.isSelfDisconnected() === true);
+  // A3 and A3b are BOTH self-reported state — the presence record this endpoint writes, and its own
+  // flag. Neither can tell "stayed off the mesh" apart from "came back and still reports offline",
+  // which is precisely the ghost class this lane exists to close. Mutation testing caught that:
+  // removing all three self-disconnect guards left A3/A3b green. So assert the CONNECTION itself,
+  // and then assert it FUNCTIONALLY — a live subscription is the thing a stale record cannot fake.
+  check("A3c the connection is actually DOWN, not merely reported down", A.connected === false);
+  const dmTool = specs.find((s: any) => s.name === "cotal_dm")!;
+  await dmTool.run(B, cfgB as any, { to: "subject-a", text: "PROBE-WHILE-DISCONNECTED" });
+  await sleep(1200);
+  const inboxTool = specs.find((s: any) => s.name === "cotal_inbox")!;
+  const whileOff = await inboxTool.run(A, cfgA as any, { peek: true });
+  check("A3d nothing is delivered live while disconnected (the functional arm)",
+    !whileOff.text.includes("PROBE-WHILE-DISCONNECTED"), whileOff.text.slice(0, 200));
 
   console.log("\n=== named refusals (each asserted as THAT refusal) ===");
   const d2 = await run("cotal_disconnect", A, cfgA, {});
