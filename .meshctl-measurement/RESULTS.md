@@ -259,16 +259,37 @@ complete. It found the following, and they are recorded here in its framing rath
   M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (7 asserted + 4 recorded)**.
 - Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
   `packages/core/smoke/connection-lifecycle.smoke.ts` **39/39 at `e15b6e36`** (re-run today, rc=0 captured),
-  `extensions/connector-core/smoke/connection-control.smoke.ts` **39 passed / 0 failed / 0 VOID at
-  `0a2a4ae6`** (run `Fri Aug 14 09:44:58 PM UTC 2026`, rc=0, ephemeral loopback broker under an
-  exclusivity ack; **counted in three columns, not one — passes, failures and VOIDs are never summed,
-  and the run additionally printed 1 RECORDED observation which is not a pass**),
+  `extensions/connector-core/smoke/connection-control.smoke.ts` **45 passed / 0 failed / 0 VOID at
+  `2cc77347`** (run `Fri Aug 14 10:57:18 PM UTC 2026`, ephemeral loopback broker; **counted in three
+  columns, not one — passes, failures and VOIDs are never summed, and the run additionally printed
+  2 RECORDED observations which are not passes**; E18 was re-asserted and re-run at `2b2ceea4`
+  after it SURVIVED its mutation — see below),
+  `.meshctl-measurement/meshctl-m10-twoviews.smoke.ts` **5 passed / 0 failed at `9142ddd3`**
+  (run `Fri Aug 14 11:10:05 PM UTC 2026`; 2 RECORDED observations, and **its headline is not usable
+  — the fixture's "long-lived" view lived ~100s against a hypothesis about a session hours old**),
   `packages/core/smoke/request-strand.smoke.ts` **9/9 at `ffc18c46`** (was 7/7 before ARM 3 was added).
 - Mutations, on named cells with broker-side non-equivalence: **MX1/MX2/MX4 killed; MX6, MX7b, MX8,
   MX8c, MX9, MX10, MX10b, MX11, MX12b killed; MX12 VOID (mutant never reached — the Plane-3 durable
   path, not the live one); MX8b REFUTED its own prediction and is kept as the reason MX8c exists;
   MX7a superseded as too blunt; MX3a and MX5 survived, as predicted.** Full ledger:
   `.meshctl-measurement/MX7-PREDICTION.md`.
+  **MX13 SURVIVED and is the most instructive one in the ledger.** Target: E18, "a credential
+  re-pointed at another space is refused." Mutant: widen the grant's space segment to `*`, i.e.
+  **delete the fence the cell claims to measure.** The cell stayed **green** — the foreign space has
+  no streams, so the publish failed anyway with `jetstream is not enabled` instead of a permissions
+  violation. **An unrelated failure stood in for the one that had been removed.** Re-asserted to
+  require a permissions refusal *naming the foreign subject*; on the same mutant it goes red alone
+  (44/1/0) while E12/E14/E15/E17 hold. *A refusal is evidence of a fence only if the cell names
+  WHICH fence refused.*
+
+**⚠️ AND THE LEAK SCANNER'S VERDICT WAS UNINFORMATIVE FOR HOURS.** Every `LEAK` result quoted from
+the 172-term list was vacuous: **44 of those terms are ordinary public strings** (they occur in
+`origin/main`), so *every* scan of *any* file returned LEAK. **The scanner already refused a guard
+that cannot FAIL; it had no guard against a verdict that cannot be CLEAN.** Fixed at the method
+(refusal 96, `leakscan.sh`) on a definitional test — *a term that already exists in public upstream
+content is not a secret* — driven in three arms so a guard that passed by disabling detection would
+have been caught. **The audit's standing is unchanged (the tree was and is clean against the
+canonical 12); what changed is that a LEAK verdict now carries information.**
 
 **⚠️ AND THE DRIFT THIS SECTION WAS WRITTEN TO PREVENT RECURRED IN THIS SECTION.** The line above read
 `21/21 at 7dae9115` while the suite had grown to 39 cells and moved 6 commits — the *same* failure,
