@@ -9,6 +9,32 @@ agent that can attach itself to a mesh is choosing what it can see and who can r
 
 ---
 
+## 0. Scope — re-target is DEFERRED out of this lane
+
+**Ships here: `connect` / `disconnect` / `reconnect`. Deferred: `re-target`.**
+
+Ruled by fm-orchestrator on this lane's own measurement, and recorded here with the reasoning
+rather than as an instruction received. Re-target requires closing the agent's durable Plane-3
+memberships on the source mesh (§7.1), and **today's primitives cannot do that atomically** (§7.2):
+tombstones are per-channel and commit independently, rollback is not lossless, and a close-all scan
+races the boot-join reconciler.
+
+The first draft proposed shipping re-target anyway behind a reported `partial-membership-close`
+outcome. **That was wrong, and the reason it was wrong is the reason this lane exists.** Its
+ordinary failure mode is a source mesh silently downgraded to live-only on some channels — clean at
+the presence plane and a lie at the delivery plane, in the one place a roster cannot show it. That
+is the same ghost class this lane was created to close, and **reporting the partial state does not
+repair it; it only attaches a better error message to the same broken state.**
+
+So `partial-membership-close` appears in this note as **the reason re-target is deferred, never as
+its shipped behaviour**. Re-target returns as a follow-on once a lifecycle-level close-and-fence
+primitive exists. The split costs the shipped scope nothing: disconnect→reconnect never depended on
+membership closure — it deliberately *keeps* the membership (§7.1).
+
+Sections below that discuss re-target are retained for the follow-on and are marked **[DEFERRED]**.
+
+---
+
 ## 1. What authority does a self-connect carry, and where does it come from?
 
 **It carries no authority of its own. It re-presents a credential its launcher already handed it,
@@ -74,14 +100,22 @@ grant, and it is the whole of "the right accesses set up":
 ```
 # .cotal/agents/<name>.md frontmatter
 capabilities: [connection]      # may call the connection verbs at all
-meshes: [main, staging]         # the targets it was provisioned for; "main" is its boot target
 ```
 
-The manager mints one credential per named mesh at spawn and hands them to the session, exactly as
-it hands the boot credential today. The agent may move among those targets and nowhere else.
+**`meshes: [...]` IS DEFERRED WITH RE-TARGET (§0), and that is a real narrowing of this section.**
+A multi-mesh grant exists only to serve re-target: the shipped scope disconnects from and reconnects
+to **the one mesh the agent was launched against**, so a second entry would hand out authority the
+shipped verbs cannot use. Shipping the grant ahead of the verb would be provisioning a credential
+for a capability that does not exist yet — the widest possible reading of "the right accesses set
+up", at exactly the moment the note argues for the narrowest.
 
-**A compromised agent reaches exactly the meshes a human pre-authorised, and nothing else** — which
-is the required answer ("nothing it did not already hold"), enforced at the broker.
+So the shipped grant is **one capability and zero new credentials**: the agent re-presents the boot
+credential it already holds, at the target it was already launched against.
+
+**A compromised agent reaches exactly the mesh a human already launched it on, and nothing else** —
+which is the required answer ("nothing it did not already hold"), enforced at the broker. Note the
+deferral makes this claim *stronger* than the multi-mesh version could be, because there is no
+second credential in the session to steal.
 
 ### Threat model, at its honest width
 
@@ -137,13 +171,20 @@ type RefusalReason =
   | "shutting-down"            // the session is ending; do not start a transition
   | "transition-unconfirmed"   // §3's confirmation did not land — REQUIRED by §3
   | "teardown-failed"          // the transition published but the connection did not close
-  | "durable-membership-unclosed" // re-target could not close a Plane-3 membership (§7.1)
   | "in-flight-request";       // holds an unresolved request — see below
 ```
 
+**`durable-membership-unclosed` and `partial-membership-close` are NOT in this union**, and their
+absence is deliberate. Both are re-target-only conditions (§7.1, §7.2), and re-target is deferred
+(§0), so **the shipped scope cannot reach either.** This applies the same principle that removed
+`holds-lease`: *do not specify a refusal for a condition this lane will not reach.* They return with
+re-target, together with the close-and-fence primitive that makes them reachable and meaningful.
+
 **Corrections after adversarial review:**
 - `transition-unconfirmed`, `teardown-failed`, `transition-in-progress`, `shutting-down` and
-  `durable-membership-unclosed` were **missing**. `transition-unconfirmed` is the worst omission:
+  `durable-membership-unclosed` were **missing** (the last has since been removed again by the §0
+  split, which is not a reversal — it was correctly missing for a scope that included re-target, and
+  is correctly absent for one that does not). `transition-unconfirmed` is the worst omission:
   §3 *requires* that refusal and §2 did not list it — an internal contradiction in this document.
 - `broker-unreachable` was **collapsing three distinct failures**. Core already distinguishes
   auth-required, stale-auth and unreachable (`endpoint.ts:4170-4188`), and "your credential was
@@ -250,9 +291,15 @@ field.
   observer can tell "this agent departed deliberately" from "this agent is idle" — which is the ghost
   in §3, and it closes.
 - What **cannot** ship: the *cause* travelling with the transition. An observer sees a deliberate
-  departure but not **why**, and for a re-target not **where to**. §3's stated property is "the
-  transition and its cause visible — not inferred from a peer's silence"; **the cause half is
-  blocked on a SPEC change this lane is not authorised to make.**
+  departure but not **why**. §3's stated property is "the transition and its cause visible — not
+  inferred from a peer's silence"; **the cause half is blocked on a SPEC change this lane is not
+  authorised to make.**
+- **The shortfall is NARROWER than first documented, because of the §0 split.** The original text
+  also owed an observer "and for a re-target, not **where to**". With re-target deferred, the
+  "where to" half defers with it. **The shipped shortfall is exactly one thing: an observer sees a
+  DELIBERATE departure but not WHY.** Narrowed deliberately so the SPEC owner inherits the true
+  remaining cost rather than an inflated one — the opposite direction from downgrading a
+  requirement to match the wire, which is refused below.
 
 **§3 is deliberately NOT downgraded to match what the wire can carry.** The requirement stands as
 written and this section records the gap, so the shortfall reaches whoever owns the SPEC as a real
@@ -289,9 +336,16 @@ process.** That asymmetry is the strongest argument for the confirmed-transition
 announcement is the last thing a mesh supervisor will ever hear from it, so it must not be
 best-effort.
 
-A re-target is a disconnect plus a connect and inherits both halves. It cannot be done in place:
-space, servers, credentials and `connId` are all constructor-pinned **[R — `endpoint.ts:445`,
-`821-855`]**, so re-targeting builds a *new* endpoint.
+**[DEFERRED — §0]** A re-target is a disconnect plus a connect and inherits both halves. It cannot
+be done in place: space, servers, credentials and `connId` are all constructor-pinned **[R —
+`endpoint.ts:445`, `821-855`]**, so re-targeting builds a *new* endpoint. Retained for the follow-on.
+
+**One consequence of the split belongs here, in the reversibility section, because it is a
+reversibility fact:** with re-target deferred, the only target an agent can reconnect to is the one
+it was launched against. That **removes the failure mode §4 was most worried about** — a failed
+connect to a *different* mesh leaving a running process with no mesh presence and no path back.
+Reconnect-to-origin can still fail, but it fails against a target the manager also knows, so the
+process handle and the mesh target no longer disagree about where the agent belongs.
 
 **Two corrections here, both from adversarial review, and the second is a plain error of mine:**
 
@@ -321,13 +375,20 @@ space, servers, credentials and `connId` are all constructor-pinned **[R — `en
 - `capabilities: [connection]` on the persona — the right to call these verbs at all. This mirrors
   the existing `capabilities: [spawn]` gate, which is enforced in the credential layer and not only
   in the tool list **[R]**, so the verbs are absent from an ungranted agent's surface rather than
-  present-and-failing.
-- `meshes: [...]` — the targets the manager provisions credentials for at spawn.
+  present-and-failing. **This `[R]` is load-bearing and is being independently attacked** — if
+  `spawn` turns out to be gated only by tool-list construction, the mirror is false and this
+  section's default-deny story is weaker than written. Recorded as a risk, not resolved.
+- ~~`meshes: [...]`~~ — **DEFERRED with re-target (§0).** No second credential is provisioned.
 
-**The smallest grant that makes the feature useful** is `capabilities: [connection]` with a single
-mesh: the agent can disconnect and reconnect *itself* — the "go quiet deliberately, come back
-cleanly" case — with no re-target and no second credential. Re-target requires a second entry in
-`meshes:`, which is a separate, deliberate human act.
+**The smallest grant that makes the feature useful is now the ONLY grant: `capabilities:
+[connection]`, and nothing else.** The agent disconnects and reconnects *itself* on the mesh it was
+launched against — the "go quiet deliberately, come back cleanly" case — re-presenting the boot
+credential it already holds. **It is worth naming that the smallest useful grant and the whole
+shipped grant have become the same thing**, which is the strongest form this section could take and
+a direct consequence of the split rather than a design flourish.
+
+Adding a mesh to an agent's reach is deferred, and when re-target returns it must be a separate,
+deliberate human act — never a side effect of granting `connection`.
 
 Default is **no grant**: an agent without `capabilities: [connection]` sees none of these verbs.
 
@@ -425,18 +486,24 @@ step of re-target; the operations available cannot do it safely:
   partial degradation invisible; transition-before-close republishes the "announced a disconnect that
   had not happened" lie.
 
-**Consequences for the design, adopted:**
-1. §2 gains **`partial-membership-close`**, and the outcome MUST carry the **closed and still-open
-   channel sets** — a partial close is a terminal reportable state, not a retryable one, because it
-   cannot be rolled back losslessly.
-2. Re-target needs a **fence on the source lifecycle** (admission closed so nothing can rejoin during
-   the scan) — the same latch shape §2 already needs for in-flight requests. Without a fence the scan
-   races the reconciler.
-3. **Honest statement of where this leaves the feature:** disconnect→reconnect is unaffected and
-   ships. **Re-target's membership cleanup cannot be made atomic with today's primitives**, so either
-   re-target ships with an explicit, reported partial state, or a lifecycle-level close-and-fence
-   operation is built first. **That is a scope decision for fm-orchestrator, not one I should quietly
-   make inside an implementation.**
+**RULED (fm-orchestrator): RE-TARGET IS DEFERRED. See §0.** The scope decision above was escalated
+rather than absorbed, and it came back as a split. What follows records the disposition, because a
+ruling whose reasoning is not written down gets re-litigated by the next reader.
+
+1. **`partial-membership-close` is NOT shipped, and is not in §2's union.** The first draft proposed
+   it as a terminal reportable outcome carrying the closed and still-open channel sets. **That is
+   rejected.** Its ordinary failure mode is a source mesh silently downgraded to live-only on some
+   channels — the exact ghost class this lane exists to close — and **an accurate report of an
+   unrepairable state is not a repair.** It survives here only as **the reason for deferral**.
+2. **Re-target needs a fence on the source lifecycle** (admission closed so nothing can rejoin
+   during the scan) — the same latch shape §2 needs for in-flight requests. Without a fence the scan
+   races the reconciler. **This fence does not exist**, and building it is the follow-on's first
+   task, not a step inside a connector-verb lane.
+3. **Where this leaves the feature, stated plainly:** disconnect→reconnect is unaffected and ships;
+   it deliberately *keeps* the durable membership (§7.1), so none of the above applies to it.
+   Re-target ships when a lifecycle-level close-and-fence primitive exists. **The split costs the
+   shipped scope nothing** — which is the fact that made deferral the cheap answer rather than a
+   sacrifice.
 
 ---
 
