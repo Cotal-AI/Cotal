@@ -352,10 +352,17 @@ export function fanoutDurableConfig(
  *  INITIATION response copies `mset.config()` and false-greens like INFO, but the STREAMED archive's
  *  first `meta.inf` entry marshals `fs.cfg` — the file store's own, rolled-back config. Reproduced live
  *  against an EACCES split: INFO and the initiation response both reported the requested TTL while the
- *  streamed `meta.inf` reported the old one. So a store-side detector EXISTS, and this codebase already
- *  has `downloadStreamSnapshot` plus a per-stream-scoped snapshot grant model (`backup.ts`). It is not
- *  used here: its cost scales with bucket size and a snapshot carries the bucket's records, so wiring it
- *  into every `cotal up` is a design decision, not a free assertion — see the tracking issue.
+ *  streamed `meta.inf` reported the old one. So a store-side detector EXISTS in the protocol, and this
+ *  codebase has `downloadStreamSnapshot` plus a per-stream-scoped snapshot grant MODEL (`backup.ts`).
+ *
+ *  **It is NOT available under current authority, and that — not the cost — is what blocks it.**
+ *  `assertBackupStream` runs every scope through `canonicalBackupStreamConfig`, which accepts only the
+ *  durable registries (channel / acl / members) among KV buckets and THROWS for presence, delivery and
+ *  manager. So wiring this in needs a NEW EXACT SCOPE, or a widening of the reconcile credential to
+ *  whole-body snapshot authority over liveness data — an unsettled authority question on the credential
+ *  this change otherwise keeps to three `STREAM.UPDATE` subjects. The cost is real too (it scales with
+ *  bucket size, and a snapshot carries the bucket's records), but quoting only the cost would read as
+ *  "available but expensive", which is the wrong summary. See the tracking issue for the full spec.
  *
  *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement — and
  *  "cannot be detected here" is the stronger claim it does NOT license.
