@@ -46,9 +46,9 @@
  * produces a CONFIDENT WRONG diagnosis — worse than the anonymous error it replaced, since a named
  * cause stops the search:
  *   B1  drop the "this process has fed nothing yet" condition
- *       -> `bracket:CONTROL-a-violation-AFTER-this-process-has-emitted-is-NOT-blamed-on-a-restart`
+ *       -> `bracket:CONTROL-a-violation-after-this-process-FED-but-never-FOLDED-is-NOT-blamed-on-lost-state`
  *   B2  drop the "the frontier is non-virgin" condition
- *       -> `bracket:CONTROL-a-violation-on-a-VIRGIN-frontier-is-NOT-blamed-on-a-restart`
+ *       -> `bracket:CONTROL-a-violation-on-a-MIGRATED-VIRGIN-frontier-is-NOT-blamed-on-lost-state`
  *   B3  never diagnose; surface the raw refusal
  *       -> `bracket:a-mid-run-restart-names-ITSELF-not-the-writer`
  *   B4  drop the "the WAL cannot say what was open" condition (added with WAL v2)
@@ -59,9 +59,28 @@
  *       -> `bracket:a-mid-run-restart-CONTINUES-because-the-state-was-persisted`
  *   V3  fold does not promote the frame's frozen bracket state
  *       -> `bracket:the-open-run-is-PERSISTED-in-the-WAL`
- * ALL THREE KILLED on their named cells. B1 and B2 are the pair worth reading together: each one
- * leaves the headline cell GREEN and kills only its own control, which is what a confident wrong
- * diagnosis looks like from the inside.
+ * B1 and B2 are the pair worth reading together: each one leaves the headline cell GREEN and kills
+ * only its own control, which is what a confident wrong diagnosis looks like from the inside.
+ *
+ * AND B1/B2 NAME DIFFERENT CELLS ABOVE THAN THEY DID ONE COMMIT AGO, BECAUSE WAL v2 SILENTLY
+ * INVALIDATED THEIR OLD ONES. Both were KILLED before v2 and both SURVIVED after it, on an
+ * unchanged predicate and unchanged controls. Adding the third condition (`the WAL cannot say what
+ * was open`) meant every case those controls exercised was already answered by it — each used a v2
+ * WAL, whose bracket state is non-null — so conditions 1 and 2 could be deleted with nothing
+ * noticing. That is this fleet's own rule arriving from the other side: DEFENCE IN DEPTH DEFEATS
+ * OUTCOME-BASED TESTING, and a control written against a two-term predicate does not survive a
+ * third term for free.
+ *
+ * The diagnosis was NOT "equivalent mutant" and NOT "weak assertion" — those need opposite repairs
+ * and the wrong one here would have deleted a live condition. Both conditions are REACHABLE with
+ * `brackets === null` held constant, and neither was covered:
+ *   - condition 1 is reached when a batch VALIDATES (setting `fedAnyEvent`) and then fails to PACK,
+ *     so nothing folds and the WAL still records no bracket state;
+ *   - condition 2 is reached by a MIGRATED v1 document that is also VIRGIN — nothing was ever
+ *     published, so nothing could have been lost.
+ * The two cells below hold `brackets === null` and vary one condition each. The pre-v2 controls are
+ * kept: they no longer discriminate, but they still assert real behaviour, and deleting a cell
+ * because a mutation stopped reaching it is how coverage is lost quietly.
  *
  * ONE THING NO CELL HERE CAN DISCRIMINATE, said plainly rather than left as an unproven constant:
  * `SIZING_EXPECTATION`. Measuring at `MAX_SAFE_INTEGER` is a provable upper bound, but the real
@@ -716,6 +735,77 @@ try {
       const p = await attempt(() => restarted.pump());
       c(
         "bracket:CONTROL-a-violation-after-a-RESTORED-restart-is-NOT-blamed-on-lost-state",
+        p.err instanceof AguiVocabularyError && !(p.err instanceof AguiBracketStateLost),
+        p.err?.message ?? "no throw",
+      );
+    }
+
+    // (1d) AND (1e) — THE TWO CONTROLS THAT WAL v2 QUIETLY INVALIDATED.
+    //
+    // B1 and B2 were KILLED before v2 and SURVIVED after it, and the reason is the exact hazard this
+    // fleet already has a rule for: DEFENCE IN DEPTH DEFEATS OUTCOME-BASED TESTING. Adding the third
+    // condition meant every case the old controls exercised was ALREADY answered by it — both used a
+    // v2 WAL, whose `brackets` is non-null, so conditions 1 and 2 could be deleted with nothing
+    // noticing. The old controls did not become wrong; they stopped discriminating.
+    //
+    // The repair is to hold `brackets === null` CONSTANT and vary only the condition under test.
+    // Both cases below are reachable and neither was covered.
+    {
+      // (1d) Migrated v1, NON-virgin, and this process HAS fed events — because its first batch
+      //      validated and then failed to PACK (an oversized unit), so nothing folded and `brackets`
+      //      is still null. A violation now is this stream's, not a ghost of the previous process.
+      const { src, walPath } = await fresh("bracket-fed-but-unfolded");
+      const adopted = (await new JsonlFileSource<Rec>(src).read(undefined)).cursor;
+      writeFileSync(walPath, JSON.stringify({
+        v: 1, space: SPACE, epoch: "ep-v1", threadId: THREAD, principal: PRINCIPAL_KEY,
+        frontier: { seq: 3, lastSubjectSeq: 9, sourceCursor: adopted }, pending: null,
+      }));
+      const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+      const ep = new FakeEndpoint();
+      // r1 opens a run and validates; r2 then finishes a run that was never started. The batch
+      // therefore VALIDATES on the first pump (r1 alone) and VIOLATES on the second (r1 re-read,
+      // then r2) — which is exactly the shape needed to reach a violation with `fedAnyEvent` set.
+      const openThenViolate = (r: Rec) =>
+        "skip" in r
+          ? null
+          : r.run === "r1"
+            ? openRunOnly(r)
+            : { runId: "rZ", events: [runFinished({ threadId: THREAD, runId: "rZ", timestamp: 9 })] };
+      const em = await AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: openThenViolate });
+      ep.maxPayload = 80; // smaller than any single unit: validation succeeds, packing refuses
+      append(src, { run: "r1", msg: "m1", text: "hello" });
+      const packFailed = await attempt(() => em.pump());
+      c(
+        "bracket:SETUP-a-batch-can-validate-and-then-fail-to-PACK-leaving-nothing-folded",
+        packFailed.err instanceof AguiVocabularyError && wal.brackets === null,
+        { err: packFailed.err?.message, brackets: wal.brackets },
+      );
+      ep.maxPayload = 4096;
+      append(src, { run: "r2", msg: "m2", text: "mid-run" });
+      const p = await attempt(() => em.pump());
+      c(
+        "bracket:CONTROL-a-violation-after-this-process-FED-but-never-FOLDED-is-NOT-blamed-on-lost-state",
+        p.err instanceof AguiVocabularyError && !(p.err instanceof AguiBracketStateLost),
+        p.err?.message ?? "no throw",
+      );
+    }
+    {
+      // (1e) Migrated v1 with a VIRGIN frontier: the document cannot say what was open AND nothing
+      //      was ever published, so nothing could have been lost. The writer really is wrong.
+      const { src, walPath } = await fresh("bracket-migrated-virgin");
+      writeFileSync(walPath, JSON.stringify({
+        v: 1, space: SPACE, epoch: "ep-v1", threadId: THREAD, principal: PRINCIPAL_KEY,
+        frontier: { seq: 0, lastSubjectSeq: 0 }, pending: null,
+      }));
+      const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+      c("bracket:SETUP-a-migrated-VIRGIN-document-also-records-no-bracket-state", wal.brackets === null, wal.brackets);
+      const ep = new FakeEndpoint();
+      const em = await AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: orphan });
+      await em.pump(); // adopt
+      append(src, { run: "r1", msg: "m1", text: "mid-run" });
+      const p = await attempt(() => em.pump());
+      c(
+        "bracket:CONTROL-a-violation-on-a-MIGRATED-VIRGIN-frontier-is-NOT-blamed-on-lost-state",
         p.err instanceof AguiVocabularyError && !(p.err instanceof AguiBracketStateLost),
         p.err?.message ?? "no throw",
       );
