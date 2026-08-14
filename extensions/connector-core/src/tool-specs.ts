@@ -9,7 +9,14 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
+import {
+  isConcreteChannel,
+  channelInAllow,
+  AmbiguousPeerError,
+  isPermissionDenied,
+  type PresenceStatus,
+  type ConnectionOutcome,
+} from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -39,6 +46,23 @@ function controlFailure(action: string, e: unknown): ToolResult {
     );
   }
   return err(`${action}: no manager reachable (${detail}). Is the manager running?`);
+}
+
+/** Render a {@link ConnectionOutcome} for a tool caller.
+ *
+ *  Two channels, both required, because they protect against different mistakes. The NAMED reason
+ *  goes in the text so a model can act on the specific condition that failed ("no grant" and "the
+ *  broker is down" have different fixes). `isError: true` goes to the HOST so a refusal cannot be
+ *  read as success by a caller that ignores the payload — every outcome object is truthy, so
+ *  without this flag "treat a refusal as success" would be the default rather than the hard path. */
+function renderOutcome(r: ConnectionOutcome): ToolResult {
+  if (r.outcome === "refused") return err(`Refused [${r.reason}]: ${r.detail}`);
+  if (r.outcome === "disconnected")
+    return ok(
+      `Disconnected from "${r.space}" ✓ (cause: ${r.cause}). Peers now see you offline. You will receive nothing until you call cotal_connect — ` +
+        `no peer can bring you back. Durable channel membership was kept, so you will be given what you missed when you return.`,
+    );
+  return ok(`Connected to "${r.space}" ✓ on #${r.channels.join(", #") || "(no channels)"}. Anything sent while you were away is replayed from the durable backstop.`);
 }
 
 /** One Cotal tool, independent of any host's tool API. */
@@ -131,6 +155,12 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // use them, instead of discovering the denial by trying. cotal_despawn stays (its no-name
   // self-despawn is granted to all). controlFailure remains the backstop if a wire denial slips by.
   const canSpawn = !config.creds || (config.capabilities?.includes("spawn") ?? false);
+  // Same shape, same reasoning, different grant: `capabilities: [connection]` is what lets a session
+  // change its OWN mesh connection. Note this gate decides only what the session can SEE — it grants
+  // no authority of its own. The verbs re-present the credential the session already holds, at the
+  // target it was already launched against, so an ungranted session that somehow called one would
+  // still reach nothing new; the broker, not this line, is the fence.
+  const canConnect = !config.creds || (config.capabilities?.includes("connection") ?? false);
   const specs: CotalToolSpec[] = [
     {
       name: "cotal_orientation",
@@ -500,7 +530,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_leave",
       title: "Cotal: leave a channel",
       description:
-        "Unsubscribe from a channel mid-session; you stop receiving its messages. You can't leave your only channel.",
+        "Unsubscribe from a channel mid-session; you stop receiving its messages. You may leave every channel, including your last one — DMs and anycast still reach you, because they do not travel over channel membership.",
       schema: {
         channel: z.string().describe("The channel to leave."),
       },
@@ -731,6 +761,31 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         return r.ok ? ok(r.message) : err(r.message);
       },
     },
+    {
+      name: "cotal_disconnect",
+      title: "Cotal: disconnect from the mesh",
+      description:
+        "Deliberately take this session OFF the mesh, announcing the departure first so a supervisor sees a departure rather than a silence. While disconnected you receive no DMs, no channel messages and no anycast, and peers see you as offline; durable channel membership is KEPT, so a durable backstop replays what you missed when you return with cotal_connect. Reversible by you and only by you on the mesh side — no peer can pull you back. Refuses (rather than going dark quietly) if the departure cannot be confirmed at the broker, if requests are still awaiting a reply, or if a transition is already in flight. Optional `cause` is shown to observers.",
+      schema: { cause: z.string().max(120).optional().describe("why you are leaving — shown to peers on your presence record") },
+      async run(agent, _config, args) {
+        return renderOutcome(await agent.disconnect(args?.cause?.trim() || "requested"));
+      },
+    },
+    {
+      name: "cotal_connect",
+      title: "Cotal: return to the mesh",
+      description:
+        "Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential it already holds — it targets no new mesh and obtains no new authority. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.",
+      async run(agent) {
+        return renderOutcome(await agent.connect());
+      },
+    },
   ];
-  return specs.filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona"));
+  return specs.filter((spec) => {
+    if (spec.name === "cotal_spawn" || spec.name === "cotal_persona") return canSpawn;
+    // The connection verbs are ABSENT from an ungranted session's surface rather than
+    // present-and-failing: an agent that cannot see the verb cannot form a plan around it.
+    if (spec.name === "cotal_disconnect" || spec.name === "cotal_connect") return canConnect;
+    return true;
+  });
 }

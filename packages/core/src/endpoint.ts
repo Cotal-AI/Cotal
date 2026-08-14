@@ -292,6 +292,64 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
   return first === items.length ? [] : items.slice(first);
 }
 
+/** Why a connection verb refused. Every member names the condition that FAILED, because a caller
+ *  can act on "you have no grant" and cannot act on "error".
+ *
+ *  Deliberately absent, and each absence is a decision rather than an oversight:
+ *  - `unknown-mesh` / `no-grant-for-mesh` — the shipped verbs take no mesh argument (they return to
+ *    the target the agent was launched against), so neither condition is reachable.
+ *  - `partial-membership-close` / `durable-membership-unclosed` — re-target-only, and re-target is
+ *    deferred until a lifecycle-level close-and-fence primitive exists.
+ *  - `holds-lease` — leases at disconnect are UNMEASURED, and specifying a refusal for a condition
+ *    nobody has observed is how a taxonomy starts describing an imagined system. */
+export type ConnectionRefusal =
+  /** The persona lacks `capabilities: [connection]`, so it may not call these verbs at all. */
+  | "no-grant"
+  /** The grant is fine and the target is simply not answering. */
+  | "broker-unreachable"
+  /** Reached the broker; it refused the credential. A different fix from "the host is down". */
+  | "auth-rejected"
+  /** The held credential is stale. A different fix again — re-mint, don't re-dial. */
+  | "credential-expired"
+  /** Already on the mesh. Distinct from success: silently succeeding hides a caller's bad model. */
+  | "already-connected"
+  /** Already off the mesh. Same reasoning, other direction. */
+  | "not-connected"
+  /** Another connect/disconnect is mid-flight; the admission latch is closed. */
+  | "transition-in-progress"
+  /** The session is ending — do not start a transition. */
+  | "shutting-down"
+  /** The departure could not be CONFIRMED at the broker, so the disconnect is refused (fail-closed). */
+  | "transition-unconfirmed"
+  /** The departure was announced, but the connection did not close; the announcement was retracted. */
+  | "teardown-failed"
+  /** Requests are awaiting a reply on this connection; tearing it down would strand them. */
+  | "in-flight-request";
+
+/** The result of a connection verb: a DISCRIMINATED union, never a boolean and never a silent
+ *  no-op, so that "treat a refusal as success" is hard to write rather than the default.
+ *
+ *  Note every member is a truthy object, so a caller can still ignore `outcome` and read success.
+ *  That is why the tool boundary additionally maps a refusal to the host's error channel — the
+ *  union is for the caller, the error flag is for the host, and both are required. */
+export type ConnectionOutcome =
+  | { outcome: "connected"; space: string; channels: string[] }
+  | { outcome: "disconnected"; space: string; cause: string }
+  | { outcome: "refused"; reason: ConnectionRefusal; detail: string };
+
+const refusal = (reason: ConnectionRefusal, detail: string): ConnectionOutcome => ({ outcome: "refused", reason, detail });
+
+/** Map a connect failure onto the refusal that tells the caller what to FIX. Core already
+ *  distinguishes these three cases when it dials, and collapsing them into "broker-unreachable"
+ *  sends an operator to check a host that is up and answering. */
+function classifyConnectFailure(e: unknown): ConnectionRefusal {
+  if (e instanceof UserAuthenticationExpiredError) return "credential-expired";
+  const m = ((e as Error)?.message ?? String(e)).toLowerCase();
+  if (m.includes("authorization violation") || m.includes("auth") || m.includes("permissions violation")) return "auth-rejected";
+  if (m.includes("expired")) return "credential-expired";
+  return "broker-unreachable";
+}
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -442,6 +500,25 @@ export class CotalEndpoint extends EventEmitter {
    *  still unsettled at 20s. A caller that hangs forever is strictly worse than one that fails,
    *  because it cannot even report which way it went. */
   private pendingRequests = new Set<(reason: Error) => void>();
+  /** Deliberately taken off the mesh by {@link disconnect} — distinct from `stopped` (terminal,
+   *  never comes back) and from a dropped connection (self-heals). This flag is what makes a
+   *  self-disconnect STICK: without it the supervisor's closed() handler would read the drain as a
+   *  fault and re-establish, so the verb would silently undo itself a few hundred ms later. */
+  private selfDisconnected = false;
+  /** Request-admission latch, closed only while {@link disconnect} inspects and tears down.
+   *
+   *  A bare "are any requests in flight?" pre-check is a race wearing the word "guard": a request is
+   *  admitted whenever `nc` is present, so one can be issued between the check and the teardown and
+   *  be stranded by it. Closing admission FIRST and only then inspecting what remains is what makes
+   *  the {@link ConnectionRefusal} `in-flight-request` a real refusal rather than a hopeful one.
+   *
+   *  Deliberately NOT held across {@link connect}: a connect's own rebuild issues internal requests,
+   *  so a latch shared with the mutual-exclusion flag below would make connect refuse its own
+   *  traffic. Mutual exclusion between the verbs and admission control of callers are two different
+   *  jobs and get two different flags. */
+  private admissionClosed = false;
+  /** Mutual exclusion between connection verbs — one transition at a time, in either direction. */
+  private transitionInFlight = false;
   /** Interruptible backoff for reestablishLoop — reconnect()/stop() resolves this to retry
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
@@ -1018,6 +1095,10 @@ export class CotalEndpoint extends EventEmitter {
     if (!nc) return;
     void nc.closed().then((err) => {
       if (this.stopped) return;
+      // A DELIBERATE departure must not be healed. Without this guard the drain inside disconnect()
+      // resolves closed(), the supervisor reads it as a fault, and the self-heal puts the agent back
+      // on the mesh moments after it asked to leave - the verb silently undoing itself.
+      if (this.selfDisconnected) return;
       if (this.nc !== nc) return; // epoch-stale — a rebuild already swapped this connection
       this.emit("connection", { connected: false }); // dropped — report it before the rebuild kicks in
       this.emit(
@@ -1089,7 +1170,9 @@ export class CotalEndpoint extends EventEmitter {
     if (this.reestablishing) return;
     this.reestablishing = true;
     try {
-      while (!this.stopped) {
+      // `selfDisconnected` exits this loop for the same reason `stopped` does: a retry loop that
+      // outlives a deliberate disconnect would reconnect the agent behind its own back.
+      while (!this.stopped && !this.selfDisconnected) {
         try {
           await this.rebuild();
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
@@ -1124,6 +1207,10 @@ export class CotalEndpoint extends EventEmitter {
    *  can report it. */
   async reconnect(): Promise<void> {
     if (this.stopped) throw new Error("endpoint stopped - cannot reconnect");
+    // A self-disconnect is a state, not a fault, so the RECOVERY path must not quietly reverse it.
+    // Say which verb does, rather than failing with a generic error the caller cannot act on.
+    if (this.selfDisconnected)
+      throw new Error("this endpoint was deliberately disconnected - use connect() to return to the mesh, not reconnect()");
     this.kickBackoff();
     try {
       await this.rebuild();
@@ -1131,6 +1218,149 @@ export class CotalEndpoint extends EventEmitter {
       void this.reestablishLoop(); // background retry until success or stop
       throw e;
     }
+  }
+
+  /** Take this endpoint OFF the mesh deliberately, reversibly, and observably.
+   *
+   *  Ordering is the whole design, and it is fail-closed: **announce first, confirmed at the broker,
+   *  and only then tear down.** A disconnect whose announcement did not land is indistinguishable
+   *  from a crash, which is the exact property this verb exists to buy — so if the announcement
+   *  cannot be confirmed, the disconnect is REFUSED and the endpoint stays up.
+   *
+   *  "Confirmed" means a server round-trip. The presence write is a JetStream KV put, which returns
+   *  a revision only after the broker has taken it; a resolved local write or a fire-and-forget
+   *  publish would NOT count, because we are confirming a publish over the very connection we are
+   *  about to destroy and a client-buffer success followed by a drain loses the message on the wire
+   *  while reporting it as sent. That would be a fail-closed guard that closes on nothing.
+   *
+   *  Returns a discriminated {@link ConnectionOutcome} rather than a boolean, so that treating a
+   *  refusal as success is hard to write rather than the default. */
+  async disconnect(cause = "requested"): Promise<ConnectionOutcome> {
+    if (this.stopped)
+      return refusal("shutting-down", "this endpoint is stopped, so it has no connection to take down");
+    if (this.transitionInFlight)
+      return refusal("transition-in-progress", "another connect/disconnect is already mid-flight on this endpoint");
+    if (this.selfDisconnected || !this.nc)
+      return refusal("not-connected", "this endpoint is already off the mesh - nothing to disconnect");
+
+    // Close admission BEFORE inspecting what is in flight, or the inspection races the teardown.
+    this.transitionInFlight = true;
+    this.admissionClosed = true;
+    try {
+      if (this.pendingRequests.size)
+        return refusal(
+          "in-flight-request",
+          `${this.pendingRequests.size} request(s) are awaiting a reply on this connection; tearing it down would strand them. Retry once they settle`,
+        );
+
+      // The announcement. `activity` is freeform and survives toOffline()'s scrub, so the cause is
+      // observable WITHOUT a wire change - advisory only, and explicitly NOT the typed cause field
+      // the SPEC still owes an observer (see docs/agent-connection-control.md).
+      const prevStatus = this.status;
+      const prevActivity = this.activity;
+      this.status = "offline";
+      this.activity = `disconnected: ${cause}`;
+      let revision: number | undefined;
+      try {
+        revision = await this.publishPresence();
+      } catch (e) {
+        this.status = prevStatus;
+        this.activity = prevActivity;
+        // "Unconfirmed" is NOT "did not happen": a JetStream write can be stored while its ack is
+        // lost, so peers may already show this agent offline. Re-assert the truth rather than assume.
+        await this.reassertPresence();
+        return refusal(
+          "transition-unconfirmed",
+          `the departure could not be confirmed at the broker (${(e as Error).message}); staying connected rather than going dark silently. ` +
+            `The write MAY have been stored and only its ack lost, so peers may briefly have seen this agent offline; current presence has been re-asserted`,
+        );
+      }
+      if (this.doRegister && revision === undefined) {
+        this.status = prevStatus;
+        this.activity = prevActivity;
+        return refusal("transition-unconfirmed", "the presence write returned no broker revision, so the departure is unconfirmed");
+      }
+
+      // Only now the teardown. `selfDisconnected` goes up FIRST so the supervisor's closed()
+      // handler reads the drain below as deliberate rather than as a fault to heal.
+      this.selfDisconnected = true;
+      const oldNc = this.nc;
+      try {
+        this.clearConnectionScoped();
+        this.nc = undefined;
+        this.js = undefined;
+        this.jsm = undefined;
+        this.kv = undefined;
+        this.channelKv = undefined;
+        this.membersKv = undefined;
+        this.aclKv = undefined;
+        this.deliveryKv = undefined;
+        this.emit("connection", { connected: false });
+        await oldNc?.drain();
+      } catch (e) {
+        // Announced a departure that did not happen. Republish the TRUE state rather than leave the
+        // lie standing - peers would otherwise materialize `offline` for a connection still live.
+        this.selfDisconnected = false;
+        this.status = prevStatus;
+        this.activity = prevActivity;
+        await this.reassertPresence();
+        return refusal(
+          "teardown-failed",
+          `the departure was announced but the connection did not close (${(e as Error).message}); the announcement has been retracted`,
+        );
+      }
+      return { outcome: "disconnected", space: this.space, cause };
+    } finally {
+      this.admissionClosed = false;
+      this.transitionInFlight = false;
+    }
+  }
+
+  /** Bring a self-disconnected endpoint BACK onto the mesh. The inverse of {@link disconnect}, and
+   *  the reason a self-disconnect is a reversible state rather than a one-way door: the credential,
+   *  the target and the grant are all still held in-process, so no new authority is needed and none
+   *  is minted. */
+  async connect(): Promise<ConnectionOutcome> {
+    if (this.stopped)
+      return refusal("shutting-down", "this endpoint is stopped; start a new session instead");
+    if (this.transitionInFlight)
+      return refusal("transition-in-progress", "another connect/disconnect is already mid-flight on this endpoint");
+    if (!this.selfDisconnected && this.nc)
+      return refusal("already-connected", "this endpoint is already on the mesh");
+
+    this.transitionInFlight = true;
+    const wasDisconnected = this.selfDisconnected;
+    try {
+      this.selfDisconnected = false;
+      await this.rebuild();
+      this.status = "idle";
+      this.activity = undefined;
+      await this.reassertPresence();
+      return { outcome: "connected", space: this.space, channels: [...this.channels] };
+    } catch (e) {
+      // Failed to get back on. Restore the self-disconnected state rather than leaving the endpoint
+      // in a third state that is neither deliberately-off nor live.
+      this.selfDisconnected = wasDisconnected;
+      return refusal(classifyConnectFailure(e), `could not reconnect to ${this.space}: ${(e as Error).message}`);
+    } finally {
+      this.transitionInFlight = false;
+    }
+  }
+
+  /** Re-publish current presence, best-effort. Used after a refused transition: "unconfirmed" is not
+   *  "did not happen" (a JetStream write can be stored while its ack is lost), so a refusal must
+   *  re-assert the truth rather than assume peers never saw the departure. */
+  private async reassertPresence(): Promise<void> {
+    try {
+      await this.publishPresence();
+    } catch {
+      /* best-effort - the caller is already being told the transition was refused */
+    }
+  }
+
+  /** True when the caller deliberately took this endpoint off the mesh (not stopped, not dropped). */
+  isSelfDisconnected(): boolean {
+    return this.selfDisconnected;
   }
 
   async stop(): Promise<void> {
@@ -1374,6 +1604,13 @@ export class CotalEndpoint extends EventEmitter {
     payload: string,
     opts: { timeout: number; noMux: boolean; reply: string },
   ): Promise<Msg> {
+    // The latch, enforced here because this is the ONE place every request/reply call passes
+    // through. Refusing at admission is what makes disconnect()'s in-flight check a guarantee
+    // rather than a snapshot: once the latch is closed the set can only shrink.
+    if (this.admissionClosed)
+      throw new Error(
+        "a disconnect is in progress on this mesh connection, so no new request was sent. Nothing happened - retry once the transition completes.",
+      );
     let reject!: (reason: Error) => void;
     const stranded = new Promise<never>((_, rej) => { reject = rej; });
     this.pendingRequests.add(reject);
@@ -3708,8 +3945,12 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  private async publishPresence(): Promise<void> {
-    if (!this.doRegister || !this.kv) return; // observers watch but never publish their own record
+  /** Returns the KV revision the broker assigned, or `undefined` when this endpoint does not publish
+   *  presence at all. The revision is the BROKER-SIDE ACKNOWLEDGEMENT `disconnect()` fails closed on:
+   *  a JetStream KV put resolves only after the server has taken the write, unlike a core-NATS
+   *  publish which resolves off the client's own send buffer. */
+  private async publishPresence(): Promise<number | undefined> {
+    if (!this.doRegister || !this.kv) return undefined; // observers watch but never publish their own record
     const p: Presence = {
       card: this.card,
       // SPEC §6/:315: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
@@ -3725,7 +3966,7 @@ export class CotalEndpoint extends EventEmitter {
     // the publisher — this covers stop(), setStatus("offline"), and any future offline publish site, so
     // the raw KV record is compliant, not only the observer-side roster materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
-    await this.kv.put(this.card.id, JSON.stringify(record));
+    return await this.kv.put(this.card.id, JSON.stringify(record));
   }
 
   private async startPresenceWatch(): Promise<void> {

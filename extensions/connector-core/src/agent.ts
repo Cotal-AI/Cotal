@@ -23,6 +23,7 @@ import {
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
+  type ConnectionOutcome,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 
@@ -266,6 +267,33 @@ export class MeshAgent extends EventEmitter {
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
     await this.ep.stop();
+  }
+
+  /** Take this session off the mesh deliberately — see {@link CotalEndpoint.disconnect}.
+   *
+   *  `stopping` is checked here rather than only in core because the agent knows about session
+   *  shutdown and the endpoint does not: a disconnect requested while the host is tearing the
+   *  session down is a different condition from one requested on a healthy session, and the caller
+   *  should be told which. */
+  async disconnect(cause = "requested"): Promise<ConnectionOutcome> {
+    if (this.stopping)
+      return { outcome: "refused", reason: "shutting-down", detail: "this session is shutting down; its mesh connection is going away anyway" };
+    return this.ep.disconnect(cause);
+  }
+
+  /** Return to the mesh after a deliberate disconnect — see {@link CotalEndpoint.connect}.
+   *
+   *  Reversibility is the point: the credential, the target and the grant are all still held in
+   *  this process, so coming back needs no new authority and mints none. */
+  async connect(): Promise<ConnectionOutcome> {
+    if (this.stopping)
+      return { outcome: "refused", reason: "shutting-down", detail: "this session is shutting down; start a new session instead" };
+    return this.ep.connect();
+  }
+
+  /** True when this session deliberately took itself off the mesh (not stopped, not dropped). */
+  isSelfDisconnected(): boolean {
+    return this.ep.isSelfDisconnected();
   }
 
   /** Manual reconnect: tear down the mesh connection and rebuild it in-process, WITHOUT
@@ -1070,7 +1098,11 @@ export class MeshAgent extends EventEmitter {
     return this.ep.joinChannel(channel);
   }
 
-  /** Leave a channel mid-session (refuses to leave the last one). */
+  /** Leave a channel mid-session. There is NO last-channel guard, and adding one was considered and
+   *  rejected: the DM plane is untouched by channel membership, so an agent on zero channels has not
+   *  made itself unreachable, and `cotal_disconnect` makes "on no channels" a legitimate deliberate
+   *  state. This jsdoc and the tool description both used to claim a guard that has never existed;
+   *  the defect was the claim, not the missing check. */
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     this.assertConnected();
     return this.ep.leaveChannel(channel);
