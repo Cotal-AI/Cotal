@@ -61,6 +61,11 @@ export const START_TIMEOUT_MS = 40_000;
 export async function resolveControlTarget(
   flags: ConnectFlags,
   profile: Profile,
+  /** `--on <instanceId>`: the instance this invocation addresses. Forwarded to the instrument mint
+   *  so the one-shot credential carries the exact `ep.inst.…` rows for it. Omitted ⇒ class rails
+   *  only, exactly as before. It has to arrive HERE rather than at the invoke: the instrument is
+   *  minted during this resolve, and a credential cannot gain a rail after it is issued. */
+  instanceId?: string,
 ): Promise<{ space: string; server: string; auth: ControlAuth }> {
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
@@ -118,7 +123,7 @@ export async function resolveControlTarget(
     }
   }
   // Static / open / raw-creds: mint the requested instrument (or bare open connect).
-  const conn = await connectOrExit(withSpace, profile);
+  const conn = await connectOrExit(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
   return {
     space: conn.space,
     server: conn.server,

@@ -546,15 +546,15 @@ registry.
 
 ```bash
 cotal ps [--on <instance>] [--space <s>]
-cotal stop --name <n> [--space <s>]
-cotal attach --name <n> [--space <s>]
+cotal stop --name <n> [--on <instance>] [--space <s>]
+cotal attach --name <n> [--on <instance>] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
-| `--on <instance>` | class scatter | `ps`: pin to one manager instance id (multi-manager space) |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space) |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
@@ -566,6 +566,12 @@ renders each managed agent's last credential-refresh outcome, fail-closed.
   the records registry, merges every registered instance's agents grouped and attributed per
   instance, and a non-answering instance is shown `unreachable` (never silently omitted).
   `--on <instance>` pins the read to one exact instance id instead.
+
+**`stop` and `attach` in a multi-manager space.** Without `--on`, both are answered by whichever
+instance wins the class queue — which is not necessarily the one hosting the seat you named. Since a
+seat can only be stopped or attached by the manager actually running it, `--on <instance>` is how
+you say which one. Pass it whenever more than one manager serves the space and you know where the
+seat lives; `cotal ps` prints the instance each agent belongs to.
 - **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
   read against the manager's in-memory roster, owner-filtered). It does **not** report other
   manager instances, and it cannot tell you that one is down — an unreachable manager is absent

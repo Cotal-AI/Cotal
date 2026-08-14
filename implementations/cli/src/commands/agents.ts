@@ -16,9 +16,14 @@ import { completingFlagValue } from "../lib/completion.js";
 const nameFlag = (what: string) =>
   ({ name: "name", type: "string", value: "<n>", description: what }) as const;
 
-export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)")] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" }] as const satisfies readonly FlagSpec[];
-export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)")] as const satisfies readonly FlagSpec[];
+/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
+ *  ps/stop/attach so the three cannot drift. For stop and attach it is the seat-locality escape
+ *  hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily the
+ *  one that wins the class queue. */
+const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" } as const;
+export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];
+export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)"), onFlag] as const satisfies readonly FlagSpec[];
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
@@ -43,9 +48,9 @@ export async function stop(args: ParsedArgs): Promise<void> {
   // "owner"` (its own-domain despawn row), and the MANAGER authorizes: agents under your own
   // owner pass with scope "spawn", another owner's agent needs "admin" on your ledger row (the
   // handler's fresh any-mode authorization). No client-side try-admin-then-owner fallback.
-  const t = await resolveControlTarget(v, "control-caller-admin");
+  const t = await resolveControlTarget(v, "control-caller-admin", v.on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach);
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, v.on);
   failIfNotOk(reply);
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
@@ -91,7 +96,9 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
-  const t = await resolveControlTarget(v, "control-caller-privileged");
+  // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
+  // this resolve, and a credential cannot gain an instance rail after it is minted.
+  const t = await resolveControlTarget(v, "control-caller-privileged", v.on);
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
   if (v.on) {
@@ -176,9 +183,9 @@ export async function attach(args: ParsedArgs): Promise<void> {
   // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
   // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
   // passes with "spawn", cross-owner needs ledger "admin").
-  const t = await resolveControlTarget(v, "control-caller-admin");
+  const t = await resolveControlTarget(v, "control-caller-admin", v.on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach);
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, v.on);
   failIfNotOk(reply);
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive

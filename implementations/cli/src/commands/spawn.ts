@@ -236,6 +236,7 @@ async function spawnDetached(
   const t = await resolveControlTarget(
     { space: values.space, server: values.server, creds: values.creds },
     "control-caller-privileged",
+    values.on,
   );
   provenance.read("mesh", `${t.space} (${t.server})`);
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
