@@ -14,6 +14,7 @@
  * D5 adds the first credential-death primitive: profile-classified user-JWT lifetimes. Full revocation,
  * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
+import { ttlBuckets } from "./streams.js";
 import { join } from "node:path";
 import {
   decode,
@@ -1668,7 +1669,12 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // three streams only — the durable streams (chat/dm/task/inbox/dlv, channel/members/acl/membership
   // registries) are never updated — and still NO DELETE/PURGE. The supervisor profile keeps its full UPDATE
   // denial; this widening is provisioning-only.
-  const ttlStreams = [presenceBucket, deliveryBucket, managerBucket].map((b) => `KV_${b(space)}`);
+  // Derived from the SAME inventory that creates and reconciles them, not a third hand-kept copy.
+  // Review found this list was the last independent one: a fourth TTL'd bucket added to `ttlBuckets`
+  // would be created and reconciled correctly and then die on a permissions violation here, because
+  // the grant never learned about it. Same defect one seam out — a bucket the code knows to maintain
+  // and the credential is not allowed to.
+  const ttlStreams = ttlBuckets(space).map(([bucket]) => `KV_${bucket}`);
   const streamReconcile = ttlStreams.map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // DM/DLV/TASK durable pre-create (bind-only mailboxes): both the new-API CREATE and legacy DURABLE.CREATE
   // forms (the client's consumer-add path varies by version), plus INFO (the add returns ConsumerInfo).

@@ -338,7 +338,7 @@ export function fanoutDurableConfig(
  *  So a metadata-write fault (EACCES, ENOSPC) yields UPDATE OK, a read-back showing the intended
  *  `max_age`, and a backing store still running unlimited with no expiry timer. No check at this seam can
  *  see that, because every field we can read comes from the config that DID get updated. Closing it needs
- *  either a behavioural proof that records actually age out (see the CLI regression's open-mesh phase,
+ *  either a behavioural proof that records actually age out (see `presence-ttl-expiry-open.smoke.ts`,
  *  which proves enforcement on a healthy server) or an upstream fix that propagates the store error.
  *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement. */
 export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<TtlReconciled | undefined> {
@@ -375,7 +375,7 @@ export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: stri
  *  Now a TTL'd bucket cannot be created without appearing here, so it cannot be missed on upgrade.
  *
  *  NOT mode-gated: an open mesh carries the same buckets and drifts identically. */
-function ttlBuckets(space: string): ReadonlyArray<readonly [string, number]> {
+export function ttlBuckets(space: string): ReadonlyArray<readonly [string, number]> {
   return [
     // Presence (liveness): dead agents' records must age out, or the roster reports a despawned
     // agent as live. Pre-created so agents, denied KV stream-create, can open it.

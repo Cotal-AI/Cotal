@@ -86,7 +86,7 @@ try {
   const after = await kv.get("liveness.probe");
   // THE CELL. If the store never started its expiry timer — the split-state failure the read-back
   // cannot see — the record is still here and this reddens, while `max_age` still reads 6s.
-  check("...and is GONE after the TTL elapses (expiry is IN FORCE, not merely configured)", after === null, after?.string());
+  check("...and is GONE after the TTL elapses — expiry IN FORCE on a HEALTHY server (this cell does NOT detect the metadata-write-fault case; nothing at this seam can)", after === null, after?.string());
   check("...while max_age still reports 6s (so the cell above proves enforcement, not config drift)", (await maxAge()) === PRESENCE_MS * 1e6);
 
   await nc.close();
