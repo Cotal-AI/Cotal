@@ -236,10 +236,28 @@ confirms against anything other than the broker has not implemented this section
    re-assert current presence after a refused transition, exactly as the F9 fix reports "the outcome
    is UNKNOWN" rather than claiming the request did not happen. **Same lesson, twice in one lane.**
 
-**Scope note this design missed:** the cause/target field does not exist in the `Presence` wire
-shape, which today carries only status/activity/attention/channelModes/lifecycleUid/ts
-(`types.ts:70-89`). Carrying a cause is therefore a **wire change requiring a SPEC update**, not a
-client-local addition. That materially widens this lane and fm-orchestrator should know before code.
+### DECLARED DEPENDENCY — the cause field is not on the wire, and §3 cannot be fully delivered
+
+The cause/target field does not exist in the `Presence` wire shape, which today carries only
+status/activity/attention/channelModes/lifecycleUid/ts (`types.ts:70-89`). Carrying a cause is a
+**wire change requiring a SPEC update**, and **fm-orchestrator has ruled it OUT OF SCOPE for this
+lane** — a connector-verb lane does not land a presence-wire change as a side effect of needing one
+field.
+
+**The consequence, stated rather than quietly absorbed.** Without a cause field:
+
+- What **can** ship: a disconnect that produces an explicit, confirmed, observable transition. An
+  observer can tell "this agent departed deliberately" from "this agent is idle" — which is the ghost
+  in §3, and it closes.
+- What **cannot** ship: the *cause* travelling with the transition. An observer sees a deliberate
+  departure but not **why**, and for a re-target not **where to**. §3's stated property is "the
+  transition and its cause visible — not inferred from a peer's silence"; **the cause half is
+  blocked on a SPEC change this lane is not authorised to make.**
+
+**§3 is deliberately NOT downgraded to match what the wire can carry.** The requirement stands as
+written and this section records the gap, so the shortfall reaches whoever owns the SPEC as a real
+cost rather than disappearing into a narrowed requirement. Shipping the observable-but-not-
+self-explaining version is a conscious partial delivery, not the design.
 
 Note there are two supervisory views by construction: the manager holds an OS process handle and
 "the mesh observes its presence separately" (`runtime.ts:29`) **[R]**. A self-disconnect diverges

@@ -174,3 +174,16 @@ cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m1-probe.mts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m2-gate.mts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m4-probe.mts
 ```
+
+## Correction: F9's blast radius (recorded, because it was overstated)
+
+I reported that `cotal_reconnect` while `cotal_spawn` is in flight hangs the spawn forever, and it
+was escalated on that basis. **That is wrong.** `cotal_spawn` goes through `managerInvoke` →
+`invokeService` (`agent.ts:758-794`) — the **ep rail** — which uses `nc.subscribe`/`nc.publish` raced
+against a plain `setTimeout` (`endpoint-invoke.ts:97-131`). A Node timer is not connection-scoped, so
+an ep-rail call **rejects with `deadline-exceeded` rather than stranding**.
+
+The defect is real and measured for the three `nc.request` sites (`requestControl`,
+`requestDelivery`, `requestDeliveryAdmin`) and those are what M5 drove. **The spawn impact was an
+inference I did not test and it does not hold.** The fix stands on the measured sites; the severity
+I attached to it did not.
