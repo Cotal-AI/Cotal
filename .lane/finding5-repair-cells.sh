@@ -16,6 +16,20 @@ pass=0; fail=0   # declared BEFORE the trap: with `set -u`, an exit before these
                  # would make the trap that reports the incomplete run itself fail.
 ART="${ART_DIR:?}"; mkdir -p "$ART"
 
+# STAMP THE ARTIFACT INVALID FIRST, before anything else can fail.
+# Measured, not theorised: the EXIT trap is registered below, so a death BEFORE that line left the
+# PREVIOUS run's artifact untouched — and a reader polling `finding5-repair.rc` saw that run's `0`
+# and attributed it to this one. Not the zero-cell signature that merely looks like success: a
+# STALE SUCCESS, which is worse, because the number is real and belongs to a different run.
+# Every report this lane has made reads that file, so the window was live the whole time.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+echo 97 > "$ART/finding5-repair.rc"
+echo "STARTED $RUN_ID — no result yet. rc 97 means the run did not reach its own exit handler." \
+  > "$ART/finding5-repair.marker"
+# Remaining uncovered window, stated rather than closed: if ART_DIR itself is unset the script
+# cannot write anywhere, exits 1, and the artifact keeps whatever it held. A caller must therefore
+# read the SCRIPT's rc as well, and check RUN_ID in the marker matches the run it thinks it read.
+
 # EXPECTED CELL COUNT, pinned. An early `exit` (a refusal, a dead planted pid, a failed build guard)
 # ends the run with every cell that DID run reporting PASS — and "0 FAIL" reads as a clean run to
 # anything grepping for failures. The count is checked from the EXIT trap as well as at the end, so
@@ -31,7 +45,7 @@ finish() {
     rc=1
   fi
   echo "$rc" > "$ART/finding5-repair.rc"
-  echo "trap $(date -u +%H:%M:%SZ) rc=$rc ran=$ran/$EXPECTED_CELLS" > "$ART/finding5-repair.marker"
+  echo "trap $(date -u +%H:%M:%SZ) rc=$rc ran=$ran/$EXPECTED_CELLS run=$RUN_ID" > "$ART/finding5-repair.marker"
   cleanup
   exit "$rc"
 }
