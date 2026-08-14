@@ -65,7 +65,18 @@ check("and it reaches this package's source",
 
 // An INVOCATION, not the interface declaration — `putAttachment(...)` in the deps interface is a
 // type, not a write.
-const INVOCATION = /\.putAttachment\s*\(/;
+//
+// IT COVERS THE DELETE PATH TOO, AND FOR ONE REVISION IT DID NOT — a gap introduced by the very
+// change that added `dropAttachment`. The invariant this suite enforces is that the attachment index
+// is UNREACHABLE except through `confirmAttach`; a sweep matching only `.putAttachment(` quantified
+// over half of that. A second mutator arrived, every cell here stayed green, and the suite's own
+// summary line still read "exactly ONE production call site writes an attachment row".
+//
+// The general form, which is why this comment is long: **a structural sweep is only as wide as its
+// pattern, and its pattern is a claim about what mutation looks like.** Adding a new way to mutate
+// the thing under guard silently narrows the guard, and nothing about the guard's output changes to
+// say so. The list of verbs below is the part to extend when the next one lands.
+const INVOCATION = /\.(putAttachment|dropAttachment)\s*\(/;
 const callSites = files.filter((f) => INVOCATION.test(readFileSync(f, "utf8")));
 
 // ---- THE POSITIVE CONTROL — before any zero is believed ----------------------------------------
@@ -74,6 +85,18 @@ const callSites = files.filter((f) => INVOCATION.test(readFileSync(f, "utf8")));
 check("POSITIVE CONTROL: the sweep FINDS the known writer (confirmAttach)",
   callSites.some((f) => f.endsWith("packages/core/src/artifact-attach.ts")),
   callSites.map((f) => relative(ROOT, f)));
+
+// ---- A CONTROL PER MUTATING VERB, because one control proves one pattern alternative ------------
+// The combined regex is an alternation, and an alternation can rot one branch at a time while the
+// other keeps the control green. That is the same shape as a suite whose single control proves
+// `grep` is alive without proving it reached the corpus.
+{
+  const attachSrc = readFileSync(files.find((f) => f.endsWith("packages/core/src/artifact-attach.ts"))!, "utf8");
+  for (const verb of ["putAttachment", "dropAttachment"]) {
+    check(`POSITIVE CONTROL: the sweep's \`${verb}\` branch matches a real call site`,
+      new RegExp(`\\.${verb}\\s*\\(`).test(attachSrc), verb);
+  }
+}
 
 // ---- and only that one --------------------------------------------------------------------------
 check("exactly ONE production call site writes an attachment row",
@@ -84,7 +107,7 @@ check("exactly ONE production call site writes an attachment row",
 // touches the same messages and would be a plausible place to "helpfully" attach.
 const MUST_NOT_WRITE = [
   "packages/core/src/endpoint.ts",      // fanOutMessage's durable + live arms, catch-up copy, DLV reader, readHistory
-  "packages/core/src/artifact-index.ts",// key grammar only
+  "packages/core/src/artifact-index.ts",// key grammar + the raw helpers, which take a kv, not the deps
   "packages/core/src/artifact-fetch.ts",// the read gate
   "packages/core/src/artifact-chunk.ts",// sizing
   "packages/core/src/artifact-transfer.ts", // the planner — added when Step 5 landed, per the owed re-run
