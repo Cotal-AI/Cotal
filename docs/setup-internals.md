@@ -30,10 +30,28 @@ It is two-tier, gated on a machine marker.
 **Later runs** run `runEnsure`: re-seed the `default` persona if it's missing (announced),
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run — so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
-installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
-dashboard, and the manager) and for anything down it prints the exact command to start it
-(`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
-still launches nothing.
+installs it), then print the **status card** (`readyCard`). The card is **read-only probes**
+(`machineStatus`/`meshStatus`/`webUp` for NATS, the plugin, the mesh and the web dashboard) and for
+anything down it prints the exact command to start it (`cotal up --detach`, `cotal web`).
+Displaying state never depends on it; setup still launches nothing.
+
+**The manager row is deliberately different, and no arm of it ticks green.** It renders the full
+five-valued `managerLivenessSnapshot()` rather than a boolean, because the only thing a pidfile can
+establish is that *a* process exists at a recorded pid — not that it is a manager, and not that it
+answers:
+
+| state | row | start hint? |
+| --- | --- | --- |
+| `alive` | `· local process present (pid N · .cotal/manager.pid) · serving not checked` | no |
+| `dead` / `absent` | `○ not running · start: cotal up, or: cotal supervise` | **yes** |
+| `unknown` | `? cannot establish: the kernel answered neither running nor no-such-process …` | no |
+| `unattributable` | `? cannot establish: .cotal/manager.pid does not hold a pid …` | no |
+
+`alive` names its **source** (the pid, and the file the pid came from) and says plainly that serving
+was **not** checked. The start hint is **earned**: it appears only where the record positively says
+nothing is there, because recommending a start over a record that may front a live process is a
+double-launch. The pid and the state come from a **single read**, so the row cannot name a pid it
+did not probe.
 
 Steps run in-process via `runSteps`
 ([`lib/steps.ts`](../implementations/cli/src/lib/steps.ts)). A step can be `optional` (asked
@@ -93,7 +111,9 @@ fail-loud on collision.
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
   supervise` detached (pty runtime); it answers the control plane
   (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.pid` and
-  `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
+  `.cotal/manager.log`. Setup's status card reads that record through
+  `managerLivenessSnapshot()` and reports all five states; **pid liveness is not a health check and
+  the card no longer presents it as one** (see the manager-row table above).
 
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
 extension and is seeded automatically by the boot reconcile — the same durable, version-locked path as
