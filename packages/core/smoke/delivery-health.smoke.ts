@@ -175,8 +175,60 @@ console.log("\ndelivery-health assessment\n");
       const s = renderHealth(v);
       return s.length > 0 && !/unknown/i.test(s) && (v.serving ? s.startsWith("serving") : s.startsWith("CANNOT ESTABLISH HEALTH"));
     }));
-  check("all five distinct conditions are actually reachable",
-    new Set(verdicts.map(refusalOf)).size === 5);
+  // NAMED, not counted. This previously asserted `new Set(…).size === 5` and called it "all five
+  // distinct conditions are actually reachable" — but the set it measured was
+  // {SERVING, no-responder, lease-stale, no-lease, refused}: it COUNTED `SERVING`, which is not a
+  // refusal condition at all, and never constructed `unreachable`. A size check cannot notice that
+  // it is counting the wrong five. Assert the names, and state plainly which arm is unconstructed.
+  const seen = new Set(verdicts.map(refusalOf));
+  check("the four constructed refusal conditions are each reachable BY NAME",
+    ["no-responder", "lease-stale", "no-lease", "refused"].every((c) => seen.has(c)));
+  check("and the serving arm is reachable, counted separately from the refusals", seen.has("SERVING"));
+  // Declared absent rather than quietly folded into a count: no seam in this suite produces a
+  // broker dial failure, so `unreachable` is NOT exercised here. Naming it is the point.
+  check("`unreachable` is NOT constructed by this suite — declared, not silently counted",
+    !seen.has("unreachable"));
+}
+
+// ---- CLOCK SKEW: the age that could not be established. C1-C5, predicted in .lane/clamp-predictions.md
+// ---- BEFORE the fix. `evidenceAt` is a FOREIGN clock, so it can run ahead of ours.
+{
+  const now = 1_000_000;
+  const SKEW = 5_000;
+  // A lease whose writer stamped it 5s in the FUTURE relative to our observation.
+  const skewed: HealthProbes = {
+    readLease: async () => ({ holder: "d", since: now + SKEW, ready: true }),
+    probe: answers,
+    now: clockAt(now),
+  };
+  const h = await assessDeliveryHealth(0, TTL, DEADLINE, skewed);
+  const arm = refusalArm(h, "lease-stale");
+
+  // C1 — the whole point: the old clamp reported 0 here, and 0 is what a live round-trip produces.
+  check("CLOCK-SKEW: evidence stamped in the future does not render as age 0",
+    arm?.lastHeartbeat.ageMs !== 0);
+  // C2 — it must say the age could not be established, not pick a number.
+  check("CLOCK-SKEW: the fact reports that its age could not be established",
+    arm?.lastHeartbeat.ageMs === null);
+  // C3 — carry HOW FAR ahead, so the reader can act on it.
+  check("CLOCK-SKEW: the fact carries the measured skew, so a reader can see how far ahead",
+    arm?.lastHeartbeat.clockSkewMs === SKEW);
+  // C4 — the half that matters: it must not sail through the TTL gate.
+  check("CLOCK-SKEW: a lease whose writer clock is ahead REFUSES rather than passing the TTL gate",
+    h.serving === false && refusalOf(h) === "lease-stale");
+  check("CLOCK-SKEW: and the refusal NAMES the clock fault rather than claiming an ordinary stale heartbeat",
+    /CLOCK FAULT/.test(arm?.detail ?? "") && /FUTURE/.test(arm?.detail ?? ""));
+
+  // C5 — INVERSE CONTROL. Same lease, sane clock. If this also refused, the arms could not differ
+  // and C4 would prove nothing. This is the cell that makes the block meaningful.
+  const sane: HealthProbes = {
+    readLease: async () => ({ holder: "d", since: now, ready: true }),
+    probe: answers,
+    now: clockAt(now),
+  };
+  const ok = await assessDeliveryHealth(0, TTL, DEADLINE, sane);
+  check("CLOCK-SKEW inverse control: the same lease with a sane clock is SERVING — the skew is what decided it",
+    ok.serving === true);
 }
 
 console.log(`\nDELIVERY-HEALTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

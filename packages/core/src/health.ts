@@ -42,13 +42,35 @@ export interface HealthFact<T> {
   value: T;
   source: HealthSource;
   observedAt: number;
-  ageMs: number;
+  /** How old the EVIDENCE was at `observedAt`, or `null` when that cannot be established.
+   *
+   *  `null` rather than a number, deliberately, so every consumer must narrow before comparing.
+   *  A numeric sentinel would be silently comparable — and the comparison at the TTL gate below is
+   *  precisely where a sentinel would be read as "fresh". */
+  ageMs: number | null;
+  /** Set only when `evidenceAt` is AFTER `observedAt`: the evidence clock runs ahead of ours by
+   *  this many ms, so no age can be computed from the two. Carried so a reader can see HOW FAR
+   *  ahead rather than merely that something was wrong. */
+  clockSkewMs?: number;
 }
 
 /** Build a fact whose evidence was produced `evidenceAt` (epoch ms) and observed at `observedAt`.
- *  Age is clamped at 0: a record stamped in the future is a clock fault, not negative age. */
+ *
+ *  A record stamped in the FUTURE is a clock fault, and this function REFUSES to age it rather than
+ *  clamping it to 0. The clamp that used to live here was the lane's own disease in the lane's own
+ *  envelope: `evidenceAt` comes from a FOREIGN clock (the daemon writes it into the lease; we read
+ *  it), so a writer running ahead made the subtraction negative, and `Math.max(0, …)` reported
+ *  `ageMs: 0` — **which is exactly what a live responder round-trip produces**
+ *  (`fact(answered - started, "responder-roundtrip", answered, answered)` below). Arbitrarily stale
+ *  evidence became indistinguishable from an answer that arrived just now.
+ *
+ *  It was not merely cosmetic: the TTL gate compares `ageMs > ttlMs`, so a clamped 0 sailed through
+ *  the staleness check that the age exists to drive. The defensive clamp WAS the bug — a degraded
+ *  input that did not degrade the claim. */
 export function fact<T>(value: T, source: HealthSource, evidenceAt: number, observedAt: number): HealthFact<T> {
-  return { value, source, observedAt, ageMs: Math.max(0, observedAt - evidenceAt) };
+  const delta = observedAt - evidenceAt;
+  if (delta < 0) return { value, source, observedAt, ageMs: null, clockSkewMs: -delta };
+  return { value, source, observedAt, ageMs: delta };
 }
 
 /** WHY health could not be established. Each arm names the condition that failed and carries the
@@ -168,6 +190,29 @@ export async function assessDeliveryHealth(
     };
 
   const heartbeat = fact(lease.since, "lease-kv", lease.since, seen);
+  // `ageMs === null` FIRST, and it refuses. An age that could not be established must never reach
+  // the `> ttlMs` comparison: the old clamp made a forward-skewed clock read as 0, which passes the
+  // TTL gate and lets a lease of ANY age render as fresh. Narrowing is enforced by the type.
+  //
+  // PROVISIONAL ARM PLACEMENT, flagged rather than decided: a clock fault is not the same fact as
+  // "the heartbeat is older than the TTL", and collapsing two conditions into one name is exactly
+  // what this union is not supposed to do. It rides `lease-stale` only because a blocking review
+  // finding against the union's closure is open and unruled, and inventing a sixth arm underneath
+  // that review would pre-empt it. The `detail` therefore names the ACTUAL condition, so no reader
+  // is told the wrong thing even while the arm is provisional.
+  if (heartbeat.ageMs === null)
+    return {
+      serving: false,
+      refusal: {
+        condition: "lease-stale",
+        shard,
+        lastHeartbeat: heartbeat,
+        detail:
+          `CLOCK FAULT: the lease heartbeat is stamped ${heartbeat.clockSkewMs}ms in the FUTURE, so its ` +
+          `age cannot be established and it cannot be shown to be within the ${ttlMs}ms TTL. ` +
+          `Not treated as fresh: an age that could not be measured is a refusal, never a pass`,
+      },
+    };
   if (heartbeat.ageMs > ttlMs)
     return {
       serving: false,
