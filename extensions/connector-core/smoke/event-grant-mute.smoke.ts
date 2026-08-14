@@ -98,6 +98,12 @@
  * grant quoted, the observation present, and the keying named), while leaving every LIVE and FOREIGN
  * cell GREEN — that asymmetry is the evidence, since a mutation that reddens everything proves only
  * that the suite noticed something.
+ * W1 ACTUAL, run at 1ad6120b: KILLED, red and named `FAIL: ruled:single-token-wildcard-refuses-
+ * with-a-witness`. The predicted asymmetry HELD and was measured rather than assumed: the mutant
+ * reddens exactly the six MUTE cells and the ruled cell, each reporting the discriminated verdict
+ * `WRONG-REFUSAL[no-observation]` — the helper naming WHICH of the three required parts went
+ * missing, not a bare failure — while every LIVE, FOREIGN, witness, mixed, reach and sentinel cell
+ * stays green. G1 and G3 re-run at the same tip and both KILLED on their named cells. 3 of 3.
  *
  * WHAT STILL HOLDS AFTER RETIRING TWO: G1 is the mutation that matters, because a uniformly
  * permissive guard is the realistic failure and it is killed by the MUTE and witness-absent arms
