@@ -66,6 +66,35 @@ const svc = parseSubject(`${spacePrefix(SPACE)}.svc.someroute.${OWNER}.${ACTOR}`
 check("an anycast subject is NOT kind chat", svc?.kind !== "chat", svc?.kind);
 check("an anycast rest is the ROUTE, not a channel", svc?.rest === "someroute", svc?.rest);
 
+// ── 1b. WHAT THE CELLS ABOVE ACTUALLY EXECUTED ──────────────────────────────────────────────────
+// `@cotal-ai/core` resolves through its exports map to `dist/index.js`, which is GITIGNORED. So the
+// block above drives the last BUILD, not the source in this tree — and a stale build would make
+// every cell above a statement about code nobody is editing. The gate's `smoke:dist-freshness`
+// guard checks ORDERING only, and says so itself: a newer-but-wrong dist passes.
+//
+// So compare the two directly on the same vectors. `subjects.ts` imports nothing first-party
+// (only `node:crypto`), so it loads standalone. If the built artifact and the source disagree,
+// this reddens here rather than silently grading the wrong one.
+const src = await import("../../../packages/core/src/subjects.ts");
+check("core source loaded directly (an unloadable source would skip this whole block)",
+  typeof src.parseSubject === "function" && typeof src.chatSubject === "function");
+
+const VECTORS = [
+  ["chat", "general"],
+  ["chat", "team.backend"],
+  ["chat", `events.${OWNER}.${ACTOR}`],
+] as const;
+check("the differential vector table is populated", VECTORS.length === 3);
+for (const [, ch] of VECTORS) {
+  const subjDist = chatSubject(SPACE, OWNER, ACTOR, ch);
+  const subjSrc = src.chatSubject(SPACE, OWNER, ACTOR, ch);
+  check(`built artifact and source build the same subject — ${ch.slice(0, 24)}`, subjDist === subjSrc, { subjDist, subjSrc });
+  const pd = parseSubject(subjDist);
+  const ps = src.parseSubject(subjSrc);
+  check(`built artifact and source parse the same channel — ${ch.slice(0, 24)}`, pd?.rest === ps?.rest, { dist: pd?.rest, src: ps?.rest });
+  check(`built artifact and source agree on kind — ${ch.slice(0, 24)}`, pd?.kind === ps?.kind, { dist: pd?.kind, src: ps?.kind });
+}
+
 // ── 2. STRUCTURAL: the wiring that decides which value is used ──────────────────────────────────
 const webTs = read("../src/web.ts");
 check("the server derives the channel from the parsed subject",
