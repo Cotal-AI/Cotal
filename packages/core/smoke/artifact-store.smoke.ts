@@ -193,6 +193,40 @@ try {
     bindRefusal);
   await deleteSpace({ servers, space: hijack });
 
+  // ---- THE INDEX BUCKETS DRIFT TOO, and for one revision nothing checked ------------------------
+  //
+  // The two cells above prove the OBJECT store refuses a drifted predecessor. The index buckets sat
+  // fifteen lines away in the same file behind two bare `kvm.create()` calls with no verify at all —
+  // and it is the index whose config the source calls LOAD-BEARING: "possession must OUTLIVE the
+  // lifecycle that earned it … a ttl here would re-fire the exact branch the `confirmAttach` design
+  // exists to close". The strongest paragraph in the file guarded the weakest three lines.
+  //
+  // THE CONSEQUENCE IS ASSERTED, NOT JUST THE REFUSAL. A cell that only checks for a thrown message
+  // passes against a verify that fires on the wrong field. So this first PROVES the drifted bucket
+  // really does destroy possession — the row is written and is gone a second later — and only then
+  // asserts that setup refuses to adopt it. Without the first half, the refusal is a guard with no
+  // demonstrated harm behind it.
+  const idrift = `${SPACE}idx`;
+  const inc = await connect({ servers });
+  const ikvm = new Kvm(inc);
+  const bad = await ikvm.create(possessionBucket(idrift), { history: 5, ttl: 500 });
+  await bad.put("d.p.lc", new TextEncoder().encode("1"));
+  check("PRE a possession row written to the drifted bucket is present at t=0",
+    (await bad.get("d.p.lc")) !== null);
+  await new Promise((r) => setTimeout(r, 1200));
+  const reaped = await bad.get("d.p.lc");
+  check("PRE and it is GONE 1.2s later — the ttl really does reap possession",
+    reaped === null || reaped.operation === "DEL", reaped?.operation ?? reaped);
+  await inc.close();
+  let idxRefusal = "";
+  try { await setupSpaceStreams({ servers, space: idrift }); idxRefusal = "ADOPTED A REAPING INDEX"; }
+  catch (e) { idxRefusal = (e as Error).message; }
+  check("setup REFUSES a pre-existing possession index whose ttl would reap it",
+    idxRefusal.includes("has drifted"), idxRefusal);
+  check("the refusal names the TTL, which is the load-bearing field",
+    idxRefusal.includes("ttl is"), idxRefusal);
+  await deleteSpace({ servers, space: idrift });
+
   // WRONG FLAGS, RIGHT EVERYTHING ELSE — and the cell proves the CONSEQUENCE, not just the config
   // difference. A store with canonical subjects, cap, discard, storage and retention but
   // `allow_rollup_hdrs:false` accepts provisioning and then rejects every put, because the object

@@ -535,10 +535,44 @@ export async function reconcileSpaceTtls(opts: {
  * NO TTL, and it is load-bearing: possession must OUTLIVE the lifecycle that earned it so a delayed
  * message can still attach after its publisher retires. A ttl here would reap the rows on a timer and
  * re-fire the exact branch the `confirmAttach` design exists to close, with no adversary involved.
+ *
+ * AND IT CREATES *AND VERIFIES*, because for one revision it only created. Two bare `kvm.create()`
+ * calls adopt an existing bucket whatever its config: a bucket pre-created with `ttl=500ms` and
+ * `history=5` survived this helper's SUCCESS return, and a possession row written through it was
+ * GONE 1.2s later. The paragraph directly above calls the absence of a TTL load-bearing, and the
+ * three lines below it could not enforce that against any bucket that already existed — a guarantee
+ * stated in prose that the code did not keep. `ensureArtifactStore` fifteen lines down has always
+ * done create-then-verify with an explicit drift list; the two are now the same shape, and the
+ * contrast between them was the whole argument for this change.
  */
 export async function ensureArtifactIndexStores(kvm: Kvm, space: string): Promise<void> {
-  await kvm.create(possessionBucket(space), { history: 1 });
-  await kvm.create(attachmentBucket(space), { history: 1 });
+  for (const bucket of [possessionBucket(space), attachmentBucket(space)]) {
+    const kv = await kvm.create(bucket, { history: 1 });
+    const status = await kv.status();
+    const config = status.streamInfo.config;
+    const drift: string[] = [];
+    // THE LOAD-BEARING ONE. Possession must outlive the lifecycle that earned it, so a message
+    // delayed across a respawn can still attach. A ttl reaps the rows on a timer and re-fires the
+    // exact branch `confirmAttach` exists to close, with no adversary involved.
+    if (status.ttl !== 0)
+      drift.push(`ttl is ${status.ttl}, expected 0 (a ttl silently reaps the rows this index must outlive)`);
+    // history > 1 keeps superseded revisions addressable, which makes "the row is absent" a claim
+    // about the latest revision rather than about the key.
+    if (status.history !== 1) drift.push(`history is ${status.history}, expected 1`);
+    // A mirror or source makes this space's possession index a VIEW of another stream's rows —
+    // nothing about the ttl would look wrong, the rows would simply not be the space's own.
+    if (config.mirror) drift.push("it is a MIRROR of another stream");
+    if (config.sources?.length) drift.push(`it SOURCES ${config.sources.length} other stream(s)`);
+    // Memory storage loses every possession row on a broker restart while every published artifact
+    // reference survives it — the same dangling-reference wave, arriving from a config field.
+    if (String(config.storage) !== "file") drift.push(`storage is ${config.storage}, expected file`);
+    if (config.sealed === true) drift.push("the bucket is SEALED (writes permanently refused)");
+    if (drift.length)
+      throw new Error(
+        `artifact index bucket ${bucket} has drifted: ${drift.join("; ")} - refusing to adopt an ` +
+        `index whose bounds are not the ones this space enforces (delete it, or reconcile it deliberately)`,
+      );
+  }
 }
 
 export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
