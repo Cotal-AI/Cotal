@@ -370,11 +370,40 @@ async function main() {
       /authed-arm/.test(String(authedSeen()?.activity ?? "")), authedSeen());
 
     const ec = await runAuthed("cotal_connect", {});
-    armCheck("AUTHED", "E6 the authed agent brings ITSELF back through the same surface — a real credential is re-presented, not re-minted wider",
+    armCheck("AUTHED", "E6 the authed agent brings ITSELF back through the same surface",
       !ec.isError, ec.text);
     armCheck("AUTHED", "E7 CONTROL: the observer sees it back (so E4's offline was the disconnect, not a dead fixture)",
       await (async () => { for (let i = 0; i < 40; i++) { const s = authedSeen(); if (s && s.status !== "offline") return true; await sleep(150); } return false; })(),
       authedSeen());
+
+    // E8/E9 — THE HALF E6's LABEL USED TO CLAIM AND NEVER MEASURED. E6 asserted only that the call
+    // did not error, under a name that promised the returned credential was "not re-minted wider".
+    // A cell whose label out-runs its assertion is the same defect as a refusal naming the wrong
+    // condition: it reads as covered. The label is narrowed and the claim is measured here instead.
+    //
+    // Measured FUNCTIONALLY and at the broker, not from the client's view of its own grant. The
+    // tool gate refuses an out-of-ACL join client-side (m2), so the gate is BYPASSED deliberately —
+    // `joinChannel` is the layer beneath it — and the question is put to the broker: with the
+    // credential this session came back on, is a read outside its ACL served or denied?
+    //
+    // REFUTED IF the out-of-ACL post arrives (the return widened the grant), or if the in-ACL post
+    // does NOT arrive (then E8's silence is a dead probe and proves nothing).
+    await S.joinChannel("secret").catch(() => { /* the broker may reject the bind outright; either way the read must not be served */ });
+    await sleep(600);
+    // If the POSTER were itself denied #secret, nothing would ever be published and E8 would go
+    // green having denied nothing — the vacuous pass, one layer further out than the one that bit
+    // this suite already. So the publish is asserted as its own precondition: no post, no verdict.
+    const outPost = await obsEp.multicast("PROBE-OUT-OF-ACL", { channel: "secret" }).catch((e: Error) => e);
+    precondition("AUTHED", "E8-pre the out-of-ACL post was actually PUBLISHED, so there is something for the broker to withhold",
+      !(outPost instanceof Error) && !!outPost, outPost instanceof Error ? outPost.message : outPost);
+    await obsEp.multicast("PROBE-IN-ACL", { channel: "general" }).catch(() => { /* control */ });
+    await sleep(1500);
+    const inboxSpec = authedSpecs.find((s: any) => s.name === "cotal_inbox")!;
+    const seenMsgs = await inboxSpec.run(S, cfgAuthed, { peek: true });
+    armCheck("AUTHED", "E9 CONTROL: the IN-ACL post IS delivered (so E8's silence is a denial, not a dead probe)",
+      seenMsgs.text.includes("PROBE-IN-ACL"), seenMsgs.text.slice(0, 300));
+    armCheck("AUTHED", "E8 an out-of-ACL read is STILL denied after the self-reconnect — the credential came back no wider than it left",
+      !seenMsgs.text.includes("PROBE-OUT-OF-ACL"), seenMsgs.text.slice(0, 300));
 
     await S.stop();
     await obsEp.stop();
