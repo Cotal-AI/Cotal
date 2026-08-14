@@ -57,6 +57,16 @@ export type ManagerHealth =
   /** No persisted identity for this root+space: there is nothing to pin to, so nothing was asked.
    *  NOT a statement that no manager is running. */
   | { condition: "no-identity"; detail: string; source: string; observedAt: number }
+  /** ⚠️ No caller could be built, so the question was never put. Deliberately NOT `no-responder`:
+   *  nothing was asked and no manager is implicated.
+   *
+   *  This arm exists because the standard pinned-caller resolve (`resolveControlTarget` →
+   *  `connectOrExit`) calls `process.exit(1)` at thirteen sites. A read-only card that used it
+   *  would TERMINATE on a missing credential or an unreachable broker — printing a truncated card
+   *  and no verdict at all — in exactly the situation an operator ran the command to diagnose.
+   *  Silence is the one output this surface may never produce, so the inability to ask is carried
+   *  as a fact like any other. */
+  | { condition: "no-auth"; detail: string; source: string; observedAt: number }
   /** The broker could not be reached at all. The manager is NOT implicated — saying "manager down"
    *  here would blame the wrong component and invite the wrong repair. */
   | { condition: "unreachable"; detail: string; source: string; observedAt: number; rttMs: number }
@@ -88,7 +98,8 @@ export async function probeManagerHealth(o: {
   space: string;
   server: string;
   instanceId: string | undefined;
-  caller: EpCaller;
+  /** Undefined when no caller could be minted — reported as `no-auth`, never as a manager fact. */
+  caller: EpCaller | undefined;
   creds?: string;
   bearer?: string;
   sentinelCreds?: string;
@@ -112,6 +123,17 @@ export async function probeManagerHealth(o: {
   const instanceId = o.instanceId;
   const source = sourceFor(o.server, instanceId);
 
+  // Order matters: this is checked AFTER the identity, because "there is no manager to ask about"
+  // and "we could not build a caller to ask with" are different gaps and the first one makes the
+  // second irrelevant.
+  if (o.caller === undefined)
+    return {
+      condition: "no-auth",
+      detail: `no caller credential could be built for space "${o.space}" — the health question was never put, so nothing has been established about the manager`,
+      source, observedAt,
+    };
+  const caller = o.caller;
+
   const started = now();
   const rtt = (): number => now() - started;
 
@@ -133,7 +155,7 @@ export async function probeManagerHealth(o: {
   try {
     let service;
     try {
-      service = await resolveService(nc, o.space, BASELINE_LIFECYCLE_ENDPOINT, o.caller, { deadlineMs: timeoutMs, instanceId });
+      service = await resolveService(nc, o.space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: timeoutMs, instanceId });
     } catch (e) {
       // The broker answered; the pinned manager did not. A wedged manager and an absent one both
       // land here, and this function does NOT guess between them — the caller holds the local pid
