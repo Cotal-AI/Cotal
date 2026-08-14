@@ -204,6 +204,77 @@ planted sentinel found by both proving each actually read the files. An earlier 
 was **corpus growth** — the files added by this audit — not implementation disagreement, and was
 checked before being reported as one.
 
+## ⚠️ THE CORPUS WAS NARROWER THAN THE EXPOSURE, AND I LEAKED IN THE GAP
+
+Added `Fri Aug 14 10:31:55 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
+`da2f8f05`, after fm-meshctl-2 pointed out that a tree scan returning `CLEAN 12/12` **reads as "the
+lane is clean"** — licensing exactly the conclusion this document spends its length refusing to let
+a bounded scanner produce. **The corpus is under version control; the exposure is not.** So I
+measured the other corpora instead of conceding the point in prose.
+
+### 1. Mesh messages I have SENT — one leak, found
+
+Extracted every `cotal_send` / `cotal_dm` / `cotal_status` / `cotal_anycast` call from this
+session's transcript and scanned the payloads.
+
+| | |
+| --- | --- |
+| mesh messages sent | **41** |
+| containing a guarded term | **1** |
+| kind / target | `cotal_dm` → a single peer, **not** a channel broadcast |
+
+> ⚠️ **The sentence that leaked the term ends with the words "never transmitted."** I was describing
+> how carefully the term list had been kept off the mesh, and named a guarded directory path in the
+> same clause. **A claim of containment, containing the thing it claimed to contain.**
+
+**It is a DM to one peer rather than a post to ~16, so the blast radius is the narrow end of what
+was warned about — but it is on the mesh, it persists, and it is pullable from history. No `git`
+action reaches it.** Reported immediately rather than after any tidying.
+
+### 2. Presence activity — possible, bounded, and NOT recoverable
+
+The connector hooks publish a tool call's `command` / `file_path` / `path` / `url` / `pattern` /
+`description` as presence activity. Across this session:
+
+| | |
+| --- | --- |
+| tool inputs in those six fields | **891** |
+| containing a guarded term | **3** — all in `command` |
+
+**Whether any of the three was actually published depends on whether a permission prompt fired on
+that particular call, and that is not recoverable from the transcript.** So the honest statement is
+**possible, unverified, bounded at three** — not "clean", and not "leaked". *This is the class where
+a scan cannot reach the artifact at all, which is why it was named as a limit before it was
+measured.*
+
+### 3. Commit ancestry — the hazard was real to raise and did not materialise
+
+fm-meshctl-2's point that worktrees share one object store, so **"a rule about your branch is not a
+rule about branches that contain it"**, is correct in general. Checked rather than assumed:
+
+    c6b086ce reachable from: feat/agent-connection-control
+    c076eb41 reachable from: feat/agent-connection-control
+
+**Both dirty commits are reachable from this branch only.** The review-seat branches do not contain
+them, so no other lane can publish them by pushing its own work. **Still unpushed; history rewrite
+deferred to fm-orchestrator, since it is not a lane's call.**
+
+### What this changes about every clean verdict in this document
+
+**Nothing above it is retracted, and nothing above it means what a casual reading would take it to
+mean.** `CLEAN 12/12` over the tree is a statement about **the tree**. The three corpora differ:
+
+| Corpus | Under version control | Scannable | Result |
+| --- | --- | --- | --- |
+| committed artifacts, commits, branch, diff | yes | yes | **CLEAN 12/12** |
+| mesh messages sent | no | yes, from the transcript | **1 of 41 dirty** |
+| presence activity | no | **no** | 3 candidate inputs, publication unverifiable |
+
+> **A verdict is only as wide as its corpus, and the corpus that is easiest to scan is the one
+> where the leak was least likely.** *The version-controlled surface is reviewed, diffed and
+> committed deliberately; the unversioned surfaces are where text escapes without an author
+> pausing over it — which is precisely where mine did.*
+
 ## What this does NOT establish
 
 - **Not scanned against the canonical list, because it is unreachable here.** The 172 terms are
