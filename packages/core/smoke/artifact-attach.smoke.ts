@@ -209,6 +209,12 @@ await refuses("A7 two live ACL rows for the alias refuse `AmbiguousAclAlias`, di
 // probe shapes — not as five separate "this one says notYours" cells, which would all pass against
 // an implementation that leaked through a sixth shape.
 {
+  // Taken BEFORE the probes and asserted after. The previous form asked whether any row had landed
+  // on `secret`, under a name that quantifies over ALL rows — so an unauthorized write to any THIRD
+  // channel was invisible to all seventeen cells: a mutation that kept every reply collapsed and
+  // wrote a row to `public` left the suite at 17/17. A count that must not move covers the channels
+  // nobody has thought of, which is the whole point of a block written against "a sixth shape".
+  const before = attachments.length;
   const probes = await Promise.all([
     run({ ...base, seq: 999_999_999 }),                            // does that seq exist?
     run({ digest: DIGEST, channel: "secret", seq: 8 }),            // which channel is it on?
@@ -221,8 +227,8 @@ await refuses("A7 two live ACL rows for the alias refuse `AmbiguousAclAlias`, di
     distinct.size === 1, [...distinct]);
   check("and that one reply is the collapsed refusal",
     probes.every((p) => p.ok === false && p.error === ATTACH_REFUSAL.notYours), probes);
-  check("no foreign probe wrote an attachment row", attachments.every((a) => a.channel !== "secret"),
-    attachments);
+  check("no foreign probe wrote an attachment row — the COUNT did not move, on ANY channel",
+    attachments.length === before, { before, after: attachments.length, attachments });
 }
 
 // ---- CONTROL — without this the refusals above are unfalsifiable --------------------------------
