@@ -271,7 +271,7 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 
 *define a persona*
 
-Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md), then announce it on the mesh. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
+Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Silent by default — it posts nothing on the mesh unless you ask it to with `announce`. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
 
 - **Side-effect:** writes a persona file via the manager (becomes spawnable).
 - **Available:** capability-gated like cotal_spawn.
@@ -282,6 +282,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). |
+| `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: peers who did not ask for it cannot act on the persona anyway, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message. |
 
 ## `cotal_reconnect`
 

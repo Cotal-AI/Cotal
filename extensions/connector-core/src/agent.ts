@@ -834,18 +834,40 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Define a persona and persist it as config (the manager's `definePersona` op writes
-   *  .cotal/agents/<name>.md). On success, announce it on the channel — the "send it out"
-   *  half — so peers see the new persona; `spawn(name)` then launches an agent wearing it. */
+   *  .cotal/agents/<name>.md). `spawn(name)` then launches an agent wearing it.
+   *
+   *  Writing is the whole job: announcing is OPT-IN via `announce`, and silence is the default.
+   *  This used to end in a bare `this.send(...)`, which has no channel argument, so
+   *  {@link Endpoint.multicast} resolved the destination as the caller's FIRST CONCRETE CHANNEL —
+   *  `general` for most personas, purely by list order. Nobody ever chose that: defining a review
+   *  panel sprayed one broadcast per seat into every peer's inbox on the mesh, and because the send
+   *  was unconditional on `reply.ok`, a host-level tool retry (the manager write is an idempotent
+   *  overwrite, so it succeeds again) announced the same persona twice. The text was worse than the
+   *  volume: "spawn it to bring it online" is an imperative addressed to strangers, indistinguishable
+   *  from an attempt to get unrelated agents to run someone else's code, and it tripped a real
+   *  provenance investigation.
+   *
+   *  So: no `announce` ⇒ no mesh traffic at all, and the definer already knows what it defined (the
+   *  reply says so, and `spawn` on a missing persona fails loud). With `announce` ⇒ that channel and
+   *  only that channel, never one inferred from ordering; post rights stay broker-enforced, so a
+   *  definer without them fails there loudly rather than falling back to `general`. The wording is a
+   *  statement of what the sender did, not an instruction to the reader — the sender's identity is
+   *  already on the envelope, so an attributed fact is what a peer can actually evaluate. */
   async definePersona(def: {
     name: string;
     prompt: string;
     model?: string;
+    announce?: string;
   }): Promise<ControlReply> {
     this.assertConnected();
     // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
     const args = { name: def.name, model: def.model, persona: def.prompt };
     const reply = await this.managerInvoke("define-persona", args);
-    if (reply.ok) await this.send(`persona \`${def.name}\` is now available — spawn it to bring it online`);
+    if (reply.ok && def.announce)
+      await this.send(
+        `defined persona \`${def.name}\` — in this workspace's persona catalog, spawnable with cotal_spawn`,
+        def.announce,
+      );
     return reply;
   }
 

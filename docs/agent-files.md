@@ -87,12 +87,19 @@ should point at the source (the repo's docs, a URL), not assert them.
 
 ## Defining one at runtime
 
-`cotal_persona(name, prompt, model?)` sends a persona to the manager, which writes the
-same file and announces it; a later `cotal_spawn(name, role?, agent?, model?, variant?)`
-brings it online, so a peer can mint a teammate with no hand-written file
+`cotal_persona(name, prompt, model?, announce?)` sends a persona to the manager, which
+writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?)` brings
+it online, so a peer can mint a teammate with no hand-written file
 ([tool catalog](mcp-tools.md)). The write path takes **content only** (`model` /
 `persona`); `role`, `allowPublish`, `capabilities`, and `owner` are policy and have no
 slot, so a peer cannot grant itself a capability by redefining a file.
+
+**Defining is silent.** Nothing goes out on the mesh unless you pass `announce: <channel>`,
+and then it goes to that channel only. Peers who did not ask for the persona cannot act on
+it, and a broadcast soliciting spawns from an unfamiliar principal is a thing a peer should
+be suspicious of, so announcing belongs on the channel your team is working on rather than
+`general`. Discovery does not depend on the announcement: `cotal personas list` reads the
+catalog directly, and `cotal_spawn` on a name that does not exist fails loud.
 
 The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it
 reads and writes the same files directly, offline, no mesh ([CLI](cli.md)).
