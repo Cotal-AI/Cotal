@@ -338,6 +338,11 @@ export class EventWal {
   ) {}
 
   get epoch(): string { return this.doc.epoch; }
+  /** The principal this WAL was loaded FOR — exposed so a consumer can prove it is holding its own.
+   *  `open()` already refuses a document whose stored principal disagrees, but that check protects
+   *  the FILE, not the caller: an emitter handed the wrong WAL object entirely would sail past it. */
+  get principal(): string { return this.doc.principal; }
+  get threadId(): string { return this.doc.threadId; }
   get frontier(): WalFrontier { return { ...this.doc.frontier }; }
   get pending(): WalPending | null { return this.doc.pending ? { ...this.doc.pending } : null; }
 

@@ -30,6 +30,25 @@
  *       to the end of the last complete line, i.e. the same value. **That cell does not
  *       discriminate this mutation**, and saying so is more useful than quietly counting it.
  *
+ *   P1  walk the batch in CHARACTERS instead of bytes
+ *       KILLED on `per-record:resume-after-a-MULTI-BYTE-record-is-byte-exact`. It is green on every
+ *       ASCII cell in this file, which is the entire reason the fixture carries a multi-byte record:
+ *       a suite written in English cannot see this defect at all.
+ *   P2  give every record the END-OF-BATCH cursor
+ *       KILLED on `per-record:cursor-resumes-EXACTLY-after-that-record` — the `[P8]` silent-loss
+ *       shape itself, and the one a reader would most plausibly write.
+ *   P3  place a record's cursor BEFORE the newline that terminated it
+ *       KILLED, and NOT by a content cell: the walk-consistency check in `read()` refuses the whole
+ *       read. That is the intended outcome — an off-by-one becomes a loud refusal rather than a
+ *       quietly re-delivered record — so the kill is asserted on the refusal's text.
+ *
+ * P1 first came back WRONG-RED with ZERO marks, and the finding is in the harness rather than the
+ * subject: `readOr` guards the CALL and returns an empty result, but nothing guarded the INDEXING of
+ * that result, so the next line's `records[0].value` crashed the suite before its summary. Guarding
+ * a call and guarding the use of what it returns are two different guards. Every record indexing in
+ * this file is now optional-chained, including the ones that predate the fix and had simply not been
+ * hit yet.
+ *
  * The suite converts an unexpected throw into a cell failure rather than aborting. A run that dies
  * on the first surprise cannot report WHICH cells a mutation killed, and an illegible kill set is
  * indistinguishable from no mutation testing.

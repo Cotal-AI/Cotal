@@ -64,6 +64,11 @@ import type {
   ToolCallResultEvent,
   ToolCallStartEvent,
 } from "@ag-ui/core";
+import { randomUUID } from "node:crypto";
+import { isCasLoss, principalKey, type Part } from "@cotal-ai/core";
+import type { DurableSource } from "./durable-source.js";
+import type { EventWal } from "./event-wal.js";
+import { eventChannelForSession } from "./launch.js";
 
 /**
  * The AG-UI events this plane emits — the MAPPED SUBSET, not the whole protocol.
@@ -824,4 +829,418 @@ export function reasoningMessageEnd(o: {
     timestamp: o.timestamp,
     ...(o.cotal ? { cotal: o.cotal } : {}),
   } as WithCotal<ReasoningMessageEndEvent>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE EMITTER (plan §5.4 for the state machine, §5.6 for this file, build-order step 2a for the
+// startup preflight).
+//
+// Everything above this line is a pure function of its arguments. Everything below it is the one
+// thing that TALKS: it reads a durable source forward from the WAL's cursor, maps records to
+// events, packs them into frames that provably fit, and appends them to the principal's event
+// channel under an optimistic-concurrency expectation with a frozen dedup id.
+//
+// The emitter owns no policy about WHAT an event means — that is §3's per-connector mapping, and it
+// arrives here as an injected function. What it owns is the property none of the pieces can hold
+// alone: that a frame is either on the wire and folded into the frontier, or not on the wire and
+// not folded, and that no third state is ever reported as success.
+
+/**
+ * The endpoint surface the emitter needs, declared STRUCTURALLY rather than as `CotalEndpoint`.
+ *
+ * Not for testability as an end in itself — for a specific one. A cell that needs a live broker to
+ * exercise the duplicate-ack halt cannot be written at all before a broker exists, and a cell that
+ * re-implements `encodedSize` is measuring a copy. This interface is the exact set of methods the
+ * emitter calls, so a cell substitutes an instrument and the production path substitutes the real
+ * endpoint, and neither one is a re-implementation of the other.
+ */
+export interface EmitterEndpoint {
+  readonly principal: { owner: string; actor: string };
+  readonly actorIsEphemeral: boolean;
+  /** The broker's live `max_payload`. Throws when not connected — never guesses a default. */
+  readonly maxPayload: number;
+  /** `[P5]`'s R1 preflight. The emitter calls this at startup, before anything can publish. */
+  assertExpectationSemantics(): Promise<void>;
+  encodedSize(o: { channel: string; parts: Part[]; id: string; expectedLastSubjectSeq: number }): number;
+  multicastExpecting(o: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    expectedLastSubjectSeq: number;
+  }): Promise<{ ack: { seq: number; duplicate: boolean } }>;
+}
+
+/**
+ * One source record's worth of events, with the cursor that resumes AFTER that record.
+ *
+ * `[P8]`: the emitter splits only at source-observation boundaries that are independently
+ * reconstructable from the durable source. A frame therefore ends where a record ends, and carries
+ * that record's cursor — so folding it means exactly "every record in this frame is consumed".
+ */
+export interface EmitUnit {
+  /** The run these events belong to. A frame's envelope names ONE run (§4), so units are never
+   *  mixed across runs in one frame. */
+  runId: string;
+  events: AguiEvent[];
+  cursor: string;
+}
+
+/** What the mapper returns for one source record: its run and its events, or `null` for a record
+ *  this plane deliberately drops (§3 drops many). `null` is NOT an error — `[P7]` keeps the two
+ *  apart, and conflating them turns a parser bug into silently skipped history. */
+export type RecordMapper<T> = (record: T) => { runId: string; events: AguiEvent[] } | null;
+
+/**
+ * The emitter has stopped and will not publish again without operator action.
+ *
+ * Halting is a SUCCESS of this design, not a failure of it: every halt below is a case where the
+ * alternative is to report success for a message that was not stored, or to fold an ack for a body
+ * we did not write. A halt is loud, bounded and recoverable by a human; the alternative is silent
+ * and permanent.
+ */
+export class AguiEmitterHalted extends Error {
+  constructor(
+    readonly reason: "duplicate-ack" | "cas-loss",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AguiEmitterHalted";
+  }
+}
+
+/**
+ * The id used only for SIZING, and it is the longest one `assertIdToken` admits.
+ *
+ * Sizing must never report a smaller number than publishing will produce, and the id is not known
+ * when a frame is measured — it is minted per publish attempt. Measuring at the maximum admissible
+ * length makes the measurement an UPPER BOUND over every id the emitter could mint, which costs a
+ * few bytes of packing density and removes an entire class of near-ceiling defect. The alternative,
+ * measuring with the id we intend to use, requires minting before packing and freezing an id for a
+ * frame that may never be built.
+ */
+const SIZING_ID = "S".repeat(64);
+
+/**
+ * Likewise for the expectation, and this one CANNOT be known at pack time even in principle.
+ *
+ * `expectedLastSubjectSeq` for frame k+1 is the sequence the broker assigns frame k, and the stream
+ * sequence advances with every message in the space, not only ours. Its decimal length is therefore
+ * unknowable while packing. `MAX_SAFE_INTEGER` is the widest value the publish path will accept, so
+ * measuring at it bounds every expectation the emitter can ever send.
+ */
+const SIZING_EXPECTATION = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Pack units into frames, splitting ONLY at unit boundaries and never inside one.
+ *
+ * Deliberately NOT {@link splitFrames}, and the difference is `[P8]`. `splitFrames` splits at EVENT
+ * boundaries, which is what §5.2 specifies for a frame considered on its own — but a frame that
+ * ends mid-record has no cursor it can honestly store: the only value available says the whole
+ * record was consumed, and folding that after a crash skips the rest of the record's events with no
+ * `seq` gap for a consumer to notice.
+ *
+ * **So §5.2's event-boundary split and `[P8]`'s unit rule are in tension, and this resolves it in
+ * the direction `[P8]` states explicitly: a single unit that does not fit FAILS LOUD rather than
+ * being truncated at a frame boundary.** That leaves `splitFrames`'s truncation path with no caller
+ * on the durable plane, which is reported as a plan conflict rather than silently decided here.
+ *
+ * @throws {AguiVocabularyError} when one unit cannot fit in a frame alone.
+ */
+export function packUnits(opts: {
+  threadId: string;
+  epoch: string;
+  firstSeq: number;
+  units: readonly EmitUnit[];
+  measure: (frame: AguiFrame) => number;
+  limit: number;
+}): { frame: AguiFrame; cursor: string }[] {
+  const { threadId, epoch, measure, limit } = opts;
+  if (!Number.isSafeInteger(limit) || limit <= 0)
+    throw new AguiVocabularyError(`pack limit must be a positive safe integer, got ${JSON.stringify(limit)}`);
+
+  const out: { frame: AguiFrame; cursor: string }[] = [];
+  let seq = opts.firstSeq;
+  let batch: AguiEvent[] = [];
+  let batchRun: string | undefined;
+  let batchCursor: string | undefined;
+
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    out.push({ frame: aguiFrame({ threadId, runId: batchRun as string, epoch, seq, events: batch }), cursor: batchCursor as string });
+    seq += 1;
+    batch = [];
+    batchRun = undefined;
+    batchCursor = undefined;
+  };
+
+  for (const unit of opts.units) {
+    if (unit.events.length === 0)
+      throw new AguiVocabularyError("packUnits was handed an empty unit; a record that maps to nothing advances the cursor and never becomes a frame");
+
+    // A frame names ONE run. A unit from a different run cannot join the open batch even if it
+    // would fit, so the run change is a flush and not a size decision.
+    if (batchRun !== undefined && unit.runId !== batchRun) flush();
+
+    const candidate = [...batch, ...unit.events];
+    const fits =
+      measure(aguiFrame({ threadId, runId: batchRun ?? unit.runId, epoch, seq, events: candidate })) <= limit;
+    if (fits) {
+      batch = candidate;
+      batchRun = batchRun ?? unit.runId;
+      batchCursor = unit.cursor;
+      continue;
+    }
+
+    // It did not fit WITH the open batch. Flush and try it alone before concluding anything about
+    // the unit itself: an ordinary unit that happens to arrive behind a nearly-full frame is not an
+    // oversized unit, and treating it as one would halt the emitter on a packing accident.
+    flush();
+    const alone = aguiFrame({ threadId, runId: unit.runId, epoch, seq, events: unit.events });
+    const aloneBytes = measure(alone);
+    if (aloneBytes > limit)
+      throw new AguiVocabularyError(
+        `a single source observation does not fit in one frame (${aloneBytes} > ${limit} bytes, ` +
+          `${unit.events.length} event(s), run ${unit.runId}). [P8] requires this to fail loud rather ` +
+          `than be truncated at a frame boundary: a frame that ends mid-record has no cursor it can ` +
+          `honestly store, and a dropped boundary with no gap marker is worse than a halt.`,
+      );
+    batch = [...unit.events];
+    batchRun = unit.runId;
+    batchCursor = unit.cursor;
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The event emitter: one per principal, one thread at a time (§5.5).
+ *
+ * **A KNOWN GAP, DECLARED RATHER THAN PAPERED OVER: bracket state does not survive a restart.**
+ * {@link AguiBrackets} checks a property of the WRITER'S STREAM across frames, and the WAL persists
+ * `epoch`, `frontier` and the pending frame — not the open runs and messages. So a process that
+ * crashes mid-run restarts with an empty bracket machine, resumes from `sourceCursor` at events
+ * whose `RUN_STARTED` was already published, and the first of them is REFUSED. That is a halt, not
+ * a loss, which is the safe direction — but it is a real production behaviour and not a hypothetical,
+ * and §5.4 specifies recovery of the durable state without saying anything about this one. Reported
+ * as a plan defect; not decided here.
+ */
+export class AguiEmitter<T> {
+  private readonly brackets = new AguiBrackets();
+  private halted: AguiEmitterHalted | undefined;
+
+  private constructor(
+    private readonly ep: EmitterEndpoint,
+    private readonly wal: EventWal,
+    private readonly source: DurableSource<T>,
+    private readonly map: RecordMapper<T>,
+    /** Derived from the endpoint's OWN principal, never from a config name or the launch env. */
+    readonly channel: string,
+    readonly threadId: string,
+  ) {}
+
+  /**
+   * Start an emitter: resolve the channel, run the `[P5]` preflight, and settle any pending frame.
+   *
+   * **THIS IS BUILD-ORDER STEP 2a's PRODUCTION CALL SITE, AND UNTIL THIS FUNCTION EXISTED THERE WAS
+   * NONE.** `CotalEndpoint.assertExpectationSemantics()` had zero production callers: it was a
+   * check that shipped, was covered by its own suite, and never ran outside one. That is why it is
+   * called HERE, before recovery and therefore before any publish — a serialized append on an
+   * unverified stream is the exact case it exists to prevent, and doing it after recovery would
+   * leave the one publish that matters most, the re-publish of a frozen frame, outside the guard.
+   */
+  static async start<T>(opts: {
+    endpoint: EmitterEndpoint;
+    /** Already open, so the caller owns `space`, the WAL path, and the `subjectMayExist` judgement
+     *  — none of which the emitter can make honestly on the caller's behalf. */
+    wal: EventWal;
+    source: DurableSource<T>;
+    map: RecordMapper<T>;
+  }): Promise<AguiEmitter<T>> {
+    const { endpoint, wal } = opts;
+    const channel = eventChannelForSession(endpoint);
+
+    // The WAL must be THIS principal's. `EventWal.open` refuses a document whose stored principal
+    // disagrees with what it was asked for, but that protects the file against being mistaken for
+    // another; it cannot notice an emitter handed the wrong WAL object. Publishing under one
+    // principal's identity while recovering another's frozen `E` is a fabricated frontier.
+    const live = principalKey(endpoint.principal.owner, endpoint.principal.actor).key;
+    if (wal.principal !== live)
+      throw new Error(
+        `event WAL belongs to principal ${wal.principal}, but this endpoint is ${live} — refusing to ` +
+          `publish under one identity from another's write-ahead log`,
+      );
+
+    // `[P5]` R1 PREFLIGHT — before recovery, before any publish.
+    await endpoint.assertExpectationSemantics();
+
+    const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId);
+    await em.recover();
+    return em;
+  }
+
+  /** True once the emitter has stopped for good. */
+  get stopped(): boolean {
+    return this.halted !== undefined;
+  }
+
+  /**
+   * Boot recovery, branching on the WAL's tag (§5.4).
+   *
+   * `acked` NEVER republishes: the frame landed and we know it, so the only remaining work is to
+   * fold. `sent_unacked` is the genuinely uncertain case and republishes with the SAME frozen `id`
+   * and `E` — never the current tip, because re-deriving either is what turns an uncertain publish
+   * into a second, different message.
+   */
+  private async recover(): Promise<void> {
+    const p = this.wal.pending;
+    if (!p) return;
+    if (p.state === "acked") {
+      await this.wal.fold();
+      return;
+    }
+    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });
+  }
+
+  /**
+   * Read forward, map, pack, and publish. Returns what it did, so a caller can distinguish "nothing
+   * to do" from "did work" without inspecting the WAL.
+   */
+  async pump(): Promise<{ frames: number; events: number }> {
+    if (this.halted) throw this.halted;
+    if (this.wal.pending)
+      throw new Error(
+        `event emitter for ${this.channel}: a frame is still pending; recovery must settle it before a new read`,
+      );
+
+    const read = await this.source.read(this.wal.frontier.sourceCursor);
+
+    // Units the mapper dropped are not errors and not frames. Their cursor folds FORWARD into the
+    // preceding unit, so consuming that frame consumes them too and they are never re-read. `[P7]`
+    // keeps this apart from a mapper error, which reaches the caller with the cursor unmoved.
+    const units: EmitUnit[] = [];
+    for (const rec of read.records) {
+      const mapped = this.map(rec.value);
+      if (mapped === null || mapped.events.length === 0) {
+        const last = units[units.length - 1];
+        if (last) last.cursor = rec.cursor;
+        continue;
+      }
+      units.push({ runId: mapped.runId, events: mapped.events, cursor: rec.cursor });
+    }
+
+    // `[P7]` — a bounded range that mapped to nothing advances the cursor atomically and ALONE. It
+    // must still advance, or an adopt (which reads zero records by design) never persists its
+    // position and the next read adopts a LATER end, silently skipping everything appended between.
+    if (units.length === 0) {
+      if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
+      return { frames: 0, events: 0 };
+    }
+
+    // Validate the WHOLE batch before publishing any of it. A vocabulary violation discovered
+    // halfway through would leave a valid prefix on the wire and the rest refused, and the refusal
+    // is supposed to mean "this stream never carried that", not "it carried some of it".
+    for (const u of units) for (const e of u.events) this.brackets.accept(e);
+
+    const frames = packUnits({
+      threadId: this.threadId,
+      epoch: this.wal.epoch,
+      firstSeq: this.wal.frontier.seq + 1,
+      units,
+      measure: (f) => this.measure(f),
+      limit: this.ep.maxPayload,
+    });
+
+    let events = 0;
+    for (const { frame, cursor } of frames) {
+      await this.publish(frame, cursor);
+      events += frame.events.length;
+    }
+
+    // Records the mapper dropped AFTER the last unit have no frame to ride on, so their cursor is
+    // advanced on its own — the same `[P7]` rule, applied to the tail of the batch.
+    if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
+
+    return { frames: frames.length, events };
+  }
+
+  /** Measure a candidate frame EXACTLY as the wire will, at an upper bound over id and expectation. */
+  private measure(frame: AguiFrame): number {
+    return this.ep.encodedSize({
+      channel: this.channel,
+      parts: [frame as unknown as Part],
+      id: SIZING_ID,
+      expectedLastSubjectSeq: SIZING_EXPECTATION,
+    });
+  }
+
+  /** Transition 1 then the first network attempt. */
+  private async publish(frame: AguiFrame, cursor: string): Promise<void> {
+    const id = randomUUID();
+    const E = this.wal.frontier.lastSubjectSeq;
+    const body: Part[] = [frame as unknown as Part];
+    // Durable BEFORE the wire. The order is the whole state machine: a crash between this line and
+    // the next is recoverable precisely because the id and `E` are already frozen on disk.
+    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body });
+    await this.attempt({ id, E, body, retry: false });
+  }
+
+  /**
+   * One publish attempt — first or retry — with the FROZEN id and the FROZEN `E`. Never the tip.
+   *
+   * The three outcomes are not symmetric and the asymmetry is the design:
+   * - `!duplicate` → transition 2 then 3. Success becomes durable before the frontier moves.
+   * - `duplicate` → HALT. On a first attempt it means a body WE DID NOT WRITE holds our id, and
+   *   folding its `ackSeq` would advance the frontier and the source cursor past events that were
+   *   never published. On a retry it cannot happen under `[P5]` at all — an R1 stream evaluates the
+   *   expectation before the dedup cache — so observing it proves `[P5]` was violated. Both are
+   *   fail-loud, and neither is a case where guessing is better than stopping.
+   * - CAS loss → HALT. Someone else moved the tip on a subject only this principal may write, or
+   *   the subject was purged. Uncertainty plus a moved tip is exactly what must not be guessed at.
+   *
+   * A NETWORK error is deliberately none of these: it leaves `pending` as `sent_unacked`, which is
+   * the state that means "we do not know", and the next boot retries the same frozen frame.
+   */
+  private async attempt(o: { id: string; E: number; body: Part[]; retry: boolean }): Promise<void> {
+    let ack: { seq: number; duplicate: boolean };
+    try {
+      ({ ack } = await this.ep.multicastExpecting({
+        channel: this.channel,
+        parts: o.body,
+        id: o.id,
+        expectedLastSubjectSeq: o.E,
+      }));
+    } catch (e) {
+      if (isCasLoss(e))
+        throw this.halt(
+          "cas-loss",
+          `event emitter for ${this.channel}: the subject tip is no longer ${o.E} (${(e as Error).message}). ` +
+            `This subject is writable by one principal, so a moved tip means another writer, a restored ` +
+            `stream, or a filtered purge — none of which a publisher may resolve by re-reading the tip. ` +
+            `Clearing it is an explicit abandonment, which resets epoch, seq, E and cursor together.`,
+        );
+      throw e;
+    }
+
+    if (ack.duplicate)
+      throw this.halt(
+        "duplicate-ack",
+        `event emitter for ${this.channel}: the broker answered ${o.retry ? "a RETRY" : "a FIRST attempt"} ` +
+          `for id ${o.id} with duplicate:true. ` +
+          (o.retry
+            ? `Under [P5] this cannot happen on an R1 stream, which evaluates the subject expectation ` +
+              `before the dedup cache — so either the stream is not R1 or a foreign body holds our ` +
+              `stream-wide id. `
+            : `We have never published this id, so a body we did not write holds it. `) +
+          `Folding this ack would advance the frontier and the source cursor past events that were ` +
+          `never published: silent loss of real events. The frontier and cursor are unchanged.`,
+      );
+
+    await this.wal.recordAck(ack.seq);
+    await this.wal.fold();
+  }
+
+  private halt(reason: "duplicate-ack" | "cas-loss", message: string): AguiEmitterHalted {
+    this.halted = new AguiEmitterHalted(reason, message);
+    return this.halted;
+  }
 }
