@@ -11,9 +11,18 @@
  * because one prediction was wrong in an instructive way.
  *
  *   M1  consume the whole chunk instead of stopping at the last newline
- *       predicted 2, ACTUAL 3: "a half-written trailing line is NOT consumed", "the fragment is
- *       delivered once the writer completes it", plus the harness's own unexpected-throw guard
- *       (the truncated JSON throws where the real code would not). Correct on all three.
+ *       RE-MEASURED 2026-08-14 and the ledger was STALE — it named three and the mutation kills
+ *       FOUR. The missing one is "the cursor stops EXACTLY at the end of the last complete line",
+ *       a cell added after this entry was written, which is exactly how a kill-set claim rots:
+ *       silently, on every cell addition, while still reading as authoritative. The full set:
+ *         - "a half-written trailing line is NOT consumed"
+ *         - "the cursor stops EXACTLY at the end of the last complete line"   ← was missing
+ *         - "the fragment is delivered once the writer completes it"
+ *         - the harness's own unexpected-throw guard (the truncated JSON throws where the real
+ *           code would not) — this one is NOT a cell of the suite's 29; the guard adds a failure
+ *           row when it fires, which is why a "26 passed / 4 failed" run and a 29-cell baseline
+ *           are consistent rather than contradictory.
+ *       Original entry, kept because the correction is the finding: predicted 2, recorded 3.
  *
  *   M4  start a fresh adopt at 0 instead of the current end
  *       predicted 2, ACTUAL 1: only "a fresh adopt does not rebroadcast existing history".
