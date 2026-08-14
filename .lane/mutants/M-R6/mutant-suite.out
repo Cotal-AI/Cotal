@@ -1,0 +1,30 @@
+$ tsx bin/smoke/liveness-snapshot.smoke.ts
+
+liveness-snapshot — the reported pid is the pid that was probed
+
+  · an unanchored scratch resolves to: /tmp
+  ✓ S1-anchor-control: an UNANCHORED dir does NOT resolve to the anchored scratch root
+  ⚠ ANCESTOR CAPTURE: an unanchored dir here resolves to /tmp — a shared root.
+    Any suite under this tmpdir that does not anchor itself writes into it.
+  ✓ S2-anchor: an anchored dir resolves to ITSELF, so every write below lands in the scratch
+  ✓ S2a-anchor: the pid path resolves INSIDE the scratch, not into a real .cotal
+  ✓ S3-control: the injected probe was actually called exactly once
+  ✓ S4: the probe received the pid that was on disk when the call began
+  ✓ S5: the RETURNED pid is the pid that was probed, not the value written during the probe
+  ✓ S6: the returned raw bytes are the ones that were parsed, not a re-read
+  ✓ S7: the state is the probe's verdict for that same pid
+  ✓ S7-control: the concurrent write really did land (else S5 observed no race at all)
+  ✓ S8: managerLiveness (the collapsing wrapper) agrees with the snapshot's state
+  ✓ S9-inverse: a later call reports the CURRENT file's pid, so S5 is not a stale cache
+  ✗ FAIL: R1: the pid record is read EXACTLY ONCE (a second read is the defect, whatever its position)
+  ✓ R1-control: the injected reader was actually used (0 reads would satisfy any count check)
+  ✓ R1: the single read is the one that produced the answer
+  ✗ FAIL: R2: the pid RETURNED is the pid PROBED, against a record that changes on every read
+  ✓ R2-control: the shifting reader really does return different bytes on successive calls
+  ✓ R2: with one read, the answer is the FIRST value the record gave
+  ✓ S10: no pidfile is `absent` with NO pid, and the probe is never reached
+  ✓ S11: unattributable content keeps its raw bytes and yields NO pid
+  ✓ S11a: unattributable is NOT collapsed into absent
+
+liveness-snapshot: 18 passed, 2 failed
+[ELIFECYCLE] Command failed with exit code 1.
