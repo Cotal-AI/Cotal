@@ -8,11 +8,19 @@
  * so a bare rename would make every preserved inventory unreplayable at the exact moment an
  * operator upgraded, with their agents already stopped. This is the upgrade path, not a nicety.
  *
- * MUTATION LEDGER — predicted before the run:
+ * MUTATION LEDGER — predicted before the run, and M1 RE-MEASURED 2026-08-14 because it was stale.
  *   M1  neuter the preprocess (identity function)
- *       -> kills 2, CONFIRMED: the legacy document AND the both-keys document, because with no
- *          rename the `transcript` key is simply unrecognized by the strictObject in both.
+ *       -> kills THREE, named, not the two originally recorded. With no rename the `transcript`
+ *          key is simply unrecognized by the strictObject, so every document that spells it dies:
+ *            - "legacy `transcript` document still parses, mapped to events"
+ *            - "legacy `transcript: false` migrates to `events: false` — disabled stays disabled"
+ *              ← MISSING from the original entry; it is the FALSE-POLARITY cell, added later
+ *            - "both keys present: events wins, never OR-ed"
  *       -> does NOT touch the new-document, missing-flag, or unknown-key cells.
+ *       The omitted cell is the one that matters most to get right: an agent preserved with the
+ *       flag OFF must come back OFF, and a migration that only ever proved the true polarity would
+ *       pass while silently enabling a stream an operator had disabled. A ledger that fails to name
+ *       it invites exactly the "it only kills the happy-path cells" reading.
  *   M2  OR the two values instead of preferring `events`
  *       -> kills 1, CONFIRMED: "both keys present: events wins, never OR-ed" — and ONLY that,
  *          which is what makes it a precedence test rather than a parse test.
