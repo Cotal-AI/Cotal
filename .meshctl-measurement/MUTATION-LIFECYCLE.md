@@ -1,7 +1,7 @@
 # Mutation record — connection-lifecycle repair
 
 Base: the fix commit `325aaa50` + suite `3c1055e3`, worktree `/home/david/Cotal-wt-fm-meshctl`.
-Suite: `packages/core/smoke/connection-lifecycle.smoke.ts`, **20/20 green at base**.
+Suite: `packages/core/smoke/connection-lifecycle.smoke.ts`, **20/20 green at base; 27/27 after ARM 3b**.
 
 **No VOID risk on this suite, and it was checked rather than assumed.** It imports
 `../src/index.js` relatively through `tsx`, so a mutation in `packages/core/src` IS the code that
@@ -68,6 +68,28 @@ Mutant: both arm guards, the entry fence, the in-transaction fence, and `disconn
 **Non-equivalence, at the broker:** four authenticated connections dialled by an endpoint that had
 deliberately left the mesh. Independently reproduced by `rev2-meshctl-authority`, which reached the
 same place from the other direction (marker `DRIVE_TIMER_PREFLIGHT_REPRODUCED`).
+
+## MX4 — remove the post-source-await fence inside `adoptFreshCreds`  → **KILLED**
+
+Added after `rev2-meshctl-authority` reproduced the crossing my earlier fences could not reach
+(marker `SOURCE_CROSS_FIX_EXPECTATION_RC 1`): a renewal already inside its source call when
+`disconnect()` lands is past every earlier check, and the next thing it touches is the preflight.
+
+| cell | predicted | observed |
+|---|---|---|
+| D3h the crossed renewal does not dial | RED | RED — **`{ before: 7, after: 9 }`** |
+| D3k CONTROL: released while CONNECTED it DOES dial | GREEN | GREEN |
+| ARM 1, ARM 2, rest of ARM 3 | GREEN | GREEN (26 passed, 1 failed) — clean, no cascade |
+
+**Non-equivalence, at the broker:** two authenticated connections from an endpoint that had
+deliberately left the mesh. D3k is what makes D3h mean something — without it, "did not dial" is
+equally explained by a renewal that never fires.
+
+**Why the fix is a DISCARD and not a skip-the-dial.** Under prove-before-adopt a candidate may not be
+committed without the broker proof, and being deliberately off forbids taking that proof — so
+"commits but no longer dials" is not an available state. The candidate is dropped unproven and
+re-fetched, and re-proven, by `connect()`. That framing is `rev2-meshctl-authority`'s, and it is the
+reason the first patch shape (fence the transaction, keep the commit) would have been wrong.
 
 ## MX3a — remove ONLY `disconnect()`'s `clearTimeout`, keep every fence  → **SURVIVED (predicted)**
 
