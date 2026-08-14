@@ -352,6 +352,28 @@ the zero mean anything.
 **Standing gate on this lane: the branch must not be pushed as-is.** The `pre-rewrite-boundary` tag
 is held at `4f338cf1` and neither it nor the reflog will be expired without an explicit instruction.
 
+### Reconciling two controlled counts of the same object store: 4 vs 30
+
+fm-artifact swept all 11,559 blobs in the shared store and reported **4** dirty on this branch; my
+per-commit loop reported **30**. Both runs carried live controls, so one of them looked wrong.
+**Neither is. They count different objects with the same word.**
+
+    commit-STATES for the two paths across the branch:  40
+    distinct BLOBS for the two paths:                   10
+    DIRTY distinct blobs:                                4   <- reproduced exactly
+
+**A blob is a distinct content object; a commit-state is path x commit. Identical content committed
+repeatedly is ONE blob and MANY states.** My 30 was over the 26-commit rewrite span.
+
+> **And the operationally important half, which cuts against this lane's own interest: 4 dirty blobs
+> does NOT make the rewrite cheaper.** Rewrite cost is **hash churn**, set by the POSITION of the
+> earliest dirty commit, not by how many blobs are dirty. `c076eb41` sits 27 commits from the tip,
+> so 27 hashes change whether the dirty content is 4 blobs or 400.
+
+**The blob count says how much content to fix. The commit position says what the operation costs.
+They are independent, and only the second bounds the blast radius** — so a low blob count on a deep
+branch makes an expensive rewrite look trivial.
+
 ### 3. Commit ancestry — the hazard was real to raise and did not materialise
 
 fm-meshctl-2's point that worktrees share one object store, so **"a rule about your branch is not a
