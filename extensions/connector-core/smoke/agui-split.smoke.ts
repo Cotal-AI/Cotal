@@ -203,15 +203,17 @@ const refusalNaming = (fn: () => unknown, needle: string): string => {
 // ── Code POINTS, not code units: a lone surrogate is not well-formed UTF-16 ────────────────────────
 //    This branch already refuses ill-formed names at the wire; a splitter that manufactured one here
 //    would produce a frame the wire layer is obliged to reject.
-//    SWEPT ACROSS MANY CEILINGS ON PURPOSE, AND THIS IS THE SECOND TIME THIS SUITE HAS BEEN CAUGHT
-//    ASSERTING SOMETHING ITS ARMS COULD NOT DISTINGUISH. The first version pinned ONE ceiling. Under
-//    a code-UNIT slice, whether a surrogate pair is halved depends on the PARITY of the cut index —
-//    an even cut is well-formed by luck. The single ceiling happened to land even, so the broken
-//    implementation produced well-formed output and the mutation SURVIVED a cell named for exactly
-//    that defect. A negative control is only a control if its arms CAN differ. Sweeping consecutive
-//    byte ceilings walks the cut index through both parities, so at least one lands odd and the
-//    difference becomes observable. State the refutation up front: if a code-unit slice ever passes
-//    this loop, the sweep is too narrow and the cell is decoration again.
+//    WHAT THIS BLOCK PROVES, AND WHY IT IS NOT THE PROOF IT LOOKS LIKE. Under the PRODUCTION-shaped
+//    measure, a code-unit slice cannot produce a lone surrogate, so this sweep CANNOT distinguish the
+//    two implementations and S2 survives it. That was measured, not assumed, and the arithmetic says
+//    why: `JSON.stringify` escapes a lone surrogate as `\udXXX`, six bytes, so an odd cut of k pairs
+//    plus one half costs 4k+6 while the NEXT EVEN cut costs 4k+4. Whenever an odd cut fits, the even
+//    cut above it also fits, so the binary search always advances past odd and `lo` can never land
+//    there. Probed across 16 consecutive ceilings: every cut even, no lone surrogate, on the BROKEN
+//    implementation.
+//    So this block is a REGRESSION FENCE on the production path — the cut must stay well-formed and
+//    within the ceiling as the measure evolves — and the invariant itself is proved by the
+//    adversarial-measure cell below, which is the one whose arms can differ.
 {
   const original = "😀".repeat(2000); // every character is a surrogate PAIR (2 code units)
   const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
@@ -225,6 +227,50 @@ const refusalNaming = (fn: () => unknown, needle: string): string => {
   }
   c("truncate:no-lone-surrogate", malformedAt === undefined, `first malformed at limit ${malformedAt}`);
   c("truncate:surrogate-result-fits", overLimitAt === undefined, `first over-limit at ${overLimitAt}`);
+}
+
+// ── THE INVARIANT ITSELF, UNDER A MEASURE THAT DOES NOT RESCUE IT ─────────────────────────────────
+//    The cut must land on a CODE-POINT boundary because that is what the truncator promises — not
+//    because the encoder happens to make the broken answer expensive. The block above cannot show
+//    that: JSON escaping penalises a lone surrogate into never being chosen, so both implementations
+//    look identical there and the mutation survives.
+//    This cell removes the rescue. `Buffer.byteLength` maps a lone surrogate to the 3-byte
+//    replacement character, so an odd cut costs 4k+3 — CHEAPER than the 4k+4 of the next even cut —
+//    and the search will settle on odd whenever it can. A code-unit slice then emits a lone
+//    surrogate and this cell reddens; the shipped code-point slice cannot, and it stays green.
+//    That is the arm that can differ, and it is the reason this cell exists rather than a wider
+//    sweep of the block above. It is deliberately ADVERSARIAL and does not claim to be the
+//    production measure — it isolates the property from the encoder that would otherwise mask it.
+//    KEEPING `takeCodePoints` IS A DECISION, NOT A LEFTOVER: the production encoder makes the defect
+//    unreachable TODAY, and nothing pins that. A measure that stopped escaping lone surrogates — or
+//    a future non-JSON body encoding — would make it reachable again with no test failing anywhere,
+//    which is precisely the class of silent regression this plane exists to remove.
+{
+  const original = "😀".repeat(2000);
+  const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const rawMeasure = (f: AguiFrame): number =>
+    HEADER_BYTES +
+    f.events.reduce(
+      (n, e) => n + Buffer.byteLength(String((e as unknown as Record<string, unknown>).delta ?? ""), "utf8"),
+      120,
+    );
+  let malformedAt: number | undefined;
+  for (let limit = 600; limit < 640; limit++) {
+    const frames = splitFrames({
+      ...ID,
+      firstSeq: 0,
+      events: [text("m1", original)],
+      measure: rawMeasure,
+      limit,
+    });
+    const cut = (flatten(frames)[0] as unknown as Record<string, unknown>).delta as string;
+    if (loneSurrogate.test(cut) && malformedAt === undefined) malformedAt = limit;
+  }
+  c(
+    "truncate:cut-is-on-a-code-point-boundary-even-when-the-encoder-does-not-punish-otherwise",
+    malformedAt === undefined,
+    `first malformed at limit ${malformedAt}`,
+  );
 }
 
 // ── An oversized event with NO truncatable field is REFUSED, naming why ────────────────────────────
