@@ -31,6 +31,29 @@
  * on EVERY retry passes every halt cell here. So each arm also runs a retry whose id was never
  * seeded, and requires it to ack, fold, and move the frontier — through the same code path.
  *
+ * KILL SET, predicted as NAMES before the run, and ALL THREE KILLED:
+ *   X1  accept a duplicate ack as success instead of halting
+ *       KILLED on `standalone-R1: the frontier is UNCHANGED ON DISK after the halt`. Note which cell
+ *       does NOT die: `NOTHING was stored on the event subject` stays green, correctly — the frame
+ *       still never reached the wire. The damage is entirely in what gets FOLDED, which is why the
+ *       on-disk frontier is the assertion and not the broker's message count.
+ *   X2  mint a FRESH id on retry instead of republishing the frozen one
+ *       KILLED on `a RETRY under a pre-seeded frozen msgID HALTS the emitter`. This is the cell that
+ *       proves the probe is exercising the FROZEN id rather than any id: with a fresh one the seed
+ *       is simply not hit and everything succeeds.
+ *   X3  halt with the WRONG reason (`cas-loss`) on a duplicate ack
+ *       KILLED. A refusal cell has to assert WHICH refusal, or a throw from anywhere else on the
+ *       path scores as a pass.
+ *
+ * WHAT THIS SUITE DOES NOT COVER, said rather than left as a silent hole: the R3 arm. An endpoint
+ * cannot even START against a replicated chat stream — `ensureStreams` creates the canonical R1
+ * config and the server refuses the mismatch — so reaching R3 needs a delete-and-recreate through a
+ * raw JetStream manager, which is not a dependency of this package and should not become one for a
+ * test. That case is covered by COMPOSITION rather than here: `smoke:cas-preflight-cluster` drives
+ * the shipped check against a real R3 chat stream and proves it REFUSES, and `E1` in
+ * `smoke:agui-emitter` proves the emitter runs that check before anything can publish — including
+ * before recovery's re-publish. Neither half is sufficient alone and the pair is stated as a pair.
+ *
  * Run: pnpm smoke:agui-retry-duplicate   (needs nats-server on PATH; starts its own brokers)
  */
 import { spawn, type ChildProcess } from "node:child_process";
