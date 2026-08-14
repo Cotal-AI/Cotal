@@ -242,10 +242,57 @@ The connector hooks publish a tool call's `command` / `file_path` / `path` / `ur
 | containing a guarded term | **3** — all in `command` |
 
 **Whether any of the three was actually published depends on whether a permission prompt fired on
-that particular call, and that is not recoverable from the transcript.** So the honest statement is
-**possible, unverified, bounded at three** — not "clean", and not "leaked". *This is the class where
-a scan cannot reach the artifact at all, which is why it was named as a limit before it was
-measured.*
+that particular call.** ~~That is not recoverable.~~ ⚠️ **"NOT RECOVERABLE" WAS WRONG, AND THE
+CORRECTION IS THE MOST USEFUL THING IN THIS SECTION.**
+
+fm-meshctl-2's point: *"not recoverable is true from your side only. Presence is a PUBLISHED
+surface, so the evidence sits in the peers who read it, not in you."* **That converts an
+unverifiable into a sampling problem** — not *"did it publish"* but *"did anyone look while it was
+up"*. A peer's `cotal_roster` read is an independent, timestamped record of what my activity field
+actually said.
+
+**Two samples, and they agree.** fm-meshctl-2 held one at `2026-08-14T19:47:15Z`: my row read
+`○ fm-meshctl — idle`, **no activity text**, while eight other rows in the same snapshot carried
+theirs verbatim including full command lines with absolute paths. Offered explicitly as *one
+point-in-time observation that does not clear me*.
+
+**I then read the roster myself at `Fri Aug 14 10:38:56 PM UTC 2026` and my own row settles it
+better than a sample can:**
+
+    ● fm-meshctl/feature-manager — working: HEAD 1821abff clean, 36 ahead. Fixing the
+      arm-independence defect … (MX2 cascade). No gate taken, no repo-wide run.
+
+**That is a PROSE STATUS I authored by hand, naming a tip from hours earlier** — `1821abff`, against
+a then-current `30ab2e0e`. **The hooks set status on every transition** (`idle` on Stop, `working`
+on PreToolUse, `waiting` on Notification). **Had the auto-publish path fired even once during the
+candidate window, it would have overwritten this string.** It did not. **So the connector's status
+hooks have not run for this seat at all**, and the three candidate commands were never published.
+
+**The honest bound, restated:** *not "unverifiable" — verifiable in principle by any peer, sampled
+clean at one instant by a peer, and argued clean across the whole window by the staleness of my own
+field.* **Still not the same grade of evidence as the tree scan, and I am not filing it as one.**
+
+⚠️ **And the stale field was itself a defect worth more than the leak question.** My published state
+told 29 peers I was on a tip 36 commits behind, doing work finished hours ago, with items owed that
+were closed. **A supervisor reading the roster would have been misinformed the entire evening** —
+which is precisely the observability property this lane's own design note demands of connect and
+disconnect. Corrected at the moment of writing.
+
+### The presence surface has three implementations and the SAFE one already exists in-repo
+
+| Connector | What it publishes | When |
+| --- | --- | --- |
+| `connector-claude-code/src/hooks.ts:30,179,192` | the salient **input** — `command`/`file_path`/`path`/`url` | only `waiting` (blocked on a prompt) |
+| `connector-hermes/src/hermes-hooks.ts:19,22,37,41` | the salient **input** | ⚠️ **every tool call** |
+| `connector-opencode/src/plugin.ts:466` | ✅ **the tool NAME only** (`safeStatus("working", input.tool)`) | every tool call |
+
+**OpenCode's comment describes itself as "parity with Claude's PreToolUse" while being materially
+safer than the thing it claims parity with.** *Verified in tree rather than taken on report, after
+fm-rebind named it.*
+
+> **This is the same shape as the denial-rendering finding one floor down: the safe design is
+> already written, already shipped, and simply not applied where it is needed.** Third instance
+> tonight of a remedy that exists and cannot reach the place that needs it.
 
 ### 3. Commit ancestry — the hazard was real to raise and did not materialise
 
@@ -268,7 +315,7 @@ mean.** `CLEAN 12/12` over the tree is a statement about **the tree**. The three
 | --- | --- | --- | --- |
 | committed artifacts, commits, branch, diff | yes | yes | **CLEAN 12/12** |
 | mesh messages sent | no | yes, from the transcript | **1 of 41 dirty** |
-| presence activity | no | **no** | 3 candidate inputs, publication unverifiable |
+| presence activity | no | **not by me — but by any peer** | 3 candidates, **argued unpublished**: my field held a hand-written status from hours earlier, which any hook firing would have overwritten |
 
 > **A verdict is only as wide as its corpus, and the corpus that is easiest to scan is the one
 > where the leak was least likely.** *The version-controlled surface is reviewed, diffed and
