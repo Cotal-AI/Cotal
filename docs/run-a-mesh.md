@@ -81,7 +81,7 @@ Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it
 
 **Runtimes.** The manager spawns into a **pty** it owns by default. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
-`--runtime orca` (similarly `@cotal-ai/tmux` and `@cotal-ai/cmux`). They put teammates in native
+`--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Runtime names are open-ended and resolved from
 the registry; a missing provider or app throws, never silently falls back
 ([architecture](architecture.md)).
