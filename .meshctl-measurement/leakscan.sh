@@ -15,6 +15,8 @@
 # Exit codes:  0 clean (with coverage)   1 LEAK   93 zero terms parsed   95 terms file unreadable
 #              94 a control failed (mode control, or a directional control) -- coverage is not claimable
 #              92 the scan ERRORED and did not complete -- there is no verdict
+#              96 the term list contains PUBLIC strings, so CLEAN is unreachable and every scan
+#                 returns LEAK (needs LEAKSCAN_UPSTREAM_REV; skipped, loudly, when unset)
 set -u
 TERMS=${1:?usage: leakscan.sh <terms-file> <path...>}
 shift
@@ -49,6 +51,36 @@ fi
 # arithmetic test then ERRORS rather than evaluating -- reaching the right verdict by a broken path.
 N=$("$GREP" -c . "$WORK/terms" 2>/dev/null); N=${N:-0}
 [ "$N" -gt 0 ] || { echo "REFUSED(93): zero terms parsed from $TERMS"; exit 93; }
+
+# UPSTREAM GUARD (refusal 96) -- A TERM LIST THAT MAKES `CLEAN` UNREACHABLE IS NOT A TERM LIST.
+# Measured, and it nearly cost a false report: the list in use had grown to 172 entries, of which
+# the ones that fired on a routine two-file scan were all ordinary strings -- `node_modules` and
+# friends. Every scan therefore returned LEAK, on any file, forever. That is the exact mirror of the
+# tautological self-match this scanner already refuses: there, a guard that could not FAIL; here, a
+# verdict that cannot be CLEAN. Both carry zero information, and the second is worse because it
+# trains the operator to dismiss the output.
+#
+# The discriminator is definitional rather than a judgement call: A TERM THAT ALREADY EXISTS IN
+# PUBLIC UPSTREAM CONTENT IS NOT A SECRET. Set LEAKSCAN_UPSTREAM_REV to a public rev (e.g.
+# origin/main) and any term found there is refused OUT OF THE LIST, by count and never by printing
+# it. Unset, the check is skipped and the scan says so -- silence here would be another vacuous pass.
+if [ -n "${LEAKSCAN_UPSTREAM_REV:-}" ]; then
+  UPHITS=0
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if git grep -qF -- "$t" "$LEAKSCAN_UPSTREAM_REV" 2>/dev/null; then UPHITS=$((UPHITS+1)); fi
+  done < "$WORK/terms"
+  if [ "$UPHITS" -gt 0 ]; then
+    echo "REFUSED(96): $UPHITS of $N term(s) occur in upstream content at $LEAKSCAN_UPSTREAM_REV."
+    echo "             They are public strings, so they are not guarded terms -- and they make a"
+    echo "             CLEAN verdict unreachable: every scan of any file returns LEAK on them."
+    echo "             Remove them from the list. A scanner that always cries leak is not read."
+    exit 96
+  fi
+  echo "[upstream guard] 0/$N terms occur at $LEAKSCAN_UPSTREAM_REV -- CLEAN is reachable"
+else
+  echo "[upstream guard] SKIPPED (LEAKSCAN_UPSTREAM_REV unset) -- a generic term in the list would make CLEAN unreachable and this run would not notice"
+fi
 
 # MODE CONTROL (metacharacter canary). Replaces a per-term self-match test that was a TAUTOLOGY:
 # under -F every string matches itself BY CONSTRUCTION, so that test could not fail for any input.
