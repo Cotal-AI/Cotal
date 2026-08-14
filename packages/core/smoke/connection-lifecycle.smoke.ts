@@ -301,6 +301,27 @@ try {
   check("D3k CONTROL: released with the endpoint CONNECTED, the renewal DOES reach the broker (so D3h could have failed)",
     dialled, { before: before3j.total, after: (await varz()).total });
 
+  // ── D3l/D3m — does DISCARDING leave anything worse than it fixes? ─────────────────────────────
+  // The discard drops a candidate mid-flight, so the session keeps its OLD cached credential and
+  // has no armed timer until connect(). If the endpoint then stays off past that credential's own
+  // expiry, coming back has to re-fetch or it presents a dead cred. Raised as an open question by
+  // review; driven here rather than reasoned about.
+  console.log("\n=== D3l: a discarded renewal, then a gap past the cached credential's expiry ===");
+  holdNext = true;
+  release = undefined;
+  const held3 = await until(() => release !== undefined, TTL * 1000 + 3000);
+  check("setup: a third renewal is held", held3, { mints });
+  const d3c = await c.disconnect("arm3c");
+  check("setup: disconnected while it was held", d3c.outcome === "disconnected", d3c);
+  release!(); // discarded
+  await wait(TTL * 1000 + 1500); // now past the cached credential's own exp
+  const mintsBeforeReturn = mints;
+  const r3c = await c.connect();
+  check("D3l after a DISCARDED renewal and a gap past the cached credential's expiry, connect() still comes back",
+    r3c.outcome === "connected", r3c);
+  check("D3m CONTROL: it came back by RE-FETCHING (the cached credential was treated as stale) — without this, D3l is equally explained by a credential that never expired",
+    mints > mintsBeforeReturn, { before: mintsBeforeReturn, after: mints });
+
   console.log(`\nCONNECTION-LIFECYCLE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
