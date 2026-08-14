@@ -322,6 +322,56 @@ try {
     check("MAPPING: `live` passes through as live", holderLivenessFromReply({ principal: p, state: "live", sweepComplete: true }, p).state === "live");
   }
 
+  // ---------- THE LOST-PAGE UNDER-REPORT (adversary seat, Finding 1) ----------
+  // A sweep that PAGINATES can lose a later page: page 0 comes back full with `total` promising
+  // more, and the next round is silent. The bug this pins is that the loop used to read that
+  // silence as the END of the data — `sweepComplete:true` — so a principal living on the page that
+  // was never delivered read as absent, and absent-under-a-complete-sweep is exactly what
+  // authorizes `gone`. That is "a dropped reply on the gone side": the one thing this command must
+  // never do. Scripted, because a healthy broker will not drop a page on demand.
+  {
+    const VICTIM = principalKey(DEV_OWNER, "pagevictim").key;
+    const pageOpts = { settleMs: 50, maxWaitMs: 300, pageLimit: 1 } as const;
+    const rounds = (pages: unknown[][]): NatsConnection => {
+      let round = 0;
+      let cb: ((e: unknown, m: { json: () => unknown }) => void) | undefined;
+      return {
+        subscribe: (_s: string, o: { callback: (e: unknown, m: { json: () => unknown }) => void }) => { cb = o.callback; return { unsubscribe: () => {} }; },
+        publish: () => { const rs = pages[round++] ?? []; setTimeout(() => { for (const r of rs) cb?.(null, { json: () => r }); }, 0); },
+      } as unknown as NatsConnection;
+    };
+    const row = (p: string) => ({ cid: 1000 + Math.floor(Math.random() * 1000), tags: [`principal:${p}`] });
+    const pg = (conns: unknown[], total: number) => ({ server: { id: "SERVER_A" }, data: { server_id: "SERVER_A", total, connections: conns } });
+
+    const lost = await observePrincipalLiveness(rounds([[pg([row(principalKey(DEV_OWNER, "filler").key)], 2)], []]), "ACC", VICTIM, pageOpts);
+    check("LOST PAGE: page0 full + page1 SILENT is an UNDER-REPORT, not an ending — unknown, sweepComplete:false (never a false `gone`)",
+      lost.state === "unknown" && lost.sweepComplete === false, lost);
+    const verdict = holderLivenessFromReply(lost, VICTIM);
+    check("LOST PAGE: the reconciler's mapping refuses it (a lost page can never authorize the repair)",
+      verdict.state !== "gone", verdict);
+
+    // Inverse control: every page delivered, victim on the LAST one — it must read live, so the fix
+    // is "notice the loss", not "refuse whenever there is more than one page".
+    const seen = await observePrincipalLiveness(rounds([[pg([row(principalKey(DEV_OWNER, "filler").key)], 2)], [pg([row(VICTIM)], 2)]]), "ACC", VICTIM, pageOpts);
+    check("LOST PAGE inverse control: with every page delivered, a victim on the LAST page reads LIVE",
+      seen.state === "live" && seen.sweepComplete === true, seen);
+    // And a genuinely finished multi-page sweep still yields `gone` — the fix must not wedge it.
+    const done = await observePrincipalLiveness(rounds([[pg([row(principalKey(DEV_OWNER, "filler").key)], 2)], [pg([row(principalKey(DEV_OWNER, "filler2").key)], 2)]]), "ACC", VICTIM, pageOpts);
+    check("LOST PAGE inverse control: a COMPLETE multi-page sweep with the victim nowhere still reads GONE (no permanent wedge)",
+      done.state === "gone" && done.sweepComplete === true, done);
+
+    // THE SECOND GUARD SHARED THE SAME HOLE. The design says the probe is a precondition ON TOP OF
+    // the barrier's verified eviction — but belt-and-braces is worthless if both are the same belt.
+    // `evictDeniedPrincipal` paginates through the same shape, so a lost page made `verifiedGone`
+    // lie in exactly the way it made the probe lie. Pinned here so the two guards stay independent.
+    const evicted = await evictDeniedPrincipal(
+      rounds([[pg([row(principalKey(DEV_OWNER, "filler").key)], 2)], []]),
+      evictorNc!, "ACC", VICTIM, { ...pageOpts, maxVerifyRounds: 1 },
+    );
+    check("LOST PAGE (eviction path): a lost page is scanComplete:false / verifiedGone:false — the barrier's own guard does not inherit the probe's blind spot",
+      evicted.verifiedGone === false && evicted.scanComplete === false, evicted);
+  }
+
   // ---------- REFUSAL 4/5: states this repair does not own ----------
   {
     // not-frozen: a freshly provisioned, still-OPEN gate.

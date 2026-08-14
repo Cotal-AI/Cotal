@@ -110,11 +110,16 @@ async function scanLive(
   let unroutable = false; // a reply named no server id → its conns can't be KICKed → scan is not complete
   const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
   let seq = 0;
+  // See the lost-page check below: servers that owe a page after the previous round.
+  let owed = new Set<string>();
+  let lostPage = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * opts.pageLimit;
     const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
     if (replies.length) gotAnyReply = true;
     let fullPageSomewhere = false;
+    const deliveredThisRound = new Set<string>();
+    const owesAfterThisRound = new Set<string>();
     for (const r of replies) {
       const serverId = r.data?.server_id ?? r.server?.id;
       if (!serverId) {
@@ -139,13 +144,23 @@ async function scanLive(
         }
         conns.push({ cid: c.cid, serverId, principal });
       }
+      deliveredThisRound.add(serverId);
       const total = r.data?.total ?? 0;
-      if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
+      if (cs.length >= opts.pageLimit && offset + cs.length < total) {
+        fullPageSomewhere = true;
+        owesAfterThisRound.add(serverId);
+      }
     }
+    // THE LOST-PAGE CHECK (same defect, same fix, as `livenessSweep`): a server that reported more
+    // data and then failed to deliver a page has gone silent mid-pagination, not ended. Reading
+    // that as an ending makes a scan that MISSED live connections report itself complete — and here
+    // that is `verifiedGone:true` for a principal still holding a connection past the first page.
+    for (const s of owed) if (!deliveredThisRound.has(s)) lostPage = true;
+    owed = owesAfterThisRound;
     if (!fullPageSomewhere) break; // no server still has a full page → done
     if (page === MAX_PAGES - 1) truncated = true;
   }
-  return { conns, complete: gotAnyReply && !truncated && !unroutable };
+  return { conns, complete: gotAnyReply && !truncated && !unroutable && !lostPage };
 }
 
 /** One CONNZ round: fan out the account request, collect every server's reply within the window. */
@@ -403,11 +418,18 @@ async function livenessSweep(
   const repliers = new Set<string>();
   const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
   let seq = 0;
+  // Servers that reported MORE data after the previous round, and therefore OWE a page on this one.
+  // A server that owes a page and does not deliver a well-formed one has UNDER-REPORTED — the sweep
+  // must not read that silence as the end of the data (see `lostPage`).
+  let owed = new Set<string>();
+  let lostPage = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * opts.pageLimit;
     const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
     if (replies.length) gotAnyReply = true;
     let fullPageSomewhere = false;
+    const deliveredThisRound = new Set<string>();
+    const owesAfterThisRound = new Set<string>();
     for (const r of replies) {
       const envId = r.server?.id;
       const cluster = (r.server as { cluster?: unknown } | undefined)?.cluster;
@@ -439,13 +461,24 @@ async function livenessSweep(
           ...(principal === null ? {} : { principal }),
         });
       }
+      deliveredThisRound.add(serverId);
       const total = r.data.total;
-      if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
+      if (cs.length >= opts.pageLimit && offset + cs.length < total) {
+        fullPageSomewhere = true;
+        owesAfterThisRound.add(serverId);
+      }
     }
+    // THE LOST-PAGE CHECK. A server that said "there is more" and then failed to deliver a
+    // well-formed page has not ended its data — it has gone silent mid-pagination, and its
+    // remaining connections were never seen. Reading that as the end is how a sweep that MISSED a
+    // live connection reports itself COMPLETE, and a complete-and-absent sweep is exactly what
+    // authorizes `gone`. Fail closed: the observation is an under-report, not an ending.
+    for (const s of owed) if (!deliveredThisRound.has(s)) lostPage = true;
+    owed = owesAfterThisRound;
     if (!fullPageSomewhere) break;
     if (page === MAX_PAGES - 1) truncated = true;
   }
-  const sweepComplete = gotAnyReply && !truncated && !malformed;
+  const sweepComplete = gotAnyReply && !truncated && !malformed && !lostPage;
   return {
     conns, sweepComplete, clusterDeclared, repliers: repliers.size,
     singleServerProven: sweepComplete && !clusterDeclared && repliers.size === 1,
