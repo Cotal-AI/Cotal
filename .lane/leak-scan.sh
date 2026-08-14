@@ -52,17 +52,42 @@ rm -f "$CTL"
 
 # ---- corpus -------------------------------------------------------------------------------------
 shift $(( $# > 0 ? 1 : 0 )); [ "$MUTANT" = "--regex-mutant" ] && shift $(( $# > 0 ? 1 : 0 ))
+# The corpus is TRACKED files — what would actually travel if this branch were pushed.
+#
+# HOW TO DRIVE THE POSITIVE ARM CORRECTLY, because I got this wrong: planting a canary file is not
+# enough. An UNTRACKED file is not in `git ls-files`, so the scan never sees it, reports `hits: 0`,
+# and that zero reads exactly like a clean corpus. The canary must be added to the index
+# (`git add -N`) or the control silently tests nothing:
+#     awk 'NR==1{print;exit}' <terms> > .lane/.leak-canary && git add -N .lane/.leak-canary
+#     bash .lane/leak-scan.sh <terms>          # must report HIT term[1] and exit 94
+#     git rm --cached .lane/.leak-canary; rm -f .lane/.leak-canary
 mapfile -t CORPUS < <(git ls-files .lane bin/smoke docs .changeset implementations/cli/src)
 [ "${#CORPUS[@]}" -gt 0 ] || { echo "REFUSE(95): empty corpus — a scan over no files is clean by construction"; exit 95; }
 
+# ---- report ------------------------------------------------------------------------------------
+# A HIT IS REPORTED BY INDEX AND FILE:LINE, NEVER BY TERM TEXT, AND NEVER WITH THE MATCHING LINE.
+# The earlier version echoed the term and the matched line. Pointed at the canonical list that is
+# fine only while the terms are ones I chose — against the real list it would print the protected
+# string into stdout, into the artifact, and into any report quoting it. **A leak detector whose
+# output republishes what it detects is the defect wearing the uniform of the fix.**
+# The operator resolves an index against the terms file they already hold; nobody else can.
 hits=0
+i=0
 for t in "${LIST[@]}"; do
-  out=$(grep -rn "${FIXED[@]}" -- "$t" "${CORPUS[@]}" 2>/dev/null | head -3)
-  if [ -n "$out" ]; then hits=$((hits+1)); echo "LEAK: $t"; echo "$out" | sed 's/^/    /'; fi
+  i=$((i+1))
+  files=$(grep -rl "${FIXED[@]}" -- "$t" "${CORPUS[@]}" 2>/dev/null | head -5)
+  if [ -n "$files" ]; then
+    hits=$((hits+1))
+    echo "HIT term[$i] in:"; echo "$files" | sed 's/^/    /'
+  fi
 done
 
-echo "terms: ${#LIST[@]} (coverage N/N BY CONSTRUCTION under -F; the mode control above is what makes that meaningful)"
-echo "corpus files: ${#CORPUS[@]}"
-echo "hits: $hits"
+# The verdict may report COVERAGE. It may not report "clean" — see the readme: a clean verdict cannot
+# be distinguished from "never looked", which is the whole reason this instrument exists.
+echo "terms parsed:      ${#LIST[@]}"
+echo "coverage:          ${#LIST[@]}/${#LIST[@]} scannable BY CONSTRUCTION (-F literal mode)"
+echo "mode control:      PASS ('a.c' did not match 'abc'); regex-mutant arm refuses at rc 5"
+echo "corpus files:      ${#CORPUS[@]}"
+echo "hits:              $hits"
 [ "$hits" -eq 0 ] || exit 94
 exit 0
