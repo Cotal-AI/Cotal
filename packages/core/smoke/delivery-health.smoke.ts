@@ -205,8 +205,14 @@ console.log("\ndelivery-health assessment\n");
   const arm = refusalArm(h, "lease-stale");
 
   // C1 — the whole point: the old clamp reported 0 here, and 0 is what a live round-trip produces.
+  //
+  // The FIRST version of this cell was `arm?.lastHeartbeat.ageMs !== 0`, and the mutation run caught
+  // it PASSING under the restored clamp. With the clamp, the verdict is `serving`, so `refusalArm`
+  // returns undefined and `undefined !== 0` is true — the cell passed VACUOUSLY on the exact input it
+  // was written to catch. `?.` on an absent arm fails safe for a crash and fails OPEN for a claim.
+  // So: assert the arm EXISTS first, then assert the age. Both halves, or the cell proves nothing.
   check("CLOCK-SKEW: evidence stamped in the future does not render as age 0",
-    arm?.lastHeartbeat.ageMs !== 0);
+    arm !== undefined && arm.lastHeartbeat.ageMs !== 0);
   // C2 — it must say the age could not be established, not pick a number.
   check("CLOCK-SKEW: the fact reports that its age could not be established",
     arm?.lastHeartbeat.ageMs === null);
