@@ -39,8 +39,10 @@ import {
   chatStream,
   confirmAttach,
   deleteSpace,
+  isArtifactPart,
   isReachable,
   possessionBucket,
+  parseSubject,
   possessionKey,
   principalKey,
   putAttachmentIfAbsent,
@@ -173,7 +175,45 @@ try {
       "another file", { channel: CHANNEL, parts: [{ ...part, digest: D2 }] as never });
     // The PREDECESSOR's possession row exists — under the predecessor's lifecycle.
     await possession.put(possessionKey(D2, CALLER, LC_A), new TextEncoder().encode("1"));
-    const r = await confirmAttach({ digest: D2, channel: CHANNEL, seq: ack2.seq }, CALLER, deps);
+
+    // E4-pre / E4-pre2 — THE PRECONDITIONS, ASSERTED POSITIVELY.
+    //
+    // The refusal collapse is working as designed: "no such entry", "not yours" and "you do not
+    // possess that digest" are deliberately ONE reply. That is the security property — and it also
+    // destroys the discriminator this cell was relying on. Aimed at a seq with no entry behind it,
+    // E4 stayed green (M23: 14/14, with `[PROBE] E4 ENTRY MISSING` printing), so a cell named for
+    // succession was satisfied by a refusal that had nothing to do with succession.
+    //
+    // UNDER A COLLAPSED REFUSAL VOCABULARY A REFUSAL CELL MUST ESTABLISH ITS PRECONDITIONS
+    // POSITIVELY, because the reply can no longer say why. Both preconditions below are therefore
+    // about the ENTRY, not about the answer: past them, the only thing left that can produce
+    // `notYours` is the possession fence.
+    //
+    // E4-pre reads `args.seq` — the value the confirm consumes — and not `ack2.seq` again. A
+    // precondition that re-derives the value independently passes happily while the confirm points
+    // somewhere else, which is the hole rather than the fix.
+    //
+    // E4-pre2 watches the DEPENDENCY instead of the reply: whatever seq reaches the verb, this
+    // records what the VERB resolved. E4-pre alone cannot see a divergence introduced at the call
+    // site; this can, and it is the same shape that makes the fetch-gate and refusal-collapse
+    // instruments able to see a silent reintroduction.
+    const args = { digest: D2, channel: CHANNEL, seq: ack2.seq };
+    const target = await deps.entryBySeq(args.seq);
+    const targetPart = target?.msg.parts?.find(isArtifactPart);
+    const targetSubject = target === null ? null : parseSubject(target.subject);
+    check("E4-pre the seq under test RESOLVES to this caller's D2 artifact entry on this channel",
+      targetPart?.digest === D2 && targetSubject?.rest === CHANNEL && targetSubject?.sender === CALLER,
+      { subject: target?.subject ?? null, digest: targetPart?.digest ?? null });
+
+    let resolved: { subject: string; msg: CotalMessage } | null | undefined;
+    const watched: ConfirmAttachDeps = {
+      ...deps,
+      async entryBySeq(seq) { resolved = await deps.entryBySeq(seq); return resolved; },
+    };
+    const r = await confirmAttach(args, CALLER, watched);
+    check("E4-pre2 the VERB resolved a real entry, so the refusal below came from the fence",
+      resolved !== undefined && resolved !== null,
+      resolved === undefined ? "entryBySeq was never called" : resolved);
     check("E4 a SAME-ALIAS successor cannot attach its predecessor's bytes",
       r.ok === false && r.error === ATTACH_REFUSAL.notYours, r);
     check("E4b (guard) the successor's live lifecycle really did resolve to the NEW uid",
