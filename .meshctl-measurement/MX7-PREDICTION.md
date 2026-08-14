@@ -168,3 +168,107 @@ been bitten once by a count that drifted between a document and the code it desc
 
 MX1, MX2, MX3, MX4 killed; MX6 killed on the flip; **MX7b killed on the named cell**; MX7a killed
 bluntly (superseded, kept for the record); MX3a and MX5 survivors.
+
+---
+
+# MX8 — prediction, written BEFORE the mutant runs
+
+Written `Fri Aug 14 09:05:30 PM UTC 2026`. Base `aaaa95cc`, tree clean.
+
+## Why this mutation, and what it settles
+
+`E8` shows the credential is narrow after a self-reconnect. **That is not the same as showing the
+cell would notice if it stopped being narrow**, and I said so in the report before running anything.
+
+The mutation site follows from the claim rather than from convenience. A returned grant can only be
+wider if it was **MINTED** wider — the ACL is broker-enforced from the credential, not from any
+client-side filter. So the honest mutant lands in the mint, **which is the exact gap fm-orchestrator
+named as uncovered** ("nothing on this lane mutates the mint"). If `E8` reddens, this arm can see a
+widened read ACL, and that gap is smaller than it was stated to be.
+
+## The mutant
+
+`packages/core/src/provision.ts:1064` — the read ACL baked into every minted credential:
+
+    const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"];
+    →
+    const allowSubscribe = ["*"];   // a credential minted wider than it was asked for
+
+## Predicted cells, NAMED
+
+| Cell | Prediction |
+| --- | --- |
+| `EX` (credential-less client refused) | **GREEN** — nothing about anonymous access changes. |
+| `E0` (authed session connects) | **GREEN** — a wider grant still connects. |
+| `E8-pre` (out-of-ACL post published) | **GREEN** — the poster is unaffected. |
+| `E9` (in-ACL post delivered) | **GREEN** — a wider ACL still contains `general`. |
+| **`E8`** (out-of-ACL read still denied) | **RED** — the widened credential now serves `#secret`. |
+| every open-mode cell (21) | **GREEN** — open mode mints nothing. |
+
+Expected tally: **32 passed, 1 failed, 0 VOID, rc=1.**
+
+## What would REFUTE me — stated before any result is cited
+
+1. **`E8` stays GREEN.** Then `E8` cannot detect a widened credential, the cell is weaker than its
+   label a second time, and I would have to narrow it again rather than cite it.
+2. **`E9` or `E8-pre` reddens.** The mutant broke the fixture instead of the property; the run is
+   void and proves nothing about `E8`.
+3. **Any open-mode cell reddens.** The mutation is not confined to the credentialed path.
+4. **`E0` reddens.** The mutant is not "wider", it is "malformed", and a connect failure would
+   redden `E8` for the wrong reason entirely — the most dangerous of the four, because it would
+   look like success.
+
+## Non-equivalence
+
+Must be observable as **delivery**: under the mutant the subject should actually RECEIVE
+`PROBE-OUT-OF-ACL`, not merely fail an assertion. A message crossing the broker to a subscriber that
+was previously denied is the behaviour change, at the authority boundary.
+
+---
+
+# MX8 RESULT — read at `Fri Aug 14 09:06:54 PM UTC 2026`
+
+**KILLED on the named cell, with the strongest non-equivalence this lane has produced.**
+
+Observed: **32 passed, 1 failed, 0 VOID, rc=1** — exactly the predicted tally.
+
+| Cell | Predicted | Observed |
+| --- | --- | --- |
+| `EX`, `E0`, `E8-pre`, `E9` | GREEN | **GREEN** |
+| **`E8`** | **RED** | **RED** |
+| every open-mode cell (21) | GREEN | **GREEN** |
+
+All four refutation criteria were reachable. **None fired.**
+
+**Non-equivalence, observed as DELIVERY rather than as an assertion:**
+
+    ✗ FAIL: E8 ... 2 messages (peek — not cleared):
+    [#secret authed-observer] PROBE-OUT-OF-ACL
+    [#general authed-observer] PROBE-IN-ACL
+
+**The out-of-ACL message is IN THE SUBJECT'S INBOX.** It crossed the broker to a subscriber the
+unmutated build denies. That is the behaviour change at the authority boundary — not a reddened
+assertion, not an error string, but the message itself arriving where it must not.
+
+## What this settles, and what it does NOT
+
+**Settles:** `E8` detects a widened read ACL. The cell is not merely observing that the grant happens
+to be narrow — **it fails when the grant widens.** And the mutation site was the **MINT**, which
+fm-orchestrator had named as the uncovered dimension: *"nothing on this lane mutates the mint."*
+Something does now.
+
+**Does NOT settle — and this is the honest boundary:**
+- Only the **read** ACL (`allowSubscribe`). A widened **publish** ACL (`allowPublish`) is untested;
+  `E8` would not see it, because `E8` measures what the subject can RECEIVE.
+- One channel (`secret`), not the wildcard/subtree shapes. `m3-fence` covers those **at mint time**;
+  nothing re-covers them **after a reconnect**.
+- The mutant widens the grant for **every** principal the mint serves. A mutation that widened only
+  the subject's would be sharper, and MX7a is the standing reminder of what a too-wide mutation
+  costs — here it did not matter, because the fixture's other credentials are minted through the
+  same call and the open-mode arm stayed green regardless.
+
+## Ledger
+
+MX1, MX2, MX3, MX4 killed; MX6 killed on the flip; MX7b killed on the named cell; **MX8 killed on
+the named cell, with delivery-level non-equivalence**; MX7a killed bluntly (superseded, kept);
+MX3a and MX5 survivors.
