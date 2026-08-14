@@ -475,6 +475,17 @@ async function main() {
       witnessed.some((w) => w.includes("PUB-IN-ACL")), { witnessed, inPub: inPub.text });
     armCheck("AUTHED", "E12 the subject still CANNOT post outside its publish ACL after the self-reconnect — the return did not widen what it may SAY, only what it may hear was checked before",
       !witnessed.some((w) => w.includes("PUB-OUT-OF-ACL")), { witnessed, outPub: outPub.text });
+    // E13 — WHAT THE CALLER IS TOLD, which is a different question from what the broker did, and the
+    // one a route-less seat's behaviour turns on. E12 proves the post did not arrive; it says
+    // nothing about whether the AGENT learned that. `cotal_send` never consults `allowPublish`
+    // (`tool-specs.ts:343`), so the only possible signal is the publish itself failing.
+    //
+    // This is RECORDED, NOT ASSERTED. I do not know which way it should go: a rejection is the
+    // better outcome and an acceptance would be a genuine defect, but asserting either would be
+    // asserting a conclusion I have not established. The cell prints what happens so the design note
+    // that depends on it can cite a measurement instead of a reading of `js.publish`.
+    console.log(`  ▸ RECORDED (not asserted) — what the caller is told when it posts outside its publish ACL:\n` +
+      `      isError=${outPub.isError === true}  text=${JSON.stringify(String(outPub.text).slice(0, 200))}`);
 
     await S.stop();
     await obsEp.stop();
