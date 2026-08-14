@@ -47,6 +47,31 @@
  *   S5  drop the emptied-value guard, so an impossible envelope is not refused — kills
  *       `refuse:impossible-even-when-emptied`.
  *
+ * ACTUAL VERDICTS, run at 14128aa9 and (for S2') at 309f7e28. **4 of 5 as predicted; S2 was wrong,
+ * twice, and the second wrong answer is the one worth reading.**
+ *   S1 KILLED  `FAIL: unlucky-neighbour:not-truncated`. Note the mutant CRASHES rather than merely
+ *              failing — with the retry gone, an event carrying no truncatable field reaches the
+ *              truncator and it refuses, correctly. The named FAIL prints first, which is the
+ *              direct evidence; the crash is why the run shows 0 progress marks.
+ *   S2 SURVIVED, and then survived a WIDER SWEEP. Not a coverage gap and not laziness: under the
+ *              production-shaped measure a code-unit slice CANNOT produce a lone surrogate at all.
+ *              `JSON.stringify` escapes one as `\udXXX`, six bytes, so an odd cut of k pairs plus a
+ *              half costs 4k+6 while the next EVEN cut costs 4k+4 — whenever odd fits, the even
+ *              above it also fits, so the search always advances past odd. Probed on the BROKEN
+ *              implementation across 16 consecutive ceilings: every cut even. **Widening the sweep
+ *              was the wrong repair and was tried first.** The encoder, not the truncator, is what
+ *              keeps the output well-formed there.
+ *   S2' KILLED `FAIL: truncate:cut-is-on-a-code-point-boundary-even-when-the-encoder-does-not-
+ *              punish-otherwise`. The same mutation graded against a measure where a lone surrogate
+ *              costs 3 bytes, making an odd cut CHEAPER than the next even one. That is the arm
+ *              that can differ, and it is where the invariant is actually proved.
+ *   S3 KILLED  `FAIL: truncate:label-records-original-size`.
+ *   S4 KILLED  `FAIL: truncate:result-actually-fits`.
+ *   S5 KILLED  `FAIL: refuse:impossible-even-when-emptied`.
+ * The lesson this suite paid for twice, recorded so the next reader does not pay again: **a
+ * mutation surviving can mean the test is weak OR that the defect is unreachable on the path under
+ * test. Those need opposite repairs, and only measuring tells you which one you have.**
+ *
  * Run: pnpm smoke:agui-split
  */
 import {
