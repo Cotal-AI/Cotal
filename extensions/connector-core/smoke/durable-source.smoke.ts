@@ -39,7 +39,7 @@
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync, openSync, readSync, writeSync, closeSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlFileSource } from "../src/durable-source.js";
+import { JsonlFileSource, type SourceRecord } from "../src/durable-source.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -51,7 +51,7 @@ const c = (n: string, v: boolean, extra?: unknown) => {
  *  illegible kill set is the same as no mutation testing at all. */
 const readOr = async <T>(src: JsonlFileSource<T>, cursor: string | undefined, what: string) => {
   try { return await src.read(cursor); }
-  catch (e) { c(`${what} (unexpected throw)`, false, String(e)); return { records: [] as T[], cursor: cursor ?? "0" }; }
+  catch (e) { c(`${what} (unexpected throw)`, false, String(e)); return { records: [] as SourceRecord<T>[], cursor: cursor ?? "0" }; }
 };
 
 const dir = mkdtempSync(join(tmpdir(), "durable-source-"));
@@ -73,7 +73,7 @@ try {
   // ── new complete records are read forward ──
   appendFileSync(path, '{"i":3}\n{"i":4}\n');
   const r1 = await readOr(src, adopt.cursor, "read forward");
-  c("new complete records are read forward from the cursor", r1.records.length === 2 && r1.records[1].i === 4, r1.records);
+  c("new complete records are read forward from the cursor", r1.records.length === 2 && r1.records[1].value.i === 4, r1.records);
 
   // ── nothing new: no records, cursor unmoved ──
   const r2 = await readOr(src, r1.cursor, "unchanged read");
@@ -82,7 +82,7 @@ try {
   // ── THE CASE: a half-written line must not be consumed ──
   appendFileSync(path, '{"i":5}\n{"i":6'); // no trailing newline: the writer is mid-line
   const r3 = await readOr(src, r2.cursor, "partial-line read");
-  c("a half-written trailing line is NOT consumed", r3.records.length === 1 && r3.records[0].i === 5, r3.records);
+  c("a half-written trailing line is NOT consumed", r3.records.length === 1 && r3.records[0].value.i === 5, r3.records);
   // EXACT, not an inequality. This read `< 46` while the correct stop is 40, so 32..45 all passed —
   // a wrong stop one byte either side would have gone unnoticed (fmae-rev-test F1). The expected
   // value is computed from the fixture bytes so it stays true if the fixture changes.
@@ -92,7 +92,7 @@ try {
   // ── and it arrives once the writer finishes it ──
   appendFileSync(path, '}\n');
   const r4 = await readOr(src, r3.cursor, "completed-fragment read");
-  c("the fragment is delivered once the writer completes it", r4.records.length === 1 && r4.records[0].i === 6, r4.records);
+  c("the fragment is delivered once the writer completes it", r4.records.length === 1 && r4.records[0].value.i === 6, r4.records);
 
   // ── a complete but unparseable line is LOUD, never silently skipped ──
   appendFileSync(path, 'not json at all\n');
@@ -143,7 +143,7 @@ try {
     appendFileSync(f, '2}\n');                        // completes it: the real record is {"i":12}
     const r = await readOr(s1, a.cursor, "B1 read");
     c("B1: adopting mid-record does not emit the record's suffix",
-      r.records.length === 1 && r.records[0].i === 12, r.records);
+      r.records.length === 1 && r.records[0].value.i === 12, r.records);
     rmSync(d, { recursive: true, force: true });
   }
 
@@ -204,7 +204,7 @@ try {
     const a = await readOr(s3c, undefined, "B3c adopt");
     writeFileSync(f, '{"a":1}\n{"z":9}\n');           // same prefix, then genuinely new content
     const r = await readOr(s3c, a.cursor, "B3c read");
-    c("B3c: a rewrite preserving the consumed prefix is NOT an error", r.records.length === 1 && r.records[0].z === 9, r.records);
+    c("B3c: a rewrite preserving the consumed prefix is NOT an error", r.records.length === 1 && r.records[0].value.z === 9, r.records);
     rmSync(d, { recursive: true, force: true });
   }
 
@@ -290,6 +290,100 @@ try {
         outside === "", outside || "(not detected, as documented)");
     } finally {
       rmSync(sd, { recursive: true, force: true });
+    }
+  }
+
+  // ── PER-RECORD CURSORS — what `[P8]` needs and what the batch cursor cannot give it ────────────
+  //
+  // The emitter may turn one read into several frames, and each frame is its own durable
+  // pending/publish/ack cycle with its OWN `sourceCursor`. With only an end-of-batch cursor, a frame
+  // covering the first half of a read can store nothing except "the whole batch was consumed" — fold
+  // it, crash, and the frontier has skipped the records the later frames were carrying, with no
+  // `seq` gap for a consumer to see. So these cells are not decoration on a convenience field; they
+  // are the property the resume path rests on.
+  {
+    const pd = mkdtempSync(join(tmpdir(), "durable-source-percur-"));
+    try {
+      const f = join(pd, "s.jsonl");
+      writeFileSync(f, "");
+      const s = new JsonlFileSource<{ i: number; t?: string }>(f);
+      const start = await readOr(s, undefined, "per-record adopt");
+
+      appendFileSync(f, '{"i":1}\n{"i":2}\n{"i":3}\n');
+      const all = await readOr(s, start.cursor, "per-record read");
+      c("per-record:three-records-arrive", all.records.length === 3, all.records.map((r) => r.value));
+
+      // THE CELL THE WHOLE FIELD EXISTS FOR: resuming from record 0's cursor yields records 1 and 2
+      // and NOT record 0. An off-by-one in either direction is visible here — a cursor placed before
+      // record 0's newline re-delivers it, one placed past record 1 loses it.
+      const after0 = await readOr(s, all.records[0].cursor, "resume after record 0");
+      c(
+        "per-record:cursor-resumes-EXACTLY-after-that-record",
+        after0.records.length === 2 && after0.records[0].value.i === 2 && after0.records[1].value.i === 3,
+        after0.records.map((r) => r.value),
+      );
+
+      // The batch cursor and the last record's cursor are the SAME position. They are computed by
+      // two different walks over the same bytes, and a disagreement is silent in the dangerous
+      // direction, so it is asserted rather than assumed.
+      c(
+        "per-record:the-last-record's-cursor-IS-the-batch-cursor",
+        all.records[all.records.length - 1].cursor === all.cursor,
+        { last: all.records[all.records.length - 1].cursor, batch: all.cursor },
+      );
+
+      const afterLast = await readOr(s, all.records[all.records.length - 1].cursor, "resume after the last record");
+      c("per-record:CONTROL-resuming-after-the-last-record-yields-nothing", afterLast.records.length === 0, afterLast.records);
+
+      // ── THE MULTI-BYTE TRAP, and it is the reason this walk counts BYTES ───────────────────────
+      //
+      // The cursor is a byte offset; `complete.split("\n")` yields a decoded STRING. Walking it with
+      // `line.length` costs nothing on ASCII and is wrong the moment a record carries anything else
+      // — every cursor after the first multi-byte record lands short, inside a record rather than
+      // between two. An ASCII-only fixture cannot see that: it is the same defect class as a suite
+      // whose fixtures all happened to end on a record boundary.
+      //
+      // "é" is 2 bytes, "…" is 3, "🙂" is 4 — one of each, so a character walk is off by 6 and lands
+      // inside the SECOND record, not merely at its edge.
+      const mb = join(pd, "utf8.jsonl");
+      writeFileSync(mb, "");
+      const ms = new JsonlFileSource<{ i: number; t: string }>(mb);
+      const mstart = await readOr(ms, undefined, "utf8 adopt");
+      appendFileSync(mb, '{"i":1,"t":"é…🙂"}\n{"i":2,"t":"plain"}\n{"i":3,"t":"ünïcøde"}\n');
+      const mall = await readOr(ms, mstart.cursor, "utf8 read");
+      c(
+        "per-record:multi-byte-records-are-read-whole",
+        mall.records.length === 3 && mall.records[0].value.t === "é…🙂" && mall.records[2].value.t === "ünïcøde",
+        mall.records.map((r) => r.value),
+      );
+      // Resuming after a MULTI-BYTE record is the assertion a character walk cannot pass: it would
+      // resume 6 bytes early, inside `{"i":2,...}`, and either throw on the fragment or hand back a
+      // record that was never written.
+      const afterMb = await readOr(ms, mall.records[0].cursor, "resume after a multi-byte record");
+      c(
+        "per-record:resume-after-a-MULTI-BYTE-record-is-byte-exact",
+        afterMb.records.length === 2 && afterMb.records[0].value.i === 2 && afterMb.records[0].value.t === "plain",
+        afterMb.records.map((r) => r.value),
+      );
+
+      // A blank separator is not a record but it IS bytes. If the walk skipped it, the internal
+      // consistency check would refuse the whole read — which is the loud outcome, and this cell
+      // pins that the ordinary case does not trip it.
+      const bl = join(pd, "blank.jsonl");
+      writeFileSync(bl, "");
+      const bs = new JsonlFileSource<{ i: number }>(bl);
+      const bstart = await readOr(bs, undefined, "blank adopt");
+      appendFileSync(bl, '{"i":1}\n\n{"i":2}\n');
+      const ball = await readOr(bs, bstart.cursor, "blank read");
+      c("per-record:blank-separators-advance-the-offset-without-becoming-records",
+        ball.records.length === 2 && ball.records[1].value.i === 2 && ball.records[1].cursor === ball.cursor,
+        ball.records);
+      const afterBlank = await readOr(bs, ball.records[0].cursor, "resume across a blank line");
+      c("per-record:resuming-across-a-blank-line-yields-only-the-later-record",
+        afterBlank.records.length === 1 && afterBlank.records[0].value.i === 2,
+        afterBlank.records.map((r) => r.value));
+    } finally {
+      rmSync(pd, { recursive: true, force: true });
     }
   }
 } finally {

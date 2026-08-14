@@ -20,10 +20,39 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 
+/**
+ * One record, WITH THE CURSOR THAT RESUMES AFTER IT — not just the value.
+ *
+ * **The per-record cursor is not a convenience; without it `[P8]` is unimplementable.** The emitter
+ * may turn one read into several frames, and `[P8]` requires each frame to be its own durable
+ * pending/publish/ack cycle *with its own `sourceCursor`*. A read that offers only a single
+ * end-of-batch cursor gives a frame covering records 0..i exactly one legal cursor value to store:
+ * the one that says every record in the batch was consumed. Fold that frame, crash, and the frontier
+ * has advanced past records the later frames were carrying — with no `seq` gap and nothing for a
+ * consumer to notice. That is the silent loss this whole plane exists to make impossible, reached
+ * through the resume path rather than the publish one.
+ *
+ * The alternative — one read is indivisibly one frame — is worse: a restart's read returns
+ * everything appended since the cursor, so `[P8]`'s "a single unit that cannot fit FAILS LOUD"
+ * would fire on ordinary catch-up traffic.
+ */
+export interface SourceRecord<T> {
+  value: T;
+  /** Pass to the next {@link DurableSource.read} to resume immediately after this record. */
+  cursor: string;
+}
+
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
 export interface SourceRead<T> {
-  records: T[];
-  /** Pass to the next {@link DurableSource.read}. Advances ONLY past fully-consumed records. */
+  records: SourceRecord<T>[];
+  /**
+   * Pass to the next {@link DurableSource.read}. Advances ONLY past fully-consumed records.
+   *
+   * Equal to the last record's cursor when the read is non-empty — an implementation MUST keep
+   * those two agreeing, and {@link JsonlFileSource} asserts it rather than assuming it.
+   * It is still carried separately because an EMPTY read has a cursor and no last record: a fresh
+   * adopt and a no-new-data poll both need one, and `[P7]`'s cursor-only advance is defined on it.
+   */
   cursor: string;
 }
 
@@ -205,18 +234,47 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         );
       }
 
-      const records: T[] = [];
+      // PER-RECORD CURSORS, AND THE ARITHMETIC IS IN BYTES BECAUSE THE FILE IS.
+      //
+      // `complete` is a decoded STRING; the cursor is a BYTE offset. A record containing any
+      // non-ASCII character makes `line.length` smaller than the bytes it occupies, so walking the
+      // split with character lengths silently mis-places the cursor of every record after the first
+      // multi-byte one — and the resume then lands mid-record, which is precisely the truncated-read
+      // corruption the partial-line rule exists to prevent. The decode above was FATAL, so `line`
+      // re-encodes to exactly the bytes it came from; `Buffer.byteLength` is that re-encoding.
+      //
+      // A blank line is not a record but it IS bytes, so it advances the offset like any other.
+      const records: SourceRecord<T>[] = [];
+      let at = from.offset;
       for (const line of complete.split("\n")) {
+        at += Buffer.byteLength(line, "utf8") + 1; // + the newline that terminated it
         if (line.trim() === "") continue; // blank separators are not records
+        let value: T;
         try {
-          records.push(JSON.parse(line) as T);
+          value = JSON.parse(line) as T;
         } catch (e) {
           throw new Error(
             `JsonlFileSource: unparseable complete line at offset ~${from.offset} in ${this.path}: ${(e as Error).message}`,
           );
         }
+        // One seal per record, computed by the SAME function the batch cursor uses. It is a 512-byte
+        // read each, which is the honest cost of not having a second sealing path here — and two
+        // places that both compute a cursor would drift exactly the way two places that both compute
+        // a size do.
+        records.push({ value, cursor: await here(at) });
       }
-      return { records, cursor: await here(from.offset + lastNl + 1) };
+
+      const end = from.offset + lastNl + 1;
+      // The walk must land exactly on the batch boundary. It is arithmetic over the same bytes, so
+      // a disagreement means one of the two is wrong about what was consumed — and the dangerous
+      // direction is silent: a short walk hands back a cursor that re-reads records, a long one
+      // hands back a cursor that skips them. Cheap to check, and it is checked in the code that
+      // RUNS rather than asserted in a comment.
+      if (at !== end)
+        throw new Error(
+          `JsonlFileSource: internal cursor walk ended at ${at} but the batch ends at ${end} in ${this.path}`,
+        );
+      return { records, cursor: await here(end) };
     } finally {
       await fh.close();
     }
