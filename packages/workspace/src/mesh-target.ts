@@ -377,11 +377,13 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the
     // exact silent-wrong-mesh outcome this feature exists to prevent).
-    // Same predicate as the match above, and for the same reason in the opposite direction: under
-    // `resolve` our OWN record, spelled differently, reads as a DIFFERENT root — so a project whose
-    // mesh is recorded at the default port is told that mesh belongs to someone else.
+    // One rule, one spelling — but only that, and the comment says only that because it was
+    // measured. Reaching here means `rootMatches` was EMPTY, so no recorded root canonicalizes to
+    // ours and this conjunct is already true for every entry. It is NOT what stops a project being
+    // told its own mesh is foreign; the match predicate above is. A mutation that reverts this site
+    // alone is equivalent, and survives.
     const onDefault = meshes.find(
-      (m) => m.server === DEFAULT_SERVER && canonicalRoot(m.root) !== canonicalRoot(root),
+      (m) => m.server === DEFAULT_SERVER && resolve(m.root) !== resolve(root),
     );
     if (onDefault)
       throw new MeshTargetError(
