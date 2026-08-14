@@ -202,6 +202,23 @@ export function epDescribeAllGrantRow(space: string, caller: EpCaller): string {
   return `${spacePrefix(space)}.ep.one.*.describe.${callerBlock(caller)}.*`;
 }
 
+/** The same baseline `describe`, addressed to ONE INSTANCE rather than the class queue:
+ *  `ep.inst.*.*.describe.<cO>.<cA>.<cUid>.*` — endpoint and instance wildcarded, the command the
+ *  literal reserved `describe`, the caller triple still pinned.
+ *
+ *  REACH-NEUTRAL by construction, which is why it belongs in the baseline beside its class sibling:
+ *  {@link epDescribeAllGrantRow} already grants describe on EVERY endpoint, and a describe answer is
+ *  the endpoint's public content-addressed contract surface — identical whichever registered
+ *  instance returns it. This row adds no information and no authority, only a second route to what
+ *  is already granted. The serve side already subscribes it ({@link epServeSubscribeRows} derives
+ *  the reserved describe for every serve credential), so the caller's publish row was the only
+ *  missing half — and without it every instance-addressed describe dies as a broker publish
+ *  violation that the client surfaces as a describe TIMEOUT, which is why `--on` reads as an
+ *  unresponsive manager rather than as a missing grant. */
+export function epDescribeInstGrantRow(space: string, caller: EpCaller): string {
+  return `${spacePrefix(space)}.ep.inst.*.*.describe.${callerBlock(caller)}.*`;
+}
+
 /** The baseline {@link EpCapability} set every agent holds (Appendix B) beyond the wildcard
  *  describe row: delivery join/leave/list (untargeted) + self-mode lifecycle. */
 export function baselineCallerCapabilities(): EpCapability[] {
@@ -279,6 +296,7 @@ export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: str
   return {
     pub: [
       epDescribeAllGrantRow(space, caller),
+      epDescribeInstGrantRow(space, caller),
       // ONE subject-scoped Direct Get row (the `DIRECT.GET.<stream>.<subject>` form the client's
       // last_by_subj read rides), pinned to the epc subject space — never the bare/stream-wide
       // form. The D32 matrix audit exempts exactly this row shape from the untrusted-profile
