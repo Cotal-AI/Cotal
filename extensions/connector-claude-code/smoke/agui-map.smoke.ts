@@ -141,6 +141,14 @@
  *   M19 both `diagnose()` zeroes share one sentence
  *                                       -> `diagnose:the-two-zeroes-do-NOT-produce-the-same-sentence`
  *
+ *   M20 delete the `system` row       -> `mechanism:an-origin-less-record-with-promptSource-system-is-refused-WITHOUT-throwing`
+ *
+ *   M20 is the one that grades a row entered on someone ELSE'S measurement. `"system"` on an
+ *   absent-origin record appears 0× in my 129,910-record corpus and 81× in §3.1's, on a capture that
+ *   is not on this machine. Deleting the row makes the mapper throw, and the cell catches the throw
+ *   rather than letting it escape — uncaught it would kill the process before the cell name printed,
+ *   which is red and unattributable.
+ *
  *   M16 is `sdk: null` and not a deletion ON PURPOSE. Deleting the key makes the value unmeasured,
  *   so the mapper THROWS and the suite dies before the cell — red, and the wrong red. `null` keeps
  *   the value known and flips only the answer, which is the thing under test.
