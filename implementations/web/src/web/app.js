@@ -30,8 +30,7 @@ let expandAll = false; // channel-wide: expand every clamped message body (else 
 const esc = (s) =>
   String(s).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
 const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const bodyText = (msg) =>
-  (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ");
+const bodyText = (msg) => window.COTAL_PARTS.partsToText(msg.parts);
 function ago(ts) {
   const s = Math.max(0, (Date.now() - ts) / 1000);
   if (s < 45) return "just now";

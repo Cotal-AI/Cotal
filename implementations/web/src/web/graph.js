@@ -68,7 +68,7 @@
   let W = 0, H = 0, DPR = 1, hover = null, sel = null, lastT = 0, alpha = 1;
 
   // ── utils ──
-  const partsText = (m) => (m.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ");
+  const partsText = (m) => window.COTAL_PARTS.partsToText(m.parts);
   const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const shortId = (x) => (/^[A-Z2-7]{32,}$/.test(x) ? x.slice(0, 6) + "…" : x);

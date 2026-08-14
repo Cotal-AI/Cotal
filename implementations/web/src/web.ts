@@ -98,6 +98,7 @@ const PAGE: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
   "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
+  "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
   "/graph.js": { path: join(here, "web/graph.js"), type: jsType },
