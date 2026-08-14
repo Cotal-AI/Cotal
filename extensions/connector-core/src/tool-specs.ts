@@ -685,12 +685,27 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         try {
           const reply = await agent.definePersona({ name, prompt, model, announce });
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
+          const spawnHint = `spawn it with cotal_spawn(name="${name}") to bring it online`;
+          // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
+          // not a failure. Saying "couldn't define" would name the wrong remediation (the caller
+          // would fix its spawn capability, which was never the problem) and invite a retry — and a
+          // retry that succeeds posts the duplicate announcement this change exists to remove. Say
+          // what happened to each half, and point at the ACL that actually blocked the post.
+          if (reply.announceError)
+            return ok(
+              `Persona \`${name}\` saved — but the announcement to #${announce} did NOT go out: ${reply.announceError}. ` +
+                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. You can ${spawnHint}.`,
+            );
           // Report the destination when there was one, so the caller can tell a silent define from an
           // announced one without having to go read the channel.
-          return ok(
-            `Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""} — spawn it with cotal_spawn(name="${name}") to bring it online.`,
-          );
+          return ok(`Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""} — ${spawnHint}.`);
         } catch (e) {
+          // A rejected `announce` throws before the manager write, so nothing was saved and the
+          // remediation is the argument, not a capability. controlFailure's spawn-capability advice
+          // would be actively misleading here.
+          const detail = (e as Error)?.message ?? String(e);
+          if (detail.startsWith("announce:"))
+            return err(`Couldn't define ${name}: ${detail}. Nothing was written.`);
           return controlFailure(`Couldn't define ${name}`, e);
         }
       },

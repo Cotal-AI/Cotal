@@ -5,13 +5,19 @@
  * reaches `Endpoint.multicast`, which resolves the destination as `opts?.channel ?? the caller's
  * FIRST CONCRETE CHANNEL ?? "general"` — so every persona definition broadcast to `#general`, not
  * because anyone chose `#general` but because `general` is first in most personas' channel list.
- * Standing up a four-seat review panel put four posts in every peer's inbox on the mesh, a tool
- * retry announced the same persona twice (the send was unconditional on `reply.ok`, and the
- * manager write is an idempotent overwrite), and the text — "spawn it to bring it online" — is an
- * imperative addressed to strangers, which tripped a real provenance investigation.
+ * Standing up a four-seat review panel put four posts in every peer's inbox on the mesh, and the
+ * text — "spawn it to bring it online" — is an imperative addressed to strangers, which tripped a
+ * real provenance investigation. The retry harm was narrower than "unconditional": the old send WAS
+ * gated on `reply.ok`, so a failed manager reply announced nothing; but nothing else gated it, and
+ * the manager write is an idempotent overwrite, so a retry that SUCCEEDED announced a second time.
  *
- * What this proves, against a REAL Manager on a real JWT broker, driven through the REAL
- * `cotal_persona` MCP tool entry point (not `definePersona` called by hand):
+ * What this proves, against a REAL Manager on a real JWT broker, driven through the `cotal_persona`
+ * tool spec — the platform-neutral object every host renders onto its own tool API, resolved out of
+ * `cotalToolSpecs()` and invoked via its `run()`, not `definePersona` called by hand. Note the
+ * limit: this is one layer below a host's registration (`tools.ts`), so it does NOT exercise the
+ * MCP layer's zod input validation. That is why `announce` is validated inside `definePersona`
+ * rather than only in the schema — the guarantee has to hold on the path a direct API caller takes,
+ * and cell 4 below is what proves it does.
  *
  *   1. DEFINE STILL WORKS. The persona file lands on disk and the tool reports success. This runs
  *      FIRST and deliberately: every silence assertion below is worthless if the define failed,
@@ -24,7 +30,17 @@
  *      wording; and `general` must still receive nothing.
  *   4. THE DESTINATION IS THE ONE NAMED, never one inferred from channel order — asserted by
  *      announcing to the lane while `general` sits first in the definer's channel list, which is
- *      exactly the ordering that produced the bug.
+ *      exactly the ordering that produced the bug. Cell 3 asserts the message text EXACTLY, because
+ *      a name-plus-absence-of-old-phrases pair let a review swap the production sentence for
+ *      `deleted persona <name> - no longer spawnable` with the suite still fully green.
+ *   5. A BAD DESTINATION FAILS LOUD AND FAILS EARLY (cell 4). `""`, whitespace, a wildcard, and a
+ *      name the subject layer would rewrite are each refused, with NO persona file written and
+ *      nothing published — `present` must mean exactly the channel named, and a refusal must blame
+ *      the argument rather than the spawn capability.
+ *   6. A DENIED ANNOUNCEMENT IS A SAVED PERSONA (cell 5), against a real broker denial from a
+ *      definer with read-but-not-post rights on the lane. The file is on disk, the result says so,
+ *      it points at `allowPublish`, and it tells the caller not to re-run — because the retry is
+ *      exactly where the duplicate announcement came from.
  *
  * Run: pnpm smoke:persona-announce   (needs nats-server + node on PATH; boots its own broker)
  */
@@ -266,7 +282,14 @@ try {
 
   check("exactly one message arrives on the announced lane", loudLane.length === 1, loudLane.map(textOf));
   const text = loudLane[0] ? textOf(loudLane[0]) : "";
-  check("the announcement names the persona it announced", text.includes(loudName), text);
+  // The EXACT sentence, spelled out here rather than imported from the implementation. An
+  // `includes(name)` + "doesn't say the old thing" pair is not a content assertion: a review of this
+  // suite replaced the production text with `deleted persona <name> - no longer spawnable` and the
+  // whole suite still passed, because that string also contains the name and neither old phrase. A
+  // shared constant would have the same hole from the other direction — it would follow the
+  // implementation wherever it went. Only a literal written down independently pins the wording.
+  const EXPECTED = `defined persona \`${loudName}\` — in this workspace's persona catalog, spawnable with cotal_spawn`;
+  check("the announcement is EXACTLY the intended sentence", text === EXPECTED, { got: text, want: EXPECTED });
   check(
     "the announcement is an attributed statement, not the old spawn solicitation",
     !text.includes("is now available") && !text.includes("spawn it to bring it online"),
@@ -279,6 +302,97 @@ try {
     loudGeneral.map(textOf),
   );
   check("the tool result names where it announced", String(loudResult.text ?? "").includes(LANE), loudResult);
+
+  // ---- 4. a destination that is not a channel is refused BEFORE anything is written -------------
+  console.log("4. a bad announce target fails loud, and fails before the write");
+  // `""` is the dangerous one: falsy, so a truthiness guard reads a supplied destination as "absent"
+  // and publishes nowhere while reporting success. `team.>` is a wildcard. `lane/fm380` is not a
+  // channel name — the subject layer would rewrite it and publish somewhere the caller did not name.
+  for (const bad of ["", "   ", "team.>", "lane/fm380"]) {
+    const badName = `fm380bad${Buffer.from(bad).toString("hex").slice(0, 8)}`;
+    const beforeBad = { general: heard.general.length, [LANE]: heard[LANE].length };
+    const r = await persona.run(definer, cfg, { name: badName, prompt: "should never be written.", announce: bad });
+    check(`announce ${JSON.stringify(bad)} is refused`, r.isError === true, r);
+    check(
+      `announce ${JSON.stringify(bad)} does not blame the spawn capability (the argument is the problem)`,
+      !String(r.text ?? "").includes("capabilities: [spawn]"),
+      r,
+    );
+    check(
+      `announce ${JSON.stringify(bad)} wrote NO persona file (refused before the manager op)`,
+      !existsSync(join(workspaceRoot, ".cotal", "agents", `${badName}.md`)),
+    );
+    await sleep(300);
+    check(
+      `announce ${JSON.stringify(bad)} published nothing anywhere`,
+      heard.general.length === beforeBad.general && heard[LANE].length === beforeBad[LANE],
+    );
+  }
+
+  // ---- 5. a denied announcement is a saved persona, not a failed definition ---------------------
+  console.log("5. saved-but-not-announced is reported as such");
+  // A definer that may READ the lane but may not POST to it. The manager writes the file, then the
+  // broker refuses the post. Reporting that as "couldn't define" names the wrong fix and invites a
+  // retry — and the retry is where the duplicate announcement comes from.
+  const mutedId = newIdentity();
+  const mutedUid = mintLifecycleUid();
+  const mutedCreds = await provisionAgent(provisioner, auth, mutedId, {
+    subscribe: ["general", LANE],
+    allowSubscribe: ["general", LANE],
+    allowPublish: ["general"], // NOT the lane
+    role: "feature-manager",
+    lifecycleUid: mutedUid,
+    capabilities: ["spawn"],
+    endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }],
+  });
+  const mutedCfg: AgentConfig = {
+    ...cfg,
+    name: "definer-nopost",
+    creds: mutedCreds,
+    id: mutedId.id,
+    lifecycleUid: mutedUid,
+    allowPublish: ["general"],
+  };
+  const mutedAgent = new MeshAgent(mutedCfg);
+  mutedAgent.on("error", () => {});
+  mutedAgent.start();
+  for (let i = 0; i < 60; i++) {
+    if (mutedAgent.connected) break;
+    await sleep(200);
+  }
+  check("the post-denied definer connected", mutedAgent.connected === true);
+  try {
+    const deniedName = "fm380denied";
+    const deniedBefore = { general: heard.general.length, [LANE]: heard[LANE].length };
+    const deniedResult = await persona.run(mutedAgent, mutedCfg, {
+      name: deniedName,
+      prompt: "Saved, but its announcement is refused by the broker.",
+      announce: LANE,
+    });
+    await sleep(SETTLE_MS);
+    check(
+      "the persona IS on disk even though the announcement was refused",
+      existsSync(join(workspaceRoot, ".cotal", "agents", `${deniedName}.md`)),
+    );
+    check("a denied announcement is NOT reported as a failed definition", deniedResult.isError !== true, deniedResult);
+    const dt = String(deniedResult.text ?? "");
+    check("the result says the persona was saved", dt.includes("saved"), dt);
+    check("the result says the announcement did not go out", dt.includes("did NOT go out"), dt);
+    check("the result points at allowPublish, not at the spawn capability", dt.includes("allowPublish"), dt);
+    check(
+      "the result does NOT blame the spawn capability (the caller has it; that was never the problem)",
+      !dt.includes("capabilities: [spawn]"),
+      dt,
+    );
+    check("the result tells the caller not to re-run (a retry is how the duplicate happens)", dt.includes("do not re-run"), dt);
+    check(
+      "nothing was actually delivered on either channel",
+      heard.general.length === deniedBefore.general && heard[LANE].length === deniedBefore[LANE],
+      { general: heard.general.slice(deniedBefore.general).map(textOf), lane: heard[LANE].slice(deniedBefore[LANE]).map(textOf) },
+    );
+  } finally {
+    await mutedAgent.stop().catch(() => {});
+  }
 
   console.log(`\n  ${pass} checks passed`);
 } finally {

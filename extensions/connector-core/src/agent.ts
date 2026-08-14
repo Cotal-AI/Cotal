@@ -5,6 +5,7 @@ import {
   normalizeMentions,
   subjectMatches,
   isConcreteChannel,
+  assertValidChannel,
   channelInAllow,
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
@@ -858,16 +859,43 @@ export class MeshAgent extends EventEmitter {
     prompt: string;
     model?: string;
     announce?: string;
-  }): Promise<ControlReply> {
+  }): Promise<ControlReply & { announceError?: string }> {
     this.assertConnected();
+    // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
+    // this is the API every host's tool surface funnels through, so a caller that reaches
+    // definePersona directly gets the same guarantee. `announce` present must mean EXACTLY that
+    // channel: `""` would otherwise be falsy and silently mean "absent" (a supplied destination
+    // that quietly publishes nowhere), and a wildcard or a name the subject layer rewrites
+    // (`lane/x` → `lane_x`) would publish somewhere the caller did not name. Failing before the
+    // write also means a bad destination costs nothing — the alternative is a persona on disk plus
+    // an error, which reads as "nothing happened" and invites a retry.
+    if (def.announce !== undefined) {
+      if (def.announce.trim() === "")
+        throw new Error("announce: empty channel — omit it to define silently, or name a concrete channel");
+      const canonical = assertValidChannel(def.announce);
+      if (canonical !== def.announce)
+        throw new Error(
+          `announce: "${def.announce}" is not a channel name — it normalizes to "${canonical}", which is not what you asked for; pass the exact channel`,
+        );
+      if (!isConcreteChannel(def.announce))
+        throw new Error(`announce: "${def.announce}" is a wildcard — announce to one concrete channel`);
+    }
     // role is policy — set at spawn, never via definePersona; the manager ignores it regardless.
     const args = { name: def.name, model: def.model, persona: def.prompt };
     const reply = await this.managerInvoke("define-persona", args);
-    if (reply.ok && def.announce)
+    if (!reply.ok || !def.announce) return reply;
+    // The persona IS saved by this point (the manager only replies ok after it writes the file), so
+    // a failed announcement must NOT be reported as a failed definition. Reporting it as one names
+    // the wrong remediation and invites a retry — and a retry that succeeds is the duplicate
+    // announcement this change exists to remove. Report the write as done and the post as failed.
+    try {
       await this.send(
         `defined persona \`${def.name}\` — in this workspace's persona catalog, spawnable with cotal_spawn`,
         def.announce,
       );
+    } catch (e) {
+      return { ...reply, announceError: (e as Error)?.message ?? String(e) };
+    }
     return reply;
   }
 

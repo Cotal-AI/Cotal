@@ -24,7 +24,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_spawn`](#cotalspawn) | spawn a new teammate | starts a new agent process via the manager |
 | [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
 | [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
-| [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable) |
+| [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
 
 ## `cotal_orientation`
@@ -273,9 +273,9 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 
 Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Silent by default — it posts nothing on the mesh unless you ask it to with `announce`. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
 
-- **Side-effect:** writes a persona file via the manager (becomes spawnable).
+- **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
-- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy.
+- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. Defining is silent by default — `announce` is the only way it emits, and then only to the channel you name.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
