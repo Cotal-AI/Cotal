@@ -26,17 +26,29 @@
  * Neither is silently absorbed: {@link closeOpenRun} exists so the connector's `Stop` hook can shut
  * the run at the real boundary once a vehicle is ruled, and until then the lag is honest.
  *
- * **(B) `origin.kind === "human"` is not a total discriminator — MEASURED, and this is why the
- * mapping smoke reads a real session rather than a fixture.** §3.1's rule is right about what it
- * excludes (peer/mesh injections, task notifications, resumed-session summaries). It is not
- * complete: in a **headless / SDK session** (`claude -p`) `origin` is ABSENT from every user entry
- * and the field that carries the provenance is `promptSource: "sdk"`. Applied there, the rule emits
- * ZERO prompts — the exact regression §3.1 says omitting prompts would be. Measured on two real
- * sessions, one of each kind; the numbers are in the smoke, which asserts the CONSEQUENCE so it
- * cannot be forgotten. **The rule is implemented exactly as specified** — extending it to
- * `promptSource` would be patching a plan gap into the code, and the safe direction is not obvious:
+ * **(B) `origin.kind === "human"` MATCHES NOTHING IN A REAL SESSION — MEASURED, on both shapes, and
+ * this is why the mapping smoke reads a real session rather than a fixture.** §3.1's rule is right
+ * about what it excludes (peer/mesh injections, task notifications, resumed-session summaries). What
+ * it does not do is select anything:
+ *
+ *   - **headless / SDK** (`claude -p`), 30 records, 5 user entries: `origin` ABSENT from every one.
+ *   - **interactive**, 5938 records, 892 user entries: `origin` absent from 825, and present on 67
+ *     — every one of them `kind: "channel"`, a Cotal mesh delivery. `kind: "human"` occurs **zero**
+ *     times.
+ *
+ * An earlier revision of this comment recorded (B) as HEADLESS-ONLY and said the interactive case
+ * was fine. That was wrong and a real interactive session is what falsified it: a human turn is
+ * simply a `user` entry with no `origin` at all. Applied to either shape the rule emits ZERO
+ * prompts, and because an assistant observation cannot name a run that was never opened, **a real
+ * session maps to no events whatsoever** — the exact regression §3.1 says omitting prompts would be.
+ *
+ * **The rule is implemented exactly as specified and is NOT patched here.** Extending it to
+ * `promptSource`, or to "a user entry with no origin", would be putting a guess in the connector:
  * "sdk" also covers programmatic injection, and over-emitting republishes other people's content
- * onto a channel with a different read ACL, which is the worse failure of the two.
+ * onto a channel with a different read ACL, which is the worse failure of the two. Escalated as a
+ * plan defect against §3.1 rather than decided here. The smoke asserts the CONSEQUENCE, with a
+ * control requiring the mapper to open a run on a genuine `origin.kind === "human"` entry, so
+ * "opens no run" is a statement about the data and not about a broken rule.
  *
  * **(C) `TOOL_CALL_RESULT.messageId` is unstated in §3.1's table** (the row names only
  * `toolCallId`) while the real schema REQUIRES it. It is keyed the same way every other message

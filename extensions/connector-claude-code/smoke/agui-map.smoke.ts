@@ -42,6 +42,28 @@
  * SELECTION (which records become events), IDENTITY (what the ids are keyed on), and BRACKETING
  * (whether the sequence a real session produces is well-formed).
  *
+ * MUTATION LEDGER — verdicts as NAMES, never counts, and **this header goes stale silently every
+ * time a cell is added, so re-measure before trusting it**. Run with `COTAL_AGUI_SESSION` set to the
+ * headless capture; all restores verified by the tool and the tree measured clean afterwards.
+ *
+ *   M1  pass `signature` into `reasoningMessageContent`      -> **SURVIVED**, and that is recorded
+ *       rather than deleted: the constructor returns an explicit field literal (`agui.ts:882`), so
+ *       an unknown ARGUMENT key cannot reach the output at all. The outcome cell was riding a
+ *       barrier it did not assert. It is why `mechanism:*` exists, and M1 stays in the ledger
+ *       because a survivor that produced a fix is the most useful line in it.
+ *   M1b put the signature into `cotal` instead (the real channel — passed through by reference)
+ *       -> KILLED `real:no-signature-KEY-is-emitted-by-any-event-of-a-real-session`
+ *   M2  skip thinking blocks that carry a signature
+ *       -> KILLED `real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature`
+ *   M3  force the read offset to 0 -> **WRONG-RED**, not a kill: the seal is verified at the cursor
+ *       offset (`durable-source.ts:206`), so it threw before reaching the cell. Red is not proof.
+ *   M3b make each record's cursor point at its own START instead of its end
+ *       -> KILLED `source:resuming-from-record-k-yields-exactly-the-records-after-k`
+ *   M4  drop the `origin.kind === "human"` test from the prompt rule
+ *       -> KILLED `defect-B:so-the-rule-AS-SPECIFIED-opens-no-run-on-THIS-real-session`
+ *   M5  make the constructor spread its input (`...o`)
+ *       -> KILLED `mechanism:the-event-constructor-DROPS-an-unknown-key`
+ *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
 import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdtempSync } from "node:fs";
