@@ -68,3 +68,27 @@ witness list. Both are driven: MX9 kills `E12`; MX12b kills `E11`.
 
 **Not covered:** whether a widened publish grant is detectable by any *shipped* surface. The suite
 detects it with an independent witness the product does not have.
+
+## Addendum: the denied direction IS signalled — which sharpens the asymmetry rather than softening it
+
+Added after driving `E13` at tip `0a2a4ae6` (`Fri Aug 14 09:44:58 PM UTC 2026`). The finding above
+measures what happens when the grant is **too wide**. `E13` measures the other direction — the grant
+correctly **narrow**, the post correctly **denied**:
+
+    isError=true
+    text="Couldn't send: Permissions Violation for Publish to \"cotal.<space>.chat.local.<uid>.secret\""
+
+**So the publish side is not signal-free in general. It signals loudly when the broker says no, and
+says nothing at all when the broker wrongly says yes.** That is a worse shape than "no signal
+either way", because it teaches the operator that this surface *does* report publish problems — and
+then stays silent on the only publish problem that is a security defect.
+
+**The absence of a client gate is therefore not the reason the widened case is silent.** A denied
+publish reaches the caller through the broker's own rejection; a wrongly-permitted one has no
+rejection to carry it. **No client-side gate would change that**, which strengthens the section above:
+adding one by symmetry would still not detect the case this finding is about.
+
+One further detail from the same run, filed here because it is the same surface: the connector's
+endpoint error channel emits a *better* message for this exact denial — `check this endpoint's ACLs
+(a denied peer looks "absent" rather than blocked)` — which the tool caller never receives. Treated
+fully in `.meshctl-measurement/DESIGN-route-refusal.md` §0a.
