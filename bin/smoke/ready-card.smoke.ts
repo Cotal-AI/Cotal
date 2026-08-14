@@ -26,7 +26,7 @@
  * Run: pnpm exec tsx bin/smoke/ready-card.smoke.ts
  */
 import { spawnSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertBuildCurrent } from "./_build-current.js";
@@ -82,6 +82,34 @@ function card(): string {
   return out.join(" ").replace(/│/g, "").replace(/\s+/g, " ").trim();
 }
 
+// ---- the hermeticity instrument, armed BEFORE the first run --------------------------------------
+// ⚠️ AN EARLIER VERSION OF THIS SUITE WAS VACUOUS HERE AND REVIEW PROVED IT: it created `PROJ/.cotal`
+// and `HOME_D` itself, then "established" hermeticity by checking those same pre-created paths still
+// existed. Existence proved by the setup code, not by the run. Review redirected the child's `HOME`
+// to an external decoy — setup wrote `.agents` into the operator-visible decoy — and the suite stayed
+// entirely green. That is precisely the regression that once wrote into a real `~/.agents`.
+//
+// What replaces it: a fingerprint over the marker paths a `setup` run actually creates, taken before
+// and after. `HOME` and `COTAL_HOME` are witnessed SEPARATELY because they are separate redirections
+// — `.agents` follows HOME, `onboarded.json` follows COTAL_HOME, and a mutant that moves one leaves
+// the other's witness green.
+const HOME_MARKERS = [".agents", ".claude", "claude-plugin", "agent-skills.json", "onboarded.json"] as const;
+/** Presence AND mtime: presence alone cannot see a rewrite, mtime alone cannot see a creation. */
+function homeFingerprint(dir: string): string {
+  return HOME_MARKERS.map((m) => {
+    try { const s = statSync(join(dir, m)); return `${m}:${s.mtimeMs}`; } catch { return `${m}:absent`; }
+  }).join("|");
+}
+const REAL_HOME = process.env.HOME;
+if (REAL_HOME === undefined || REAL_HOME === "") throw new Error("CANNOT MEASURE: no HOME in this environment — the protected path cannot be identified, so its invariance cannot be asserted");
+if (REAL_HOME === HOME_D) throw new Error(`CANNOT MEASURE: the scratch HOME is the real HOME (${REAL_HOME})`);
+const realHomeBefore = homeFingerprint(REAL_HOME);
+const scratchHomeBefore = homeFingerprint(HOME_D);
+// The witnesses must not pre-date the run, or every assertion below is satisfied by this suite's own
+// mkdir. This is the cell whose absence made the old pair vacuous.
+check("HERMETIC-precondition: the scratch HOME is EMPTY before any run (a pre-created witness proves nothing)",
+  readdirSync(HOME_D).length === 0);
+
 // Onboard once so every later render is a fast repeat that draws the card.
 spawnSync(NODE, [TSX, CLI, "setup", "--yes"], { cwd: PROJ, env: ENV, encoding: "utf8", timeout: 240_000 });
 
@@ -96,8 +124,15 @@ const rowFor = (label: string): string => {
 // ---- ALIVE: an unrelated LIVE pid — the defect-B state ------------------------------------------
 // A real process that is not a manager. `kill(pid,0)` succeeds, and the old card called that
 // `✓ manager running`.
-const child = spawn("sleep", ["900"], { detached: true, stdio: "ignore" });
-child.unref();
+// This interpreter, not POSIX `sleep`. Review's finding, and it was right: a suite that calls itself
+// portable and is replayed on Windows cannot depend on an executable the repo never guarantees — the
+// dependency reproduces as ENOENT, and "Git-for-Windows happens to ship sleep.exe" is environment
+// leakage, not a repo-level fact. A Node child is the same live unrelated pid with no such dependency.
+// NOT unref'd, and that is deliberate: an unref'd handle lets the event loop drain while the child is
+// still alive, and the `exit` await below then never settles — measured, on the first run after this
+// swap ("unsettled top-level await", 9 cells reached of 26). Keeping it referenced also guarantees the
+// suite cannot finish while its own planted process is still running.
+const child = spawn(NODE, ["-e", "setInterval(() => {}, 1000);"], { detached: true, stdio: "ignore" });
 const plantedPid = child.pid!;
 writeFileSync(PIDFILE, String(plantedPid));
 const alive = rowFor("alive");
@@ -168,12 +203,23 @@ check("UNATTRIBUTABLE: it is NOT rendered as `not running` — absent and unread
 // still print all-green. The count is checked BECAUSE each state is asserted individually above.
 check(`CARDINALITY: all 4 states rendered a row (saw ${rowsSeen})`, rowsSeen === 4);
 
-// ---- hermeticity: the operator's real home was not touched ---------------------------------------
-check("HERMETIC: the run wrote into the scratch, not the real home", existsSync(join(PROJ, ".cotal")));
-check("HERMETIC-control: the scratch HOME actually received the run's state (else the check above is vacuous)",
-  existsSync(HOME_D));
+// ---- hermeticity: witnessed on BOTH sides, positive and negative ----------------------------------
+// The HOME-rooted witness is the one review's decoy mutant moved. `.agents` follows `HOME` and only a
+// run creates it — this suite asserted the directory was empty before anything ran.
+check("HERMETIC: the run's HOME-rooted state landed in the SCRATCH home (.agents, created by the run)",
+  existsSync(join(HOME_D, ".agents")));
+check("HERMETIC: the run's COTAL_HOME-rooted state landed there too (onboarded.json — a separate redirection)",
+  existsSync(join(HOME_D, "onboarded.json")));
+// The protected path, asserted directly rather than by proxy.
+check("HERMETIC: the OPERATOR's real home is byte-for-byte unchanged across every run above",
+  homeFingerprint(REAL_HOME) === realHomeBefore);
+// ⚠️ The inverse. Without it, the cell above passes for a fingerprint function that can see nothing —
+// which is exactly how the pair it replaced failed. Same comparator, a directory that DID change.
+check("HERMETIC-control: the same comparator DOES report a change for the scratch home (else invariance is vacuous)",
+  homeFingerprint(HOME_D) !== scratchHomeBefore);
+check("HERMETIC: the project state landed in the scratch project root", existsSync(join(PROJ, ".cotal")));
 
-const EXPECTED_CELLS = 22;
+const EXPECTED_CELLS = 26;
 if (pass + fail !== EXPECTED_CELLS) {
   fail++;
   console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);
