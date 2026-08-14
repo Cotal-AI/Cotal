@@ -14,7 +14,7 @@ import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
-import { managerUp } from "../lib/manager-proc.js";
+import { MANAGER_PID_PATH, managerLiveness } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { cotalPath } from "../lib/paths.js";
 
@@ -331,23 +331,76 @@ function webInstalled(): boolean {
 // the connectors. So setup no longer fetches it — by the time these steps run, the reconcile has
 // already seeded web at the binary's version.
 
+/** The card's manager row, rendered from the FULL five-valued {@link managerLiveness} rather than
+ *  from a boolean.
+ *
+ *  This row used to read `managerUp()` and print `✓ manager running`. `managerUp()` is
+ *  `managerLiveness() === "alive"`, and `alive` is `kill(pid, 0)` — process EXISTENCE. Reproduced on
+ *  a real manager: `SIGSTOP` it, `/proc/<pid>/status` reads `State: T (stopped)`, no control probe
+ *  answers, and the card still printed `✓ manager running`. Reproduced again with an unrelated live
+ *  pid (a plain `sleep`) written into `.cotal/manager.pid`. So the green tick was a claim about an
+ *  integer, not about a manager, and `manager-proc.ts` says so itself: collapsing the five-valued
+ *  answer to a boolean "is what made this dangerous", and callers that ACT on it must not — while
+ *  this caller prints a start recommendation.
+ *
+ *  So: NO ARM OF THIS ROW RENDERS `✓`. A pidfile cannot support a health claim, and the fix is to
+ *  stop making one rather than to make a quieter one. What the row can honestly report is that a
+ *  local process is present, whose pid came from a named file, and that its SERVING was not checked.
+ *
+ *  Equally deliberately, `alive` does not render as `not running` — that trades a false green for a
+ *  false red, which this lane has already shipped once. And it does not render as silence: a row the
+ *  reader cannot see is the failure mode the whole surface exists to prevent.
+ *
+ *  The start recommendation is EARNED, not decorative. It appears only where the record positively
+ *  says no manager is there (`dead`/`absent`). On `unknown` (the kernel answered neither way — a
+ *  seccomp filter or LSM policy does this) and `unattributable` (the file holds something that is
+ *  not a pid), the honest answer is that ownership could not be established, and recommending a
+ *  start over a record that may front a live process is exactly the double-launch this refuses.
+ *
+ *  Age is not rendered on purpose: the liveness observation is made synchronously here, so its age
+ *  is zero by construction. Stamping the PIDFILE's mtime beside it would show the age of the record
+ *  as the age of the observation, which is the conflation this surface exists to avoid. */
+function managerRow(cmd: string): { marker: string; text: string } {
+  const start = `start: ${cmd} up, or: ${cmd} supervise`;
+  const path = MANAGER_PID_PATH();
+  // Named relative, not absolute. The source must be unambiguous, but this is a one-glance card and
+  // an absolute path wraps it across three lines — measured, with a real scratch root. `.cotal/` is
+  // the name the operator already knows, and it is unambiguous because the card is rooted here.
+  const src = ".cotal/manager.pid";
+  const pid = existsSync(path) ? readFileSync(path, "utf8").trim() : "";
+  switch (managerLiveness()) {
+    case "alive":
+      return { marker: dim("·"), text: `local process present (pid ${pid} · ${src}) · serving not checked` };
+    case "dead":
+    case "absent":
+      return { marker: dim("○"), text: `not running · ${start}` };
+    case "unknown":
+      return { marker: "?", text: `cannot establish: the kernel answered neither running nor no-such-process for pid ${pid} (${src}) · no action recommended` };
+    case "unattributable":
+      return { marker: "?", text: `cannot establish: ${src} does not hold a pid · no action recommended` };
+  }
+}
+
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
  *  probes — displaying state is not depending on it), plus the key commands. */
 async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
   const web = await webUp();
-  const mgr = managerUp();
   const cmd = displayCmd();
   const hasDemo = existsSync(cotalPath("agents", "david.md")); // the guided team is present ⇒ richer hint
   const line = (on: boolean, text: string) => `${on ? ok("✓") : dim("○")} ${text}`;
+  // A marker per state, because the manager row has THREE outcomes and a boolean has two. `?` is
+  // deliberately not dim: "cannot establish" must not read as quietly fine.
+  const mark = (m: string, text: string) => `${m} ${text}`;
+  const mgr = managerRow(cmd);
   note(
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
       line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down · start: ${cmd} up --detach`)}`),
       line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
-      line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
+      mark(mgr.marker, `manager  ${dim(mgr.text)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,
       // Match the hint to what's actually on disk: the guided team (with --demo) vs the one default agent.
