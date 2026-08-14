@@ -60,7 +60,24 @@ export * from "./canonical.js";
 export * from "./artifact.js";
 export * from "./artifact-chunk.js";
 export * from "./artifact-attach.js";
-export * from "./artifact-index.js";
+// NOT `export *`. The attachment index is writable only through `confirmAttach`, and a blanket
+// re-export made `putAttachmentIfAbsent` and `deleteAttachment` public API of `@cotal-ai/core`: any
+// consumer could write the index directly, with no succession fence and no possession check. The
+// guard for that invariant is an IN-TREE structural sweep, which by construction cannot see an
+// out-of-tree caller — so the export list is where the invariant has to hold. Reads and the key
+// grammar stay public; the two mutators do not. Adding one back here re-opens the hole, which is
+// why `artifact-single-writer` asserts their absence from the runtime surface.
+export {
+  digestKeyToken,
+  possessionBucket,
+  attachmentBucket,
+  possessionKey,
+  parsePossessionKey,
+  attachmentKey,
+  readPossession,
+  type AttachmentRow,
+  type AttachmentKv,
+} from "./artifact-index.js";
 export * from "./artifact-fetch.js";
 export * from "./artifact-transfer.js";
 export * from "./parts.js";

@@ -153,5 +153,37 @@ for (const rel of MUST_NOT_WRITE) {
     f === undefined ? "FILE NOT FOUND — the sweep's universe is wrong, not the codebase" : "has a call site");
 }
 
+// ---- THE EXPORT SURFACE, WHICH IS WHERE THIS SUITE'S UNIVERSE ENDS -------------------------------
+// Everything above is a scan of THIS REPO. The invariant it enforces — the attachment index is
+// unreachable except through `confirmAttach` — is a claim about ALL callers, and an out-of-tree
+// consumer is outside the sweep's universe by construction. `index.ts` used to `export *` from
+// `artifact-index.js`, which put `putAttachmentIfAbsent` and `deleteAttachment` on the public runtime
+// surface of `@cotal-ai/core`: `import { deleteAttachment } from "@cotal-ai/core"` wrote the index
+// with no succession fence and no possession check, and every cell above stayed green.
+//
+// **A structural sweep's PATTERN is a claim about what mutation looks like; its UNIVERSE is a claim
+// about where mutation can happen. The pattern was widened once already; this is the universe.**
+//
+// Asserted against the RUNTIME surface, not the text of `index.ts`. A re-export can arrive by a route
+// no grep of that one file would catch (a barrel file, a renamed alias, a nested `export *`), and the
+// property that matters is what a consumer can actually import.
+{
+  const surface = await import("../src/index.js");
+  const pub = surface as unknown as Record<string, unknown>;
+
+  // POSITIVE CONTROL FIRST: an absence assertion is vacuously true against a module that failed to
+  // load or resolved to something empty. This is the fourth instrument on this lane where the arm
+  // that must PASS is the only thing distinguishing a real measurement from a broken one.
+  check("POSITIVE CONTROL: the public surface loaded and carries the non-mutating index exports",
+    typeof pub.possessionBucket === "function" && typeof pub.attachmentBucket === "function"
+      && typeof pub.confirmAttach === "function",
+    { possessionBucket: typeof pub.possessionBucket, confirmAttach: typeof pub.confirmAttach });
+
+  for (const verb of RAW_MUTATORS) {
+    check(`the public surface of @cotal-ai/core does NOT export \`${verb}\``,
+      pub[verb] === undefined, typeof pub[verb]);
+  }
+}
+
 console.log(`\nartifact-single-writer: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
