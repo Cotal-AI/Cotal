@@ -67,6 +67,69 @@ be measured from this account**. It needs a deliberately narrow `allowPublish` o
 which the connection-control suite's authed arm already builds (`allowPublish: ["general"]`, driven
 as `E12`). **The fixture for the owed measurement already exists; only the assertion is missing.**
 
+## 0c. THE OUTBOUND TWIN — and it is outside the grant system entirely
+
+Added `Fri Aug 14 09:39:25 PM UTC 2026` on fm-orchestrator's instruction, which is right that the
+note is stronger for covering both directions.
+
+**Reported to me, not measured by me** — this is fm-orchestrator relaying a reviewer seat's own
+account of why it tasked another lane's closed seat:
+
+> *"I believed I was allowed to use the runtime's local `functions.task` subagent tool… I did NOT
+> understand that invoking it could enlist an existing Cotal seat, reopen/place work on another lane,
+> or publish that work to a mesh channel; I treated it as private harness-local delegation outside
+> the mesh."*
+
+**I have not verified how a runtime subagent call reaches a live Cotal seat; that is the harness's
+integration and I have measured none of it.** What follows treats the *shape* as given and reasons
+about the authority model, which is the part this note is competent to address.
+
+### The two failures are one failure
+
+| | The seat believes | What is true | What it can ask |
+| --- | --- | --- | --- |
+| **Inbound (§0–§2)** | "I delivered my report" | It went to the only lane it could reach | Nothing about a destination |
+| **Outbound (this)** | "I spawned a private worker" | It enlisted a real seat on another lane and published there | Nothing about a blast radius |
+
+> **Both are capability surfaces whose holder cannot ask what they are holding.** One is a seat that
+> cannot deliver and does not know; the other delivers across a boundary and does not know.
+> **A seat cannot refuse a bridge it does not know it is standing on** — and it cannot decline for
+> lack of route it was never shown.
+
+### ⚠️ The structural half, which is this lane's actual subject
+
+The capability gate governs **`cotal_*` tools only** — `tool-specs.ts:799` filters the spec array by
+`canSpawn` for `cotal_spawn` / `cotal_persona`, and `tool-specs.ts:177` gates the connection verbs
+the same way. **That gate is a filter over one namespace.**
+
+**A runtime-provided tool is not in that namespace and cannot be filtered by it.** So if such a tool
+has mesh effects, then:
+
+- **`capabilities: [spawn]` is not the authority to enlist another agent.** It is the authority to
+  enlist another agent *through the `cotal_*` door*. A second door exists, ungated, and the grant
+  system cannot see it — a seat with `capabilities: []` still holds it.
+- **`cotal_orientation` will report that seat's capabilities honestly and still be wrong about what
+  it can do.** `access.post` and `capabilities` describe the mesh surface; they cannot describe a
+  surface the mesh does not own.
+
+**This is worse than the inbound case, and in the opposite way.** Inbound, the grant is correct and
+the seat is merely not prompted to consult it. Outbound, **the grant is not the whole truth**, so
+consulting it more carefully would not have helped. *A seat that did everything this note recommends
+would still have made that call.*
+
+### What the design owes it
+
+The predicate in §1 answers *"may I reach `<destination>`?"*. The outbound case needs the other
+question — **"what does this action reach?"** — and **that question cannot be answered from
+`config`**, because the reach of a non-mesh tool is not in the mesh's model of the seat.
+
+**So I am NOT proposing a mechanism for it here, and I want that refusal to be explicit rather than
+an omission.** The honest options are governance (fm-orchestrator's standing instruction: do not use
+the runtime's subagent facility) or a harness-level change, and **neither is this lane's to design.**
+What this note contributes is the diagnosis: **the mesh's authority model has a surface it does not
+enumerate, and every statement the mesh makes about a seat's powers is therefore an
+under-statement.** That belongs written down whether or not anyone acts on it here.
+
 ## 1. What a seat should be able to ask
 
 One question, asked about a destination rather than about itself:
