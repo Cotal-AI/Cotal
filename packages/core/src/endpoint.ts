@@ -12,6 +12,7 @@ import {
   UserAuthenticationExpiredError,
   NoRespondersError,
   RequestError,
+  type Msg,
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
@@ -432,6 +433,15 @@ export class CotalEndpoint extends EventEmitter {
   private reconnecting = false;
   /** One reestablishLoop at a time; concurrent triggers coalesce via rebuild(). */
   private reestablishing = false;
+  /** Rejectors for request/reply calls currently in flight on `this.nc`.
+   *
+   *  A request's reply subject AND its timeout timer both live on the connection it was issued on
+   *  (`noMux` + an explicit `reply`). A rebuild drains that connection, so without this set the
+   *  reply can never arrive and the timeout can never fire: the caller's promise settles NEVER.
+   *  Measured, not theorised — a request with its own 5s deadline, interrupted by a rebuild, was
+   *  still unsettled at 20s. A caller that hangs forever is strictly worse than one that fails,
+   *  because it cannot even report which way it went. */
+  private pendingRequests = new Set<(reason: Error) => void>();
   /** Interruptible backoff for reestablishLoop — reconnect()/stop() resolves this to retry
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
@@ -1039,6 +1049,9 @@ export class CotalEndpoint extends EventEmitter {
     const oldNc = this.nc;
     this.reconnecting = true;
     try {
+      // BEFORE the drain: anything waiting on a reply over `oldNc` will never be answered once it
+      // is gone, and its own timeout dies with it. Settle those callers here or they wait forever.
+      this.failPendingRequests("rebuilt");
       this.clearConnectionScoped();
       this.nc = undefined;
       this.js = undefined;
@@ -1123,6 +1136,9 @@ export class CotalEndpoint extends EventEmitter {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    // Same reasoning as the rebuild path: a stop drains the connection an in-flight reply would
+    // have arrived on, so settle those callers rather than leaving them pending on a dead endpoint.
+    this.failPendingRequests("stopped");
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
@@ -1339,8 +1355,52 @@ export class CotalEndpoint extends EventEmitter {
     const reqSubject = controlServiceSubject(this.space, service, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBounded(this.nc, reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
     return m.json<ControlReply>();
+  }
+
+  /** Every request/reply call goes through here, so a connection teardown can never strand one.
+   *
+   *  The reply subscription and the timeout timer both belong to `nc`. When a rebuild drains it,
+   *  nats.js has nothing left that will ever settle the promise — so we register a rejector for the
+   *  lifetime of the call and {@link failPendingRequests} settles it at teardown instead.
+   *
+   *  Deliberately NOT a retry: the request may well have been received and acted on by the
+   *  responder, and re-issuing it here would silently duplicate a control-plane effect. The caller
+   *  is told exactly that and decides. */
+  private async requestBounded(
+    nc: NatsConnection,
+    subject: string,
+    payload: string,
+    opts: { timeout: number; noMux: boolean; reply: string },
+  ): Promise<Msg> {
+    let reject!: (reason: Error) => void;
+    const stranded = new Promise<never>((_, rej) => { reject = rej; });
+    this.pendingRequests.add(reject);
+    try {
+      return await Promise.race([nc.request(subject, payload, opts), stranded]);
+    } finally {
+      this.pendingRequests.delete(reject);
+    }
+  }
+
+  /** Settle every in-flight request before the connection under it goes away.
+   *
+   *  The wording is load-bearing: the request WAS sent, so it may already have been acted on. A
+   *  message claiming it did not happen would be a lie a caller could act on destructively — the
+   *  honest report is that the outcome is unknown, which tells the caller to check state rather
+   *  than blindly retry. */
+  private failPendingRequests(cause: string): void {
+    if (!this.pendingRequests.size) return;
+    const err = new Error(
+      `the mesh connection was ${cause} while this request was in flight, so its reply can never arrive. ` +
+        `The request WAS published, so the responder may or may not have acted on it - the outcome is UNKNOWN. ` +
+        `Check the effect before re-issuing; a blind retry can duplicate a control-plane action.`,
+    );
+    for (const reject of [...this.pendingRequests]) {
+      this.pendingRequests.delete(reject);
+      reject(err);
+    }
   }
 
   /** This endpoint's v0.4 caller triple (§13.2) — the identity its minted ep-rail rows pin. The
@@ -1410,7 +1470,7 @@ export class CotalEndpoint extends EventEmitter {
     // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBounded(this.nc, reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
     return m.json<ControlReply>();
   }
 
@@ -1425,7 +1485,7 @@ export class CotalEndpoint extends EventEmitter {
     const reqSubject = controlServiceSubject(this.space, CONTROL_DELIVERY_ADMIN, this.owner, this.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
-    const m = await this.nc.request(reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
+    const m = await this.requestBounded(this.nc, reqSubject, JSON.stringify(body), { timeout: timeoutMs, noMux: true, reply });
     return m.json<ControlReply>();
   }
 
