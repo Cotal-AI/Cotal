@@ -315,7 +315,8 @@
     "smoke:resolve-rtt": "tsx implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
     "smoke:queue-win": "tsx implementations/manager/smoke/queue-win-distribution.smoke.ts",
     "smoke:instrument-instance-pin": "tsx implementations/manager/smoke/instrument-instance-pin.smoke.ts",
-    "smoke:cli-seat-locality": "tsx implementations/manager/smoke/cli-seat-locality.smoke.ts"
+    "smoke:cli-seat-locality": "tsx implementations/manager/smoke/cli-seat-locality.smoke.ts",
+    "smoke:delivery-health": "tsx packages/core/smoke/delivery-health.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
