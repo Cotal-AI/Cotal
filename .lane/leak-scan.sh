@@ -25,6 +25,19 @@
 #   95 REFUSE — unreadable terms file, zero terms, or an empty corpus
 set -u
 
+# ---- PIN THE ENGINE, AND PRINT IT ---------------------------------------------------------------
+# `grep` on this box is a shell FUNCTION wrapping ugrep 7.5.0, and ugrep HONOURS IGNORE FILES: a
+# planted term in a gitignored file is found by GNU grep and silently skipped by the wrapper, both
+# at exit 0 with hits, so nothing looks wrong. Measured here: the wrapper is defined only in the
+# interactive shell and is NOT exported, so a script run as `bash leak-scan.sh` already resolves
+# /usr/bin/grep — but "already correct" is not a guarantee, it is today's accident of how this was
+# invoked. Pinned so it stays correct when someone sources it, exports the function, or runs it from
+# an interactive shell. The verdict prints the binary and version because a scan whose engine is
+# unnamed cannot be re-derived.
+GREP=/usr/bin/grep
+[ -x "$GREP" ] || { echo "REFUSE(95): $GREP is not executable — the engine cannot be pinned"; exit 95; }
+GREP_ID=$("$GREP" --version | head -1)
+
 TERMS="${1:?usage: leak-scan.sh <terms-file> [--regex-mutant]}"
 MUTANT="${2:-}"          # --regex-mutant forces regex mode, to prove the mode control can FAIL
 FIXED=(-F)
@@ -34,14 +47,14 @@ FIXED=(-F)
 
 # Strip comments and blanks. A comment scanned as a term is a term that never matches, which
 # inflates a coverage count with entries that were never going to hit anything.
-mapfile -t LIST < <(grep -v '^[[:space:]]*#' "$TERMS" | grep -v '^[[:space:]]*$')
+mapfile -t LIST < <("$GREP" -v '^[[:space:]]*#' "$TERMS" | "$GREP" -v '^[[:space:]]*$')
 [ "${#LIST[@]}" -gt 0 ] || { echo "REFUSE(95): zero terms — a scan over no terms is clean by construction"; exit 95; }
 
 # ---- MODE CONTROL: a metacharacter canary ------------------------------------------------------
 # `a.c` must NOT match `abc`. Under -F it does not; under regex it does. This is the property the
 # coverage claim rests on, and unlike the self-test it CAN fail.
 CTL=$(mktemp); printf 'abc\n' > "$CTL"
-if grep -q "${FIXED[@]}" -- 'a.c' "$CTL"; then
+if "$GREP" -q "${FIXED[@]}" -- 'a.c' "$CTL"; then
   rm -f "$CTL"
   echo "REFUSE(5): mode control FAILED — 'a.c' matched 'abc', so terms are being read as REGEX."
   echo "  A clean verdict in regex mode covers only the terms that happen to be valid regexes"
@@ -75,7 +88,17 @@ hits=0
 i=0
 for t in "${LIST[@]}"; do
   i=$((i+1))
-  files=$(grep -rl "${FIXED[@]}" -- "$t" "${CORPUS[@]}" 2>/dev/null | head -5)
+  # NO `2>/dev/null`. Suppressing stderr here turns "could not read that file" into "read it and it
+  # was clean" — the same collapse this whole instrument exists to refuse, one line deep. Errors are
+  # captured and REFUSED on, because a scan that could not read part of its corpus has not scanned it.
+  errf=$(mktemp)
+  files=$("$GREP" -rl "${FIXED[@]}" -- "$t" "${CORPUS[@]}" 2>"$errf" | head -5)
+  if [ -s "$errf" ]; then
+    echo "REFUSE(95): the scanner could not read part of its corpus on term[$i]:"
+    sed 's/^/    /' "$errf"          # paths only; a grep error never contains the term
+    rm -f "$errf"; exit 95
+  fi
+  rm -f "$errf"
   if [ -n "$files" ]; then
     hits=$((hits+1))
     echo "HIT term[$i] in:"; echo "$files" | sed 's/^/    /'
@@ -84,6 +107,7 @@ done
 
 # The verdict may report COVERAGE. It may not report "clean" — see the readme: a clean verdict cannot
 # be distinguished from "never looked", which is the whole reason this instrument exists.
+echo "engine:            $GREP — $GREP_ID"
 echo "terms parsed:      ${#LIST[@]}"
 echo "coverage:          ${#LIST[@]}/${#LIST[@]} scannable BY CONSTRUCTION (-F literal mode)"
 echo "mode control:      PASS ('a.c' did not match 'abc'); regex-mutant arm refuses at rc 5"

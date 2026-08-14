@@ -1,3 +1,45 @@
-.lane/finding5-repair-cells.sh: line 98: FG5_SCRATCH: parameter null or not set
-FAIL SUITE INCOMPLETE — ran 0 of 32 cells (rc=1). This is NOT a clean run.
-.lane/finding5-repair-cells.sh: line 49: cleanup: command not found
+finding5 scope-1 repair cells  22:26:31Z
+  build-current: 1 package(s) current
+planted live non-manager pid 2518773
+    row|  · manager local process present (pid 2518773 · .cotal/manager.pid) · serving not checked 
+  PASS  R0[alive] the manager row is present in the 'alive' state (silence is the failure mode, not a pass)
+  PASS  R10[alive] the capture stops at the row and does not swallow the hint block
+  PASS  R4 unrelated-live-pid-never-claimed-running (no ✓ on the manager row)
+  PASS  R2 alive-row-names-its-source (pid AND the pidfile path)
+  PASS  R3 alive-row-says-serving-not-checked
+  PASS  R2b alive-row-offers-no-start-hint
+.lane/finding5-repair-cells.sh: line 157: 2518773 Killed                  setsid sleep 900
+    row|  ○ manager not running · start: cotal up, or: cotal supervise 
+  PASS  R0[dead] the manager row is present in the 'dead' state (silence is the failure mode, not a pass)
+  PASS  R10[dead] the capture stops at the row and does not swallow the hint block
+  PASS  R5 dead-pid-still-says-not-running-AND-still-offers-the-start-hint (INVERSE CONTROL)
+    row|  ○ manager not running · start: cotal up, or: cotal supervise 
+  PASS  R0[absent] the manager row is present in the 'absent' state (silence is the failure mode, not a pass)
+  PASS  R10[absent] the capture stops at the row and does not swallow the hint block
+  PASS  R6 absent-pidfile-still-says-not-running-AND-still-offers-the-start-hint (INVERSE CONTROL)
+    row|  ? manager cannot establish: .cotal/manager.pid does not hold a pid · no action recommended 
+  PASS  R0[unattributable] the manager row is present in the 'unattributable' state (silence is the failure mode, not a pass)
+  PASS  R10[unattributable] the capture stops at the row and does not swallow the hint block
+  PASS  R7a unattributable-pidfile-says-cannot-establish
+  PASS  R7 unattributable-pidfile-offers-NO-start-hint
+  PASS  R7c unattributable-row-carries-no-green-tick
+  PASS  R11 the capture still includes the WRAPPED continuation line (INVERSE CONTROL for R10)
+  PASS  R12-control the seccomp filter makes kill(2) return EIO (got: EIO)
+  PASS  R12-inverse without the filter kill(2) SUCCEEDS (got: NONE)
+    row|  ? manager cannot establish: the kernel answered neither running nor no-such-process for pid 1 (.cotal/manager.pid) · no action recommended 
+  PASS  R12 unknown-kernel-answer says cannot establish
+  PASS  R12a unknown names WHICH condition failed (not a bare 'unknown')
+  PASS  R12b unknown offers NO start hint (a start here is the double-launch)
+  PASS  R12c unknown carries no green tick
+  PASS  R12d unknown is NOT rendered as unattributable (the two conditions stay distinct)
+  PASS  R13-control managerRow was actually FOUND in setup.ts (an empty extract passes every absence check)
+  PASS  R13 managerRow does not read the pidfile itself — pid and state come from ONE call
+  PASS  R13a managerRow derives both from managerLivenessSnapshot (the positive half of R13)
+  PASS  R0-count all 5 rendered states were captured (saw 5)
+  PASS  R9-control the witness DETECTS a change (else R9 is vacuous, not clean)
+  PASS  R9-usable the witness actually produced a reading both times (not a could-not-check sentinel)
+  PASS  R9 hermetic: the operator's real ~/.agents was NOT modified by this run
+
+repair cells: 32 passed, 0 failed
+  planted pid 2518773 gone: yes
+  scratch PRESERVED at /tmp/fg5-mr5-mutant-0YrPya
