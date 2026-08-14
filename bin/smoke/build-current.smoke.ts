@@ -81,6 +81,34 @@ console.log(`  · implementations/cli → ${real.condition}${real.condition === 
 check("REAL: the cli package is classified with a known condition, not silently skipped",
   ["current", "stale", "never-built"].includes(real.condition));
 
+// PARTIAL BUILD — the fail-open found in review, kept as a named regression cell.
+// The original guard compared the newest source against the NEWEST output, so one fresh unrelated
+// output masked a stale one: precisely what an interrupted or errored build leaves on disk. Every
+// synthetic package above has ONE source and ONE output, which is why they all missed it.
+const partial = join(root, "partial-pkg");
+mkdirSync(join(partial, "src"), { recursive: true });
+mkdirSync(join(partial, "dist"), { recursive: true });
+const stamp = (p: string, ms: number): void => { writeFileSync(p, "x\n"); utimesSync(p, new Date(ms), new Date(ms)); };
+stamp(join(partial, "dist", "a.js"), T);            // stale output …
+stamp(join(partial, "src", "a.ts"), T + 60_000);    // … behind its source
+stamp(join(partial, "src", "b.ts"), T + 120_000);
+stamp(join(partial, "dist", "b.js"), T + 180_000);  // an unrelated FRESH output, newest overall
+const part = buildStaleness(partial);
+check("PARTIAL BUILD: one fresh output does NOT mask a stale one", part.condition === "stale");
+check("PARTIAL BUILD: the verdict names the OUTPUT that is behind, not just the source",
+  part.condition === "stale" && part.distPath.endsWith("a.js"));
+check("PARTIAL BUILD: assertBuildCurrent REFUSES it", refusedWith(() => assertBuildCurrent([partial]), "(stale)"));
+// INVERSE: a package whose outputs are ALL newer than every source must still pass, or the stricter
+// rule has simply broken the guard into refusing everything.
+const allFresh = join(root, "allfresh-pkg");
+mkdirSync(join(allFresh, "src"), { recursive: true });
+mkdirSync(join(allFresh, "dist"), { recursive: true });
+stamp(join(allFresh, "src", "a.ts"), T);
+stamp(join(allFresh, "src", "b.ts"), T + 1_000);
+stamp(join(allFresh, "dist", "a.js"), T + 60_000);
+stamp(join(allFresh, "dist", "b.js"), T + 61_000);
+check("INVERSE: a fully rebuilt multi-file package is still `current`", buildStaleness(allFresh).condition === "current");
+
 // A MISSING package must not be dressed up as a build fact. Before this split, a typo'd path
 // returned `no-source` and refused with "run pnpm build" — an instruction that cannot fix it, while
 // the package the caller meant to check went unexamined and unmentioned.

@@ -30,10 +30,10 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** The newest mtime under `dir` for files matching `ext`, and the file that carried it.
+/** The extreme mtime under `dir` for files matching `ext`, and the file that carried it.
  *  Returns undefined for a missing or empty tree — "no evidence" is a distinct answer from "old",
  *  and the caller must not be able to confuse them. */
-function newest(dir: string, ext: string): { path: string; mtimeMs: number } | undefined {
+function extreme(dir: string, ext: string, pick: "newest" | "oldest"): { path: string; mtimeMs: number } | undefined {
   if (!existsSync(dir)) return undefined;
   let best: { path: string; mtimeMs: number } | undefined;
   const walk = (d: string): void => {
@@ -42,7 +42,8 @@ function newest(dir: string, ext: string): { path: string; mtimeMs: number } | u
       if (e.isDirectory()) walk(p);
       else if (e.name.endsWith(ext)) {
         const { mtimeMs } = statSync(p);
-        if (!best || mtimeMs > best.mtimeMs) best = { path: p, mtimeMs };
+        const better = !best || (pick === "newest" ? mtimeMs > best.mtimeMs : mtimeMs < best.mtimeMs);
+        if (better) best = { path: p, mtimeMs };
       }
     }
   };
@@ -64,8 +65,16 @@ export function buildStaleness(pkgDir: string): BuildStaleness {
   // it — while the package the caller MEANT to check goes unexamined and the suite runs anyway.
   if (!existsSync(pkgDir))
     return { condition: "no-package", pkg: pkgDir, detail: `no such directory: ${pkgDir} — the guard cannot examine it, so nothing about its build has been established` };
-  const src = newest(join(pkgDir, "src"), ".ts");
-  const dist = newest(join(pkgDir, "dist"), ".js");
+  const src = extreme(join(pkgDir, "src"), ".ts", "newest");
+  // The OLDEST output, not the newest. Comparing newest-to-newest fails OPEN on a PARTIAL build:
+  // with `src/a.ts` newer than a stale `dist/a.js`, one unrelated fresh `dist/b.js` makes the
+  // package look current — exactly the state an interrupted or errored build leaves behind. Found
+  // by review, with a two-file fixture; reproduced here before this was changed.
+  // `tsc -p` rewrites every output, so after a complete build the oldest output is still newer than
+  // the newest source (measured on implementations/cli). A package that legitimately ships an
+  // output it does not rewrite would read as permanently stale — the verdict names the exact file,
+  // so that shows up as a diagnosable false positive rather than a silent pass.
+  const dist = extreme(join(pkgDir, "dist"), ".js", "oldest");
   if (!src) return { condition: "no-source", pkg: pkgDir, detail: `no .ts files under ${join(pkgDir, "src")}` };
   if (!dist) return { condition: "never-built", pkg: pkgDir, detail: `no .js files under ${join(pkgDir, "dist")} — this package has never been built, so a suite driving it measures nothing` };
   if (src.mtimeMs > dist.mtimeMs)
@@ -73,7 +82,7 @@ export function buildStaleness(pkgDir: string): BuildStaleness {
       condition: "stale", pkg: pkgDir,
       srcPath: src.path, distPath: dist.path,
       behindMs: Math.round(src.mtimeMs - dist.mtimeMs),
-      detail: `${src.path} is newer than the newest build output ${dist.path}`,
+      detail: `${src.path} is newer than the OLDEST build output ${dist.path} — the build did not complete after that source change`,
     };
   return { condition: "current", pkg: pkgDir };
 }
