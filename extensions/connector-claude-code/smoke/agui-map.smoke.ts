@@ -47,7 +47,7 @@
 import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AguiBrackets, type AguiEvent } from "../../connector-core/src/agui.js";
+import { AguiBrackets, reasoningMessageContent, type AguiEvent } from "../../connector-core/src/agui.js";
 import { JsonlFileSource } from "../../connector-core/src/durable-source.js";
 import { createClaudeMapper, type ClaudeEntry } from "../src/agui-map.js";
 
@@ -382,7 +382,28 @@ c("control:the-key-walker-DOES-find-a-signature-key-when-one-is-present",
 c("control:and-does-NOT-fire-on-the-word-in-a-value",
   signatureKeys([{ type: "REASONING_MESSAGE_CONTENT", delta: "the signature is sealed" }]) === 0);
 
-c("real:the-thinking-SIGNATURE-never-appears-in-any-emitted-event", (() => {
+// THE TWO MECHANISMS, ASSERTED SEPARATELY — because a cell on the OUTCOME alone proves neither,
+// and this suite found that out by mutation rather than by reasoning about it.
+//
+// A mutation that passed `signature` straight into `reasoningMessageContent` SURVIVED: the
+// constructor builds an explicit field literal (`agui.ts:882`), so an unknown key is structurally
+// dropped and the leak could never reach the output through that argument at all. The outcome cell
+// below was therefore riding on a barrier it was not testing. `cotal` is the OTHER story — it is
+// passed through by reference, so it is a real channel a key can travel down, and it is the one the
+// mapper has to be trusted not to use for this.
+c("mechanism:the-event-constructor-DROPS-an-unknown-key", (() => {
+  const e = reasoningMessageContent({ messageId: "m", delta: "d", timestamp: 0, signature: "SIG" } as never);
+  return signatureKeys([e]) === 0;
+})());
+c("mechanism:but-cotal-meta-IS-a-passthrough-channel-a-key-can-travel-down", (() => {
+  const e = reasoningMessageContent({ messageId: "m", delta: "d", timestamp: 0, cotal: { signature: "SIG" } as never });
+  return signatureKeys([e]) === 1;
+})());
+
+// Scoped to what a key walk can actually establish: no signature FIELD is emitted. A signature
+// pasted into a text VALUE would not be caught here, and deliberately so — checking values is what
+// produced 29 false hits on the word in reasoning text. The claim is the field, and it says so.
+c("real:no-signature-KEY-is-emitted-by-any-event-of-a-real-session", (() => {
   const on = run({ reasoning: true }).flatMap((u) => u.events);
   return on.length > 0 && signatureKeys(on) === 0;
 })());
