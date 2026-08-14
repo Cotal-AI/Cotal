@@ -154,6 +154,52 @@ async function main(): Promise<void> {
   check("NOT A REGRESSION: the OUTGOING `resolve()` spelling also compares these UNEQUAL",
     outgoingEqual === false, `resolve-equal=${outgoingEqual}`);
 
+  // ---- `resolve`-equal does NOT imply `canonicalRoot`-equal -----------------------------------
+  // Measured because TWO SEATS independently asserted the implication and rested an
+  // equivalent-mutant argument on it. It is FALSE, and a third seat told not to inherit the
+  // argument produced this counterexample. It is re-derived here so it survives in the tree rather
+  // than in one reviewer's scratch file: a green nobody can re-derive at a named hash is not
+  // evidence.
+  //
+  // `a/link/../file` where `a/link` is a symlink to `b/c` — pointing OUTSIDE its own parent.
+  // `resolve` collapses `..` LEXICALLY, never looking at the link, and yields `<a>/file`.
+  // `canonicalRoot` follows the link FIRST, so the `..` climbs out of `b/c` and yields `<b>/file`.
+  //
+  // BOTH TARGETS MUST EXIST for this to bite, and that is itself part of the result. `canonicalRoot`
+  // only diverges from `resolve` when `realpath` SUCCEEDS; with nothing on disk both sides take the
+  // fallback and agree. The first attempt at this cell created no targets, and the suite reported
+  // `canonical-equal=true` — it refused a counterexample that did not reproduce, which is what a
+  // cell is for.
+  const outer = realpathSync(mkdtempSync(join(tmpdir(), "cotal-outlink-")));
+  scratch.push(outer);
+  const aDir = join(outer, "a");
+  const bDir = join(outer, "b", "c");
+  mkdirSync(bDir, { recursive: true });
+  mkdirSync(join(aDir, "file"), { recursive: true }); // <outer>/a/file — the plain spelling's target
+  mkdirSync(join(outer, "b", "file"), { recursive: true }); // <outer>/b/file — where the link route lands
+  symlinkSync(bDir, join(aDir, "link")); // a/link -> b/c, i.e. OUT of a
+  // Built by CONCATENATION, not `join`. `path.join` normalizes as it builds, so it collapses the
+  // `..` lexically and the `link` segment never reaches `realpath` at all — the second attempt at
+  // this cell used `join` and destroyed its own input, reporting `canonical-equal=true` for a pair
+  // that was `<a>/file` on both sides. The raw string is the whole point of the counterexample.
+  const viaLink = `${aDir}/link/../file`; // a/link/../file -> realpath <outer>/b/file
+  const viaPlain = join(aDir, "file"); //    a/file         -> realpath <outer>/a/file
+  const resolveAgrees = resolve(viaLink) === resolve(viaPlain);
+  const canonicalAgrees = canonicalRoot(viaLink) === canonicalRoot(viaPlain);
+  check("COUNTEREXAMPLE: `resolve` reads the symlink-escaping pair as the SAME path",
+    resolveAgrees === true, `resolve-equal=${resolveAgrees}`);
+  check("COUNTEREXAMPLE: `canonicalRoot` reads that SAME pair as DIFFERENT paths",
+    canonicalAgrees === false,
+    `canonical-equal=${canonicalAgrees} — ${canonicalRoot(viaLink)} vs ${canonicalRoot(viaPlain)}`);
+  // Both together are the refutation: the implication holds only on the REACHABLE set, where every
+  // writer has already stored `resolve()` output (`meshes-add.ts`, `findCotalRoot`) so a raw
+  // `symlink/../` string is never recorded. On this pair the two spellings actively DISAGREE —
+  // `canonicalRoot` calls the entry foreign, `resolve` calls it ours — which is why the second root
+  // compare keeps the canonical spelling even though it is inert on everything reachable today.
+  check("...so `resolve`-equal does NOT imply `canonicalRoot`-equal, and the unqualified claim is FALSE",
+    resolveAgrees === true && canonicalAgrees === false,
+    `resolve-equal=${resolveAgrees} canonical-equal=${canonicalAgrees}`);
+
   // ---- WOULD-HAVE-REFUTED, stated as a cell so it cannot be claimed after the fact -------------
   // If `canonicalRoot` had thrown on ANY missing-root case above, the fix would have been withdrawn
   // rather than landed. This cell records that the refutation condition was defined in advance and

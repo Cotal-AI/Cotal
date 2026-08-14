@@ -62,13 +62,18 @@
  *      persist, `resolve(a) === resolve(b)` implies `canonicalRoot(a) === canonicalRoot(b)`, so
  *      the mutated conjunct is vacuously true as well. Both spellings reduce to
  *      `meshes.find((m) => m.server === DEFAULT_SERVER)`.
- *      THE QUALIFIER IS LOAD-BEARING AND WAS ADDED BY REVIEW, NOT BY THE AUTHORS. The implication
- *      is not unconditional: a `..` segment traversing an EACCES directory makes `canonicalRoot`
- *      fall back to `resolve` on one side while the other resolves for real, giving a pair that is
- *      `resolve`-equal and `canonicalRoot`-unequal. It is unreachable here only because every
- *      writer that persists a root stores `resolve()` output (`meshes-add.ts:128`, `findCotalRoot`).
- *      So this mutant is equivalent ON THE SUPPORTED PATHS, which is a narrower claim than the one
- *      two seats independently wrote down — and the narrower claim is the true one.
+ *      THE QUALIFIER IS LOAD-BEARING AND WAS ADDED BY REVIEW, NOT BY THE AUTHORS — with a
+ *      COUNTEREXAMPLE THE REVIEWER MEASURED rather than argued. For `a/link/../file` where `a/link`
+ *      is a symlink to `b/c`, pointing OUTSIDE its own parent: `resolve` collapses `..` lexically to
+ *      `resolve(a/file)`, while `canonicalRoot` follows the link first and gives `b/file`. So the
+ *      pair is `resolve`-equal and `canonicalRoot`-unequal, and on it the two spellings actively
+ *      DISAGREE — canonical reads the entry as foreign, resolve reads it as ours.
+ *      It is unreachable only because every writer that persists a root stores `resolve()` output
+ *      (`meshes-add.ts:128`, `findCotalRoot` at `auth-paths.ts:400`), so the raw `symlink/../`
+ *      string is never recorded. This mutant is therefore equivalent ON THE REACHABLE SET, which is
+ *      narrower than what TWO SEATS INDEPENDENTLY WROTE DOWN — and the narrower claim is the true
+ *      one. Two seats agreeing is precisely when a shared error survives; it took a third seat,
+ *      told not to inherit the argument, to measure the counterexample.
  *      So a SURVIVED here is NOT a weak suite: with the match predicate corrected, the second
  *      half of the fix is a no-op, and the comment that presents it as ARM B's fix overstates it.
  *      REFUTATION CONDITION, declared before the run: if ANY cell reddens under M2, this
