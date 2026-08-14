@@ -31,6 +31,21 @@
  *       refused -> `pack:[P8]-a-single-oversized-unit-FAILS-LOUD`
  *   E4  let one frame carry two runs -> `pack:a-run-change-flushes-even-when-the-frame-has-room`
  *   E5  drop the cursor-only advance on an empty map -> `[P7]:an-adopt-persists-its-cursor`
+ *   E6  size with a SHORT id instead of the longest admissible one
+ *       -> `sizing:the-UPPER-BOUND-keeps-a-packed-frame-under-the-REAL-ceiling`. Added because the
+ *          two earlier sizing cells assert a property of `encodedSize` and NOT of the emitter, so
+ *          they would have stayed green with `SIZING_ID` set to anything at all.
+ *
+ * ALL SIX KILLED, each on the cell it was predicted against, with the run's outcome recorded rather
+ * than the prediction restated. E5 first came back KILLED-but-with-ZERO-MARKS — the right verdict
+ * from a suite that had died rather than failed, which is the worse version of that defect because
+ * a correct verdict invites no second look. Fixed by running each fixture block inside a guard.
+ *
+ * ONE THING NO CELL HERE CAN DISCRIMINATE, said plainly rather than left as an unproven constant:
+ * `SIZING_EXPECTATION`. Measuring at `MAX_SAFE_INTEGER` is a provable upper bound, but the real
+ * expectation is a stream sequence, and reaching a 16-digit one takes ~10^15 messages. A mutation
+ * lowering it therefore survives on any reachable fixture. It is an equivalent mutant AT THIS SCALE,
+ * not a coverage gap, and the distinction matters because the two need opposite repairs.
  *
  * Run: pnpm smoke:agui-emitter
  */
