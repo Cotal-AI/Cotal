@@ -49,7 +49,10 @@ function launcherSource(payload: LauncherPayload): string {
  *  script in a private temp dir; herdr only ever sees `node <script>`. The script removes its
  *  own directory as soon as it has loaded. */
 export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher {
-  const dir = mkdtempSync(join(tmpdir(), "cotal-herdr-"));
+  // Prefix is specifically `cotal-herdr-launch-`, not `cotal-herdr-`: the smoke counts launcher
+  // dirs to prove failed spawns clean up after themselves, and a shorter prefix would also match
+  // the driver's own `cotal-herdr-srv-` scratch, making that count wider than the claim it tests.
+  const dir = mkdtempSync(join(tmpdir(), "cotal-herdr-launch-"));
   hardenPrivate(dir, "dir");
   const script = join(dir, "launch.mjs");
   writeSecretFile(script, launcherSource({ cwd, command: spec.command, args: spec.args, env: spec.env ?? {} }));
@@ -57,7 +60,7 @@ export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher 
 }
 
 /** How spawned agents are laid out in the session: `tab` (default) gives each agent its own
- *  name-labeled tab; `split` keeps herdr's native behavior of splitting the focused tab.
+ *  name-labeled tab; `split` shares one tab, splitting it per agent.
  *  Selected per manager process via COTAL_HERDR_LAYOUT; an unknown value fails loud. */
 function layoutFromEnv(): "tab" | "split" {
   const raw = process.env.COTAL_HERDR_LAYOUT ?? "tab";
@@ -100,8 +103,13 @@ export class HerdrRuntime implements Runtime {
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
       throw new Error(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
-    if (!herdr.available())
-      throw new Error("herdr runtime: herdr is not available - is herdr installed and on PATH?");
+    if (!herdr.available()) {
+      const found = herdr.versionText();
+      throw new Error(
+        `herdr runtime: no usable herdr on PATH - needs >= ${herdr.MIN_HERDR.join(".")}` +
+          (found ? ` (found "${found}")` : " (herdr not installed or not on PATH)"),
+      );
+    }
     // herdr silently substitutes $HOME for a bad --cwd; validate here so a bad workspace
     // fails loud at spawn instead of the agent starting somewhere else entirely (a non-directory
     // would otherwise die later, invisibly, at the launcher's chdir).
@@ -109,16 +117,22 @@ export class HerdrRuntime implements Runtime {
     const layout = layoutFromEnv(); // before any side effects, so a bad value spawns nothing
     herdr.ensureServer(this.session);
 
+    // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
+    const tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
+
     const launcher = privateLauncher(spec, cwd);
     let agent: herdr.HerdrAgent | undefined;
     let startedTerminalId: string | undefined;
     try {
+      // agentStart lands the agent in its own workspace + name-labeled tab, so the default
+      // layout needs no move at all.
       agent = herdr.agentStart(this.session, name, cwd, launcher.argv);
       startedTerminalId = agent.terminalId;
-      // Default layout: every agent in its own name-labeled tab (herdr's native behavior is
-      // to split the focused tab, which `split` opts back into). The move may change the
-      // public pane id — keep the returned, terminal-pinned record.
-      if (layout === "tab") agent = herdr.paneMoveNewTab(this.session, agent.paneId, name, startedTerminalId);
+      // `split`: fold this agent into a pre-existing tab. With none (the first agent) there is
+      // nothing to share and it stays where it is — that is the layout's meaning, not a fallback.
+      // The move changes the public pane id — keep the returned, terminal-pinned record.
+      if (layout === "split" && tabsBefore.length > 0)
+        agent = herdr.paneMoveIntoTab(this.session, agent.paneId, tabsBefore[0]!, startedTerminalId);
       // Cosmetic but part of the spawn contract: fail loud, and don't leave the started pane behind.
       herdr.reportMetadata(this.session, agent.paneId, "cotal", { cotal: this.session });
     } catch (err) {
@@ -182,10 +196,12 @@ export class HerdrRuntime implements Runtime {
           return;
         }
         // Graceful: type `/exit` so the agent session shuts down cleanly (its lifecycle hook
-        // leaves the mesh), then close the now-idle pane regardless.
+        // leaves the mesh), then close the now-idle pane regardless. Both calls are pane-scoped,
+        // so resolve the pane ONCE — re-resolving between them would let the id move underneath.
         try {
-          herdr.sendText(session, terminalId, "/exit");
-          herdr.sendKeys(session, currentPane(), "enter");
+          const pane = currentPane();
+          herdr.sendText(session, pane, "/exit");
+          herdr.sendKeys(session, pane, "enter");
         } catch {
           /* terminal already gone — still ensure the pane closes below */
         }
@@ -211,9 +227,11 @@ export class HerdrRuntime implements Runtime {
         }
       },
       attach: () => {
+        // NOT `agent attach`: herdr reserves its agent registry for recognized kinds, and a pane
+        // started by this runtime never joins it — that command would report the agent as missing.
         throw new Error(
-          `herdr runtime: attach natively - \`herdr --session ${session} agent attach ${terminalId}\` ` +
-            `(agent "${name}"), or \`herdr session attach ${session}\` for the whole session`,
+          `herdr runtime: attach natively - \`herdr session attach ${session}\`, ` +
+            `then select the "${name}" tab (terminal ${terminalId})`,
         );
       },
     };
