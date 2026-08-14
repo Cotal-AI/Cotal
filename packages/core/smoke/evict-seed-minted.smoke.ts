@@ -5,10 +5,18 @@
  * WHY THIS EXISTS. A separate measurement established that `revokeActor` (the actor-grant ledger)
  * does NOT bite a seed-minted credential: `revokeActor` deletes an on-disk JSON row and gates the
  * bearer-MINT and bearer-CONNECT boundaries, while `mintCreds` performs no authorize call at all
- * and records into a different store (a JetStream KV). That left ONE open question, and the whole
- * question of whether a seed-minted send credential is revocable AT ALL hangs on it: live eviction
- * is documented as "the D5 lever, not the ledger's" — but whether that lever can *target* a
+ * and RECORDS NO LEDGER ROW WHATEVER for this profile — only `endpoint-serve` enters durable
+ * finalization (`provision.ts:819`), so there is no row for a revoke to delete. (An earlier version
+ * of this comment said the mint "records into a different store (a JetStream KV)". That was FALSE
+ * and is corrected here rather than left standing.) That left ONE open question: live eviction is
+ * documented as "the D5 lever, not the ledger's" — but whether that lever can *target* a
  * seed-minted credential was never measured. This suite measures it by DRIVING it.
+ *
+ * WHAT HANGS ON IT, STATED AT ITS TRUE WIDTH. Not "whether a seed-minted send credential is
+ * revocable AT ALL" — that framing is too strong and was corrected in review. TTL expiry and loaded
+ * data-signing-key rotation (`provision.ts:367-390`) ARE deny-new boundaries; rotation is
+ * coarse/account-wide. What this suite bears on is narrower and is the whole question: whether there
+ * is an IMMEDIATE, PER-CREDENTIAL deny-new for a STILL-UNEXPIRED raw `operator` credential.
  *
  * WHAT WOULD REFUTE THE PROBE (stated before the run, not after):
  *   - If cell A1 fails — the seed connection dies when a DIFFERENT principal is evicted — the probe
@@ -43,9 +51,17 @@
  *        returns exactly A1's shape (`kicked:0, scanComplete:true`, connection survives). A1 alone
  *        therefore cannot distinguish a working probe from a blind one; A2's `kicked >= 1` and A3's
  *        cid comparison are the clauses carrying that weight, and M1 is what proves it.
- *   M2 — `ledgerAuthorizeConnect` forced to allow. Non-equivalent: the revoked bearer connects.
- *        PREDICTED RED: B2 only. Everything else green. This proves the inverse control's arms can
- *        genuinely differ, so B2's refusal is a measurement and not a constant.
+ *   M2 — `ledgerAuthorizeConnect` forced to allow. **INVALID / NOT PERFORMED. It proved NOTHING and
+ *        must not be read as having validated the inverse control.** It failed twice over:
+ *        (a) IT NEVER RAN. From a worktree, `node_modules/@cotal-ai/auth` resolves to the SHARED
+ *            checkout, so both the mutation and its unconditional-throw positive control were
+ *            unloaded — the throw left the suite green, which is how the deadness was caught.
+ *        (b) EVEN LOADED IT COULD NOT HAVE REDDENED B2. `calloutPermissions` performs a SECOND
+ *            fresh `resolveAcl(t)` read (`implementations/auth/src/permissions.ts:55-64`) which
+ *            independently refuses the deleted row. So the registered prediction "B2 reddens" was
+ *            unobtainable in every outcome — a single-outcome arm, which is not a control.
+ *        The prediction is kept FALSIFIED rather than rewritten. **The executed negative control for
+ *        the bearer arm is B3 (see its cell below), not M2.**
  * Note the asymmetry that makes A3 informative in BOTH directions: it reddens under M1 (the kick
  * never landed) and it would also redden if a deny-new boundary for seed-minted credentials ever
  * landed (the holder would stay gone). Green here means precisely "kicked, and already back".
@@ -312,6 +328,13 @@ try {
   //
   // So a SECOND bearer, granted and NEVER revoked, is driven through the SAME eviction path and
   // asked to reconnect. This is the input-varying twin of the mutation that could not run.
+  //
+  // THE LIMIT OF THIS CELL, drawn in review and recorded here so it is not over-claimed later: B3
+  // validates the ACTOR-LEDGER SYSTEM BOUNDARY — that the refusal is revocation-caused rather than a
+  // constant bearer-reconnect failure. It is NOT mutation proof of `ledgerAuthorizeConnect`
+  // specifically, and it does not identify WHICH boundary refuses (authorize, the second
+  // `resolveAcl`, or both). That indifference is exactly why it survives M2's defect (b), and it is
+  // also exactly what it cannot tell you.
   //
   // PREDICTION REGISTERED BEFORE THE RUN: B3 GREEN — the never-revoked bearer reconnects.
   // WHAT WOULD REFUTE ME: B3 RED. That would mean bearers cannot reconnect here for reasons
