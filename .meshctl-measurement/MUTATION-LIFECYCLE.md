@@ -2,7 +2,8 @@
 
 Base: the fix commit `325aaa50` + suite `3c1055e3`, worktree `/home/david/Cotal-wt-fm-meshctl`.
 Suite: `packages/core/smoke/connection-lifecycle.smoke.ts`, **20/20 green at base; 27/27 after ARM 3b;
-32/32 at tip `1821abff`** after the D3l/D3m arms — re-run and re-read today, not carried forward.
+32/32 at `1821abff`; 34/34 at `b1b757f7`** after the per-arm entry preconditions — every number
+re-run and re-read, none carried forward.
 
 **This line was stale until it was measured.** It read `27/27` while the suite had already grown to
 32 cells, because the count was carried from the last time it was written rather than from the last
@@ -110,19 +111,82 @@ five sites are proven and only three are. The honest statement: **the fences are
 
 ---
 
+## MX2-R — the SAME MX2 mutant, re-run to test the arm-independence fix itself
+
+Not a re-proof of MX2. MX2 was already killed. This run tests **the repair**: the original MX2 run
+reddened cells in ARM 1 and ARM 3 by cascade, and I recorded those reds as *not evidence*. An
+arm-independence fix that is asserted rather than demonstrated is the same defect one level up, so
+the fix had to be shown failing ONE arm while the others kept reporting.
+
+Predictions written to `scratchpad/PREDICTIONS-MX2R.md` **before the first run**, including the
+refutation criteria. Mutant: identical to MX2 (drop the handles and emit `connection:false` first,
+drain after).
+
+### Run 1 — at `8c6c8aea`. HALF MY PREDICTION WAS REFUTED, AND THE REFUTATION IS THE USEFUL PART.
+
+| cell | predicted | observed |
+|---|---|---|
+| `D2b` / `D2c` / `D2d` | RED | RED — `D2c` = `{ status: 'offline', … }`, the ghost |
+| `D2e` control | (RED, as originally) | RED — the exact state that contaminated ARM 1 before |
+| `PRE-ARM 1` + all 6 ARM 1 cells | GREEN | **GREEN, 7/7** — the claim under test, and it held |
+| `PRE-ARM 3` | GREEN | **RED — `{ mints: 1, current: 2 }`** |
+| ARM 3's 13 cells | GREEN | **VOID — not evaluated** |
+
+**I predicted ARM 3 would be independent and it was not.** By the refutation criterion I wrote down
+in advance — *"any ARM 3 cell going VOID … would mean an earlier arm can still spoil a later arm's
+fixture"* — that is a refutation, and I am recording it as one.
+
+**What the run nevertheless proved:** the VOID machinery is not decoration. It fired on real
+contamination and named it, with the measured value that caused it. **The 13 cells that would once
+have reddened silently — and been read as evidence — were instead declared not-evaluated.** The
+failure mode changed from *invisible* to *named*, which is the whole point of the third outcome.
+
+**Why `current: 2`:** retiring the endpoint OBJECTS is not enough. An earlier arm left a connection
+alive at the broker that its endpoint no longer held. Every ARM 3 cell is a cumulative-counter delta,
+so a stray socket is indistinguishable from the renewal dial the arm exists to detect.
+
+### Run 2 — after the ARM 3 broker restart (`b1b757f7`)
+
+| cell | predicted | observed |
+|---|---|---|
+| `PRE-ARM 3` | GREEN | **GREEN — `c` is the only endpoint live** |
+| ARM 1, 7 cells | GREEN | **GREEN, 7/7** |
+| ARM 2's four named cells | RED | RED |
+| VOID count | 0 | **0** |
+| ARM 3 cells | GREEN | **12 green, `D3c` RED — `{ before: 2, after: 3 }`** |
+
+**`D3c`'s red is a legitimate kill, NOT residual coupling, and that is measured rather than argued.**
+ARM 3 calls `c.disconnect()` — the mutated function — so the mutant genuinely reaches this arm.
+The discriminator is `PRE-ARM 3` itself: it passed, establishing that **`c` was the only endpoint
+live at the broker**, so the +1 cumulative connection inside `c`'s off-window is attributable to `c`
+alone and to no predecessor. *A green precondition is what converts a red cell from an accusation
+into evidence.*
+
+**The claim this buys, stated at exactly its width:** under a mutant that breaks ARM 2, **ARM 1 is
+demonstrably unaffected — 7/7 green, its own subject, its own precondition.** "Green elsewhere" is
+now a measured property of this suite rather than an assumption about it. It is proven for ARM 1;
+for ARM 3 the mutant reaches the arm legitimately, so ARM 3 is *fairly run*, not *unaffected*, and
+those are different claims.
+
+---
+
 ## What this record does NOT cover
 
 - **ARM 3 is core-API only.** A creds SOURCE is not a state `cotalToolSpecs` can construct
   (`MeshAgent` passes static creds bytes), so nothing here shows a *tool caller* can reach the
   renewal arm. `rev2-meshctl-authority` refuted that reachability itself, unprompted, and I am not
   re-asserting it.
-- **Arm independence.** MX2 showed the three arms share a fixture. Not fixed.
+- **Arm independence. FIXED and DEMONSTRATED — see MX2-R below.** MX2 showed the three arms shared a
+  fixture; each arm now declares an entry precondition, ARM 1 builds its own subject, and ARM 3
+  restarts the broker. Re-running the *same* mutant shows ARM 1 fully green while ARM 2 reddens.
 - **The in-flight crossing is now CLOSED, and that limitation is withdrawn.** An earlier version of
   this file declared it fenced "for the queued case only, with that exact race undriven". ARM 3b
   drives it (hold a source call open, disconnect, release) and MX4 proves the cell detects it.
 - **No repo-wide suite was run.** No gate has been released to this lane. Scoped suites only:
-  `connection-lifecycle` **32/32** (re-run at tip `1821abff`), `connection-control` 19/19,
+  `connection-lifecycle` **34/34** (re-run at tip `b1b757f7`), `connection-control` 19/19,
   `request-strand` 9/9, `§7.2 gap` 11/11.
-  One honest gap in how that 32/32 was read: the run's exit code was **not** captured — `PIPESTATUS`
+  One honest gap in how the earlier 32/32 was read: its exit code was **not** captured — `PIPESTATUS`
   is a bashism and the shell here is `/bin/sh`, so it came back empty. The claim rests on the
-  suite's own printed `0 failed` line, not on an exit status I never saw.
+  suite's own printed `0 failed` line, not on an exit status I never saw. The 34/34 runs above DO
+  carry a captured code: they were run under `bash -c` with an explicit `TERMINAL_MARKER rc=$?`,
+  which is why this file can now cite `rc=0` clean and `rc=1` under both mutants.

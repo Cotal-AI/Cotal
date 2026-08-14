@@ -192,16 +192,25 @@ re-target through the agent's own credential.** See DESIGN §7.2 for the saga th
 - **A drain that rejects, and an in-flight credential fetch crossing a disconnect**, are states the
   connector cannot construct. The first is driven with an injected fault at the core API; the second
   is fenced for the QUEUED case only and that exact race is undriven here.
-- **The three arms of `connection-lifecycle.smoke.ts` share one fixture**, so a mutant that breaks an
-  early arm contaminates the later ones. That costs the suite its ability to make a clean "green
-  elsewhere" claim — see `MUTATION-LIFECYCLE.md`.
+- ~~**The three arms of `connection-lifecycle.smoke.ts` share one fixture**~~ — **FIXED and
+  demonstrated, not merely asserted.** Each arm now declares a named entry precondition; ARM 1 builds
+  its own subject instead of inheriting ARM 2's; ARM 3 restarts the broker. A failed precondition
+  records that arm's cells **VOID — not evaluated** rather than failed. Re-running the *same* MX2
+  mutant now reddens ARM 2's four named cells while **ARM 1 stays 7/7 green**, so "green elsewhere"
+  is a measured property rather than an assumption. **The first attempt at this fix was refuted by
+  its own experiment** (ARM 3's precondition failed, `current: 2`, and 13 cells voided) — the second
+  pass fixed the cause. Full record in `MUTATION-LIFECYCLE.md` § MX2-R.
+- **What is still NOT claimed about ARM 3:** under MX2 it is *fairly run*, not *unaffected*. It calls
+  the mutated `disconnect()` itself, so `D3c` reddens legitimately. Its green precondition is what
+  makes that red attributable to `c` alone rather than to a predecessor — but "unaffected by a
+  mutation in another arm" is proven for ARM 1 only.
 
 ### What HAS been run, named as suites
 **No repo-wide suite has been run and no gate has been released to this lane.** Scoped only:
 - Probes: M1 verb drive, M2 open-mode gate-bypass, M3 broker fence (9), M4 observer ghost,
   M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (11/11)**.
 - Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
-  `packages/core/smoke/connection-lifecycle.smoke.ts` **32/32 at `1821abff`** (re-run today),
+  `packages/core/smoke/connection-lifecycle.smoke.ts` **34/34 at `b1b757f7`** (re-run today, rc=0 captured),
   `extensions/connector-core/smoke/connection-control.smoke.ts` **19/19 at `ffc18c46`**,
   `packages/core/smoke/request-strand.smoke.ts` **9/9 at `ffc18c46`** (was 7/7 before ARM 3 was added).
 - Mutations: MX1/MX2/MX3/MX4 killed on named cells with broker-side non-equivalence; **MX3a survived, as
