@@ -48,6 +48,7 @@ runtimes ship this way.
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed manager restart, after verifying the holder is gone |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#describe-invoke) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
@@ -650,6 +651,46 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+
+## reconcile-gate
+
+```bash
+cotal reconcile-gate [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | this folder's auth space | Space the frozen gate lives in |
+| `--server <url>` | the local mesh | Broker URL |
+| `--endpoint <e>` | `manager` | Endpoint whose gate is frozen |
+| `--instance <id>` | this folder's persisted manager instance | Instance id |
+
+**When you need this.** A manager restart killed partway through — after it began deregistering,
+before the new incarnation finished — leaves the endpoint's issuance gate *frozen*, held by a
+process that no longer exists. The next manager start refuses to proceed, which is correct: the
+freeze is what stops two incarnations serving at once. But nothing can lift it, so every restart
+fails the same way. `cotal doctor` shows the gate as frozen; the manager's own start logs name the
+gate it could not advance.
+
+This command is the way out. It checks that the holder really is gone, prints what it found, and
+then finishes the dead operation exactly as the interrupted restart would have: revoke the old
+credentials, evict their holders with verification, and reopen the gate. Start the manager
+afterwards and its normal takeover runs end to end.
+
+**It refuses far more often than it acts, on purpose**, and always says which check stopped it:
+
+| Refusal | What it means | What to do |
+|---|---|---|
+| `holder-alive` | The freeze-holder still has a live connection — a manager *is* running | Stop that process first. Reconciling would evict a live manager's credentials |
+| `holder-unknown` | The connection sweep could not prove the holder absent | Not safe to proceed: an unprovable holder is treated as a live one. Re-run once the broker answers completely |
+| `liveness-unestablishable` | The delivery daemon could not be asked at all | Start it (`cotal up` runs it) and re-run. Silence is never read as death |
+| `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair — check `--endpoint` / `--instance` |
+| `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
+| `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
+| `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+
+There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
+proving the holder is gone and then completing the operation properly.
 
 ## runtimes
 

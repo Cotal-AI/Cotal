@@ -356,6 +356,11 @@ export class CotalEndpoint extends EventEmitter {
      *  two claimed sealed-scanner connections are live/gone/unknown via the daemon's $SYS observer
      *  cred (opened per call; read-only, never the evictor). */
     planeConnLiveness?: (query: unknown) => Promise<unknown>;
+    /** Composition-root hook: the freeze-holder liveness probe (#391) — answer whether ONE
+     *  principal still holds any live connection, via the daemon's $SYS observer cred (opened per
+     *  call). The READ half of {@link evictPrincipal}: read-only by construction, so a repair path
+     *  can refuse on a live holder's behalf instead of killing it to find out. */
+    principalLiveness?: (principal: string) => Promise<unknown>;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -2537,10 +2542,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown> } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness };
     await this.armPlane3();
   }
 
@@ -2825,6 +2830,22 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: "planeConnLiveness: no plane-liveness oracle wired on this daemon" };
       try {
         return { ok: true, data: await this.plane3.planeConnLiveness(req.args?.query) };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "principalLiveness") {
+      // The freeze-holder liveness probe (#391): the READ-ONLY half of `evictPrincipal`. A repair
+      // that must REFUSE while the holder is alive cannot use eviction as its own precheck — that
+      // kills the holder before anything can refuse on its behalf. Same executor-hook shape as the
+      // verbs above (the $SYS observer cred lives outside this trust boundary); absent hook =
+      // refused loudly, and the caller maps a refusal to UNKNOWN and never repairs over it.
+      if (!this.plane3?.principalLiveness)
+        return { ok: false, error: "principalLiveness: no liveness oracle wired on this daemon" };
+      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+      if (!principal) return { ok: false, error: "principalLiveness: a principal (owner.actor dot-form) is required" };
+      try {
+        return { ok: true, data: await this.plane3.principalLiveness(principal) };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
