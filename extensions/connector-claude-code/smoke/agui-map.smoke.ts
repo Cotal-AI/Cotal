@@ -79,17 +79,26 @@
  *   M7  [B] make the RESULT name an id no START opened
  *       -> KILLED `real:every-RESULT-names-a-toolCallId-that-a-START-opened`
  *
- *   M8  [B] open a run on any string-content entry (drop the `promptSource` test)
- *       -> PREDICTED to kill `split:every-run-opened-came-from-a-promptSource-bearing-record`
- *          [PENDING EXECUTION — this row is a prediction, not a verdict]
- *   M9  [B] drop the compaction-summary exclusion
- *       -> PREDICTED to SURVIVE, as a redundancy rather than a hole.
- *          [PENDING EXECUTION — this row is a prediction, not a verdict] The compaction summary carries
- *       no `promptSource` either, so the run-opening test already excludes it on every capture
- *       available and the positive marker is a second mechanism guarding the same outcome. It is
- *       KEPT — a harness that starts stamping `promptSource` on compaction records would make it
- *       load-bearing overnight — but **no cell here proves it works**, and claiming otherwise would
- *       repeat M1 exactly. Graded by nothing; said so rather than left to look covered.
+ *   ⚠️ M8/M9 — **BOTH PREDICTIONS WERE WRONG, AND THE PAIR IS THE MOST INSTRUCTIVE ROW HERE.**
+ *       M8 (drop the `promptSource` run-opening test) was predicted to KILL and **SURVIVED**. M9
+ *       (drop the compaction exclusion) was predicted to survive as a one-sided redundancy, and did
+ *       — but so did M8, which is the part I did not see coming. **The two exclusions MASK EACH
+ *       OTHER.** On every capture available, a string-content `user` entry either carries
+ *       `promptSource` (all 67 mesh deliveries) or is the compaction summary, so whichever check is
+ *       removed the other still excludes exactly the same records. Each mutant was EQUIVALENT over
+ *       the real population — and **equivalent is the HIGHER-severity outcome, not the lower one**:
+ *       survival is the single case where a blind cell and an absent mutation are indistinguishable.
+ *       No outcome cell over a real session can ever discriminate this pair.
+ *   M8b [B] same mutation, graded against a record only the run-opening test can refuse
+ *       -> KILLED `mechanism:promptSource-ALONE-excludes-a-record-the-compaction-marker-does-not`
+ *   M9b [B] same mutation, graded against a stamped compaction record the run-opening test admits
+ *       -> KILLED `mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not`
+ *
+ *       **Those two cells build their records BY HAND, and that limit is theirs:** they prove each
+ *       mechanism discriminates, and prove nothing about a real entry point reaching it. The
+ *       population cell (`split:every-run-opened-came-from-a-promptSource-bearing-record`) is the
+ *       half that walks 5938 real records. **Neither is sufficient alone and the pair is stated as
+ *       a pair** — the same shape as the `[P5]` probe composing with `smoke:cas-preflight-cluster`.
  *
  * **⚠️ THE HUMAN ARM IS DECLARED-UNMEASURED.** Every capture available contains ZERO human-typed
  * prompts — `~/.claude/history.jsonl` reports 0 for all three sessions and 0 for this project — so
