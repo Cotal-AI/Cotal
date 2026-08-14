@@ -806,12 +806,20 @@ async function refresh() {
     select(selected);
   } else {
     activity = await (await fetch("/api/activity?limit=200")).json();
+    // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
+    // requested, so the payload claim is overwritten at ingress rather than downstream.
+    for (const e of activity) if (e?.msg && e.channel) e.msg.channel = e.channel;
     renderCenter();
   }
 }
 
 function onMessage(entry) {
   const { mode, msg } = entry;
+  // TRUST IS DECIDED ONCE, HERE. The server sends the channel it took from the SUBJECT (a publish
+  // grant is per-channel, so that token is covered by the minted grant); `msg.channel` is the
+  // publisher own claim and is backed by nothing. Overwrite the claim at the boundary so no
+  // downstream reader has to know which one it is holding.
+  if (entry.channel) msg.channel = entry.channel;
   if (!activity.some((e) => e.msg.id === msg.id)) {
     activity.push(entry);
     if (activity.length > 500) activity.shift();
