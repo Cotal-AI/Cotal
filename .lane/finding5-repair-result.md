@@ -90,3 +90,29 @@ was three lines long with an absolute path in it, which is why the rendered sour
 
 Manager health — scope 2, ruled separate. `meshStatus`'s hardcoded `DEFAULT_SERVER`. The A5-pin,
 still carried open. §4. `pnpm smoke:ci` or any other suite. **No gate.**
+
+## M-R2 — the pure-derivation mutant. Registered `a52ffdc1`, run, restored.
+
+Collapsed `unattributable` into the `dead`/`absent` arm. **No rendered string was added or altered**
+— the whole diff adds one line, `case "unattributable":`, a case label. Every phrase the mutant can
+render already existed in the file.
+
+**Predicted RED: `R7a`, `R7`. Predicted GREEN: the other eight. Both sets matched exactly.**
+rc=1 under the mutant, 8 passed / 2 failed; restore verified by `git status --porcelain` and
+re-measured **10/0 rc=0**.
+
+**Why this run exists, and what M-R1 could not establish.** M-R1 moved the derivation and the
+rendered words together, so a cell reddening under it could have been keyed on either. M-R2 moves
+only *which fact an input derives from*. **R7a and R7 reddened anyway, with no word changed — so
+those cells are keyed on the DERIVATION, not on the string.** That is the property the kill set
+needed and did not have.
+
+**Survivors: none among the predicted-red, across both mutations.** So there is nothing to classify
+as EQUIVALENT-or-BLIND. Registered in advance for M-R2: a survivor there could not have been
+equivalent, because the mutation demonstrably changes what that input renders — it would have been a
+**BLIND CELL**, to be recorded as such rather than re-run.
+
+**Limitation, stated rather than left implied:** `R2`/`R3` assert rendered phrases (`serving not
+checked`, the pid, the source). A benign REWORD of those phrases would redden them without any
+derivation changing. That is inherent to testing a render surface, but it means R2/R3 are
+string-coupled where R7a/R7 are derivation-coupled, and only the latter pair has been proven so.
