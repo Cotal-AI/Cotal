@@ -46,7 +46,7 @@ const spy = (over: Partial<FetchGateDeps> = {}) => {
   // Wrap EVERY dep, overrides included, so no override can escape the recorder.
   for (const k of Object.keys(deps) as (keyof FetchGateDeps)[]) {
     const inner = deps[k] as (...a: unknown[]) => Promise<unknown>;
-    (deps as Record<string, unknown>)[k] = async (...a: unknown[]) => {
+    (deps as unknown as Record<string, unknown>)[k] = async (...a: unknown[]) => {
       calls.push(k); args[k] = a; return inner(...a);
     };
   }
