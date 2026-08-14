@@ -40,13 +40,22 @@
  * **`kind:"human"` occurs zero times — but so does a human.** `~/.claude/history.jsonl`, which
  * records typed prompts through a different mechanism entirely, reports **0** for all three sessions
  * and 0 for this worktree. The two sources agree, so zero matches is the CORRECT result on these
- * captures and NOT evidence the rule is wrong. **The rule is unexercised here, not disproven**, and
- * nothing available measures whether it fires on a session a person actually types into.
+ * captures and NOT evidence the rule is wrong. **The rule is unexercised here, not disproven.**
  *
- * **What IS established, and what blocks:** on agent-driven sessions — the workload this fleet
- * actually runs — no run is ever opened, so the connector emits nothing. §3.1 never answers what
- * opens a run in a session nobody types into. The real turn-initiators here are the mesh deliveries
- * (`origin.kind:"channel"`, `promptSource:"system"`), which §3.1 explicitly excludes.
+ * **AND IT IS EXERCISED ELSEWHERE — read `plans/agui-events.md` §3.1 before reading these numbers as
+ * a defect.** That section measured a real session a person was driving and counted `kind:"human"`
+ * **44 times**, with `promptSource: "typed"`/`"queued"`, beside 3068 `kind:"channel"` injections. So
+ * the predicate does select, on a session that contains the thing it selects. The three captures
+ * here simply contain none. **Both numbers belong together; either alone misleads.**
+ *
+ * **What IS established, and what blocks — a COVERAGE gap, not a defective predicate:** on
+ * agent-driven sessions, the workload this fleet actually runs, no run is ever opened and the
+ * connector emits nothing. §3.1's session had a human typing 44 times *alongside* its 3068 mesh
+ * messages; a spawned lane seat has **0 and 67**. The only turn-initiator here is the peer, and
+ * §3.1's table sends every non-`human` origin to *nothing* — deliberately, on the sound ground that
+ * re-emitting injected mesh messages would republish peer content onto a channel with a different
+ * read ACL. So the open question is not whether `"human"` is the right token. It is **what opens a
+ * run when nobody types**, and that is a design ruling, not something to infer here.
  *
  * **DO NOT "FIX" THIS BY TREATING ABSENT `origin` AS HUMAN.** In a Claude session `user` is also the
  * role of a TOOL RESULT: that predicate selects **825** of the interactive session's 892 user
