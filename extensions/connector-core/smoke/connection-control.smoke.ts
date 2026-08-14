@@ -54,8 +54,27 @@ console.log(`[safety] dialling ${SERVER} — asserted not ${LIVE}, loopback only
 
 let pass = 0;
 let fail = 0;
+let voided = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+
+// ---- arm contamination: a green cell on a dead fixture is worse than a red one ------------------
+// Measured, not anticipated: the authed arm's first run had its subject fail to connect, and E4
+// ("the observer sees it offline") and E5 ("the cause is carried") both went GREEN — because an
+// agent that never connected is trivially offline, and its activity string was whatever the
+// disconnect had written. Two cells asserting a real property passed for a reason that had nothing
+// to do with the property. So the entry precondition is asserted separately, and every cell
+// downstream of a failed precondition is VOID — not passed, and not failed either, since a cell
+// that never ran is not evidence against the code.
+const contaminated = new Set<string>();
+const precondition = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
+  else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
+};
+const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (contaminated.has(arm)) { voided++; console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
+  check(name, cond, extra);
 };
 
 const store = mkdtempSync(join(tmpdir(), "meshctl-conn-"));
@@ -194,7 +213,149 @@ async function main() {
 
   await A.stop();
   await B.stop();
-  console.log(`\nCONNECTION-CONTROL SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+
+  // ══ THE AUTHED ARM ═══════════════════════════════════════════════════════════════════════════
+  // Everything above runs in OPEN mode — no credential, no broker ACL. That was this suite's
+  // weakest property and it was found by auditing the not-measured list rather than the code: for
+  // an AUTHORITY surface, being proven end-to-end only where there is no authority is the weakest
+  // possible coverage. It is also the mode the real fleet does not run in — measured, every live
+  // connector session on this box carries COTAL_CREDS and takes the restrictive gate arm.
+  //
+  // So: a real auth broker, a real minted credential, a real `capabilities: [connection]` grant,
+  // and the same two verbs driven through the same `spec.run` entry point, asserted at an
+  // INDEPENDENT AUTHED OBSERVER rather than from the subject's own view.
+  //
+  // REFUTED IF: the authed subject's self-disconnect is not visible to the authed observer, or the
+  // authed connect does not bring it back. E1 is the inverse control for both — it establishes the
+  // observer can see this subject at all before anything is asserted about its departure.
+  console.log("\n=== THE AUTHED ARM: the same verbs, with a real credential and a real grant ===");
+  const {
+    CotalEndpoint, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid,
+    serverConfig, newIdentity, setupSpaceStreams,
+  } = await import("@cotal-ai/core");
+
+  const APORT = await pickFreePort();
+  const ASERVER = `nats://127.0.0.1:${APORT}`;
+  if (ASERVER.includes(LIVE)) throw new Error(`REFUSING: ${ASERVER} is the live broker`);
+  if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(ASERVER)) throw new Error(`REFUSING: ${ASERVER} is not loopback`);
+  const aspace = "meshctl-authed";
+  const sauth = await createSpaceAuth(aspace);
+  const astore = mkdtempSync(join(tmpdir(), "meshctl-authed-"));
+  writeFileSync(join(astore, "nats.conf"),
+    `${serverConfig(sauth, [sauth], { transport: { kind: "plaintext" }, port: APORT, storeDir: join(astore, "js") })}\n`);
+  const anats = spawn("nats-server", ["-c", join(astore, "nats.conf")], { stdio: "ignore", detached: true });
+  const apgid = anats.pid!;
+  try {
+    for (let i = 0; i < 80; i++) { if (await isReachable(ASERVER)) break; await sleep(150); }
+
+    // ⚠ THE CONTROL THAT MAKES THIS ARM MEAN ANYTHING. Everything below asserts behaviour "under
+    // auth", and the cheapest way for that claim to be false is for this broker to be quietly
+    // serving open mode — in which case E0–E7 would re-prove the open-mode arm under a new name and
+    // read as coverage. So the enforcement is measured directly, not assumed from the config text.
+    // REFUTED IF: an anonymous client can connect to ASERVER. Then this is not an authed arm.
+    // Driven with the SAME client the feature uses (a credential-less `CotalEndpoint`) rather than a
+    // raw nats connection — the connector package has no direct nats dependency, and this is the
+    // stronger probe regardless: it is the exact code path a real ungranted session would take.
+    const anonEp = new CotalEndpoint({
+      space: aspace, servers: ASERVER, card: { name: "anon-probe", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+    });
+    anonEp.on("error", () => { /* expected: this endpoint is supposed to be refused */ });
+    let anonDetail = "an anonymous connection SUCCEEDED — this broker is NOT enforcing auth";
+    const anonOutcome = await Promise.race([
+      anonEp.start().then(() => "connected" as const).catch((e: Error) => { anonDetail = e.message; return "rejected" as const; }),
+      sleep(8000).then(() => "hung" as const),
+    ]);
+    if (anonOutcome === "connected") { try { await anonEp.stop(); } catch { /* nothing to unwind */ } }
+    if (anonOutcome === "hung") anonDetail = "no verdict within 8s — inconclusive, which is NOT a pass";
+    precondition("AUTHED", "EX the broker is REALLY enforcing auth — a credential-less client is REFUSED",
+      anonOutcome === "rejected", anonDetail);
+    console.log(`     └─ credential-less connect → ${anonOutcome}: ${anonDetail}`);
+
+    // The launcher's job, done here the way the manager does it: mint the agent's creds from the
+    // space signing key and hand the session the BYTES (config.creds is content, not a path).
+    const mgrId = newIdentity();
+    const mgrCreds = await mintCreds(sauth, mgrId, "provisioner");
+    await setupSpaceStreams({ servers: ASERVER, space: aspace, creds: mgrCreds });
+    const mgrEp = new CotalEndpoint({
+      space: aspace, servers: ASERVER, creds: mgrCreds,
+      card: { id: mgrId.id, name: "authed-mgr", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+    });
+    await mgrEp.start();
+
+    const obsEp = new CotalEndpoint({
+      space: aspace, servers: ASERVER, creds: await mintCreds(sauth, newIdentity(), "operator"),
+      card: { name: "authed-observer", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: true,
+    });
+    await obsEp.start();
+    const authedSeen = (): { status?: string; activity?: string } | undefined => {
+      const row = (obsEp.getRoster() as any[]).find((p) => (p.name ?? p.card?.name) === "authed-subject");
+      return row ? { status: row.status, activity: row.activity } : undefined;
+    };
+
+    const subId = newIdentity();
+    const subUid = mintLifecycleUid();
+    // `role` is NOT optional decoration here: the endpoint binds a role TASK queue consumer at
+    // connect, and `provisionAgentDurables` only creates that queue when `role` is passed. Omitting
+    // it produced a subject that authenticated fine and then span forever on
+    // `Permissions Violation for Publish to "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker"`.
+    const subCreds = await provisionAgent(mgrEp, sauth, subId, {
+      subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: subUid, role: "worker",
+    });
+    // An AUTHED connector session: real creds bytes, the launcher's lifecycle uid, and the grant.
+    const cfgAuthed: any = {
+      space: aspace, name: "authed-subject", role: "worker", kind: "agent", servers: ASERVER,
+      subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"], tls: false,
+      id: subId.id, creds: subCreds, lifecycleUid: subUid, capabilities: ["connection"],
+    };
+    const S = new MeshAgent(cfgAuthed);
+    S.start(300);
+    for (let i = 0; i < 90 && !S.connected; i++) await sleep(150);
+    precondition("AUTHED", "E0 the AUTHED session connected with a real minted credential", S.connected, { connected: S.connected });
+    await sleep(1500);
+
+    // The gate, on a real authed config rather than a hand-built one: the verbs must be PRESENT
+    // because the grant is present. G1 already proved they are absent without it.
+    const authedSpecs = cotalToolSpecs(cfgAuthed, "smoke");
+    const authedNames = authedSpecs.map((s: any) => s.name);
+    check("E1 the verbs are on the surface of a REAL authed+granted session (not just a synthesized config)",
+      authedNames.includes("cotal_disconnect") && authedNames.includes("cotal_connect"), authedNames);
+    const runAuthed = async (tool: string, args?: any) => {
+      const spec = authedSpecs.find((s: any) => s.name === tool);
+      if (!spec) throw new Error(`fixture failed: ${tool} absent from the authed surface`);
+      return spec.run(S, cfgAuthed, args);
+    };
+    armCheck("AUTHED", "E2 CONTROL: the authed observer can see the authed subject at all, BEFORE anything is claimed about its departure",
+      authedSeen()?.status !== undefined && authedSeen()!.status !== "offline", authedSeen());
+
+    const ed = await runAuthed("cotal_disconnect", { cause: "authed-arm" });
+    armCheck("AUTHED", "E3 an AUTHED self-disconnect succeeds through the real tool", !ed.isError, ed.text);
+    armCheck("AUTHED", "E4 and an INDEPENDENT AUTHED observer sees it offline — the supervisor property holds under auth, not just in open mode",
+      await (async () => { for (let i = 0; i < 40; i++) { if (authedSeen()?.status === "offline") return true; await sleep(150); } return false; })(),
+      authedSeen());
+    armCheck("AUTHED", "E5 the cause is carried on the authed path too, so a deliberate departure is not a crash",
+      /authed-arm/.test(String(authedSeen()?.activity ?? "")), authedSeen());
+
+    const ec = await runAuthed("cotal_connect", {});
+    armCheck("AUTHED", "E6 the authed agent brings ITSELF back through the same surface — a real credential is re-presented, not re-minted wider",
+      !ec.isError, ec.text);
+    armCheck("AUTHED", "E7 CONTROL: the observer sees it back (so E4's offline was the disconnect, not a dead fixture)",
+      await (async () => { for (let i = 0; i < 40; i++) { const s = authedSeen(); if (s && s.status !== "offline") return true; await sleep(150); } return false; })(),
+      authedSeen());
+
+    await S.stop();
+    await obsEp.stop();
+    await mgrEp.stop();
+  } finally {
+    try { process.kill(-apgid, "SIGTERM"); } catch { /* already gone */ }
+    for (let i = 0; i < 20 && anats.exitCode === null && anats.signalCode === null; i++) await sleep(100);
+    try { rmSync(astore, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+
+  console.log(`\nCONNECTION-CONTROL SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, ${voided} VOID)`);
+  if (voided) console.log(`  ⚠ ${voided} cell(s) VOID — they did not run, so they are not evidence of anything. Do not read this as coverage.`);
   if (fail) process.exitCode = 1;
 }
 
