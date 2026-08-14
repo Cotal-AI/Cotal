@@ -370,8 +370,14 @@ try {
     const emptyMid = await observePrincipalLiveness(rounds([[pgAt([row(principalKey(DEV_OWNER, "filler").key)], 3, 0)], [pgAt([], 3, 1)]]), "ACC", VICTIM, pageOpts);
     check("EMPTY MID-PAGE: an owed server answering with an empty page while offset < total is an UNDER-REPORT (answering is not delivering)",
       emptyMid.state === "unknown" && emptyMid.sweepComplete === false, emptyMid);
-    const legitEnd = await observePrincipalLiveness(rounds([[pgAt([row(principalKey(DEV_OWNER, "filler").key)], 1, 0)], [pgAt([], 1, 1)]]), "ACC", VICTIM, pageOpts);
-    check("EMPTY MID-PAGE inverse control: an empty page at offset >= total is a legitimate END — still GONE (the rule demands progress, not data that does not exist)",
+    // The inverse control has to reach the `offset >= total` branch as an OWED server, or it is
+    // green for the wrong reason. A first draft used total:1, which made page 0 not-full — the loop
+    // never paginated, nothing was ever owed, and the cell passed on "single page, complete" while
+    // appearing to test the discharge rule. So page 0 is FULL and owing, and page 1 comes back
+    // empty with a SHRUNK total (connections closed mid-sweep — real churn): offset has now reached
+    // that total, there is genuinely nothing left to hand over, and the debt is discharged.
+    const legitEnd = await observePrincipalLiveness(rounds([[pgAt([row(principalKey(DEV_OWNER, "filler").key)], 5, 0)], [pgAt([], 1, 1)]]), "ACC", VICTIM, pageOpts);
+    check("EMPTY MID-PAGE inverse control: an OWED server whose offset has reached its (shrunk) total is a legitimate END — still GONE (the rule demands progress, not data that no longer exists)",
       legitEnd.state === "gone" && legitEnd.sweepComplete === true, legitEnd);
 
     // THE SECOND GUARD SHARED THE SAME HOLE. The design says the probe is a precondition ON TOP OF
