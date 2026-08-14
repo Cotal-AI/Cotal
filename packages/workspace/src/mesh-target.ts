@@ -378,10 +378,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // fallback would silently join someone else's mesh on the default port with our persona (the
     // exact silent-wrong-mesh outcome this feature exists to prevent).
     // This conjunct is INERT today, and saying so is the honest version. Reaching this line means
-    // `rootMatches` was EMPTY — no recorded root canonicalizes to ours — and `resolve`-equal implies
-    // `canonicalRoot`-equal, so an empty `rootMatches` makes the conjunct true for every entry under
-    // EITHER spelling. Reverting this site alone is therefore an EQUIVALENT mutation and survives;
-    // it was predicted to die, it did not, and the prediction was wrong rather than the suite.
+    // `rootMatches` was EMPTY — no recorded root canonicalizes to ours — and for every root a
+    // supported writer can persist, `resolve`-equal implies `canonicalRoot`-equal, so an empty
+    // `rootMatches` makes the conjunct true for every entry under EITHER spelling. Reverting this
+    // site alone is therefore an EQUIVALENT mutation and survives; it was predicted to die, it did
+    // not, and the prediction was wrong rather than the suite.
+    // The implication is NOT unconditional, and the qualifier above is load-bearing: a `..` segment
+    // that traverses an EACCES directory makes `canonicalRoot` fall back to `resolve` on one side
+    // while the other side resolves for real, so the two can be `resolve`-equal and
+    // `canonicalRoot`-unequal. Every writer that persists a root stores `resolve()` output
+    // (`meshes-add.ts:128`, `findCotalRoot`), so no recorded operator path reaches that pair — which
+    // is why this stays "inert" and not "equivalent for all inputs".
     // It is NOT what stops a project being told its own mesh is foreign — the match predicate above
     // is. Kept as `canonicalRoot` anyway, for one reason that is not style: the equivalence is a
     // consequence of the early return above, not a property of this line. Change that return and the

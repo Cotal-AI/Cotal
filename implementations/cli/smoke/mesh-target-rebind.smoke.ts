@@ -58,9 +58,17 @@
  *      in advance rather than excused afterwards. `onDefault` is reached only when `rootMatches`
  *      is EMPTY (a non-empty `rootMatches` either returns at `recorded` or throws
  *      `ambiguous-target`). Empty means no recorded entry canonicalizes to this root, so the
- *      conjunct is vacuously true for every entry; and `resolve(a) === resolve(b)` implies
- *      `canonicalRoot(a) === canonicalRoot(b)`, so the mutated conjunct is vacuously true as
- *      well. Both spellings reduce to `meshes.find((m) => m.server === DEFAULT_SERVER)`.
+ *      conjunct is vacuously true for every entry; and for every root a supported writer can
+ *      persist, `resolve(a) === resolve(b)` implies `canonicalRoot(a) === canonicalRoot(b)`, so
+ *      the mutated conjunct is vacuously true as well. Both spellings reduce to
+ *      `meshes.find((m) => m.server === DEFAULT_SERVER)`.
+ *      THE QUALIFIER IS LOAD-BEARING AND WAS ADDED BY REVIEW, NOT BY THE AUTHORS. The implication
+ *      is not unconditional: a `..` segment traversing an EACCES directory makes `canonicalRoot`
+ *      fall back to `resolve` on one side while the other resolves for real, giving a pair that is
+ *      `resolve`-equal and `canonicalRoot`-unequal. It is unreachable here only because every
+ *      writer that persists a root stores `resolve()` output (`meshes-add.ts:128`, `findCotalRoot`).
+ *      So this mutant is equivalent ON THE SUPPORTED PATHS, which is a narrower claim than the one
+ *      two seats independently wrote down — and the narrower claim is the true one.
  *      So a SURVIVED here is NOT a weak suite: with the match predicate corrected, the second
  *      half of the fix is a no-op, and the comment that presents it as ARM B's fix overstates it.
  *      REFUTATION CONDITION, declared before the run: if ANY cell reddens under M2, this
