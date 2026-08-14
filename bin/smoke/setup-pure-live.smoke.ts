@@ -11,9 +11,10 @@
  * Run: pnpm smoke:setup-pure:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { findCotalRoot, localProcessPath } from "@cotal-ai/workspace";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-home-"));
 const configHome = mkdtempSync(join(tmpdir(), "cotal-setup-config-"));
@@ -42,8 +43,42 @@ const cotal = (args: string[], cwd: string) =>
   spawnSync(realNode, [tsxCli, binCotal, ...args], { encoding: "utf8", env, cwd, timeout: 120_000 });
 
 // One project folder for the whole scenario — persona seeding roots at the INVOKING folder's
-// `.cotal/` (findCotalRoot falls back to cwd), which is itself part of the contract under test.
+// `.cotal/`, which is itself part of the contract under test.
 const proj = mkdtempSync(join(tmpdir(), "cotal-setup-proj-"));
+
+// ── ANCHOR FIRST, and it is a containment boundary rather than a tidiness step ───────────────────
+// `findCotalRoot` (auth-paths.ts:399-407) walks UP from cwd and returns the first ancestor holding a
+// `.cotal`, falling back to cwd only when NO ancestor has one. The old comment here read "falls back
+// to cwd" as though that were guaranteed; it is conditional on the box. `COTAL_HOME` does not enter
+// this resolution at all, so sandboxing the home does NOT sandbox the root: on a box where a
+// `.cotal` exists anywhere above the temp dir, every write this suite makes lands in THAT tree.
+// That is not hypothetical — it is what happens on a developer box with a `/tmp/.cotal`, which is
+// where broker credentials and logs live.
+//
+// Creating the anchor makes the intended resolution deterministic instead of ambient. The negative
+// control for it is the assertion below: unanchored, resolution escapes; anchored, it stays.
+mkdirSync(join(proj, ".cotal"), { recursive: true });
+ok("resolution is CONTAINED in the project dir (an escaped root writes into a real tree)",
+  findCotalRoot(proj) === proj, { resolved: findCotalRoot(proj), proj });
+
+// The product resolves every pidfile and runtime log through `localProcessPath`, which joins
+// `.cotal` unconditionally (local-process.ts:50) and THROWS on an absolute or traversing template
+// (:48-49). Rebuilding these paths by hand is what let the B-cells below drift: they checked
+// `join(home, "manager.pid")` — wrong root AND no `.cotal` segment — which no configuration can
+// produce, so they could not fail and would have passed with a manager running.
+// `manager.pid`/`nats.log`/`delivery.log` carry no `{space}` token, so the space here only satisfies
+// the resolver's signature.
+const runtimeArtifact = (name: string) => localProcessPath(name, { root: proj, space: "main" });
+
+// MUST-PASS CONTROL, before any of the absence cells run. `all absence cells green` and `the suite
+// never reached them` are the same output, so prove the detection path is live: plant a file at the
+// exact path the product would write, require it to be SEEN, remove it, require it to be gone.
+const pidProbe = runtimeArtifact("manager.pid");
+writeFileSync(pidProbe, "0\n");
+ok("CONTROL: a pidfile at the product's own path IS detected (else every absence cell is vacuous)",
+  existsSync(pidProbe), { pidProbe });
+rmSync(pidProbe);
+ok("CONTROL: and detection clears once it is removed", !existsSync(pidProbe), { pidProbe });
 
 // A — first run: configure-only, non-interactive.
 const first = cotal(["setup", "--yes"], proj);
@@ -51,8 +86,8 @@ ok("first run exits 0", first.status === 0, { status: first.status, err: first.s
 
 // B — nothing launched: no manager pid file in the sandboxed home, and setup spawned no broker
 // (we can't own :4222, but the pid file + the absence of any `up`-style output is the contract).
-ok("no manager pid file", !existsSync(join(home, "manager.pid")));
-ok("no nats/delivery logs (nothing started)", !existsSync(join(home, "nats.log")) && !existsSync(join(home, "delivery.log")));
+ok("no manager pid file", !existsSync(runtimeArtifact("manager.pid")));
+ok("no nats/delivery logs (nothing started)", !existsSync(runtimeArtifact("nats.log")) && !existsSync(runtimeArtifact("delivery.log")));
 ok("output never claims to start anything", !/running at|manager up|mesh running/i.test(first.stdout + first.stderr), (first.stdout + first.stderr).slice(-300));
 
 // C — the default persona write happened (in the INVOKING folder's .cotal) and was announced.
@@ -73,13 +108,13 @@ for (const f of ["david.md", "sven.md", "me.md"]) {
   ok(`demo persona ${f} written`, existsSync(join(proj, ".cotal", "agents", f)));
 }
 ok("demo provenance announces persona writes", /→ wrote persona: .*david\.md/.test(demo.stderr), demo.stderr.slice(-500));
-ok("demo setup still launches nothing", !existsSync(join(home, "manager.pid")) && !existsSync(join(home, "nats.log")));
+ok("demo setup still launches nothing", !existsSync(runtimeArtifact("manager.pid")) && !existsSync(runtimeArtifact("nats.log")));
 
 // E — repeat run: status card, still nothing launched, exit 0.
 const second = cotal(["setup"], proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
 ok("repeat run shows the status card", /cotal · status/.test(second.stdout + second.stderr), (second.stdout + second.stderr).slice(-300));
-ok("repeat run still launches nothing", !existsSync(join(home, "manager.pid")) && !existsSync(join(home, "nats.log")));
+ok("repeat run still launches nothing", !existsSync(runtimeArtifact("manager.pid")) && !existsSync(runtimeArtifact("nats.log")));
 
 // F — removed surface fails loud.
 const open = cotal(["setup", "--open"], proj);
