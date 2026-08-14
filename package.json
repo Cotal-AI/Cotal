@@ -298,6 +298,7 @@
     "smoke:durable-source": "tsx extensions/connector-core/smoke/durable-source.smoke.ts",
     "smoke:event-wal": "tsx extensions/connector-core/smoke/event-wal.smoke.ts",
     "smoke:foreground-event-grant": "tsx implementations/cli/smoke/foreground-event-grant.smoke.ts",
+    "smoke:frame-size": "tsx packages/core/smoke/frame-size.smoke.ts",
     "smoke:actor-ephemeral": "tsx packages/core/smoke/actor-ephemeral.smoke.ts",
     "smoke:event-channel": "tsx extensions/connector-core/smoke/event-channel.smoke.ts",
     "smoke:agui-conformance": "tsx extensions/connector-core/smoke/agui-conformance.smoke.ts",

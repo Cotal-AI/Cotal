@@ -1196,12 +1196,24 @@ export class CotalEndpoint extends EventEmitter {
     return msg;
   }
 
-  /** The broker's live `max_payload`, so a caller can size a message BEFORE building it.
+  /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
+   *  caller's own payload.
    *
    *  Exposed because the connection is private and callers outside core (a connector assembling a
    *  batched payload) otherwise have no way to learn the ceiling except by failing a publish.
    *  Throws rather than guessing a default: a wrong ceiling is worse than none, because it splits
-   *  either too eagerly or too late and both look like working code. */
+   *  either too eagerly or too late and both look like working code.
+   *
+   *  THIS ALONE CANNOT SIZE A MESSAGE, and an earlier version of this comment said it could ("so a
+   *  caller can size a message BEFORE building it"). A caller holding only its own parts does not
+   *  know what will be sent: this endpoint adds `id`, `ts`, `space`, `from` and `channel` to the
+   *  envelope AFTER the publish call, and the JetStream client adds headers the broker charges
+   *  against this same ceiling. Measured against a 4096-byte broker, the largest frame that
+   *  published carried a 3993-byte JSON payload — 103 bytes went to what the caller never sees, and
+   *  a 3994-byte payload was REFUSED while naive arithmetic said it fit by a hundred bytes. Use
+   *  {@link encodedSize}, which measures what will actually be sent. A comment asserting something
+   *  outside its own function is a test nobody wrote, and this one was asserting the opposite of
+   *  what the wire does. */
   get maxPayload(): number {
     const max = this.nc?.info?.max_payload;
     if (typeof max !== "number" || !Number.isFinite(max) || max <= 0)
@@ -1261,6 +1273,94 @@ export class CotalEndpoint extends EventEmitter {
       );
   }
 
+  /** The envelope {@link multicastExpecting} publishes, built in ONE place so that a frame and any
+   *  measurement of that frame cannot describe different messages. The fields this adds — `ts`,
+   *  `space`, `from`, `channel` and the normalized `mentions` — are exactly the ones a caller
+   *  holding only its parts cannot account for. */
+  private casEnvelope(opts: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    mentions?: string[];
+    replyTo?: string;
+    contextId?: string;
+  }): CotalMessage {
+    return {
+      id: opts.id,
+      ts: Date.now(),
+      space: this.space,
+      from: this.ref(),
+      channel: opts.channel,
+      mentions: normalizeMentions(opts.mentions),
+      parts: opts.parts,
+      replyTo: opts.replyTo,
+      contextId: opts.contextId,
+    };
+  }
+
+  /**
+   * The bytes this frame will ACTUALLY put on the wire, to compare against {@link maxPayload}.
+   *
+   * WHY THIS EXISTS RATHER THAN THE CALLER DOING ARITHMETIC. The purpose of splitting an oversized
+   * frame is a LABELLED truncation, so that loss is visible. A split sized against the caller's own
+   * payload is not conservative — it is wrong in the dangerous direction: the frame it produces is
+   * REJECTED, and a rejected truncation makes the loss silent again, which is the failure the split
+   * exists to prevent. Measured against a 4096-byte broker, a 3994-byte JSON payload was refused
+   * while naive arithmetic said it fit by a hundred bytes.
+   *
+   * IT LIVES ON THE SURFACE THAT BUILDS THE ENVELOPE, deliberately. Measurement and construction in
+   * two places drift, and the drift is invisible: nothing fails until a frame near the ceiling meets
+   * a broker, which is exactly the case no unit test builds. So this shares {@link casEnvelope} with
+   * the publish path and sets the same two headers the JetStream client sets for a `msgID` +
+   * `expect.lastSubjectSequence` publish.
+   *
+   * THE HEADER BLOCK IS ENCODED BY THE CLIENT'S OWN ENCODER, never re-implemented here — a private
+   * hand-rolled copy of the wire format is a second source of truth that a client upgrade silently
+   * invalidates. What this file DOES decide is WHICH headers get set, and that choice is calibrated
+   * against a real broker in `frame-size.smoke.ts`: the suite binary-searches the true ceiling and
+   * requires this number to land on it exactly, so a client that changes its encoding, or a publish
+   * path that starts setting a third header, fails there rather than in a customer's split.
+   *
+   * `expectedLastSubjectSeq` is a parameter because it is a HEADER VALUE: sizing at 0 and publishing
+   * at 123456 differ by five bytes, and a frame sized one digit short of the ceiling is the frame
+   * that gets refused.
+   *
+   * The residual, stated rather than hidden: `ts` is stamped at measurement and re-stamped at
+   * publish, so the two differ in value. They cannot differ in LENGTH until epoch-millis needs a
+   * 14th digit, in the year 2286.
+   */
+  encodedSize(opts: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    expectedLastSubjectSeq: number;
+    mentions?: string[];
+    replyTo?: string;
+    contextId?: string;
+  }): number {
+    // The same argument validation the publish path applies, so a caller cannot size a frame that
+    // would have been refused before it ever reached the wire.
+    if (!isConcreteChannel(opts.channel))
+      throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    assertIdToken(opts.id, "publish id");
+    if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
+      throw new Error(
+        `expectedLastSubjectSeq must be a non-negative safe integer, got ${JSON.stringify(opts.expectedLastSubjectSeq)}`,
+      );
+    if (!Array.isArray(opts.parts) || opts.parts.length === 0)
+      throw new Error("encodedSize requires at least one part");
+
+    const mh = headers();
+    mh.set("Nats-Msg-Id", opts.id);
+    mh.set("Nats-Expected-Last-Subject-Sequence", `${opts.expectedLastSubjectSeq}`);
+    // `encode()` is on the client's header implementation but not on the published `MsgHdrs` type,
+    // so it is reached through a cast rather than copied. If a client version drops it, this throws
+    // immediately and loudly — the calibration cell would also fail — instead of returning a number
+    // that is quietly wrong near the ceiling.
+    const headerBytes = (mh as unknown as { encode(): Uint8Array }).encode().length;
+    return headerBytes + Buffer.byteLength(JSON.stringify(this.casEnvelope(opts)), "utf8");
+  }
+
   /**
    * Multicast with an OPTIMISTIC-CONCURRENCY expectation and a caller-chosen dedup id, returning
    * the `PubAck` fields instead of discarding them. The serialized-append primitive: two writers
@@ -1306,17 +1406,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!Array.isArray(opts.parts) || opts.parts.length === 0)
       throw new Error("multicastExpecting requires at least one part");
 
-    const message: CotalMessage = {
-      id: opts.id,
-      ts: Date.now(),
-      space: this.space,
-      from: this.ref(),
-      channel: opts.channel,
-      mentions: normalizeMentions(opts.mentions),
-      parts: opts.parts,
-      replyTo: opts.replyTo,
-      contextId: opts.contextId,
-    };
+    const message = this.casEnvelope(opts);
     // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
     // the ack, and publishMsg deliberately does neither.
     const ack = await this.js.publish(
