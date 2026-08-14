@@ -89,6 +89,16 @@
  *              wrote. G2 and G4 are retired from this kill set — an equivalent mutant is not
  *              evidence in either direction, and leaving them listed would let a later reader
  *              inherit two "unproven" cells that no test can ever close.
+ * W1, ADDED AFTER G2/G4 WERE RETIRED AND PREDICTED BEFORE ITS RUN — replace the refusal's whole
+ * message with a bare "invalid grant". This is the mutation the earlier set could not see at all: it
+ * still THROWS, still throws on exactly the right inputs, and is wrong anyway, because refusing and
+ * explaining are different acts and only the second is repairable by the operator who hit it. A
+ * suite asserting "it threw" scores it a pass. PREDICTED to kill `ruled:single-token-wildcard-
+ * refuses-with-a-witness` and every MUTE cell (they route through `refusal()`, which requires the
+ * grant quoted, the observation present, and the keying named), while leaving every LIVE and FOREIGN
+ * cell GREEN — that asymmetry is the evidence, since a mutation that reddens everything proves only
+ * that the suite noticed something.
+ *
  * WHAT STILL HOLDS AFTER RETIRING TWO: G1 is the mutation that matters, because a uniformly
  * permissive guard is the realistic failure and it is killed by the MUTE and witness-absent arms
  * while leaving LIVE and FOREIGN green. G3 is the one an outcome-based suite cannot see.
@@ -152,7 +162,18 @@ const refusal = (pattern: string): string => {
     return "NO-THROW";
   } catch (e) {
     const msg = (e as Error).message;
-    return msg.includes(`"${pattern}"`) ? "OK" : `WRONG-REFUSAL: ${msg}`;
+    // THE REFUSAL MUST WITNESS, NOT MERELY REFUSE. Three independent things must be in the message
+    // or this is not the refusal under test: the grant AS WRITTEN, what it was observed to address,
+    // and the keying in force that makes it unmatchable. A guard that threw "invalid grant" would
+    // satisfy an assertion that only checked "it threw", and would leave the operator to re-derive
+    // what this function already knew — which is the containment-dressed-as-a-witness failure this
+    // whole lane exists to remove.
+    const missing = [
+      msg.includes(`"${pattern}"`) ? "" : "grant-not-quoted",
+      msg.includes("What it addresses:") ? "" : "no-observation",
+      msg.includes("events.<owner>.<actor>") ? "" : "keying-not-named",
+    ].filter(Boolean);
+    return missing.length === 0 ? "OK" : `WRONG-REFUSAL[${missing.join(",")}]: ${msg}`;
   }
 };
 
@@ -213,6 +234,37 @@ function refusalInMixed(): string {
     return msg.includes(`"events.*"`) && !msg.includes(`"events.u_alice.>"`) ? "OK" : `WRONG-REFUSAL: ${msg}`;
   }
 }
+
+// ── THE RULED CASE, PINNED BY NAME: `events.*` REFUSES AS A WITNESS ───────────────────────────────
+//    The single-token wildcard is the shape the re-key silenced, so it gets its own cell rather than
+//    living inside the MUTE loop where a later edit could quietly drop it. This asserts the WITNESS
+//    text specifically: the arity it was observed to address, and the arity the keying requires. A
+//    refusal that merely said "invalid grant" fails here, which is the whole point — refusing and
+//    explaining are different acts, and only the second is repairable by the operator who hit it.
+c(
+  "ruled:single-token-wildcard-refuses-with-a-witness",
+  (() => {
+    try {
+      assertPrincipalChannelGrants(["events.*"], eventChannel, "cell");
+      return "NO-THROW";
+    } catch (e) {
+      const m = (e as Error).message;
+      return m.includes(`"events.*"`) && m.includes("What it addresses: 1 token below events") &&
+        m.includes("a channel there has exactly 2") && m.includes("events.<owner>.<actor>")
+        ? "OK"
+        : `WRONG-REFUSAL: ${m}`;
+    }
+  })() === "OK",
+);
+//    THE INVERSE CONTROL, THROUGH THE SAME CALL: the owner-wide form the two-token key exists to
+//    make expressible must still resolve. If this ever refused, the re-key would have traded a real
+//    authorization dimension for nothing, and the cell above would still be green — which is exactly
+//    why a refusal cell without its inverse proves only that something refuses.
+c(
+  "ruled:CONTROL-owner-wide-still-resolves-through-the-same-call",
+  allowed(["events.u_alice.>"]) === "OK",
+  allowed(["events.u_alice.>"]),
+);
 
 // ── THE WITNESS IS A REAL CHANNEL, not a formatting of the input ──────────────────────────────────
 //    The guard's whole construction is that it delegates the verdict to the shipped matcher against a

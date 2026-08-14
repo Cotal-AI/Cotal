@@ -568,7 +568,13 @@ const WITNESS_ACTOR = "witness";
  *  turn a guard against mute streams into a guard against working ones.
  *
  *  Throws rather than filtering. A filtered grant list would launch, and the operator would learn
- *  they had asked for something impossible only from the absence of data. */
+ *  they had asked for something impossible only from the absence of data.
+ *
+ *  THE REFUSAL WITNESSES, IT DOES NOT MERELY REFUSE. "invalid grant" would absorb the fact and emit
+ *  only a verdict, leaving the operator to re-derive what this function already knew. So the message
+ *  reports WHAT WAS SEEN — the grant as written, the arity it actually addresses, and the arity the
+ *  keying requires — and only then what to write instead. The difference is an operator fixing it in
+ *  ten seconds versus filing a bug against this guard. */
 export function assertPrincipalChannelGrants(
   patterns: readonly string[] | undefined,
   channelFor: (principal: { owner: string; actor: string }) => string,
@@ -583,13 +589,22 @@ export function assertPrincipalChannelGrants(
     const inNamespace = prefix.every((seg, i) => pattern.split(".")[i] === seg);
     if (!inNamespace) continue;
     if (principalChannelWitness(pattern, channelFor)) continue;
+    // What was actually SEEN, measured off this pattern rather than described in general terms: how
+    // many tokens it addresses past the namespace, against the two the keying requires. `>` is
+    // reported as a subtree rather than counted, because counting it would state a falsehood — it
+    // spans any depth, and when it is refused the reason is never arity.
+    const rest = pattern.split(".").slice(prefix.length);
+    const seen = rest.includes(">")
+      ? `the subtree "${rest.join(".")}" below ${prefix.join(".")}`
+      : `${rest.length} token${rest.length === 1 ? "" : "s"} below ${prefix.join(".")}` +
+        ` (${rest.map((t) => `"${t}"`).join(", ") || "none"}), and a channel there has exactly 2`;
     throw new Error(
-      `${context}: the grant "${pattern}" matches no ${prefix.join(".")} channel and would publish ` +
-        `nowhere. Those channels are keyed on the agent's principal (${live}), so a single-token ` +
-        `wildcard like "${prefix.join(".")}.*" and any flat pre-principal name cover nothing, and a ` +
-        `grant that covers nothing is indistinguishable from a quiet channel once it is running. ` +
-        `Use "${prefix.join(".")}.<owner>.>" for every actor of one owner, "${live}" for one agent, ` +
-        `or "${prefix.join(".")}.>" for all of them.`,
+      `${context}: the grant "${pattern}" can never match a channel under "${prefix.join(".")}", so ` +
+        `it would publish nowhere. What it addresses: ${seen}. Those channels are keyed on the agent's ` +
+        `principal (${live}), and a grant that matches nothing is indistinguishable at the broker ` +
+        `from a channel with no traffic — the stream would simply be mute while this launch reported ` +
+        `success. Write "${prefix.join(".")}.<owner>.>" for every actor of one owner, "${live}" for ` +
+        `one agent, or "${prefix.join(".")}.>" for all of them.`,
     );
   }
 }
