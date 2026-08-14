@@ -313,9 +313,21 @@ try {
     const beforeBad = { general: heard.general.length, [LANE]: heard[LANE].length };
     const r = await persona.run(definer, cfg, { name: badName, prompt: "should never be written.", announce: bad });
     check(`announce ${JSON.stringify(bad)} is refused`, r.isError === true, r);
+    // Assert what the message SAYS, not just what it avoids. The previous version of this cell
+    // checked only that the text lacked spawn-capability advice — and passed while the tool was
+    // answering "no manager reachable ... Is the manager running?" for a bad argument, because that
+    // wrong message also lacks the phrase. Absence of one wrong answer is not presence of the right
+    // one; that is the same hole review found in the content assertion, in a second place.
+    const rt = String(r.text ?? "");
+    check(`announce ${JSON.stringify(bad)} names the offending argument`, rt.includes("announce:"), r);
+    check(
+      `announce ${JSON.stringify(bad)} does NOT blame a dead manager (the manager was never called)`,
+      !rt.includes("no manager reachable") && !rt.includes("Is the manager running?"),
+      r,
+    );
     check(
       `announce ${JSON.stringify(bad)} does not blame the spawn capability (the argument is the problem)`,
-      !String(r.text ?? "").includes("capabilities: [spawn]"),
+      !rt.includes("capabilities: [spawn]"),
       r,
     );
     check(
@@ -377,7 +389,8 @@ try {
     check("a denied announcement is NOT reported as a failed definition", deniedResult.isError !== true, deniedResult);
     const dt = String(deniedResult.text ?? "");
     check("the result says the persona was saved", dt.includes("saved"), dt);
-    check("the result says the announcement did not go out", dt.includes("did NOT go out"), dt);
+    check("the result says the announcement was REFUSED (a denial proves non-delivery)", dt.includes("REFUSED"), dt);
+    check("the result says it did not go out", dt.includes("did not go out"), dt);
     check("the result points at allowPublish, not at the spawn capability", dt.includes("allowPublish"), dt);
     check(
       "the result does NOT blame the spawn capability (the caller has it; that was never the problem)",
@@ -392,6 +405,48 @@ try {
     );
   } finally {
     await mutedAgent.stop().catch(() => {});
+  }
+
+  // ---- 6. an UNCONFIRMED post is not a denied post ---------------------------------------------
+  console.log("6. an unknown send outcome is reported as unconfirmed, not as 'did not go out'");
+  // A chat publish rides JetStream request/PubAck, so a timeout can mean the stream STORED the
+  // message and we simply never saw the ack. Telling the caller "it did not go out, post it
+  // yourself" on that outcome is how the channel gets the announcement twice — the exact harm this
+  // change removes. Drive it by making the send itself fail with a non-permission error.
+  {
+    const unknownName = "fm380unknown";
+    const realSend = definer.send.bind(definer);
+    (definer as unknown as { send: MeshAgent["send"] }).send = async () => {
+      throw new Error("TIMEOUT: no response from stream");
+    };
+    let unknownResult;
+    try {
+      unknownResult = await persona.run(definer, cfg, {
+        name: unknownName,
+        prompt: "Its announcement neither confirms nor denies.",
+        announce: LANE,
+      });
+    } finally {
+      (definer as unknown as { send: MeshAgent["send"] }).send = realSend;
+    }
+    const ut = String(unknownResult?.text ?? "");
+    check(
+      "the persona is still saved when the announcement outcome is unknown",
+      existsSync(join(workspaceRoot, ".cotal", "agents", `${unknownName}.md`)),
+    );
+    check("an unknown outcome is not reported as a failed definition", unknownResult?.isError !== true, ut);
+    check("an unknown outcome says it could NOT CONFIRM", ut.includes("could NOT CONFIRM"), ut);
+    check(
+      "an unknown outcome does NOT claim the post did not go out (that claim invites a duplicate)",
+      !ut.includes("did not go out") && !ut.includes("did NOT go out"),
+      ut,
+    );
+    check(
+      "an unknown outcome does NOT blame allowPublish (only a denial proves an ACL problem)",
+      !ut.includes("allowPublish"),
+      ut,
+    );
+    check("an unknown outcome tells the caller to READ the channel before posting", ut.includes(`READ #${LANE}`), ut);
   }
 
   console.log(`\n  ${pass} checks passed`);

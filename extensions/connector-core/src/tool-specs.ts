@@ -674,7 +674,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            "Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: peers who did not ask for it cannot act on the persona anyway, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message.",
+            "Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message.",
           ),
       },
       async run(
@@ -691,10 +691,21 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // would fix its spawn capability, which was never the problem) and invite a retry — and a
           // retry that succeeds posts the duplicate announcement this change exists to remove. Say
           // what happened to each half, and point at the ACL that actually blocked the post.
+          // Two different partial successes, and conflating them is dangerous in the direction this
+          // change cares about. A permission denial PROVES nothing was published. Any other failure
+          // — a reconnect, a publish timeout — leaves the outcome UNKNOWN, because a chat publish
+          // rides JetStream request/PubAck and the stream may have stored the message while the ack
+          // was never observed. Telling someone "it did not go out, post it yourself" on an unknown
+          // outcome is how they post it twice.
+          if (reply.announceError && reply.announceOutcome === "denied")
+            return ok(
+              `Persona \`${name}\` saved — but the announcement to #${announce} was REFUSED and did not go out: ${reply.announceError}. ` +
+                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. You can ${spawnHint}.`,
+            );
           if (reply.announceError)
             return ok(
-              `Persona \`${name}\` saved — but the announcement to #${announce} did NOT go out: ${reply.announceError}. ` +
-                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. You can ${spawnHint}.`,
+              `Persona \`${name}\` saved — but I could NOT CONFIRM the announcement to #${announce}: ${reply.announceError}. ` +
+                `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${announce} before posting anything yourself — posting blind is how the channel gets it twice. You can ${spawnHint}.`,
             );
           // Report the destination when there was one, so the caller can tell a silent define from an
           // announced one without having to go read the channel.

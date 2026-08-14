@@ -11,6 +11,7 @@ import {
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  isPermissionDenied,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -841,12 +842,12 @@ export class MeshAgent extends EventEmitter {
    *  This used to end in a bare `this.send(...)`, which has no channel argument, so
    *  {@link Endpoint.multicast} resolved the destination as the caller's FIRST CONCRETE CHANNEL —
    *  `general` for most personas, purely by list order. Nobody ever chose that: defining a review
-   *  panel sprayed one broadcast per seat into every peer's inbox on the mesh, and because the send
-   *  was unconditional on `reply.ok`, a host-level tool retry (the manager write is an idempotent
-   *  overwrite, so it succeeds again) announced the same persona twice. The text was worse than the
-   *  volume: "spawn it to bring it online" is an imperative addressed to strangers, indistinguishable
-   *  from an attempt to get unrelated agents to run someone else's code, and it tripped a real
-   *  provenance investigation.
+   *  panel sprayed one broadcast per seat into every peer's inbox on the mesh. `reply.ok` was the
+   *  send's ONLY gate, so a failed manager reply announced nothing — but a host-level tool retry
+   *  hit an idempotent overwrite, succeeded again, and announced the same persona twice. The text
+   *  was worse than the volume: "spawn it to bring it online" is an imperative addressed to
+   *  strangers, indistinguishable from an attempt to get unrelated agents to run someone else's
+   *  code, and it tripped a real provenance investigation.
    *
    *  So: no `announce` ⇒ no mesh traffic at all, and the definer already knows what it defined (the
    *  reply says so, and `spawn` on a missing persona fails loud). With `announce` ⇒ that channel and
@@ -859,7 +860,7 @@ export class MeshAgent extends EventEmitter {
     prompt: string;
     model?: string;
     announce?: string;
-  }): Promise<ControlReply & { announceError?: string }> {
+  }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     this.assertConnected();
     // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
     // this is the API every host's tool surface funnels through, so a caller that reaches
@@ -872,11 +873,17 @@ export class MeshAgent extends EventEmitter {
     if (def.announce !== undefined) {
       if (def.announce.trim() === "")
         throw new Error("announce: empty channel — omit it to define silently, or name a concrete channel");
-      const canonical = assertValidChannel(def.announce);
-      if (canonical !== def.announce)
-        throw new Error(
-          `announce: "${def.announce}" is not a channel name — it normalizes to "${canonical}", which is not what you asked for; pass the exact channel`,
-        );
+      // `assertValidChannel` returns its input unchanged or THROWS — it never rewrites. An earlier
+      // version of this guard compared its return value against the input, which could not fire, and
+      // worse: the throw escaped carrying core's own wording, which the tool layer does not
+      // recognise as an argument error, so a bad channel was reported as "no manager reachable".
+      // Re-throw under the `announce:` prefix so the failure is attributed to the argument that
+      // actually caused it.
+      try {
+        assertValidChannel(def.announce);
+      } catch (e) {
+        throw new Error(`announce: ${(e as Error)?.message ?? String(e)}`);
+      }
       if (!isConcreteChannel(def.announce))
         throw new Error(`announce: "${def.announce}" is a wildcard — announce to one concrete channel`);
     }
@@ -894,7 +901,17 @@ export class MeshAgent extends EventEmitter {
         def.announce,
       );
     } catch (e) {
-      return { ...reply, announceError: (e as Error)?.message ?? String(e) };
+      // WHY the outcome is classified rather than flattened to a string: only a permission denial
+      // proves the message did not go out. A chat publish rides JetStream request/PubAck, so a
+      // timeout or a reconnect means the stream may well have STORED the message while we simply
+      // never saw the ack — the outcome is unknown, not negative. Reporting unknown as "it did not
+      // go out, post it yourself" is how a caller posts the announcement a second time, which is
+      // the exact duplicate this change exists to remove. Say "denied" only when it was denied.
+      return {
+        ...reply,
+        announceError: (e as Error)?.message ?? String(e),
+        announceOutcome: isPermissionDenied(e) ? "denied" : "unknown",
+      };
     }
     return reply;
   }

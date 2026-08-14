@@ -282,7 +282,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). |
-| `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: peers who did not ask for it cannot act on the persona anyway, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message. |
+| `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message. |
 
 ## `cotal_reconnect`
 
