@@ -78,7 +78,14 @@ async function trySubscribe(servers: string, creds: string, id: string, subject:
       inboxPrefix: `_INBOX_${id}`, maxReconnectAttempts: 0,
     });
   } catch {
-    return "denied" as const; // could not even connect ⇒ certainly cannot subscribe
+    // WAS: `return "denied"` — "could not even connect ⇒ certainly cannot subscribe". True, and
+    // still the MX13 defect: it lets a NON-permission failure satisfy a cell that claims a
+    // permission fence. MX13 killed exactly this shape on E18, where a missing-stream error stood
+    // in for the deleted ACL and the cell stayed green. C1/C2 make it residual here rather than
+    // active — they prove this cred connects and subscribes on this broker — but a control that
+    // holds globally does not exclude a transient failure inside one cell. Reported distinctly so
+    // a substitution is loud instead of silent.
+    return "unreachable" as const;
   }
   let denied = false;
   void (async () => {
@@ -88,11 +95,18 @@ async function trySubscribe(servers: string, creds: string, id: string, subject:
     }
   })().catch(() => {});
   const sub = nc.subscribe(subject, { callback: (err) => { if (err) denied = true; } });
-  await nc.flush().catch(() => { denied = true; });
+  // Same correction: a flush that fails for ANY reason used to set `denied`, so a dropped socket
+  // read as a permission fence. Tracked apart.
+  let unreachable = false;
+  await nc.flush().catch(() => { unreachable = true; });
   await wait(graceMs);
   try { sub.unsubscribe(); } catch { /* ignore */ }
   await nc.drain().catch(() => {});
-  return denied ? ("denied" as const) : ("allowed" as const);
+  // `denied` wins over `unreachable`: a permission violation observed on the status stream is a
+  // POSITIVE observation of the fence, and it commonly arrives alongside a torn-down connection.
+  // Only an unreachable arm with NO permission evidence is reported as unreachable.
+  if (denied) return "denied" as const;
+  return unreachable ? ("unreachable" as const) : ("allowed" as const);
 }
 
 const spaceA = `fence-a-${randomUUID().slice(0, 8)}`;
