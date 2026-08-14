@@ -326,8 +326,15 @@ export type ConnectionRefusal =
   | "shutting-down"
   /** The departure could not be CONFIRMED at the broker, so the disconnect is refused (fail-closed). */
   | "transition-unconfirmed"
-  /** The departure was announced, but the connection did not close; the announcement was retracted. */
+  /** The departure was announced, but the connection did not close. The detail says whether the
+   *  announcement was retracted — a retraction that could not itself be published is NOT reported
+   *  as one. */
   | "teardown-failed"
+  /** The broker ACCEPTED the connection and then the session could not be bound (JetStream/KV
+   *  unavailable, a stream missing, presence unwritable). Distinct from `broker-unreachable` on
+   *  purpose: the host is up and answering, so sending an operator to check the host is a lie.
+   *  Classified from STATE (the socket was accepted) rather than from the error text. */
+  | "bind-failed"
   /** Requests are awaiting a reply on this connection; tearing it down would strand them. */
   | "in-flight-request";
 
@@ -350,9 +357,18 @@ export type ConnectionOutcome =
 const refusal = (reason: ConnectionRefusal, detail: string): ConnectionOutcome => ({ outcome: "refused", reason, detail });
 
 /** Map a connect failure onto the refusal that tells the caller what to FIX. Core already
- *  distinguishes these three cases when it dials, and collapsing them into "broker-unreachable"
- *  sends an operator to check a host that is up and answering. */
-function classifyConnectFailure(e: unknown): ConnectionRefusal {
+ *  distinguishes these cases when it dials, and collapsing them into "broker-unreachable"
+ *  sends an operator to check a host that is up and answering.
+ *
+ *  `postDial` is the ONLY reliable discriminator between "could not reach the broker" and
+ *  "the broker took the connection and the session would not bind", and it comes from STATE
+ *  (the transport was accepted and assigned) rather than from matching the error text. Text
+ *  matching got this wrong: a presence-write failure — which by definition happens over an
+ *  accepted, authenticated connection — was reported as `broker-unreachable`. */
+function classifyConnectFailure(e: unknown, postDial = false): ConnectionRefusal {
+  // Past the handshake there is nothing to say about reachability or credentials: both were
+  // already accepted by the broker. Whatever failed, failed on a live connection.
+  if (postDial) return "bind-failed";
   if (e instanceof UserAuthenticationExpiredError) return "credential-expired";
   const m = ((e as Error)?.message ?? String(e)).toLowerCase();
   // Credential SOURCE first: a bearer command that would not run, or a creds file that would not
@@ -534,6 +550,10 @@ export class CotalEndpoint extends EventEmitter {
   private admissionClosed = false;
   /** Mutual exclusion between connection verbs — one transition at a time, in either direction. */
   private transitionInFlight = false;
+  /** Set by {@link doRebuild} when a rebind failed AFTER the broker had already accepted the
+   *  transport. Read only by {@link connect}, to classify the refusal from what actually happened
+   *  rather than from the error's wording. */
+  private lastRebuildFailedPostDial = false;
   /** Interruptible backoff for reestablishLoop — reconnect()/stop() resolves this to retry
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
@@ -704,6 +724,11 @@ export class CotalEndpoint extends EventEmitter {
   private async refreshBearer(initial = false): Promise<void> {
     try {
       const bearer = await this.bearerSource!();
+      // A fetch already in flight when disconnect() ran must not commit or re-arm behind it.
+      // Clearing the timer cannot cover this crossing — the call was already past the timer.
+      // connect() re-fetches through connectAndBind when the cached token is stale, so dropping
+      // this one loses nothing.
+      if (this.selfDisconnected) return;
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
@@ -717,7 +742,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private armBearerRefresh(delayMs: number): void {
-    if (this.stopped) return;
+    if (this.stopped || this.selfDisconnected) return; // see armCredsRefresh
     clearTimeout(this.bearerTimer);
     this.bearerTimer = setTimeout(() => void this.refreshBearer(), Math.max(5_000, delayMs));
     this.bearerTimer.unref?.();
@@ -856,9 +881,21 @@ export class CotalEndpoint extends EventEmitter {
    *  stays live until its expiry. */
   private async renewCredsOnTimer(): Promise<void> {
     // Deadline captured HERE, before the enqueue, for the same reason as the explicit reload.
+    if (this.selfDisconnected) return;
     const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
     try {
-      await this.runCredsTxn(() => this.adoptFreshCreds({ deadline }));
+      // The fence goes INSIDE the single-flight, not just at entry. adoptFreshCreds proves its
+      // candidate with an authenticated broker preflight, and a tick that queued behind a slow
+      // transaction crosses a disconnect while sitting in that queue — measured by review: the late
+      // candidate committed and re-armed with `selfDisconnected` already true, and the broker's
+      // cumulative connection count rose while the endpoint was deliberately off. The timer arms
+      // now refuse to re-arm, and this refuses to dial.
+      const adopted = await this.runCredsTxn(async () => {
+        if (this.selfDisconnected) return false;
+        await this.adoptFreshCreds({ deadline });
+        return true;
+      });
+      if (!adopted || this.selfDisconnected) return;
       await this.swapConnectionOntoFreshCreds();
     } catch (e) {
       this.emit("error", new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
@@ -908,7 +945,11 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private armCredsRefresh(delayMs: number): void {
-    if (this.stopped) return;
+    // `selfDisconnected` bars re-arming for the same reason `stopped` does: there is no connection
+    // to keep alive, and this arm's proof-of-record is an AUTHENTICATED broker preflight, so a
+    // deliberately-off endpoint would keep dialling the mesh it was told to leave. connect() rebinds
+    // through connectAndBind, which arms it again.
+    if (this.stopped || this.selfDisconnected) return;
     clearTimeout(this.credsTimer);
     // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
     // lifetimes are hours+ so the floor never engages there.
@@ -929,12 +970,20 @@ export class CotalEndpoint extends EventEmitter {
       const stale = !this.currentBearer ||
         bearerExpiryMs(this.currentBearer) - Date.now() < CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
       if (stale) await this.refreshBearer(!this.currentBearer);
+      // Re-arm after a self-disconnect. disconnect() disarms the refresh (nothing should renew a
+      // credential for a connection that is deliberately gone), and only a STALE token re-arms it
+      // above — so a connect() while the cached token is still fresh would otherwise come back with
+      // no refresh pending at all and die silently at that token's expiry. A plain rebuild never
+      // reaches this: its timer was never disarmed.
+      else if (!this.bearerTimer)
+        this.armBearerRefresh(bearerExpiryMs(this.currentBearer!) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     }
     // Creds-source endpoints likewise fetch before the FIRST connect, and re-fetch on a rebuild
     // whose cached cred is expired or inside its renewal window.
     if (this.credsSource) {
       const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
       if (stale) await this.refreshCreds(!this.currentCreds);
+      else if (!this.credsTimer) this.armCredsRefresh(credsRenewalDelayMs(this.currentCreds!)); // see above
     }
     this.nc = await connect({
       servers: this.servers,
@@ -1166,7 +1215,41 @@ export class CotalEndpoint extends EventEmitter {
       } catch {
         /* already closing */
       }
-      await this.connectAndBind();
+      this.lastRebuildFailedPostDial = false;
+      try {
+        await this.connectAndBind();
+      } catch (e) {
+        // connectAndBind assigns `this.nc` as soon as the handshake is accepted and THEN does the
+        // fallible work (KV opens, JetStream binds, consumer binds, the first presence put). A throw
+        // from any of those leaves a live, AUTHENTICATED connection on `this.nc` that nothing is
+        // supervising: the supervisor is armed after this method returns, so it never gets armed at
+        // all. Measured by review at two independent sites — an injected presence throw, and a
+        // broker restarted with JetStream disabled (no injection): the caller was told the connect
+        // was refused while that connection stayed open and flushing.
+        //
+        // Close it HERE, in the transition that opened it. `close()` rather than `drain()`: there is
+        // nothing worth flushing on a half-bound session, and a drain against the very subsystem
+        // that just failed can hang.
+        // Annotated because TS inlines connectAndBind's assignment and narrows a bare `this.nc`
+        // here to `never` — the same quirk the tearDownIfStopped comment below records.
+        const halfBound = this.nc as NatsConnection | undefined;
+        this.lastRebuildFailedPostDial = halfBound !== undefined;
+        this.clearConnectionScoped();
+        this.nc = undefined;
+        this.js = undefined;
+        this.jsm = undefined;
+        this.kv = undefined;
+        this.channelKv = undefined;
+        this.membersKv = undefined;
+        this.aclKv = undefined;
+        this.deliveryKv = undefined;
+        try {
+          await halfBound?.close();
+        } catch {
+          /* it is already failing; the point is that we do not keep a reference to it */
+        }
+        throw e;
+      }
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)
@@ -1301,6 +1384,19 @@ export class CotalEndpoint extends EventEmitter {
       this.selfDisconnected = true;
       const oldNc = this.nc;
       try {
+        // DRAIN FIRST, handles still bound. The order here is not stylistic: the retraction below is
+        // a presence write, and publishPresence returns immediately when `this.kv` is unset. Dropping
+        // the handles before the drain therefore made the failure path REPORT a retraction it had not
+        // sent — measured by review with a rejecting drain(): an independent observer still saw
+        // `offline` while the caller was told the announcement was retracted. Draining first keeps
+        // every handle live for exactly as long as the retraction might need them, and leaves the
+        // connection on `this.nc` where reconnect() and the supervisor can still reach it, rather
+        // than orphaned past the epoch guard.
+        //
+        // `selfDisconnected` is already up, which is what stops the supervisor from healing the close
+        // this drain causes. That guard is load-bearing HERE in a way it was not before: `this.nc`
+        // still points at the draining connection, so the epoch check cannot stand in for it.
+        await oldNc?.drain();
         this.clearConnectionScoped();
         this.nc = undefined;
         this.js = undefined;
@@ -1310,18 +1406,27 @@ export class CotalEndpoint extends EventEmitter {
         this.membersKv = undefined;
         this.aclKv = undefined;
         this.deliveryKv = undefined;
+        // Nothing renews a credential for a connection that is deliberately gone. Left armed, these
+        // fire against the credential source — and the standing-creds arm PROVES a candidate with an
+        // authenticated broker preflight, so a "deliberately off" endpoint would keep dialling.
+        clearTimeout(this.credsTimer);
+        this.credsTimer = undefined;
+        clearTimeout(this.bearerTimer);
+        this.bearerTimer = undefined;
         this.emit("connection", { connected: false });
-        await oldNc?.drain();
       } catch (e) {
         // Announced a departure that did not happen. Republish the TRUE state rather than leave the
         // lie standing - peers would otherwise materialize `offline` for a connection still live.
         this.selfDisconnected = false;
         this.status = prevStatus;
         this.activity = prevActivity;
-        await this.reassertPresence();
+        const retracted = await this.reassertPresence();
         return refusal(
           "teardown-failed",
-          `the departure was announced but the connection did not close (${(e as Error).message}); the announcement has been retracted`,
+          `the departure was announced but the connection did not close (${(e as Error).message}); ` +
+            (retracted
+              ? "the announcement HAS been retracted and this endpoint is still on the mesh"
+              : "AND THE ANNOUNCEMENT COULD NOT BE RETRACTED - peers may still show this agent offline while it is in fact connected. Re-assert presence or reconnect"),
         );
       }
       return { outcome: "disconnected", space: this.space, cause };
@@ -1332,9 +1437,17 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Bring a self-disconnected endpoint BACK onto the mesh. The inverse of {@link disconnect}, and
-   *  the reason a self-disconnect is a reversible state rather than a one-way door: the credential,
-   *  the target and the grant are all still held in-process, so no new authority is needed and none
-   *  is minted. */
+   *  the reason a self-disconnect is a reversible state rather than a one-way door.
+   *
+   *  On what it can reach — stated precisely, because the loose version of this claim is FALSE.
+   *  It is NOT true that connect() "mints nothing": a bearer- or creds-SOURCE endpoint whose cached
+   *  material has gone stale re-fetches it in {@link connectAndBind}, which is a fresh mint. What is
+   *  true, and what the safety of the verb actually rests on, is that it takes NO TARGET and asks
+   *  for NO SCOPE: the servers, the space and the credential source are the ones this endpoint was
+   *  constructed with. So it re-reads whatever the operator's grant says RIGHT NOW — which may be
+   *  narrower than before, and can never be wider than the operator has granted — and it can reach
+   *  no mesh the endpoint was not already pointed at. A revoked grant comes back as a refusal, not
+   *  as a stale key that still works. */
   async connect(): Promise<ConnectionOutcome> {
     if (this.stopped)
       return refusal("shutting-down", "this endpoint is stopped; start a new session instead");
@@ -1362,8 +1475,13 @@ export class CotalEndpoint extends EventEmitter {
     } catch (e) {
       // Failed to get back on. Restore the self-disconnected state rather than leaving the endpoint
       // in a third state that is neither deliberately-off nor live.
+      // The rebuild has already closed any half-bound connection it opened (see doRebuild), so the
+      // restored flag describes the whole endpoint: deliberately off, with nothing live behind it.
       this.selfDisconnected = wasDisconnected;
-      return refusal(classifyConnectFailure(e), `could not reconnect to ${this.space}: ${(e as Error).message}`);
+      return refusal(
+        classifyConnectFailure(e, this.lastRebuildFailedPostDial),
+        `could not reconnect to ${this.space}: ${(e as Error).message}`,
+      );
     } finally {
       this.transitionInFlight = false;
     }
@@ -1372,11 +1490,15 @@ export class CotalEndpoint extends EventEmitter {
   /** Re-publish current presence, best-effort. Used after a refused transition: "unconfirmed" is not
    *  "did not happen" (a JetStream write can be stored while its ack is lost), so a refusal must
    *  re-assert the truth rather than assume peers never saw the departure. */
-  private async reassertPresence(): Promise<void> {
+  private async reassertPresence(): Promise<boolean> {
     try {
-      await this.publishPresence();
+      // A broker revision, not a resolved promise: publishPresence returns undefined WITHOUT
+      // writing when this endpoint does not register presence or its KV handle is gone. A caller
+      // that treats that as a retraction reports a correction it never sent.
+      return (await this.publishPresence()) !== undefined;
     } catch {
       /* best-effort - the caller is already being told the transition was refused */
+      return false;
     }
   }
 

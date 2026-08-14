@@ -789,7 +789,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_connect",
       title: "Cotal: return to the mesh",
       description:
-        "Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential it already holds — it targets no new mesh and obtains no new authority. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.",
+        "Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential this session was launched with — it takes no target, so it asks for no access you did not already have and cannot reach another mesh. It re-reads your grant as it stands NOW, so access revoked while you were away comes back as a refusal rather than silently still working. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.",
       async run(agent) {
         return renderOutcome(await agent.connect());
       },

@@ -116,7 +116,7 @@ const ANNOTATIONS = {
     effect: "puts you back on the mesh; peers see you online again",
     availability: "only with `capabilities: [connection]`",
     notes:
-      "Takes no target: it returns to the mesh this session was launched against, re-presenting the credential it already holds, so it obtains no new authority and can reach no mesh you were not already on. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.",
+      "Takes no target: it returns to the mesh this session was launched against, with the credential source it was launched with, so it asks for no access you did not already have and can reach no mesh you were not already on. It re-reads that credential when the cached one is stale, which is how a grant revoked while you were away comes back as a refusal rather than as a key that still works. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.",
   },
 };
 

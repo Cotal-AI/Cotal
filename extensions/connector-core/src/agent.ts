@@ -283,8 +283,11 @@ export class MeshAgent extends EventEmitter {
 
   /** Return to the mesh after a deliberate disconnect — see {@link CotalEndpoint.connect}.
    *
-   *  Reversibility is the point: the credential, the target and the grant are all still held in
-   *  this process, so coming back needs no new authority and mints none. */
+   *  Reversibility is the point: the target and the credential SOURCE are the ones this session was
+   *  launched with, so coming back asks for no scope it did not already have and can reach no other
+   *  mesh. It does not follow that it mints nothing — a session whose credential has gone stale
+   *  re-reads it, which is exactly how a grant REVOKED while the agent was away comes back as a
+   *  refusal instead of as a key that still works. */
   async connect(): Promise<ConnectionOutcome> {
     if (this.stopping)
       return { outcome: "refused", reason: "shutting-down", detail: "this session is shutting down; start a new session instead" };
