@@ -1377,11 +1377,19 @@ export class CotalEndpoint extends EventEmitter {
         this.activity = prevActivity;
         // "Unconfirmed" is NOT "did not happen": a JetStream write can be stored while its ack is
         // lost, so peers may already show this agent offline. Re-assert the truth rather than assume.
-        await this.reassertPresence();
+        // REPORT THE RE-ASSERTION ONLY IF IT WAS SENT. This branch used to discard the result and
+        // state flatly that presence "has been re-asserted" — the same defect already fixed on the
+        // teardown-failed branch below, left standing here. `reassertPresence()` returns false when
+        // the write did not happen, and a refusal that claims a correction it never made is worse
+        // than one that admits it could not make it.
+        const reasserted = await this.reassertPresence();
         return refusal(
           "transition-unconfirmed",
           `the departure could not be confirmed at the broker (${(e as Error).message}); staying connected rather than going dark silently. ` +
-            `The write MAY have been stored and only its ack lost, so peers may briefly have seen this agent offline; current presence has been re-asserted`,
+            `The write MAY have been stored and only its ack lost, so peers may briefly have seen this agent offline; ` +
+            (reasserted
+              ? "current presence HAS been re-asserted"
+              : "AND CURRENT PRESENCE COULD NOT BE RE-ASSERTED - peers may still show this agent offline while it is in fact connected. Re-assert presence or reconnect"),
         );
       }
       if (this.doRegister && revision === undefined) {
@@ -1471,10 +1479,22 @@ export class CotalEndpoint extends EventEmitter {
     const wasDisconnected = this.selfDisconnected;
     try {
       this.selfDisconnected = false;
-      await this.rebuild();
+      // CLEAR THE DEPARTED STATUS *BEFORE* THE REBUILD, not after.
+      // `rebuild()` reaches `connectAndBind`, which publishes presence as part of coming up. With
+      // the disconnect's `offline` / `disconnected: <cause>` still set, that publish announced the
+      // agent as DEPARTED on the very connection that had just brought it back, and the correction
+      // below was the only thing that removed it. A best-effort correction is a poor guard for a
+      // ghost: if it failed, a live agent stayed `offline` to every peer and the caller was still
+      // told `connected`. Setting the truth first means the rebuild publishes the RIGHT status and
+      // no window exists to correct.
       this.status = "idle";
       this.activity = undefined;
-      await this.reassertPresence();
+      await this.rebuild();
+      // Now belt-and-braces rather than load-bearing, and its result is no longer discarded: the
+      // heartbeat re-publishes on a timer, so a false here is a delay, not a permanent lie.
+      const presenceAsserted = await this.reassertPresence();
+      if (!presenceAsserted)
+        this.emit("error", new Error("connect(): the presence re-assert did not reach the broker; the heartbeat will republish"));
       // Report the read set the broker ACTUALLY granted, not the one that was asked for.
       const denied = [...this.chatSubDenied];
       return {

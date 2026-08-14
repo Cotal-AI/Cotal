@@ -231,6 +231,21 @@ try {
   armCheck("ARM 2", "D2f CONTROL: and the observer DOES see offline (so D2c could have failed)",
     await until(() => seen()?.status === "offline"), seen());
 
+  // ── D2g/D2h — COMING BACK MUST NOT LEAVE A GHOST ─────────────────────────────────────────────
+  // Raised by evidence review: connect() set `status = "idle"` only AFTER rebuild(), so the
+  // presence publish inside connectAndBind announced the agent with the disconnect's `offline`
+  // status on the very connection that had just restored it. A best-effort re-assert was the only
+  // thing that took it back, its result was discarded, and the caller was told `connected` either
+  // way — a live agent showing as departed to every peer, which is the exact ghost this lane exists
+  // not to manufacture. The status is now set BEFORE the rebuild, so no window exists to correct.
+  // D2f is the inverse control and it has already run: the observer DOES report offline while the
+  // agent is genuinely off, so "not offline" here cannot be an observer that never sees anything.
+  console.log("\n--- D2g/D2h: the agent comes BACK — no ghost may survive it ---");
+  const r2back = await a.connect();
+  armCheck("ARM 2", "D2g it comes back through the same path", r2back.outcome === "connected", r2back);
+  armCheck("ARM 2", "D2h and an INDEPENDENT observer no longer sees it offline — coming back left no ghost",
+    await until(() => seen()?.status !== undefined && seen()!.status !== "offline"), seen());
+
   // ══ ARM 1 — a refused connect() must leave nothing live ══════════════════════════════════════
   console.log("\n=== ARM 1: refused connect leaves nothing live ===");
   // ARM 1 BUILDS ITS OWN SUBJECT INSTEAD OF INHERITING ARM 2's.
