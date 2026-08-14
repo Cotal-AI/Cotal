@@ -36,11 +36,17 @@ export interface AgentConfig {
   /** Display-only metadata from unmodelled agent-file frontmatter keys (for example `theme`).
    *  Connector-owned keys such as `connector` and `model` are overlaid later and cannot be spoofed here. */
   meta?: Record<string, string>;
-  /** Control-plane capabilities this session declares (from the agent file's `capabilities:`); today
-   *  only `spawn`. Used to gate the manager-op tools (cotal_spawn / cotal_persona) so the advertised
-   *  surface matches what the agent can actually invoke. The cred layer is the real boundary (auth
-   *  mode); open mode mints no creds, so the gate is permissive there. Same file the manager minted
-   *  creds from, so the tool gate mirrors the wire grant exactly. */
+  /** Control-plane capabilities this session declares (from the agent file's `capabilities:`):
+   *  `spawn` gates the manager-op tools (cotal_spawn / cotal_persona), `connection` gates the
+   *  connection verbs (cotal_disconnect / cotal_connect), so the advertised surface matches what the
+   *  agent can actually invoke. The cred layer is the real boundary (auth mode); open mode mints no
+   *  creds, so the gate is permissive there. Same file the manager minted creds from, so the tool
+   *  gate mirrors the wire grant exactly.
+   *
+   *  The permissive open-mode arm is NOT symmetric between the two, and the asymmetry is load-bearing.
+   *  `spawn` survives it because the broker denies an ungranted spawn at the wire. A disconnect closes
+   *  this client's own socket, which no broker can police — so for `connection` this gate is the ONLY
+   *  gate, and it must never grow a permissive arm on the credentialed paths. */
   capabilities?: string[];
   servers: string;
   /** The *active* read set — channels this agent actually subscribes to (read). May include
