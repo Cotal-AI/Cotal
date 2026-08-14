@@ -200,11 +200,19 @@ re-target through the agent's own credential.** See DESIGN §7.2 for the saga th
 **No repo-wide suite has been run and no gate has been released to this lane.** Scoped only:
 - Probes: M1 verb drive, M2 open-mode gate-bypass, M3 broker fence (9), M4 observer ghost,
   M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (11/11)**.
-- Committed suites at `ffc18c46`: `packages/core/smoke/connection-lifecycle.smoke.ts` **20/20**,
-  `extensions/connector-core/smoke/connection-control.smoke.ts` **19/19**,
-  `packages/core/smoke/request-strand.smoke.ts` **9/9** (was 7/7 before ARM 3 was added).
-- Mutations: MX1/MX2/MX3 killed on named cells with broker-side non-equivalence; **MX3a survived, as
+- Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
+  `packages/core/smoke/connection-lifecycle.smoke.ts` **32/32 at `1821abff`** (re-run today),
+  `extensions/connector-core/smoke/connection-control.smoke.ts` **19/19 at `ffc18c46`**,
+  `packages/core/smoke/request-strand.smoke.ts` **9/9 at `ffc18c46`** (was 7/7 before ARM 3 was added).
+- Mutations: MX1/MX2/MX3/MX4 killed on named cells with broker-side non-equivalence; **MX3a survived, as
   predicted**.
+
+**Why the first two lines now carry different hashes.** This list previously stamped every suite with
+`ffc18c46` and reported the lifecycle suite as **20/20**, then **27/27**, while the suite had grown to
+**32** cells. Nothing was falsified — the counts were simply carried forward from the last time the
+line was *written* rather than the last time the suite was *run*, and a single shared hash hid which
+was which. **The lifecycle number is now one I re-derived by running it; the other two are not, and
+they say so.** A suite's result belongs to the commit it was executed against.
 
 **The earlier draft of this list said "no repo suite was run" and then cited a committed suite's
 result in the same bullet, which reads as a contradiction.** It was not one — a committed suite run

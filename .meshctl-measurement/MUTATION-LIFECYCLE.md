@@ -1,7 +1,14 @@
 # Mutation record — connection-lifecycle repair
 
 Base: the fix commit `325aaa50` + suite `3c1055e3`, worktree `/home/david/Cotal-wt-fm-meshctl`.
-Suite: `packages/core/smoke/connection-lifecycle.smoke.ts`, **20/20 green at base; 27/27 after ARM 3b**.
+Suite: `packages/core/smoke/connection-lifecycle.smoke.ts`, **20/20 green at base; 27/27 after ARM 3b;
+32/32 at tip `1821abff`** after the D3l/D3m arms — re-run and re-read today, not carried forward.
+
+**This line was stale until it was measured.** It read `27/27` while the suite had already grown to
+32 cells, because the count was carried from the last time it was written rather than from the last
+time it was run. The number is now the one the suite printed: `CONNECTION-LIFECYCLE OK ✅ (32 passed,
+0 failed)`. Recorded here because a ledger that drifts from its own suite is how a ledger becomes
+fiction — the fix is to correct the document to the measurement, never the reverse.
 
 **No VOID risk on this suite, and it was checked rather than assumed.** It imports
 `../src/index.js` relatively through `tsx`, so a mutation in `packages/core/src` IS the code that
@@ -114,5 +121,8 @@ five sites are proven and only three are. The honest statement: **the fences are
   this file declared it fenced "for the queued case only, with that exact race undriven". ARM 3b
   drives it (hold a source call open, disconnect, release) and MX4 proves the cell detects it.
 - **No repo-wide suite was run.** No gate has been released to this lane. Scoped suites only:
-  `connection-lifecycle` **27/27**, `connection-control` 19/19, `request-strand` 9/9,
-  `§7.2 gap` 11/11.
+  `connection-lifecycle` **32/32** (re-run at tip `1821abff`), `connection-control` 19/19,
+  `request-strand` 9/9, `§7.2 gap` 11/11.
+  One honest gap in how that 32/32 was read: the run's exit code was **not** captured — `PIPESTATUS`
+  is a bashism and the shell here is `/bin/sh`, so it came back empty. The claim rests on the
+  suite's own printed `0 failed` line, not on an exit status I never saw.
