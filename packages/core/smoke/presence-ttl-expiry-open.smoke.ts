@@ -10,11 +10,19 @@
  * metadata-write fault can yield UPDATE OK, a read-back showing the intended `max_age`, and a store
  * with no expiry timer. Every field the reconcile can read comes from the config that DID update.
  *
- * No check at that seam can close it. The thing that can is asking the mesh a different question:
- * not "what does the config say" but "did the record go away". That is what this suite does — write
- * a key, wait past the TTL, and require it to be GONE. On a healthy server that proves enforcement
- * is running rather than merely configured. It does NOT detect the fault case (a storage-fault
- * injection would), and this file does not claim to.
+ * The reconcile's own read-back cannot close it. This suite asks the mesh a different question — not
+ * "what does the config say" but "did the record go away" — writing a key, waiting past the TTL, and
+ * requiring it to be GONE. On a healthy server that proves enforcement is running rather than merely
+ * configured. It does NOT detect the fault case, and this file does not claim to.
+ *
+ * An earlier version of this comment said no check at that seam could close it. That was FALSE and a
+ * reviewer disproved it live: `$JS.API.STREAM.SNAPSHOT`'s initiation response false-greens like INFO,
+ * but the STREAMED archive's first `meta.inf` entry carries `fs.cfg` — the store's own rolled-back
+ * config — so a store-side detector exists and this repo already has `downloadStreamSnapshot` and a
+ * per-stream-scoped snapshot grant. It is not used here because its cost scales with bucket size and a
+ * snapshot carries the bucket's records; that is a design decision recorded in the tracking issue, not
+ * an impossibility. The distinction matters: "we priced this and declined it" survives someone finding
+ * the snapshot path later; "nothing can see it" does not.
  *
  * OPEN MODE deliberately: a bare connection holds KV value-write rights, so the record can be
  * written without an agent credential. The TTL'd buckets are not mode-gated — an open mesh carries
@@ -86,7 +94,7 @@ try {
   const after = await kv.get("liveness.probe");
   // THE CELL. If the store never started its expiry timer — the split-state failure the read-back
   // cannot see — the record is still here and this reddens, while `max_age` still reads 6s.
-  check("...and is GONE after the TTL elapses — expiry IN FORCE on a HEALTHY server (this cell does NOT detect the metadata-write-fault case; nothing at this seam can)", after === null, after?.string());
+  check("...and is GONE after the TTL elapses — expiry IN FORCE on a HEALTHY server (this cell does NOT detect the metadata-write-fault case; a snapshot meta.inf read does - see the tracking issue)", after === null, after?.string());
   check("...while max_age still reports 6s (so the cell above proves enforcement, not config drift)", (await maxAge()) === PRESENCE_MS * 1e6);
 
   await nc.close();

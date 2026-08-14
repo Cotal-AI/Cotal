@@ -336,11 +336,21 @@ export function fanoutDurableConfig(
  *      `writeStreamMeta()` fails — BEFORE `expireMsgs()`/age enforcement is ever started;
  *    - `STREAM.INFO` is answered from `mset.config()`, i.e. the in-memory copy.
  *  So a metadata-write fault (EACCES, ENOSPC) yields UPDATE OK, a read-back showing the intended
- *  `max_age`, and a backing store still running unlimited with no expiry timer. No check at this seam can
- *  see that, because every field we can read comes from the config that DID get updated. Closing it needs
- *  either a behavioural proof that records actually age out (see `presence-ttl-expiry-open.smoke.ts`,
- *  which proves enforcement on a healthy server) or an upstream fix that propagates the store error.
- *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement.
+ *  `max_age`, and a backing store still running unlimited with no expiry timer. **This check cannot see
+ *  that**, because both fields it reads come from the config that DID get updated.
+ *
+ *  It is NOT, however, invisible everywhere — an earlier version of this comment said no check at this
+ *  seam could see it, and that was false. `$JS.API.STREAM.SNAPSHOT` splits the useful way: the snapshot
+ *  INITIATION response copies `mset.config()` and false-greens like INFO, but the STREAMED archive's
+ *  first `meta.inf` entry marshals `fs.cfg` — the file store's own, rolled-back config. Reproduced live
+ *  against an EACCES split: INFO and the initiation response both reported the requested TTL while the
+ *  streamed `meta.inf` reported the old one. So a store-side detector EXISTS, and this codebase already
+ *  has `downloadStreamSnapshot` plus a per-stream-scoped snapshot grant model (`backup.ts`). It is not
+ *  used here: its cost scales with bucket size and a snapshot carries the bucket's records, so wiring it
+ *  into every `cotal up` is a design decision, not a free assertion — see the tracking issue.
+ *
+ *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement — and
+ *  "cannot be detected here" is the stronger claim it does NOT license.
  *
  *  CONSEQUENCE OF READING FIRST, which follows from the same split and is worth naming because the
  *  skip is deliberate: once `STREAM.INFO` reports the intended `max_age`, later reconciles see no
