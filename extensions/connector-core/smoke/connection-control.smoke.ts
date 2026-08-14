@@ -187,6 +187,18 @@ async function main() {
     names({ ...openUngranted, creds: "/nonexistent/agent.creds" }));
 
   console.log("\n=== C1 CONTROL: a granted, connected agent disconnects itself ===");
+  // A3d-univ, taken HERE because it can only be taken here. A3d later asserts that nothing is
+  // delivered while disconnected — an ABSENCE with no positive arm in its own read, and MX10 caught
+  // exactly that: emptying `peekInbox` left A3d green having observed nothing, because "no forbidden
+  // message arrived" and "no message can arrive at all" produce the same green. So the reachability
+  // of that same read, on that same tool and agent, is established while the connection is still up.
+  const dmTool0 = specs.find((s: any) => s.name === "cotal_dm")!;
+  const inboxTool0 = specs.find((s: any) => s.name === "cotal_inbox")!;
+  await dmTool0.run(B, cfgB as any, { to: "subject-a", text: "PROBE-WHILE-CONNECTED" });
+  await sleep(1000);
+  const whileOn = await inboxTool0.run(A, cfgA as any, { peek: true });
+  check("A3d-univ CONTROL: this inbox read DOES deliver a DM while connected (so A3d's later silence is the disconnect, not a dead read)",
+    whileOn.text.includes("PROBE-WHILE-CONNECTED"), whileOn.text.slice(0, 200));
   const before = seenBy(B, "subject-a");
   check("C1a CONTROL: observer-B sees subject-a PRESENT and not offline beforehand",
     !!before && before.status !== "offline", before);
@@ -220,6 +232,8 @@ async function main() {
   const whileOff = await inboxTool.run(A, cfgA as any, { peek: true });
   check("A3d nothing is delivered live while disconnected (the functional arm)",
     !whileOff.text.includes("PROBE-WHILE-DISCONNECTED"), whileOff.text.slice(0, 200));
+  // A3d's positive arm is A3d-univ, taken earlier — necessarily earlier, because it has to be taken
+  // while the connection is still up. See the note there.
 
   console.log("\n=== named refusals (each asserted as THAT refusal) ===");
   const d2 = await run("cotal_disconnect", A, cfgA, {});
