@@ -1,0 +1,13 @@
+diff --git a/implementations/cli/src/lib/manager-proc.ts b/implementations/cli/src/lib/manager-proc.ts
+index 8a6698bf..9531142a 100644
+--- a/implementations/cli/src/lib/manager-proc.ts
++++ b/implementations/cli/src/lib/manager-proc.ts
+@@ -53,7 +53,7 @@ export function managerLivenessSnapshot(probe: LivenessProbe = probeLiveness): {
+   // that record may front a live process nobody can identify. `absent` means no pidfile (or an
+   // empty husk); corrupt content is its own state and every action path must refuse on it.
+   if (pid === undefined) return { state: "unattributable", pid: undefined, raw };
+-  return { state: probe(pid), pid, raw };
++  const st = probe(pid); const raw2 = readFileSync(p, "utf8").trim(); return { state: st, pid: parsePid(raw2), raw: raw2 };
+ }
+ 
+ /** True only if the manager is PROVABLY running. `unknown` is not up, and callers that would ACT on

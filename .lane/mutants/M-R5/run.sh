@@ -20,6 +20,25 @@ export PATH="$HOME/.nvm/versions/node/v22.23.2/bin:$PATH"
 git rev-parse HEAD > "$ART/base-sha.txt"
 date -u > "$ART/started-at.txt"
 
+# The repair cells take their artifact directory from ART_DIR and REFUSE (`${ART_DIR:?}`) without
+# it. The first version of this runner did not set it, so both repair arms died at line 17 having
+# run nothing — and each exited 1, which read alone looks exactly like "the structural suite went
+# red on the mutant". That is the opposite of the truth and it flatters the mutant. So the rc is
+# never taken from the command here: it is taken from the artifact the suite stamps itself, and a
+# missing stamp is reported as NOT MEASURED rather than as any verdict.
+export ART_DIR="$ART/repair-artifacts"
+mkdir -p "$ART_DIR"
+
+# Read a repair run's real result, or say plainly that there is none.
+repair_verdict() {
+  local label=$1
+  if [ -f "$ART_DIR/finding5-repair.rc" ]; then
+    echo "$label: rc=$(cat "$ART_DIR/finding5-repair.rc") marker=$(head -1 "$ART_DIR/finding5-repair.marker" 2>/dev/null)"
+  else
+    echo "$label: NOT MEASURED — the suite never reached its own stamp"
+  fi
+}
+
 FIND='return { state: probe(pid), pid, raw };'
 REPL='const st = probe(pid); const raw2 = readFileSync(p, "utf8").trim(); return { state: st, pid: parsePid(raw2), raw: raw2 };'
 
@@ -41,8 +60,10 @@ echo $? > "$ART/build.rc"
 pnpm smoke:liveness-snapshot > "$ART/mutant-liveness.out" 2>&1
 echo $? > "$ART/mutant-liveness.rc"
 
+rm -f "$ART_DIR/finding5-repair.rc" "$ART_DIR/finding5-repair.marker"
 bash .lane/finding5-repair-cells.sh > "$ART/mutant-repair.out" 2>&1
-echo $? > "$ART/mutant-repair.rc"
+echo $? > "$ART/mutant-repair.shell-rc"
+repair_verdict "MUTANT REPAIR" > "$ART/mutant-repair.verdict"
 
 # ---- restore, and PROVE the restore ------------------------------------------------------------
 git checkout -- "$TARGET"
@@ -53,8 +74,10 @@ echo $? > "$ART/restore-build.rc"
 pnpm smoke:liveness-snapshot > "$ART/restore-liveness.out" 2>&1
 echo $? > "$ART/restore-liveness.rc"
 
+rm -f "$ART_DIR/finding5-repair.rc" "$ART_DIR/finding5-repair.marker"
 bash .lane/finding5-repair-cells.sh > "$ART/restore-repair.out" 2>&1
-echo $? > "$ART/restore-repair.rc"
+echo $? > "$ART/restore-repair.shell-rc"
+repair_verdict "RESTORE REPAIR" > "$ART/restore-repair.verdict"
 
 date -u > "$ART/finished-at.txt"
 echo "M-R5 done. rc files under $ART"
