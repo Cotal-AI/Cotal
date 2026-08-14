@@ -49,6 +49,11 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventWal, WalCorruptError, EVENT_WAL_VERSION, openExclusiveNoFollow } from "../src/event-wal.js";
+import type { Part } from "@cotal-ai/core";
+
+/** A neutral bracket snapshot for fixtures whose subject is NOT the bracket machine. Named so a
+ *  reader can see at a glance which cells are about brackets and which merely need the field. */
+const BR = { run: undefined, text: [], reasoning: [], tools: [] };
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -70,12 +75,16 @@ const root = mkdtempSync(join(tmpdir(), "event-wal-"));
 const T = { space: "sp1", threadId: "th1", principal: "pr1", subjectMayExist: false };
 const EXISTS = { ...T, subjectMayExist: true };
 /** A minimal publishable body — the bar `multicastExpecting` sets: a non-empty array of parts. */
-const BODY = [{ kind: "text", text: "frame" }] as const;
+// NOT `as const`. It is passed to `beginSend`, whose parameter is a mutable `Part[]`, so a readonly
+// tuple does not typecheck — which `tsx` never told us, because it strips types without checking
+// them. Found the moment this file was typechecked on its own, which is a thing `pnpm typecheck`
+// does not do for any smoke in this repo (every package tsconfig is `include: ["src"]`).
+const BODY: Part[] = [{ kind: "text", text: "frame" }];
 let n = 0;
 const p = () => join(root, `w${++n}.json`);
 const doc = (over: Record<string, unknown> = {}) => JSON.stringify({
   v: EVENT_WAL_VERSION, space: "sp1", epoch: "ep1", threadId: "th1", principal: "pr1",
-  frontier: { seq: 0, lastSubjectSeq: 0 }, pending: null, ...over,
+  frontier: { seq: 0, lastSubjectSeq: 0 }, pending: null, brackets: null, ...over,
 });
 
 try {
@@ -85,7 +94,7 @@ try {
   c("virgin thread starts at seq 0 / E 0 with a fresh epoch",
     wal.frontier.seq === 0 && wal.frontier.lastSubjectSeq === 0 && wal.epoch.length > 0 && wal.pending === null);
 
-  await wal.beginSend({ id: "id-1", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
+  await wal.beginSend({ id: "id-1", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
   c("T1 records sent_unacked with id and E frozen",
     wal.pending?.state === "sent_unacked" && wal.pending.id === "id-1" && wal.pending.E === 0);
   c("T1 does NOT move the frontier (publish happens after this, never before)",
@@ -138,7 +147,7 @@ try {
   const braces = p();
   writeFileSync(braces, "{}");
   await refuses("[B1] `{}` is a DIFFERENT input from zero bytes and fails on version, not emptiness",
-    `v === ${EVENT_WAL_VERSION}`, () => EventWal.open(braces, T));
+    "v is a positive integer", () => EventWal.open(braces, T));
 
   // ── [B1] truncated MID-WRITE, not between writes. An atomic temp+rename should never produce
   //    this; a filesystem that lost the tail does. The guarantee is belt (atomicity) AND braces
@@ -157,7 +166,11 @@ try {
   await refuses("a WAL for a different principal is refused", "principal matches", () => EventWal.open(otherPrincipal, T));
 
   const badV = p(); writeFileSync(badV, doc({ v: 99 }));
-  await refuses("an unknown version is refused, never coerced", `v === ${EVENT_WAL_VERSION}`, () => EventWal.open(badV, T));
+  // NEWER than this build is its own invariant and its own message. "Unknown version" sends an
+  // operator looking for corruption; the real situation is a code rollback that left newer state
+  // behind, and the refusal has to say so or the search starts in the wrong place.
+  await refuses("a NEWER version is refused, and refused AS newer rather than as unknown",
+    `v <= ${EVENT_WAL_VERSION}`, () => EventWal.open(badV, T));
 
   // ── the three ACKED-VINTAGE relations, each its own cell ──
   //    A frontier NEWER than its acked pending is a file of mixed vintage: the frontier's cursor
@@ -166,7 +179,7 @@ try {
   //    folded", which is why it joins the corrupt class instead of being repaired.
   const ackedDoc = (pend: Record<string, unknown>, front: Record<string, unknown>) =>
     doc({ frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1", ...front },
-          pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", body: BODY, ackSeq: 6, ...pend } });
+          pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", body: BODY, ackSeq: 6, brackets: BR, ...pend } });
 
   const okAcked = p(); writeFileSync(okAcked, ackedDoc({}, {}));
   const loaded = await EventWal.open(okAcked, EXISTS);
@@ -190,7 +203,7 @@ try {
   //    path that had already succeeded and almost none for the one still in flight.
   const sentDoc = (over: Record<string, unknown>) => doc({
     frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" },
-    pending: { state: "sent_unacked", id: "ok", E: 5, seq: 2, sourceCursor: "c2", body: BODY, ...over },
+    pending: { state: "sent_unacked", id: "ok", E: 5, seq: 2, sourceCursor: "c2", body: BODY, brackets: BR, ...over },
   });
   const sentOk = p(); writeFileSync(sentOk, sentDoc({}));
   const sentLoaded = await EventWal.open(sentOk, EXISTS);
@@ -224,7 +237,7 @@ try {
     const real = async (stage: "pending" | "folded"): Promise<string> => {
       const path = p();
       const w = await EventWal.open(path, T);
-      await w.beginSend({ id: "frame-one", E: 0, seq: 1, sourceCursor: "cur-1", body: BODY });
+      await w.beginSend({ id: "frame-one", E: 0, seq: 1, sourceCursor: "cur-1", body: BODY, brackets: BR });
       if (stage === "folded") { await w.recordAck(7); await w.fold(); }
       return path;
     };
@@ -252,7 +265,7 @@ try {
     {
       let threw = false;
       const api = await EventWal.open(p(), T);
-      try { await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c", body: [] }); } catch { threw = true; }
+      try { await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c", body: [], brackets: BR }); } catch { threw = true; }
       c("[F1] beginSend refuses an empty body BEFORE freezing it, not on the retry after a crash", threw);
     }
 
@@ -310,16 +323,16 @@ try {
     const api = await EventWal.open(p(), T);
     for (const bad of [" ", "bad\nid", "a".repeat(65), "has.dots", ""]) {
       let threw = false;
-      try { await api.beginSend({ id: bad, E: 0, seq: 1, sourceCursor: "c", body: BODY }); } catch { threw = true; }
+      try { await api.beginSend({ id: bad, E: 0, seq: 1, sourceCursor: "c", body: BODY, brackets: BR }); } catch { threw = true; }
       c(`beginSend refuses an id the WIRE would reject: ${JSON.stringify(bad).slice(0, 12)}`, threw);
     }
     let succession = false;
-    try { await api.beginSend({ id: "ok-id", E: 3, seq: 1, sourceCursor: "c", body: BODY }); } catch { succession = true; }
+    try { await api.beginSend({ id: "ok-id", E: 3, seq: 1, sourceCursor: "c", body: BODY, brackets: BR }); } catch { succession = true; }
     c("beginSend refuses an E that is not the frontier's tip", succession);
 
     // recordAck(-1) previously ACCEPTED, fold() then persisted lastSubjectSeq = -1, and the NEXT
     // open refused the file — one bad ack durably bricked the WAL while every call reported success.
-    await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
+    await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
     let ackThrew = false;
     try { await api.recordAck(-1); } catch { ackThrew = true; }
     c("recordAck refuses a negative ackSeq BEFORE the durable write", ackThrew);
@@ -373,7 +386,7 @@ try {
 
   const noAckSeq = p(); writeFileSync(noAckSeq, doc({
     frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" },
-    pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", body: BODY },
+    pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", body: BODY, brackets: BR },
   }));
   await refuses("an acked pending with no ackSeq is refused", "acked.ackSeq present", () => EventWal.open(noAckSeq, EXISTS));
 
@@ -387,7 +400,7 @@ try {
   //    and the only window where it is readable is the one this file holds it in. Asserted on the
   //    file AFTER a rename, because the mode that matters is the surviving inode's, not the temp's.
   const secret = await EventWal.open(p(), T);
-  await secret.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
+  await secret.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
   const mode = statSync(secret.path).mode & 0o777;
   c("the WAL is 0600 — group and other cannot read a frozen id before it is published", mode === 0o600, mode.toString(8));
   await secret.recordAck(1);
@@ -415,7 +428,7 @@ try {
       const oldStyle = join(wd, `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`);
       writeFileSync(oldStyle, "", { mode: 0o644 });
       const contested = await EventWal.open(target, T);
-      await contested.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
+      await contested.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
       c("a planted 0644 temp does NOT become the WAL's mode — it is 0600 on the surviving inode",
         (statSync(target).mode & 0o777) === 0o600, (statSync(target).mode & 0o777).toString(8));
 
@@ -425,7 +438,7 @@ try {
       const t2 = join(wd, "w2.json");
       symlinkSync(victim, join(wd, `.${createHash("sha256").update(t2).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`));
       const other = await EventWal.open(t2, T);
-      await other.beginSend({ id: "x", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
+      await other.beginSend({ id: "x", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
       c("a planted symlink at the old temp name does not get clobbered through",
         readFileSync(victim, "utf8") === "DO_NOT_CLOBBER", readFileSync(victim, "utf8"));
 
@@ -466,8 +479,8 @@ try {
       const rp = join(rd, "r.json");
       const w = await EventWal.open(rp, T);
       const settled = await Promise.allSettled([
-        w.beginSend({ id: "A", E: 0, seq: 1, sourceCursor: "c1", body: BODY }),
-        w.beginSend({ id: "B", E: 0, seq: 2, sourceCursor: "c2", body: BODY }),
+        w.beginSend({ id: "A", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR }),
+        w.beginSend({ id: "B", E: 0, seq: 2, sourceCursor: "c2", body: BODY, brackets: BR }),
       ]);
       const won = settled.filter((r) => r.status === "fulfilled").length;
       c("exactly ONE concurrent beginSend wins; the other is refused cleanly", won === 1, settled.map((r) => r.status));
@@ -481,9 +494,9 @@ try {
 
   // ── one emit unit is ONE pending frame (`[P8]`) ──
   const single = await EventWal.open(p(), T);
-  await single.beginSend({ id: "a", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
+  await single.beginSend({ id: "a", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
   let refusedSecond = false;
-  try { await single.beginSend({ id: "b", E: 0, seq: 2, sourceCursor: "c2", body: BODY }); } catch { refusedSecond = true; }
+  try { await single.beginSend({ id: "b", E: 0, seq: 2, sourceCursor: "c2", body: BODY, brackets: BR }); } catch { refusedSecond = true; }
   c("[P8] a second pending frame is refused — one emit unit is one pending frame", refusedSecond);
 
   let refusedAdvance = false;
@@ -502,7 +515,7 @@ try {
 {
   const base = p();
   const w = await EventWal.open(base, T);
-  await w.beginSend({ id: "id-c1", E: 0, seq: 1, sourceCursor: "cur-1", body: BODY });
+  await w.beginSend({ id: "id-c1", E: 0, seq: 1, sourceCursor: "cur-1", body: BODY, brackets: BR });
   const canonical = readFileSync(base, "utf8");
 
   // POSITIVE CONTROL: the unmodified document loads. Without it, both refusals below could be the
@@ -544,6 +557,95 @@ try {
   writeFileSync(okFile, JSON.stringify(okDoc));
   await EventWal.open(okFile, EXISTS);
   c("[control] a WIRE-VALID pending.id still loads (the rule refuses bad ids, not all ids)", true);
+}
+
+
+// ── THE v2 MIGRATION — forward-only, and the direction is the whole safety argument ───────────────
+//
+// v2 added `brackets`. A v1 document is migrated FORWARD; a newer one is refused with a message that
+// says the state is newer than the code rather than "unknown version", because the two send an
+// operator to completely different places. There is deliberately no downgrade: it would have to
+// discard the bracket state, which is exactly what the migration exists to stop losing.
+//
+// AND THE CONSEQUENCE, PINNED HERE BECAUSE IT IS EASY TO FORGET: once a process writes v2, reverting
+// the code no longer reverts the state. That is the right trade — fail-loud beats reading a schema
+// you do not understand — but it is a fact, not an implementation detail.
+{
+  const v1 = (over: Record<string, unknown> = {}) => JSON.stringify({
+    v: 1, space: "sp1", epoch: "ep1", threadId: "th1", principal: "pr1",
+    frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" }, pending: null, ...over,
+  });
+
+  const atRest = p(); writeFileSync(atRest, v1());
+  const migrated = await EventWal.open(atRest, EXISTS);
+  // UNKNOWN, not empty. The document genuinely cannot say what was open when it was written, and
+  // answering "nothing" on its behalf invents an observation it never made — the same class as
+  // treating a zero-byte file as a virgin thread.
+  c("v2:a-v1-WAL-at-rest-migrates-forward-with-brackets-UNKNOWN",
+    migrated.brackets === null && migrated.frontier.seq === 1 && migrated.frontier.lastSubjectSeq === 5,
+    { brackets: migrated.brackets, frontier: migrated.frontier });
+
+  // The migration is IN MEMORY until something writes. This asserts it reaches disk, and that what
+  // reaches disk is a real recorded state rather than the `null` it was loaded with.
+  await migrated.beginSend({ id: "after-migration", E: 5, seq: 2, sourceCursor: "c2", body: BODY, brackets: BR });
+  await migrated.recordAck(6);
+  await migrated.fold();
+  const onDisk = JSON.parse(readFileSync(atRest, "utf8")) as { v: number; brackets: unknown };
+  c("v2:the-migration-reaches-DISK-on-the-next-durable-write",
+    onDisk.v === 2 && onDisk.brackets !== null && typeof onDisk.brackets === "object", onDisk.v);
+  c("v2:fold-PROMOTES-the-frame's-frozen-bracket-state-to-the-document",
+    JSON.stringify(onDisk.brackets) === JSON.stringify(BR), onDisk.brackets);
+
+  // A v1 WAL with a frame IN FLIGHT is the one migration case that must refuse. The bracket state
+  // belonging to that frame is not in the file and cannot be reconstructed, and inventing one would
+  // restore the machine into a state that never existed — on the exact path (`sent_unacked`
+  // recovery) where a wrong answer republishes.
+  const inFlight = p(); writeFileSync(inFlight, v1({
+    pending: { state: "sent_unacked", id: "mid", E: 5, seq: 2, sourceCursor: "c2", body: BODY },
+  }));
+  await refuses("v2:a-v1-WAL-with-a-frame-IN-FLIGHT-is-refused-rather-than-guessed",
+    "a v1 WAL has no frame in flight", () => EventWal.open(inFlight, EXISTS));
+
+  // NEWER than this build. Asserted on the invariant AND on the message, because "it refused" is not
+  // the property — "it refused for the reason an operator needs" is.
+  const newer = p(); writeFileSync(newer, doc({ v: EVENT_WAL_VERSION + 1 }));
+  let newerMsg = "";
+  try { await EventWal.open(newer, T); } catch (e) { newerMsg = (e as Error).message; }
+  c("v2:a-NEWER-document-says-the-STATE-IS-NEWER-THAN-THE-CODE",
+    /THE STATE IS NEWER\s+THAN THE CODE/.test(newerMsg) && /forward-only/.test(newerMsg) && /no downgrade/.test(newerMsg),
+    newerMsg || "no throw");
+  // CONTROL: the inverse of "newer" is not "older" — it is "not a version at all", and that must
+  // still be refused as corruption rather than migrated. Without this the check above passes for an
+  // implementation that treats every unparseable `v` as newer.
+  const garbageV = p(); writeFileSync(garbageV, doc({ v: "two" }));
+  await refuses("v2:CONTROL-a-non-numeric-version-is-still-refused-as-corruption",
+    "v is a positive integer", () => EventWal.open(garbageV, T));
+
+  // The persisted state is validated, not trusted. It is loaded straight into the machine that
+  // decides whether an event is refused, so a hand-edited or foreign document must not be able to
+  // seed it with a state the machine itself could never enter.
+  const impossible = p(); writeFileSync(impossible, doc({ brackets: { run: undefined, text: ["m1"], reasoning: [], tools: [] } }));
+  await refuses("v2:brackets-with-open-messages-and-NO-open-run-is-refused",
+    "brackets has no open run while messages or tool calls are open", () => EventWal.open(impossible, EXISTS));
+  const notStrings = p(); writeFileSync(notStrings, doc({ brackets: { run: "r1", text: [7], reasoning: [], tools: [] } }));
+  await refuses("v2:brackets-arrays-are-checked-ELEMENT-BY-ELEMENT-not-just-Array.isArray",
+    "brackets.text is an array of strings", () => EventWal.open(notStrings, EXISTS));
+  // CONTROL: a legal open-run state loads, so the two refusals above are not vacuous.
+  const legal = p(); writeFileSync(legal, doc({ brackets: { run: "r1", text: ["m1"], reasoning: [], tools: ["t1"] } }));
+  const legalWal = await EventWal.open(legal, EXISTS);
+  c("v2:CONTROL-a-legal-open-run-state-loads-through-the-same-check",
+    legalWal.brackets?.run === "r1" && legalWal.brackets.text[0] === "m1", legalWal.brackets);
+
+  // Abandonment is TOTAL, and the machine is part of the total: carrying the old chain's open runs
+  // into a new epoch would be a partial abandonment, and partial abandonment is not a state.
+  const ab = p(); writeFileSync(ab, doc({ brackets: { run: "r1", text: ["m1"], reasoning: [], tools: [] } }));
+  const abWal = await EventWal.open(ab, EXISTS);
+  const oldEpoch = abWal.epoch;
+  await abWal.abandon();
+  c("v2:abandon-resets-brackets-to-KNOWN-empty-along-with-everything-else",
+    abWal.epoch !== oldEpoch && abWal.brackets?.run === undefined && abWal.brackets?.text.length === 0 &&
+      abWal.frontier.seq === 0 && abWal.frontier.lastSubjectSeq === 0 && abWal.frontier.sourceCursor === undefined,
+    { epochChanged: abWal.epoch !== oldEpoch, brackets: abWal.brackets, frontier: abWal.frontier });
 }
 
 } finally {

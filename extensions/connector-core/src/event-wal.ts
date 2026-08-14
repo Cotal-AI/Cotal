@@ -25,9 +25,23 @@ import { constants } from "node:fs";
 import { open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { assertIdToken, type Part } from "@cotal-ai/core";
+import type { BracketState } from "./agui.js";
 
-/** Bump ONLY with a migration. An unknown version fails loud; it is never coerced. */
-export const EVENT_WAL_VERSION = 1;
+/**
+ * Bump ONLY with a migration. An OLDER document is migrated forward; a NEWER one fails loud.
+ *
+ * **v2 added `brackets`** — the AG-UI bracket machine's state, persisted so a mid-run restart can
+ * continue instead of refusing the first event it re-reads.
+ *
+ * **THE MIGRATION IS FORWARD-ONLY, AND THAT MAKES THE STATE OUTLIVE A CODE ROLLBACK.** Once a
+ * process writes v2, reverting the code does NOT revert the state: the older build refuses the
+ * document it now finds. That is the right trade — fail-loud beats silently reading a schema you do
+ * not understand — but it converts "revert the commit" into "revert the commit and hand-migrate the
+ * state", and the person doing the reverting will otherwise discover that at the worst moment. So
+ * the refusal below distinguishes NEWER-than-this-code from unknown, and says which migration.
+ * There is deliberately no downgrade path: a lossy downgrade is worse than a halt.
+ */
+export const EVENT_WAL_VERSION = 2;
 
 export interface WalFrontier {
   /** The `seq` of the last frame FOLDED into the frontier. 0 before the first frame lands. */
@@ -61,6 +75,15 @@ export interface WalPending {
   body: Part[];
   /** Present iff `state === "acked"`: the sequence the server assigned. */
   ackSeq?: number;
+  /**
+   * The bracket machine's state AFTER this frame's events (v2).
+   *
+   * Frozen with the frame rather than derived on fold, for the same reason the body is: the state
+   * that belongs to a frame is decided when the frame is decided. Transition 3 promotes it to the
+   * document's own `brackets`, so what is persisted always describes exactly the events that have
+   * been published AND folded — never a batch that was validated and not yet sent.
+   */
+  brackets: BracketState;
 }
 
 export interface WalDoc {
@@ -78,6 +101,17 @@ export interface WalDoc {
   principal: string;
   frontier: WalFrontier;
   pending: WalPending | null;
+  /**
+   * The bracket machine at the FOLDED position, or `null` for **unknown** (v2).
+   *
+   * `null` and an explicitly empty state are different facts and the difference is load-bearing.
+   * An empty state is this writer saying "nothing is open"; `null` is a document that cannot say —
+   * a WAL migrated from v1, which recorded no bracket state at all. A restart on `null` therefore
+   * still takes the lost-state path and still says so, while a restart on a recorded state simply
+   * continues. Collapsing the two would make a migrated document silently claim a clean boundary it
+   * never observed, which is the same class as treating a zero-byte file as a virgin thread.
+   */
+  brackets: BracketState | null;
 }
 
 /** Every refusal in this file is one of these, so a caller can never mistake it for an I/O blip. */
@@ -196,6 +230,41 @@ function assertPendingVintage(path: string, p: WalPending, f: WalFrontier): void
   // a thing this layer can do correctly, and doing it with string `<` was wrong in both directions.
 }
 
+/**
+ * Validate a persisted bracket state, or refuse it.
+ *
+ * `nullable` distinguishes the document-level field (which may legitimately be `null` for unknown)
+ * from a pending frame's (which never may — a frame that was decided has a state that was decided
+ * with it). Passing the same shape check over both is what keeps the two from drifting.
+ *
+ * The arrays are checked ELEMENT BY ELEMENT rather than by `Array.isArray` alone. A JSON array is a
+ * shape a foreign or hand-edited producer can satisfy while carrying numbers or objects, and this
+ * value is loaded straight into a `Set` that decides whether an event is refused.
+ */
+function parseBrackets(path: string, field: string, v: unknown, nullable: boolean): BracketState | null {
+  if (v === null && nullable) return null;
+  if (typeof v !== "object" || v === null)
+    throw new WalCorruptError(path, `${field} is an object${nullable ? " or null" : ""}`, JSON.stringify(v));
+  const b = v as Partial<BracketState>;
+  if (b.run !== undefined && typeof b.run !== "string")
+    throw new WalCorruptError(path, `${field}.run is a string or absent`, JSON.stringify(b.run));
+  const lists: Record<string, unknown> = { text: b.text, reasoning: b.reasoning, tools: b.tools };
+  for (const [k, list] of Object.entries(lists)) {
+    if (!Array.isArray(list) || list.some((x) => typeof x !== "string"))
+      throw new WalCorruptError(path, `${field}.${k} is an array of strings`, JSON.stringify(list));
+  }
+  // A closed run with open messages is not a state any transition can produce: `RUN_FINISHED` is
+  // refused while anything it opened is still open. Refusing it here keeps a hand-edited document
+  // from restoring a machine into a state the machine itself would never enter.
+  if (b.run === undefined && (b.text as string[]).concat(b.reasoning as string[], b.tools as string[]).length > 0)
+    throw new WalCorruptError(
+      path,
+      `${field} has no open run while messages or tool calls are open`,
+      JSON.stringify(b),
+    );
+  return { run: b.run, text: b.text as string[], reasoning: b.reasoning as string[], tools: b.tools as string[] };
+}
+
 function parseDoc(path: string, raw: string, space: string, threadId: string, principal: string): WalDoc {
   let d: unknown;
   try {
@@ -207,8 +276,24 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
   const doc = d as Partial<WalDoc>;
 
   // Version FIRST: on an unknown version every field below is a guess about a foreign schema.
-  if (doc.v !== EVENT_WAL_VERSION)
-    throw new WalCorruptError(path, `v === ${EVENT_WAL_VERSION}`, `found v=${String(doc.v)}; a WAL is migrated, never coerced`);
+  //
+  // NEWER and OLDER are different situations and are answered differently. Older is MIGRATED below.
+  // Newer is refused with a message that says the STATE IS NEWER THAN THE CODE and names what
+  // introduced it — because "unknown version" sends an operator looking for corruption, and the
+  // actual situation is a rollback that left state behind. There is no downgrade: a lossy one would
+  // be worse than this halt.
+  if (typeof doc.v !== "number" || !Number.isSafeInteger(doc.v) || doc.v < 1)
+    throw new WalCorruptError(path, "v is a positive integer", `found v=${String(doc.v)}`);
+  if (doc.v > EVENT_WAL_VERSION)
+    throw new WalCorruptError(
+      path,
+      `v <= ${EVENT_WAL_VERSION}`,
+      `this WAL is v${doc.v} and this build understands v${EVENT_WAL_VERSION} — THE STATE IS NEWER ` +
+        `THAN THE CODE, which is what a code rollback across the v2 migration (persisted bracket ` +
+        `state) leaves behind. The migration is forward-only by design: there is no downgrade, ` +
+        `because a lossy one would silently discard state this file exists to preserve. Run the ` +
+        `newer build, or move this WAL aside and accept that the thread restarts from a new epoch.`,
+    );
 
   // The tuple: a WAL that belongs to a different space, thread or principal is not ours to resume
   // from. All THREE are checked, because all three are hashed path components and the design stores
@@ -300,11 +385,39 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
     // make this file a second, drifting source of truth about what a part is.
     if (!Array.isArray(p.body) || p.body.length === 0)
       throw new WalCorruptError(path, "pending.body is a non-empty array of parts", JSON.stringify(p.body));
+    // A v1 document with a frame IN FLIGHT cannot be migrated, and this is the one migration case
+    // that must refuse rather than default. The frame's bracket state is not recoverable from
+    // anything in the file, and inventing one would restore a machine into a state that never
+    // existed — on the exact path (`sent_unacked` recovery) where a wrong answer republishes.
+    // A v1 WAL at REST migrates cleanly; only one mid-flight does not.
+    if (doc.v === 1)
+      throw new WalCorruptError(
+        path,
+        "a v1 WAL has no frame in flight",
+        `this v1 document holds a ${String((p as { state?: unknown }).state)} frame, and v2 requires the ` +
+          `bracket state that belongs to it — which v1 never recorded and nothing here can reconstruct. ` +
+          `Let the older build settle this frame first, then start the newer one.`,
+      );
+    (p as { brackets?: unknown }).brackets = parseBrackets(path, "pending.brackets", (p as { brackets?: unknown }).brackets, false);
     pending = p as WalPending;
     assertPendingVintage(path, pending, f as WalFrontier);
   }
 
-  return { v: doc.v, space, epoch: doc.epoch, threadId, principal, frontier: f as WalFrontier, pending };
+  // v1 KNEW NOTHING ABOUT BRACKETS, so migrating one forward yields `null` — unknown — and NOT an
+  // empty state. The document genuinely cannot say what was open when it was written, and saying
+  // "nothing was open" on its behalf is inventing an observation it never made.
+  const brackets = doc.v === 1 ? null : parseBrackets(path, "brackets", (doc as { brackets?: unknown }).brackets, true);
+
+  return {
+    v: EVENT_WAL_VERSION, // MIGRATED IN MEMORY; it reaches disk on the next durable write.
+    space,
+    epoch: doc.epoch,
+    threadId,
+    principal,
+    frontier: f as WalFrontier,
+    pending,
+    brackets,
+  };
 }
 
 export class EventWal {
@@ -343,6 +456,9 @@ export class EventWal {
    *  the FILE, not the caller: an emitter handed the wrong WAL object entirely would sail past it. */
   get principal(): string { return this.doc.principal; }
   get threadId(): string { return this.doc.threadId; }
+  /** The bracket machine at the folded position, or `null` when the document cannot say (migrated
+   *  from v1). The two are different facts; see {@link WalDoc.brackets}. */
+  get brackets(): BracketState | null { return this.doc.brackets; }
   get frontier(): WalFrontier { return { ...this.doc.frontier }; }
   get pending(): WalPending | null { return this.doc.pending ? { ...this.doc.pending } : null; }
 
@@ -406,11 +522,22 @@ export class EventWal {
       principal,
       frontier: { seq: 0, lastSubjectSeq: 0, sourceCursor: undefined },
       pending: null,
+      // KNOWN empty, not unknown: a virgin thread has published nothing, so "nothing is open" is an
+      // observation this writer can actually make.
+      brackets: { run: undefined, text: [], reasoning: [], tools: [] },
     };
   }
 
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
-  async beginSend(frame: { id: string; E: number; seq: number; sourceCursor: string; body: Part[] }): Promise<void> {
+  async beginSend(frame: {
+    id: string;
+    E: number;
+    seq: number;
+    sourceCursor: string;
+    body: Part[];
+    /** The bracket machine AFTER this frame's events — frozen with the frame, promoted on fold. */
+    brackets: BracketState;
+  }): Promise<void> {
     return this.serialize(async () => {
     if (this.doc.pending) throw new Error(`event WAL ${this.path}: a frame is already pending; one emit unit is one pending frame`);
     // THE SAME GRAMMAR THE WIRE USES, not a restatement of it. `beginSend` previously accepted ids
@@ -461,6 +588,9 @@ export class EventWal {
       ...this.doc,
       frontier: { seq: p.seq, lastSubjectSeq: p.ackSeq, sourceCursor: p.sourceCursor },
       pending: null,
+      // The frame's frozen state becomes the document's, so `brackets` always describes exactly the
+      // events that are PUBLISHED AND FOLDED — never a batch that was validated and not yet sent.
+      brackets: p.brackets,
     });
     });
   }
@@ -493,6 +623,10 @@ export class EventWal {
       epoch: randomUUID(),
       frontier: { seq: 0, lastSubjectSeq: 0, sourceCursor: undefined },
       pending: null,
+      // Abandonment is TOTAL, and the bracket machine is part of the total. A new epoch tells a
+      // consumer the chain broke, so carrying the old chain's open runs into it would be a partial
+      // abandonment — and partial abandonment is not a state.
+      brackets: { run: undefined, text: [], reasoning: [], tools: [] },
     });
     });
   }

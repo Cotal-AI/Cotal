@@ -212,6 +212,21 @@ export class AguiVocabularyError extends Error {
 }
 
 /**
+ * The bracket machine's persisted form (WAL v2).
+ *
+ * It is a plain, JSON-round-trippable record on purpose: it is written into the write-ahead log, so
+ * it must survive `JSON.stringify`/`parse` unchanged and must be readable by a human staring at a
+ * WAL trying to work out why an emitter refused something.
+ */
+export interface BracketState {
+  /** The run currently open, or `undefined` when the stream is at a legal stopping point. */
+  run: string | undefined;
+  text: string[];
+  reasoning: string[];
+  tools: string[];
+}
+
+/**
  * Bracketing, checked INCREMENTALLY over the event sequence — deliberately not over one frame.
  *
  * **A frame is not guaranteed to be self-bracketed, and a validator demanding that it be would
@@ -237,6 +252,40 @@ export class AguiBrackets {
   private readonly text = new Set<string>();
   private readonly reasoning = new Set<string>();
   private readonly tools = new Set<string>();
+
+  /**
+   * The machine's whole state, as plain JSON — what the WAL persists so a restart does not lose it.
+   *
+   * Sorted, because this value is written to disk and compared BY A HUMAN reading two documents.
+   * A `Set`'s iteration order is insertion order, so two machines that are semantically identical
+   * would serialize differently depending on the order events happened to arrive, and a diff of two
+   * WALs would show a change where there is none.
+   */
+  snapshot(): BracketState {
+    return {
+      run: this.run,
+      text: [...this.text].sort(),
+      reasoning: [...this.reasoning].sort(),
+      tools: [...this.tools].sort(),
+    };
+  }
+
+  /** Rebuild a machine from a snapshot. The inverse of {@link snapshot}, and the reason a mid-run
+   *  restart can continue instead of refusing its first event. */
+  static restore(s: BracketState): AguiBrackets {
+    const b = new AguiBrackets();
+    b.run = s.run;
+    for (const id of s.text) b.text.add(id);
+    for (const id of s.reasoning) b.reasoning.add(id);
+    for (const id of s.tools) b.tools.add(id);
+    return b;
+  }
+
+  /** An independent machine at the same state — used to VALIDATE a batch without advancing the
+   *  machine that is in step with the disk. */
+  clone(): AguiBrackets {
+    return AguiBrackets.restore(this.snapshot());
+  }
 
   /** True while a run is open — i.e. the stream is mid-turn and not at a legal stopping point. */
   get open(): boolean {
@@ -1073,7 +1122,14 @@ export function packUnits(opts: {
  * as a plan defect; not decided here.
  */
 export class AguiEmitter<T> {
-  private readonly brackets = new AguiBrackets();
+  /**
+   * The bracket machine AT THE FOLDED POSITION — deliberately not "wherever validation got to".
+   *
+   * It advances one frame at a time, immediately before that frame's `beginSend`, so the state
+   * frozen with a pending frame is the state that belongs to it. A machine advanced by the whole
+   * batch up front would freeze a state describing events that had not been sent.
+   */
+  private brackets: AguiBrackets;
   private halted: AguiEmitterHalted | undefined;
   /** True once THIS process has fed an event through the bracket machine. It is the half of the
    *  restart diagnosis that keeps a genuine mid-stream violation from being blamed on a restart. */
@@ -1087,7 +1143,14 @@ export class AguiEmitter<T> {
     /** Derived from the endpoint's OWN principal, never from a config name or the launch env. */
     readonly channel: string,
     readonly threadId: string,
-  ) {}
+  ) {
+    // RESTORED FROM THE WAL, which is the whole point of the v2 migration: a process that died
+    // mid-run comes back knowing which runs and messages are open, instead of refusing the first
+    // event it re-reads. `null` means the document cannot say (migrated from v1) — an empty machine
+    // is the honest starting point there, and `diagnoseBracket` is what keeps the resulting refusal
+    // from being blamed on the writer.
+    this.brackets = wal.brackets ? AguiBrackets.restore(wal.brackets) : new AguiBrackets();
+  }
 
   /**
    * Start an emitter: resolve the channel, run the `[P5]` preflight, and settle any pending frame.
@@ -1179,9 +1242,18 @@ export class AguiEmitter<T> {
       units.push({ runId: mapped.runId, events: mapped.events, cursor: rec.cursor });
     }
 
-    // `[P7]` — a bounded range that mapped to nothing advances the cursor atomically and ALONE. It
-    // must still advance, or an adopt (which reads zero records by design) never persists its
-    // position and the next read adopts a LATER end, silently skipping everything appended between.
+    // `[P7]` — a bounded range that mapped to nothing advances the cursor atomically and ALONE.
+    //
+    // THIS IS THE COMMON PATH, NOT AN EDGE CASE, and the number is here so nobody reads it as one.
+    // Measured on a real Claude session of 5938 records: only 2694 (45%) carry a `message` at all —
+    // the rest are attachments, queue operations, mode changes, prompt markers and system entries
+    // that §3 deliberately drops. So the MAJORITY of a real session maps to nothing. An emitter that
+    // advanced the cursor only through an acked frame would re-read the same 55% forever, and no
+    // fixture would ever show it, because a fixture author writes records that mean something.
+    //
+    // It must also advance on an ADOPT, which reads zero records by design: without that the position
+    // is never persisted and the next read adopts a LATER end, silently skipping everything appended
+    // in between.
     if (units.length === 0) {
       if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
       return { frames: 0, events: 0 };
@@ -1190,15 +1262,22 @@ export class AguiEmitter<T> {
     // Validate the WHOLE batch before publishing any of it. A vocabulary violation discovered
     // halfway through would leave a valid prefix on the wire and the rest refused, and the refusal
     // is supposed to mean "this stream never carried that", not "it carried some of it".
+    // Validated on a CLONE, so the machine that is in step with the disk does not advance for a
+    // batch that may never be sent. The clone starts from the folded state, so it sees exactly what
+    // the real machine will see, in the same order.
+    const probe = this.brackets.clone();
     for (const u of units)
       for (const e of u.events) {
         try {
-          this.brackets.accept(e);
+          probe.accept(e);
         } catch (err) {
           throw this.diagnoseBracket(err as Error);
         }
-        this.fedAnyEvent = true;
       }
+    // Set only after the WHOLE batch validated. Setting it per event would make a batch that failed
+    // on its FIRST event count as "this process has fed something", which is the precise input that
+    // turns the restart diagnosis off.
+    this.fedAnyEvent = true;
 
     const frames = packUnits({
       threadId: this.threadId,
@@ -1234,12 +1313,18 @@ export class AguiEmitter<T> {
 
   /** Transition 1 then the first network attempt. */
   private async publish(frame: AguiFrame, cursor: string): Promise<void> {
+    // Advance the real machine by exactly this frame. It cannot throw: the identical sequence was
+    // already accepted by a clone starting from this same state, in this same order. It is not
+    // wrapped in a diagnosis for that reason — a throw here would be a bug in this file, not a
+    // stream problem, and dressing it as one would hide it.
+    for (const e of frame.events) this.brackets.accept(e);
+    const brackets = this.brackets.snapshot();
     const id = randomUUID();
     const E = this.wal.frontier.lastSubjectSeq;
     const body: Part[] = [frame as unknown as Part];
     // Durable BEFORE the wire. The order is the whole state machine: a crash between this line and
     // the next is recoverable precisely because the id and `E` are already frozen on disk.
-    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body });
+    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets });
     await this.attempt({ id, E, body, retry: false });
   }
 
@@ -1301,11 +1386,15 @@ export class AguiEmitter<T> {
   /**
    * Decide whether a bracket refusal is the WRITER's fault or OURS, and say which.
    *
-   * Ours iff BOTH hold, and both are load-bearing:
+   * Ours iff ALL THREE hold, and each is load-bearing:
    * - this process has fed NO event through the machine yet, so the machine cannot have been put
    *   into a bad state by anything we did in this run; and
    * - the frontier is non-virgin, so frames — and therefore possibly an open `RUN_STARTED` — were
-   *   published by a PREVIOUS process whose bracket state died with it.
+   *   published by a PREVIOUS process; and
+   * - the WAL cannot say what was open. Since v2 the machine is PERSISTED, so an ordinary restart
+   *   restores it and never reaches here at all; `null` means the document was migrated from v1 and
+   *   genuinely never recorded the state. Without this condition the diagnosis would survive as a
+   *   permanent excuse for a case the migration fixed.
    *
    * Drop the first condition and a genuine mid-stream violation by the writer gets blamed on a
    * restart that happened an hour ago. Drop the second and a violation on a virgin thread, where
@@ -1314,14 +1403,15 @@ export class AguiEmitter<T> {
    * undiagnosed error it replaced, because a named cause stops the search.
    */
   private diagnoseBracket(err: Error): Error {
-    if (this.fedAnyEvent || this.wal.frontier.seq === 0) return err;
+    if (this.fedAnyEvent || this.wal.frontier.seq === 0 || this.wal.brackets !== null) return err;
     return new AguiBracketStateLost(
       `event emitter for ${this.channel}: bracket state was LOST ACROSS A RESTART — this is not a ` +
         `protocol violation by the writer. This process has emitted nothing yet, but the WAL says ` +
-        `frame ${this.wal.frontier.seq} already went out, so any run or message left open by the ` +
-        `previous process is invisible to this one: §5.4 persists epoch, frontier and the pending ` +
-        `frame, and NOT the set of open runs and messages. Resuming from the source cursor therefore ` +
-        `lands mid-run and the first event is refused. The underlying refusal was: ${err.message}`,
+        `frame ${this.wal.frontier.seq} already went out, and the document records NO bracket state ` +
+        `(it was migrated from v1, which never stored one), so any run or message the previous ` +
+        `process left open is invisible to this one. Resuming from the source cursor therefore lands ` +
+        `mid-run and the first event is refused. A WAL written by this build persists the machine and ` +
+        `does not reach this path. The underlying refusal was: ${err.message}`,
       err,
     );
   }

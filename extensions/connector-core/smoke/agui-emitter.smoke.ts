@@ -51,6 +51,14 @@
  *       -> `bracket:CONTROL-a-violation-on-a-VIRGIN-frontier-is-NOT-blamed-on-a-restart`
  *   B3  never diagnose; surface the raw refusal
  *       -> `bracket:a-mid-run-restart-names-ITSELF-not-the-writer`
+ *   B4  drop the "the WAL cannot say what was open" condition (added with WAL v2)
+ *       -> `bracket:CONTROL-a-violation-after-a-RESTORED-restart-is-NOT-blamed-on-lost-state`
+ *   V1  migrate a v1 document to an EMPTY bracket state instead of UNKNOWN
+ *       -> `bracket:a-mid-run-restart-names-ITSELF-not-the-writer`
+ *   V2  do not restore the persisted machine at startup
+ *       -> `bracket:a-mid-run-restart-CONTINUES-because-the-state-was-persisted`
+ *   V3  fold does not promote the frame's frozen bracket state
+ *       -> `bracket:the-open-run-is-PERSISTED-in-the-WAL`
  * ALL THREE KILLED on their named cells. B1 and B2 are the pair worth reading together: each one
  * leaves the headline cell GREEN and kills only its own control, which is what a confident wrong
  * diagnosis looks like from the inside.
@@ -63,7 +71,7 @@
  *
  * Run: pnpm smoke:agui-emitter
  */
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Part } from "@cotal-ai/core";
@@ -168,6 +176,10 @@ class FakeEndpoint {
   }
 }
 
+/** A neutral bracket snapshot for fixtures whose subject is NOT the bracket machine. Named so a
+ *  reader can see at a glance which cells are about brackets and which merely need the field. */
+const BR = { run: undefined, text: [], reasoning: [], tools: [] };
+
 const casLoss = (): Error => Object.assign(new Error("wrong last sequence"), { code: 10071 });
 
 /** One turn's worth of legal, bracketed events. */
@@ -260,6 +272,7 @@ try {
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
       body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: BR,
     });
     const ep = new FakeEndpoint();
     ep.preflightError = new Error("cannot verify expectation semantics: stream info unavailable");
@@ -416,6 +429,7 @@ try {
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
       body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: BR,
     });
     const ep = new FakeEndpoint();
     ep.answers = [{ seq: 88, duplicate: true }];
@@ -446,6 +460,7 @@ try {
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
       body: [{ kind: "ag-ui.frame", protocol: "ag-ui/0.0.57" } as unknown as Part],
+      brackets: BR,
     });
     const ep = new FakeEndpoint();
     ep.answers = [{ seq: 5, duplicate: false }];
@@ -581,37 +596,128 @@ try {
   // replaced, because a named cause stops the search.
   await block("A BRACKET REFUSAL MUST SAY WHOSE FAULT IT IS", async () => {
     // Mid-run content with no START — what a resume after a crash actually looks like.
+    // Opens a run and never closes it — so the frame that goes out leaves the machine mid-run.
+    const openRunOnly = (r: Rec) =>
+      "skip" in r
+        ? null
+        : {
+            runId: r.run,
+            events: [
+              runStarted({ threadId: THREAD, runId: r.run, timestamp: 1 }),
+              textMessageStart({ messageId: r.msg, timestamp: 2, role: "assistant" as const }),
+            ],
+          };
+    // Closes what `openRunOnly` opened. Legal ONLY if the machine remembers the open run — which is
+    // exactly the property under test.
+    const closeRunOnly = (r: Rec) =>
+      "skip" in r
+        ? null
+        : {
+            runId: r.run,
+            events: [
+              textMessageEnd({ messageId: r.msg, timestamp: 3 }),
+              runFinished({ threadId: THREAD, runId: r.run, timestamp: 4 }),
+            ],
+          };
     const orphan = (r: Rec) =>
       "skip" in r
         ? null
         : { runId: r.run, events: [textMessageContent({ messageId: r.msg, delta: r.text, timestamp: 1 })] };
 
-    // (1) NON-VIRGIN frontier, nothing fed in this process => OURS.
+    // (1) THE HEADLINE, AND IT IS THE OPPOSITE OF WHAT IT WAS ONE COMMIT AGO. Since the WAL
+    //     persists the bracket machine, a restart RESTORES it and the mid-run event is simply
+    //     accepted. This cell is what the v2 migration bought; the diagnosis below is now only for
+    //     a document that predates it.
     {
       const { wal, source, src, walPath } = await fresh("bracket-restart");
       const ep = new FakeEndpoint();
-      const warm = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+      const warm = await AguiEmitter.start({ endpoint: ep, wal, source, map: openRunOnly });
       await warm.pump(); // adopt
-      append(src, { run: "r1", msg: "m1", text: "hello" });
+      append(src, { run: "r1", msg: "m1", text: "opens a run and leaves it open" });
       ep.answers = [{ seq: 4, duplicate: false }];
-      await warm.pump(); // frame 1 published and folded — the frontier is now non-virgin
+      await warm.pump(); // a frame goes out with the run STILL OPEN
 
-      // A NEW emitter over the SAME WAL is the restart: same durable state, fresh bracket machine.
       const reopened = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
-      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, source: new JsonlFileSource<Rec>(src), map: orphan });
+      c(
+        "bracket:the-open-run-is-PERSISTED-in-the-WAL",
+        reopened.brackets?.run === "r1" && reopened.brackets.text.includes("m1"),
+        reopened.brackets,
+      );
+      // A NEW emitter over the SAME WAL is the restart: same durable state, and now the same
+      // bracket state too.
+      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, source: new JsonlFileSource<Rec>(src), map: closeRunOnly });
       append(src, { run: "r1", msg: "m1", text: "mid-run" });
+      ep.answers = [{ seq: 5, duplicate: false }];
       const p = await attempt(() => restarted.pump());
+      c(
+        "bracket:a-mid-run-restart-CONTINUES-because-the-state-was-persisted",
+        p.err === undefined && p.value?.frames === 1,
+        { err: p.err?.message, pumped: p.value },
+      );
+    }
+
+    // (1b) THE DIAGNOSIS, now reachable only through a MIGRATED v1 WAL — a document that records no
+    //      bracket state because v1 never had one. Same failure, and it must still name itself.
+    {
+      const { src, walPath } = await fresh("bracket-migrated");
+      // A REAL cursor, taken from the real source. A hand-written one is refused by the identity
+      // check (dev/ino), which would make this cell fail for a reason that has nothing to do with
+      // brackets — a refusal for the wrong reason is the failure mode this suite keeps finding.
+      const adopted = (await new JsonlFileSource<Rec>(src).read(undefined)).cursor;
+      writeFileSync(
+        walPath,
+        JSON.stringify({
+          v: 1, // the whole point: a document written before brackets were persisted
+          space: SPACE, epoch: "ep-v1", threadId: THREAD, principal: PRINCIPAL_KEY,
+          frontier: { seq: 3, lastSubjectSeq: 9, sourceCursor: adopted },
+          pending: null,
+        }),
+      );
+
+      const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+      c("bracket:the-migrated-document-records-NO-bracket-state", wal.brackets === null, wal.brackets);
+      const ep = new FakeEndpoint();
+      const em = await AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: orphan });
+      append(src, { run: "r1", msg: "m1", text: "mid-run" });
+      const p = await attempt(() => em.pump());
       c(
         "bracket:a-mid-run-restart-names-ITSELF-not-the-writer",
         p.err instanceof AguiBracketStateLost &&
           /LOST ACROSS A RESTART/.test(p.err.message) &&
-          /not a protocol violation by the writer/.test(p.err.message),
+          /not a protocol violation by the writer/.test(p.err.message) &&
+          /migrated from v1/.test(p.err.message),
         p.err?.message ?? "no throw",
       );
       c(
         "bracket:the-diagnosis-carries-the-underlying-refusal-rather-than-replacing-it",
         p.err instanceof AguiBracketStateLost && p.err.cause instanceof AguiVocabularyError && /run/i.test(p.err.cause.message),
         p.err instanceof AguiBracketStateLost ? p.err.cause?.message : "not diagnosed",
+      );
+    }
+
+    // (1c) CONTROL FOR THE THIRD CONDITION — a restart whose state WAS persisted, hitting a genuine
+    //      violation. Non-virgin frontier, nothing fed in this process: the first two conditions both
+    //      hold, so only "the WAL can say what was open" keeps this from being misdiagnosed. Without
+    //      this cell the third condition could be deleted and nothing would notice.
+    {
+      const { wal, source, src, walPath } = await fresh("bracket-restored-but-writer-wrong");
+      const ep = new FakeEndpoint();
+      const warm = await AguiEmitter.start({ endpoint: ep, wal, source, map: openRunOnly });
+      await warm.pump();
+      append(src, { run: "r1", msg: "m1", text: "opens a run" });
+      ep.answers = [{ seq: 4, duplicate: false }];
+      await warm.pump();
+
+      const reopened = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+      // The run IS open and IS remembered — so content for a message that was never started is the
+      // writer being wrong, not us having forgotten.
+      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, source: new JsonlFileSource<Rec>(src), map: orphan });
+      append(src, { run: "r1", msg: "NEVER-STARTED", text: "x" });
+      const p = await attempt(() => restarted.pump());
+      c(
+        "bracket:CONTROL-a-violation-after-a-RESTORED-restart-is-NOT-blamed-on-lost-state",
+        p.err instanceof AguiVocabularyError && !(p.err instanceof AguiBracketStateLost),
+        p.err?.message ?? "no throw",
       );
     }
 

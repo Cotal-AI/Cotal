@@ -184,6 +184,10 @@ const startCluster = async (tag: string): Promise<string> => {
   return url;
 };
 
+/** A neutral bracket snapshot for fixtures whose subject is NOT the bracket machine. Named so a
+ *  reader can see at a glance which cells are about brackets and which merely need the field. */
+const BR = { run: undefined, text: [], reasoning: [], tools: [] };
+
 /** A real frame, so what is frozen on disk is what a real emitter would have frozen. */
 const frameBody = (epoch: string): Part[] => [
   aguiFrame({
@@ -239,6 +243,7 @@ const arm = async (opts: { config: string; url: string; seed: boolean }) => {
       seq: 1,
       sourceCursor: "1:2:0:0000000000000000",
       body: frameBody(wal.epoch),
+      brackets: BR,
     });
     const before = wal.frontier;
 
