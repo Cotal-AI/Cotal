@@ -11,7 +11,7 @@ import {
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
-  isPermissionDenied,
+  isPublishPermissionDenied,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -901,16 +901,22 @@ export class MeshAgent extends EventEmitter {
         def.announce,
       );
     } catch (e) {
-      // WHY the outcome is classified rather than flattened to a string: only a permission denial
-      // proves the message did not go out. A chat publish rides JetStream request/PubAck, so a
-      // timeout or a reconnect means the stream may well have STORED the message while we simply
-      // never saw the ack — the outcome is unknown, not negative. Reporting unknown as "it did not
-      // go out, post it yourself" is how a caller posts the announcement a second time, which is
-      // the exact duplicate this change exists to remove. Say "denied" only when it was denied.
+      // WHY the outcome is classified rather than flattened to a string: only a denial ON THE
+      // PUBLISH proves the message did not go out. A chat publish rides JetStream request/PubAck,
+      // so a timeout, a reconnect — or a permission denial on the PubAck INBOX SUBSCRIPTION — all
+      // leave the stream possibly holding the message while we never saw the ack. Reporting any of
+      // those as "it did not go out, post it yourself" is how a caller posts the announcement a
+      // second time, which is the exact duplicate this change exists to remove.
+      //
+      // This used to ask `isPermissionDenied`, which is operation-agnostic by design (it separates
+      // denied from service-down, where the operation is irrelevant). Review proved against a live
+      // broker that a subscription denial rejects `js.publish()` with the message ALREADY STORED —
+      // so that question could not distinguish the one case that proves non-delivery from a case
+      // that proves nothing. Ask the narrower question instead, and fail toward "unknown".
       return {
         ...reply,
         announceError: (e as Error)?.message ?? String(e),
-        announceOutcome: isPermissionDenied(e) ? "denied" : "unknown",
+        announceOutcome: isPublishPermissionDenied(e) ? "denied" : "unknown",
       };
     }
     return reply;

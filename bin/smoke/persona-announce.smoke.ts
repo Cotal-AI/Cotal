@@ -67,6 +67,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { MeshAgent, cotalToolSpecs, type AgentConfig } from "@cotal-ai/connector-core";
 import { Manager } from "@cotal-ai/manager";
+import { PermissionViolationError } from "@nats-io/transport-node";
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -447,6 +448,53 @@ try {
       ut,
     );
     check("an unknown outcome tells the caller to READ the channel before posting", ut.includes(`READ #${LANE}`), ut);
+  }
+
+  // ---- 7. a SUBSCRIPTION permission denial is unknown, not denied ------------------------------
+  console.log("7. a permission denial on the PubAck inbox is unknown, not a denied post");
+  // Proved against a live broker during review: a user allowed to publish but denied its `_INBOX`
+  // subscription gets `js.publish()` rejected with a SUBSCRIPTION violation while the stream
+  // already holds the message. So "permission denied" alone cannot mean "did not go out" — only a
+  // denial on the PUBLISH can. Cell 5 above is this cell's positive control: it drives a REAL
+  // publish denial and requires REFUSED. If the typed narrowing ever stopped matching (say the
+  // error class resolved to a second module copy, making `instanceof` fail), everything would fall
+  // to "unknown" and THIS cell would still pass — cell 5 is what turns red instead.
+  {
+    const subDeniedName = "fm380subdenied";
+    const realSend = definer.send.bind(definer);
+    (definer as unknown as { send: MeshAgent["send"] }).send = async () => {
+      throw new PermissionViolationError(
+        'Permissions Violation for Subscription to "_INBOX.aBcDeF.*"',
+        "subscription",
+        "_INBOX.aBcDeF.*",
+      );
+    };
+    let r;
+    try {
+      r = await persona.run(definer, cfg, {
+        name: subDeniedName,
+        prompt: "Its PubAck inbox subscription is refused; the publish may well have landed.",
+        announce: LANE,
+      });
+    } finally {
+      (definer as unknown as { send: MeshAgent["send"] }).send = realSend;
+    }
+    const st = String(r?.text ?? "");
+    check(
+      "the persona is saved when the PubAck inbox subscription is denied",
+      existsSync(join(workspaceRoot, ".cotal", "agents", `${subDeniedName}.md`)),
+    );
+    check("a subscription denial says it could NOT CONFIRM", st.includes("could NOT CONFIRM"), st);
+    check(
+      "a subscription denial does NOT claim the post was REFUSED (the message may be stored)",
+      !st.includes("REFUSED") && !st.includes("did not go out"),
+      st,
+    );
+    check(
+      "a subscription denial does NOT blame allowPublish (publishing was never refused)",
+      !st.includes("allowPublish"),
+      st,
+    );
   }
 
   console.log(`\n  ${pass} checks passed`);

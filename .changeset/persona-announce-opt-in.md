@@ -24,5 +24,6 @@ knew nothing about, from a principal they had no relationship with.
   `allowPublish` — not as a failed definition, which named the wrong fix and invited a retry that
   posted the duplicate.
 
-Discovery is unaffected: `cotal personas list` / `show` read the catalog directly and `cotal_spawn`
-still fails loud on a name that does not exist.
+The announcement was never how peers discovered a persona: it named one and nothing else, and a peer
+joining afterwards never saw it. Discovery is the catalog — `cotal personas list` / `show` read it
+directly within a workspace — plus `cotal_spawn` failing loud on a name that does not exist.

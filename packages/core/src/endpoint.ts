@@ -3983,6 +3983,32 @@ export function isPermissionDenied(e: unknown): boolean {
   return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
 }
 
+/** True ONLY for a denial on a **publish** — the single case that proves the message never reached
+ *  the server. {@link isPermissionDenied} deliberately does not look at the operation: it exists to
+ *  separate "denied" from "service down", and that answer is the same either way. The operation
+ *  matters enormously to a caller that reports *delivery*, because a JetStream publish is
+ *  request/PubAck and the subscription half is the reply inbox — a denial THERE rejects
+ *  `js.publish()` while the stream may already hold the message. Verified against a live broker: a
+ *  user allowed to publish but denied its `_INBOX` subscription got
+ *  `Permissions Violation for Subscription to "_INBOX.….*"` back from `js.publish()`, and an
+ *  unrestricted observer then read `messages: 1` off the stream.
+ *
+ *  Note what is deliberately NOT accepted: the untyped text fallback above. A permission-shaped
+ *  message string carries no operation, so it cannot prove non-delivery, and guessing "publish"
+ *  from wording would reintroduce exactly the false certainty this exists to prevent. Anything not
+ *  provably a publish denial is unknown, and a caller reporting delivery must fail toward
+ *  "I could not confirm" rather than toward "it did not happen" — the costly mistake is telling
+ *  someone to re-send a message that was in fact stored. */
+export function isPublishPermissionDenied(e: unknown): boolean {
+  const typed =
+    e instanceof PermissionViolationError
+      ? e
+      : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError
+        ? ((e as { cause: PermissionViolationError }).cause)
+        : undefined;
+  return typed?.operation === "publish";
+}
+
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
  *  first entry wins) into a host+port for {@link tcpInfoProbe}. Defaults the port to 4222. */
 function hostPort(server: string): { host: string; port: number } {
