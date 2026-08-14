@@ -90,3 +90,44 @@ anything, which is a worse operator experience and a different defect.**
 
 Manager health. `meshStatus`'s hardcoded `DEFAULT_SERVER`. The A5-pin, still carried open from the
 re-derivation. §4. Nothing here is a gate.
+
+---
+
+## Mutation predictions — registered at `65372e7e`, BEFORE the mutation is applied
+
+**Mutation M-R1:** revert `managerRow()` to the original single line —
+`line(mgr, \`manager  ${dim(mgr ? "running" : \`not running · start: …\`)}\`)` with `mgr = managerUp()`.
+This is the exact pre-fix code, so the mutant is the defect itself rather than an invented break.
+
+**Named, not counted. Predicted RED (5):**
+
+- **R4** `unrelated-live-pid-never-claimed-running` — the old code renders `✓ manager running`.
+- **R2** `alive-row-names-its-source` — the old row is the word "running"; no pid, no source.
+- **R3** `alive-row-says-serving-not-checked` — absent from the old row entirely.
+- **R7a** `unattributable-pidfile-says-cannot-establish` — the old code collapses `unattributable`
+  into `managerUp() === false` and prints "not running".
+- **R7** `unattributable-pidfile-offers-NO-start-hint` — the old code prints the start hint here.
+
+**Predicted GREEN, and these do NOT discriminate this mutation (5):**
+
+- **R2b** `alive-row-offers-no-start-hint` — the old `alive` row is just "running" and carries no
+  hint either, so this cell cannot tell the two apart. It guards a DIFFERENT regression: a future
+  change that starts recommending an action on the `alive` arm.
+- **R5**, **R6** — the `dead`/`absent` arms are unchanged by the fix **by design**. These are the
+  inverse controls: they must stay green, and their staying green is the evidence the repair is
+  selective rather than "refuse everything".
+- **R7c** `unattributable-row-carries-no-green-tick` — the old code renders `○` here, not `✓`, so
+  this too is non-discriminating for THIS mutation. It guards against a future arm that ticks green.
+- **R0** `the manager row is never omitted` — structural; true in both.
+
+**Stating the non-discriminating cells in advance is the point.** If I reported "the mutant went red"
+without naming which five, R2b/R7c/R0 staying green would look like laxity in the cells rather than
+what it is: cells aimed at a different regression than this mutation exercises.
+
+**Equivalence:** M-R1 is NOT equivalent — it changes rendered output on the `alive`, `unknown` and
+`unattributable` arms, which is exactly what R2/R3/R4/R7/R7a assert. If any of those five SURVIVES,
+that is not a pass: it means the cell is blind, and I must say so rather than re-run.
+
+**R1** (`wedged-manager-never-claimed-running`) is measured separately, by running the untouched
+pre-fix instrument `.lane/finding5-A-wedge.sh` against the fixed code: its `A4` cell asserts the OLD
+behaviour and must now FAIL. That instrument was written before the fix existed.
