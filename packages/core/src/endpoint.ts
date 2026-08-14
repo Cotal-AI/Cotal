@@ -4082,12 +4082,21 @@ export async function isReachable(
   servers: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? 1000;
   if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls)
-    return tcpInfoProbe(servers, opts.timeoutMs ?? 1000);
+    return tcpInfoProbe(servers, timeoutMs);
+  // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
+  // the same orphaned-socket defect probeConnect did (#389) and takes the same gate: reach the
+  // address on a socket we own first, and give `connect()` the remainder of the budget its own
+  // timeout always covered. A gate failure is a genuine connection failure, which is exactly the
+  // `false` the catch below already returns for one — an auth rejection cannot reach us from an
+  // address that never completed a handshake.
+  const started = Date.now();
+  if (!(await tcpDialable(servers, timeoutMs))) return false;
   try {
     const nc = await connect({
       servers,
-      timeout: opts.timeoutMs ?? 1000,
+      timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
       maxReconnectAttempts: 0,
       ...authOpts(opts),
