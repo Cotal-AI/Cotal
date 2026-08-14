@@ -253,6 +253,32 @@ try {
   armCheck("ARM 2", "D2h and an INDEPENDENT observer no longer sees it offline — coming back left no ghost",
     await until(() => seen()?.status !== undefined && seen()!.status !== "offline"), seen());
 
+  // ── D2i/D2j — A REFUSAL MUST NOT NAME THE WRONG CONDITION ────────────────────────────────────
+  // `reconnect()` never took the `transitionInFlight` latch that `connect()` and `disconnect()` both
+  // take. The symptom was not a missing refusal but a WRONG one: a disconnect landing inside
+  // reconnect's null window found `this.nc` already gone and refused `not-connected` — naming a
+  // condition that was false, on an endpoint that was mid-transition and would be back. That is
+  // worse than an unnamed error, because a caller can act on it: "already off, nothing to do" is
+  // precisely the wrong conclusion. `transition-in-progress` was already in the vocabulary and was
+  // simply unreachable from this path.
+  //
+  // THE ASSERTION IS THE FLIP, NOT THE VALUE. D2j drives the SAME call to the SAME method and gets
+  // `not-connected` — so D2i passing is a discrimination between two reachable reasons, not a method
+  // that answers `transition-in-progress` to everything.
+  console.log("\n--- D2i/D2j: a disconnect landing inside reconnect's null window ---");
+  const reconnecting = a.reconnect().catch(() => { /* settled below; the refusal is what we assert */ });
+  const dDuring = await a.disconnect("arm2-during-reconnect");
+  armCheck("ARM 2", "D2i a disconnect inside reconnect's window refuses TRANSITION-IN-PROGRESS, not the false 'not-connected'",
+    dDuring.outcome === "refused" && (dDuring as any).reason === "transition-in-progress", dDuring);
+  await reconnecting;
+  const dOff = await a.disconnect("arm2-settle");
+  const dAgain = await a.disconnect("arm2-really-off");
+  armCheck("ARM 2", "D2j DISCRIMINATION: with no transition in flight and the endpoint genuinely off, the SAME call refuses NOT-CONNECTED",
+    dAgain.outcome === "refused" && (dAgain as any).reason === "not-connected", { settle: dOff.outcome, again: dAgain });
+  const backOn = await a.connect(); // leave the fixture connected for what follows
+  armCheck("ARM 2", "D2k the fixture is restored to connected after the discrimination arm",
+    backOn.outcome === "connected", backOn);
+
   // ══ ARM 1 — a refused connect() must leave nothing live ══════════════════════════════════════
   console.log("\n=== ARM 1: refused connect leaves nothing live ===");
   // ARM 1 BUILDS ITS OWN SUBJECT INSTEAD OF INHERITING ARM 2's.

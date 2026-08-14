@@ -24,6 +24,8 @@ import {
   type ChannelMode,
   type CotalMessage,
   type ConnectionOutcome,
+  type ConnectionRefusal,
+  type ReconnectFailure,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 
@@ -304,10 +306,11 @@ export class MeshAgent extends EventEmitter {
    *  {@link CotalEndpoint.reconnect}, which is serialized with the self-heal supervisor and
    *  interruptible. Returns a one-line status for the caller to surface (e.g. the
    *  cotal_reconnect tool → TUI); on failure the endpoint keeps retrying in the background. */
-  async reconnect(): Promise<{ ok: boolean; message: string }> {
+  async reconnect(): Promise<{ ok: boolean; message: string; reason?: ConnectionRefusal }> {
     if (this.stopping) {
       return {
         ok: false,
+        reason: "shutting-down",
         message: "This session is shutting down, so its Cotal mesh connection cannot be reconnected. Start a new session instead.",
       };
     }
@@ -316,7 +319,14 @@ export class MeshAgent extends EventEmitter {
       // _connected is set by the endpoint's "connection" event on the successful rebind, not here.
       return { ok: true, message: `Reconnected ✓ (${this.config.name}@${this.config.space})` };
     } catch (e) {
-      return { ok: false, message: `Reconnect failed: ${(e as Error).message}. Still retrying automatically — or run /reconnect to retry now.` };
+      // ADDITIVE: `reason` carries the same named vocabulary `connect`/`disconnect` return, so a
+      // caller can branch instead of matching English. The message is unchanged and a caller that
+      // ignores `reason` behaves exactly as before — this is deliberately not an outcome conversion.
+      return {
+        ok: false,
+        reason: (e as Partial<ReconnectFailure>).reason,
+        message: `Reconnect failed: ${(e as Error).message}. Still retrying automatically — or run /reconnect to retry now.`,
+      };
     }
   }
 

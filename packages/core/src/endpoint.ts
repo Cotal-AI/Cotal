@@ -356,6 +356,21 @@ export type ConnectionOutcome =
 
 const refusal = (reason: ConnectionRefusal, detail: string): ConnectionOutcome => ({ outcome: "refused", reason, detail });
 
+/** An Error carrying the same named `reason` its sibling verbs return in a {@link ConnectionOutcome}.
+ *
+ *  `reconnect()` throws rather than returning an outcome — it pre-dates the connection verbs and its
+ *  existing callers (the TUI, `/reconnect`) depend on that shape, so converting it would be a
+ *  breaking change to a verb this work did not introduce. **This is the additive half instead: the
+ *  vocabulary was already in the message TEXT, and the defect was that a caller could only reach it
+ *  by matching English.** Ignoring `reason` behaves exactly as before; reading it lets a caller
+ *  branch. Deliberately NOT a full outcome conversion — that is the cleaner design, and it is
+ *  declined here on purpose rather than overlooked. */
+export interface ReconnectFailure extends Error {
+  reason: ConnectionRefusal;
+}
+const reconnectFailure = (reason: ConnectionRefusal, detail: string, cause?: unknown): ReconnectFailure =>
+  Object.assign(new Error(detail, cause === undefined ? undefined : { cause }), { reason });
+
 /** Map a connect failure onto the refusal that tells the caller what to FIX. Core already
  *  distinguishes these cases when it dials, and collapsing them into "broker-unreachable"
  *  sends an operator to check a host that is up and answering.
@@ -1315,17 +1330,31 @@ export class CotalEndpoint extends EventEmitter {
    *  running in the background so the endpoint never stays dead, and rethrows so the caller
    *  can report it. */
   async reconnect(): Promise<void> {
-    if (this.stopped) throw new Error("endpoint stopped - cannot reconnect");
+    if (this.stopped) throw reconnectFailure("shutting-down", "endpoint stopped - cannot reconnect");
     // A self-disconnect is a state, not a fault, so the RECOVERY path must not quietly reverse it.
     // Say which verb does, rather than failing with a generic error the caller cannot act on.
     if (this.selfDisconnected)
-      throw new Error("this endpoint was deliberately disconnected - use connect() to return to the mesh, not reconnect()");
+      throw reconnectFailure(
+        "not-connected",
+        "this endpoint was deliberately disconnected - use connect() to return to the mesh, not reconnect()",
+      );
+    // THE LATCH. `connect()` and `disconnect()` both take `transitionInFlight`; this verb never did,
+    // and the consequence was not a missing refusal but a WRONG one: a disconnect landing inside
+    // reconnect's null window found `this.nc` already gone and refused `not-connected` — naming a
+    // condition that was false, on an endpoint that was mid-transition and would be back. A refusal
+    // that names the wrong condition is worse than an unnamed one, because a caller can act on it.
+    // `transition-in-progress` was already in the vocabulary and simply unreachable from here.
+    if (this.transitionInFlight)
+      throw reconnectFailure("transition-in-progress", "another connect/disconnect is already mid-flight on this endpoint");
+    this.transitionInFlight = true;
     this.kickBackoff();
     try {
       await this.rebuild();
     } catch (e) {
       void this.reestablishLoop(); // background retry until success or stop
-      throw e;
+      throw reconnectFailure(classifyConnectFailure(e), (e as Error).message, e);
+    } finally {
+      this.transitionInFlight = false;
     }
   }
 
