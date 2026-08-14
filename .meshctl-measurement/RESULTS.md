@@ -1,8 +1,14 @@
 # Measurement: agent-driven mesh connection control
 
 Base `7cc74f50` (measured at `1aab1389`; delta since is release/docs only). All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
-target is not the live broker as its first action, and each denial has an inverse control through
-the same path. Refutation conditions are stated in each probe's header **before** any result.
+target is not the live broker as its first action. Refutation conditions are stated in each probe's
+header **before** any result.
+
+**On controls, stated exactly rather than as a blanket claim.** An earlier draft of this line said
+"each denial has an inverse control through the same path". That was too strong: **`F3b` has none**
+(§5), and it is now marked as weak evidence rather than left inside a general assurance. Every other
+denial cited here does have one. A blanket claim about evidence quality is itself a claim that needs
+to be true of every row, and this one was not.
 
 Probes must run from the main checkout (they import per-package `node_modules`); they are kept
 here as the record. See "Reproduction" below.
@@ -67,6 +73,15 @@ the connection outright.
 | --- | --- |
 | F3 a cred minted from the same `SpaceAuth` with a **self-chosen** ACL → `chat.*.secret` (the exact subject denied at F1d) | ALLOWED |
 | F3b a `provisioner` cred → the space firehose | DENIED — least-privilege genuinely holds |
+
+**F3b HAS NO POSITIVE ARM AND IS THEREFORE WEAK EVIDENCE — withdrawn from load-bearing use.** Every
+other denial in this file is paired with a control that succeeds through the same path; F3b is not.
+Nothing in the probe shows that the *same* `provisioner` credential can do anything at all on that
+broker, so "DENIED" is equally explained by a credential that was never usable — a broken probe
+looks exactly like a working fence. The `provisioner` cred is exercised successfully elsewhere in the
+fixtures (`setupSpaceStreams` and `provisionAgent` both run on it), which is suggestive and is **not
+the same probe**, so it does not repair this cell. The claim "there is no god-role to grab" rests on
+F1a-d and F2, which do have controls. **A denial without an inverse control is not a control.**
 
 Same broker, same subject, same probe as F1d; only the mint differs. The ACL is decided at mint
 time, so whoever can read the space trust material can issue any ACL.
@@ -163,21 +178,64 @@ re-target through the agent's own credential.** See DESIGN §7.2 for the saga th
   above is a code read, not a measurement — the weakest claim here.
 - Leases and claims held by an agent at disconnect. (In-flight *replies* ARE now measured — §9.)
 - Multi-membership close, partial-close failure, and concurrent reopen during a close scan (§7.2 of
-  the design). M6 covers the single-membership case only.
+  the design). M6 covers the single-membership case only. **The single-membership GAP is now
+  measured** — see the §7.2 probe below — but the multi-membership and partial-failure cases are not.
+- **The other half of a partial close**: channels that FAIL to close stay open on an abandoned mesh
+  and keep accruing. No probe touches it.
 - A confirmed causal presence transition — no probe drives one; M4 drives today's best-effort stop.
-- **No repo suite was run.** These are six scoped probes: M1 verb drive, M2 open-mode gate-bypass,
-  M3 broker fence (9 checks), M4 observer ghost, M5 lease/in-flight, M6 durable membership (4/4);
-  plus the committed regression suite `packages/core/smoke/request-strand.smoke.ts` (7/7,
-  2/2 mutations killed on named cells).
+- **`F3b` has no positive arm** (above), so "provisioner is least-privilege" is weaker than the other
+  fence cells.
+- **The creds-SOURCE renewal arm is not reachable through `cotalToolSpecs`** — `MeshAgent` passes
+  static creds bytes, and the user-mode bearer source exchanges over local auth-service HTTP rather
+  than NATS. The renewal cells prove the ENDPOINT contract and say nothing about the tool path.
+  (Narrowing volunteered by `rev2-meshctl-authority` against its own broader claim, and held to.)
+- **A drain that rejects, and an in-flight credential fetch crossing a disconnect**, are states the
+  connector cannot construct. The first is driven with an injected fault at the core API; the second
+  is fenced for the QUEUED case only and that exact race is undriven here.
+- **The three arms of `connection-lifecycle.smoke.ts` share one fixture**, so a mutant that breaks an
+  early arm contaminates the later ones. That costs the suite its ability to make a clean "green
+  elsewhere" claim — see `MUTATION-LIFECYCLE.md`.
+
+### What HAS been run, named as suites
+**No repo-wide suite has been run and no gate has been released to this lane.** Scoped only:
+- Probes: M1 verb drive, M2 open-mode gate-bypass, M3 broker fence (9), M4 observer ghost,
+  M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (11/11)**.
+- Committed suites at `ffc18c46`: `packages/core/smoke/connection-lifecycle.smoke.ts` **20/20**,
+  `extensions/connector-core/smoke/connection-control.smoke.ts` **19/19**,
+  `packages/core/smoke/request-strand.smoke.ts` **9/9** (was 7/7 before ARM 3 was added).
+- Mutations: MX1/MX2/MX3 killed on named cells with broker-side non-equivalence; **MX3a survived, as
+  predicted**.
+
+**The earlier draft of this list said "no repo suite was run" and then cited a committed suite's
+result in the same bullet, which reads as a contradiction.** It was not one — a committed suite run
+on its own is not a repo-wide run — but the two claims needed separating rather than defending, so
+they now sit in different sections.
 
 ## Reproduction
 
 The probes import core via a relative path, so they exercise **the tree they sit in**. Run them from
 a checkout with `node_modules` reachable (this program never runs `pnpm install`).
 
-**Trap worth knowing:** `extensions/connector-core/node_modules/@cotal-ai/core` is a RELATIVE symlink.
-If you symlink a whole `node_modules` into a worktree, that link resolves to the **main checkout's**
-core — so a probe can silently test unpatched source. Point it at the worktree explicitly.
+**Trap worth knowing, MEASURED on this box rather than reasoned about.** It has two faces and they
+are usually confused for each other:
+
+1. **Resolution.** This worktree's ROOT `node_modules` is a symlink to the principal checkout, and
+   `node_modules/@cotal-ai/core` resolves to the PRINCIPAL's `packages/core`. A real, non-symlinked
+   `extensions/connector-core/node_modules/` stops resolution before it walks up that far, which is
+   why the connector suite is clear:
+   ```
+   $ cd extensions/connector-core && node -e 'console.log(await import.meta.resolve("@cotal-ai/core"))'
+   file:///home/david/Cotal-wt-fm-meshctl/packages/core/dist/index.js
+   ```
+   **Resolve the path; do not infer it from "am I in a worktree".** Anything resolving
+   `@cotal-ai/core` from the worktree ROOT still lands in the principal checkout.
+2. **Built output.** `@cotal-ai/core`'s `main` is `./dist/index.js`. **Mutating `packages/core/src`
+   without rebuilding `dist` produces a NO-OP mutant, and a no-op mutant is byte-identical to a
+   survivor.** That cost four runs here, recorded as VOID rather than banked as survivals. Suites
+   importing `../src/index.js` relatively (the lifecycle, request-strand and §7.2 probes) do not have
+   this face at all; the connector suite does, and needs `tsc -p packages/core` before every run.
+
+Neither is fixed by an install, and this program never runs one.
 
 ```
 node_modules/.bin/tsx packages/core/meshctl-m3-fence.smoke.ts
