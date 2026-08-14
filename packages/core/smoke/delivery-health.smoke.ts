@@ -17,7 +17,7 @@
  *
  * Run: pnpm smoke:delivery-health   (no broker, no network)
  */
-import { assessDeliveryHealth, renderHealth, type DeliveryHealth, type HealthProbes } from "../src/health.js";
+import { assessDeliveryHealth, renderHealth, type DeliveryHealth, type HealthProbes, type HealthRefusal } from "../src/health.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean): void => {
@@ -38,6 +38,22 @@ const neverAnswers: HealthProbes["probe"] = async (ms) => { throw new Error(`tim
 
 const refusalOf = (h: DeliveryHealth): string => (h.serving ? "SERVING" : h.refusal.condition);
 
+/** Narrow to an arm, returning `undefined` rather than gating a block.
+ *
+ *  Written this way deliberately. The first draft guarded its detail assertions with
+ *  `if (!h.serving && h.refusal.condition === "…") { … }`, and two mutation runs showed those cells
+ *  SILENTLY VANISHING instead of failing when the mutant changed the arm — 27 cells became 21
+ *  passed and 3 failed, with 3 simply gone. A cell that disappears under mutation is a vacuous
+ *  pass wearing the costume of a skip. Checks written against these helpers EVALUATE to false
+ *  instead. */
+const servingArm = (h: DeliveryHealth): Extract<DeliveryHealth, { serving: true }> | undefined =>
+  h.serving ? h : undefined;
+const refusalArm = <C extends HealthRefusal["condition"]>(
+  h: DeliveryHealth,
+  c: C,
+): Extract<HealthRefusal, { condition: C }> | undefined =>
+  !h.serving && h.refusal.condition === c ? (h.refusal as Extract<HealthRefusal, { condition: C }>) : undefined;
+
 console.log("\ndelivery-health assessment\n");
 
 // ---- serving: the affirmative path -------------------------------------------------------------
@@ -49,13 +65,12 @@ console.log("\ndelivery-health assessment\n");
     now: clockAt(now),
   });
   check("a fresh lease AND a responder that answers is SERVING", h.serving === true);
-  if (h.serving) {
-    check("serving carries the daemon incarnation from the lease holder", h.incarnation.value === "daemon-A");
-    check("the heartbeat fact reports its real age (4000ms), not zero", h.lastHeartbeat.ageMs === 4_000);
-    check("the heartbeat fact names its source as lease-kv, not the round-trip", h.lastHeartbeat.source === "lease-kv");
-    check("the affirmative fact names its source as responder-roundtrip", h.respondedIn.source === "responder-roundtrip");
-    check("the affirmative fact's own age is 0 — the daemon answered just now", h.respondedIn.ageMs === 0);
-  }
+  const s = servingArm(h);
+  check("serving carries the daemon incarnation from the lease holder", s?.incarnation.value === "daemon-A");
+  check("the heartbeat fact reports its real age (4000ms), not zero", s?.lastHeartbeat.ageMs === 4_000);
+  check("the heartbeat fact names its source as lease-kv, not the round-trip", s?.lastHeartbeat.source === "lease-kv");
+  check("the affirmative fact names its source as responder-roundtrip", s?.respondedIn.source === "responder-roundtrip");
+  check("the affirmative fact's own age is 0 — the daemon answered just now", s?.respondedIn.ageMs === 0);
 }
 
 // ---- no-responder: THE INCIDENT. Fresh lease, nothing answers ----------------------------------
@@ -70,12 +85,11 @@ console.log("\ndelivery-health assessment\n");
   const h = await assessDeliveryHealth(0, TTL, DEADLINE, wedged);
   check("WEDGED: a ready, freshly-renewed lease with no responder REFUSES", h.serving === false);
   check("WEDGED: the refusal is named no-responder specifically", refusalOf(h) === "no-responder");
-  if (!h.serving && h.refusal.condition === "no-responder") {
-    check("WEDGED: the refusal carries the deadline it waited", h.refusal.deadlineMs === DEADLINE);
-    check("WEDGED: the refusal still reports the fresh heartbeat (1000ms) — the two facts disagree, and that IS the finding",
-      h.refusal.lastHeartbeat?.ageMs === 1_000);
-    check("WEDGED: the detail names that the lease claimed ready", /ready:true/.test(h.refusal.detail));
-  }
+  const w = refusalArm(h, "no-responder");
+  check("WEDGED: the refusal carries the deadline it waited", w?.deadlineMs === DEADLINE);
+  check("WEDGED: the refusal still reports the fresh heartbeat (1000ms) — the two facts disagree, and that IS the finding",
+    w?.lastHeartbeat?.ageMs === 1_000);
+  check("WEDGED: the detail names that the lease claimed ready", w !== undefined && /ready:true/.test(w.detail));
   // INVERSE CONTROL: flip ONLY the responder. Same lease, same clock.
   const control = await assessDeliveryHealth(0, TTL, DEADLINE, { ...wedged, probe: answers });
   check("WEDGED inverse control: the identical lease WITH a responder is SERVING — the responder is what decided it",
@@ -93,9 +107,8 @@ console.log("\ndelivery-health assessment\n");
   const h = await assessDeliveryHealth(0, TTL, DEADLINE, stale);
   check("STALE: a heartbeat older than the TTL REFUSES", h.serving === false);
   check("STALE: the refusal is named lease-stale specifically", refusalOf(h) === "lease-stale");
-  if (!h.serving && h.refusal.condition === "lease-stale")
-    check("STALE: the refusal carries the measured age, not just the fact of staleness",
-      h.refusal.lastHeartbeat.ageMs === TTL + 1);
+  check("STALE: the refusal carries the measured age, not just the fact of staleness",
+    refusalArm(h, "lease-stale")?.lastHeartbeat.ageMs === TTL + 1);
   // INVERSE CONTROL: move the heartbeat one ms inside the TTL. Nothing else changes.
   const fresh = await assessDeliveryHealth(0, TTL, DEADLINE, {
     ...stale,
@@ -138,8 +151,9 @@ console.log("\ndelivery-health assessment\n");
   check("REFUSED: the refusal is named refused specifically", refusalOf(h) === "refused");
   check("REFUSED: it is NOT the no-lease refusal — a denial must never render as an absence",
     refusalOf(h) !== "no-lease");
-  if (!h.serving && h.refusal.condition === "refused")
-    check("REFUSED: the refusal names which read failed and why", /delivery lease shard 0/.test(h.refusal.read) && /no grant/.test(h.refusal.detail));
+  const r = refusalArm(h, "refused");
+  check("REFUSED: the refusal names which read failed and why",
+    r !== undefined && /delivery lease shard 0/.test(r.read) && /no grant/.test(r.detail));
 }
 
 // ---- the type-level property: no verdict is ever undefined or a bare boolean -------------------
