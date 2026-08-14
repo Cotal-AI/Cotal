@@ -30,30 +30,38 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** The extreme mtime under `dir` for files matching `ext`, and the file that carried it.
- *  Returns undefined for a missing or empty tree — "no evidence" is a distinct answer from "old",
- *  and the caller must not be able to confuse them. */
-function extreme(dir: string, ext: string, pick: "newest" | "oldest"): { path: string; mtimeMs: number } | undefined {
-  if (!existsSync(dir)) return undefined;
-  let best: { path: string; mtimeMs: number } | undefined;
+/** Every file under `dir` ending in `ext`, recursively. Empty for a missing tree. */
+function allFiles(dir: string, ext: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
   const walk = (d: string): void => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith(ext)) {
-        const { mtimeMs } = statSync(p);
-        const better = !best || (pick === "newest" ? mtimeMs > best.mtimeMs : mtimeMs < best.mtimeMs);
-        if (better) best = { path: p, mtimeMs };
-      }
+      else if (e.name.endsWith(ext)) out.push(p);
     }
   };
   walk(dir);
+  return out;
+}
+
+/** The extreme mtime under `dir` for files matching `ext`, and the file that carried it.
+ *  Returns undefined for a missing or empty tree — "no evidence" is a distinct answer from "old",
+ *  and the caller must not be able to confuse them. */
+function extreme(dir: string, ext: string, pick: "newest" | "oldest"): { path: string; mtimeMs: number } | undefined {
+  let best: { path: string; mtimeMs: number } | undefined;
+  for (const p of allFiles(dir, ext)) {
+    const { mtimeMs } = statSync(p);
+    const better = !best || (pick === "newest" ? mtimeMs > best.mtimeMs : mtimeMs < best.mtimeMs);
+    if (better) best = { path: p, mtimeMs };
+  }
   return best;
 }
 
 export type BuildStaleness =
   | { condition: "current"; pkg: string }
   | { condition: "never-built"; pkg: string; detail: string }
+  | { condition: "incomplete-build"; pkg: string; detail: string; srcPath: string; expected: string }
   | { condition: "no-package"; pkg: string; detail: string }
   | { condition: "no-source"; pkg: string; detail: string }
   | { condition: "stale"; pkg: string; detail: string; srcPath: string; distPath: string; behindMs: number };
@@ -77,6 +85,26 @@ export function buildStaleness(pkgDir: string): BuildStaleness {
   const dist = extreme(join(pkgDir, "dist"), ".js", "oldest");
   if (!src) return { condition: "no-source", pkg: pkgDir, detail: `no .ts files under ${join(pkgDir, "src")}` };
   if (!dist) return { condition: "never-built", pkg: pkgDir, detail: `no .js files under ${join(pkgDir, "dist")} — this package has never been built, so a suite driving it measures nothing` };
+
+  // PER-OUTPUT: every source must have its OWN output, present and not older than it.
+  // The aggregate comparison below catches an output that is present-but-old. It cannot catch an
+  // output that is ABSENT — the oldest of the surviving files says nothing about the one that is
+  // gone, so a build that emitted `b.js` and never emitted `a.js` read as `current`. Found by
+  // review, reproduced with a real two-source package before this was written.
+  // `.d.ts` sources are skipped: they are declarations and emit no `.js`, so requiring one would
+  // make every package with an ambient declaration permanently incomplete.
+  const srcRoot = join(pkgDir, "src");
+  const missing = allFiles(srcRoot, ".ts")
+    .filter((p) => !p.endsWith(".d.ts"))
+    .map((p) => ({ srcPath: p, expected: join(pkgDir, "dist", `${p.slice(srcRoot.length + 1, -3)}.js`) }))
+    .find(({ expected }) => !existsSync(expected));
+  if (missing)
+    return {
+      condition: "incomplete-build", pkg: pkgDir,
+      srcPath: missing.srcPath, expected: missing.expected,
+      detail: `${missing.srcPath} has no build output at ${missing.expected} — the build did not emit every source, so the package is only partly built`,
+    };
+
   if (src.mtimeMs > dist.mtimeMs)
     return {
       condition: "stale", pkg: pkgDir,

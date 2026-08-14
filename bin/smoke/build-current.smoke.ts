@@ -109,6 +109,57 @@ stamp(join(allFresh, "dist", "a.js"), T + 60_000);
 stamp(join(allFresh, "dist", "b.js"), T + 61_000);
 check("INVERSE: a fully rebuilt multi-file package is still `current`", buildStaleness(allFresh).condition === "current");
 
+// MISSING OUTPUT — the second fail-open found in review, and it is a DIFFERENT state from the one
+// above. `stale` means the output is present and old; this means the output was never emitted at
+// all. The oldest-output comparison cannot see it: the oldest of the files that DO exist says
+// nothing about the one that does not, so `src/a.ts` + `src/b.ts` with only a fresh `dist/b.js`
+// read as `current`. Every fixture above creates an output for every source, which is exactly why
+// none of them could construct this.
+const noOut = join(root, "missing-output-pkg");
+mkdirSync(join(noOut, "src"), { recursive: true });
+mkdirSync(join(noOut, "dist"), { recursive: true });
+stamp(join(noOut, "src", "a.ts"), T);
+stamp(join(noOut, "src", "b.ts"), T);
+stamp(join(noOut, "dist", "b.js"), T + 60_000);     // fresh — and `a.js` was never emitted
+const miss = buildStaleness(noOut);
+check("MISSING OUTPUT: a source with no build output at all is `incomplete-build`, not `current`",
+  miss.condition === "incomplete-build");
+check("MISSING OUTPUT: it is NOT collapsed into `stale` — never emitted and emitted-old are different facts",
+  miss.condition !== "stale");
+check("MISSING OUTPUT: the verdict names the source that was not emitted",
+  miss.condition === "incomplete-build" && miss.srcPath.endsWith(join("src", "a.ts")));
+check("MISSING OUTPUT: the verdict names the output path it looked for and did not find",
+  miss.condition === "incomplete-build" && miss.expected.endsWith(join("dist", "a.js")));
+check("MISSING OUTPUT: assertBuildCurrent REFUSES it, naming that condition",
+  refusedWith(() => assertBuildCurrent([noOut]), "(incomplete-build)"));
+// INVERSE for the per-output rule: nested outputs must be matched by their OWN relative path, or
+// the rule would either refuse every package with subdirectories or pass on a name collision.
+const nested = join(root, "nested-pkg");
+mkdirSync(join(nested, "src", "lib"), { recursive: true });
+mkdirSync(join(nested, "dist", "lib"), { recursive: true });
+stamp(join(nested, "src", "lib", "a.ts"), T);
+stamp(join(nested, "dist", "lib", "a.js"), T + 60_000);
+check("INVERSE: a nested source matched by its own relative output path is `current`",
+  buildStaleness(nested).condition === "current");
+// …and the flat-name collision the inverse above would hide: `dist/a.js` must NOT satisfy
+// `src/lib/a.ts`. Without this, matching on basename alone would pass and look identical.
+const collide = join(root, "collide-pkg");
+mkdirSync(join(collide, "src", "lib"), { recursive: true });
+mkdirSync(join(collide, "dist"), { recursive: true });
+stamp(join(collide, "src", "lib", "a.ts"), T);
+stamp(join(collide, "dist", "a.js"), T + 60_000);   // right basename, WRONG path
+check("COLLISION: a same-named output at the wrong path does NOT satisfy a nested source",
+  buildStaleness(collide).condition === "incomplete-build");
+// A `.d.ts` source emits no `.js`. Requiring one would make every package shipping an ambient
+// declaration permanently `incomplete-build` — a guard that refuses everything is not a guard.
+const dts = join(root, "dts-pkg");
+mkdirSync(join(dts, "src"), { recursive: true });
+mkdirSync(join(dts, "dist"), { recursive: true });
+stamp(join(dts, "src", "a.ts"), T);
+stamp(join(dts, "src", "env.d.ts"), T);
+stamp(join(dts, "dist", "a.js"), T + 60_000);
+check("EXEMPTION: a .d.ts source is not expected to have a .js output", buildStaleness(dts).condition === "current");
+
 // A MISSING package must not be dressed up as a build fact. Before this split, a typo'd path
 // returned `no-source` and refused with "run pnpm build" — an instruction that cannot fix it, while
 // the package the caller meant to check went unexamined and unmentioned.
@@ -134,8 +185,18 @@ const rcOf = (...argv: string[]): number =>
 check("EXIT 0: a current package exits 0", rcOf(cliPkg) === 0);
 check("EXIT 94: a stale package exits 94 (a build verdict)", rcOf(stale) === 94);
 check("EXIT 94: a never-built package exits 94 (also a build verdict)", rcOf(unbuilt) === 94);
+check("EXIT 94: an incomplete build exits 94 (a build verdict, not a guard failure)", rcOf(noOut) === 94);
 check("EXIT 95: a MISSING package exits 95, not 94 — the guard could not run", rcOf(missing) === 95);
 check("EXIT 95: no arguments exits 95, not 0 — a guard called with nothing must not pass", rcOf() === 95);
+
+// PIN THE COUNT. `pass` climbing while a cell silently stops running is a green that describes a
+// smaller suite than the one it names — and nothing in "32 passed, 0 failed" says how many were
+// supposed to run. Update this deliberately when adding a cell.
+const EXPECTED_CELLS = 32;
+if (pass + fail !== EXPECTED_CELLS) {
+  fail++;
+  console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);
+}
 
 console.log(`\nbuild-current: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
