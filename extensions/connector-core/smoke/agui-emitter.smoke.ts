@@ -51,6 +51,9 @@
  *       -> `bracket:CONTROL-a-violation-on-a-VIRGIN-frontier-is-NOT-blamed-on-a-restart`
  *   B3  never diagnose; surface the raw refusal
  *       -> `bracket:a-mid-run-restart-names-ITSELF-not-the-writer`
+ * ALL THREE KILLED on their named cells. B1 and B2 are the pair worth reading together: each one
+ * leaves the headline cell GREEN and kills only its own control, which is what a confident wrong
+ * diagnosis looks like from the inside.
  *
  * ONE THING NO CELL HERE CAN DISCRIMINATE, said plainly rather than left as an unproven constant:
  * `SIZING_EXPECTATION`. Measuring at `MAX_SAFE_INTEGER` is a provable upper bound, but the real
