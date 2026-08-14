@@ -46,6 +46,7 @@ import {
   possessionKey,
   principalKey,
   putAttachmentIfAbsent,
+  deleteAttachment,
   readAclForAlias,
   readPossession,
   setupSpaceStreams,
@@ -122,6 +123,7 @@ try {
     },
     hasPossession: (digest, principal, lifecycleUid) => readPossession(possession, digest, principal, lifecycleUid),
     putAttachment: (digest, channel, row) => putAttachmentIfAbsent(attach, digest, channel, row),
+    dropAttachment: (digest, channel) => deleteAttachment(attach, digest, channel),
     now: () => 1000,
   };
 

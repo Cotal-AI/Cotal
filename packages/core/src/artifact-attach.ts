@@ -142,8 +142,20 @@ export interface ConfirmAttachDeps {
    * only if this dependency is insert-if-absent. Stated here because a contract that lives in one
    * function's comment while being enforced in another's implementation is a contract nobody checks.
    * S5 owes the cell: confirm twice, assert `createdAt` is unchanged.
+   *
+   * IT RETURNS WHETHER IT INSERTED, and that boolean is load-bearing rather than informational.
+   * The fence below can be overtaken: possession reads true, a sweep then removes the possession
+   * and attachment rows, and this write lands afterwards and RECREATES the attachment — resurrecting
+   * a swept digest, which the write's own comment promises it may never do. Undoing that requires
+   * knowing whether this call created the row or found one already there, because rolling back a row
+   * we did not write would delete a live attachment belonging to someone else's confirm.
    */
-  putAttachment(digest: string, channel: string, row: AttachmentRow): Promise<void>;
+  putAttachment(digest: string, channel: string, row: AttachmentRow): Promise<boolean>;
+  /**
+   * Remove an attachment row. Called on ONE path only: rolling back an insert that lost the race
+   * against a sweep. It is not a verb and there is deliberately no caller-reachable route to it.
+   */
+  dropAttachment(digest: string, channel: string): Promise<void>;
   now(): number;
 }
 
@@ -239,8 +251,10 @@ export async function confirmAttach(
   // ON TIMING. A previous comment here claimed both refusal paths perform the possession read, and
   // that was false: the foreign path short-circuits at the sender check and performs ZERO. With the
   // collapse moved to the front that is now the DESIGN rather than a defect — a foreign caller is
-  // refused before any possession lookup, so there is no possession-read count to compare. The only
-  // callers reaching this line are owners of the entry, and they all do exactly one read.
+  // refused before any possession lookup, so there is no possession-read count to compare. Every
+  // caller reaching this line is an owner of the entry, and the count differs only between OWNERS —
+  // one read when this refuses, two when the write is confirmed below — which distinguishes nothing
+  // a successful confirm has not already told the same caller outright.
   // ---------------------------------------------------------------------------------------------
   if (!(await deps.hasPossession(args.digest, caller, lifecycleUid)))
     return { ok: false, error: ATTACH_REFUSAL.notYours };
@@ -250,9 +264,35 @@ export async function confirmAttach(
   // any legitimate publisher becomes an unbounded-retention primitive without ever calling `pin`.
   // The row records the LIFECYCLE that confirmed it, never the alias, so `pin` cannot later be
   // satisfied by a successor.
-  await deps.putAttachment(args.digest, args.channel, {
+  const inserted = await deps.putAttachment(args.digest, args.channel, {
     attacherLifecycleUid: lifecycleUid,
     createdAt: deps.now(),
   });
+
+  // ---------------------------------------------------------------------------------------------
+  // THE FENCE CAN BE OVERTAKEN, AND FOR ONE REVISION THE COMMENT ABOVE WAS A PROMISE THE CODE COULD
+  // NOT KEEP. Between the possession read and this write, a sweep can remove BOTH the possession row
+  // and the attachment row; the write then lands and recreates the attachment — resurrecting exactly
+  // the swept digest the line above says it may never resurrect. Reproduced on real KV, no adversary
+  // and no unusual timing required, because the two steps are separate round trips to the broker.
+  //
+  // So the write is confirmed against the state it was authorized by. Re-reading possession AFTER
+  // the write is what makes the ordering safe: a sweep that ran at any point before this read is
+  // seen here, and one that runs after it removes both rows itself and leaves nothing behind.
+  //
+  // ONLY AN INSERT IS ROLLED BACK. If the row was already there, this call resurrected nothing —
+  // some earlier confirm wrote it and the sweep will collect it on its own terms. Deleting it would
+  // turn a lost race into the destruction of a live attachment, which is a worse outcome than the
+  // one being fixed.
+  //
+  // WHAT THIS DOES NOT CLAIM. The row is briefly visible to a concurrent reader before the rollback,
+  // and closing that needs a compare-and-delete the KV surface does not offer against a key another
+  // writer may have replaced. What is guaranteed is the TERMINAL state: no attachment row survives
+  // this call for a digest whose possession was swept before the write was confirmed.
+  // ---------------------------------------------------------------------------------------------
+  if (inserted && !(await deps.hasPossession(args.digest, caller, lifecycleUid))) {
+    await deps.dropAttachment(args.digest, args.channel);
+    return { ok: false, error: ATTACH_REFUSAL.notYours };
+  }
   return { ok: true };
 }

@@ -74,6 +74,8 @@ const refuses = async (
 
 const DIGEST = "sha256:" + "ab".repeat(32);
 const OTHER_DIGEST = "sha256:" + "cd".repeat(32);
+const RACE_A = "sha256:" + "1a".repeat(32);
+const RACE_B = "sha256:" + "1b".repeat(32);
 const base: ConfirmAttachArgs = { digest: DIGEST, channel: "general", seq: 1 };
 
 const SPACE = "main";
@@ -128,6 +130,11 @@ const ENTRIES: Record<number, { subject: string; msg: CotalMessage } | null> = {
     subject: chatSubject(SPACE, OWNER, ACTOR, "multi"),
     msg: { ...msgWith([artifactPart(DIGEST), artifactPart(OTHER_DIGEST)]), channel: "multi" } as CotalMessage,
   },
+  // Carries both race digests so the race cells need only one entry, on a channel of their own.
+  12: {
+    subject: chatSubject(SPACE, OWNER, ACTOR, "race"),
+    msg: { ...msgWith([artifactPart(RACE_A), artifactPart(RACE_B)]), channel: "race" } as CotalMessage,
+  },
 };
 
 const attachments: { digest: string; channel: string; lc: string }[] = [];
@@ -136,7 +143,15 @@ const deps = (over: Partial<ConfirmAttachDeps> = {}): ConfirmAttachDeps => ({
   async liveLifecycleFor() { return LC; },
   // seq 3 is the no-possession fixture; every other seq possesses.
   async hasPossession() { return true; },
-  async putAttachment(digest, channel, row) { attachments.push({ digest, channel, lc: row.attacherLifecycleUid }); },
+  async putAttachment(digest, channel, row) {
+    const had = attachments.some((a) => a.digest === digest && a.channel === channel);
+    if (!had) attachments.push({ digest, channel, lc: row.attacherLifecycleUid });
+    return !had;
+  },
+  async dropAttachment(digest, channel) {
+    const i = attachments.findIndex((a) => a.digest === digest && a.channel === channel);
+    if (i >= 0) attachments.splice(i, 1);
+  },
   now() { return 1; },
   ...over,
 });
@@ -294,6 +309,44 @@ await refuses("A7 two live ACL rows for the alias refuse `AmbiguousAclAlias`, di
     { async liveLifecycleFor() { return LC; }, hasPossession: possession });
   check("S1-CONTROL the PREDECESSOR — same double, same entry, its own lifecycle — SUCCEEDS",
     reply.ok === true, reply);
+}
+
+// ---- THE SWEEP RACE — the write must not resurrect what the sweep removed ----------------------
+//
+// The possession read and the attachment write are two separate round trips. A sweep landing between
+// them removes the possession row AND the attachment row, and the write then RECREATES the
+// attachment — resurrecting a swept digest, which the write's own comment promises it may never do.
+// Reproduced on real KV by the review seat with no adversary and no unusual timing.
+//
+// Driven deterministically here by a possession dep that answers TRUE to the fence and FALSE to the
+// confirming re-read, which is exactly the interleaving without the flakiness of provoking it.
+{
+  const flip = () => { let n = 0; return async () => (n++ === 0); };
+
+  // R1/R2 — the race is LOST and the insert is undone.
+  const lost = await run({ digest: RACE_A, channel: "race", seq: 12 }, { hasPossession: flip() });
+  check("R1 a confirm whose possession is swept mid-write is REFUSED, under the collapsed name",
+    lost.ok === false && lost.error === ATTACH_REFUSAL.notYours, lost);
+  check("R2 and the row it inserted is GONE — the swept digest is not resurrected",
+    !attachments.some((a) => a.digest === RACE_A), attachments.filter((a) => a.channel === "race"));
+
+  // R3 — THE CONTROL. Same entry, same channel, possession that does NOT vanish. Without it, a
+  // rollback that fired unconditionally would satisfy R1 and R2 perfectly.
+  const kept = await run({ digest: RACE_A, channel: "race", seq: 12 });
+  check("R3 CONTROL an unswept confirm still SUCCEEDS and keeps its row",
+    kept.ok === true && attachments.some((a) => a.digest === RACE_A), kept);
+
+  // R4 — AND A ROW WE DID NOT WRITE IS NOT COLLATERAL. The rollback is keyed on whether THIS call
+  // inserted, not on whether possession vanished: a confirm that finds an existing row resurrected
+  // nothing, and deleting it would turn a lost race into the destruction of a live attachment
+  // belonging to some other principal's confirm. That is a worse outcome than the bug being fixed,
+  // and it is the failure mode a naive "delete on lost race" would introduce.
+  const seeded = await run({ digest: RACE_B, channel: "race", seq: 12 });
+  check("R4-pre a first confirm writes the row", seeded.ok === true, seeded);
+  const second = await run({ digest: RACE_B, channel: "race", seq: 12 }, { hasPossession: flip() });
+  check("R4 a repeat confirm that loses the race leaves the PRE-EXISTING row alone",
+    attachments.some((a) => a.digest === RACE_B), attachments.filter((a) => a.channel === "race"));
+  check("R4b and it does not report a failure it did not cause", second.ok === true, second);
 }
 
 // ---- THE STRUCTURE ORACLE, CLOSED — asserted as an INDISTINGUISHABILITY -------------------------

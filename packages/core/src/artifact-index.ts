@@ -105,6 +105,7 @@ export interface AttachmentRow {
 export interface AttachmentKv {
   create(key: string, value: Uint8Array): Promise<number>;
   get(key: string): Promise<{ operation?: string } | null>;
+  delete(key: string): Promise<void>;
 }
 
 /**
@@ -135,18 +136,34 @@ export async function putAttachmentIfAbsent(
   digest: string,
   channel: string,
   row: AttachmentRow,
-): Promise<void> {
+): Promise<boolean> {
   const key = attachmentKey(digest, channel);
   try {
     await kv.create(key, new TextEncoder().encode(JSON.stringify(row)));
+    // TRUE means THIS call created the row. The caller uses it to decide whether an attachment may
+    // be rolled back after a lost race, so reporting a found row as an insert would delete someone
+    // else's live attachment.
+    return true;
   } catch (e) {
     const existing = await kv.get(key);
     // Only a PUT is presence. DEL and PURGE are absence wearing an object — a tombstone here means
     // the create failed for some OTHER reason and the row is genuinely gone, so this must not
     // silently report success over it.
-    if (existing !== null && existing.operation === "PUT") return;
+    if (existing !== null && existing.operation === "PUT") return false;
     throw e;
   }
+}
+
+/**
+ * Delete one attachment row, EXACT KEY.
+ *
+ * ONE CALLER, ONE PURPOSE: `confirmAttach` rolling back an insert that lost the race against a
+ * sweep. It is not reachable from any verb, because a caller-reachable attachment delete would let a
+ * publisher detach bytes from a channel other principals can already read — a different power from
+ * the one `confirmAttach` grants, arriving through the same rail.
+ */
+export async function deleteAttachment(kv: AttachmentKv, digest: string, channel: string): Promise<void> {
+  await kv.delete(attachmentKey(digest, channel));
 }
 
 /**
