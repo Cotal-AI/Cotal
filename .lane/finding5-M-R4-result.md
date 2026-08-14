@@ -22,7 +22,25 @@ than described.
 | `exit-trap.rc` | **`1`** — from the EXIT trap, not a pipe |
 | `restore-suite.out` | the post-restore run |
 | `restore-exit-trap.rc` | **`0`** |
-| `build.log`, `restore-build.log` | the mutant and restore builds (`dist` is what actually runs) |
+| `build.log`, `restore-build.log` | the mutant and restore build invocations — **the command line only (`$ tsc -p tsconfig.json`), NOT an exit code.** Both builds' rc were read directly at the time and were 0; that reading is not in these files |
+
+**Verify this table rather than trusting it** — `git ls-files .lane/mutants/M-R4/` must list every row
+above. It did not, and that is finding 3 below.
+
+## ⚠️ The inventory above was WRONG when first written, and the way it was wrong is the point
+
+**Root `.gitignore:5` is `*.log`.** `git add .lane/mutants` **exited 0 and silently omitted both build
+logs**, while this file claimed they were preserved. The files existed on disk the whole time, so
+nothing looked missing from where I was standing.
+
+**A successful `git add` that skipped two files, and a confident inventory written from intent
+rather than from `git ls-files`.** Same shape as every other instrument failure in this lane
+tonight: *the tool answered, the answer was well-formed, and it was about something other than what
+I asked.* Found in review, not by me.
+
+Fixed by force-adding the evidence and scoping a negation in `.lane/mutants/.gitignore`, so the next
+mutation record cannot be silently thinned the same way. **The general rule: an evidence inventory
+is a claim about the repository, and it must be READ BACK from the repository.**
 
 ## The mutation
 
