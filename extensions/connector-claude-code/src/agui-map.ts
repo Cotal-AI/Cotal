@@ -26,21 +26,35 @@
  * Neither is silently absorbed: {@link closeOpenRun} exists so the connector's `Stop` hook can shut
  * the run at the real boundary once a vehicle is ruled, and until then the lag is honest.
  *
- * **(B) `origin.kind === "human"` MATCHES NOTHING IN A REAL SESSION — MEASURED, on both shapes, and
+ * **(B) `origin.kind === "human"` OPENS NO RUN IN ANY AGENT-DRIVEN SESSION — MEASURED on three, and
  * this is why the mapping smoke reads a real session rather than a fixture.** §3.1's rule is right
- * about what it excludes (peer/mesh injections, task notifications, resumed-session summaries). What
- * it does not do is select anything:
+ * about what it excludes (peer/mesh injections, task notifications, resumed-session summaries). The
+ * problem is what is left to select. Partitioned by CONTENT SHAPE, not just counted:
  *
- *   - **headless / SDK** (`claude -p`), 30 records, 5 user entries: `origin` ABSENT from every one.
- *   - **interactive**, 5938 records, 892 user entries: `origin` absent from 825, and present on 67
- *     — every one of them `kind: "channel"`, a Cotal mesh delivery. `kind: "human"` occurs **zero**
- *     times.
+ *   | session | user entries | `tool_result` | mesh (`origin.kind:"channel"`) | compact summary | human |
+ *   | --- | --- | --- | --- | --- | --- |
+ *   | interactive, 5938 rec | 892 | 824 | 67 | 1 | **0** |
+ *   | headless `claude -p`, 30 rec | 5 | 3 | 0 | 0 | **0** (2 prompts, `promptSource:"sdk"`) |
+ *   | agent session, 1088 rec | 90 | 86 | 4 | 0 | **0** |
  *
- * An earlier revision of this comment recorded (B) as HEADLESS-ONLY and said the interactive case
- * was fine. That was wrong and a real interactive session is what falsified it: a human turn is
- * simply a `user` entry with no `origin` at all. Applied to either shape the rule emits ZERO
- * prompts, and because an assistant observation cannot name a run that was never opened, **a real
- * session maps to no events whatsoever** — the exact regression §3.1 says omitting prompts would be.
+ * **`kind:"human"` occurs zero times — but so does a human.** `~/.claude/history.jsonl`, which
+ * records typed prompts through a different mechanism entirely, reports **0** for all three sessions
+ * and 0 for this worktree. The two sources agree, so zero matches is the CORRECT result on these
+ * captures and NOT evidence the rule is wrong. **The rule is unexercised here, not disproven**, and
+ * nothing available measures whether it fires on a session a person actually types into.
+ *
+ * **What IS established, and what blocks:** on agent-driven sessions — the workload this fleet
+ * actually runs — no run is ever opened, so the connector emits nothing. §3.1 never answers what
+ * opens a run in a session nobody types into. The real turn-initiators here are the mesh deliveries
+ * (`origin.kind:"channel"`, `promptSource:"system"`), which §3.1 explicitly excludes.
+ *
+ * **DO NOT "FIX" THIS BY TREATING ABSENT `origin` AS HUMAN.** In a Claude session `user` is also the
+ * role of a TOOL RESULT: that predicate selects **825** of the interactive session's 892 user
+ * entries, and the single non-tool-result among them is a **context-compaction summary**
+ * (`isCompactSummary`), so the true human count is 0 and the predicate over-matches by 825. It would
+ * not emit nothing — it would emit a flood, each entry opening a run, which looks like the connector
+ * working. An earlier revision of this comment recorded (B) as HEADLESS-ONLY and asserted a human
+ * turn is "a `user` entry with no `origin`"; both halves were wrong.
  *
  * **The rule is implemented exactly as specified and is NOT patched here.** Extending it to
  * `promptSource`, or to "a user entry with no origin", would be putting a guess in the connector:
