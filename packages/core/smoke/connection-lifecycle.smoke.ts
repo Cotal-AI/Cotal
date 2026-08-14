@@ -223,9 +223,22 @@ try {
   const TTL = 4; // renewal arms at 75% ⇒ ~3s
   const cid = newIdentity();
   let mints = 0;
+  // ARM 3b needs to HOLD a source call open across a disconnect — the crossing that no timer fence
+  // can reach, because the call is already past every fence when the disconnect happens.
+  let holdNext = false;
+  let release: (() => void) | undefined;
+  const heldSource = async (): Promise<string> => {
+    mints++;
+    const cred = await mintCreds(auth, cid, "supervisor", { expiresInSeconds: TTL });
+    if (holdNext) {
+      holdNext = false;
+      await new Promise<void>((r) => { release = r; });
+    }
+    return cred;
+  };
   c = new CotalEndpoint({
     space, servers: SERVERS,
-    creds: () => { mints++; return mintCreds(auth, cid, "supervisor", { expiresInSeconds: TTL }); },
+    creds: heldSource,
     card: { id: cid.id, name: "renewer", kind: "endpoint" },
     consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
   });
@@ -251,6 +264,42 @@ try {
     await until(() => mints > mintsAtOn, TTL * 1000 + 2000), { atOn: mintsAtOn, now: mints });
   check("D3f CONTROL: and the broker's cumulative count rose (so D3c could have failed)",
     (await varz()).total > before3c.total, { before: before3c.total, after: (await varz()).total });
+
+  // ══ ARM 3b — the CROSSING: a source call already in flight when the disconnect lands ══════════
+  // Reproduced by review at the previous tip: every earlier fence is already behind this call, and
+  // the next thing it touches is the preflight — an authenticated dial from an endpoint that has
+  // left the mesh. Clearing the timer cannot reach it; the fence has to sit between the source
+  // await and the proof. Discarding is the only correct outcome: prove-before-adopt forbids
+  // committing without the broker proof, and being deliberately off forbids taking it.
+  console.log("\n=== ARM 3b: a renewal already inside its source call when disconnect lands ===");
+  holdNext = true;
+  release = undefined;
+  const held = await until(() => release !== undefined, TTL * 1000 + 3000);
+  check("setup: a renewal is HELD inside its source call (the state a fresh run cannot produce)", held, { mints });
+  const d3b = await c.disconnect("arm3b");
+  check("D3g it disconnects while that renewal is mid-flight", d3b.outcome === "disconnected", d3b);
+  const before3b = await varz();
+  release!(); // the crossing: the held call now returns, past every earlier fence
+  await wait(2000);
+  check("D3h the crossed renewal does NOT dial the broker — the candidate is discarded unproven",
+    (await varz()).total === before3b.total, { before: before3b.total, after: (await varz()).total });
+  check("D3i and it did not re-arm behind the disconnect", c.isSelfDisconnected() === true, { self: c.isSelfDisconnected() });
+
+  console.log("\n--- INVERSE CONTROL: the same held call, WITHOUT a disconnect, DOES dial ---");
+  const r3b = await c.connect();
+  check("D3j CONTROL: it comes back", r3b.outcome === "connected", r3b);
+  holdNext = true;
+  release = undefined;
+  const held2 = await until(() => release !== undefined, TTL * 1000 + 3000);
+  check("setup: a second renewal is held, this time with no disconnect", held2, { mints });
+  const before3j = await varz();
+  release!();
+  const dialled = await (async () => {
+    for (let i = 0; i < 40; i++) { if ((await varz()).total > before3j.total) return true; await wait(100); }
+    return false;
+  })();
+  check("D3k CONTROL: released with the endpoint CONNECTED, the renewal DOES reach the broker (so D3h could have failed)",
+    dialled, { before: before3j.total, after: (await varz()).total });
 
   console.log(`\nCONNECTION-LIFECYCLE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

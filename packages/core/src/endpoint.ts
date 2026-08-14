@@ -852,6 +852,17 @@ export class CotalEndpoint extends EventEmitter {
     if (Date.now() > deadline)
       throw new Error("reloadCreds: the request deadline elapsed while queued behind another credential transaction; nothing adopted");
     const candidate = await CotalEndpoint.withDeadline(this.credsSource!(), deadline - Date.now(), "reloadCreds: the creds source did not return before the daemon deadline; nothing adopted");
+    // FENCE AFTER THE SOURCE AWAIT, and this is the only place it can go. A transaction already
+    // inside its source call when disconnect() ran crosses the disconnect HERE, past every earlier
+    // fence, and the next statement to touch the network is the preflight — an AUTHENTICATED broker
+    // dial from an endpoint that has deliberately left the mesh. Measured by review at exactly this
+    // point: the broker's cumulative connection count rose while `selfDisconnected` was true.
+    //
+    // DISCARDING is the only correct outcome, not "commit but skip the dial": under prove-before-adopt
+    // a candidate may not be committed without the broker proof, and being deliberately off forbids
+    // taking that proof. So the candidate is dropped and re-fetched, and re-proven, on connect().
+    if (this.selfDisconnected)
+      throw new Error("credential renewal crossed a deliberate disconnect; the candidate was discarded unproven rather than preflighted from an endpoint that is off the mesh - connect() re-fetches and re-proves it");
     const id = idFromCreds(candidate);
     if (id !== this.connId)
       throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
