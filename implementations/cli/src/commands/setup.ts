@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, r
 import { join, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
+import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, loadManagerInstanceIdentity, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, canonicalSkillNames, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
@@ -15,8 +15,9 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerLivenessSnapshot } from "../lib/manager-proc.js";
+import { managerClaim, mintHealthCaller, probeManagerHealth } from "../lib/manager-health.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
-import { cotalPath } from "../lib/paths.js";
+import { cotalPath, cotalRoot } from "../lib/paths.js";
 
 const ONBOARD_VERSION = "2";
 const README_URL = "https://github.com/Cotal-AI/Cotal/blob/main/README.md";
@@ -360,6 +361,55 @@ function webInstalled(): boolean {
  *  Age is not rendered on purpose: the liveness observation is made synchronously here, so its age
  *  is zero by construction. Stamping the PIDFILE's mtime beside it would show the age of the record
  *  as the age of the observation, which is the conflation this surface exists to avoid. */
+/** The row once an AFFIRMATIVE health read is possible: green only when a manager pinned to this
+ *  root's instance actually answered and identified itself as that instance.
+ *
+ *  The local pid evidence is still read — it is what separates a wedged manager from an absent one
+ *  when nothing answers — but it no longer produces the claim on its own. `managerClaim` owns the
+ *  decision and is asserted separately over all 40 combinations; this function only renders it.
+ *
+ *  INHERITED, NOT INTRODUCED: the server comes from `meshStatus`, which hardcodes `DEFAULT_SERVER`
+ *  rather than consulting the registered mesh. That defect is filed and is not this change's to fix
+ *  — but the health verdict carries its SOURCE, which names the server that was actually asked, so
+ *  it now shows up in the row a reader can see instead of silently deciding the answer. */
+async function managerHealthRow(cmd: string, mesh: { server: string; space: string }): Promise<{ marker: string; text: string }> {
+  const start = `start: ${cmd} up, or: ${cmd} supervise`;
+  const src = ".cotal/manager.pid";
+  // ONE read, for the same reason as below: the pid displayed must be the pid probed.
+  const { state, pid } = managerLivenessSnapshot();
+  const root = cotalRoot();
+  const instanceId = loadManagerInstanceIdentity(root, mesh.space)?.instanceId;
+  const minted = instanceId === undefined ? undefined : await mintHealthCaller({ root, space: mesh.space, instanceId });
+  const health = await probeManagerHealth({
+    space: mesh.space, server: mesh.server, instanceId,
+    caller: minted?.caller, ...(minted?.creds !== undefined ? { creds: minted.creds } : {}),
+  });
+  const claim = managerClaim(state, health);
+  // The SOURCE travels with every row that has local evidence. Dropping it on the non-green arms was
+  // a real regression in the first wiring: the `cannot establish` row named the condition but not the
+  // pid or the file it came from, so a reader could not tell WHICH record the verdict was about.
+  // "Every fact carries its source" is one of this surface's three answers, and it is least
+  // convenient exactly where the answer is unwelcome.
+  const where = pid === undefined ? src : `pid ${pid} · ${src}`;
+  switch (claim.claim) {
+    // `✓` is reachable ONLY from an attributed affirmative reply. That is the whole of scope 2, and
+    // the tick is the one thing a reader takes at a glance.
+    case "serving":
+      return { marker: ok("✓"), text: `serving · ${claim.detail}` };
+    case "absent":
+      return { marker: dim("○"), text: `not running · ${claim.detail} · ${start}` };
+    // `!` rather than `○`: a live process that is not serving is not the same as nothing being
+    // there, and it must not read as quietly fine OR as absence — an operator who reads absence
+    // here starts a second manager alongside the wedged one.
+    case "wedged":
+      return { marker: "!", text: `NOT SERVING · ${claim.detail} (${where})` };
+    case "refused":
+    case "misattributed":
+    case "cannot-establish":
+      return { marker: "?", text: `cannot establish: ${claim.detail} (${where}) · no action recommended` };
+  }
+}
+
 function managerRow(cmd: string): { marker: string; text: string } {
   const start = `start: ${cmd} up, or: ${cmd} supervise`;
   // Named relative, not absolute. The source must be unambiguous, but this is a one-glance card and
@@ -396,7 +446,7 @@ async function readyCard(cwd: string): Promise<void> {
   // A marker per state, because the manager row has THREE outcomes and a boolean has two. `?` is
   // deliberately not dim: "cannot establish" must not read as quietly fine.
   const mark = (m: string, text: string) => `${m} ${text}`;
-  const mgr = managerRow(cmd);
+  const mgr = await managerHealthRow(cmd, mesh);
   note(
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),

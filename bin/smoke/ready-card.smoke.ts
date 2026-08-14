@@ -105,12 +105,26 @@ check("P0-control: the manager row was FOUND in the rendered card (an empty extr
 check("ALIVE: an unrelated live pid is NEVER claimed running (no ✓ on the row)", !alive.includes("✓"));
 check("ALIVE: the row names its SOURCE — the pid and the pidfile it came from",
   alive.includes(String(plantedPid)) && alive.includes("manager.pid"));
-check("ALIVE: the row says serving was NOT checked, rather than implying it was", alive.includes("serving not checked"));
+// Since the affirmative read landed, the row no longer says "serving not checked" — it says what
+// was actually established. What must hold in EVERY case is that it never implies serving without
+// having established it, and that it names the condition rather than going quiet.
+check("ALIVE: the row does not claim serving, and says which condition stopped it",
+  !alive.includes("· serving ·") && (alive.includes("NOT SERVING") || alive.includes("cannot establish")));
 check("ALIVE: the row offers NO start hint over a live process", !alive.includes("start:"));
 // The extractor must not have stopped early: the row wraps, and a truncated read would satisfy every
 // absence check above for the wrong reason.
 check("P0-bound: the extract reached the END of the wrapped row, not just its first line",
-  alive.includes("serving not checked") && alive.length > 40);
+  alive.includes(".cotal/manager.pid") && alive.length > 60);
+// The row must not say the same thing twice. The first wiring rendered "pid N (…) is present but a
+// local process is present but no manager answered" — the renderer's own preamble colliding with
+// the claim's detail. Caught by reading the real output, not by any assertion that existed.
+check("ALIVE: the row does not repeat itself (no duplicated 'is present')",
+  (alive.match(/is present/g) ?? []).length <= 1);
+// ⚠️ NOTHING WAS ASKED in this scratch: no manager instance is recorded, so no health read was
+// attempted. The row must not claim a manager failed to answer. This is the defect driving the real
+// card exposed in the decision table, and this is the cell that keeps it closed at the surface.
+check("ALIVE: with no recorded instance, the row does NOT claim a manager failed to answer",
+  !/no manager answered/.test(alive));
 
 // ---- DEAD: the same record, its pid proven gone -------------------------------------------------
 // AWAIT the exit rather than polling around a blocking sleep. The first version of this arm looped
@@ -159,7 +173,7 @@ check("HERMETIC: the run wrote into the scratch, not the real home", existsSync(
 check("HERMETIC-control: the scratch HOME actually received the run's state (else the check above is vacuous)",
   existsSync(HOME_D));
 
-const EXPECTED_CELLS = 20;
+const EXPECTED_CELLS = 22;
 if (pass + fail !== EXPECTED_CELLS) {
   fail++;
   console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);

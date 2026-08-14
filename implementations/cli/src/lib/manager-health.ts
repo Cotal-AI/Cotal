@@ -29,7 +29,8 @@
  * `uptimeMs` is the responder's clock and is carried as reported, never converted to a local
  * timestamp: an age computed against a foreign clock is the defect this surface exists to catch.
  */
-import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, invokeCommand, resolveService, standaloneConnectOpts, type EpCaller } from "@cotal-ai/core";
+import { BASELINE_LIFECYCLE_ENDPOINT, DEV_OWNER, EpEnvelopeError, instancePinnedInstrumentCapabilities, invokeCommand, mintCreds, mintLifecycleUid, newIdentity, resolveService, standaloneConnectOpts, type EpCaller } from "@cotal-ai/core";
+import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 
 /** How long the whole probe may take. A health read that has not answered is not a health read:
@@ -86,6 +87,42 @@ export type ManagerHealth =
 
 /** Every fact this surface reports carries where it came from. */
 const sourceFor = (server: string, instanceId: string): string => `manager status @ ${server} (instance ${instanceId})`;
+
+/**
+ * Mint a one-shot caller for the health read, WITHOUT the exiting resolver.
+ *
+ * This is the same mint the control path performs, minus `connectOrExit`'s thirteen `process.exit`
+ * sites, because a read-only card must never terminate: the states that make the exiting path give
+ * up are precisely the states this surface exists to describe. It returns `undefined` instead, which
+ * the probe reports as `no-auth`.
+ *
+ * ⚠️ THE PIN IS NOT OPTIONAL AND THE REASON IS A MISATTRIBUTION HAZARD. An instrument minted without
+ * the instance-pinned capabilities holds class-rail rows only; every instance-addressed request is
+ * then refused AT THE BROKER, and that refusal surfaces to the client as a resolve timeout. It would
+ * arrive here as `no-responder` — *the manager did not answer* — when the truth is *I was never
+ * permitted to ask*. That is this surface's own defect class reached through the credential layer,
+ * so the pin is minted with the request rather than left to a default.
+ */
+export async function mintHealthCaller(o: { root: string; space: string; instanceId: string }): Promise<{ caller: EpCaller; creds?: string } | undefined> {
+  try {
+    const auth = await getSpaceAuth(workspaceSecretStore(o.root), o.space);
+    // No space auth on disk is an OPEN mesh, not a failure: the broker enforces nothing and the
+    // manager registered under DEV_OWNER, so a synthesized triple with no credential is the correct
+    // caller. Reporting `no-auth` here would refuse to ask a question that can be asked.
+    if (!auth) return { caller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
+    const identity = newIdentity();
+    const uid = mintLifecycleUid();
+    const creds = await mintCreds(auth, identity, "control-caller-privileged", {
+      lifecycleUid: uid,
+      endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", o.instanceId),
+    });
+    return { caller: { owner: DEV_OWNER, actor: identity.id, uid }, creds };
+  } catch {
+    // The mint failed. That is a fact about our own credentials, not about the manager, and the
+    // caller renders it as such.
+    return undefined;
+  }
+}
 
 /** The local pid evidence, as `managerLivenessSnapshot()` reports it. */
 export type LocalManagerEvidence = "alive" | "dead" | "unknown" | "absent" | "unattributable";
@@ -147,6 +184,17 @@ export function managerClaim(local: LocalManagerEvidence, health: ManagerHealth)
   if (health.condition === "no-auth" || health.condition === "malformed-reply")
     return { claim: "cannot-establish", serving: false, startHint: false, detail: health.detail };
 
+  // Only `no-responder` and `no-identity` remain, and THEY ARE NOT THE SAME EVENT.
+  //
+  // ⚠️ `no-responder` means a question was put and nothing came back. `no-identity` means there was
+  // no instance to address, so NOTHING WAS ASKED. An earlier version of this table wrote the same
+  // sentence for both — rows read "no manager answered" in states where no read had been attempted.
+  // That is this surface's own defect: an absence of evidence presented as evidence of absence, in
+  // the function written to forbid it. It survived the hand-built cells and was caught the moment
+  // the real card was driven, which is the argument for wiring a decision to an entry point.
+  const asked = health.condition === "no-responder";
+  const silence = asked ? "no manager answered the health read" : "no manager instance is recorded for this root, so no health read was attempted";
+
   // 6. Local evidence we cannot attribute outranks the remaining remote silence: a record we cannot
   //    read may front a live process nobody can identify, and a start hint over it is the
   //    double-launch. Checked before the absent case for exactly that reason.
@@ -154,25 +202,31 @@ export function managerClaim(local: LocalManagerEvidence, health: ManagerHealth)
     return {
       claim: "cannot-establish", serving: false, startHint: false,
       detail: local === "unknown"
-        ? "the kernel answered neither running nor no-such-process for the recorded pid, and no manager answered — ownership of that process cannot be established"
-        : "the pid record does not hold a pid, and no manager answered — that record may front a live process nobody can identify",
+        ? `the kernel answered neither running nor no-such-process for the recorded pid, and ${silence} — ownership of that process cannot be established`
+        : `the pid record does not hold a pid, and ${silence} — that record may front a live process nobody can identify`,
     };
 
-  // 7. Nothing answered, and a local process IS present: the wedge. This is the incident shape —
-  //    the process exists, the health read gets nothing, and the old card called it running.
-  //    Explicitly no start hint: the process is alive and a second one would contend with it.
+  // 7. A local process IS present. Two different facts, and the difference is whether we asked:
+  //    with a question put and nothing returned, this is the WEDGE — the incident shape, where the
+  //    process exists, the read gets nothing, and the old card called it running. With nothing
+  //    asked, the honest claim is that we cannot establish anything, NOT that it failed to answer.
+  //    Neither earns a start hint: the process is alive and a second would contend with it.
   if (local === "alive")
-    return {
-      claim: "wedged", serving: false, startHint: false,
-      detail: `a local process is present but no manager answered the health read — it is not serving, and starting another would contend with it`,
-    };
+    return asked
+      ? {
+          claim: "wedged", serving: false, startHint: false,
+          detail: "it did not answer the health read — it is not serving, and starting another would contend with it",
+        }
+      : {
+          claim: "cannot-establish", serving: false, startHint: false,
+          detail: `a local process is present but ${silence} — whether it is serving is unknown and unasked`,
+        };
 
-  // 8. Nothing answered and no local process. ONLY here is the hint earned.
+  // 8. No local process, and either nothing answered or nothing to ask. ONLY here is the hint
+  //    earned, and the two are still worded apart.
   return {
     claim: "absent", serving: false, startHint: true,
-    detail: health.condition === "no-identity"
-      ? "no manager is recorded for this root and none answered"
-      : "no local process and no manager answered",
+    detail: asked ? "no local process, and no manager answered" : "no local process and no manager recorded for this root",
   };
 }
 

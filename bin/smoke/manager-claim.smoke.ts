@@ -106,10 +106,28 @@ check("PIN: the detail names BOTH ids so an operator can see the mismatch",
 check("no-auth is `cannot-establish`, not `absent` — nothing was asked", managerClaim("absent", noAuth).claim === "cannot-establish");
 check("no-auth earns NO start hint", managerClaim("absent", noAuth).startHint === false);
 check("malformed-reply is `cannot-establish`, not serving", managerClaim("alive", malformed).claim === "cannot-establish");
-check("no-identity with no local process IS absent (nothing recorded, nothing answered)",
+check("no-identity with no local process IS absent (nothing recorded, no process)",
   managerClaim("absent", noIdentity).claim === "absent" && managerClaim("absent", noIdentity).startHint === true);
-check("no-identity with a LIVE local process is not absent — a process exists we cannot address",
-  managerClaim("alive", noIdentity).claim === "wedged");
+
+// ---- ASKED vs NOT ASKED, which these cells originally got WRONG ---------------------------------
+// The first version of this suite expected `no-identity` + a live process to claim `wedged`, and the
+// implementation obliged. Both were wrong in the same direction: `wedged` means a question was put
+// and nothing came back, and with no recorded instance NOTHING IS ASKED. The rendered rows said
+// "no manager answered" about a read that never happened — an absence of evidence presented as
+// evidence of absence, inside the function written to forbid exactly that. It was invisible here
+// and obvious the moment the real card was driven.
+check("ASKED: a live process with NOTHING ASKED is `cannot-establish`, not `wedged`",
+  managerClaim("alive", noIdentity).claim === "cannot-establish");
+check("ASKED: `wedged` requires that a read was actually attempted and got nothing",
+  managerClaim("alive", noResponder).claim === "wedged");
+check("ASKED: the not-asked detail does NOT claim a manager failed to answer",
+  !managerClaim("alive", noIdentity).detail.includes("answer"));
+check("ASKED: the asked detail DOES say the read went unanswered (the inverse of the cell above)",
+  managerClaim("alive", noResponder).detail.includes("answer"));
+check("ASKED: absent-by-silence and absent-by-no-record are worded apart",
+  managerClaim("absent", noResponder).detail !== managerClaim("absent", noIdentity).detail);
+check("ASKED: neither of those earns a green, and both still earn the hint",
+  managerClaim("absent", noResponder).startHint && managerClaim("absent", noIdentity).startHint);
 
 // ---- PROPERTIES OVER THE WHOLE MATRIX ------------------------------------------------------------
 // Asserted as properties rather than case-by-case, so an arm added later cannot quietly acquire a
@@ -137,7 +155,7 @@ check("INVERSE: `serving` IS reachable", matrix.some((m) => m.r.serving));
 for (const claim of ["serving", "wedged", "absent", "refused", "misattributed", "cannot-establish"] as const)
   check(`REACHABLE: some combination produces \`${claim}\``, matrix.some((m) => m.r.claim === claim));
 
-const EXPECTED_CELLS = 49;
+const EXPECTED_CELLS = 54;
 if (pass + fail !== EXPECTED_CELLS) {
   fail++;
   console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);
