@@ -102,7 +102,26 @@ This is forced by measurement, not preference:
 
 - An agent's credential is space-scoped and issuer-scoped. Re-presenting it at another space on the
   same broker is denied on every subject; at a foreign-operator broker the connection is refused
-  outright. **[M — F1a-d, F2]**
+  outright. **[M — F1a-d, F2; and independently E17/E18]**
+  **Strengthened, and the strengthening is the point:** `F1a-d` originally classified *any* connect
+  or flush failure as `denied`, so a non-permission failure could satisfy a permission cell. Fixed
+  (`ca01c01c`) to track unreachability apart; **re-run 9/9, so those four were genuine denials** —
+  cells that could now have reported otherwise. **E17/E18** measure the same fence from the other
+  end, through the connect path this feature actually uses, **with a permitted twin** (identical
+  constructor, identical credential, only the space string differs) **and a surviving-then-killed
+  mutation**. Two independent probes, opposite directions, both controlled.
+- ⚠️ **THE POST ACL DOES NOT BOUND PEER REACH — and this note previously implied that it did.**
+  `allowPublish` is per-channel default-deny, but the DM and anycast publish grants are
+  `inst.*.*.<o>.<a>` and `svc.*.<o>.<a>` — **wildcard over destination, pinned only on the sender's
+  own identity** (`provision.ts:1078-1080`). Measured in one instant by one seat: the same
+  credential is **denied** one word to a channel and **delivers** a DM to that channel's only
+  member, and an anycast to a role it holds nothing about. **[M — E12/E14/E15, asserted as one
+  conjunction at E16, witnessed at the recipient]**
+  **This does not weaken the authority answer; it corrects its scope.** A self-connect still grants
+  *nothing it did not already hold* — the agent could always address any peer in its space. **What
+  is false is the stronger, tidier claim that the channel ACL bounds who an agent can reach.** It
+  bounds what an agent can BROADCAST. Whom it can ADDRESS is unfenced within the space by
+  construction, and the fence that does exist is the space itself.
 - The ACL is fixed at **mint** time. A credential minted from the same `SpaceAuth` with a self-chosen
   `allowSubscribe` reaches a subject the agent's own credential is denied. **[M — F3]**
   **Label correction:** F3 constructs its `SpaceAuth` **in memory** and passes the object; it never
