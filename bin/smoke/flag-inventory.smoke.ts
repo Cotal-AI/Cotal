@@ -120,13 +120,21 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
+  // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391). It is
+  // a CLI command rather than a manager admin verb because the state it repairs IS "the manager
+  // cannot complete registration" — an endpoint-served repair would be unreachable exactly when it
+  // is needed. No `--force`: the only way it reopens a gate is by proving the holder is gone.
+  "reconcile-gate": {
+    flags: ["endpoint:string", "instance:string", "server:string", "space:string"],
+    positionals: false,
+  },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
-  stop: { flags: [...TARGET, "name:string"], positionals: false },
+  stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   ps: { flags: [...TARGET, "on:string"], positionals: false },
-  attach: { flags: [...TARGET, "name:string"], positionals: false },
+  attach: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   deliver: {
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped

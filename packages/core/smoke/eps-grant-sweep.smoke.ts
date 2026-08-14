@@ -77,7 +77,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   supervisor: via("supervisor"),
   provisioner: via("provisioner"),
   deprovisioner: via("deprovisioner", { deprovisionTarget: { principal: `${DEV_OWNER}.worker`, lifecycleUid: UID } }),
-  "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager" } }),
+  "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager", uid: UID, target: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID } } }),
   "lifecycle-executor": via("lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID, alias: "worker" } }),
   "endpoint-serve-executor": via("endpoint-serve-executor", { endpointServeExecutor: { endpoint: EP, instanceId: IID } }),
   operator: via("operator"),
