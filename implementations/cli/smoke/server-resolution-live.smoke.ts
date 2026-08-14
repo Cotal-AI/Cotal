@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,12 +32,23 @@ const freePort = (): Promise<number> =>
   });
 
 // Sandbox the registry BEFORE importing workspace — homeCotalDir() reads COTAL_HOME per call.
-const home = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-home-"));
-const cwd = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-cwd-"));
-const projectRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-root-"));
+//
+// The fixtures go under a scratch base with PROVEN-clean `.cotal` ancestry, not under a bare
+// `tmpdir()`. `findCotalRoot` walks to `/` with no boundary, so a single `.cotal` anywhere above the
+// temp base captures every dir minted here. This suite is unusually exposed to that: the whole point
+// of `cwd` below is that it has no `.cotal` up-tree, so bare resolution falls through to the
+// registry. Under a captured base that premise is simply false, and the cells still pass, having
+// exercised a different code path than the one they name.
+const scratch = makeScratch("cotal-ps-resolve-");
+const home = mkdtempSync(join(scratch, "home-"));
+const cwd = mkdtempSync(join(scratch, "cwd-"));
+const projectRoot = mkdtempSync(join(scratch, "root-"));
 // Created out here with its siblings so the `finally` sweep removes it on every exit path — a
 // dir made inside the `try` leaks one OS temp directory per run when a cell throws.
-const mismatchRoot = mkdtempSync(join(tmpdir(), "cotal-ps-resolve-mismatch-"));
+const mismatchRoot = mkdtempSync(join(scratch, "mismatch-"));
+// Witnessed, not assumed. A scratch base that is silently captured would leave every assertion
+// below testing the captured-root path while reading as green.
+assertScratchHeld(cwd, "server-resolution fixtures");
 process.env.COTAL_HOME = home;
 const startCwd = process.cwd(); // restored before cleanup so Windows can rmdir `cwd` (it locks a live process's cwd)
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry

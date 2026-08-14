@@ -60,7 +60,7 @@ const conns: NatsConnection[] = [];
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1"])
+for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1", "race"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 // A ROLE-LESS persona: its succeeded terminal data carries no `role`, which the strict
 // canonicalJson would reject if the manager left `role: undefined` on the payload (surfaced live
@@ -281,6 +281,49 @@ try {
     // able to read the outcome. Reading through the goal-writer proves it landed on the one subject.
     const durable = await readGoalResult(rctx, goalRef(acc(r).goalId as string));
     check("M7 the failed terminal is DURABLE, not only an epe event", durable?.state === "failed", durable);
+  }
+
+  // ── M8: DUPLICATE-GOAL RACE: the LOSER of the bind CAS must not commit the terminal (#357) ──
+  {
+    // The duplicate is the SAME REQUEST BYTES delivered a second time: a client retry, a redelivery,
+    // or one anycast reaching two responders. Captured off the wire and replayed rather than
+    // hand-assembled, so what races is a frame the door already admitted, carrying the same `id`
+    // (which IS the goalId) and the same submission fingerprint.
+    //
+    // The window is real but narrow: the duplicate must arrive before the winner writes
+    // `goalAcceptances` (after that the idempotent-retry path serves the prior acceptance and
+    // nothing races). Replaying at capture time puts it there. `join` is used so the WINNER's honest
+    // terminal is `succeeded`, which makes a stolen terminal unmistakable rather than a coin flip
+    // between two failures.
+    const tapNc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
+    conns.push(tapNc);
+    let replayed = 0;
+    const tap = tapNc.subscribe(`cotal.${SPACE}.ep.one.${MANAGER_ENDPOINT}.spawn.>`, {
+      callback: (err, m) => {
+        if (err || replayed > 0) return;
+        replayed++;
+        tapNc.publish(m.subject, m.data); // the duplicate: identical subject, identical body
+      },
+    });
+    await tapNc.flush(); // the tap MUST be live before the request is published, or nothing races
+    const r = await callSpawn({ name: "race", agent: "join" });
+    tap.unsubscribe();
+    // POSITIVE CONTROL for the instrument: if the replay never fired, everything below is vacuously
+    // green and would report a fixed defect that was simply never exercised.
+    check("M8 the duplicate frame was actually replayed onto the wire", replayed === 1, { replayed });
+    check("M8 the caller still gets an ACCEPTANCE (a duplicate is not the caller's problem)",
+      r.reply.ok === true && typeof acc(r).goalId === "string", r.reply);
+    const goalId = acc(r).goalId as string;
+    if (typeof goalId !== "string") throw new Error(`M8 cannot continue: no goalId in ${JSON.stringify(r.reply)}`);
+    const f = await followGoal(goalId, 15_000);
+    const durable = await readGoalResult(rctx, goalRef(goalId));
+    // The winner spawns and joins presence, so the only honest terminal is `succeeded`. A `failed`
+    // here is the loser's: it lost the create-only bindGoal CAS, provisioned nothing, and still
+    // reached onOutcome because `terminalEntered` was false on its unwind path.
+    check("M8 the goal's terminal is the WINNER's outcome, not the losing duplicate's failure",
+      f.terminal?.state === "succeeded", { terminal: f.terminal, durable });
+    check("M8 the DURABLE terminal agrees (a stolen terminal is durable, not just an event)",
+      durable?.state === "succeeded", durable);
   }
 
   // ── M5: MANAGER KILL MID-GOAL → the SUCCESSOR reconciles (must-5 Q-B; never drops an accepted goal) ──

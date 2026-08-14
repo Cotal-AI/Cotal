@@ -28,7 +28,7 @@
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parsePid, probeLiveness } from "../../implementations/cli/src/lib/pid.js";
+import { parsePid, probeLiveness } from "@cotal-ai/workspace";
 
 /**
  * The physical path, symlinks resolved.

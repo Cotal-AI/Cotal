@@ -1031,7 +1031,7 @@ export class Manager {
    *
    *  The manager is the renewal owner for every credential it CAN re-sign, and these two are the ones
    *  it cannot: they are `rotation-renewed`, so no resident process re-mints them and they simply die
-   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all —
+   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all,
    *  it discovered the expiry as an "Authorization Violation" in the delivery log and a refused
    *  membership adoption, weeks after the warning would have been actionable (#338). The pass runs
    *  every half-TTL of the 24h class, so this repeats about twice a day for the ~7 days between the
@@ -4547,6 +4547,21 @@ export class Manager {
     // fallback below must fire only when `onOutcome` never ran at all, never as a second attempt
     // behind a commit that threw.
     let terminalEntered = false;
+    // TWO DIFFERENT QUESTIONS, DELIBERATELY NOT ONE FLAG.
+    //
+    //   `terminalEntered`  HAS this goal already been settled (or claimed) by someone?
+    //   `ownsGoal`         MAY THIS ATTEMPT settle it at all?
+    //
+    // The second is the authority, and it is default-CLOSED: an attempt earns it by WINNING the
+    // create-only `bindGoal` CAS below, and nothing else grants it. That matters because the
+    // post-accept fallback exists to settle a goal nobody answered, so every new way of leaving
+    // this function is opted INTO committing a terminal unless something stops it. Deriving the
+    // right from the claim instead of from a running record means a losing attempt CANNOT commit
+    // down any unwind path, including ones added later that never thought about this. Collapsing
+    // the two into one boolean is what let a duplicate-goal loser steal the winner's terminal
+    // (#357): it had entered no terminal, so the fallback wrote one for it, using its own abort
+    // message as the caller-visible outcome.
+    let ownsGoal = false;
 
     // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
@@ -4559,6 +4574,11 @@ export class Manager {
     // path — one commit site, so the progress event, the index clear and the `agentGoals` cleanup
     // cannot drift between a normal outcome and a recovered one.
     const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<void> => {
+      // THE AUTHORITY CHECK, and the only one. An attempt that never won the bind provisioned
+      // nothing and has no outcome to report: the goal belongs to whoever won it, in this
+      // incarnation or a sibling. Refusing here rather than at each unwind site is the point --
+      // there is exactly one commit path, so this fences every route into it, present and future.
+      if (!ownsGoal) return;
       terminalEntered = true; // entered, not succeeded — see the catch below
       try {
         await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits
@@ -4607,6 +4627,7 @@ export class Manager {
         if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
           acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
           resolveAccept(acceptance);
+          // No claim needed here: `ownsGoal` is still false, so the commit path refuses this attempt.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
         }
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
@@ -4619,10 +4640,16 @@ export class Manager {
           // (no second spawn). The throw unwinds to the finally, which releases this attempt's reserve.
           acceptance = this.goalAcceptances.get(goalId) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
           resolveAccept(acceptance);
+          // No claim needed here either. This attempt lost the CAS, so `ownsGoal` is still false and
+          // the single check in `onOutcome` refuses it. Before that check existed this site had to
+          // remember to claim the terminal by hand, and the one place that forgot is how a loser
+          // came to commit `failed` on the winner's goal, using its own abort text as the outcome.
           // Unwind the provision (the acceptance is already served); the code is discarded by the
           // caller (acceptance !== undefined), so it just aborts this attempt's side-effects.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already accepted; the cached acceptance is served`);
         }
+        // WON the claim: this attempt, and only this attempt, may settle this goal.
+        ownsGoal = true;
         await createGoal(gw.ctx, ref, {
           fingerprint,
           command: ctx.subject.command,

@@ -257,6 +257,15 @@ importers:
         specifier: ^4.22.4
         version: 4.22.4
 
+  extensions/herdr:
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/orca:
     devDependencies:
       '@cotal-ai/core':

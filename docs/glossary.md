@@ -118,7 +118,7 @@ One-line definitions of the terms used across these docs and the spec. The base 
 - **Role / service**: a named anycast target a group of agents share; a message to the role
   reaches one of them. [SPEC §1](../SPEC.md#1-scope-and-terminology), [§4](../SPEC.md#4-delivery-modes)
 
-- **Runtime (`pty` / `tmux` / `cmux` / `orca`)**, how the manager runs each agent process: the
+- **Runtime (`pty` / `tmux` / `cmux` / `orca` / `herdr`)**, how the manager runs each agent process: the
   built-in pty, or a native terminal surface via an extension. [run-a-mesh.md](run-a-mesh.md)
 
 - **Space**: an isolated coordination context and tenant boundary; one space maps to one NATS
