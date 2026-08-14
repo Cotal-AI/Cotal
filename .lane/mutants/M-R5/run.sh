@@ -28,6 +28,11 @@ date -u > "$ART/started-at.txt"
 # missing stamp is reported as NOT MEASURED rather than as any verdict.
 export ART_DIR="$ART/repair-artifacts"
 mkdir -p "$ART_DIR"
+# The repair cells also refuse without FG5_SCRATCH (`${FG5_SCRATCH:?}`), which is where they build
+# their ANCHORED project root. Run 2 supplied ART_DIR but not this, so the suite stamped an honest
+# `ran=0/32 SUITE INCOMPLETE` — the count pin and the EXIT trap working exactly as built. A fresh
+# scratch per arm, so the mutant arm cannot inherit residue from the restore arm or the reverse.
+new_scratch() { mktemp -d "${TMPDIR:-/tmp}/fg5-mr5-$1-XXXXXX"; }
 
 # Read a repair run's real result, or say plainly that there is none.
 repair_verdict() {
@@ -61,13 +66,18 @@ pnpm smoke:liveness-snapshot > "$ART/mutant-liveness.out" 2>&1
 echo $? > "$ART/mutant-liveness.rc"
 
 rm -f "$ART_DIR/finding5-repair.rc" "$ART_DIR/finding5-repair.marker"
+export FG5_SCRATCH="$(new_scratch mutant)"
 bash .lane/finding5-repair-cells.sh > "$ART/mutant-repair.out" 2>&1
 echo $? > "$ART/mutant-repair.shell-rc"
 repair_verdict "MUTANT REPAIR" > "$ART/mutant-repair.verdict"
 
 # ---- restore, and PROVE the restore ------------------------------------------------------------
 git checkout -- "$TARGET"
-git diff --quiet HEAD; echo $? > "$ART/restore-clean.rc"   # 0 == tree matches HEAD again
+# SCOPED TO THE MUTATED FILE ON PURPOSE. An unscoped `git diff --quiet HEAD` returned 1 here and it
+# had nothing to do with the restore: this runner overwrites its own TRACKED artifact files, so the
+# whole-tree form was answering about its own output. A restore check that reports the checker's
+# footprint is not a restore check.
+git diff --quiet HEAD -- "$TARGET"; echo $? > "$ART/restore-clean.rc"   # 0 == the mutated file matches HEAD again
 ( cd implementations/cli && tsc -p tsconfig.json ) > "$ART/restore-build.log" 2>&1
 echo $? > "$ART/restore-build.rc"
 
@@ -75,6 +85,7 @@ pnpm smoke:liveness-snapshot > "$ART/restore-liveness.out" 2>&1
 echo $? > "$ART/restore-liveness.rc"
 
 rm -f "$ART_DIR/finding5-repair.rc" "$ART_DIR/finding5-repair.marker"
+export FG5_SCRATCH="$(new_scratch restore)"
 bash .lane/finding5-repair-cells.sh > "$ART/restore-repair.out" 2>&1
 echo $? > "$ART/restore-repair.shell-rc"
 repair_verdict "RESTORE REPAIR" > "$ART/restore-repair.verdict"

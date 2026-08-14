@@ -1,1 +1,3 @@
-.lane/finding5-repair-cells.sh: line 17: ART_DIR: parameter null or not set
+.lane/finding5-repair-cells.sh: line 98: FG5_SCRATCH: parameter null or not set
+FAIL SUITE INCOMPLETE — ran 0 of 32 cells (rc=1). This is NOT a clean run.
+.lane/finding5-repair-cells.sh: line 49: cleanup: command not found
