@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# M-R5: apply the mutant by hand, run BOTH suites, restore, verify the restore.
+#
+# mutation-proof already killed this mutant against the new behavioural suite. This run exists for
+# the OTHER half of the prediction: that the STRUCTURAL shell cells stay fully green against the
+# same mutant, because they scan `managerRow` and the mutant is one call below it. That blindness is
+# the reviewer's finding, and demonstrating it is what shows the new suite closed a real hole rather
+# than an imagined one.
+#
+# Every exit code here is read from a FILE written by the command itself, never from a pipe.
+set -u
+cd "$(dirname "$0")/../../.." || exit 95
+REPO=$PWD
+ART="$REPO/.lane/mutants/M-R5"
+TARGET="implementations/cli/src/lib/manager-proc.ts"
+export PATH="$HOME/.nvm/versions/node/v22.23.2/bin:$PATH"
+
+# Refuse on a dirty tree: git has to be the recovery, not this script.
+[ -z "$(git status --porcelain)" ] || { echo "REFUSE(95): dirty tree"; exit 95; }
+git rev-parse HEAD > "$ART/base-sha.txt"
+date -u > "$ART/started-at.txt"
+
+FIND='return { state: probe(pid), pid, raw };'
+REPL='const st = probe(pid); const raw2 = readFileSync(p, "utf8").trim(); return { state: st, pid: parsePid(raw2), raw: raw2 };'
+
+python3 - "$TARGET" "$FIND" "$REPL" <<'PY' || exit 95
+import sys
+p, find, repl = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+n = s.count(find)
+if n != 1:
+    print(f"REFUSE: target occurs {n} times, need exactly 1"); sys.exit(1)
+open(p, "w").write(s.replace(find, repl))
+PY
+
+git diff > "$ART/mutant.diff"
+
+( cd implementations/cli && tsc -p tsconfig.json ) > "$ART/build.log" 2>&1
+echo $? > "$ART/build.rc"
+
+pnpm smoke:liveness-snapshot > "$ART/mutant-liveness.out" 2>&1
+echo $? > "$ART/mutant-liveness.rc"
+
+bash .lane/finding5-repair-cells.sh > "$ART/mutant-repair.out" 2>&1
+echo $? > "$ART/mutant-repair.rc"
+
+# ---- restore, and PROVE the restore ------------------------------------------------------------
+git checkout -- "$TARGET"
+git diff --quiet HEAD; echo $? > "$ART/restore-clean.rc"   # 0 == tree matches HEAD again
+( cd implementations/cli && tsc -p tsconfig.json ) > "$ART/restore-build.log" 2>&1
+echo $? > "$ART/restore-build.rc"
+
+pnpm smoke:liveness-snapshot > "$ART/restore-liveness.out" 2>&1
+echo $? > "$ART/restore-liveness.rc"
+
+bash .lane/finding5-repair-cells.sh > "$ART/restore-repair.out" 2>&1
+echo $? > "$ART/restore-repair.rc"
+
+date -u > "$ART/finished-at.txt"
+echo "M-R5 done. rc files under $ART"
