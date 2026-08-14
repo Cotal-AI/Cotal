@@ -110,8 +110,12 @@ This is forced by measurement, not preference:
   material" is measured, but **"an agent can read the on-disk trust material" is a READ [R]**
   (`auth-paths.ts` persistence + same-OS-user file permissions), not a measurement. The first draft
   labelled the combination **[M]**, which claimed more than the probe carries.
-- `provisioner` is genuinely least-privilege — it does not reach the space firehose. There is no
-  god-role to grab. **[M — F3b]**
+- ~~`provisioner` is genuinely least-privilege — it does not reach the space firehose.~~
+  **WITHDRAWN AS A PREMISE. `F3b` HAS NO POSITIVE ARM**, so its `DENIED` is equally explained by a
+  credential that was never usable on that broker — a broken probe and a working fence look
+  identical. RESULTS §5 withdrew it from load-bearing use and this section went on using it as a
+  strong `[M]`, which is the same correction failing to propagate as above. **"There is no god-role
+  to grab" rests on F1a-d and F2, which do have controls**, and it is only claimed at that width.
 
 So the authority boundary is the **mint path**, not the connect call. The specification follows:
 
@@ -182,8 +186,15 @@ second credential in the session to steal.
 ### Threat model, at its honest width
 
 The never-mint rule **does not stop a hostile agent**. An agent process running as the same OS user
-can read `<root>/.cotal/auth/auth.json` and mint itself any ACL it likes **[M — F3]**. No client-side
+can read `<root>/.cotal/auth/auth.json` and mint itself any ACL it likes **[R — see below]**. No client-side
 rule constrains code that can read the trust material.
+
+> **LABEL CORRECTED.** This used to read `[M — F3]`. It is not: F3 builds its `SpaceAuth` **in
+> memory** and never opens `auth.json`, which the correction above already says. **What F3 measures
+> is that the ACL is chosen at mint time; that an agent can READ the on-disk trust material is a
+> read, not a measurement**, and re-asserting it as `[M]` two sections later contradicted the very
+> correction that fixed it. A correction that is not carried into every downstream use is not a
+> correction. Caught by `rev2-meshctl-evidence`.
 
 What the rule actually buys:
 
@@ -215,7 +226,7 @@ protection (`smoke/persona-input-closed.smoke.ts`).
 What remains open is a **direct same-UID filesystem write** to the catalog, which a later launch
 would honour (`manager.ts:2891-2911,3063-3072`) **[R]**. That adds nothing to the threat model
 already stated: a process that can write the persona catalog can also read the trust material and
-mint itself any ACL **[M — F3]**, which is strictly more. **But it does mean the persona file must
+mint itself any ACL **[R — the read half; F3 measures only the mint half]**, which is strictly more. **But it does mean the persona file must
 not be described as an operator-authenticated boundary** — it is operator-authored configuration,
 trusted because the process is trusted, not because anything verifies its provenance.
 
@@ -445,10 +456,13 @@ fm-orchestrator rules or the seat comes up.
 ## 4. Is disconnect reversible, and by whom?
 
 **By the agent itself: yes.** It retains its grant set and credentials in-process, so
-`cotal_connect(mesh)` brings it back without help.
+`cotal_connect()` brings it back without help — **no argument: the shipped verb takes NO target.**
+(This read `cotal_connect(mesh)` while re-target was in scope. Leaving the parameter in after the §0
+split described a verb that does not exist, and in the one section a reader consults to learn whether
+disconnect is reversible.)
 
 **By a mesh-only supervisor: no.** Once off the mesh, DMs cannot reach it — unlike leaving every
-channel, which is *not* a disconnect and leaves the DM plane fully intact **[M — F3]**. A supervisor
+channel, which is *not* a disconnect and leaves the DM plane fully intact **[M — M4 Q2, not M3 F3 — label corrected]**. A supervisor
 holding only a mesh seat loses its handle entirely.
 
 **By the manager: yes, always** — it holds an OS process handle independent of the mesh **[R]**.
@@ -467,7 +481,7 @@ indefinite, self-initiated loss of supervision.** The supporting facts are the l
 
 - The OS process keeps running while every mesh peer loses reach; process control and mesh presence
   are separate by construction (`runtime.ts:28-40`) **[R]**.
-- This is materially stronger than "go quiet": leaving every channel preserves DM reach **[M — F3]**,
+- This is materially stronger than "go quiet": leaving every channel preserves DM reach **[M — M4 Q2, not M3 F3 — label corrected]**,
   a disconnect does not.
 - Durable memberships stay open across it by design (§7.1) **[M — M6]**, so an indefinitely
   disconnected agent keeps accumulating owed delivery.
@@ -610,7 +624,7 @@ no broker can police, so this gate is the only gate** — hence G3.
 **Finding 1 — fix the description, do not add the guard.** `cotal_leave`'s description and
 `MeshAgent.leaveChannel`'s jsdoc both assert a last-channel guard that does not exist **[M — F1]**.
 The defect is the false claim. A guard was **considered and rejected**: the DM plane is untouched by
-channel membership **[M — F3]**, so an agent on zero channels has not made itself unreachable, and
+channel membership **[M — M4 Q2, not M3 F3 — label corrected]**, so an agent on zero channels has not made itself unreachable, and
 this feature makes "on no channels" a legitimate deliberate state. Adding the guard would be
 designing by docstring and would fence off the state the verb exists to create. One-line truth
 repair at `tool-specs.ts:503` and `agent.ts:1073`, with the rejection recorded in the commit body so

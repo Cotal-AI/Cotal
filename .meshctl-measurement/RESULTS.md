@@ -198,9 +198,15 @@ re-target through the agent's own credential.** See DESIGN §7.2 for the saga th
   static creds bytes, and the user-mode bearer source exchanges over local auth-service HTTP rather
   than NATS. The renewal cells prove the ENDPOINT contract and say nothing about the tool path.
   (Narrowing volunteered by `rev2-meshctl-authority` against its own broader claim, and held to.)
-- **A drain that rejects, and an in-flight credential fetch crossing a disconnect**, are states the
-  connector cannot construct. The first is driven with an injected fault at the core API; the second
-  is fenced for the QUEUED case only and that exact race is undriven here.
+- **A drain that rejects** is a state the connector cannot construct; it is driven with an injected
+  fault at the core API.
+- ~~**and an in-flight credential fetch crossing a disconnect … that exact race is undriven**~~ —
+  **WITHDRAWN, AND THIS ONE WAS STALE IN THE DIRECTION THAT FLATTERED ME.** ARM 3b drives exactly
+  that race (hold a source call open, disconnect, release) and **MX4 killed the cell** with two
+  authenticated dials at the broker. Leaving it here made the not-measured list look more scrupulous
+  than the tree actually was, which is the worst direction for *this* list to drift: an entry that
+  overstates a gap is a smaller sin than an omission, but it is the same failure of upkeep, and it
+  costs the list its authority either way. Caught by `rev2-meshctl-evidence`.
 - ~~**The three arms of `connection-lifecycle.smoke.ts` share one fixture**~~ — **FIXED and
   demonstrated, not merely asserted.** Each arm now declares a named entry precondition; ARM 1 builds
   its own subject instead of inheriting ARM 2's; ARM 3 restarts the broker. A failed precondition
