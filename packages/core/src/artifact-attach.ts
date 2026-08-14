@@ -41,19 +41,21 @@ import type { AttachmentRow } from "./artifact-index.js";
  * fix.
  */
 export const ATTACH_REFUSAL = Object.freeze({
-  /** A3 — the confirm's `channel` disagrees with the entry's SUBJECT channel (never `msg.channel`). */
-  channelMismatch: "confirmAttach: the entry was not published to that channel",
-  /** A4 — the entry carries no `artifact` part. */
-  noArtifactPart: "confirmAttach: that entry carries no artifact reference",
-  /** A5 — the part's digest is not the digest being confirmed. */
-  digestMismatch: "confirmAttach: that entry references a different artifact",
   /**
-   * A1 + A2 + A6, COLLAPSED DELIBERATELY — everything a caller can ask before proving it owns the
-   * entry.
+   * THE ONLY REFUSAL THIS VERB HAS, apart from the ambiguous-alias fault below. Every state a
+   * caller can reach here collapses into it.
    *
-   * "no such stream entry", "that entry is not yours" and "you do not possess that digest" are ONE
-   * refusal, because a caller who has proven nothing is not entitled to be told which stream
-   * entries exist, who wrote them, or which digests are in the store.
+   * IT USED TO BE FOUR NAMES. `channelMismatch`, `noArtifactPart` and `digestMismatch` were kept
+   * distinct on the ground that the sender compare had proven the caller published the entry. It
+   * had not: that compare reads an ALIAS out of a chat subject that carries no lifecycle, so a
+   * same-alias SUCCESSOR passed it and could then read a retired predecessor's channel,
+   * artifact-bearing and digest off the refusal names alone. The three names are gone and the
+   * reasoning is at the collapse site.
+   *
+   * So: "no such stream entry", "that entry is not yours", "not published to that channel",
+   * "carries no artifact reference", "references a different artifact" and "you do not possess that
+   * digest" are ONE refusal, because a caller who has proven nothing is not entitled to be told
+   * which stream entries exist, who wrote them, what they carry, or which digests are in the store.
    *
    * The rule: **a refusal may distinguish states only when the caller has already proven
    * entitlement to the state being distinguished.** At fetch, the caller has passed the scope's
@@ -171,24 +173,40 @@ export async function confirmAttach(
   if (entry === null || parsed === null || parsed.kind !== "chat" || parsed.sender !== caller)
     return { ok: false, error: ATTACH_REFUSAL.notYours };
 
-  // PAST THIS LINE the caller has proven it published this entry, so it is entitled to precise
-  // statements ABOUT ITS OWN ENTRY — which is what makes the fine-grained names below legitimate
-  // rather than an oracle. They exist so that deleting any one check reddens its own cell.
-
-  // THE SUBJECT's channel, never `msg.channel`. The broker forge-locked the subject; the payload is
-  // whatever the publisher wrote. Comparing the argument against the payload would let the CALLER
-  // decide the scope, which is the caller-declared scope §4.1 refuses.
+  // WHAT THAT LINE DOES NOT ESTABLISH — and an earlier version of this file claimed it did.
   //
-  // THIS COMMENT WAS TRUE AND UNTESTED. Every fixture set the subject channel and `msg.channel` to
-  // the same value, so swapping `parsed.rest` for `entry.msg.channel` survived all eleven cells:
-  // the distinction the comment explains at length was invisible to the suite documenting it. There
-  // is now a fixture where the two DISAGREE.
-  if (parsed.rest !== args.channel)
-    return { ok: false, error: ATTACH_REFUSAL.channelMismatch };
+  // It said: "PAST THIS LINE the caller has proven it published this entry, so it is entitled to
+  // precise statements ABOUT ITS OWN ENTRY." That is refuted by the comment eight lines above it.
+  // The sender compare is an ALIAS compare and a same-alias successor passes it trivially, so it
+  // proves nothing about publication. This file wrote down the exact reason the gate does not work
+  // and then built an entitlement on that gate. A comment naming a limitation is not a mitigation
+  // for it.
+  //
+  // So the fine-grained names are GONE. Without this collapse a respawned agent learns, about a
+  // retired predecessor's entry it holds no read ACL for: which channel it was published to,
+  // whether it carried an artifact at all, and whether a suspected digest matches — §5.1's
+  // existence oracle arriving through refusal names instead of through a response field.
+  //
+  // WHY A RE-ORDERED FENCE DOES NOT RESCUE THE NAMES. Running the possession read above these
+  // checks was considered and does not work: possession is content-addressed and GLOBAL, so a
+  // successor may hold the very digest its predecessor published — having put those bytes itself —
+  // and would then still be told the predecessor's channel. Possession proves who holds bytes,
+  // never who published an entry. And "I published this entry" is not provable AT ALL from a chat
+  // subject that carries no lifecycle. The entitlement §5.1 requires cannot be established here, so
+  // these states may not be distinguished. One name.
+  //
+  // THE SUBJECT's channel, never `msg.channel`: the broker forge-locked the subject, the payload is
+  // whatever the publisher wrote, and comparing against the payload would let the CALLER decide the
+  // scope — the caller-declared scope §4.1 refuses. The collapse does not weaken that: the fixture
+  // where the two DISAGREE still refuses here and its matched pair still succeeds, so swapping
+  // `parsed.rest` for `entry.msg.channel` flips both.
+  if (parsed.rest !== args.channel) return { ok: false, error: ATTACH_REFUSAL.notYours };
 
-  const part = entry.msg.parts?.find(isArtifactPart);
-  if (part === undefined) return { ok: false, error: ATTACH_REFUSAL.noArtifactPart };
-  if (part.digest !== args.digest) return { ok: false, error: ATTACH_REFUSAL.digestMismatch };
+  // ANY artifact part carrying this digest — not the FIRST artifact part. `Part[]` carries no
+  // one-artifact restriction, so `find(isArtifactPart)` meant a two-artifact message could never
+  // confirm its second attachment: that digest was compared against its sibling's and refused.
+  if (!entry.msg.parts?.some((p) => isArtifactPart(p) && p.digest === args.digest))
+    return { ok: false, error: ATTACH_REFUSAL.notYours };
 
   let lifecycleUid: string;
   try {

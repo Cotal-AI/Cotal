@@ -1,11 +1,22 @@
 /**
  * The `confirmAttach` refusal suite — every predicate named, and a CONTROL that succeeds.
  *
- * WHY EACH PREDICATE NEEDS ITS OWN NAME. Every failure here has the same observable: no attachment
- * row. That is a single bit, and a single bit cannot be a suite. Without distinct named refusals,
- * deleting the `channel` check leaves the suite green — some other check rejects the same fixture —
- * and that check is the one standing between us and a caller-declared scope, which is precisely what
- * §4.1 refuses.
+ * THE VERB NOW HAS ONE REFUSAL NAME, WHICH CHANGES WHAT THIS SUITE CAN AND CANNOT ASSERT.
+ * `channelMismatch`, `noArtifactPart` and `digestMismatch` were removed: they were licensed by an
+ * entitlement the sender compare does not establish, and a same-alias successor could read a
+ * predecessor's entry off them (see S1). So a cell can no longer prove WHICH predicate fired, and
+ * one written as if it could would be agreeing with itself.
+ *
+ * What replaces the discriminator, in three layers:
+ *   - each predicate keeps a cell asserting its fixture is REFUSED AT ALL. Deleting the check makes
+ *     that fixture SUCCEED, and no collapse can hide a success.
+ *   - matched pairs where a mutation must flip BOTH arms — A3-payload/A3-subject for the subject-vs
+ *     -payload channel compare, A5-multi/A5-multi3 for the digest match.
+ *   - indistinguishability asserted as a SET OF SIZE ONE across probe shapes (S1, and the foreign
+ *     block), which is the only form that can fail on a leak through a shape nobody enumerated.
+ *
+ * Every failure here otherwise has the same observable — no attachment row — and a single bit
+ * cannot be a suite.
  *
  * WHY THE CONTROL CELL IS NOT OPTIONAL. A suite where everything is rejected is unfalsifiable: it
  * passes identically against a verb that refuses correctly and against one that refuses everything,
@@ -107,6 +118,16 @@ const ENTRIES: Record<number, { subject: string; msg: CotalMessage } | null> = {
   8: { subject: chatSubject(SPACE, OTHER_OWNER, ACTOR, "secret"), msg: msgWith([artifactPart(DIGEST)]) },
   9: { subject: chatSubject(SPACE, OTHER_OWNER, ACTOR, "general"), msg: msgWith([{ kind: "text", text: "hi" }]) },
   10: { subject: chatSubject(SPACE, OTHER_OWNER, ACTOR, "general"), msg: msgWith([artifactPart(OTHER_DIGEST)]) },
+  // ---- TWO ARTIFACT PARTS, on a channel of its own ---------------------------------------------
+  // `Part[]` never restricted a message to one artifact, but every fixture above carries at most
+  // one — so `find(isArtifactPart)` taking the FIRST part looked identical to matching the RIGHT
+  // part, and the second attachment being unconfirmable was invisible.
+  // Its own channel (`multi`), because the CONTROL below counts rows on `general` and a fixture that
+  // quietly moves another cell's count is a fixture that can make it pass for the wrong reason.
+  11: {
+    subject: chatSubject(SPACE, OWNER, ACTOR, "multi"),
+    msg: { ...msgWith([artifactPart(DIGEST), artifactPart(OTHER_DIGEST)]), channel: "multi" } as CotalMessage,
+  },
 };
 
 const attachments: { digest: string; channel: string; lc: string }[] = [];
@@ -136,8 +157,10 @@ await refuses("A1 a seq past the stream head refuses with the COLLAPSED name, no
 // The comparison is against the subject-parsed channel, never the payload's `msg.channel`. Deleting
 // this check would let the confirm ARGUMENT decide the scope — a caller-declared scope, which is
 // exactly what §4.1 refuses and what the whole possession design exists to avoid.
-await refuses("A3 confirming an entry published to another channel refuses `channel mismatch`",
-  ATTACH_REFUSAL.channelMismatch,
+// The expectation is the COLLAPSED name — see S1. What this cell still pins is that the predicate
+// REFUSES AT ALL: delete the compare and the confirm succeeds, which no collapsed name can hide.
+await refuses("A3 confirming an entry published to another channel is REFUSED, under the collapsed name",
+  ATTACH_REFUSAL.notYours,
   () => run({ ...base, channel: "other-channel" }));
 
 // ---- A3-payload — THE SUBJECT WINS, and this is the pair that proves it ------------------------
@@ -145,7 +168,7 @@ await refuses("A3 confirming an entry published to another channel refuses `chan
 // matched pair: one must REFUSE and one must SUCCEED, and swapping the compare to `msg.channel`
 // flips BOTH. A single cell here would be killable by a mutation that simply refuses everything.
 await refuses("A3-payload naming the PAYLOAD's channel is refused — the payload does not decide scope",
-  ATTACH_REFUSAL.channelMismatch,
+  ATTACH_REFUSAL.notYours,
   () => run({ digest: DIGEST, channel: "secret", seq: 7 }));
 {
   const reply = await run({ digest: DIGEST, channel: "public", seq: 7 });
@@ -154,14 +177,31 @@ await refuses("A3-payload naming the PAYLOAD's channel is refused — the payloa
 }
 
 // ---- A4 — no artifact part --------------------------------------------------------------------
-await refuses("A4 a text-only entry refuses `no artifact part`",
-  ATTACH_REFUSAL.noArtifactPart,
+await refuses("A4 a text-only entry is REFUSED, under the collapsed name",
+  ATTACH_REFUSAL.notYours,
   () => run({ ...base, seq: 2 }));
 
-// ---- A5 — the part references a different digest -----------------------------------------------
-await refuses("A5 confirming a digest the entry does not carry refuses `digest mismatch`",
-  ATTACH_REFUSAL.digestMismatch,
+// ---- A5 — the entry carries no part with this digest -------------------------------------------
+await refuses("A5 confirming a digest the entry does not carry is REFUSED, under the collapsed name",
+  ATTACH_REFUSAL.notYours,
   () => run({ ...base, digest: OTHER_DIGEST }));
+
+// ---- A5-multi — TWO artifact parts, and the SECOND one must be confirmable ----------------------
+// `find(isArtifactPart)` took the first artifact part and compared only ITS digest, so the second
+// attachment of a two-artifact message was refused against its sibling's digest and could never be
+// confirmed. `Part[]` carries no one-artifact restriction, so this is a reachable shape and not a
+// hypothetical. The matched cell below it is what stops the fix from becoming "accept anything".
+{
+  const first = await run({ digest: DIGEST, channel: "multi", seq: 11 });
+  check("A5-multi the FIRST artifact part of a two-artifact entry confirms",
+    first.ok === true, first);
+  const second = await run({ digest: OTHER_DIGEST, channel: "multi", seq: 11 });
+  check("A5-multi2 and so does the SECOND — it is not compared against its sibling's digest",
+    second.ok === true, second);
+}
+await refuses("A5-multi3 a THIRD digest the entry does not carry is still refused",
+  ATTACH_REFUSAL.notYours,
+  () => run({ digest: "sha256:" + "ef".repeat(32), channel: "multi", seq: 11 }));
 
 // ---- A2 + A6 — COLLAPSED, and the collapse is the assertion ------------------------------------
 // Two fixtures, ONE refusal. Asserting they produce the SAME name is the test; asserting each
@@ -195,6 +235,65 @@ await refuses("A7 two live ACL rows for the alias refuse `AmbiguousAclAlias`, di
   check("A7b an infrastructure fault PROPAGATES — it is not renamed as an ambiguous alias",
     threw instanceof Error && (threw as Error).message === "ECONNRESET",
     threw instanceof Error ? threw.message : threw);
+}
+
+// ---- THE SUCCESSION ORACLE — the adversary this suite could not previously construct ------------
+//
+// Every other fixture in this file models a foreign caller as a DIFFERENT ALIAS, which the sender
+// compare rejects. That is not the adversary the design exists for. `artifact-attach.ts:166-169`
+// says so in terms — the sender compare "is useless against SUCCESSION … a same-alias successor
+// passes it trivially" — and then `:174-176` builds the fine-grained refusals on top of it, claiming
+// the caller "has proven it published this entry". **Both cannot be true.** The suite could not see
+// the contradiction because it never built a caller that is the same alias and a different
+// incarnation, and a suite that cannot build the adversary cannot fail on it.
+//
+// TWO THINGS MAKE THIS BLOCK POSSIBLE, and the second is why it was missed for so long:
+//  1. A same-alias caller whose LIVE lifecycle is the successor's.
+//  2. A possession double keyed by LIFECYCLE. The `deps()` default returns a flat `true`, so the
+//     fence — the one line the whole design rests on — could not distinguish an incarnation from
+//     its predecessor no matter what the code did. The double was more forgiving than the store on
+//     the ONE axis under test, so the fence's own cells measured nothing.
+{
+  const LC_SUCC = "01h" + "z".repeat(22) + "c";
+  const seen: string[] = [];
+  // FAITHFUL: the predecessor put the bytes, so only its lifecycle possesses them.
+  const possession = async (_d: string, _p: string, lifecycleUid: string) => {
+    seen.push(lifecycleUid);
+    return lifecycleUid === LC;
+  };
+  const successor: Partial<ConfirmAttachDeps> =
+    { async liveLifecycleFor() { return LC_SUCC; }, hasPossession: possession };
+
+  const before = attachments.length;
+  // The same five shapes as the foreign block below, asked by a caller the sender compare ADMITS.
+  const probes = await Promise.all([
+    run({ ...base, seq: 999_999_999 }, successor),                          // does that seq exist?
+    run({ digest: DIGEST, channel: "other-channel", seq: 1 }, successor),   // which channel is it on?
+    run({ digest: DIGEST, channel: "general", seq: 2 }, successor),         // does it carry an artifact?
+    run({ digest: OTHER_DIGEST, channel: "general", seq: 1 }, successor),   // is it THIS digest?
+    run({ ...base, seq: 1 }, successor),                                    // well-formed, not possessed
+  ]);
+  const distinct = new Set(probes.map((p) => `${p.ok}|${p.error}`));
+  check("S1 SUCCESSOR PROBES ARE INDISTINGUISHABLE — a respawn learns nothing about its predecessor's entry",
+    distinct.size === 1, [...distinct]);
+  check("S1b and that one reply is the collapsed refusal",
+    probes.every((p) => p.ok === false && p.error === ATTACH_REFUSAL.notYours), probes);
+  check("S1c no successor probe wrote an attachment row — the COUNT did not move, on ANY channel",
+    attachments.length === before, { before, after: attachments.length });
+
+  // S1-pre — THE PRECONDITION, ASSERTED POSITIVELY, because the collapsed reply can no longer say
+  // why it refused. Without this, a fixture whose `liveLifecycleFor` override silently failed to
+  // apply would produce five identical PASSES for the wrong reason.
+  check("S1-pre the fence really resolved the SUCCESSOR's lifecycle, not the predecessor's",
+    seen.length > 0 && seen.every((l) => l === LC_SUCC), seen);
+
+  // S1-CONTROL — the same faithful double, one predicate changed: the caller is the incarnation that
+  // actually put the bytes. It must SUCCEED. A `hasPossession` stuck at `false` would satisfy every
+  // cell above while proving nothing, and this is the arm that cannot pass if it is.
+  const reply = await run({ digest: DIGEST, channel: "public", seq: 7 },
+    { async liveLifecycleFor() { return LC; }, hasPossession: possession });
+  check("S1-CONTROL the PREDECESSOR — same double, same entry, its own lifecycle — SUCCEEDS",
+    reply.ok === true, reply);
 }
 
 // ---- THE STRUCTURE ORACLE, CLOSED — asserted as an INDISTINGUISHABILITY -------------------------
