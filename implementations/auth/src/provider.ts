@@ -14,7 +14,7 @@
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type SecretStore } from "@cotal-ai/core";
-import { assertUserAuthInfo, homeCotalDir, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
@@ -37,13 +37,12 @@ import {
 
 const READY_TIMEOUT_MS = 15_000;
 
+/** Present only if PROVEN present. `probeLiveness` resolves EPERM (another user's process) to
+ *  `alive`, which is the defect this fixes: the old two-state probe called that dead. `unknown`
+ *  reads as NOT present, matching the behaviour this replaced, because a readiness caller that
+ *  accepts an undeterminable pid hands out an endpoint nothing is listening on. */
 function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return probeLiveness(pid) === "alive";
 }
 
 export const cotalAuthProvider: AuthProvider = {
@@ -96,7 +95,13 @@ export const cotalAuthProvider: AuthProvider = {
                 if (res.ok) return { url: info.url };
                 lastReason = `health probe at ${info.url}/health returned HTTP ${res.status}`;
               } else if (info) {
-                lastReason = `discovery file names pid ${info.pid}, which is not running (stale entry)`;
+                // Do not assert "not running" about a pid we could not attribute. The POLICY is
+                // unchanged (unknown is not ready, and no HTTP call is made), but the REASON has to
+                // be true: one of these is an observation and the other is a guess wearing its clothes.
+                lastReason =
+                  probeLiveness(info.pid) === "unknown"
+                    ? `discovery file names pid ${info.pid}, whose liveness cannot be determined (a seccomp filter or LSM policy answers kill(pid,0) with an arbitrary errno) - not treating it as ready`
+                    : `discovery file names pid ${info.pid}, which is not running (stale entry)`;
               }
             } catch (e) {
               lastReason = e instanceof Error ? e.message : String(e);
@@ -126,6 +131,11 @@ export const cotalAuthProvider: AuthProvider = {
     // restart recovery (U10) without spending an IdP /token call — and without an unrelated
     // IdP/network failure masking it. Missing-login stays primary (the session gate above).
     const info = loadAuthServiceInfo(dir);
+    if (info && probeLiveness(info.pid) === "unknown")
+      throw new Error(
+        `the user-auth service for space "${space}" records pid ${info.pid}, whose liveness cannot be determined - the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
+          `Refusing rather than claiming it is down: verify with \`ps -p ${info.pid}\` before restarting anything.`,
+      );
     if (!info || !pidAlive(info.pid))
       throw new Error(
         `the user-auth service for space "${space}" is not running - restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,

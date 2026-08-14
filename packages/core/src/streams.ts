@@ -1,4 +1,5 @@
 import {
+  jetstream,
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
@@ -6,10 +7,13 @@ import {
   type JetStreamManager,
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
-import { connect, credsAuthenticator, tokenAuthenticator, nanos } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
+import { Objm } from "@nats-io/obj";
 import {
   spacePrefix,
+  artifactBucket,
+  objectStoreStream,
   chatStream,
   chatSubject,
   chatWildcard,
@@ -89,6 +93,20 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
  *  far above any realistic readership while keeping the bucket from growing unbounded. A deliberate cap,
  *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
 export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Bucket-level `max_bytes` cap on the per-space artifact Object Store (`cotal_artifacts_<space>`).
+ *
+ *  THIS NUMBER IS THE ONLY THING BOUNDING ARTIFACT STORAGE, so it is a decision rather than a
+ *  default. A fresh Object Store bucket ships `max_bytes: -1`, and the space account is provisioned
+ *  `disk_storage: -1`, so nothing above it says no: without this cap an artifact flood grows until
+ *  the disk does, starving the chat/DM/delivery streams that share it.
+ *
+ *  4 GiB is roughly sixteen artifacts at the 256 MiB per-artifact ceiling, which is generous for the
+ *  transfer use case (screenshots, reports, build outputs) and small enough that filling it is a
+ *  visible event rather than a silent disk exhaustion. `discard: new` on the bucket means hitting it
+ *  REFUSES the write rather than evicting older artifacts — the loud failure, not the silent one
+ *  where a reference published yesterday quietly stops resolving. */
+export const ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export interface ClearSpaceHistoryResult {
   chat: number;
@@ -476,6 +494,87 @@ export async function reconcileSpaceTtls(opts: {
   }
 }
 
+/**
+ * Create the space's artifact Object Store, or VERIFY an existing one — never silently adopt it.
+ *
+ * `Objm.create(bucket, { max_bytes })` is create-if-MISSING. Measured on nats-server 2.14.4 with
+ * `@nats-io/obj` 3.4.0: creating at `max_bytes: 1024`, then calling create again with `4096`, leaves
+ * the stream at **1024** — it neither updates the config nor refuses. A bare `create()` with no
+ * options does the same.
+ *
+ * That makes create-alone actively dangerous here, because {@link setupSpaceStreams} is idempotent
+ * and re-runs on every `cotal up`. A store that predates this cap, or that an operator widened by
+ * hand, would be adopted forever: the code would look like it enforces a 4 GiB ceiling while the
+ * broker enforced whatever was there first, and nothing would ever say so. The cap is the ONLY thing
+ * bounding artifact storage (account disk is provisioned unlimited), so an unenforced cap is not a
+ * smaller cap — it is no cap.
+ *
+ * So: create, then read the config back and refuse loudly on drift. Same create-or-verify discipline
+ * `ensureAuthorityStores` already uses, and the same reason: an idempotent setup path must either
+ * converge the resource or report that it cannot.
+ */
+export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
+  const bucket = artifactBucket(space);
+  const stream = objectStoreStream(bucket);
+  await new Objm(jetstream(nc)).create(bucket, { max_bytes: ARTIFACT_STORE_MAX_BYTES });
+  const { config } = await (await jetstreamManager(nc)).streams.info(stream);
+  const drift: string[] = [];
+  // SUBJECTS FIRST, because they decide whether this is an object store AT ALL. A stream created
+  // under the right name with the right cap and the right discard, but bound to other subjects, is
+  // adopted by a cap-only check while artifact puts can never land - and setup reports success.
+  // (Measured: a stream named OBJ_<bucket> over `foreign.capture.>` survived setup untouched.)
+  const want = [`$O.${bucket}.C.>`, `$O.${bucket}.M.>`];
+  if (JSON.stringify(config.subjects ?? []) !== JSON.stringify(want))
+    drift.push(`subjects are ${JSON.stringify(config.subjects ?? [])}, expected ${JSON.stringify(want)}`);
+  // A MIRROR or SOURCE under this name makes the space's artifact store a view of someone else's
+  // stream. Nothing about the cap would look wrong; the bytes would simply not be the space's own.
+  if (config.mirror) drift.push("it is a MIRROR of another stream");
+  if (config.sources?.length) drift.push(`it SOURCES ${config.sources.length} other stream(s)`);
+  if (config.max_bytes !== ARTIFACT_STORE_MAX_BYTES)
+    drift.push(`max_bytes is ${config.max_bytes}, expected ${ARTIFACT_STORE_MAX_BYTES}`);
+  // `discard: new` is what makes a full store REFUSE a put instead of evicting a live artifact whose
+  // reference is already published. Drift here is silent data loss, not a capacity difference.
+  if (String(config.discard) !== "new") drift.push(`discard is ${config.discard}, expected new`);
+  // File storage: memory-backed artifacts vanish on a broker restart while every published reference
+  // survives, which turns a restart into a wave of unresolvable references.
+  if (String(config.storage) !== "file") drift.push(`storage is ${config.storage}, expected file`);
+  // Limits retention: any interest/work-queue retention DELETES messages once consumed, so a fetch
+  // would destroy the artifact it just read.
+  if (String(config.retention) !== "limits") drift.push(`retention is ${config.retention}, expected limits`);
+  // Rollup headers: WRITE-CRITICAL, and measured rather than assumed. With `allow_rollup_hdrs:false`
+  // on an otherwise canonical store, `put` fails outright with "rollup not permitted" - the object
+  // store uses a rollup to replace an object's metadata. So a store drifted here accepts setup and
+  // then rejects every artifact, which is the worst shape: green provisioning, broken feature.
+  //
+  // `allow_direct` is deliberately NOT checked. Measured on the same probe: with it false, put and
+  // get both still succeed, because this client's info path uses STREAM.MSG.GET rather than
+  // DIRECT.GET. Asserting it would refuse a store that works.
+  if (config.allow_rollup_hdrs !== true) drift.push("allow_rollup_hdrs is false, expected true (put fails without it)");
+  // max_age: SILENT DATA LOSS, measured. With max_age 1s on an otherwise canonical store, a put
+  // succeeds and the object is GONE 1.8s later (stream messages back to 0) - while every reference
+  // already published to a channel survives forever. That is the dangling-reference wave this design
+  // refuses everywhere else, arriving from a config field rather than from GC.
+  if (config.max_age !== 0) drift.push(`max_age is ${config.max_age}, expected 0 (a non-zero age silently deletes stored artifacts)`);
+  // sealed: cheap to check, and the mechanism is NOT the one it is usually described by. Measured:
+  // the broker REFUSES to create a sealed stream at all ("stream configuration for create can not be
+  // sealed"), so a sealed store cannot arrive through the create path - only by a later update. That
+  // narrows it to a deliberate operator action, which is exactly the drift worth naming.
+  if (config.sealed === true) drift.push("the stream is SEALED (writes permanently refused)");
+  // The message-count and size limits must stay unbounded, because THE CAP IS SUPPOSED TO BE THE
+  // OPERATIVE BOUND. Reproduced: max_msgs=2 accepts setup, the first 1-byte object succeeds (chunk +
+  // meta = 2 messages), and the second fails "maximum messages exceeded" with 4 GiB still free. A
+  // hidden limit that overrides the advertised capacity makes the number this code reports a lie -
+  // loud rather than silent, but still a bound nobody configured deliberately.
+  for (const [field, value] of [["max_msgs", config.max_msgs], ["max_msgs_per_subject", config.max_msgs_per_subject],
+                                ["max_msg_size", config.max_msg_size]] as const)
+    if (value !== -1) drift.push(`${field} is ${value}, expected -1 (max_bytes is the only bound this store advertises)`);
+  if (drift.length)
+    throw new Error(
+      `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +
+      `bounds are not the ones this space enforces (delete it, or reconcile it deliberately)`,
+    );
+}
+
 export async function setupSpaceStreams(opts: {
   servers: string;
   space: string;
@@ -517,6 +616,9 @@ export async function setupSpaceStreams(opts: {
     // Same list as `reconcileSpaceTtls`, from one source: two copies would let a fourth TTL'd bucket
     // be added to the create path and silently miss the upgrade path, which is this defect exactly.
     for (const [bucket, ttl] of ttlBuckets(opts.space)) await reconcileBucketTtl(jsm, `KV_${bucket}`, ttl);
+    // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
+    // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
+    await ensureArtifactStore(nc, opts.space);
   } finally {
     await nc.drain();
   }

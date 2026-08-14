@@ -254,12 +254,13 @@ concrete mechanism you can check against the code.
 |---|---|
 | [`@cotal-ai/core`](packages/core) | Endpoint, subjects, message types, the NATS client layer, and the `Connector`/`Command` contracts. |
 | [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `up`, `down`, `join`, `console`, `spawn`, `mint`, `channels`, `history`, and the operator extension loader. |
-| [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux / Orca), with `start`/`stop`/`ps`/`attach`. |
+| [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux / Orca / Herdr), with `start`/`stop`/`ps`/`attach`. |
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
 Plus the five agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
-[`@cotal-ai/tmux`](extensions/tmux), and [`@cotal-ai/orca`](extensions/orca) runtime integrations;
+[`@cotal-ai/tmux`](extensions/tmux), [`@cotal-ai/orca`](extensions/orca), and
+[`@cotal-ai/herdr`](extensions/herdr) runtime integrations;
 the full package list is in [AGENTS.md](AGENTS.md).
 
 ## Documentation
