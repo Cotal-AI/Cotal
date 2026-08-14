@@ -14,7 +14,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { executeEviction, executePlaneLiveness } from "./evict-exec.js";
+import { executeEviction, executePlaneLiveness, executePrincipalLiveness } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -222,6 +222,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     // Plane-claim liveness oracle (#29 HIGH 3): read-only $SYS CONNZ per call; the auth plane's
     // stale-claim reclaim gates on this verdict (any refusal/unknown blocks takeover, fail-closed).
     planeConnLiveness: (query) => executePlaneLiveness(server, query),
+    // Freeze-holder liveness probe (#391): read-only $SYS CONNZ per call — the READ half of
+    // evictPrincipal, so gate reconciliation can refuse on a live holder's behalf rather than
+    // killing it to discover it was alive (any refusal/unknown blocks the repair, fail-closed).
+    principalLiveness: (principal) => executePrincipalLiveness(server, principal),
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,

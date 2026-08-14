@@ -5,10 +5,12 @@ import {
   isPlaneConnTuple,
   isPrincipalOwnerToken,
   observePlaneLivenessWithCreds,
+  observePrincipalLivenessWithCreds,
   parsePrincipalKey,
   type EvictionResult,
   type PlaneLivenessQuery,
   type PlaneLivenessResult,
+  type PrincipalLivenessResult,
 } from "@cotal-ai/core";
 import { findCotalRoot } from "@cotal-ai/workspace";
 
@@ -83,5 +85,47 @@ export async function executePlaneLiveness(server: string, query: unknown): Prom
     observerCreds: readFileSync(obsPath, "utf8"),
     accountId,
     query: { ledger: q.ledger, records: q.records },
+  });
+}
+
+/**
+ * The delivery daemon's FREEZE-HOLDER LIVENESS probe (#391, on the privileged delivery-admin rail):
+ * answer whether ONE principal still holds a live connection, via the $SYS CONNZ observer cred
+ * (opened per call; READ-ONLY — the KICK evictor cred never enters this path, and is not even read
+ * from disk here).
+ *
+ * This is the READ half of {@link executeEviction}, and it exists because the write half cannot
+ * serve as its own precheck: a repair that must REFUSE while the holder is alive would, using
+ * `evictPrincipal` to find out, kill the holder before it could refuse. Same observer cred, same
+ * sweep, same refusal posture as the plane oracle — a space provisioned before the observer existed
+ * refuses with the regeneration step, and the caller treats that refusal as UNKNOWN and never
+ * repairs over it (fail-closed).
+ */
+export async function executePrincipalLiveness(server: string, principal: unknown): Promise<PrincipalLivenessResult> {
+  // Same fail-closed principal boundary the eviction filter applies, for the same reason: CONNZ
+  // attribution only ever surfaces `local` / derived `u_…` owners, so a syntactically-valid
+  // non-principal would sweep completely, match nothing, and read as a healthy `gone` — false
+  // confidence for a typo'd or old-shape holder, on the exact verdict that authorizes the repair.
+  if (typeof principal !== "string" || principal.trim().length === 0)
+    throw new Error("principalLiveness: a principal (owner.actor dot-form) is required");
+  const target = principal.trim();
+  const parsed = parsePrincipalKey(target);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
+    throw new Error(`principalLiveness: "${target}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
+  const dir = join(findCotalRoot(), ".cotal");
+  const obsPath = join(dir, "membership-observer.creds");
+  const cfgPath = join(dir, "membership.json");
+  if (!existsSync(obsPath))
+    throw new Error(
+      "principalLiveness: the $SYS observer creds are not provisioned here (a space created before live observation); mint them with `cotal down` then `cotal up --rotate-sys`",
+    );
+  if (!existsSync(cfgPath)) throw new Error(`principalLiveness: ${cfgPath} is missing, so the account to scan is unknown`);
+  const accountId = (JSON.parse(readFileSync(cfgPath, "utf8")) as { accountId?: string }).accountId;
+  if (!accountId) throw new Error("principalLiveness: .cotal/membership.json has no accountId");
+  return observePrincipalLivenessWithCreds({
+    servers: server,
+    observerCreds: readFileSync(obsPath, "utf8"),
+    accountId,
+    principal: target,
   });
 }
