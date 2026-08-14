@@ -44,7 +44,9 @@
  *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AguiBrackets, type AguiEvent } from "../../connector-core/src/agui.js";
 import { JsonlFileSource } from "../../connector-core/src/durable-source.js";
 import { createClaudeMapper, type ClaudeEntry } from "../src/agui-map.js";
@@ -93,20 +95,81 @@ const mint = (): string => `run-${(minted += 1)}`;
 // Read through `JsonlFileSource` rather than `readFileSync().split()` on purpose: the production
 // path is the one that has to survive a partial trailing record, and a suite that split the file
 // itself would be grading a reader nothing ships.
+//
+// **ADOPT-THEN-APPEND, because a fresh adopt is not a read of the file.** An earlier revision of
+// this suite called `source.read(undefined)` and asserted it returned every record. It returns
+// ZERO — `undefined` is a fresh adopt, defined at `durable-source.ts:179` to start at the last
+// complete record boundary rather than replay history, which is what an emitter attaching to a
+// live session must do. Against a real 30-record session that read 0 and took eleven downstream
+// cells with it. The suite was wrong, not the source.
+//
+// So the session is driven through the shape production actually has: adopt an EMPTY file, then
+// let the records arrive. The real session's bytes are appended to the adopted file (same inode —
+// the cursor is bound to `<dev>:<ino>` and a replacement is refused by design), and the read
+// resumes from the adopt cursor. No cursor is hand-built here: constructing a `<dev>:<ino>:0:<seal>`
+// string would mean re-implementing `sealAt`, which is the same sin as splitting the file myself.
 // ---------------------------------------------------------------------------------------------
-const source = new JsonlFileSource<ClaudeEntry>(SESSION);
-const read = await source.read(undefined);
-const rawLines = readFileSync(SESSION, "utf8").split("\n").filter((l) => l.trim() !== "").length;
+const raw = readFileSync(SESSION);
+const rawLines = raw.toString("utf8").split("\n").filter((l) => l.trim() !== "").length;
+
+const replay = join(mkdtempSync(join(tmpdir(), "agui-map-")), "session.jsonl");
+writeFileSync(replay, "");
+const source = new JsonlFileSource<ClaudeEntry>(replay);
+
+const adopt = await source.read(undefined);
+c("source:a-fresh-adopt-yields-NO-records", adopt.records.length === 0, { records: adopt.records.length });
+
+appendFileSync(replay, raw);
+const read = await source.read(adopt.cursor);
 
 c("source:reads-every-complete-record", read.records.length === rawLines, {
   viaSource: read.records.length,
   completeLines: rawLines,
 });
-c("source:record-cursors-are-strictly-increasing", (() => {
-  for (let i = 1; i < read.records.length; i += 1)
-    if (!(read.records[i]!.cursor > read.records[i - 1]!.cursor)) return false;
-  return read.records.length > 1;
-})(), { records: read.records.length });
+// A cursor is OPAQUE (`durable-source.ts:14`), so the thing to assert is the property the contract
+// actually promises — RESUMABILITY — not an ordering of the token's bytes.
+//
+// The cell that used to sit here compared cursors with `>`, i.e. lexicographically. It failed on a
+// real session at record 3, where the offset goes 902 -> 2767: strictly increasing as a number,
+// inverted as a string. It was asserting a property of the ENCODING that the interface declines to
+// promise, and it would have gone red on any session crossing a digit-width boundary — which is to
+// say, essentially all of them. That is the "comment asserting something outside its own function"
+// rule applied to a cell: the suite does not get to know what is inside the token.
+c("source:cursors-are-distinct-per-record", new Set(read.records.map((r) => r.cursor)).size === read.records.length, {
+  records: read.records.length,
+});
+
+// Resume from record k and require exactly the records after k. That is the property the contract
+// promises and the one production depends on.
+//
+// THE CAP IS REAL AND IT IS NAMED, because a silent cap reads as "covered everything". Each read
+// returns the WHOLE remainder, so walking every k is quadratic in bytes — on a 9.6MB session that
+// is tens of GB of reads and the suite simply stops finishing. So: every k up to `FULL_WALK`, and
+// above it a deterministic subset that always includes both ends and **every offset digit-width
+// transition** — those transitions are exactly where the lexicographic cell this replaced actually
+// broke (902 -> 2767), so the sample is chosen to contain the known failure shape rather than to be
+// evenly spread. `walked` is reported so a green states how much of the session it walked.
+const FULL_WALK = 200;
+const ks: number[] = (() => {
+  const n = read.records.length;
+  if (n <= FULL_WALK) return [...Array(n).keys()];
+  const off = (i: number): number => Number(read.records[i]!.cursor.split(":")[2]);
+  const picked = new Set<number>([0, 1, n - 2, n - 1]);
+  for (let i = 1; i < n; i += 1)
+    if (String(off(i)).length !== String(off(i - 1)).length) { picked.add(i - 1); picked.add(i); }
+  for (let i = 0; i < n; i += Math.ceil(n / 50)) picked.add(i);
+  return [...picked].filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
+})();
+
+c("source:resuming-from-record-k-yields-exactly-the-records-after-k", await (async () => {
+  for (const k of ks) {
+    const rest = await source.read(read.records[k]!.cursor);
+    if (rest.records.length !== read.records.length - k - 1) return false;
+    // Identity, not just count: the first record back must be the one that followed k.
+    if (rest.records.length > 0 && rest.records[0]!.cursor !== read.records[k + 1]!.cursor) return false;
+  }
+  return read.records.length > 1 && ks.length > 1;
+})(), { records: read.records.length, walked: ks.length, full: read.records.length <= FULL_WALK });
 
 const entries = read.records.map((r) => r.value);
 const typeHist = new Map<string, number>();
@@ -127,28 +190,68 @@ c("session:is-a-multi-turn-session-with-tool-use", (() => {
 })(), { types: [...typeHist] });
 
 // ---------------------------------------------------------------------------------------------
-// PART 2 — THE DEFECT, ASSERTED RATHER THAN DESCRIBED.
+// PART 2 — THE DEFECT, ASSERTED RATHER THAN DESCRIBED, AND SCOPED TO THE SESSIONS IT ACTUALLY HITS.
 //
-// §3.1's prompt rule is `origin.kind === "human"`. On a HEADLESS session (`claude -p`) the field is
-// absent from every user entry and provenance rides `promptSource: "sdk"` instead — so the rule
-// selects nothing, no run is ever opened, and because an assistant observation cannot name a run
-// that was never started, THE ENTIRE SESSION MAPS TO NOTHING.
+// §3.1's prompt rule is `origin.kind === "human"`. An earlier revision of this block asserted, flatly
+// and for every session, that no user entry carries `origin.kind` and so THE ENTIRE SESSION MAPS TO
+// NOTHING. **That is false, and a real session is what falsified it:** on a 5938-record INTERACTIVE
+// session with 892 user entries the field is present and the rule selects normally. The defect is
+// real but it is HEADLESS-ONLY (`claude -p`), where provenance rides `promptSource: "sdk"` instead.
 //
-// This cell asserts that outcome deliberately. It is not an approval of it: it is the shape of the
-// defect, pinned, so that a ruling which fixes the rule turns this cell RED and forces the suite to
-// be updated in the same change rather than quietly continuing to pass.
+// So the arm is DETECTED from the session rather than assumed, and each arm asserts the outcome that
+// belongs to it. A cell that fails because it met the other kind of session is not a finding, it is
+// a cell that did not say what it was about — and it would have read as "the mapper is broken" for
+// whoever ran it next.
 // ---------------------------------------------------------------------------------------------
+// Exactly one synthetic record in the whole suite, declared here because PART 2 needs it as a
+// control and PART 3 needs it as a crutch. It is what §3.1 says a prompt looks like — and the
+// measurement below is that no real record in either session shape looks like this.
+const OPENER: ClaudeEntry = {
+  type: "user",
+  uuid: "synthetic-opener",
+  timestamp: "2026-08-14T21:00:00.000Z",
+  origin: { kind: "human" },
+  message: { content: "open the run" },
+};
+
 const asSpecified = createClaudeMapper({ threadId: THREAD, mintRunId: mint, now: () => 0 });
 const asSpecifiedUnits = entries.map((e) => asSpecified.map(e)).filter((u) => u !== null);
+// The observed `origin.kind` values, reported so a failure names the vocabulary it actually met.
+// These are KEY/ENUM names, never content — rule 2 still holds.
+const originKinds = [...new Set(entries.map((e) => (e.origin === undefined ? "<absent>" : `kind=${String(e.origin.kind)}`)))].sort();
+const humanOrigin = entries.filter((e) => e.origin?.kind === "human").length;
+const ARM = entries.every((e) => e.origin === undefined) ? "HEADLESS" : "INTERACTIVE";
 
-c("defect-B:no-user-entry-in-this-session-carries-origin.kind", entries.every((e) => e.origin === undefined), {
+c(`defect-B:arm-is-${ARM}-by-measurement-not-assumption`, entries.length > 0, {
+  userEntries: typeHist.get("user") ?? 0,
+  originKinds,
+});
+
+// THE DEFECT, AND IT IS NOT HEADLESS-ONLY. Measured on both real shapes: an interactive session of
+// 5938 records with 892 user entries carries `origin` on 67 of them and every one is
+// `kind:"channel"` (a Cotal mesh delivery). `kind:"human"` occurs ZERO times in either shape, so
+// §3.1's rule selects nothing and a real session maps to NO events at all.
+//
+// Pinned rather than repaired: what the rule SHOULD key on is a design ruling, and inventing one
+// here would put a guess in the connector and a green cell on top of it.
+c("defect-B:NO-user-entry-in-this-real-session-carries-origin.kind===human", humanOrigin === 0, {
+  humanOrigin,
   userEntries: typeHist.get("user") ?? 0,
 });
-c("defect-B:the-rule-AS-SPECIFIED-opens-no-run-on-a-headless-session", asSpecified.openRun() === null);
-c("defect-B:and-so-the-WHOLE-real-session-maps-to-nothing", asSpecifiedUnits.length === 0, {
+c("defect-B:so-the-rule-AS-SPECIFIED-opens-no-run-on-THIS-real-session", asSpecified.openRun() === null, { originKinds });
+c("defect-B:and-the-WHOLE-real-session-maps-to-nothing", asSpecifiedUnits.length === 0, {
   units: asSpecifiedUnits.length,
   records: entries.length,
 });
+
+// CONTROL — the inverse of the predicate. Without it, all three cells above are equally satisfied by
+// a mapper whose prompt rule is broken outright, and "opens no run" would prove nothing about
+// `origin.kind`. Feed the ONE thing the spec says a prompt looks like and require a run to open.
+c("control:the-mapper-DOES-open-a-run-on-an-origin.kind===human-entry", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  return m.map(OPENER) !== null && m.openRun() !== null;
+})());
 
 // ---------------------------------------------------------------------------------------------
 // PART 3 — the same real records, with ONE synthetic entry in front to open a run.
@@ -158,14 +261,6 @@ c("defect-B:and-so-the-WHOLE-real-session-maps-to-nothing", asSpecifiedUnits.len
 // prompt looks like), and the other 30 are the real session's own bytes. When the prompt rule is
 // ruled on, this block loses its synthetic head and reads the file straight through.
 // ---------------------------------------------------------------------------------------------
-const OPENER: ClaudeEntry = {
-  type: "user",
-  uuid: "synthetic-opener",
-  timestamp: "2026-08-14T21:00:00.000Z",
-  origin: { kind: "human" },
-  message: { content: "open the run" },
-};
-
 const run = (opts?: { reasoning?: boolean }): { runId: string; events: AguiEvent[] }[] => {
   let n = 0;
   const m = createClaudeMapper({
@@ -262,11 +357,50 @@ c("real:reasoning-is-emitted-when-asked", (() => {
   }
   return thinking > 0 && on.filter((e) => e.type === "REASONING_MESSAGE_START").length === thinking;
 })());
+// Asserted on the reasoning-ON stream, because OFF proves nothing about a field that only exists
+// beside the content this setting emits.
+//
+// **BY KEY, AND THE PREVIOUS VERSION ONLY SAID SO.** It read
+// `!JSON.stringify(on).includes("signature")` under a comment claiming "by KEY, not by value" — a
+// substring test over keys AND values alike. On the real 5938-record session it went RED with 29
+// hits and ZERO of them a key: the word appears in the reasoning text, because the session is about
+// WAL seals and signing. A cell that reddens on what the operator was thinking ABOUT is a cell that
+// gets ignored, and the comment asserting a property the code did not have is the "test nobody
+// wrote" rule landing on a suite instead of on source.
+const signatureKeys = (v: unknown): number => {
+  if (Array.isArray(v)) return v.reduce<number>((n, x) => n + signatureKeys(x), 0);
+  if (v && typeof v === "object")
+    return Object.entries(v).reduce((n, [k, val]) => n + (k === "signature" ? 1 : 0) + signatureKeys(val), 0);
+  return 0;
+};
+
+// CONTROL FIRST, and it is the inverse of the predicate: a walker that can never find the key
+// reports zero for a mapper that leaks and a mapper that does not, and the two are indistinguishable
+// from the counting side. So prove the instrument can fail before trusting it to pass.
+c("control:the-key-walker-DOES-find-a-signature-key-when-one-is-present",
+  signatureKeys([{ type: "REASONING_MESSAGE_CONTENT", delta: "x", signature: "sig" }]) === 1);
+c("control:and-does-NOT-fire-on-the-word-in-a-value",
+  signatureKeys([{ type: "REASONING_MESSAGE_CONTENT", delta: "the signature is sealed" }]) === 0);
+
 c("real:the-thinking-SIGNATURE-never-appears-in-any-emitted-event", (() => {
-  // Asserted on the reasoning-ON stream, because OFF proves nothing about a field that only exists
-  // beside the content this setting emits. Checked on the serialized events by KEY, not by value.
   const on = run({ reasoning: true }).flatMap((u) => u.events);
-  return !JSON.stringify(on).includes("signature");
+  return on.length > 0 && signatureKeys(on) === 0;
+})());
+
+// And the mapper drops the field rather than the block: a mapper that skipped every signed thinking
+// block would also emit no signature key, and would pass the cell above for the wrong reason.
+c("real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0, reasoning: true });
+  m.map(OPENER);
+  const unit = m.map({
+    type: "assistant",
+    uuid: "signed-thinking",
+    timestamp: "2026-08-14T21:00:01.000Z",
+    message: { id: "msg-signed", content: [{ type: "thinking", thinking: "deliberating", signature: "SIG-DO-NOT-EMIT" }] },
+  } as ClaudeEntry);
+  const ev = unit?.events ?? [];
+  return ev.some((e) => e.type === "REASONING_MESSAGE_CONTENT") && signatureKeys(ev) === 0;
 })());
 
 // SELECTION. The classes §3.1 drops must actually be dropped, and the count is the evidence: a
