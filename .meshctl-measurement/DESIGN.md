@@ -33,6 +33,16 @@ membership closure — it deliberately *keeps* the membership (§7.1).
 
 Sections below that discuss re-target are retained for the follow-on and are marked **[DEFERRED]**.
 
+**⚠️ THE PARAGRAPH ABOVE IS PARTLY REFUTED BY THIS LANE'S OWN LATER MEASUREMENT, AND THAT BELONGS AT
+THE TOP RATHER THAN BURIED IN §7.2.** "Silently downgraded to live-only" was measured
+(`meshctl-72-gap.smoke.ts` @ `1e8ecd84`, 11/11) and it **overstates the harm on replay-enabled
+channels**: chat history is a separate JetStream stream from Plane-3 membership, so a live join
+backfills the missed interval — the ordinary act an agent performs on arrival. It is **exact on
+replay-disabled channels**, where the interval is gone with no path back. The deferral's disposition
+below **stands until fm-orchestrator rules on that measurement**; it is flagged here because a scope
+argument that outlives its evidence is how a deferral becomes permanent by inertia. Full result and
+its bounds: §7.2.
+
 ---
 
 ## 1. What authority does a self-connect carry, and where does it come from?
@@ -623,6 +633,29 @@ step of re-target; the operations available cannot do it safely:
   with a fresh `joinCursor`. Messages in the gap fall outside both intervals (`members.ts:93-127,
   212-229`). **"Just rejoin what you closed" cannot restore continuous durable coverage** — so a
   partial failure is not undoable, only reportable.
+
+  > **MEASURED, AND THIS BULLET IS TRUE BUT LOAD-BEARING FOR LESS THAN IT LOOKS.**
+  > `.meshctl-measurement/meshctl-72-gap.smoke.ts` @ `1e8ecd84`, 11/11, ephemeral auth broker with a
+  > real delivery daemon. Close a membership, post into the gap, re-open, ask both of the acceptance
+  > questions fm-orchestrator set.
+  > - **A durable re-join does NOT replay the gap** — the bullet above is confirmed exactly as
+  >   written. The backstop starts from the new generation.
+  > - **But the interval is not LOST.** Chat history is a **separate JetStream stream** from Plane-3
+  >   membership, so it is still on the broker after the membership is gone, and **a live join
+  >   backfills it** — `cotal_join` → `agent.joinChannel` → `ep.joinChannel`, the path an agent
+  >   actually has. (`recallChannel(ch, 0)` also returns it, but that is the ENDPOINT API and no tool
+  >   exposes it for an arbitrary earlier gap: `MeshAgent.recallAmbient` is focus-mode-only, pinned
+  >   to the frontier at focus **entry**, and live-joined channels only. Citing it would have
+  >   answered the question with a path the caller does not have.)
+  > - **BOUNDED: recall and backfill are both replay-gated.** The same probe on a channel seeded
+  >   `replay: false` finds the interval **gone, with no path back**.
+  >
+  > So "silently downgraded to live-only" **overstates the harm on replay-enabled channels**: the
+  > agent recovers the interval by the ordinary act of joining, which is what it does on arrival
+  > anyway. It is exact on replay-disabled ones. **Not measured, and untouched by this probe: the
+  > OTHER half of a partial close** — channels that fail to close stay open on the abandoned mesh and
+  > keep accruing for an agent that is never coming back. That is a leak on the source, not a gap for
+  > the agent, and the concern survives there in full.
 - **Even a fully successful scan is racy.** `listMemberships` is a snapshot; a `durableJoin` can
   reopen a membership after it, and the per-generation stale-leave guard deliberately protects the
   newer rejoin from the older leave. The boot-join reconciler also retries until membership exists
@@ -635,6 +668,22 @@ step of re-target; the operations available cannot do it safely:
 **RULED (fm-orchestrator): RE-TARGET IS DEFERRED. See §0.** The scope decision above was escalated
 rather than absorbed, and it came back as a split. What follows records the disposition, because a
 ruling whose reasoning is not written down gets re-litigated by the next reader.
+
+> **THE RULING'S OWN ACCEPTANCE TEST HAS SINCE BEEN RUN, AND ONE OF ITS TWO CONDITIONS HOLDS.**
+> fm-orchestrator named two conditions that would flip the ruling: **(1)** a named path that
+> re-establishes the missed interval, or **(2)** a demonstration that the gap is observable and
+> re-fetchable by the caller. Measured above: **(1) fails, (2) holds on replay-enabled channels
+> through `cotal_join`'s backfill, and fails on replay-disabled ones.**
+>
+> This is recorded here rather than acted on unilaterally: **the disposition below stays as written
+> until the orchestrator rules on the measurement.** But it is recorded *at the bullet it refutes*,
+> because a note that keeps a superseded rationale while its own probe sits elsewhere is how a
+> deferral outlives its reason. The honest residue for a future re-target is the **replay-disabled**
+> case and the **failed-to-close** case — not the recoverable one.
+>
+> Standing caveat on "observable": the agent recovers the interval by re-joining; **nothing tells it
+> an interval was missed.** Re-target implies re-joining, so it converges in practice, but
+> observability as a first-class property is a design item that does not exist yet.
 
 1. **`partial-membership-close` is NOT shipped, and is not in §2's union.** The first draft proposed
    it as a terminal reportable outcome carrying the closed and still-open channel sets. **That is
