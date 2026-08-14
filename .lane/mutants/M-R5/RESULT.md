@@ -49,10 +49,26 @@ about its own footprint. Scoped to the mutated file, it is **0**.
 
 ## Evidence — READ BACK from the repository, not written from intent
 
-Verify with `git ls-files .lane/mutants/M-R5/`; do not trust this table. The last inventory in this
-lane was written from intent, `git add` exited 0 having silently skipped two `*.log` files, and the
-provenance record had a provenance defect. `.lane/mutants/.gitignore` carries the scoped negation
-that stops it recurring.
+Verify with `git ls-files .lane/mutants/M-R5/`; do not trust this table.
+
+⚠️ **AND THAT VERIFICATION IS NOT ENOUGH, WHICH REVIEW HAD TO TELL ME.** `git ls-files` answers
+*is this file tracked*. It does not answer *does this file contain what the table says*. The row for
+the build logs claimed a command line; both logs are **zero bytes**. So the previous version of this
+section fixed the failure mode where a file is silently absent and reproduced the one where the
+description is wrong — with the read-back ceremony making it look settled.
+
+**The rule needs its second half: an evidence inventory is a claim about the repository AND about
+the contents, and `git ls-files` establishes only the first.** The contents were checked with
+`wc -c` after review pointed at them, which is how the zero bytes were confirmed.
+
+The first failure in this sequence was the other half: an inventory written from intent, where
+`git add` exited 0 having silently skipped two `*.log` files while this file listed them as
+preserved. `.lane/mutants/.gitignore` carries the scoped negation that stops that one recurring.
+**Two failures, one file, opposite directions — present but undescribed, then described but empty.**
+
+Contents, not just tracking:
+
+    git ls-files .lane/mutants/M-R5/ | while read -r f; do printf '%8s  %s\n' "$(wc -c < "$f")" "$f"; done
 
 | file | what it is |
 | --- | --- |
@@ -65,7 +81,8 @@ that stops it recurring.
 | `restore-liveness.out` / `.rc` | 14 passed, 0 failed / rc `0` |
 | `restore-repair.out` / `.verdict` | 32 passed, 0 failed / `rc=0 ran=32/32` |
 | `restore-clean.rc` | `0` — the mutated file matches HEAD again |
-| `build.log`, `restore-build.log`, `*.rc` | the builds; **command line and a separately-written rc**, both `0` |
+| `build.log`, `restore-build.log` | ⚠️ **ZERO BYTES.** `tsc` printed nothing on success and the runner redirected output without recording the command. An earlier version of this table said they carried the command line — **they never did** |
+| `build.rc`, `restore-build.rc` | the build exit codes, written separately: both `0` |
 
 `repair-artifacts/` holds the stamps the repair suite writes about itself, which is where its rc is
 read from — never from the shell's view of the command.

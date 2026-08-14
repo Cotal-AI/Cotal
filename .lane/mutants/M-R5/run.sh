@@ -59,7 +59,9 @@ PY
 
 git diff > "$ART/mutant.diff"
 
-( cd implementations/cli && tsc -p tsconfig.json ) > "$ART/build.log" 2>&1
+# Record the command as well as its output: `tsc` prints nothing on success, so a bare redirect
+# leaves a ZERO-BYTE log that an inventory can then describe as anything it likes. It did.
+{ echo "\$ tsc -p tsconfig.json  (cwd implementations/cli)"; ( cd implementations/cli && tsc -p tsconfig.json ) 2>&1; } > "$ART/build.log"
 echo $? > "$ART/build.rc"
 
 pnpm smoke:liveness-snapshot > "$ART/mutant-liveness.out" 2>&1
@@ -78,7 +80,7 @@ git checkout -- "$TARGET"
 # whole-tree form was answering about its own output. A restore check that reports the checker's
 # footprint is not a restore check.
 git diff --quiet HEAD -- "$TARGET"; echo $? > "$ART/restore-clean.rc"   # 0 == the mutated file matches HEAD again
-( cd implementations/cli && tsc -p tsconfig.json ) > "$ART/restore-build.log" 2>&1
+{ echo "\$ tsc -p tsconfig.json  (cwd implementations/cli)"; ( cd implementations/cli && tsc -p tsconfig.json ) 2>&1; } > "$ART/restore-build.log"
 echo $? > "$ART/restore-build.rc"
 
 pnpm smoke:liveness-snapshot > "$ART/restore-liveness.out" 2>&1
