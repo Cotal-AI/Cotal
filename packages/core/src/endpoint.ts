@@ -23,6 +23,8 @@ import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
+import { confirmAttach, type ConfirmAttachDeps } from "./artifact-attach.js";
+import { readPossession, putAttachmentIfAbsent, deleteAttachment, possessionBucket, attachmentBucket } from "./artifact-index.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -335,6 +337,8 @@ export class CotalEndpoint extends EventEmitter {
   private membersKv?: KV;
   private aclKv?: KV;
   private deliveryKv?: KV;
+  private artPossessKv?: KV;
+  private artAttachKv?: KV;
   private managerLeaseKv?: KV;
   private membershipFeedKv?: KV;
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
@@ -1052,6 +1056,10 @@ export class CotalEndpoint extends EventEmitter {
       this.membersKv = undefined;
       this.aclKv = undefined;
       this.deliveryKv = undefined;
+      // The artifact index handles are Plane-3 KV too: a confirmAttach arriving after a reconnect
+      // would otherwise read possession through a dead handle and refuse a legitimate publisher.
+      this.artPossessKv = undefined;
+      this.artAttachKv = undefined;
       this.emit("connection", { connected: false }); // null window opened — not live until the rebind below
       try {
         await oldNc?.drain();
@@ -2224,6 +2232,29 @@ export class CotalEndpoint extends EventEmitter {
     return this.deliveryKv;
   }
 
+  /** The artifact POSSESSION index — opened READ-ONLY in intent, and the grant must match.
+   *
+   *  THE ASYMMETRY BETWEEN THE TWO BUCKETS IS THE DESIGN, not an oversight to be tidied up. Delivery
+   *  needs read on possession and NOTHING else. A daemon that can WRITE possession can manufacture
+   *  possession for any principal at any lifecycle, after which `confirmAttach` is a formality and
+   *  the succession fence protects nothing — possession is earned by putting the bytes and is the
+   *  only thing the fence reads. A reviewer optimising for symmetry will propose matching grants on
+   *  both buckets; that is the proposal to refuse. */
+  private async artifactPossessionKv(): Promise<KV> {
+    if (!this.nc) throw new Error("endpoint not started");
+    this.artPossessKv ??= await new Kvm(this.nc).open(possessionBucket(this.space));
+    return this.artPossessKv;
+  }
+
+  /** The artifact ATTACHMENT index — read + create + delete, this space only. The delete is the
+   *  sweep-race rollback and has no other route: `dropAttachment` is not a verb, and the grant
+   *  cannot be narrowed below it, so the confinement lives in code and a cell holds it there. */
+  private async artifactAttachmentKv(): Promise<KV> {
+    if (!this.nc) throw new Error("endpoint not started");
+    this.artAttachKv ??= await new Kvm(this.nc).open(attachmentBucket(this.space));
+    return this.artAttachKv;
+  }
+
   private encodeLease(ready: boolean): Uint8Array {
     return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
   }
@@ -2591,6 +2622,7 @@ export class CotalEndpoint extends EventEmitter {
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
     if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
+    if (req.op === "confirmAttach") return this.deliveryConfirmAttach(caller, args);
     if (req.op === "listMemberships") {
       if (typeof args.lifecycleUid !== "string")
         return { ok: false, error: "listMemberships: the caller's lifecycleUid is required (membership rows are lifecycle-keyed, SPEC 13.1)" };
@@ -2660,6 +2692,82 @@ export class CotalEndpoint extends EventEmitter {
     try { await this.durableLeaveFor(caller, channel, uid, args.generation); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     return { ok: true, data: { channel } };
+  }
+
+  /** Serve one `confirmAttach` — the artifact plane's incarnation proof, arriving on the control rail.
+   *
+   *  THE LIFECYCLE IS RESOLVED SERVER-SIDE AND THE OP CARRIES NO `lifecycleUid`. This rail already
+   *  contains both possible answers and the difference is argued rather than assumed:
+   *  {@link deliveryJoin} resolves via `aclForAlias` because the trusted registry decides, while
+   *  {@link deliveryLeave} accepts a caller-asserted uid and EARNS it — the key it selects is
+   *  confined to the caller's own alias, so the worst a lie reaches is the caller's own retired row.
+   *
+   *  That harmlessness argument INVERTS here, which is why this is the join case and not close. A
+   *  false uid does not reach the caller's own retired row; it reaches the PREDECESSOR'S POSSESSION,
+   *  which is the whole asset. A same-alias successor asserting its predecessor's uid would pass
+   *  `hasPossession` and attach bytes it never put — exactly the succession attack the fence exists
+   *  to stop.
+   *
+   *  So `args.lifecycleUid` IS NOT READ, and the op has no such parameter. THE ABSENCE IS THE
+   *  ENFORCEMENT: a parameter that is present and ignored is a defect waiting for a refactor to
+   *  honour it. A cell drives a request carrying one anyway and asserts it changes nothing.
+   *
+   *  RESOLVED FRESH ON EVERY CALL, NEVER CACHED, for the reason {@link deliveryReadHistory} names as
+   *  the one invariant it exists for — with more force here: a memoized `aclForAlias` would let a
+   *  RETIRED lifecycle keep confirming attachments after its successor exists. */
+  private async deliveryConfirmAttach(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
+    // Arg SHAPE only. These are not authorization and must not read like it: a malformed request is
+    // a client bug and says nothing about any principal's entries, so it names its own fault. Every
+    // check that could describe a TARGET collapses to `notYours` inside the verb.
+    const digest = typeof args.digest === "string" ? args.digest.trim() : "";
+    if (!digest) return { ok: false, error: "confirmAttach: digest must be a non-blank string" };
+    const channel = this.checkDurableChannelArg(args, "confirmAttach");
+    if (typeof channel !== "string") return channel; // a ControlReply error
+    if (typeof args.seq !== "number" || !Number.isInteger(args.seq) || args.seq <= 0)
+      return { ok: false, error: "confirmAttach: a positive integer seq is required (from the publish PubAck; there is no get-by-msgID)" };
+
+    const possession = await this.artifactPossessionKv();
+    const attach = await this.artifactAttachmentKv();
+    const jsm = this.jsm;
+    if (!jsm) throw new Error("endpoint not started");
+    const space = this.space;
+    const deps: ConfirmAttachDeps = {
+      async entryBySeq(seq) {
+        // A missing entry is `null`, not a throw: the verb collapses it into `notYours` along with
+        // every other pre-possession state. Only a genuinely absent entry may be reported that way,
+        // so this must not swallow transport faults — `getMessage` rejects for both, and they are
+        // separated on the STRUCTURED err_code (10037, "no message found"), never on message text,
+        // the same classifier `readLastFact` and the records reader use. A bare catch here would
+        // turn a broker outage into `notYours`, which is the fail-closed direction but tells an
+        // operator to chase an authorization problem while the stream is unreachable.
+        try {
+          // TWO ROUTES TO ABSENCE, and both must land on `null`: the API rejects with 10037 for a
+          // purged/never-written seq, and it RESOLVES with null on a stream that cannot serve it.
+          // Handling only the throw leaves the resolve path returning an entry-shaped undefined.
+          const m = await jsm.streams.getMessage(chatStream(space), { seq });
+          return m === null ? null : { subject: m.subject, msg: m.json<CotalMessage>() };
+        } catch (e) {
+          if ((e as { code?: unknown }).code === 10037) return null;
+          throw e;
+        }
+      },
+      liveLifecycleFor: async (principal) => {
+        // `aclForAlias` THROWS AmbiguousAclAlias on two live rows, and the verb maps that to its own
+        // distinct refusal. Let it propagate untouched: catching it here would collapse the one
+        // refusal that describes the CALLER'S OWN ACL state into one that describes a target.
+        const acl = await this.aclForAlias(principal);
+        if (acl === undefined)
+          throw new Error(`confirmAttach: no ACL row on record for ${principal} (not provisioned for the artifact plane)`);
+        return acl.lifecycleUid;
+      },
+      hasPossession: (d, principal, uid) => readPossession(possession, d, principal, uid),
+      putAttachment: (d, ch, row) => putAttachmentIfAbsent(attach, d, ch, row),
+      dropAttachment: (d, ch) => deleteAttachment(attach, d, ch),
+      now: () => Date.now(),
+    };
+
+    const reply = await confirmAttach({ digest, channel, seq: args.seq }, caller, deps);
+    return reply.ok ? { ok: true, data: { digest, channel } } : { ok: false, error: reply.error };
   }
 
   /** Serve one MEDIATED HISTORY READ (`readHistory`, the client side is {@link readHistory}). The daemon
