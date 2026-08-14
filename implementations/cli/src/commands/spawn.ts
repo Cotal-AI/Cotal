@@ -19,6 +19,7 @@ import {
   provisionAgentDurables,
   registry,
   resolveAuthProvider,
+  assertPrincipalChannelGrants,
   CotalEndpoint,
   type AgentDef,
   type CompletionResult,
@@ -150,6 +151,13 @@ export function foregroundAllowPublish(
   connector: Pick<Connector, "name" | "eventChannel">,
   principal: { owner: string; actor: string } | undefined,
 ): string[] | undefined {
+  // THE OPERATOR'S OWN LIST IS CHECKED FIRST, AND REGARDLESS OF `events`. A grant naming an event
+  // channel that cannot exist is a misconfiguration whether or not this launch also asked for one:
+  // an agent file carrying `events.*` from before the principal re-key is mute either way, and the
+  // whole point is that it says so at spawn instead of at no point at all. Skipped only for a
+  // connector with no event channel to check against — there is no namespace to be wrong about.
+  if (connector.eventChannel)
+    assertPrincipalChannelGrants(base, connector.eventChannel, `${connector.name} spawn allowPublish`);
   if (events !== true) return base;
   if (!connector.eventChannel)
     throw new Error(`${connector.name} connector does not support event publishing (--events)`);

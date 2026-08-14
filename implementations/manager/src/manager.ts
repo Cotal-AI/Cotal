@@ -26,6 +26,7 @@ import {
   parsePrincipalKey,
   parseShareSelection,
   channelInAllow,
+  assertPrincipalChannelGrants,
   principalKey,
   probeConnect,
   provisionAgent,
@@ -2988,6 +2989,16 @@ export class Manager {
       // Asked of the resolved connector, never a literal, so the grant and the publish (which
       // derives from the live endpoint's own principal) name one subject. The capability was
       // already refused at accept, so `eventChannel` is present whenever `events` is set.
+      // REFUSE AN INHERITED EVENT GRANT THAT CAN NEVER MATCH, before it is minted into a JWT. What
+      // arrives in `allowPublish` here is the operator's own list (agent file `allowPublish`, or the
+      // control-plane argument), and an entry written against the FLAT pre-principal channel —
+      // `events.*`, or a bare sanitised name — covers nothing now that the channel carries two
+      // principal tokens. Minting it would produce exactly the failure this whole surface exists to
+      // stop: a launch that reports success and a stream nothing can publish to. Checked whether or
+      // not `events` is set, because a mute grant is a mute grant. Against the connector's OWN
+      // `eventChannel`, so this cannot drift from the channel it is validating.
+      if (connector.eventChannel)
+        assertPrincipalChannelGrants(allowPublish, connector.eventChannel, `spawn ${name}: allowPublish`);
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!(agentTriple)];
       await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
@@ -3493,6 +3504,19 @@ export class Manager {
       //
       // Compared against the connector's OWN `eventChannel`, never a hardcoded prefix — the same
       // rule the manager's spawn path follows, so the two cannot drift.
+      // A RETAINED GRANT THAT CAN NEVER MATCH IS REFUSED HERE TOO, and this is the path where it
+      // actually bites. The spawn-side check cannot reach an inventory written BEFORE the principal
+      // re-key: that cut is already on disk, still carrying a flat `events.<name>` or `events.*`
+      // entry, and every resume from it would re-arm a stream that publishes nowhere. Independent of
+      // the `events` bit for the same reason as at spawn — the grant is mute either way, and a resume
+      // is exactly where a mute grant gets inherited as though it had been checked once already.
+      if (connector.eventChannel) {
+        try {
+          assertPrincipalChannelGrants(entry.launch.allowPublish, connector.eventChannel, `resume ${entry.name}: retained allowPublish`);
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      }
       if (entry.launch.events === true) {
         if (!connector.eventChannel)
           return { ok: false, error: `${connector.name} connector does not support event publishing (events)` };

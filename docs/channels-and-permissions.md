@@ -62,6 +62,12 @@ Every field name below is verified against [agent-files.md](agent-files.md) and
 | **Grant a subtree** | `allowSubscribe: [team.>]`, read any concrete channel under `team.` without enumerating them | [SPEC §3](../SPEC.md#3-subject-layout), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization) |
 | A **reviewer that can join any `review.*`** | `allowSubscribe: [review, review.>]`. `review.>` matches strictly deeper channels, so include bare `review` to also read the top channel | [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) |
 | **Hide history from new joiners** | channel registry `replay: false` (noise control, not secrecy; ACL holders can still read history) | [SPEC §7](../SPEC.md#7-channels) |
+| **Let a UI read one agent's event stream** | `allowSubscribe: [events.<owner>.<actor>]`, or `events.<owner>.>` for every actor of one owner | [connect-claude.md](connect-claude.md) |
+
+Event channels are keyed on the agent's **principal** (`events.<owner>.<actor>`), so a
+single-token `events.*` matches nothing. A grant that can match no event channel is **refused by
+name when it is granted** — at spawn and on resume — rather than launching an agent whose stream
+is silently mute.
 
 ## Wildcards
 

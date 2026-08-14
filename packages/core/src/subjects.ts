@@ -464,6 +464,118 @@ export function patternInAllow(allow: string[], pattern: string): boolean {
   return allow.some((a) => patternCovers(a, pattern));
 }
 
+// ---- Principal-keyed channel grants ----
+//
+// A channel keyed on a principal (`<prefix…>.<owner>.<actor>`) costs one token MORE than the flat,
+// name-keyed form it replaced. That re-key is invisible to an operator holding an OLD grant, and the
+// failure mode is the worst kind: a single-token wildcard (`<prefix>.*`) matched the flat form and
+// matches NOTHING under the keyed one, while a grant that matches nothing is indistinguishable at
+// the broker from a channel with no traffic. The stream is simply mute, and the launch that armed it
+// reports success.
+//
+// So the mismatch is named where it is still fixable — at grant/spawn time — rather than discovered
+// as silence. This is the same shape as refusing `--events` in a mode with no stable identity: a
+// surface must not degrade its input while leaving its claim intact.
+//
+// `patternCovers` is deliberately NOT the test here, and the difference is not pedantic.
+// `patternCovers` asks CONTAINMENT ("is every channel matched by X also matched by Y"); this asks
+// INTERSECTION ("does X match ANY principal-keyed channel at all"). They disagree on exactly the
+// grant the re-key was designed to make expressible: `patternCovers("events.u_a.>", "events.*.*")`
+// is false in both directions, yet `events.u_a.>` is live and owner-wide. Reaching for the nearest
+// existing helper would therefore have refused the one capability the two-token key exists to buy.
+
+/** A WITNESS subject that `pattern` matches and that `channelFor` would really build — or `undefined`
+ *  when no such subject exists, i.e. the grant is mute against every principal-keyed channel.
+ *
+ *  Witness-based ON PURPOSE. The decision could be made by inspecting tokens, but then this function
+ *  would hold a SECOND copy of the channel's shape and could drift from the builder silently — the
+ *  drift being, once again, invisible. Instead the candidate is handed to `channelFor` (which
+ *  validates its own tokens and THROWS on an impossible one, e.g. a literal carrying the `-` that
+ *  owner/actor tokens ban) and the verdict is delegated to {@link subjectMatches}, the shipped
+ *  matcher the broker's rule is expressed in. The prefix and arity are read off a probe built by
+ *  `channelFor` itself, so nothing here names a particular namespace.
+ *
+ *  Returning the witness rather than a boolean is what makes the refusal explainable: a caller can
+ *  show an operator a subject their grant WOULD have covered, or state that none exists.
+ *
+ *  DEEPER-THAN-PRINCIPAL PATTERNS YIELD NO WITNESS. A grant naming more tokens than the principal key
+ *  (a per-session sub-channel, say) matches no principal-keyed channel, so it is reported mute here
+ *  like any other. That is the conservative reading and it is deliberate: such a grant is minted by
+ *  whatever change starts emitting on those subjects, in that same change. */
+export function principalChannelWitness(
+  pattern: string,
+  channelFor: (principal: { owner: string; actor: string }) => string,
+): string | undefined {
+  const probe = channelFor({ owner: WITNESS_OWNER, actor: WITNESS_ACTOR });
+  const prefix = probe.split(".").slice(0, -2);
+  const tokens = pattern.split(".");
+
+  const confirm = (owner: string, actor: string): string | undefined => {
+    let witness: string;
+    try {
+      witness = channelFor({ owner, actor });
+    } catch {
+      return undefined; // the literal cannot BE an owner/actor, so it names no reachable channel
+    }
+    return subjectMatches(pattern, witness) ? witness : undefined;
+  };
+
+  for (let i = 0; i < prefix.length; i++) {
+    if (i >= tokens.length) return undefined; // shorter than the namespace it would have to reach into
+    if (tokens[i] === ">") return confirm(WITNESS_OWNER, WITNESS_ACTOR); // fans out over everything below
+    if (tokens[i] !== "*" && tokens[i] !== prefix[i]) return undefined; // a different namespace entirely
+  }
+
+  const rest = tokens.slice(prefix.length);
+  if (rest.length === 1 && rest[0] === ">") return confirm(WITNESS_OWNER, WITNESS_ACTOR);
+  if (rest.length !== 2) return undefined; // one token short (the flat old form) or one too deep
+  return confirm(
+    rest[0] === "*" ? WITNESS_OWNER : rest[0],
+    rest[1] === "*" || rest[1] === ">" ? WITNESS_ACTOR : rest[1],
+  );
+}
+
+// Two tokens that are valid under any owner/actor grammar this repo enforces ([A-Za-z0-9_]), used
+// only to probe shape. They never reach a grant or a wire subject: `principalChannelWitness` returns
+// a witness for the CALLER to render, and every caller here renders it into an error string.
+const WITNESS_OWNER = "u_witness";
+const WITNESS_ACTOR = "witness";
+
+/** Refuse, by name, any `patterns` entry that sits in `channelFor`'s namespace but can never match a
+ *  principal-keyed channel in it. Entries OUTSIDE that namespace are not this function's business and
+ *  pass untouched — `chat.>` is not a broken event grant, it is a different grant.
+ *
+ *  Namespace membership is tested LITERALLY (the entry spells the prefix out) rather than by match,
+ *  so a deliberately broad grant like `*.>` is left alone: it genuinely covers, and refusing it would
+ *  turn a guard against mute streams into a guard against working ones.
+ *
+ *  Throws rather than filtering. A filtered grant list would launch, and the operator would learn
+ *  they had asked for something impossible only from the absence of data. */
+export function assertPrincipalChannelGrants(
+  patterns: readonly string[] | undefined,
+  channelFor: (principal: { owner: string; actor: string }) => string,
+  context: string,
+): void {
+  if (!patterns?.length) return;
+  const probe = channelFor({ owner: WITNESS_OWNER, actor: WITNESS_ACTOR });
+  const prefix = probe.split(".").slice(0, -2);
+  const live = `${prefix.join(".")}.<owner>.<actor>`;
+
+  for (const pattern of patterns) {
+    const inNamespace = prefix.every((seg, i) => pattern.split(".")[i] === seg);
+    if (!inNamespace) continue;
+    if (principalChannelWitness(pattern, channelFor)) continue;
+    throw new Error(
+      `${context}: the grant "${pattern}" matches no ${prefix.join(".")} channel and would publish ` +
+        `nowhere. Those channels are keyed on the agent's principal (${live}), so a single-token ` +
+        `wildcard like "${prefix.join(".")}.*" and any flat pre-principal name cover nothing, and a ` +
+        `grant that covers nothing is indistinguishable from a quiet channel once it is running. ` +
+        `Use "${prefix.join(".")}.<owner>.>" for every actor of one owner, "${live}" for one agent, ` +
+        `or "${prefix.join(".")}.>" for all of them.`,
+    );
+  }
+}
+
 /** Drop exact duplicates and any subject subsumed by a more-general one — JetStream
  *  rejects a consumer whose `filter_subjects` overlap, so `[team.>, team.backend]`
  *  must collapse to `[team.>]` before binding the chat consumer. A parent and its subtree
