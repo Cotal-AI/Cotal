@@ -16,10 +16,30 @@
  * derived from a source position BEHIND the frontier. None of them arise from writing whole valid
  * documents, which is all a naive fixture ever does.
  *
- * MUTATION LEDGER — predicted before the run; ACTUAL recorded after.
+ * MUTATION LEDGER — predicted before the run; ACTUAL recorded after. Kill sets name CELLS, never
+ * counts: a count cannot tell a real kill from an unrelated early failure. M4-M9 were run through
+ * `scratch/wal-mutate.mjs` with a COPY-ASIDE restore, because the tree was dirty and `git checkout`
+ * on a mutated file that also holds uncommitted work destroys the work.
  *   M1  drop the zero-byte branch (fall through to parse)  -> predict kills [B1] zero-byte only
  *   M2  weaken acked vintage to `>=`                       -> predict kills the ackSeq cell only
  *   M3  drop the version check                             -> predict kills the wrong-v cell only
+ *   M4  drop the nonzero-frontier-carries-its-cursor guard -> KILLED [F2] deleted-cursor, alone
+ *   M5  drop the both-zero-or-both-nonzero frontier guard  -> KILLED [F2] mixed-pair, alone
+ *   M6  drop the pending-shape guard                       -> KILLED both [F3] cells
+ *   M7  drop the space tuple check                         -> KILLED both [F4] cells
+ *   M8  drop the frozen-body load guard                    -> KILLED both [F1] refusal cells
+ *   M9  stop freezing the body at T1 (writer side)         -> ABORTS the suite; see below
+ *
+ * M9 IS REPORTED, NOT COUNTED AS A KILL. Removing the body from transition 1 makes every
+ * writer-produced fixture unloadable, so the run dies before the summary: it tells you something
+ * broke, not WHICH property. That is a known limit of a shared-state refusal suite and is written
+ * down rather than dressed up as a clean kill.
+ *
+ * M6 IS THE ONE WORTH READING. Its first version had TWO guards for the absent `pending` key — a
+ * `hasOwnProperty` check and a `typeof` check — and deleting the first killed NOTHING, because an
+ * absent key is `undefined` and the second refuses it under the same invariant. Defence in depth
+ * defeated the cell: two mechanisms preventing one outcome mean a cell asserting that outcome
+ * proves neither. The redundant guard was removed rather than the cell weakened.
  *
  * Run: pnpm smoke:event-wal
  */
@@ -47,12 +67,14 @@ async function refuses(what: string, invariant: string, fn: () => Promise<unknow
 }
 
 const root = mkdtempSync(join(tmpdir(), "event-wal-"));
-const T = { threadId: "th1", principal: "pr1", subjectMayExist: false };
+const T = { space: "sp1", threadId: "th1", principal: "pr1", subjectMayExist: false };
 const EXISTS = { ...T, subjectMayExist: true };
+/** A minimal publishable body — the bar `multicastExpecting` sets: a non-empty array of parts. */
+const BODY = [{ kind: "text", text: "frame" }] as const;
 let n = 0;
 const p = () => join(root, `w${++n}.json`);
 const doc = (over: Record<string, unknown> = {}) => JSON.stringify({
-  v: EVENT_WAL_VERSION, epoch: "ep1", threadId: "th1", principal: "pr1",
+  v: EVENT_WAL_VERSION, space: "sp1", epoch: "ep1", threadId: "th1", principal: "pr1",
   frontier: { seq: 0, lastSubjectSeq: 0 }, pending: null, ...over,
 });
 
@@ -63,7 +85,7 @@ try {
   c("virgin thread starts at seq 0 / E 0 with a fresh epoch",
     wal.frontier.seq === 0 && wal.frontier.lastSubjectSeq === 0 && wal.epoch.length > 0 && wal.pending === null);
 
-  await wal.beginSend({ id: "id-1", E: 0, seq: 1, sourceCursor: "c1" });
+  await wal.beginSend({ id: "id-1", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
   c("T1 records sent_unacked with id and E frozen",
     wal.pending?.state === "sent_unacked" && wal.pending.id === "id-1" && wal.pending.E === 0);
   c("T1 does NOT move the frontier (publish happens after this, never before)",
@@ -144,7 +166,7 @@ try {
   //    folded", which is why it joins the corrupt class instead of being repaired.
   const ackedDoc = (pend: Record<string, unknown>, front: Record<string, unknown>) =>
     doc({ frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1", ...front },
-          pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", ackSeq: 6, ...pend } });
+          pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", body: BODY, ackSeq: 6, ...pend } });
 
   const okAcked = p(); writeFileSync(okAcked, ackedDoc({}, {}));
   const loaded = await EventWal.open(okAcked, EXISTS);
@@ -168,7 +190,7 @@ try {
   //    path that had already succeeded and almost none for the one still in flight.
   const sentDoc = (over: Record<string, unknown>) => doc({
     frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" },
-    pending: { state: "sent_unacked", id: "ok", E: 5, seq: 2, sourceCursor: "c2", ...over },
+    pending: { state: "sent_unacked", id: "ok", E: 5, seq: 2, sourceCursor: "c2", body: BODY, ...over },
   });
   const sentOk = p(); writeFileSync(sentOk, sentDoc({}));
   const sentLoaded = await EventWal.open(sentOk, EXISTS);
@@ -187,21 +209,117 @@ try {
   await refuses("a sent_unacked seq that is not the frontier's successor is refused",
     "pending.seq === frontier.seq + 1", () => EventWal.open(sentSeq, EXISTS));
 
+  // ── THE FOUR STATES A REVIEW FOUND ACCEPTED, EACH DRIVEN FROM A DOCUMENT THE WRITER PRODUCED ──
+  //
+  //    Every fixture below is written by the SHIPPED writer and then changed in EXACTLY ONE
+  //    respect. That is not ceremony: a hand-built document can refuse for a reason unrelated to
+  //    the predicate, which is how an absent defect gets recorded as a present one — and the cells
+  //    above, all hand-built, are why these four states went unnoticed while this suite was green.
+  //
+  //    Each acceptance-turned-refusal carries a CONTROL that is the INVERSE of the predicate under
+  //    test, because a guard that refuses because it is correct and one that refuses because it is
+  //    broken are identical from the refusing side.
+  {
+    /** Drive the real writer; `folded` runs T1-T2-T3, `pending` stops after T1. */
+    const real = async (stage: "pending" | "folded"): Promise<string> => {
+      const path = p();
+      const w = await EventWal.open(path, T);
+      await w.beginSend({ id: "frame-one", E: 0, seq: 1, sourceCursor: "cur-1", body: BODY });
+      if (stage === "folded") { await w.recordAck(7); await w.fold(); }
+      return path;
+    };
+    /** Re-write the writer's own document with one field changed. */
+    const bend = (src: string, edit: (d: Record<string, unknown>) => void): string => {
+      const d = JSON.parse(readFileSync(src, "utf8")) as Record<string, unknown>;
+      edit(d);
+      const dst = p();
+      writeFileSync(dst, JSON.stringify(d));
+      return dst;
+    };
+
+    // [F1] the frozen body — a WAL that cannot re-publish the frame it froze is not a write-ahead
+    //      log. `[P2]` requires it; `WalPending` carried the id and the expectation and no payload.
+    const withBody = await real("pending");
+    const recovered = await EventWal.open(withBody, EXISTS);
+    c("[F1] a restart RECOVERS the frozen body, so the same frame can be re-published",
+      JSON.stringify(recovered.pending?.body) === JSON.stringify(BODY), recovered.pending);
+    await refuses("[F1] a pending with NO body is refused (it names a frame it cannot reproduce)",
+      "pending.body is a non-empty array of parts",
+      () => EventWal.open(bend(withBody, (d) => { delete (d.pending as Record<string, unknown>).body; }), EXISTS));
+    await refuses("[F1] a pending with an EMPTY body is refused — the wire would reject it too",
+      "pending.body is a non-empty array of parts",
+      () => EventWal.open(bend(withBody, (d) => { (d.pending as Record<string, unknown>).body = []; }), EXISTS));
+    {
+      let threw = false;
+      const api = await EventWal.open(p(), T);
+      try { await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c", body: [] }); } catch { threw = true; }
+      c("[F1] beginSend refuses an empty body BEFORE freezing it, not on the retry after a crash", threw);
+    }
+
+    // [F2] a nonzero frontier without the position it was derived from. Accepting it is silent
+    //      loss: `read(undefined)` adopts at the current end rather than resuming, so every unread
+    //      record is skipped and transition 4 commits the new end with no frame and no seq gap.
+    const folded = await real("folded");
+    await refuses("[F2] a NONZERO frontier with its sourceCursor deleted is refused",
+      "a nonzero frontier carries its sourceCursor",
+      () => EventWal.open(bend(folded, (d) => { delete (d.frontier as Record<string, unknown>).sourceCursor; }), EXISTS));
+    c("[F2] CONTROL: the same document UNCHANGED still loads (the refusal is the deletion, not the file)",
+      (await EventWal.open(folded, EXISTS)).frontier.sourceCursor === "cur-1");
+    // [F2] CONTROL, and the inverse of the predicate: a cursor at a ZERO frontier is LEGAL. This is
+    //      [P7]'s cursor-only advance over a source range that mapped to no events, and a guard
+    //      written as "cursor iff nonzero" would refuse it — breaking a shipped transition to close
+    //      a corruption hole. The asymmetry is the point, so it is asserted, not assumed.
+    {
+      const virgin = await EventWal.open(p(), T);
+      await virgin.advanceCursorOnly("cur-only");
+      const back = await EventWal.open(virgin.path, EXISTS);
+      c("[F2] CONTROL: [P7] a cursor at a ZERO frontier LOADS — cursor-only advance is not corruption",
+        back.frontier.sourceCursor === "cur-only" && back.frontier.seq === 0 && back.frontier.lastSubjectSeq === 0);
+    }
+    await refuses("[F2] a MIXED frontier pair (seq 0, lastSubjectSeq 7) is impossible and refused",
+      "frontier.seq and lastSubjectSeq are both zero or both nonzero",
+      () => EventWal.open(bend(folded, (d) => { (d.frontier as Record<string, unknown>).seq = 0; }), EXISTS));
+
+    // [F3] absent is not null. `null` is the writer stating nothing is outstanding; an absent key is
+    //      a document that never said, and adopting it downgrades "we may have published and do not
+    //      know" to "we have nothing in flight" on the WAL's own authority.
+    await refuses("[F3] a document whose `pending` KEY IS ABSENT is refused, not read as null",
+      "pending is present (null or an object)",
+      () => EventWal.open(bend(withBody, (d) => { delete d.pending; }), EXISTS));
+    await refuses("[F3] a `pending` that is neither null nor an object is refused",
+      "pending is present (null or an object)",
+      () => EventWal.open(bend(withBody, (d) => { d.pending = 5; }), EXISTS));
+    c("[F3] CONTROL: an EXPLICIT null loads and is the only way to say 'nothing outstanding'",
+      (await EventWal.open(bend(withBody, (d) => { d.pending = null; }), EXISTS)).pending === null);
+
+    // [F4] `space` is a hashed path component, and a path component is not a trusted input. The
+    //      design stores the unhashed tuple inside the file so a mis-resolved or collided directory
+    //      is loud; two of the three members were verified and the third was not.
+    await refuses("[F4] a WAL opened under a DIFFERENT space is refused",
+      "space matches",
+      () => EventWal.open(folded, { ...EXISTS, space: "sp2" }));
+    c("[F4] CONTROL: the same file under its OWN space loads (the refusal is the space, not the file)",
+      (await EventWal.open(folded, EXISTS)).frontier.seq === 1);
+    await refuses("[F4] a document with NO stored space is refused rather than assumed to be ours",
+      "space matches",
+      () => EventWal.open(bend(folded, (d) => { delete d.space; }), EXISTS));
+  }
+
   // ── THE TRANSITION API REFUSES BEFORE THE DURABLE WRITE, not on the boot after it ──
   {
     const api = await EventWal.open(p(), T);
     for (const bad of [" ", "bad\nid", "a".repeat(65), "has.dots", ""]) {
       let threw = false;
-      try { await api.beginSend({ id: bad, E: 0, seq: 1, sourceCursor: "c" }); } catch { threw = true; }
+      try { await api.beginSend({ id: bad, E: 0, seq: 1, sourceCursor: "c", body: BODY }); } catch { threw = true; }
       c(`beginSend refuses an id the WIRE would reject: ${JSON.stringify(bad).slice(0, 12)}`, threw);
     }
     let succession = false;
-    try { await api.beginSend({ id: "ok-id", E: 3, seq: 1, sourceCursor: "c" }); } catch { succession = true; }
+    try { await api.beginSend({ id: "ok-id", E: 3, seq: 1, sourceCursor: "c", body: BODY }); } catch { succession = true; }
     c("beginSend refuses an E that is not the frontier's tip", succession);
 
     // recordAck(-1) previously ACCEPTED, fold() then persisted lastSubjectSeq = -1, and the NEXT
     // open refused the file — one bad ack durably bricked the WAL while every call reported success.
-    await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c1" });
+    await api.beginSend({ id: "ok-id", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
     let ackThrew = false;
     try { await api.recordAck(-1); } catch { ackThrew = true; }
     c("recordAck refuses a negative ackSeq BEFORE the durable write", ackThrew);
@@ -255,11 +373,11 @@ try {
 
   const noAckSeq = p(); writeFileSync(noAckSeq, doc({
     frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" },
-    pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2" },
+    pending: { state: "acked", id: "i", E: 5, seq: 2, sourceCursor: "c2", body: BODY },
   }));
   await refuses("an acked pending with no ackSeq is refused", "acked.ackSeq present", () => EventWal.open(noAckSeq, EXISTS));
 
-  const badTag = p(); writeFileSync(badTag, doc({ pending: { state: "wat", id: "i", E: 0, seq: 1, sourceCursor: "c" } }));
+  const badTag = p(); writeFileSync(badTag, doc({ pending: { state: "wat", id: "i", E: 0, seq: 1, sourceCursor: "c", body: BODY } }));
   await refuses("an unknown pending tag is refused", "pending.state is a known tag", () => EventWal.open(badTag, EXISTS));
 
   // ── the WAL is 0600, because `pending.id` is a PRE-PUBLICATION SECRET ──
@@ -269,7 +387,7 @@ try {
   //    and the only window where it is readable is the one this file holds it in. Asserted on the
   //    file AFTER a rename, because the mode that matters is the surviving inode's, not the temp's.
   const secret = await EventWal.open(p(), T);
-  await secret.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1" });
+  await secret.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
   const mode = statSync(secret.path).mode & 0o777;
   c("the WAL is 0600 — group and other cannot read a frozen id before it is published", mode === 0o600, mode.toString(8));
   await secret.recordAck(1);
@@ -297,7 +415,7 @@ try {
       const oldStyle = join(wd, `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`);
       writeFileSync(oldStyle, "", { mode: 0o644 });
       const contested = await EventWal.open(target, T);
-      await contested.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1" });
+      await contested.beginSend({ id: "pre-publication-secret", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
       c("a planted 0644 temp does NOT become the WAL's mode — it is 0600 on the surviving inode",
         (statSync(target).mode & 0o777) === 0o600, (statSync(target).mode & 0o777).toString(8));
 
@@ -307,7 +425,7 @@ try {
       const t2 = join(wd, "w2.json");
       symlinkSync(victim, join(wd, `.${createHash("sha256").update(t2).digest("hex").slice(0, 12)}.${process.pid}.wal.tmp`));
       const other = await EventWal.open(t2, T);
-      await other.beginSend({ id: "x", E: 0, seq: 1, sourceCursor: "c1" });
+      await other.beginSend({ id: "x", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
       c("a planted symlink at the old temp name does not get clobbered through",
         readFileSync(victim, "utf8") === "DO_NOT_CLOBBER", readFileSync(victim, "utf8"));
 
@@ -348,8 +466,8 @@ try {
       const rp = join(rd, "r.json");
       const w = await EventWal.open(rp, T);
       const settled = await Promise.allSettled([
-        w.beginSend({ id: "A", E: 0, seq: 1, sourceCursor: "c1" }),
-        w.beginSend({ id: "B", E: 0, seq: 2, sourceCursor: "c2" }),
+        w.beginSend({ id: "A", E: 0, seq: 1, sourceCursor: "c1", body: BODY }),
+        w.beginSend({ id: "B", E: 0, seq: 2, sourceCursor: "c2", body: BODY }),
       ]);
       const won = settled.filter((r) => r.status === "fulfilled").length;
       c("exactly ONE concurrent beginSend wins; the other is refused cleanly", won === 1, settled.map((r) => r.status));
@@ -363,9 +481,9 @@ try {
 
   // ── one emit unit is ONE pending frame (`[P8]`) ──
   const single = await EventWal.open(p(), T);
-  await single.beginSend({ id: "a", E: 0, seq: 1, sourceCursor: "c1" });
+  await single.beginSend({ id: "a", E: 0, seq: 1, sourceCursor: "c1", body: BODY });
   let refusedSecond = false;
-  try { await single.beginSend({ id: "b", E: 0, seq: 2, sourceCursor: "c2" }); } catch { refusedSecond = true; }
+  try { await single.beginSend({ id: "b", E: 0, seq: 2, sourceCursor: "c2", body: BODY }); } catch { refusedSecond = true; }
   c("[P8] a second pending frame is refused — one emit unit is one pending frame", refusedSecond);
 
   let refusedAdvance = false;
@@ -384,7 +502,7 @@ try {
 {
   const base = p();
   const w = await EventWal.open(base, T);
-  await w.beginSend({ id: "id-c1", E: 0, seq: 1, sourceCursor: "cur-1" });
+  await w.beginSend({ id: "id-c1", E: 0, seq: 1, sourceCursor: "cur-1", body: BODY });
   const canonical = readFileSync(base, "utf8");
 
   // POSITIVE CONTROL: the unmodified document loads. Without it, both refusals below could be the

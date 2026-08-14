@@ -24,7 +24,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { assertIdToken } from "@cotal-ai/core";
+import { assertIdToken, type Part } from "@cotal-ai/core";
 
 /** Bump ONLY with a migration. An unknown version fails loud; it is never coerced. */
 export const EVENT_WAL_VERSION = 1;
@@ -46,12 +46,33 @@ export interface WalPending {
   E: number;
   seq: number;
   sourceCursor: string;
+  /**
+   * The frame's parts, FROZEN at transition 1 beside the id and `E` that identify them.
+   *
+   * Without this the WAL froze what NAMES a frame and not the frame: a restart holding
+   * `sent_unacked` recovered the id and the expectation and had nothing to re-publish, so
+   * "retry the same frame after a crash" — the one thing this file exists to make possible —
+   * could not be performed from the document. `[P2]` requires it and it was absent.
+   *
+   * It is the parts and not a rendered message because `multicastExpecting` builds the envelope
+   * (`ts`, `from`, `space`) at publish time; storing that too would freeze a second copy of fields
+   * the publisher owns, and a retry would then carry a stale `ts` under a frozen id.
+   */
+  body: Part[];
   /** Present iff `state === "acked"`: the sequence the server assigned. */
   ackSeq?: number;
 }
 
 export interface WalDoc {
   v: number;
+  /**
+   * The space this WAL belongs to — stored because it is a PATH COMPONENT and a path component is
+   * not a trusted input (`agui-events.md:683-692`). `principal` and `threadId` were verified on
+   * load and `space` was not, so a WAL copied or mis-resolved between two space directories under
+   * the same principal and thread LOADED, and one space's frontier was adopted as another's. Two
+   * thirds of a three-part guard is not the guard.
+   */
+  space: string;
   epoch: string;
   threadId: string;
   principal: string;
@@ -175,7 +196,7 @@ function assertPendingVintage(path: string, p: WalPending, f: WalFrontier): void
   // a thing this layer can do correctly, and doing it with string `<` was wrong in both directions.
 }
 
-function parseDoc(path: string, raw: string, threadId: string, principal: string): WalDoc {
+function parseDoc(path: string, raw: string, space: string, threadId: string, principal: string): WalDoc {
   let d: unknown;
   try {
     d = JSON.parse(raw);
@@ -189,7 +210,12 @@ function parseDoc(path: string, raw: string, threadId: string, principal: string
   if (doc.v !== EVENT_WAL_VERSION)
     throw new WalCorruptError(path, `v === ${EVENT_WAL_VERSION}`, `found v=${String(doc.v)}; a WAL is migrated, never coerced`);
 
-  // The tuple: a WAL that belongs to a different thread or principal is not ours to resume from.
+  // The tuple: a WAL that belongs to a different space, thread or principal is not ours to resume
+  // from. All THREE are checked, because all three are hashed path components and the design stores
+  // the unhashed tuple inside the file precisely so a collided or mis-resolved directory is a loud
+  // mismatch instead of silent cross-talk.
+  if (doc.space !== space)
+    throw new WalCorruptError(path, "space matches", `WAL space=${String(doc.space)} caller=${space}`);
   if (doc.threadId !== threadId)
     throw new WalCorruptError(path, "threadId matches", `WAL threadId=${String(doc.threadId)} caller=${threadId}`);
   if (doc.principal !== principal)
@@ -203,8 +229,47 @@ function parseDoc(path: string, raw: string, threadId: string, principal: string
   if (f.sourceCursor !== undefined && typeof f.sourceCursor !== "string")
     throw new WalCorruptError(path, "frontier.sourceCursor is a string or absent", typeof f.sourceCursor);
 
+  // A NONZERO FRONTIER MUST CARRY THE POSITION IT WAS DERIVED FROM.
+  //
+  // This guard was omitted on the reasoning that no shipped transition can produce a nonzero
+  // frontier without a cursor — which is exactly backwards. A recovery component must refuse the
+  // states its own writer CANNOT produce, because those are precisely the states corruption
+  // produces. The happy path is not the input domain.
+  //
+  // The cost of accepting it is silent loss, and it is not theoretical: the emitter resumes by
+  // reading forward from this cursor, and `read(undefined)` does not resume — it ADOPTS AT THE
+  // CURRENT END (`durable-source.ts:155-156`). So an absent cursor makes every unread record
+  // vanish, transition 4 durably commits the new end, and nothing is left to notice it: no frame
+  // published, and therefore no gap in the consumer's `seq` either.
+  //
+  // A cursor at a ZERO frontier is legal and must stay so — `[P7]`'s cursor-only advance over a
+  // source range that mapped to no events is exactly that state, and it is the ONLY asymmetry
+  // here. `seq` and `lastSubjectSeq` move together in transition 3 and reset together in
+  // abandonment, so a mixed pair is impossible by every shipped transition and refused for the
+  // same reason as the missing cursor.
+  if ((f.seq === 0) !== (f.lastSubjectSeq === 0))
+    throw new WalCorruptError(path, "frontier.seq and lastSubjectSeq are both zero or both nonzero", JSON.stringify(f));
+  if ((f.seq > 0 || f.lastSubjectSeq > 0) && typeof f.sourceCursor !== "string")
+    throw new WalCorruptError(path, "a nonzero frontier carries its sourceCursor", JSON.stringify(f));
+
+  // A MISSING `pending` KEY IS NOT AN EXPLICIT `null`, AND THE DIFFERENCE IS THE WHOLE POINT.
+  // `null` is this writer stating that nothing is outstanding. An ABSENT key is a document that
+  // never said — a truncated tail, a hand edit, a foreign producer — and accepting it silently
+  // reclassifies "we may have published and do not know" as "we have nothing in flight", which is
+  // the one downgrade a write-ahead log must never make on its own authority.
+  //
+  // ONE check, not two. The first version guarded the absent key with `hasOwnProperty` AND the
+  // shape with a `typeof`, and the mutation proof caught the redundancy: deleting the
+  // `hasOwnProperty` half killed nothing, because an absent key is `undefined` and the shape check
+  // already refuses it with the same invariant. Two mechanisms preventing one outcome means a cell
+  // asserting that outcome proves neither of them — so the belt came off and the cells now bite on
+  // the one guard that does the work.
+  if (doc.pending !== null && typeof doc.pending !== "object")
+    throw new WalCorruptError(path, "pending is present (null or an object)",
+      doc.pending === undefined ? "the key is absent, which is not the same as null" : typeof doc.pending);
+
   let pending: WalPending | null = null;
-  if (doc.pending !== null && doc.pending !== undefined) {
+  if (doc.pending !== null) {
     const p = doc.pending as Partial<WalPending>;
     if (p.state !== "sent_unacked" && p.state !== "acked")
       throw new WalCorruptError(path, "pending.state is a known tag", String(p.state));
@@ -225,11 +290,21 @@ function parseDoc(path: string, raw: string, threadId: string, principal: string
       throw new WalCorruptError(path, "pending E/seq are safe non-negative integers", JSON.stringify(p));
     if (typeof p.sourceCursor !== "string")
       throw new WalCorruptError(path, "pending.sourceCursor is a string", typeof p.sourceCursor);
+    // The frozen body must still be PUBLISHABLE, for the reason the id check above exists: a value
+    // that the wire rejects, adopted at recovery, turns disk corruption into a permanent wedge
+    // rather than a refusal at open.
+    //
+    // The bar is `multicastExpecting`'s OWN precondition — a non-empty array — and deliberately not
+    // core's `isMessagePart`. That predicate is core's INBOUND validator; the publish path does not
+    // apply it, so mirroring it here would refuse documents that would in fact publish, and would
+    // make this file a second, drifting source of truth about what a part is.
+    if (!Array.isArray(p.body) || p.body.length === 0)
+      throw new WalCorruptError(path, "pending.body is a non-empty array of parts", JSON.stringify(p.body));
     pending = p as WalPending;
     assertPendingVintage(path, pending, f as WalFrontier);
   }
 
-  return { v: doc.v, epoch: doc.epoch, threadId, principal, frontier: f as WalFrontier, pending };
+  return { v: doc.v, space, epoch: doc.epoch, threadId, principal, frontier: f as WalFrontier, pending };
 }
 
 export class EventWal {
@@ -277,7 +352,7 @@ export class EventWal {
    */
   static async open(
     path: string,
-    opts: { threadId: string; principal: string; subjectMayExist: boolean },
+    opts: { space: string; threadId: string; principal: string; subjectMayExist: boolean },
   ): Promise<EventWal> {
     let raw: string | undefined;
     let bytes: Buffer | undefined;
@@ -304,7 +379,7 @@ export class EventWal {
     if (raw === undefined) {
       if (opts.subjectMayExist)
         throw new WalCorruptError(path, "WAL exists when the subject may", "no WAL file, but this thread may already have published");
-      return new EventWal(path, EventWal.virgin(opts.threadId, opts.principal));
+      return new EventWal(path, EventWal.virgin(opts.space, opts.threadId, opts.principal));
     }
 
     // A ZERO-BYTE file is its own case, and the trap this design is shaped to fall into: it reads
@@ -314,12 +389,13 @@ export class EventWal {
     if (raw.length === 0)
       throw new WalCorruptError(path, "WAL is non-empty", "the file is zero bytes — distinct from missing and never treated as a virgin thread");
 
-    return new EventWal(path, parseDoc(path, raw, opts.threadId, opts.principal));
+    return new EventWal(path, parseDoc(path, raw, opts.space, opts.threadId, opts.principal));
   }
 
-  private static virgin(threadId: string, principal: string): WalDoc {
+  private static virgin(space: string, threadId: string, principal: string): WalDoc {
     return {
       v: EVENT_WAL_VERSION,
+      space,
       epoch: randomUUID(),
       threadId,
       principal,
@@ -329,7 +405,7 @@ export class EventWal {
   }
 
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
-  async beginSend(frame: { id: string; E: number; seq: number; sourceCursor: string }): Promise<void> {
+  async beginSend(frame: { id: string; E: number; seq: number; sourceCursor: string; body: Part[] }): Promise<void> {
     return this.serialize(async () => {
     if (this.doc.pending) throw new Error(`event WAL ${this.path}: a frame is already pending; one emit unit is one pending frame`);
     // THE SAME GRAMMAR THE WIRE USES, not a restatement of it. `beginSend` previously accepted ids
@@ -342,6 +418,11 @@ export class EventWal {
       throw new Error(`event WAL ${this.path}: E=${frame.E} is not the frontier's tip ${this.doc.frontier.lastSubjectSeq}`);
     if (frame.seq !== this.doc.frontier.seq + 1)
       throw new Error(`event WAL ${this.path}: seq=${frame.seq} is not the frontier's successor ${this.doc.frontier.seq + 1}`);
+    // Refuse an unpublishable body HERE rather than freezing it and discovering it on the retry
+    // after a crash — the same reason the id is validated on the way in. Same bar as the load
+    // guard and as `multicastExpecting`: non-empty array.
+    if (!Array.isArray(frame.body) || frame.body.length === 0)
+      throw new Error(`event WAL ${this.path}: a frame body must be a non-empty array of parts`);
     await this.write({ ...this.doc, pending: { state: "sent_unacked", ...frame } });
     });
   }
