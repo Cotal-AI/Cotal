@@ -76,7 +76,23 @@ check("and it reaches this package's source",
 // pattern, and its pattern is a claim about what mutation looks like.** Adding a new way to mutate
 // the thing under guard silently narrows the guard, and nothing about the guard's output changes to
 // say so. The list of verbs below is the part to extend when the next one lands.
-const INVOCATION = /\.(putAttachment|dropAttachment)\s*\(/;
+//
+// IT LANDED, AND THE LIST WAS NOT EXTENDED — the comment above named the maintenance obligation and
+// nothing discharged it, which is the same shape one level out. `artifact-index.ts` exports the raw
+// mutators as FREE FUNCTIONS taking a `kv`, and `index.ts`'s `export * from "./artifact-index.js"`
+// makes them public API of `@cotal-ai/core`. A leading `\.` matches a deps METHOD and can never match
+// `deleteAttachment(kv, …)`, so the suite's own invariant — the attachment index is UNREACHABLE
+// except through `confirmAttach` — was false against either of them. Proven by SURVIVAL before it was
+// fixed: a real `await deleteAttachment(...)` planted in `artifact-fetch.ts` left this suite 11/0
+// green, with the cell asserting that very file writes no attachment row passing.
+//
+// TWO PATTERNS RATHER THAN ONE ALTERNATION, because they discriminate differently: a deps call is
+// always dotted, a raw helper call never is, and the raw form must not match the DECLARATION in the
+// module that legitimately defines it.
+const INVOCATION_VIA_DEPS = /\.(putAttachment|dropAttachment)\s*\(/;
+const RAW_MUTATORS = ["putAttachmentIfAbsent", "deleteAttachment"] as const;
+const INVOCATION_RAW = new RegExp(`(?<!function\\s)\\b(${RAW_MUTATORS.join("|")})\\s*\\(`);
+const INVOCATION = new RegExp(`${INVOCATION_VIA_DEPS.source}|${INVOCATION_RAW.source}`);
 const callSites = files.filter((f) => INVOCATION.test(readFileSync(f, "utf8")));
 
 // ---- THE POSITIVE CONTROL — before any zero is believed ----------------------------------------
@@ -96,6 +112,24 @@ check("POSITIVE CONTROL: the sweep FINDS the known writer (confirmAttach)",
     check(`POSITIVE CONTROL: the sweep's \`${verb}\` branch matches a real call site`,
       new RegExp(`\\.${verb}\\s*\\(`).test(attachSrc), verb);
   }
+}
+
+// ---- SYNTHETIC CONTROLS for the raw-helper branches, and why they cannot take the form above -----
+// The controls above point each branch at a REAL call site. For the raw helpers there is deliberately
+// no production caller — that absence is the property this suite guards — so a control of that form
+// is impossible here, and a branch carrying NO control is exactly the rot the controls exist to
+// prevent. So each raw branch is proven against fixed samples instead.
+//
+// TWO ARMS, and the second is the load-bearing one. Matching an invocation proves the branch is
+// ALIVE. Refusing the DECLARATION proves it DISCRIMINATES — without that, the widened pattern matches
+// `artifact-index.ts`'s own `export async function deleteAttachment(` and the MUST_NOT_WRITE cell
+// below fails on the one file that is supposed to define these. A pattern that fires on everything
+// is not a wider guard, it is a broken one, and it fails on the innocent file first.
+for (const verb of RAW_MUTATORS) {
+  check(`POSITIVE CONTROL: the sweep's raw \`${verb}\` branch matches an INVOCATION`,
+    INVOCATION.test(`  await ${verb}(kv, digest, channel);`), verb);
+  check(`NEGATIVE CONTROL: the sweep's raw \`${verb}\` branch does NOT match its DECLARATION`,
+    !INVOCATION.test(`export async function ${verb}(kv: AttachmentKv, digest: string) {`), verb);
 }
 
 // ---- and only that one --------------------------------------------------------------------------
