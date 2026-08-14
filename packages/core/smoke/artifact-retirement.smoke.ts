@@ -21,7 +21,7 @@
  * Run: pnpm smoke:artifact-retirement   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
@@ -32,6 +32,7 @@ import {
   possessionBucket, possessionKey, principalKey, aclKey, aclBucket,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { stopBrokerAndClean } from "./_stop-broker.js";
 
 let ok = 0, fail = 0;
 const check = (name: string, pass: boolean, extra?: unknown) => {
@@ -136,8 +137,9 @@ try {
     await nc.close();
   }
 } finally {
-  broker.kill("SIGKILL");
-  rmSync(sd, { recursive: true, force: true });
+  const survivors = await stopBrokerAndClean(broker, sd);
+  check("R6 TEARDOWN proved the broker dead BEFORE removing its scratch", survivors.length === 0,
+    survivors);
 }
 
 console.log(`\nartifact-retirement: ${ok} passed, ${fail} failed`);

@@ -22,7 +22,7 @@
  * Run: pnpm smoke:artifact-e2e   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
@@ -51,6 +51,7 @@ import {
   type CotalMessage,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { stopBrokerAndClean } from "./_stop-broker.js";
 
 let ok = 0, fail = 0;
 const check = (name: string, pass: boolean, extra?: unknown) => {
@@ -200,8 +201,9 @@ try {
   await nc.close();
   await deleteSpace({ servers, space: SPACE });
 } finally {
-  broker.kill("SIGKILL");
-  rmSync(sd, { recursive: true, force: true });
+  const survivors = await stopBrokerAndClean(broker, sd);
+  check("E6 TEARDOWN proved the broker dead BEFORE removing its scratch", survivors.length === 0,
+    survivors);
 }
 
 console.log(`\nartifact-e2e: ${ok} passed, ${fail} failed`);

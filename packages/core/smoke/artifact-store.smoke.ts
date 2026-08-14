@@ -17,7 +17,7 @@
  * Run: pnpm smoke:artifact-store   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -43,6 +43,7 @@ import {
   attachmentKey,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { stopBrokerAndClean } from "./_stop-broker.js";
 
 const SPACE = "artstore";
 const LC_PROBE = "01h" + "z".repeat(22) + "a";
@@ -461,8 +462,9 @@ try {
   if (gone.some(isUnenumeratedAuthority))
     console.log("  ! pre-existing leak (Cotal #356), not this slice:", gone.filter(isUnenumeratedAuthority).join(", "));
 } finally {
-  broker.kill("SIGKILL");
-  rmSync(sd, { recursive: true, force: true });
+  const survivors = await stopBrokerAndClean(broker, sd);
+  check("S39 TEARDOWN proved the broker dead BEFORE removing its scratch", survivors.length === 0,
+    survivors);
 }
 
 console.log(`\nartifact-store: ${ok} passed, ${fail} failed`);

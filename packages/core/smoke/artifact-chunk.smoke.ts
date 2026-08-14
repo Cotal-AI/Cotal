@@ -20,7 +20,7 @@
  * Run: pnpm smoke:artifact-chunk   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -28,6 +28,7 @@ import { connect } from "@nats-io/transport-node";
 import { fitChunk, frameBytes, assertUploadFits, MinimumChunkError } from "../src/artifact-chunk.js";
 import { isReachable } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { stopBrokerAndClean } from "./_stop-broker.js";
 
 let ok = 0, fail = 0;
 const check = (name: string, pass: boolean, extra?: unknown) => {
@@ -242,8 +243,12 @@ try {
 
   await nc.close();
 } finally {
-  // Only pids this suite recorded at creation — never a broad sweep.
-  for (const b of brokers) { b.proc.kill("SIGKILL"); rmSync(b.sd, { recursive: true, force: true }); }
+  // Only pids this suite recorded at creation — never a broad sweep. Each is proven dead before
+  // its scratch goes: as one statement per broker, this loop could orphan SEVERAL at once.
+  const survivors: string[] = [];
+  for (const b of brokers) survivors.push(...(await stopBrokerAndClean(b.proc, b.sd)));
+  check("C9 TEARDOWN proved EVERY broker dead BEFORE removing its scratch", survivors.length === 0,
+    survivors);
 }
 
 console.log(`\nartifact-chunk: ${ok} passed, ${fail} failed`);
