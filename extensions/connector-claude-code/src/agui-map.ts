@@ -181,6 +181,18 @@ const ORIGIN_RULE: Record<string, "human" | "channel" | null> = {
  */
 const ABSENT_ORIGIN_RULE: Record<string, "sdk" | null> = {
   sdk: "sdk",
+  // **NOT FROM MY CORPUS — FROM §3.1's, WHICH I CANNOT RE-READ.** My 88-session sweep finds this
+  // value on an absent-origin `user` record ZERO times in 129,910 records. §3.1's table records it
+  // 81 times, as "local-command caveats, heartbeats, resumed-session summaries", on a capture with
+  // 4728 `user` entries and 3068 `channel` deliveries — and **no session on this machine matches
+  // that shape**; the closest has 18 human and 0 channel. So the two measurements are over different
+  // corpora and one of them is gone.
+  //
+  // It is entered as `null` — known, and NOT a turn — because §3.1 already classified it and a
+  // measurement I cannot repeat is still a measurement. Leaving it out would make the throw below
+  // fire in production on a class the plan documents, which is the one thing a fail-loud branch must
+  // not do: **a fail-loud branch is only safe if you know what is on the other side of it.**
+  system: null,
 };
 
 /**

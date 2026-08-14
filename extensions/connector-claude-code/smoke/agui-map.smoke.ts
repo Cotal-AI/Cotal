@@ -651,6 +651,22 @@ c("mechanism:an-origin-less-record-with-NO-promptSource-opens-no-run", (() => {
   return unit === null && mapper.openRun() === null;
 })());
 
+// §3.1's CLASS, and the cell exists because the ALTERNATIVE to it is a production throw. `"system"`
+// on an absent-origin record appears ZERO times in my 129,910-record corpus and 81 times in §3.1's,
+// on a capture no longer on this machine. Entered as known-and-not-a-turn on the strength of that
+// measurement. **The assertion that matters is that it does NOT throw** — a refusal and a crash are
+// both "no run" from the outside, and only one of them takes a live connector down.
+c("mechanism:an-origin-less-record-with-promptSource-system-is-refused-WITHOUT-throwing", (() => {
+  try {
+    const { unit, mapper } = mapOnce(originLess("system"));
+    return unit === null && mapper.openRun() === null;
+  } catch {
+    // The throw IS the failure mode under test, so it is caught and reported as this cell failing.
+    // Left uncaught it would kill the process before the cell name printed — red, and unattributable.
+    return false;
+  }
+})());
+
 // WHICH REFUSAL. A mapper that refused because the value is unmeasured and one that refused because
 // it is broken are identical from the refusing side, so the message is asserted, not just the throw.
 c("mechanism:an-origin-less-record-with-an-UNMEASURED-promptSource-THROWS-naming-the-table", (() => {
