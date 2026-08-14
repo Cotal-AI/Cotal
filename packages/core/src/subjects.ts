@@ -804,6 +804,24 @@ export function leaseKey(shardIndex: number): string {
 export function managerBucket(space: string): string {
   return `cotal_manager_${token(space)}`;
 }
+
+/** Name of the per-space **Object Store bucket** holding artifact bytes (SPEC §5's `artifact` part).
+ *
+ *  Its backing stream is `OBJ_<bucket>` over `$O.<bucket>.C.>` (chunks) and `$O.<bucket>.M.>`
+ *  (metadata) — a grammar owned by the Object Store, so it sits **outside** the `cotal.<space>.>`
+ *  subject tree while staying **inside** the per-space account. Account isolation therefore holds,
+ *  but the space's own subject audit cannot see it: it has to be enumerated by NAME everywhere a
+ *  space's resources are listed, never swept by prefix. {@link objectStoreStream} is that name. */
+export function artifactBucket(space: string): string {
+  return `cotal_artifacts_${token(space)}`;
+}
+
+/** The JetStream stream backing an Object Store bucket. The `OBJ_` prefix is the Object Store's own
+ *  convention, not Cotal's — measured against `@nats-io/obj` 3.4.0 rather than assumed, because this
+ *  name is what every stream inventory, teardown list and backup check matches on. */
+export function objectStoreStream(bucket: string): string {
+  return `OBJ_${bucket}`;
+}
 /** The lease-key PREFIX token in {@link managerBucket}. The demoted per-instance key is
  *  `${MANAGER_LEASE_KEY}.<instanceId>` ({@link managerLeaseKey}); this bare prefix is no longer written
  *  on its own (it stays exported as the grant/subtree anchor `${MANAGER_LEASE_KEY}.*`). */

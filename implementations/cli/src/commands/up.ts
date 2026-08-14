@@ -31,6 +31,7 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
   setupSpaceStreams,
+  reconcileSpaceTtls,
   standaloneConnectOpts,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
@@ -683,6 +684,43 @@ export async function up(args: ParsedArgs): Promise<void> {
         );
         process.exit(1);
       }
+      // #286: reconcile the presence/lease bucket TTLs, HERE, before the success line.
+      //
+      // This branch is the upgrade path. A mesh created before the bucket TTLs existed keeps no
+      // `max_age` forever, so dead presence records never expire and the roster reports a despawned
+      // agent as live — and that mesh is by definition ALREADY RUNNING, which is precisely the case
+      // that returns from here without ever reaching `postStart`/`setupSpaceStreams`. Reconciling
+      // only on the create path fixes the deployments that never had the bug.
+      //
+      // BEFORE the success print, not after: `✓ already running` is a claim about a healthy mesh,
+      // and printing it over an unreconciled one is the silent-drift failure this change exists to
+      // remove. A reconcile that cannot complete is a loud refusal, not a footnote under a tick.
+      //
+      // Read-first, so this stays a no-op in steady state: each bucket is skipped when its `max_age`
+      // already matches, so a repeat `cotal up` on a current mesh issues three reads and no writes.
+      // When it DOES write it says so — a bare `cotal up` now performs a config write on a running
+      // mesh, and an operator should never have to infer that from silence.
+      try {
+        // Open meshes hold no creds and need none (a bare connection has the rights) — but they DO
+        // carry the same three TTL'd buckets, so they drift identically and are reconciled too.
+        let reconcileCreds: string | undefined;
+        if (held.mode !== "open") {
+          const spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
+          if (!spaceAuth) {
+            console.error(c.red(`✗ mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its presence/lease TTLs; restore or re-provision \`.cotal/auth\``));
+            process.exit(1);
+          }
+          // Ephemeral, reconcile-only, discarded with the connection. Same enumerated `provisioner`
+          // scope the create path mints — no principal gains authority it did not already have, since
+          // a same-root caller holds the space's signing material either way.
+          reconcileCreds = await mintCreds(spaceAuth, newIdentity(), "provisioner");
+        }
+        for (const r of await reconcileSpaceTtls({ servers: server, space: held.space, creds: reconcileCreds }))
+          console.log(c.dim(`  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
+      } catch (e) {
+        console.error(c.red(`✗ mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`));
+        process.exit(1);
+      }
       console.log(c.green(`✓ mesh "${held.space}" already running at ${server}`));
       // USER MODE: re-upping IS the documented recovery for a dead auth service (the provider's
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
@@ -912,8 +950,9 @@ export async function up(args: ParsedArgs): Promise<void> {
     void stopDelivery()
       .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
       .then(() => {
-        stopManager();
-        stopAuthService(space);
+        void stopManager()
+          .then(() => stopAuthService(space))
+          .catch((e: Error) => console.error(`! teardown: ${e.message}`));
         child.kill("SIGTERM");
       });
   };
@@ -925,8 +964,8 @@ export async function up(args: ParsedArgs): Promise<void> {
     rmSync(cotalPath("nats.pid"), { force: true });
     // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
     await stopDelivery().catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-    stopManager();
-    stopAuthService(space);
+    await stopManager().catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
+    await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
     // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
     // record — removing by name would clobber the live winner and hide it from the registry.
@@ -1718,7 +1757,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // A leftover detached manager (its broker is gone — the reachability check above proved nothing
   // lives at this address) would win the fresh mesh's lease and the launch manager would refuse.
   // Stop it, so the manager started below WITH the launch spec is THE manager.
-  stopManager();
+  await stopManager();
   let pid: number;
   let controlPlane = false;
   let authService = true;

@@ -256,12 +256,19 @@ Delivery messages are UTF-8 JSON objects with this shape (`CotalMessage`):
 | `replyTo` | string | MAY | id of the message replied to |
 | `contextId` | string | MAY | thread/conversation correlation id |
 
-`Part` is one of the two core shapes, or an extension object whose `kind` is namespaced
+`Part` is one of the three core shapes, or an extension object whose `kind` is namespaced
 as described in §11:
 
 - `{ "kind": "text", "text": string }`
 - `{ "kind": "data", "data": <any JSON value> }`
+- `{ "kind": "artifact", "name": string, "mediaType": string, "digest": string, "size": number }`
 - `{ "kind": "<reverse-DNS extension kind>", ... }`
+
+An `artifact` part REFERENCES bytes held outside the message. `digest` MUST be
+`sha256:<lowercase hex>` over the raw bytes and is the artifact's identity; the part carries no
+location, so resolution is the receiver's. `name`, `mediaType`, and `size` are the publisher's
+claims: a receiver MUST NOT allocate from `size`, and MUST verify fetched bytes against `digest`
+before use.
 
 `EndpointRef` is `{ "id": string, "name": string, "role"?: string }`.
 
@@ -275,9 +282,9 @@ Endpoint requests and replies (the control surface) use the versioned typed enve
 
 Receivers MUST ignore unknown object fields. Unknown conformant extension `Part.kind` values
 MUST be ignored unless the receiver explicitly supports that extension. Bare unrecognized
-core-kind values are not conformant. Messages MUST fit the broker's configured maximum payload.
-v0 has no artifact transfer part; large payload transport is reserved for a future Object Store
-extension.
+core-kind values are not conformant. Messages MUST fit the broker's configured maximum payload;
+bytes that do not fit move out of the message and are referenced by an `artifact` part (above).
+The transport that serves those bytes is not defined by this document.
 
 **Schema.** The JSON Schema (draft-07) at
 [`spec/cotal.schema.json`](spec/cotal.schema.json) is **authoritative for message shapes**:
@@ -762,15 +769,14 @@ subjects, credentials, or deployment config (the v0.4 endpoint grammar is such a
 deliberately and separately from any wire change.
 
 **Extension namespacing.** Core `Part.kind` values, `meta` keys, and `tags` are bare and reserved
-to this spec (`text`, `data`, and future core additions). A non-core extension MUST namespace its
+to this spec (`text`, `data`, `artifact`, and future core additions). A non-core extension MUST namespace its
 custom `Part.kind` values and `meta` keys reverse-DNS, under a domain its author controls, e.g.
 `{ "kind": "com.acme.snapshot" }` or `meta["com.acme.region"]`; Cotal's own non-core extensions
 use `ai.cotal.*`. This keeps third-party names from colliding with each other or with future core
 names, with no central registry.
 
-Reserved future work: signed envelopes, `did:key` identity, artifact/object-store parts,
-auth-callout bootstrap tokens, manager profile scoping, and federated/untrusted relay
-bindings. (Revocation/TTL for minted credentials is no longer future work on the control
+Reserved future work: signed envelopes, `did:key` identity, auth-callout bootstrap tokens,
+manager profile scoping, and federated/untrusted relay bindings. (Revocation/TTL for minted credentials is no longer future work on the control
 surface: v0.4 defines it normatively via the credential ledger and the lifecycle barriers,
 §13.1.)
 

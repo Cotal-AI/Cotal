@@ -624,7 +624,7 @@ try {
       (await refusal(() => stopAuthService("stopg"))).includes("unattributable") && existsSync(hexStop));
     rmSync(hexStop, { force: true });
     writeFileSync(hexStop, ""); // empty husk is safe to clear (nothing to signal)
-    stopAuthService("stopg");
+    await stopAuthService("stopg");
     check("stopAuthService clears an EMPTY husk (no process to orphan)", !existsSync(hexStop));
   } finally {
     process.chdir(prevCwd);
