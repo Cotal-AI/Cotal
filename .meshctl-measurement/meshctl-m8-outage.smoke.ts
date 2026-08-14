@@ -16,6 +16,26 @@
  *   HELD only if a caller receiving one text could not tell which condition produced it.
  * I would rather refute myself here than confirm myself.
  *
+ * ⚠️ THE PUBLISH PATH IS PINNED, NOT ASSUMED (the hazard fm-meshctl-2 raised, and it decides
+ * whether the arms CAN differ). A *core* publish is fire-and-forget into a local buffer: with the
+ * connection down the client accepts it, queues it, and the caller is told NOTHING — an absent
+ * string is not a comparison. Verified in source instead: `agent.send` → `ep.multicast` →
+ * `publishMsg` (`packages/core/src/endpoint.ts:2541`) → `await this.js.publish(...)`, a JetStream
+ * publish that awaits a PubAck. **So this arm exercises the awaited path and a dead broker must
+ * produce something.** Re-verify this citation if `publishMsg` changes.
+ *
+ * ⚠️ FOUR OUTCOMES, SCORED BEFORE THE RUN so silence cannot be scored to suit the sentence already
+ * in the note — and the sentence is mine:
+ *   1. an error naming an OUTAGE/reconnect condition  -> REFUTES the claim. Strike it from the note.
+ *      Note `notLiveMsg()` (`endpoint.ts:2535`) returns "reconnecting - try again shortly", which
+ *      names a condition AND a next action, i.e. the opposite of indistinguishable.
+ *   2. an error naming a PERMISSION condition         -> HOLDS the claim. Implausible; recorded if seen.
+ *   3. NO ANSWER (hang)                               -> a THIRD outcome, scored as DISTINGUISHABLE:
+ *      a caller left waiting is in a different state than one handed a refusal. Not a pass, not a
+ *      failure string, counted in its own column.
+ *   4. SILENT SUCCESS (resolves without error)        -> REFUTES the claim and is a WORSE defect
+ *      than the one under investigation: the caller is told it sent when nothing was stored.
+ *
  * INVERSE CONTROLS — without these neither arm means anything:
  *   C1 the seat CAN publish in-ACL while the broker is up. Without it, the outage arm's failure is
  *      equally explained by "this seat could never publish", and the comparison is between two
@@ -146,9 +166,15 @@ try {
 
   // ARM B — the outage, on the seat's OWN in-ACL channel, so the only changed variable is the broker.
   const out = await bounded("B", send({ text: "M8-IN-ACL-DEAD", channel: "general" }));
-  outage = (out as any)?.HUNG ? "<NO ANSWER — hung>" : String((out as any)?.text ?? "");
-  check("M8-B the in-ACL post against a dead broker is also reported as an error rather than as a success",
-    (out as any)?.HUNG === true || (out as any)?.isError === true, outage);
+  const hung = (out as any)?.HUNG === true;
+  outage = hung ? "<NO ANSWER — hung>" : String((out as any)?.text ?? "");
+  // Outcome 4 is the one that must never be scored as "well, it didn't error, so they differ".
+  const silentSuccess = !hung && (out as any)?.isError !== true;
+  check("M8-B the in-ACL post against a dead broker is NOT silently accepted — the caller is not told it sent when nothing was stored",
+    !silentSuccess, { silentSuccess, outage });
+  if (silentSuccess)
+    console.log(`  ⚠ OUTCOME 4 (pre-declared): SILENT SUCCESS against a dead broker. This refutes the\n` +
+                `    claim AND is a worse defect than the one under investigation.`);
 
   // ---- The comparison. RECORDED, and the discriminability computed rather than eyeballed. ----
   const names = (s: string) => ({
@@ -162,11 +188,21 @@ try {
   console.log(`      identical: ${denial === outage}`);
   console.log(`      denial names a permission condition: ${dn.permissionWord} | names an outage condition: ${dn.outageWord}`);
   console.log(`      outage names a permission condition: ${on.permissionWord} | names an outage condition: ${on.outageWord}`);
-  const separable = denial !== outage && (dn.permissionWord !== on.permissionWord || dn.outageWord !== on.outageWord);
-  console.log(`\n  ▸ VERDICT ON MY OWN CLAIM ("indistinguishable from a broker outage"):`);
+  // Map onto the four pre-declared outcomes rather than inventing a rule now that results exist.
+  const outcome = hung ? 3
+    : silentSuccess ? 4
+    : on.permissionWord && !on.outageWord ? 2
+    : 1;
+  const separable = outcome !== 2 && (denial !== outage);
+  console.log(`\n  ▸ PRE-DECLARED OUTCOME: ${outcome} — ${
+    outcome === 1 ? "error naming an OUTAGE/reconnect condition"
+    : outcome === 2 ? "error naming a PERMISSION condition"
+    : outcome === 3 ? "NO ANSWER (hang)"
+    : "SILENT SUCCESS"}`);
+  console.log(`  ▸ VERDICT ON MY OWN CLAIM ("indistinguishable from a broker outage"):`);
   console.log(separable
-    ? `      REFUTED — the texts carry different condition words, so a caller CAN branch on them.\n` +
-      `      The note's sentence must be struck, not softened.`
+    ? `      REFUTED — the two are separable by a caller (outcome ${outcome}).\n` +
+      `      The note's sentence must be STRUCK, not softened.`
     : `      HELD — a caller receiving one text could not tell which condition produced it.`);
 } finally {
   killGroup();
