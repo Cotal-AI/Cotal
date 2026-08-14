@@ -322,9 +322,25 @@ export function fanoutDurableConfig(
  *  ages out already-expired messages (the intended liveness effect; active leases are younger than their
  *  TTL and survive, a stale one dies and its holder self-fences on its next failed renewal). NATS requires
  *  `duplicate_window <= max_age`; an old unlimited bucket's 120s window would otherwise reject the update,
- *  so the window is lowered in the SAME update. Idempotent (a matching bucket is skipped); reads back to
- *  prove the update took, else throws (no silent drift). The `provisioner` cred holds `STREAM.UPDATE` on
- *  exactly these three streams (see provision.ts). */
+ *  so the window is lowered in the SAME update. Idempotent (a matching bucket is skipped). The `provisioner`
+ *  cred holds `STREAM.UPDATE` on exactly these three streams (see provision.ts).
+ *
+ *  WHAT THE READ-BACK PROVES, AND WHAT IT CANNOT. It proves the SERVER REPORTS the intended config: a
+ *  no-op update, a silently clamped value, or a server that answers OK without changing anything is
+ *  caught here and throws. It does NOT prove that file-store expiry is in force, and the distinction is
+ *  not theoretical — on the supported floor (nats-server 2.12.1) the effect is applied in two places and
+ *  only one of them is visible to us:
+ *    - `stream.go` assigns the new in-memory `mset.cfg`, then calls `mset.store.UpdateConfig(cfg)` and
+ *      IGNORES its returned error;
+ *    - `filestore.go`'s `UpdateConfig` restores the previous config and returns early when
+ *      `writeStreamMeta()` fails — BEFORE `expireMsgs()`/age enforcement is ever started;
+ *    - `STREAM.INFO` is answered from `mset.config()`, i.e. the in-memory copy.
+ *  So a metadata-write fault (EACCES, ENOSPC) yields UPDATE OK, a read-back showing the intended
+ *  `max_age`, and a backing store still running unlimited with no expiry timer. No check at this seam can
+ *  see that, because every field we can read comes from the config that DID get updated. Closing it needs
+ *  either a behavioural proof that records actually age out (see the CLI regression's open-mesh phase,
+ *  which proves enforcement on a healthy server) or an upstream fix that propagates the store error.
+ *  Stated here rather than left implied: this guard is a drift detector, not proof of enforcement. */
 export async function reconcileBucketTtl(jsm: JetStreamManager, streamName: string, ttlMs: number): Promise<TtlReconciled | undefined> {
   const wantNs = nanos(ttlMs);
   const info = await jsm.streams.info(streamName);
