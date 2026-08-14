@@ -11,9 +11,13 @@
  * surfaced only because the stale value happened to be visible text that disagreed with the file on
  * disk. Had it been behaviour, the suite would have been green about a program nobody had built.
  *
- * A build is also a SHARED side effect: several worktrees exist on one machine, and one lane's
- * `pnpm build` changes what another lane's live suite executes without touching a tracked file. So
- * `git status` — the sweep every lane runs — cannot see this.
+ * A build can ALSO be a shared side effect — but that part is LANE-DEPENDENT and must be measured,
+ * not inherited. Where `node_modules/@cotal-ai/*` symlinks into a store outside the worktree, one
+ * lane's `pnpm build` changes what another lane's live suite executes without touching a tracked
+ * file, invisible to `git status`. Measured with `readlink -e` (NOT `-f`, which happily prints an
+ * absolute path for a package that is not installed), this worktree's packages all resolve inside
+ * itself, so its `dist` is private and that aggravator does not apply here. The provenance defect
+ * above never depended on sharing and stands without it.
  *
  * This refuses rather than warns, and it refuses BEFORE the suite measures anything. A discipline is
  * something a tired person skips; a refusal is not. And it names WHICH condition failed, because a
