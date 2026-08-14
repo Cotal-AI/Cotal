@@ -24,7 +24,13 @@ import { parseSubject } from "./subjects.js";
 import { AmbiguousAclAlias } from "./acls.js";
 import { isArtifactPart } from "./artifact.js";
 import type { CotalMessage } from "./types.js";
-import type { AttachmentRow } from "./artifact-index.js";
+import {
+  readPossession,
+  putAttachmentIfAbsent,
+  deleteAttachment,
+  type AttachmentKv,
+  type AttachmentRow,
+} from "./artifact-index.js";
 
 /**
  * The refusal vocabulary, exact and stable.
@@ -157,6 +163,44 @@ export interface ConfirmAttachDeps {
    */
   dropAttachment(digest: string, channel: string): Promise<void>;
   now(): number;
+}
+
+/**
+ * Bind the two index buckets into the three dependencies that TOUCH them, so no other module has to
+ * name a mutator to serve this verb.
+ *
+ * WHY THIS FUNCTION EXISTS, AND IT IS NOT TIDINESS. The single-writer sweep asserts the attachment
+ * index is unreachable except through this file, and it enforces that STRUCTURALLY, by name, over
+ * the whole corpus — `endpoint.ts` is the FIRST entry on its `MUST_NOT_WRITE` list, because that is
+ * where fan-out, the catch-up copy, the DLV reader and `readHistory` live, and where a real second
+ * writer would most plausibly appear.
+ *
+ * Wiring the control rail put the dependency closure in `endpoint.ts`, which made that file name
+ * `putAttachmentIfAbsent` and `deleteAttachment` and turned the sweep red. The write was still only
+ * reachable THROUGH `confirmAttach`, so the invariant held semantically — which is exactly what made
+ * "widen the sweep to allow `endpoint.ts`" the tempting fix, and exactly why it was refused. That
+ * would have blinded the guard on the one file it most needs to watch, to accommodate a caller that
+ * could simply be moved instead. THE CODE MOVED; THE GUARD DID NOT.
+ *
+ * The rail still supplies `entryBySeq` and `liveLifecycleFor` — those are the daemon's own seams (the
+ * chat stream and the trusted ACL registry) and belong to it. Only the index touch lives here.
+ */
+export function artifactIndexDeps(
+  stores: {
+    possession: Parameters<typeof readPossession>[0];
+    attachments: AttachmentKv;
+  },
+  rail: Pick<ConfirmAttachDeps, "entryBySeq" | "liveLifecycleFor"> & { now?: () => number },
+): ConfirmAttachDeps {
+  return {
+    entryBySeq: rail.entryBySeq,
+    liveLifecycleFor: rail.liveLifecycleFor,
+    hasPossession: (digest, principal, lifecycleUid) =>
+      readPossession(stores.possession, digest, principal, lifecycleUid),
+    putAttachment: (digest, channel, row) => putAttachmentIfAbsent(stores.attachments, digest, channel, row),
+    dropAttachment: (digest, channel) => deleteAttachment(stores.attachments, digest, channel),
+    now: rail.now ?? (() => Date.now()),
+  };
 }
 
 export async function confirmAttach(

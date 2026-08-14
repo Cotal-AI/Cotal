@@ -187,8 +187,15 @@ try {
       body.length > 0 && !READS_ASSERTED_UID.test(body), body.length);
     check("W3b POSITIVE CONTROL: the scan's pattern MATCHES a read of the asserted uid",
       READS_ASSERTED_UID.test('if (typeof args.lifecycleUid !== "string") return;'));
+    // ANCHORED ON WHAT THE HANDLER STILL OWNS, and it has already earned its keep once: it was
+    // anchored on `hasPossession`, that binding moved into the attach module so `endpoint.ts` would
+    // stop naming the index mutators, and this control went red while `W3b` itself stayed green.
+    // That is the whole point of it — `W3b` cannot tell "the parameter is absent" from "the slice is
+    // not the code I think it is", and without this arm the scan would have quietly kept passing
+    // over a body it no longer understood.
     check("W3b NEGATIVE CONTROL: the scan reached a real handler body, not an empty slice",
-      body.includes("liveLifecycleFor") && body.includes("hasPossession"), body.length);
+      body.includes("liveLifecycleFor") && body.includes("artifactIndexDeps") && body.includes("confirmAttach("),
+      body.length);
   }
 
   // ---- W4 — a different principal entirely, refused by the sender compare before possession -----

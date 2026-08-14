@@ -23,8 +23,8 @@ import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
-import { confirmAttach, type ConfirmAttachDeps } from "./artifact-attach.js";
-import { readPossession, putAttachmentIfAbsent, deleteAttachment, possessionBucket, attachmentBucket } from "./artifact-index.js";
+import { confirmAttach, artifactIndexDeps, type ConfirmAttachDeps } from "./artifact-attach.js";
+import { possessionBucket, attachmentBucket } from "./artifact-index.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -2731,7 +2731,10 @@ export class CotalEndpoint extends EventEmitter {
     const jsm = this.jsm;
     if (!jsm) throw new Error("endpoint not started");
     const space = this.space;
-    const deps: ConfirmAttachDeps = {
+    // The index touch is bound INSIDE the attach module (`artifactIndexDeps`), not here: this file is
+    // the FIRST entry on the single-writer sweep's MUST_NOT_WRITE list, and naming a mutator here to
+    // serve the verb would blind that guard on the file it most needs to watch.
+    const deps: ConfirmAttachDeps = artifactIndexDeps({ possession, attachments: attach }, {
       async entryBySeq(seq) {
         // A missing entry is `null`, not a throw: the verb collapses it into `notYours` along with
         // every other pre-possession state. Only a genuinely absent entry may be reported that way,
@@ -2760,11 +2763,7 @@ export class CotalEndpoint extends EventEmitter {
           throw new Error(`confirmAttach: no ACL row on record for ${principal} (not provisioned for the artifact plane)`);
         return acl.lifecycleUid;
       },
-      hasPossession: (d, principal, uid) => readPossession(possession, d, principal, uid),
-      putAttachment: (d, ch, row) => putAttachmentIfAbsent(attach, d, ch, row),
-      dropAttachment: (d, ch) => deleteAttachment(attach, d, ch),
-      now: () => Date.now(),
-    };
+    });
 
     const reply = await confirmAttach({ digest, channel, seq: args.seq }, caller, deps);
     return reply.ok ? { ok: true, data: { digest, channel } } : { ok: false, error: reply.error };
