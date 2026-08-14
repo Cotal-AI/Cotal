@@ -80,6 +80,24 @@ async function main(): Promise<void> {
   check("the CANONICAL `meshesForRoot` compare FINDS it for the same live root", canonicalCompare === true, `canonical=${canonicalCompare}`);
   check("therefore the two comparisons DISAGREE about one directory", rawCompare !== canonicalCompare, `raw=${rawCompare} canonical=${canonicalCompare}`);
 
+  // ---- the `resolve()`-flavoured spelling, which is what TARGET RESOLUTION actually uses ----
+  // `mesh-target.ts:355` filters with `resolve(m.root) === resolve(root)` and `:372` re-tests the
+  // same way. `resolve` normalizes separators and relative segments but does NOT collapse a
+  // symlink, so it misses here exactly as the bare `===` does — worth its own cell, because a
+  // reader can reasonably assume `resolve()` already canonicalizes and that these sites are safe.
+  //
+  // This matters more than the `up.ts` guard: `:355` is a RESOLUTION path, not a refusal. A miss
+  // there leaves `recorded` undefined for a root that IS recorded, so the project is treated as
+  // UNRECORDED — discarding the recorded server and mode and falling through to
+  // `localTarget(root, DEFAULT_SERVER)` (`:380`) when nothing else holds the default port.
+  const resolveCompare = held !== undefined && resolve(held.root) === resolve(liveRoot);
+  check("the `resolve()` compare (mesh-target.ts:355 spelling) ALSO misses", resolveCompare === false, `resolve=${resolveCompare}`);
+  check("`resolve()` and `meshesForRoot` disagree about one directory too", resolveCompare !== canonicalCompare, `resolve=${resolveCompare} canonical=${canonicalCompare}`);
+  // The `:372` companion: our OWN record now reads as "a DIFFERENT mesh" because the roots differ
+  // lexically. That is the misleading-refusal half of the same divergence.
+  const readsAsForeign = held !== undefined && resolve(held.root) !== resolve(liveRoot);
+  check("our own record reads as a FOREIGN root to the `:372` test", readsAsForeign === true, `foreign=${readsAsForeign}`);
+
   // ---- NON-VACUITY CONTROL ----
   // The miss above must be caused by the SPELLING, not by a broken fixture (a bad space name, a
   // registry that never wrote, a `meshesForRoot` that matches everything). Re-record the SAME mesh
@@ -91,6 +109,11 @@ async function main(): Promise<void> {
   check("CONTROL: recorded under the physical spelling, the RAW compare now FINDS it", rawCompare2 === true, `raw=${rawCompare2}`);
   check("CONTROL: the canonical compare still finds it", canonicalCompare2 === true, `canonical=${canonicalCompare2}`);
   check("CONTROL: the two comparisons AGREE when the spellings match", rawCompare2 === canonicalCompare2, `raw=${rawCompare2} canonical=${canonicalCompare2}`);
+  // Non-vacuity for the `resolve()` cells above: they assert a FALSE, which a broken fixture would
+  // also produce. Under the physical spelling the same expression must go TRUE, so the miss above
+  // is the symlink and not the comparison being incapable of matching anything.
+  const resolveCompare2 = held2 !== undefined && resolve(held2.root) === resolve(liveRoot);
+  check("CONTROL: the `resolve()` compare FINDS it under the physical spelling", resolveCompare2 === true, `resolve=${resolveCompare2}`);
 
   // ---- NEGATIVE CONTROL: `meshesForRoot` is not a rubber stamp ----
   const unrelated = realpathSync(mkdtempSync(join(tmpdir(), "cotal-rootid-other-")));
