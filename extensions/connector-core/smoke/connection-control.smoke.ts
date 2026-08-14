@@ -516,8 +516,14 @@ async function main() {
         subscribe: ["secret"], allowSubscribe: ["secret"], allowPublish: ["secret"],
         lifecycleUid: strUid, role: "stranger",
       }),
-      card: { id: strId.id, name: "authed-stranger", kind: "endpoint" },
-      lifecycleUid: strUid, role: "stranger",
+      // `role` MUST be on the CARD. A top-level `role:` option is silently ignored — the endpoint
+      // binds its svc_<role> queue from `this.card.role` (`endpoint.ts:3749`). The first version of
+      // this fixture passed it top-level, the stranger never bound a task queue, and E15 came back
+      // "not witnessed" — which reads EXACTLY like an ACL denial and would have been reported as
+      // one. It was a dead probe. E15's own positive form is what caught it: had it been written as
+      // "anycast is denied", the broken fixture would have PROVED IT.
+      card: { id: strId.id, name: "authed-stranger", kind: "endpoint", role: "stranger" },
+      lifecycleUid: strUid,
       // registerPresence so the subject can RESOLVE it by name: `agent.dm(to)` is a roster lookup,
       // and a resolution failure would read as an authority result if the two were not told apart.
       channels: ["secret"], consume: true, registerPresence: true, watchPresence: false,
@@ -533,11 +539,16 @@ async function main() {
     // The subject and the stranger share NOTHING: disjoint subscribe, disjoint allowPublish, no
     // common channel. E12 in this same run proves the subject cannot post one word to `#secret` —
     // the stranger's only channel. So any reach established below is reach the CHANNEL ACL denies.
-    const sawStranger = (S.getRoster?.() as any[] | undefined)?.some?.(
-      (p: any) => (p.name ?? p.card?.name) === "authed-stranger",
-    );
+    // NB: called WITHOUT optional chaining, deliberately. The first version of this line used
+    // `S.getRoster?.()` — a method MeshAgent does not have — and `?.` turned the absent method into
+    // `undefined`, i.e. into a soft "no". The precondition failed and VOIDed five cells, which is
+    // the right outcome by luck rather than by design: had the cell been written as an ABSENCE
+    // assertion instead, `undefined` would have satisfied it and the suite would have gone green on
+    // a method that does not exist. A missing accessor must THROW here, not answer.
+    const roster = S.roster().map((p: any) => p.card?.name ?? p.name);
+    const sawStranger = roster.includes("authed-stranger");
     precondition("AUTHED", "E14-pre the subject can RESOLVE the stranger by name (so a DM failure below would be an AUTHORITY result, not a lookup miss)",
-      sawStranger === true, { sawStranger, roster: (S.getRoster?.() as any[] | undefined)?.map?.((p: any) => p.name ?? p.card?.name) });
+      sawStranger, { roster });
 
     const dmSpec = authedSpecs.find((s: any) => s.name === "cotal_dm")!;
     const anySpec = authedSpecs.find((s: any) => s.name === "cotal_anycast")!;
@@ -549,6 +560,17 @@ async function main() {
       strangerSaw.some((w) => w.includes("DM-TO-UNGRANTED-PEER")), { strangerSaw, dmOut: dmOut.text, isError: dmOut.isError });
     armCheck("AUTHED", "E15 the subject CAN anycast a role it holds no grant about — witnessed at the role's server",
       strangerSaw.some((w) => w.includes("ANYCAST-TO-UNGRANTED-ROLE")), { strangerSaw, anyOut: anyOut.text, isError: anyOut.isError });
+
+    // E15b — KEPT FROM THE BROKEN RUN RATHER THAN DISCARDED. While the stranger had no task queue
+    // bound, `cotal_anycast` returned `Sent to one @stranger.` with `isError` unset — a SUCCESS
+    // report for a message with no server to receive it. That is the silent-no-op shape the design
+    // note names as the defect, so it is measured here on purpose: anycast a role that provably has
+    // no server at all, and record what the caller is told. RECORDED, NOT ASSERTED — whether the
+    // fan-out should fail is a design question I have not established, and anycast is at-least-once
+    // to a durable queue, so "nobody is listening yet" is not obviously an error.
+    const unserved = await anySpec.run(S, cfgAuthed, { role: "nobody-serves-this", text: "ANYCAST-INTO-THE-VOID" });
+    console.log(`  ▸ RECORDED (not asserted) — anycast to a role with NO server bound:\n` +
+      `      isError=${unserved.isError === true}  text=${JSON.stringify(String(unserved.text).slice(0, 200))}`);
 
     // E16 — THE ASYMMETRY AS ONE ASSERTION. E12 and E14 each measure half of it, and a reader who
     // saw only one would draw the wrong conclusion about what `allowPublish` bounds. Asserting the
