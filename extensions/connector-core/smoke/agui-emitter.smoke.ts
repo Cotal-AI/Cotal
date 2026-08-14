@@ -82,6 +82,10 @@
  * kept: they no longer discriminate, but they still assert real behaviour, and deleting a cell
  * because a mutation stopped reaching it is how coverage is lost quietly.
  *
+ * ALL SEVEN KILLED on their named cells, each with 1 mark against a baseline of 1 — so each verdict
+ * came from a suite that RAN and failed, not one that died. Instrument: `pnpm mutation-proof
+ * --config ../mut-agui-v2.json`, tree clean before and after.
+ *
  * ONE THING NO CELL HERE CAN DISCRIMINATE, said plainly rather than left as an unproven constant:
  * `SIZING_EXPECTATION`. Measuring at `MAX_SAFE_INTEGER` is a provable upper bound, but the real
  * expectation is a stream sequence, and reaching a 16-digit one takes ~10^15 messages. A mutation
