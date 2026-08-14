@@ -331,8 +331,57 @@ publish grant is the compromise this lane spent the evening proving does not cur
    applied to routing.** That is a much easier thing to argue for, and it means the design should
    follow that class's shape rather than invent one.
 
-   **Caveat, held deliberately:** this is a code reading. I have not driven either DM branch, and
-   this lane has spent the evening on the difference between those two things.
+   ~~**Caveat, held deliberately:** this is a code reading. I have not driven either DM branch, and
+   this lane has spent the evening on the difference between those two things.~~
+   **NOW DRIVEN** (`connection-control.smoke.ts` E14–E18, run `Fri Aug 14 10:57:18 PM UTC 2026`,
+   45 passed / 0 failed / 0 VOID at `2cc77347`; E18 re-asserted and re-run at `2b2ceea4`). **And the
+   driving found something the reading could not have: the peer verbs are not fenced the way the
+   channel verbs are.**
+
+   > ⚠️ **THE POST ACL DOES NOT BOUND PEER REACH. `allowPublish` is per-channel default-deny, but
+   > the DM and anycast publish grants are `inst.*.*.<o>.<a>` and `svc.*.<o>.<a>` — WILDCARD over
+   > destination, pinned only on the SENDER'S OWN identity** (`provision.ts:1078-1080`).
+
+   **Measured, in one instant, by one seat** (`allowPublish: ["general"]`, against a peer whose only
+   channel is `#secret`):
+
+   | Verb | Destination the seat holds no grant about | Result |
+   | --- | --- | --- |
+   | `cotal_send` → `#secret` | the peer's only channel | **DENIED at the broker** (E12) |
+   | `cotal_dm` → that same peer | the channel's only member | **DELIVERED** (E14) |
+   | `cotal_anycast` → `@stranger` | a role it holds nothing about | **DELIVERED** (E15) |
+
+   **E16 asserts that asymmetry as one conjunction** so it cannot survive either half changing, and
+   both deliveries are witnessed **at the recipient**, not self-reported.
+
+   **The fence is the SPACE, and it is real** (E18): the same credential re-pointed at another space
+   is refused by the broker's permissions, naming the foreign subject — with E17, the identical
+   construction against its own space, as the permitted twin. **So the answer to §1's central
+   question is measured, not argued: a self-connect cannot widen WHICH SPACE an agent reaches. It
+   also cannot narrow whom the agent may reach inside that space, because nothing ever did.**
+
+   **⚠️ AND THE FIRST VERSION OF E18 WAS WORTHLESS, WHICH IS WHY THIS PARAGRAPH IS TRUSTWORTHY.** It
+   accepted *any* refusal. Deleting the fence outright (widening the grant's space segment to `*`)
+   left it **green** — the foreign space has no streams, so the publish failed anyway with
+   `jetstream is not enabled`. **An unrelated failure stood in for the one that had been removed.**
+   The cell now requires a permissions refusal naming the foreign subject, and on the same mutant it
+   goes red alone while E12/E14/E15/E17 hold.
+
+   **Two fixture bugs are recorded in the suite rather than tidied away**, both the same class: an
+   absent accessor reached through `?.` answered "no" instead of throwing, and a `role` passed
+   top-level instead of on the card left the stranger with no task queue — making E15 read exactly
+   like an ACL denial. **E15 survived only because it was written as a POSITIVE assertion; phrased
+   as a denial, the broken fixture would have proved it.**
+2b. **RECORDED, NOT ASSERTED, and it is a live design question rather than a finding.** `cotal_anycast`
+   to a role **no server is bound to** returns `isError=false`, `Sent to one @nobody-serves-this.`
+   (E15b, same run). **The text asserts a delivery that did not occur.** I am not grading it: anycast
+   is at-least-once onto a durable queue, so *"nobody is listening yet"* is legitimately not an error
+   — a server may bind a minute later and consume it. **But `Sent to one @X` is a claim about the
+   present tense that the call cannot support**, and the honest rendering (*queued for @X; no server
+   is currently bound*) costs nothing. **It is only visible because a broken fixture produced it by
+   accident, and it is kept for that reason.** Whoever owns `cotal_anycast` should decide it; this
+   lane does not.
+
 3. **Peer-to-peer tasking refusal is a DIFFERENT refusal** (*"asked by anyone other than my manager"*)
    and is not designed here. It shares the reporting requirement in §4 and nothing else; conflating
    the two would produce a reason vocabulary where `no-route` and `not-my-manager` are the same
