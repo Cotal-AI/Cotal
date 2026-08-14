@@ -340,6 +340,20 @@ are usually confused for each other:
    on the assumption that whichever `dist` was present happened to match. Re-derivation was the point:
    these results were not wrong, they were **unestablished**, and those are different words.
 
+   **AND THEN THE OTHER FOUR, so the whole lane is on one footing** (`Fri Aug 14 08:55:07 PM UTC 2026`,
+   same build). I had first reported `m5-lease`, `m3-fence` and `m6-durable` as *not* re-run — judged
+   clean by reading imports. **That is an argument, not a measurement, and this lane does not bank
+   arguments**, so they were driven too:
+   - `m5-lease` — Q1 `CONFIRMED`, Q2 `MARKED not deleted`. **Identical.**
+   - `m3-fence` — **9 passed, 0 failed**, including F2 (a foreign broker refuses the cred) and F3
+     (a self-chosen ACL at mint time reaches what F1d denied). **Identical.**
+   - `m6-durable` — **4 passed, 0 failed**: a self-disconnect leaves the durable membership OPEN.
+     **Identical.**
+
+   **Every leg on this lane is now re-derived against a build verified newer than every core source
+   file, with the build time recorded.** Nine of nine. Nothing here rests on "whatever `dist` was
+   lying around when it ran."
+
 Neither is fixed by an install, and this program never runs one.
 
 ```
