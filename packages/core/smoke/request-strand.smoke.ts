@@ -114,6 +114,25 @@ try {
   check("a request in flight across a STOP is settled, not stranded", r2.state !== "stranded", r2.state);
   check("the stop refusal names the stop as the cause",
     /connection was stopped/i.test(r2.error?.message ?? ""), r2.error?.message);
+
+  // ---- ARM 3: the hole the sweep alone left open, found by adversarial review and measured there
+  // before it was measured here. Sweeping in-flight requests does NOT close ADMISSION, and stop()
+  // then awaits a presence publish and a drain with `this.nc` still set — so a request issued AFTER
+  // the sweep was admitted, registered a rejector nobody would ever call, and hung. Review measured
+  // it unsettled at 15s against its own 8s deadline. The sweep is not the guarantee; the latch is.
+  //
+  // This arm races a request against the stop deliberately: it must be REFUSED at admission, and
+  // the refusal must say NOTHING HAPPENED — a request that was never published is safe to retry,
+  // which is the opposite advice from a stranded one whose outcome is unknown.
+  const ep3 = new CotalEndpoint({ space, servers: SERVERS, card: { name: "caller-3", kind: "agent" }, channels: ["general"] });
+  await ep3.start();
+  const stopping = ep3.stop();
+  const afterSweep = settleWithin(ep3.requestControl("strandprobe", { op: "noop" }, 8000), 15000);
+  const r3 = await afterSweep;
+  await stopping;
+  check("ARM3 a request issued DURING a stop is not stranded either", r3.state !== "stranded", r3.state);
+  check("ARM3 it is refused at ADMISSION, and says nothing happened (safe to retry, unlike a strand)",
+    r3.state === "rejected" && /NOTHING HAPPENED/i.test(r3.error?.message ?? ""), r3.error?.message);
   ep = undefined;
 
   console.log(`\nREQUEST-STRAND SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

@@ -110,6 +110,16 @@ async function main() {
     !ungrantedNames.includes("cotal_disconnect") && !ungrantedNames.includes("cotal_connect"), ungrantedNames);
   check("G2 CONTROL: with the grant they ARE present (so G1's arms could differ)",
     grantedNames.includes("cotal_disconnect") && grantedNames.includes("cotal_connect"), grantedNames);
+  // USER MODE: `creds` is undefined by construction, so a `!config.creds` gate takes the permissive
+  // arm and an ungranted session would see the verbs. Spawn survives that because the broker denies
+  // it at the wire; a disconnect closes this client's own socket, which no broker can police, so
+  // this gate is the only gate and must not have a permissive arm here.
+  const userUngranted = { ...mk("user-ungranted", "worker"), userAuth: { owner: "o", actor: "a", sentinelCreds: "x", bearerCmd: ["true"] }, capabilities: [] as string[] };
+  const userGranted = { ...userUngranted, capabilities: ["connection"] };
+  check("G3 an UNGRANTED USER-MODE session does not see the verbs either",
+    !names(userUngranted).includes("cotal_disconnect"), names(userUngranted));
+  check("G4 CONTROL: a granted user-mode session does (so G3's arms could differ)",
+    names(userGranted).includes("cotal_disconnect"), names(userGranted));
 
   console.log("\n=== C1 CONTROL: a granted, connected agent disconnects itself ===");
   const before = seenBy(B, "subject-a");

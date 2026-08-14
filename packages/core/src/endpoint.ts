@@ -1366,6 +1366,16 @@ export class CotalEndpoint extends EventEmitter {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    // Close ADMISSION before sweeping, and never reopen it — a stop is terminal.
+    //
+    // Sweeping without closing admission leaves a hole the sweep itself cannot cover: `stop()`
+    // awaits a presence publish and a drain, `this.nc` stays set throughout, and requestControl
+    // only guards on `!this.nc`. So a request issued AFTER the sweep is admitted, registers its
+    // rejector, and is never failed by anyone — the exact permanent hang this fix exists to remove,
+    // reintroduced on the stop path. Measured by review: a request issued alongside stop() was
+    // still unsettled at 15s despite its own 8s deadline. The rebuild path never had this hole
+    // because it nulls `this.nc` inside the transition; stop() does not, so it needs the latch.
+    this.admissionClosed = true;
     // Same reasoning as the rebuild path: a stop drains the connection an in-flight reply would
     // have arrived on, so settle those callers rather than leaving them pending on a dead endpoint.
     this.failPendingRequests("stopped");
@@ -1609,7 +1619,9 @@ export class CotalEndpoint extends EventEmitter {
     // rather than a snapshot: once the latch is closed the set can only shrink.
     if (this.admissionClosed)
       throw new Error(
-        "a disconnect is in progress on this mesh connection, so no new request was sent. Nothing happened - retry once the transition completes.",
+        `this mesh connection is ${this.stopped ? "stopping" : "mid-transition"}, so no new request was sent. ` +
+          `NOTHING HAPPENED - unlike a stranded request, this one was never published, so it is safe to retry` +
+          `${this.stopped ? " on a new session" : " once the transition completes"}.`,
       );
     let reject!: (reason: Error) => void;
     const stranded = new Promise<never>((_, rej) => { reject = rej; });

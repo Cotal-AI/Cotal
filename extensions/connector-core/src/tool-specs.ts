@@ -160,7 +160,16 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // no authority of its own. The verbs re-present the credential the session already holds, at the
   // target it was already launched against, so an ungranted session that somehow called one would
   // still reach nothing new; the broker, not this line, is the fence.
-  const canConnect = !config.creds || (config.capabilities?.includes("connection") ?? false);
+  //
+  // NOTE the `userAuth` term, and that `canSpawn` above lacks it. In user mode `creds` is undefined
+  // by construction (the two modes are mutually exclusive), so `!config.creds` takes the PERMISSIVE
+  // arm and an ungranted user-mode session would see the verbs. For spawn that is survivable — the
+  // broker mints its control rows only when the capability is present, so the wire still denies it.
+  // For `connection` there is NO such backstop: a disconnect closes this client's own socket, and a
+  // broker cannot police a socket the client closes. This gate is the only gate, so it must not
+  // have a permissive arm wherever an authed launch exists.
+  const canConnect =
+    (!config.creds && !config.userAuth) || (config.capabilities?.includes("connection") ?? false);
   const specs: CotalToolSpec[] = [
     {
       name: "cotal_orientation",
