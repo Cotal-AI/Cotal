@@ -309,8 +309,23 @@ export async function invokeCommand(
   if (sendArgs === undefined && !resolved.contract.input.validate(null) && resolved.contract.input.validate({}))
     sendArgs = {};
   const describeBound = (instanceId: string): number => {
-    if (instanceId !== service.responder.instanceId)
-      throw new EpEnvelopeError("failed-precondition", `the ${service.endpoint} instance ${instanceId} answered but this service handle resolved against ${service.responder.instanceId}; a different queue winner is a superseded-or-split responder - re-resolve the service to adopt it (SPEC 13.2)`);
+    if (instanceId !== service.responder.instanceId) {
+      // The refusal is unchanged; what it SAYS is not. One message used to cover two situations
+      // that call for opposite responses, and it described only the rarer one.
+      //
+      // PINNED: the caller named an instance and a different one answered. Genuinely wrong.
+      //
+      // UNPINNED: the caller addressed the CLASS. The describe and the invoke are two independent
+      // trips through the same anycast queue, so in a multi-instance space they routinely land on
+      // different instances and this fires on an ordinary, correct request - not on a supersession.
+      // Calling that "superseded-or-split" sends the reader hunting a restart that never happened.
+      // The old text's remedy is also not executable by the surfaces that print it most (`stop`,
+      // `despawn` and `attach` have no adopt path and no pin), so it advised an action the caller
+      // could not take. Say which case this is, and stop asserting a cause that is usually wrong.
+      throw new EpEnvelopeError("failed-precondition", service.pinnedInstanceId !== undefined
+        ? `the ${service.endpoint} instance ${instanceId} answered but this handle is PINNED to ${service.pinnedInstanceId}; a pinned call names its instance and never accepts another (SPEC 13.2)`
+        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner (SPEC 13.2)`);
+    }
     return service.responder.epoch;
   };
   // P2 item 3 `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
