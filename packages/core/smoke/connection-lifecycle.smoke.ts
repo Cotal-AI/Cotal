@@ -171,7 +171,8 @@ try {
     { hasNc: (a as any).nc !== undefined, self: a.isSelfDisconnected() });
 
   console.log("\n--- INVERSE CONTROL: with the fault removed, the same call succeeds ---");
-  (a as any).nc.drain = realDrain;
+  liveNc.drain = realDrain; // restore on the CAPTURED object: under a mutant that drops the handle
+  // early, `this.nc` may be gone, and a harness that crashes there hides the cells after it.
   const d2ok = await a.disconnect("arm2-control");
   check("D2e CONTROL: the same disconnect now SUCCEEDS (so D2a's refusal was the fault, not the path)",
     d2ok.outcome === "disconnected", d2ok);
