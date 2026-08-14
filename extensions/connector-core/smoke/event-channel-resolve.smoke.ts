@@ -59,6 +59,23 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 
 type Peer = { name: string; id?: string; owner?: string; actor?: string };
 
+/**
+ * Resolve, or return the refusal AS A STRING — never let a throw escape into an assertion.
+ *
+ * Every positive cell goes through this. A cell that calls the subject directly in its assertion
+ * expression stops being a cell the moment the subject throws: the suite dies, no `x FAIL` prints,
+ * no summary prints, and the run becomes a red nobody can attribute. That is the same family as a
+ * chain that reports zero graded lines — the apparatus fails before grading and the output still
+ * looks like a verdict. Found here by a mutation, not by reading.
+ */
+const attempt = (fn: () => string): string => {
+  try {
+    return fn();
+  } catch (e) {
+    return `REFUSED: ${(e as Error).message}`;
+  }
+};
+
 /** A refusal cell must assert WHICH refusal: the message has to name the thing that went wrong, or a
  *  throw from anywhere else on the path scores as a pass. */
 const refusalNaming = (fn: () => unknown, needle: string): string => {
@@ -74,32 +91,30 @@ const ALICE: Peer = { name: "alice", id: "local.aaa", owner: "local", actor: "aa
 const BOB: Peer = { name: "bob", id: "local.bbb", owner: "local", actor: "bbb" };
 
 // ── The ordinary case ─────────────────────────────────────────────────────────────────────────────
-c(
-  "resolve:unique-name",
-  eventChannelForName("alice", [ALICE, BOB]) === eventChannel({ owner: "local", actor: "aaa" }),
-  eventChannelForName("alice", [ALICE, BOB]),
-);
-c(
-  "resolve:derives-the-same-channel-the-publisher-would",
-  eventChannelForName("bob", [ALICE, BOB]) === "events.local.bbb",
-  eventChannelForName("bob", [ALICE, BOB]),
-);
+{
+  const alice = attempt(() => eventChannelForName("alice", [ALICE, BOB]));
+  c("resolve:unique-name", alice === eventChannel({ owner: "local", actor: "aaa" }), alice);
+  // Asserted against a LITERAL as well as against the builder. Comparing only to `eventChannel(...)`
+  // would pass if BOTH drifted together, which is the one way this can be wrong and look right.
+  const bob = attempt(() => eventChannelForName("bob", [ALICE, BOB]));
+  c("resolve:derives-the-same-channel-the-publisher-would", bob === "events.local.bbb", bob);
+}
 
 // ── `id` alone is enough: it is the field every peer is guaranteed to carry ────────────────────────
-c(
-  "resolve:from-id-when-owner-actor-absent",
-  eventChannelForName("carol", [{ name: "carol", id: "local.ccc" }]) === "events.local.ccc",
-);
+{
+  const carol = attempt(() => eventChannelForName("carol", [{ name: "carol", id: "local.ccc" }]));
+  c("resolve:from-id-when-owner-actor-absent", carol === "events.local.ccc", carol);
+}
 
 // ── …and an explicit pair WINS over `id`, so the pair is not decorative ────────────────────────────
 //    They agree by construction in production. Disagreeing them is the only way to observe which one
 //    is actually read, which is what makes this a cell rather than a comment.
-c(
-  "resolve:prefers-owner-actor-over-id",
-  eventChannelForName("dave", [{ name: "dave", id: "local.WRONG", owner: "local", actor: "right" }]) ===
-    "events.local.right",
-  eventChannelForName("dave", [{ name: "dave", id: "local.WRONG", owner: "local", actor: "right" }]),
-);
+{
+  const dave = attempt(() =>
+    eventChannelForName("dave", [{ name: "dave", id: "local.WRONG", owner: "local", actor: "right" }]),
+  );
+  c("resolve:prefers-owner-actor-over-id", dave === "events.local.right", dave);
+}
 
 // ── AMBIGUITY IS REFUSED — the cell this function exists for ───────────────────────────────────────
 {
@@ -136,17 +151,20 @@ c(
     { name: "fm-agui", id: "local.same", owner: "local", actor: "same" },
     { name: "fm-agui", id: "local.same" },
   ];
-  c(
-    "dup:same-principal-twice-is-one-agent",
-    eventChannelForName("fm-agui", ghosted) === "events.local.same",
-    (() => {
-      try {
-        return eventChannelForName("fm-agui", ghosted);
-      } catch (e) {
-        return `REFUSED: ${(e as Error).message}`;
-      }
-    })(),
-  );
+  // COMPUTED ONCE, INSIDE A GUARD, AND THIS IS NOT A STYLE CHOICE. The first version called the
+  // resolver unguarded in the assertion expression. When a mutation made this input throw, the
+  // SUITE DIED instead of the CELL FAILING: no `x FAIL` line, no summary, no exit-code story — the
+  // mutation harness read it as a red it could not attribute, which is correct and is exactly the
+  // `CHAIN_LINES=0` family one level down. An assertion that can throw is an assertion that can
+  // stop reporting, and a cell which stops reporting is indistinguishable from one that never ran.
+  const got = (() => {
+    try {
+      return eventChannelForName("fm-agui", ghosted);
+    } catch (e) {
+      return `REFUSED: ${(e as Error).message}`;
+    }
+  })();
+  c("dup:same-principal-twice-is-one-agent", got === "events.local.same", got);
 }
 
 // ── An unknown name is refused, naming that it was not found ──────────────────────────────────────
