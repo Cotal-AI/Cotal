@@ -32,6 +32,24 @@
  * with the same material. If the seed credential simply reconnects, eviction is a disconnect button
  * and not a revocation lever, and that distinction is the ruling.
  *
+ * MUTATION PROOF — PREDICTED CELLS REGISTERED BEFORE THE MUTATIONS RAN (named, never a count).
+ * The re-derivation of this suite is green, but green alone does not show the cells DEPEND on the
+ * behaviour they name. Two mutations, each proven non-equivalent by an observable change:
+ *   M1 — `evict.ts` target filter neutered (`first.conns.filter(() => false)`), so the CONNZ scan
+ *        attributes nothing. Non-equivalent: `kicked` goes >=1 -> 0 and the connections stay live.
+ *        PREDICTED RED: A2 (its `kicked >= 1` clause), A3 (no kick lands, so the cid is UNCHANGED
+ *        and its `cidAfterA !== cidBeforeA` fails), and B1. PREDICTED STILL GREEN: A0, B0, A4, B2
+ *        — and, the point of the exercise, **A1 STAYS GREEN**, because a scan that matches nothing
+ *        returns exactly A1's shape (`kicked:0, scanComplete:true`, connection survives). A1 alone
+ *        therefore cannot distinguish a working probe from a blind one; A2's `kicked >= 1` and A3's
+ *        cid comparison are the clauses carrying that weight, and M1 is what proves it.
+ *   M2 — `ledgerAuthorizeConnect` forced to allow. Non-equivalent: the revoked bearer connects.
+ *        PREDICTED RED: B2 only. Everything else green. This proves the inverse control's arms can
+ *        genuinely differ, so B2's refusal is a measurement and not a constant.
+ * Note the asymmetry that makes A3 informative in BOTH directions: it reddens under M1 (the kick
+ * never landed) and it would also redden if a deny-new boundary for seed-minted credentials ever
+ * landed (the holder would stay gone). Green here means precisely "kicked, and already back".
+ *
  * COTAL_HOME-free; ephemeral broker from a scratch dir; kills only the nats-server it starts, by
  * exact PID, and awaits its exit before deleting the scratch. Asserts its broker URL is not the live
  * host as its FIRST action.
