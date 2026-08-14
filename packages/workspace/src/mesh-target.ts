@@ -377,13 +377,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the
     // exact silent-wrong-mesh outcome this feature exists to prevent).
-    // One rule, one spelling — but only that, and the comment says only that because it was
-    // measured. Reaching here means `rootMatches` was EMPTY, so no recorded root canonicalizes to
-    // ours and this conjunct is already true for every entry. It is NOT what stops a project being
-    // told its own mesh is foreign; the match predicate above is. A mutation that reverts this site
-    // alone is equivalent, and survives.
+    // This conjunct is INERT today, and saying so is the honest version. Reaching this line means
+    // `rootMatches` was EMPTY — no recorded root canonicalizes to ours — and `resolve`-equal implies
+    // `canonicalRoot`-equal, so an empty `rootMatches` makes the conjunct true for every entry under
+    // EITHER spelling. Reverting this site alone is therefore an EQUIVALENT mutation and survives;
+    // it was predicted to die, it did not, and the prediction was wrong rather than the suite.
+    // It is NOT what stops a project being told its own mesh is foreign — the match predicate above
+    // is. Kept as `canonicalRoot` anyway, for one reason that is not style: the equivalence is a
+    // consequence of the early return above, not a property of this line. Change that return and the
+    // `resolve` spelling silently becomes load-bearing and wrong.
     const onDefault = meshes.find(
-      (m) => m.server === DEFAULT_SERVER && resolve(m.root) !== resolve(root),
+      (m) => m.server === DEFAULT_SERVER && canonicalRoot(m.root) !== canonicalRoot(root),
     );
     if (onDefault)
       throw new MeshTargetError(
