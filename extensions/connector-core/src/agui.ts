@@ -41,11 +41,18 @@
  *   handed the measurement. A raw `maxPayload` getter never was sufficient, and the plan said so
  *   before this lane confirmed it against a real 4096-byte broker.
  *
- * **Still absent, and named for the same reason: NOTHING IN THIS MODULE IS CALLED BY PRODUCTION
- * CODE YET.** The vocabulary, the bracket machine and the splitter are all reachable only from this
- * package's own smokes. No connector emits, and the `[P5]` R1 preflight has no production call site
- * to start from because the emitter that §9 step 2a places it in has not been built. Read nothing
- * here as evidence that anything runs.
+ * **Where the "nothing runs" claim now stands, restated precisely rather than left to rot.** The
+ * emitter below EXISTS, and `[P5]`'s R1 preflight has a real call site in its startup — which it did
+ * not when this file landed. What is still true, and is the part that matters:
+ *
+ * - **No connector constructs an emitter**, so nothing in production reaches any of this. The
+ *   emitter is a production call site for the preflight and is not itself production-reached.
+ * - **{@link splitFrames} has no durable-plane caller BY DESIGN** — it is the preview plane's
+ *   splitter (§5.8); the emitter packs with {@link packUnits}. See its own doc for why calling it
+ *   from the durable plane would be a silent-loss bug rather than a style choice.
+ *
+ * The distinction is the whole reason this paragraph is maintained: "it has a caller" and "a real
+ * entry point reaches it" are different claims, and this module has one of each right now.
  */
 
 import type {
@@ -429,6 +436,21 @@ const takeCodePoints = (s: string, codePoints: number): string =>
 /**
  * Split `events` into as many frames as the wire requires, truncating only what physically cannot
  * cross it, and LABELLING every truncation.
+ *
+ * **THIS IS THE PREVIEW PLANE'S SPLITTER (§5.8), AND IT HAS NO DURABLE-PLANE CALLER BY DESIGN.**
+ * Read that as a boundary, not as an oversight: the durable emitter packs with {@link packUnits} at
+ * SOURCE-RECORD boundaries and refuses an oversized unit, because `[P8]` requires every frame to
+ * carry a cursor that resumes after it and a frame ending mid-record has no cursor it can honestly
+ * store. §5.2 specified this event-boundary split and its labelled truncation before the durable
+ * plane had a cursor contract; where the two now disagree, `[P8]` governs the durable plane. The
+ * PREVIEW plane has no resume obligation at all, which is exactly where truncate-and-label is the
+ * right answer and why this machinery is worth keeping.
+ *
+ * **Calling this from the durable emitter would be a silent-loss bug**, not a performance choice —
+ * so if you are here looking for the packer, you want `packUnits`. And it is marked rather than
+ * deleted for the reason one module over already demonstrated: `assertExpectationSemantics()` sat
+ * with zero production callers looking exactly like live code, and unreachable code that looks live
+ * is a hazard whichever direction the next reader resolves it in.
  *
  * **Say the uncomfortable thing** (plan §5.2): this is a content truncation, which is one of the
  * sins `tr-` is being abolished for. The difference is not that we are gentler about it. `tr-` cut
@@ -898,6 +920,27 @@ export type RecordMapper<T> = (record: T) => { runId: string; events: AguiEvent[
  * we did not write. A halt is loud, bounded and recoverable by a human; the alternative is silent
  * and permanent.
  */
+/**
+ * A bracket violation that is OURS, not the writer's: the machine that tracks open runs and messages
+ * was lost across a process restart.
+ *
+ * **This exists because two halts that both say "unbalanced" prove nothing about which produced
+ * one.** The WAL persists `epoch`, `frontier` and the pending frame (§5.4) and NOT the set of open
+ * runs and messages, so a process that dies mid-run restarts with an empty {@link AguiBrackets},
+ * resumes from `sourceCursor` at events whose `RUN_STARTED` was already published, and refuses the
+ * first of them. Without this class the operator sees "nothing may be emitted outside an open run"
+ * and files a bug against a writer that did nothing wrong.
+ *
+ * It is deliberately a SUBCLASS: every existing catch of {@link AguiVocabularyError} still catches
+ * it, and only code that wants to tell the two apart has to know it exists.
+ */
+export class AguiBracketStateLost extends AguiVocabularyError {
+  constructor(message: string, readonly cause: Error) {
+    super(message);
+    this.name = "AguiBracketStateLost";
+  }
+}
+
 export class AguiEmitterHalted extends Error {
   constructor(
     readonly reason: "duplicate-ack" | "cas-loss",
@@ -1016,6 +1059,11 @@ export function packUnits(opts: {
  * The event emitter: one per principal, one thread at a time (§5.5).
  *
  * **A KNOWN GAP, DECLARED RATHER THAN PAPERED OVER: bracket state does not survive a restart.**
+ * It now DIAGNOSES ITSELF ({@link AguiBracketStateLost}) instead of surfacing as an anonymous
+ * protocol violation, which is the interim ruled for this wave; PERSISTING the machine is a plan
+ * amendment against §5.4 targeted at the wave that ships a connector, and it must not slip past it.
+ * Today this is unreachable in production because nothing emits; the moment a connector cuts over,
+ * a mid-run crash is an ordinary Tuesday.
  * {@link AguiBrackets} checks a property of the WRITER'S STREAM across frames, and the WAL persists
  * `epoch`, `frontier` and the pending frame — not the open runs and messages. So a process that
  * crashes mid-run restarts with an empty bracket machine, resumes from `sourceCursor` at events
@@ -1027,6 +1075,9 @@ export function packUnits(opts: {
 export class AguiEmitter<T> {
   private readonly brackets = new AguiBrackets();
   private halted: AguiEmitterHalted | undefined;
+  /** True once THIS process has fed an event through the bracket machine. It is the half of the
+   *  restart diagnosis that keeps a genuine mid-stream violation from being blamed on a restart. */
+  private fedAnyEvent = false;
 
   private constructor(
     private readonly ep: EmitterEndpoint,
@@ -1139,7 +1190,15 @@ export class AguiEmitter<T> {
     // Validate the WHOLE batch before publishing any of it. A vocabulary violation discovered
     // halfway through would leave a valid prefix on the wire and the rest refused, and the refusal
     // is supposed to mean "this stream never carried that", not "it carried some of it".
-    for (const u of units) for (const e of u.events) this.brackets.accept(e);
+    for (const u of units)
+      for (const e of u.events) {
+        try {
+          this.brackets.accept(e);
+        } catch (err) {
+          throw this.diagnoseBracket(err as Error);
+        }
+        this.fedAnyEvent = true;
+      }
 
     const frames = packUnits({
       threadId: this.threadId,
@@ -1237,6 +1296,34 @@ export class AguiEmitter<T> {
 
     await this.wal.recordAck(ack.seq);
     await this.wal.fold();
+  }
+
+  /**
+   * Decide whether a bracket refusal is the WRITER's fault or OURS, and say which.
+   *
+   * Ours iff BOTH hold, and both are load-bearing:
+   * - this process has fed NO event through the machine yet, so the machine cannot have been put
+   *   into a bad state by anything we did in this run; and
+   * - the frontier is non-virgin, so frames — and therefore possibly an open `RUN_STARTED` — were
+   *   published by a PREVIOUS process whose bracket state died with it.
+   *
+   * Drop the first condition and a genuine mid-stream violation by the writer gets blamed on a
+   * restart that happened an hour ago. Drop the second and a violation on a virgin thread, where
+   * nothing was ever published and nothing could have been lost, gets blamed on a restart that never
+   * happened. Each condition alone produces a confident, wrong diagnosis — which is worse than the
+   * undiagnosed error it replaced, because a named cause stops the search.
+   */
+  private diagnoseBracket(err: Error): Error {
+    if (this.fedAnyEvent || this.wal.frontier.seq === 0) return err;
+    return new AguiBracketStateLost(
+      `event emitter for ${this.channel}: bracket state was LOST ACROSS A RESTART — this is not a ` +
+        `protocol violation by the writer. This process has emitted nothing yet, but the WAL says ` +
+        `frame ${this.wal.frontier.seq} already went out, so any run or message left open by the ` +
+        `previous process is invisible to this one: §5.4 persists epoch, frontier and the pending ` +
+        `frame, and NOT the set of open runs and messages. Resuming from the source cursor therefore ` +
+        `lands mid-run and the first event is refused. The underlying refusal was: ${err.message}`,
+      err,
+    );
   }
 
   private halt(reason: "duplicate-ack" | "cas-loss", message: string): AguiEmitterHalted {

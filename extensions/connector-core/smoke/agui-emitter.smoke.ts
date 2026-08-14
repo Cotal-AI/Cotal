@@ -41,6 +41,17 @@
  * from a suite that had died rather than failed, which is the worse version of that defect because
  * a correct verdict invites no second look. Fixed by running each fixture block inside a guard.
  *
+ * SECOND KILL SET (the [D1] interim: a bracket refusal must say WHOSE fault it is), predicted as
+ * NAMES before its run. The two conditions are tested by their INVERSES, because each one alone
+ * produces a CONFIDENT WRONG diagnosis — worse than the anonymous error it replaced, since a named
+ * cause stops the search:
+ *   B1  drop the "this process has fed nothing yet" condition
+ *       -> `bracket:CONTROL-a-violation-AFTER-this-process-has-emitted-is-NOT-blamed-on-a-restart`
+ *   B2  drop the "the frontier is non-virgin" condition
+ *       -> `bracket:CONTROL-a-violation-on-a-VIRGIN-frontier-is-NOT-blamed-on-a-restart`
+ *   B3  never diagnose; surface the raw refusal
+ *       -> `bracket:a-mid-run-restart-names-ITSELF-not-the-writer`
+ *
  * ONE THING NO CELL HERE CAN DISCRIMINATE, said plainly rather than left as an unproven constant:
  * `SIZING_EXPECTATION`. Measuring at `MAX_SAFE_INTEGER` is a provable upper bound, but the real
  * expectation is a stream sequence, and reaching a 16-digit one takes ~10^15 messages. A mutation
@@ -56,6 +67,7 @@ import type { Part } from "@cotal-ai/core";
 import {
   aguiFrame,
   AguiEmitter,
+  AguiBracketStateLost,
   AguiEmitterHalted,
   AguiVocabularyError,
   packUnits,
@@ -552,6 +564,93 @@ try {
     // packer that refuses everything.
     const justFits = packUnits({ threadId: THREAD, epoch: "e", firstSeq: 1, units: [u("r1", 1, "c1")], measure: measureOf(ep), limit: alone });
     c("pack:CONTROL-the-same-unit-fits-at-exactly-its-measured-size", justFits.length === 1, justFits.length);
+  });
+
+  // ── A BRACKET REFUSAL MUST SAY WHOSE FAULT IT IS ─────────────────────────────────────────────
+  //
+  // The WAL persists epoch, frontier and the pending frame — NOT the open runs and messages. So a
+  // process that dies mid-run restarts with an empty bracket machine, resumes at events whose
+  // `RUN_STARTED` already published, and refuses the first one. That is OUR gap, not the writer's
+  // bug, and two halts that both say "unbalanced" prove nothing about which produced one.
+  //
+  // The two CONTROLS are the inverses of the two conditions, not merely different inputs. Each
+  // condition alone yields a confident WRONG diagnosis, which is worse than the anonymous error it
+  // replaced, because a named cause stops the search.
+  await block("A BRACKET REFUSAL MUST SAY WHOSE FAULT IT IS", async () => {
+    // Mid-run content with no START — what a resume after a crash actually looks like.
+    const orphan = (r: Rec) =>
+      "skip" in r
+        ? null
+        : { runId: r.run, events: [textMessageContent({ messageId: r.msg, delta: r.text, timestamp: 1 })] };
+
+    // (1) NON-VIRGIN frontier, nothing fed in this process => OURS.
+    {
+      const { wal, source, src, walPath } = await fresh("bracket-restart");
+      const ep = new FakeEndpoint();
+      const warm = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+      await warm.pump(); // adopt
+      append(src, { run: "r1", msg: "m1", text: "hello" });
+      ep.answers = [{ seq: 4, duplicate: false }];
+      await warm.pump(); // frame 1 published and folded — the frontier is now non-virgin
+
+      // A NEW emitter over the SAME WAL is the restart: same durable state, fresh bracket machine.
+      const reopened = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, source: new JsonlFileSource<Rec>(src), map: orphan });
+      append(src, { run: "r1", msg: "m1", text: "mid-run" });
+      const p = await attempt(() => restarted.pump());
+      c(
+        "bracket:a-mid-run-restart-names-ITSELF-not-the-writer",
+        p.err instanceof AguiBracketStateLost &&
+          /LOST ACROSS A RESTART/.test(p.err.message) &&
+          /not a protocol violation by the writer/.test(p.err.message),
+        p.err?.message ?? "no throw",
+      );
+      c(
+        "bracket:the-diagnosis-carries-the-underlying-refusal-rather-than-replacing-it",
+        p.err instanceof AguiBracketStateLost && p.err.cause instanceof AguiVocabularyError && /run/i.test(p.err.cause.message),
+        p.err instanceof AguiBracketStateLost ? p.err.cause?.message : "not diagnosed",
+      );
+    }
+
+    // (2) CONTROL — VIRGIN frontier: nothing was ever published, so nothing could have been lost.
+    //     The writer really is wrong and must be told so.
+    {
+      const { wal, source, src } = await fresh("bracket-virgin");
+      const ep = new FakeEndpoint();
+      const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: orphan });
+      await em.pump(); // adopt
+      append(src, { run: "r1", msg: "m1", text: "mid-run" });
+      const p = await attempt(() => em.pump());
+      c(
+        "bracket:CONTROL-a-violation-on-a-VIRGIN-frontier-is-NOT-blamed-on-a-restart",
+        p.err instanceof AguiVocabularyError && !(p.err instanceof AguiBracketStateLost),
+        p.err?.message ?? "no throw",
+      );
+    }
+
+    // (3) CONTROL — MID-STREAM in this very process: the machine is in the state we put it in, so a
+    //     refusal now is the writer's, however long ago the process started.
+    {
+      const { wal, source, src } = await fresh("bracket-midstream");
+      const ep = new FakeEndpoint();
+      const em = await AguiEmitter.start({
+        endpoint: ep,
+        wal,
+        source,
+        map: (r: Rec) => ("skip" in r ? null : r.text === "bad" ? orphan(r) : mapper(r)),
+      });
+      await em.pump(); // adopt
+      append(src, { run: "r1", msg: "m1", text: "good" });
+      ep.answers = [{ seq: 6, duplicate: false }];
+      await em.pump(); // a legal turn goes through the machine in THIS process
+      append(src, { run: "r2", msg: "m2", text: "bad" });
+      const p = await attempt(() => em.pump());
+      c(
+        "bracket:CONTROL-a-violation-AFTER-this-process-has-emitted-is-NOT-blamed-on-a-restart",
+        p.err instanceof AguiVocabularyError && !(p.err instanceof AguiBracketStateLost),
+        p.err?.message ?? "no throw",
+      );
+    }
   });
 
   // ── SIZING IS AN UPPER BOUND, NOT AN ESTIMATE ────────────────────────────────────────────────
