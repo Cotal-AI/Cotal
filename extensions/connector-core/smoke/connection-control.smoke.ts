@@ -622,8 +622,17 @@ async function main() {
     console.log(`     └─ re-target other space "meshctl-elsewhere" → ${otherSpace.outcome}: ${otherSpace.detail}`);
     armCheck("AUTHED", "E17 CONTROL: the same credential through the same constructor DOES reach its OWN space (so E18 is a bounded credential, not a broken probe)",
       ownSpace.outcome === "PERMITTED", ownSpace);
-    armCheck("AUTHED", "E18 THE FENCE: the same credential re-pointed at ANOTHER space is refused by the BROKER — a self-connect cannot widen which space the agent reaches, whatever the client asks for",
-      otherSpace.outcome === "connect-refused" || otherSpace.outcome === "publish-refused", otherSpace);
+    // ⚠ E18 ASSERTS *THAT* REFUSAL, NOT "A" REFUSAL — and it is written this way because the loose
+    // form SURVIVED A MUTATION. The first version accepted any `*-refused` outcome. Widening the
+    // credential's space segment to `*` in `provision.ts` (i.e. DELETING the fence this cell claims
+    // to measure) left E18 GREEN: the foreign space has no streams provisioned, so the publish still
+    // failed — with `jetstream is not enabled` instead of a permissions violation. An unrelated
+    // failure was standing in for the one that had been removed, and the cell could not tell them
+    // apart. A refusal is only evidence of a fence if the cell names WHICH fence refused.
+    const fenceNamed = /permission/i.test(otherSpace.detail) && otherSpace.detail.includes("meshctl-elsewhere");
+    armCheck("AUTHED", "E18 THE FENCE: the same credential re-pointed at ANOTHER space is refused BY THE BROKER'S PERMISSIONS, naming the foreign subject — a self-connect cannot widen which space the agent reaches, whatever the client asks for",
+      (otherSpace.outcome === "connect-refused" || otherSpace.outcome === "publish-refused") && fenceNamed,
+      { ...otherSpace, fenceNamed });
 
     await strEp.stop();
     await S.stop();
