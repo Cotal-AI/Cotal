@@ -240,6 +240,13 @@ try {
   // not to manufacture. The status is now set BEFORE the rebuild, so no window exists to correct.
   // D2f is the inverse control and it has already run: the observer DOES report offline while the
   // agent is genuinely off, so "not offline" here cannot be an observer that never sees anything.
+  //
+  // ⚠️ D2h IS A REGRESSION GUARD, NOT EVIDENCE FOR THE FIX. Mutation MX5 restored the old ordering
+  // AND deleted the correction, and D2h stayed GREEN: this subject heartbeats every 400ms and each
+  // heartbeat republishes the current status, so the bad window closes before an 8s poll can see it.
+  // Proving that window needs an arm with heartbeats disabled, which does not exist yet. The fix is
+  // right on its own terms -- publish the truth rather than publish a lie and race a timer to undo
+  // it -- but it is UNPROVEN BY MUTATION and is not claimed otherwise. See MUTATION-LIFECYCLE.md.
   console.log("\n--- D2g/D2h: the agent comes BACK — no ghost may survive it ---");
   const r2back = await a.connect();
   armCheck("ARM 2", "D2g it comes back through the same path", r2back.outcome === "connected", r2back);

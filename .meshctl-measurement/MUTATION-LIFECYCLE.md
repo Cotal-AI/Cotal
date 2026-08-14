@@ -170,6 +170,43 @@ those are different claims.
 
 ---
 
+## MX5 — restore the ghost window in `connect()`  → **SURVIVED (NOT predicted). D2h PROVES NOTHING.**
+
+Mutant, two sites: move `status = "idle"` back to *after* `await this.rebuild()`, and remove the
+`reassertPresence()` correction. Site 2 is not padding — with the correction in place the ghost is
+self-healing, so the defect is only observable when that best-effort step does not land.
+
+| cell | predicted | observed |
+|---|---|---|
+| `D2h` observer no longer sees offline | **RED** | **GREEN — 36/36, rc=0** |
+| `D2g` it comes back | GREEN | GREEN |
+| ARM 1, ARM 3, VOID | GREEN / 0 | GREEN / 0 |
+
+**I wrote the refutation criterion down first — *"REFUTED IF: D2h stays GREEN (then the cell does not
+detect the ghost and proves nothing)"* — and that is exactly what happened.**
+
+**WHY, and it corrects the severity I claimed in `08a7f66c`.** The subject heartbeats every 400 ms,
+and every heartbeat republishes presence with the current status. So even with the ordering reverted
+*and* the correction deleted, the `offline` row is overwritten within one heartbeat. `D2h` polls with
+`until(…, 8000)`, so it can never see a window that closes in 400 ms.
+
+**What that means for the fix and for the claim:**
+- **The commit message overstated it.** "A live agent showing as departed to every peer" is true only
+  **until the next heartbeat** — for any endpoint that heartbeats, which is the normal case. The
+  honest description is a **transient window**, not a standing lie.
+- **The fix is still right** — publishing the correct status during the rebuild is strictly better
+  than publishing a wrong one and relying on a best-effort correction plus a timer to undo it — but
+  it is a **window-narrowing** change, and I have **not** observed a behavioural difference.
+- **So `D2h` is retained as a regression guard on the happy path and is NOT cited as evidence for
+  the fix.** Proving the window would need an endpoint with heartbeats disabled, so nothing heals
+  it; that arm is not built, and until it is, this fix is **unproven by mutation**.
+
+**Reported rather than quietly dropped, for the same reason as MX3a:** a mutation record that only
+lists kills is not a record, it is an advertisement. The `transition-unconfirmed` half of `08a7f66c`
+is likewise unproven — no cell drives a failing `reassertPresence()` on that branch.
+
+---
+
 ## What this record does NOT cover
 
 - **ARM 3 is core-API only.** A creds SOURCE is not a state `cotalToolSpecs` can construct
