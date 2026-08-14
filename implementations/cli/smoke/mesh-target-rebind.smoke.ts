@@ -79,6 +79,23 @@
  *      REFUTATION CONDITION, declared before the run: if ANY cell reddens under M2, this
  *      equivalence argument is WRONG and is withdrawn rather than reworded.
  *
+ *      A NO-OP MUTANT AND AN EQUIVALENT ONE ARE INDISTINGUISHABLE FROM A GREEN SUITE — both
+ *      survive, both leave every cell green, both produce identical artifacts. Cotal #424
+ *      (measured by fm-webconsole, credit theirs) is the live version of that hazard: in a
+ *      worktree, `node_modules` resolves to the SHARED checkout, so a cross-package mutation can
+ *      edit one copy while the suite loads another and the code under test never changes.
+ *      "M2 is equivalent" is the strictly stronger of the two explanations, so it needs its own
+ *      evidence and cannot rest on the suite staying green. PROVEN, not inferred, three ways:
+ *        1. M1 and M3 were KILLED in this same FILE, so resolution demonstrably reaches it.
+ *        2. This suite imports the code under test by RELATIVE SOURCE PATH, not by package name,
+ *           so `node_modules` is not consulted for it at all and #424 cannot apply.
+ *        3. Directly measured: M2 re-run with an added marker printing `import.meta.url` from the
+ *           mutated module. It printed
+ *           `file:///…/cotal-worktrees/fm-rebind/packages/workspace/src/mesh-target.ts` — this
+ *           worktree, not the shared checkout — with the mutant proven non-identical by `git diff`
+ *           first, and the suite still 22/22. The mutation WAS loaded and it still changed nothing.
+ *      A no-op would have shown up as a MISSING MARKER rather than as a survival.
+ *
  * M3 — the match predicate WIDENED to `meshes.filter(() => true)`.
  *      NON-EQUIVALENT, and the control for "the fix was widened, not corrected".
  *      PREDICTED RED (exactly these three):
