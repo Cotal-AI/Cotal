@@ -131,3 +131,30 @@ that is not a pass: it means the cell is blind, and I must say so rather than re
 **R1** (`wedged-manager-never-claimed-running`) is measured separately, by running the untouched
 pre-fix instrument `.lane/finding5-A-wedge.sh` against the fixed code: its `A4` cell asserts the OLD
 behaviour and must now FAIL. That instrument was written before the fix existed.
+
+---
+
+## Mutation M-R2 — a PURE-DERIVATION mutant that changes NO string literal
+
+Registered at `f7b95654`, before applying. **Purpose:** M-R1 changed both the derivation and the
+rendered words at once, so it cannot distinguish cells keyed on the DERIVATION from cells keyed on
+the STRING. fm-orchestrator's instruction is exact: *"mutate the ASSERTED CONTENT, not the
+presentation … design the kill set around the derivation, not the string."*
+
+**M-R2:** move `case "unattributable"` to fall through into the `dead`/`absent` arm. **Not one
+string literal in the file changes** — every rendered phrase that exists after the mutation also
+existed before it. Only *which fact a given input derives from* moves.
+
+**Named. Predicted RED (2):**
+- **R7a** `unattributable-pidfile-says-cannot-establish` — that input now renders "not running".
+- **R7** `unattributable-pidfile-offers-NO-start-hint` — it now inherits the earned start hint.
+
+**Predicted GREEN (8):** `R2`, `R3`, `R4`, `R2b` (the `alive` arm is untouched), `R5`, `R6` (the
+`dead`/`absent` arm is untouched and is where the mutation lands), `R7c` (still no green tick), `R0`.
+
+**What each outcome would mean, decided in advance:**
+- **R7a and R7 both RED ⇒ those cells are keyed on the DERIVATION, not on the rendered words**,
+  since no word changed. That is the property M-R1 could not establish.
+- **Either SURVIVES ⇒ classify immediately as EQUIVALENT or BLIND and record it, before anything
+  else.** It could not be equivalent: the mutation demonstrably changes what that input renders. So
+  a survivor here is a **BLIND CELL**, and I must say so rather than re-run.
