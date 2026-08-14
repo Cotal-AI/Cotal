@@ -48,9 +48,12 @@ export async function stop(args: ParsedArgs): Promise<void> {
   // "owner"` (its own-domain despawn row), and the MANAGER authorizes: agents under your own
   // owner pass with scope "spawn", another owner's agent needs "admin" on your ledger row (the
   // handler's fresh any-mode authorization). No client-side try-admin-then-owner fallback.
-  const t = await resolveControlTarget(v, "control-caller-admin", v.on);
+  // Seat-locality: the manager that can stop a seat is the one HOSTING it, so resolve WHERE before
+  // choosing WHO. Must precede the mint — a credential cannot gain an instance rail after issuance.
+  const on = await pinForTarget(v, "cotal stop");
+  const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, v.on);
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, on);
   failIfNotOk(reply);
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
@@ -67,6 +70,60 @@ type AgentRow = {
   authHealth?: string;
   authReason?: string;
 };
+
+/**
+ * WHERE does the named seat live? A `stop` or `attach` can only be served by the manager actually
+ * HOSTING the seat, and the class queue does not know which one that is — so without this the verb
+ * is answered by whichever instance wins the race and fails on a seat that plainly exists.
+ *
+ * This is a POSITIVE lookup, not a retry after a miss, and that is forced by measurement: a manager
+ * asked about a seat it does not host answers `not-found: no agent "<n>"` — the SAME code and the
+ * same message it gives for a name that exists nowhere. "Hosted elsewhere" and "does not exist" are
+ * indistinguishable from a single manager's answer, so a caller that retried on a miss would scatter
+ * for a typo and, worse, could only ever report the ambiguous message. Asking every instance is the
+ * only construction that can tell the two apart — which is also what lets the error finally say
+ * which case it is.
+ *
+ * Costs a second one-shot instrument. The scatter's freeze read belongs to the PRIVILEGED tier;
+ * `stop`/`attach` mint ADMIN, which is denied that read deliberately ("the admin tier never
+ * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
+ * instrument and the admin instrument is then minted pinned to the answer.
+ */
+type SeatLocation =
+  | { kind: "pin"; instanceId: string }
+  | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
+  | { kind: "absent"; checked: number; unreachable: string[] };
+
+async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promise<SeatLocation> {
+  // USER mode cannot do this: a ledger-scoped bearer does not hold the freeze rows, so a scatter
+  // dies on a permissions violation that reads as "no manager". Left unpinned — `--on` stays the
+  // manual escape hatch there, and docs/cli.md says so rather than this failing mysteriously.
+  const probe = await resolveControlTarget(v, "control-caller-privileged");
+  if (probe.auth.bearer) return { kind: "unpinned" };
+  const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth);
+  if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
+  const reachable = scatter.instances.filter((i) => i.reachable);
+  const unreachable = scatter.instances.filter((i) => !i.reachable).map((i) => i.instanceId);
+  if (reachable.length <= 1 && !unreachable.length) return { kind: "unpinned" };
+  const host = reachable.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
+  if (host) return { kind: "pin", instanceId: host.instanceId };
+  return { kind: "absent", checked: reachable.length, unreachable };
+}
+
+/** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
+ *  instance to address, or exits with an error that says WHICH case the miss was. */
+async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<string | undefined> {
+  if (v.on) return v.on;
+  const loc = await locateSeat(v, String(v.name));
+  if (loc.kind === "pin") return loc.instanceId;
+  if (loc.kind === "unpinned") return undefined;
+  // The honest error #383 asked for: name the search, not just the absence.
+  const missed = loc.unreachable.length
+    ? ` ${loc.unreachable.length} manager instance(s) did not answer (${loc.unreachable.map((i) => i.slice(0, 8)).join(", ")}), so it may be hosted by one of those — retry, or \`${verb} --on <instance>\` if you know where it is.`
+    : "";
+  console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
+  process.exit(1);
+}
 
 /** Render one managed-agent row (status + optional auth-health line), indented for the per-manager
  *  grouping a class scatter prints. */
@@ -183,9 +240,12 @@ export async function attach(args: ParsedArgs): Promise<void> {
   // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
   // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
   // passes with "spawn", cross-owner needs ledger "admin").
-  const t = await resolveControlTarget(v, "control-caller-admin", v.on);
+  // Same seat-locality rule as stop, and it matters more here: attaching to a seat means reaching
+  // the process, which only its host manager has.
+  const on = await pinForTarget(v as never, "cotal attach");
+  const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, v.on);
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, on);
   failIfNotOk(reply);
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
