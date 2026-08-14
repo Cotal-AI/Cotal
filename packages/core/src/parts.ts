@@ -16,16 +16,42 @@
  * understating it is part of why the shape survived — a defect described as more visible than it is
  * gets prioritised as though somebody would have noticed.
  *
- * **2. It names THREE surfaces. There were FIVE.** `implementations/web/src/web/app.js` and
- * `.../graph.js` carry independent copies of the same inline expression and were not part of the
- * consolidation, and `examples/02-self-improving-console/harness/observer.ts` reaches the same
- * outcome by *filtering* non-text parts out before mapping rather than by stringifying them.
- * **The consolidation was produced by a sweep that matched the EXPRESSION**, so it missed the two
- * copies nobody had grepped for and could never have found the filter form at all.
+ * **2. It names THREE surfaces. There are SEVEN.** **The consolidation was produced by a sweep that
+ * matched the EXPRESSION**, so it missed the copies nobody had grepped for and could never have
+ * found the filter form at all. Measured at `7cc74f50`, by the outcome predicate below:
+ *
+ *   - **3 ADOPTED** this function — `connector-core/src/agent.ts`, `cli/src/commands/join.ts`,
+ *     `cli/src/view/mesh-view.ts`. These are the only three, and so they are the only three a fix
+ *     here reaches.
+ *   - **2 STRINGIFY-FORM copies** — `implementations/web/src/web/app.js` and `.../graph.js`.
+ *   - **2 FILTER-FORM** — `examples/02-self-improving-console/harness/observer.ts` and
+ *     `examples/04-frontier-faces/tools/studio.mjs`, which drop non-text parts before mapping.
+ *
+ * ***A fix to the shared renderer cannot reach a surface whose defect is that it does not use the
+ * shared renderer.*** The four it misses are exactly the four that never adopted it — that is the
+ * definition of the set, not bad luck. **This function closes THREE OF SEVEN and nothing wider, and
+ * that is the number to check the box against.**
  *
  * > **Sweep for the OUTCOME — a part kind that reaches neither a reader nor an error — not for the
  * > expression.** The stringify form leaves a stray separator behind; the filter form leaves no
- * > trace at all.
+ * > trace at all. Re-run it with the disjunction, not one arm:
+ * > `kind === "text"` alongside `JSON.stringify(p.data)`.
+ *
+ * ⚠️ **THE OUTCOME SWEEP HAS ITS OWN ELSE-BRANCH: it mints LOOKALIKES, and only a TYPE check
+ * excludes them.** `examples/04-frontier-faces/web/studio.html:477` iterates `m.parts` and reads
+ * like an eighth instance. It is not one: those are OpenCode session parts, discriminated on
+ * `p.type` (`reasoning` / `text` / `tool`), not Cotal `Part` values, which discriminate on `p.kind`.
+ * Different type, different producer. **A count inflated by a lookalike is as wrong as one deflated
+ * by a miss, and it is the more tempting error, because it makes the finding look bigger.**
+ * Excluded deliberately; the exclusion is evidence and is recorded rather than dropped.
+ *
+ * **A separate class, named because it is the instrument rather than the product:**
+ * `packages/core/smoke.ts` and `packages/core/smoke-auth.ts` render a non-text part as `""`
+ * **explicitly** — four sites. They are harnesses, not reader-facing surfaces, so they are not part
+ * of the seven. But it means **core's own suite cannot see a part that vanishes**: a cell asserting
+ * on received text passes identically whether the non-text part arrived or was dropped. Left as
+ * found and flagged here rather than changed, because widening this commit into the suite that
+ * grades it is how a fix stops being reviewable.
  */
 import type { Part } from "./types.js";
 
