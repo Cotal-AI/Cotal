@@ -19,8 +19,13 @@ This is forced by measurement, not preference:
 - An agent's credential is space-scoped and issuer-scoped. Re-presenting it at another space on the
   same broker is denied on every subject; at a foreign-operator broker the connection is refused
   outright. **[M — F1a-d, F2]**
-- The ACL is fixed at **mint** time. A credential minted from the same on-disk `SpaceAuth` with a
-  self-chosen `allowSubscribe` reaches a subject the agent's own credential is denied. **[M — F3]**
+- The ACL is fixed at **mint** time. A credential minted from the same `SpaceAuth` with a self-chosen
+  `allowSubscribe` reaches a subject the agent's own credential is denied. **[M — F3]**
+  **Label correction:** F3 constructs its `SpaceAuth` **in memory** and passes the object; it never
+  reads `auth.json` from disk. So "the ACL is chosen at mint time by whoever holds the trust
+  material" is measured, but **"an agent can read the on-disk trust material" is a READ [R]**
+  (`auth-paths.ts` persistence + same-OS-user file permissions), not a measurement. The first draft
+  labelled the combination **[M]**, which claimed more than the probe carries.
 - `provisioner` is genuinely least-privilege — it does not reach the space firehose. There is no
   god-role to grab. **[M — F3b]**
 
@@ -28,6 +33,32 @@ So the authority boundary is the **mint path**, not the connect call. The specif
 
 > **A connection verb re-presents a credential the agent already holds. It never constructs one,
 > and it never reaches the workspace mint path (`mintCreds` / `provisionAgent` / `SpaceAuth`).**
+
+**CORRECTED after adversarial review — the rule above, stated as a ban on function names, does not
+hold. Three paths obey its letter and still obtain freshly minted authority:**
+
+1. **User mode is a credential SOURCE, not bytes.** `MeshAgent` passes a bearer *function* that
+   execs `bearerCmd` (`agent.ts:197-200`), and `connectAndBind` invokes it before every connect
+   (`endpoint.ts:826-830`). The auth callout mints a fresh scoped JWT against the **current** ledger.
+   So a connect re-reads authority rather than replaying it.
+2. **Static credentials are renewed too** — the manager re-mints a live agent from its recorded grant
+   and rewrites the file (`manager.ts:3061-3073, 4868-4923`). Credentials expire; something must
+   re-read them, and this note defined no renewal or adoption semantics for an off-target mesh.
+3. **`cotal_spawn` is an indirect mint** — the caller asks the manager, which loads the persona's ACL
+   and calls `provisionAgent` → `mintCreds` (`manager.ts:2833-2911, 3019-3073`). The caller never
+   touches `mintCreds`, so a name-based ban does not close that confused deputy.
+
+**The honest invariant, which is what §1 actually rests on:**
+
+> **A connection verb must not cause a credential to be issued with a scope the agent's operator has
+> not already granted it. The enforcement point is the ledger/persona grant plus the broker — not a
+> list of forbidden function names.**
+
+On user mode specifically: re-reading the current ledger is **the system working as designed** — the
+ledger is the human's grant surface, and an agent whose grant was widened by a human *should* pick
+that up. What was wrong was this note's claim of "nothing it did not already hold". The accurate
+claim is **"nothing the operator's current grant does not allow"**, which is weaker, true, and still
+the property worth having. A verb must therefore never *widen* a grant; it may re-read one.
 
 Because the fence is the broker rather than client code, a client that lies gains nothing: it can
 ask for any space it likes and be denied every subject. This is the property that makes the feature
@@ -62,11 +93,19 @@ What the rule actually buys:
 
 1. **It stops mistakes and scope drift** — the overwhelmingly likely failure, where a well-behaved
    agent reaches somewhere it should not because a verb made it easy.
-2. **It makes the escalation path the one that leaves evidence.** Minting is a distinct, auditable
-   act against the trust material; re-presenting a held credential is not. Forcing an attacker off
-   the sanctioned path and onto the noisy one is the real security value here.
+2. ~~It makes the escalation path the one that leaves evidence.~~ **RETRACTED — this was invented.**
+   I asserted an audit property and cited nothing that observes a mint. Adversarial review confirmed
+   it with citations: for ordinary agent profiles `mintCreds` signs and returns bytes, and only the
+   endpoint-serve arm enters the issuance ledger (`provision.ts:783-840`). **Nothing watches.** The
+   claim is deleted rather than softened; if this property is wanted it has to be built, and that is
+   a different lane.
 3. **It keeps the broker as the single enforcement point**, so the client cannot be the thing that
    is wrong.
+
+With (2) removed, the honest value proposition is narrower than this note originally claimed: for a
+**conforming** client the broker boundary is real and measured (F1/F2); for a hostile same-user
+process the rule is a guard against mistakes, not a security boundary. That is still worth shipping.
+It is not what the first draft said.
 
 Anything stronger would need OS-level separation between the agent process and the trust material,
 which is out of this lane's scope. **This note does not claim the fence stops an agent that has
@@ -90,11 +129,32 @@ type RefusalReason =
   | "no-grant-for-mesh"        // named mesh is not in this agent's `meshes:` grant
   | "unknown-mesh"             // no such mesh resolves at all
   | "broker-unreachable"       // grant is fine; the target is not answering
+  | "auth-rejected"            // reached the broker; the credential was refused
+  | "credential-expired"       // held credential is stale — distinct fix from auth-rejected
   | "already-connected"        // already on that mesh — distinct from success
   | "not-connected"            // disconnect when already off the mesh
-  | "in-flight-request"        // holds an unresolved request — see below
-  | "holds-lease";             // holds a lease/claim a disconnect would strand
+  | "transition-in-progress"   // another connect/disconnect is mid-flight
+  | "shutting-down"            // the session is ending; do not start a transition
+  | "transition-unconfirmed"   // §3's confirmation did not land — REQUIRED by §3
+  | "teardown-failed"          // the transition published but the connection did not close
+  | "durable-membership-unclosed" // re-target could not close a Plane-3 membership (§7.1)
+  | "in-flight-request";       // holds an unresolved request — see below
 ```
+
+**Corrections after adversarial review:**
+- `transition-unconfirmed`, `teardown-failed`, `transition-in-progress`, `shutting-down` and
+  `durable-membership-unclosed` were **missing**. `transition-unconfirmed` is the worst omission:
+  §3 *requires* that refusal and §2 did not list it — an internal contradiction in this document.
+- `broker-unreachable` was **collapsing three distinct failures**. Core already distinguishes
+  auth-required, stale-auth and unreachable (`endpoint.ts:4170-4188`), and "your credential was
+  refused" has a different fix from "the host is down".
+- **`holds-lease` is REMOVED.** §7 declares leases unmeasured, and specifying a refusal for a
+  condition I have not observed is exactly the thing I said I would not do. It returns only if and
+  when it is measured.
+- **A refusal MUST map to the host error channel.** Every outcome object is truthy, so a caller can
+  ignore `outcome` and read success. At the tool boundary a refusal must return `isError: true`
+  (`tool-specs.ts:18-26`); the discriminated union is for the caller, the error flag is for the host,
+  and both are required.
 
 Each names the condition that failed, so a caller can act on it. `no-grant-for-mesh` and
 `unknown-mesh` are deliberately separate: "you may not" and "there is no such thing" have different
@@ -104,11 +164,23 @@ fixes, and collapsing them tells an operator to go hunting for a mesh that exist
 a connection rebuild orphans an in-flight request into a *permanent hang* — it never resolved or
 rejected within 20s despite carrying its own 5000ms timeout, because the timeout timer lives on the
 connection the rebuild tears down **[M — F9]**. So proceeding anyway leaves the caller with an
-unresolvable promise. A refusal the verb could override would be a defect.
+unresolvable promise.
 
-> Note: this failure is reachable on `main` today through `cotal_reconnect` — an agent that
-> reconnects while a `cotal_spawn` is in flight hangs that spawn forever. Reported separately;
-> ownership is fm-orchestrator's to assign.
+**A pre-check alone is RACY, and adversarial review is right that this decides whether the refusal
+is real.** Checking and then awaiting the §3 publication leaves a window in which a new request is
+admitted, because a request is accepted whenever `nc` is present. **So the verb needs an admission
+latch, not a check**: close admission first (further requests refuse with `transition-in-progress`),
+*then* drain or refuse on what is still in flight. A check without a latch is a race wearing the
+word "guard".
+
+**SCOPE CORRECTION on F9's blast radius — my own overclaim.** I told fm-orchestrator that an agent
+calling `cotal_reconnect` while `cotal_spawn` is in flight hangs that spawn forever. **That is
+wrong.** `cotal_spawn` goes through `managerInvoke` → `invokeService` (`agent.ts:758-794`), which is
+the **ep rail** — it uses `nc.subscribe`/`nc.publish` raced against a plain `setTimeout`
+(`endpoint-invoke.ts:97-131`). A Node timer is not connection-scoped, so an ep-rail call **rejects
+with `deadline-exceeded` rather than stranding**. F9 is real for the three `nc.request` sites
+(`requestControl`, `requestDelivery`, `requestDeliveryAdmin`) and those are what M5 measured; the
+spawn impact was an inference I did not test and it does not hold.
 
 ---
 
@@ -149,6 +221,26 @@ teardown loses the message on the wire and reports it as sent — which would ma
 guard that closes on nothing, the exact defect class §3 exists to prevent. An implementation that
 confirms against anything other than the broker has not implemented this section.
 
+**Two windows adversarial review found in this ordering, both real:**
+
+1. **Publish succeeds, teardown fails.** Observers materialise `offline` from the presence record
+   immediately, while the connection is still live — a peer believing an agent has departed when it
+   has not. Today's `stop()` even swallows a drain failure (`endpoint.ts:1123-1153`), so a successful
+   presence write is demonstrably not proof of closure. Hence `teardown-failed` in §2, and the
+   transition must be **reconciled, not fire-and-forget**: if teardown fails after the announcement,
+   the verb must republish the true state rather than leave the lie standing.
+2. **"Unconfirmed" is not "did not land".** A JetStream publish can be stored while its ack is lost —
+   this codebase already documents that case, and presence KV is JetStream-backed. On that arm the
+   verb refuses and stays connected *while observers may already see the disconnect*. So
+   `transition-unconfirmed` cannot simply mean "nothing happened": the honest recovery is to
+   re-assert current presence after a refused transition, exactly as the F9 fix reports "the outcome
+   is UNKNOWN" rather than claiming the request did not happen. **Same lesson, twice in one lane.**
+
+**Scope note this design missed:** the cause/target field does not exist in the `Presence` wire
+shape, which today carries only status/activity/attention/channelModes/lifecycleUid/ts
+(`types.ts:70-89`). Carrying a cause is therefore a **wire change requiring a SPEC update**, not a
+client-local addition. That materially widens this lane and fm-orchestrator should know before code.
+
 Note there are two supervisory views by construction: the manager holds an OS process handle and
 "the mesh observes its presence separately" (`runtime.ts:29`) **[R]**. A self-disconnect diverges
 them — the manager still reads `running`. The published transition is what keeps the divergence
@@ -181,9 +273,26 @@ best-effort.
 
 A re-target is a disconnect plus a connect and inherits both halves. It cannot be done in place:
 space, servers, credentials and `connId` are all constructor-pinned **[R — `endpoint.ts:445`,
-`821-855`]**, so re-targeting builds a *new* endpoint and therefore a new mesh identity. The old
-presence must be explicitly retired first — otherwise re-target becomes the most reliable
-ghost-factory in the system.
+`821-855`]**, so re-targeting builds a *new* endpoint.
+
+**Two corrections here, both from adversarial review, and the second is a plain error of mine:**
+
+1. **"…and therefore a new mesh identity" is FALSE.** Wire identity is the `owner.actor` principal,
+   which is distinct from `connId` and derives from the *credential*: in static mode the connection
+   identity comes from `card.id` else the creds' identity, with `owner = DEV_OWNER` and
+   `actor = the connection id` (`endpoint.ts:493-534`). A new endpoint built from the **same**
+   credential therefore carries the **same** identity. I inferred "readonly `connId` ⇒ new identity",
+   which does not follow — `connId` is the inbox nonce, not the wire identity. The accurate
+   statement: **re-target to a different mesh uses a different credential and so a different
+   identity; it is the credential that decides, not the endpoint construction.**
+2. **The ordering in the first draft was backwards and actively dangerous.** "Retire the old presence
+   first" means a failed target connect leaves a **running OS process with no mesh presence at all
+   and no mesh path back** — the manager still reports it running, while the last old presence record
+   ages out of a TTL bucket. That is a stranded agent produced by a *refusal*, which is worse than
+   the ghost it was avoiding. **Corrected ordering: prove the target connect FIRST, then retire the
+   source presence** (closing durable memberships per §7.1), with the brief dual-presence overlap
+   treated as the acceptable state and reconciled — a peer momentarily seeing the agent twice is
+   recoverable; a peer seeing it nowhere while it runs is not.
 
 ---
 
