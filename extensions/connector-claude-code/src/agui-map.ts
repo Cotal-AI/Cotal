@@ -117,11 +117,21 @@ export interface ClaudeEntry {
   timestamp?: string;
   isSidechain?: boolean;
   origin?: { kind?: string };
-  /** Present on every SUBMITTED prompt and absent on tool results — the run-opening discriminator. */
+  /**
+   * Present on every submitted prompt and absent on tool results. **Not the run-opening gate** —
+   * it is `"system"` on task-notifications and caveats too. Read ONLY where `origin` is absent, and
+   * only for the value `"sdk"`. See `ABSENT_ORIGIN_RULE`.
+   */
   promptSource?: string;
   /** The harness's own compaction record. A string-content `user` entry that is not a turn. */
   isCompactSummary?: boolean;
   isVisibleInTranscriptOnly?: boolean;
+  /**
+   * The session-level invocation marker — `"cli"` or `"sdk-cli"`, uniform across a session file.
+   * **Declared and deliberately NOT read.** It is here so the field's existence is recorded rather
+   * than rediscovered, and so a suite can drive both values against a rule that must ignore them.
+   */
+  entrypoint?: string;
   message?: {
     id?: string;
     stop_reason?: string | null;
@@ -149,12 +159,57 @@ const ORIGIN_RULE: Record<string, "human" | "channel" | null> = {
   "task-notification": null, // known, and deliberately not a turn
 };
 
-const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | null => {
+/**
+ * The SECOND enumeration, and it only runs where the first one has nothing to read: a record with
+ * NO `origin` at all. An enumeration over `origin.kind` cannot classify a record that has no
+ * `origin.kind`, and inventing a synthetic member would fabricate the one field §3.1's table exists
+ * to stop us guessing at — so the absent-origin case gets its own table rather than a third member.
+ *
+ * **MEASURED ACROSS ALL 88 SESSION FILES ON THE MACHINE THAT PRODUCED THEM**, over records that are
+ * `user`, string-content, and not a compaction marker — i.e. exactly the population that reaches
+ * this function. `promptSource` takes precisely two values there: `"sdk"` × 21, absent × 66. All 21
+ * `"sdk"` records are real submitted prompts. All 66 absent ones are plumbing — `<local-command-
+ * caveat>`, `/compact` command records, `<local-command-stdout>`, the caveat/heartbeat class §3.1
+ * counts at 81.
+ *
+ * **THIS IS NOT `promptSource`-PRESENCE READMITTED, and the difference is the whole reason the first
+ * attempt was wrong.** That predicate asked "is the field there?", and the field is there on
+ * task-notifications and caveats as `"system"` — so it opened runs on harness plumbing. This asks
+ * "is the value exactly `sdk`?", in a branch that only runs when `origin` is absent, against a
+ * two-value measured population. Different predicate, different position, measured rather than
+ * inferred from a partition of three captures.
+ */
+const ABSENT_ORIGIN_RULE: Record<string, "sdk" | null> = {
+  sdk: "sdk",
+};
+
+/**
+ * (A) run-opening and (B) attribution, read off whichever of the two tables above applies.
+ *
+ * **DELIBERATELY NOT KEYED ON `entrypoint`**, which is the session-level marker a reader would
+ * reach for first. It is real — 88 sessions, exactly two values (`cli` × 69, `sdk-cli` × 19), no
+ * session mixing them — but it does not select prompts, and gating the `sdk` rule behind
+ * `entrypoint === "sdk-cli"` **drops a real one**: a `promptSource: "sdk"` record sits in a
+ * 2973-record session whose entrypoint is `cli` throughout — an SDK-submitted wake into an
+ * interactive session. A session gate opens no run for it: a silent zero manufactured by the fix
+ * for silent zeros. Asserted by `mechanism:an-sdk-prompt-opens-a-run-REGARDLESS-of-entrypoint`,
+ * because a comment claiming a rule's absence is otherwise a test nobody wrote.
+ */
+const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | "sdk" | null => {
   const kind = entry.origin?.kind;
-  // ABSENT origin is not a turn, and is not an error either: 81 such entries in §3.1's measurement
-  // are local-command caveats, heartbeats and resumed-session summaries. Absence is a known shape,
-  // so it is answered here rather than by the throw below.
-  if (kind === undefined) return null;
+  if (kind === undefined) {
+    // ABSENT origin. Not an error — absence is a known shape — but no longer a blanket refusal
+    // either, because a headless prompt has no `origin` and IS a turn.
+    const ps = entry.promptSource;
+    if (ps === undefined) return null;
+    if (!(ps in ABSENT_ORIGIN_RULE))
+      throw new Error(
+        `agui-map: origin-less entry ${entry.uuid ?? "<no uuid>"} carries promptSource ` +
+          `${JSON.stringify(ps)}, which this mapper has never measured. Refusing to decide whether it ` +
+          `begins a run. Add it to ABSENT_ORIGIN_RULE deliberately, with a measurement.`,
+      );
+    return ABSENT_ORIGIN_RULE[ps]!;
+  }
   if (!(kind in ORIGIN_RULE))
     throw new Error(
       `agui-map: unrecognised origin.kind ${JSON.stringify(kind)} on entry ${entry.uuid ?? "<no uuid>"} — ` +
@@ -211,6 +266,19 @@ export interface ClaudeMapper {
   closeOpenRun: (timestamp: number, stopReason?: string) => { runId: string; events: AguiEvent[] } | null;
   /** The run currently open, or `null`. Read-only view for a caller that needs to know. */
   openRun: () => string | null;
+  /**
+   * **WHY THIS SESSION OPENED NO RUNS** — a sentence, or `null` once any run has opened.
+   *
+   * A mapper that opens zero runs is byte-indistinguishable from a session nobody prompted, and
+   * from a mapper that is simply broken. Refusing a record is a legitimate outcome; refusing it
+   * SILENTLY is not, and the silence is the defect, not the refusal. This is the production
+   * statement of that — it lives in the shipped mapper, not in a smoke summary, so the connector
+   * and any operator reading it get the same sentence the suite does.
+   *
+   * It is deliberately NOT a throw. Some sessions genuinely contain no prompt yet, and a mapper
+   * that threw on one would take down a live connector over an empty file.
+   */
+  diagnose: () => string | null;
 }
 
 /** Parse the entry timestamp, or say honestly that we used arrival time. */
@@ -231,6 +299,12 @@ function resultContent(raw: unknown): string {
 export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
   const now = opts.now ?? (() => Date.now());
   let open: string | null = null;
+
+  // The three counters `diagnose()` reports on. They count what was SEEN and what was REFUSED, so
+  // a zero-run session can say which of the two reasons it was.
+  let runsOpened = 0;
+  let promptShaped = 0; // string-content, non-compaction `user` records — candidates
+  let refusedUnattributable = 0; // ...of those, refused for want of an attribution
 
   const closeOpenRun = (timestamp: number, stopReason?: string) => {
     if (open === null) return null;
@@ -307,12 +381,17 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // on harness plumbing. `promptSource` is corroboration; it is not the gate.
       //
       // Anything not enumerated FAILS LOUD — including a value a future harness adds.
+      promptShaped += 1;
       const turnSource = runOpeningAttribution(entry);
-      if (turnSource === null) return null;
+      if (turnSource === null) {
+        refusedUnattributable += 1;
+        return null;
+      }
 
       const prior = closeOpenRun(ts);
       const runId = opts.mintRunId();
       open = runId;
+      runsOpened += 1;
       const messageId = `${uuid}#0`;
       // The previous run's close rides the SAME unit as this run's open. They are one observation
       // of the source and must not be split across frames: a frame names ONE run (`packUnits`), so
@@ -391,5 +470,23 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
     return runId === null ? null : { runId, events };
   };
 
-  return { map, closeOpenRun, openRun: () => open };
+  const diagnose = (): string | null => {
+    if (runsOpened > 0) return null;
+    if (promptShaped === 0)
+      return (
+        `agui-map: no run opened — this session contains no prompt-shaped record at all ` +
+        `(no string-content, non-compaction \`user\` entry). Nothing was refused; there was nothing ` +
+        `to refuse.`
+      );
+    return (
+      `agui-map: NO RUN OPENED, and it was a refusal, not an empty session — ${refusedUnattributable} of ` +
+      `${promptShaped} prompt-shaped record(s) carry neither an \`origin.kind\` this mapper enumerates ` +
+      `nor \`promptSource: "sdk"\`, so none of them could be attributed and none opened a run. Every ` +
+      `event downstream of a run is therefore absent BY DECISION. If these are real prompts, the ` +
+      `harness has a provenance shape that has not been measured: measure it and add it to ` +
+      `ORIGIN_RULE or ABSENT_ORIGIN_RULE deliberately.`
+    );
+  };
+
+  return { map, closeOpenRun, openRun: () => open, diagnose };
 }

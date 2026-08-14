@@ -139,9 +139,10 @@
  *
  * Run: pnpm smoke:agui-map           (needs a session; see the refusal message)
  */
-import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdtempSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AguiBrackets, reasoningMessageContent, type AguiEvent } from "../../connector-core/src/agui.js";
 import { JsonlFileSource } from "../../connector-core/src/durable-source.js";
 import { createClaudeMapper, type ClaudeEntry } from "../src/agui-map.js";
@@ -178,6 +179,76 @@ if (SESSION === "" || !existsSync(SESSION)) {
       `  Or name one:  COTAL_AGUI_SESSION=/exact/path/to/<session>.jsonl pnpm smoke:agui-map`,
   );
   process.exit(1);
+}
+
+/**
+ * BUILD PROVENANCE — a REFUSAL, not a discipline, and it runs before the first cell.
+ *
+ * This suite's imports look relative, and two of them are. **The mapper's are not.** `agui-map.ts`
+ * imports its event constructors from `@cotal-ai/connector-core`, whose `exports` map resolves to
+ * `./dist/index.js` — a directory that is **gitignored and carries zero tracked files**. So every
+ * event this suite grades is CONSTRUCTED BY `dist`, and `dist` is invisible to `git status`, to the
+ * porcelain sweep, and to `pnpm typecheck`'s idea of what changed. A suite cannot tell "the source
+ * is right" from "the source was never run": it reports the same green for both.
+ *
+ * Worse for this file specifically: it imports `AguiBrackets` from connector-core's **src** while
+ * the mapper builds events from connector-core's **dist**. Two copies of one module. Let them drift
+ * and the bracket cell grades src's machine over dist's events — a green about a pairing that does
+ * not exist anywhere a user runs.
+ *
+ * So: refuse when any crossed `dist` is missing or older than its `src`. A refusal is self-enforcing
+ * and a rule in a header is not. **Aiming the suite at `src/` instead would be worse, not better** —
+ * the published entry point resolves through `dist`, so that trades a provenance gap for a coverage
+ * gap: green about code no user runs.
+ */
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+/** Every package this suite reaches THROUGH A SPECIFIER, transitively. Enumerated, not guessed:
+ *  the mapper imports `@cotal-ai/connector-core`, and connector-core's dist imports `@cotal-ai/core`.
+ *  Nothing else in the runtime graph crosses one. */
+const CROSSED = ["extensions/connector-core", "packages/core"];
+
+const newestMtime = (dir: string, ext: string[]): number => {
+  let newest = 0;
+  const walk = (d: string): void => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) {
+        walk(p);
+        continue;
+      }
+      if (!ext.some((x) => e.name.endsWith(x))) continue;
+      const m = statSync(p).mtimeMs;
+      if (m > newest) newest = m;
+    }
+  };
+  walk(dir);
+  return newest;
+};
+
+const provenance: string[] = [];
+for (const pkg of CROSSED) {
+  const src = join(REPO, pkg, "src");
+  const dist = join(REPO, pkg, "dist");
+  if (!existsSync(dist)) {
+    console.error(
+      `agui-map smoke: REFUSING — ${pkg}/dist does not exist, and this suite executes that package ` +
+        `through a package specifier. There is nothing to grade.\n  Fix:  pnpm build`,
+    );
+    process.exit(1);
+  }
+  const sm = newestMtime(src, [".ts"]);
+  const dm = newestMtime(dist, [".js", ".d.ts"]);
+  if (dm < sm) {
+    console.error(
+      `agui-map smoke: REFUSING — ${pkg}/dist is OLDER than ${pkg}/src, and this suite executes that ` +
+        `package through a package specifier, so a green here would be about an artifact that no ` +
+        `longer matches its source.\n` +
+        `  newest src: ${new Date(sm).toISOString()}\n  newest dist: ${new Date(dm).toISOString()}\n` +
+        `  Fix:  pnpm build`,
+    );
+    process.exit(1);
+  }
+  provenance.push(`${pkg}/dist +${Math.round((dm - sm) / 1000)}s`);
 }
 
 const THREAD = "sess-under-test";
@@ -326,7 +397,13 @@ const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>
 // Whether this session contains anything the enumeration opens a run on. Computed once, here,
 // because both the population cells below and PART 3 are unassertable without it.
 const OPENERS = entries.filter((e) => {
+  if (e.type !== "user" || typeof e.message?.content !== "string") return false;
+  if (e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) return false;
   const k = e.origin?.kind;
+  // The two levels, in the order the mapper reads them: `origin.kind` where there is one, and the
+  // absent-origin table where there is not. Written out here rather than imported so the predicate
+  // this suite uses to decide ASSERTABILITY is not the predicate under test.
+  if (k === undefined) return e.promptSource === "sdk";
   return k === "human" || k === "channel";
 }).length;
 
@@ -363,7 +440,7 @@ c("split:a-tool-result-opens-NO-run", (() => {
 // And the same claim over the REAL population rather than one hand-built record: every run opened
 // across the session must come from a record carrying `promptSource`. A count is not enough here —
 // the mapper could open the right NUMBER of runs off the wrong records.
-if (OPENERS > 0) c("split:every-run-opened-came-from-a-promptSource-bearing-record", (() => {
+if (OPENERS > 0) c("split:every-run-opened-came-from-an-ATTRIBUTABLE-record", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   let opens = 0;
@@ -373,7 +450,12 @@ if (OPENERS > 0) c("split:every-run-opened-came-from-a-promptSource-bearing-reco
     const now2 = m.openRun();
     if (now2 !== null && now2 !== was) {
       opens += 1;
-      if (e.promptSource === undefined) return false;
+      // The rule as it now stands, at both levels. `promptSource`-presence alone is NOT it — that
+      // was the category error, and asserting it here would re-enshrine the predicate the mapper
+      // deliberately does not use.
+      const k = e.origin?.kind;
+      const attributable = k === undefined ? e.promptSource === "sdk" : k === "human" || k === "channel";
+      if (!attributable) return false;
       if (e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) return false;
     }
   }
@@ -389,23 +471,19 @@ if (OPENERS > 0) c("split:every-run-opened-came-from-a-promptSource-bearing-reco
 // mechanisms preventing one outcome means a cell asserting the outcome proves NEITHER, and an
 // equivalent mutant is the one case where a blind cell and an absent mutation are indistinguishable.
 //
-// So each mechanism gets a record only IT can exclude. These two records are synthetic and that is
-// the point: no capture contains them, which is precisely why the population cells cannot
-// discriminate the pair.
-c("mechanism:an-ABSENT-origin-opens-no-run-even-carrying-promptSource", (() => {
-  let n = 0;
-  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  // The headless shape exactly: a submitted prompt with `promptSource` and NO origin. Only the
-  // enumeration can refuse this, and it must — `promptSource` is corroboration, not the gate.
-  const unit = m.map({
-    type: "user",
-    uuid: "absent-origin",
-    timestamp: "2026-08-14T21:00:03.000Z",
-    promptSource: "sdk",
-    message: { content: "a headless prompt" },
-  } as ClaudeEntry);
-  return unit === null && m.openRun() === null;
-})());
+// So each mechanism gets a record only IT can exclude. These records are synthetic and that is the
+// point: no capture contains them, which is precisely why the population cells cannot discriminate
+// the pair.
+//
+// ⚠️ **THE ORIGIN-SIDE CELL THAT USED TO SIT HERE IS RETIRED, AND IT WAS RETIRED BY A RED, NOT BY A
+// DECISION.** It read `mechanism:an-ABSENT-origin-opens-no-run-even-carrying-promptSource`, and it
+// was true of the rule it was written against: an absent origin refused unconditionally, and
+// `promptSource` could not rescue it. The absent-origin table reverses exactly that for the single
+// value `"sdk"`, so the cell went red on the first run after the change — **which is the suite doing
+// its job, not a breakage.** Its mechanism now lives in
+// `mechanism:an-origin-less-record-with-NO-promptSource-opens-no-run` and its two refusal siblings,
+// where the discriminating record is the one carrying no `promptSource` at all. M12 is re-aimed
+// there in the ledger rather than left pointing at a cell that no longer exists.
 
 // SECOND NEGATIVE TWIN. `task-notification` is enumerated as KNOWN-and-not-a-turn, so it must be
 // refused BY NAME rather than by falling through — the distinction between "we decided no" and
@@ -486,6 +564,113 @@ c("UNMEASURED:a-spec-shaped-human-prompt-opens-a-run-attributed-human", (() => {
 })());
 
 // ---------------------------------------------------------------------------------------------
+// THE ABSENT-ORIGIN TABLE — four cells, each at the mechanism, because outcome cells cannot tell
+// these apart. A record with no `origin` reaches one table; what happens next turns on a VALUE, and
+// three of the four possible answers are "no run" for three different reasons.
+// ---------------------------------------------------------------------------------------------
+const originLess = (promptSource: string | undefined, extra?: Partial<ClaudeEntry>): ClaudeEntry =>
+  ({
+    type: "user",
+    uuid: "origin-less-entry",
+    timestamp: "2026-08-14T21:00:03.000Z",
+    ...(promptSource === undefined ? {} : { promptSource }),
+    ...extra,
+    message: { content: "a prompt-shaped string" },
+  }) as ClaudeEntry;
+
+const mapOnce = (e: ClaudeEntry) => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  return { unit: m.map(e), mapper: m };
+};
+
+const turnSourceOf = (unit: { events: AguiEvent[] } | null): string | undefined =>
+  (unit?.events.find((e) => e.type === "RUN_STARTED") as { cotal?: { turnSource?: string } } | undefined)?.cotal
+    ?.turnSource;
+
+// **THE `entrypoint` CELL.** The session-level marker is real — 88 sessions, `cli` × 69 and
+// `sdk-cli` × 19, none mixing — and the mapper deliberately does not read it, because one
+// `promptSource: "sdk"` record was measured inside a 2973-record `cli` session. Gating on the
+// session would open no run for that prompt. Both entrypoints are driven here so the claim "not
+// keyed on entrypoint" is asserted rather than asserted-in-a-comment.
+c("mechanism:an-sdk-prompt-opens-a-run-REGARDLESS-of-entrypoint", (() => {
+  const headless = mapOnce(originLess("sdk", { entrypoint: "sdk-cli" }));
+  const interactive = mapOnce(originLess("sdk", { entrypoint: "cli" }));
+  return turnSourceOf(headless.unit) === "sdk" && turnSourceOf(interactive.unit) === "sdk";
+})());
+
+// THE CONTROL, and it is the INVERSE of the predicate under test: same record, same absent origin,
+// same prompt shape — only the value differs. Without it, "sdk opens a run" is satisfied by a mapper
+// that opens a run on every origin-less record, which is the caveat/heartbeat over-match exactly.
+c("mechanism:an-origin-less-record-with-NO-promptSource-opens-no-run", (() => {
+  const { unit, mapper } = mapOnce(originLess(undefined));
+  return unit === null && mapper.openRun() === null;
+})());
+
+// WHICH REFUSAL. A mapper that refused because the value is unmeasured and one that refused because
+// it is broken are identical from the refusing side, so the message is asserted, not just the throw.
+c("mechanism:an-origin-less-record-with-an-UNMEASURED-promptSource-THROWS-naming-the-table", (() => {
+  try {
+    mapOnce(originLess("some-future-harness-value"));
+    return false;
+  } catch (err) {
+    const m = err instanceof Error ? err.message : "";
+    return m.includes("ABSENT_ORIGIN_RULE") && m.includes("some-future-harness-value");
+  }
+})());
+
+// And the control for THAT: the sibling table must not be the one that fires, or the cell above
+// passes on a throw raised for the wrong reason.
+c("mechanism:an-UNMEASURED-origin.kind-throws-naming-the-OTHER-table", (() => {
+  try {
+    mapOnce({ ...originLess(undefined), origin: { kind: "some-future-origin" } } as ClaudeEntry);
+    return false;
+  } catch (err) {
+    const m = err instanceof Error ? err.message : "";
+    return m.includes("ORIGIN_RULE") && !m.includes("ABSENT_ORIGIN_RULE") && m.includes("some-future-origin");
+  }
+})());
+
+// ---------------------------------------------------------------------------------------------
+// `diagnose()` — THE LOUD REFUSAL. A zero-run session must say WHICH zero it is.
+//
+// This is the cell that makes the silence a defect rather than a shrug: an empty session and a
+// session whose every prompt was refused are byte-identical downstream, and the whole point is that
+// the mapper distinguishes them ITSELF, on the production path, not in this file's summary line.
+// ---------------------------------------------------------------------------------------------
+c("diagnose:a-session-that-opened-a-run-diagnoses-NOTHING", (() => {
+  const { mapper } = mapOnce(originLess("sdk"));
+  return mapper.diagnose() === null;
+})());
+
+c("diagnose:a-session-with-NO-prompt-shaped-record-says-so", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  m.map({ type: "assistant", uuid: "a", message: { content: [] } } as ClaudeEntry);
+  const d = m.diagnose();
+  return d !== null && d.includes("no prompt-shaped record at all");
+})());
+
+c("diagnose:a-session-whose-prompts-were-ALL-REFUSED-says-THAT-instead", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  m.map(originLess(undefined));
+  m.map(originLess(undefined));
+  const d = m.diagnose();
+  return d !== null && d.includes("NO RUN OPENED") && d.includes("refusal") && d.includes("2 of 2");
+})());
+
+// THE PAIR MUST BE DISTINGUISHABLE. Two sentences that both merely said "no runs" would leave the
+// defect exactly where it was, one indirection further along.
+c("diagnose:the-two-zeroes-do-NOT-produce-the-same-sentence", (() => {
+  let n = 0;
+  const empty = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  const refused = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+  refused.map(originLess(undefined));
+  return empty.diagnose() !== refused.diagnose() && empty.diagnose() !== null && refused.diagnose() !== null;
+})());
+
+// ---------------------------------------------------------------------------------------------
 // PART 3 — the real records, read straight through. THE CRUTCH IS GONE.
 //
 // This block used to prepend one synthetic prompt because nothing in a real session could open a
@@ -505,25 +690,32 @@ const run = (opts?: { reasoning?: boolean }): { runId: string; events: AguiEvent
   return entries.map((e) => m.map(e)).filter((u): u is { runId: string; events: AguiEvent[] } => u !== null);
 };
 
-// ⚠️ A SESSION WITH NO RUN-OPENING RECORD CANNOT ASSERT ANY OF PART 3, AND THAT IS NAMED HERE
-// RATHER THAN SKIPPED SILENTLY.
+// ⚠️ A SESSION WITH NO RUN-OPENING RECORD STILL CANNOT ASSERT PART 3 — but this is no longer the
+// HEADLESS case, and the change is the point.
 //
-// Under the enumeration, a run opens on `origin.kind ∈ {human, channel}` only. A HEADLESS session
-// (`claude -p`) carries NO `origin` on any record — measured, all 30 of them — so it opens nothing
-// and every `real:*` cell below would fail for one upstream reason, reporting thirteen findings that
-// are one fact. `promptSource: "sdk"` is present on its two prompts and is corroboration, not the
-// gate, so it does not rescue them.
+// It used to be. Under the old rule a run opened on `origin.kind ∈ {human, channel}` only, and a
+// headless session carries no `origin` on any record, so it opened nothing and this arm declared
+// PART 3 unassertable. **That gap is closed:** the absent-origin table opens a run on
+// `promptSource: "sdk"`, so a headless session now walks PART 3 like any other, on its own bytes.
 //
-// **This is the headless gap, reinstated by the corrected rule and RAISED rather than patched.**
-// Whether an sdk-submitted prompt opens a run is a spec decision; inventing a third enumeration
-// member here would be the same error twice over. Until it is ruled, this arm asserts the fact it
-// can assert — that the session opens nothing and therefore maps to nothing — and declares the rest
-// unassertable. A green on this arm must NOT be read as "the mapping works on a headless session".
+// The branch stays because a session with genuinely nothing in it is still possible, and because
+// the arm must not silently skip thirteen cells. **What it prints now is `diagnose()`'s sentence,
+// from the mapper** — so the reason travels with the shipped code and not with this file.
 if (OPENERS === 0) {
+  const why = (() => {
+    let n = 0;
+    const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
+    entries.forEach((e) => m.map(e));
+    return m.diagnose();
+  })();
   c("ARM:and-so-it-maps-to-nothing — PART 3 IS UNASSERTABLE ON THIS SESSION, not passing", run().length === 0);
+  // The mapper must be able to SAY why, or the zero is exactly the silent zero this work removed.
+  c("ARM:the-mapper-DIAGNOSES-its-own-zero-rather-than-returning-a-bare-empty", why !== null);
   console.log(
     `agui-map smoke: ${pass} passed, ${fail} failed  ` +
-      `[session: ${SESSION.split("/").pop()}, ${entries.length} records — HEADLESS ARM: no run-opening record, PART 3 not run]`,
+      `[session: ${SESSION.split("/").pop()}, ${entries.length} records — NO RUN-OPENING RECORD, PART 3 not run]\n` +
+      `  ${why ?? "(mapper diagnosed nothing — see the failing cell above)"}\n` +
+      `  build provenance: ${provenance.join(", ")}`,
   );
   process.exit(fail === 0 ? 0 : 1);
 }
@@ -716,5 +908,11 @@ c("real:the-LAST-run-of-the-session-is-still-open-at-EOF", (() => {
   return m.openRun() !== null;
 })());
 
-console.log(`agui-map smoke: ${pass} passed, ${fail} failed  [session: ${SESSION.split("/").pop()}, ${entries.length} records]`);
+console.log(
+  `agui-map smoke: ${pass} passed, ${fail} failed  ` +
+    `[session: ${SESSION.split("/").pop()}, ${entries.length} records]\n` +
+    // Which ARTIFACT ran, beside how the run went. The rc says the run is trustworthy; this says
+    // what it was a run OF, and the two are different questions.
+    `  build provenance: ${provenance.join(", ")}`,
+);
 process.exit(fail === 0 ? 0 : 1);
