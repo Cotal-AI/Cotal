@@ -57,9 +57,19 @@ const awaitExit = (p: ReturnType<typeof spawn>, ms = 4000): Promise<void> =>
     if (p.exitCode !== null || p.signalCode !== null) return res();
     p.once("exit", () => res()); setTimeout(res, ms);
   });
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, recorded = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+/** RECORD an observation. NOT an assertion, and deliberately not counted as one.
+ *  These cells answer an OPEN question -- you cannot assert the answer you are trying to discover --
+ *  so they report what happened instead of demanding it. They used to be written as
+ *  `check(name, true, extra)`, which printed a tick and incremented the pass count, so a total like
+ *  "11/11" silently included cells that could not fail. Found by adversarial review; the idiom was
+ *  fine, the ARITHMETIC was the defect. A recorded observation is evidence of what was seen, never
+ *  evidence that a property holds. */
+const record = (name: string, extra?: unknown) => {
+  recorded++; console.log(`  ● RECORDED (observation, not asserted): ${name}`, extra ?? "");
 };
 
 const space = `meshctl-72b-${randomUUID().slice(0, 8)}`;
@@ -145,8 +155,7 @@ try {
 
   // ── B1: does anything close it on its own? ───────────────────────────────────────────────────
   const openAfter = await memberships();
-  check(`B1 RESULT — after the agent is gone and its presence has lapsed, the membership is ${openAfter.some((m) => m.channel === "review") ? "STILL OPEN" : "CLOSED by something"}`,
-    true, openAfter);
+  record(`B1 RESULT — after the agent is gone and its presence has lapsed, the membership is ${openAfter.some((m) => m.channel === "review") ? "STILL OPEN" : "CLOSED by something"}`, openAfter);
   const stillOpen = openAfter.some((m) => m.channel === "review");
 
   // ── B2: does the delivery plane keep writing for it? ─────────────────────────────────────────
@@ -156,8 +165,7 @@ try {
   await wait(1500);
   const afterAbandoned = await dlvCount();
   const grewWhileOpen = afterAbandoned - before;
-  check(`B2 RESULT — with the membership open and the agent gone, the delivery stream grew by ${grewWhileOpen} for ${K} posts`,
-    true, { before, after: afterAbandoned });
+  record(`B2 RESULT — with the membership open and the agent gone, the delivery stream grew by ${grewWhileOpen} for ${K} posts`, { before, after: afterAbandoned });
 
   // ── C2: THE ATTRIBUTION CONTROL ──────────────────────────────────────────────────────────────
   console.log("\n--- INVERSE CONTROL C2: close it, post the same again, and see whether it still grows ---");
@@ -177,7 +185,9 @@ try {
     ? "  → (b) HOLDS. An abandoned membership stays open and the delivery plane keeps writing for an agent that is never coming back.\n    The deferral's surviving reason is real."
     : "  → (b) REFUTED. The deferral has no stated reason left; report SHIP and say so.");
 
-  console.log(`\n§7.2(b) LEAK PROBE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\n§7.2(b) LEAK PROBE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} ASSERTED and passed, ${fail} failed, ${recorded} recorded observations)`);
+  console.log("  NOTE: the recorded observations are NOT part of the pass count. Cite this probe as"
+    + ` "${pass} asserted + ${recorded} recorded", never as "${pass + recorded}/${pass + recorded}".`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;

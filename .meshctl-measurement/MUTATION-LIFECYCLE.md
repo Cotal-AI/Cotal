@@ -184,7 +184,7 @@ those are different claims.
   drives it (hold a source call open, disconnect, release) and MX4 proves the cell detects it.
 - **No repo-wide suite was run.** No gate has been released to this lane. Scoped suites only:
   `connection-lifecycle` **34/34** (re-run at tip `b1b757f7`), `connection-control` 19/19,
-  `request-strand` 9/9, `§7.2 gap` 11/11.
+  `request-strand` 9/9, `§7.2 gap` 7 asserted + 4 recorded.
   One honest gap in how the earlier 32/32 was read: its exit code was **not** captured — `PIPESTATUS`
   is a bashism and the shell here is `/bin/sh`, so it came back empty. The claim rests on the
   suite's own printed `0 failed` line, not on an exit status I never saw. The 34/34 runs above DO

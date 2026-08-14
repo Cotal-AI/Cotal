@@ -58,9 +58,19 @@ const awaitExit = (p: ReturnType<typeof spawn>, ms = 4000): Promise<void> =>
     if (p.exitCode !== null || p.signalCode !== null) return res();
     p.once("exit", () => res()); setTimeout(res, ms);
   });
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, recorded = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+/** RECORD an observation. NOT an assertion, and deliberately not counted as one.
+ *  These cells answer an OPEN question -- you cannot assert the answer you are trying to discover --
+ *  so they report what happened instead of demanding it. They used to be written as
+ *  `check(name, true, extra)`, which printed a tick and incremented the pass count, so a total like
+ *  "11/11" silently included cells that could not fail. Found by adversarial review; the idiom was
+ *  fine, the ARITHMETIC was the defect. A recorded observation is evidence of what was seen, never
+ *  evidence that a property holds. */
+const record = (name: string, extra?: unknown) => {
+  recorded++; console.log(`  ● RECORDED (observation, not asserted): ${name}`, extra ?? "");
 };
 
 const space = `meshctl-72-${randomUUID().slice(0, 8)}`;
@@ -157,7 +167,7 @@ try {
   const j2 = await dlv.durableJoinFor(aPrincipal, "review", uidA);
   check("setup: the membership re-opened", j2.durable === true, j2);
   const q1 = await until(() => got.includes("in-the-gap-1") && got.includes("in-the-gap-2"), 8000);
-  check(`Q1 RESULT — the gap ${q1 ? "IS" : "is NOT"} re-established by a durable re-join`, true, { q1, got });
+  record(`Q1 RESULT — the gap ${q1 ? "IS" : "is NOT"} re-established by a durable re-join`, { q1, got });
 
   // ── C3 + Q2: is the gap observable and re-fetchable by the CALLER? ────────────────────────────
   console.log("\n--- Q2: can the caller enumerate and re-fetch the gap itself? ---");
@@ -174,7 +184,7 @@ try {
   check("C3 CONTROL: recall works on this fixture — it returns a message posted while the membership was OPEN",
     recalled.includes("before-close"), { recalled, recallErr, dropped });
   const q2 = recalled.includes("in-the-gap-1") && recalled.includes("in-the-gap-2");
-  check(`Q2 RESULT — the gap ${q2 ? "IS" : "is NOT"} re-fetchable by the caller`, true, { q2, recalled, recallErr, dropped });
+  record(`Q2 RESULT — the gap ${q2 ? "IS" : "is NOT"} re-fetchable by the caller`, { q2, recalled, recallErr, dropped });
 
   // ── Q2b: is it re-fetchable through a path the AGENT actually has? ───────────────────────────
   // `recallChannel(channel, 0)` is the ENDPOINT API. The only tool-reachable route to it is
@@ -186,8 +196,7 @@ try {
   console.log("\n--- Q2b: the path the AGENT actually has — a live join's backfill ---");
   const jr = await a.joinChannel("review");
   const q2b = await until(() => got.includes("in-the-gap-1") && got.includes("in-the-gap-2"), 8000);
-  check(`Q2b RESULT — a live join ${q2b ? "DOES" : "does NOT"} backfill the gap to the agent`,
-    true, { backfilled: jr.backfilled, joined: jr.joined, got });
+  record(`Q2b RESULT — a live join ${q2b ? "DOES" : "does NOT"} backfill the gap to the agent`, { backfilled: jr.backfilled, joined: jr.joined, got });
 
   // ── ARM C: the BOUND on Q2 — replay is per-channel, and where it is off the gap is gone ──────
   console.log("\n--- ARM C: the bound — a replay-disabled channel ---");
@@ -199,14 +208,15 @@ try {
   check("C4 CONTROL: the audit channel really did receive the post (the poster's publish succeeded)",
     auditPosted, { auditPosted });
   const q2c = auditRecalled.includes("audit-in-the-gap");
-  check(`ARM C RESULT — on a replay-DISABLED channel the gap is ${q2c ? "still" : "NOT"} re-fetchable`,
-    true, { auditRecalled });
+  record(`ARM C RESULT — on a replay-DISABLED channel the gap is ${q2c ? "still" : "NOT"} re-fetchable`, { auditRecalled });
 
   console.log(`\n§7.2 VERDICT: Q1=${q1 ? "SATISFIED" : "failed"}  Q2(endpoint API)=${q2 ? "SATISFIED" : "failed"}  Q2b(agent path)=${q2b ? "SATISFIED" : "failed"}  replay-off=${q2c ? "also re-fetchable" : "NOT re-fetchable"}`);
   console.log(q1 || q2b
     ? `  → SHIP, BOUNDED. fm-orchestrator's condition (2) HOLDS through a path the agent has${q2c ? "" : ", BUT ONLY ON REPLAY-ENABLED CHANNELS"}.`
     : "  → DEFER STANDS. Neither condition holds through a path the caller actually has.");
-  console.log(`\n§7.2 GAP PROBE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\n§7.2 GAP PROBE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} ASSERTED and passed, ${fail} failed, ${recorded} recorded observations)`);
+  console.log("  NOTE: the recorded observations are NOT part of the pass count. Cite this probe as"
+    + ` "${pass} asserted + ${recorded} recorded", never as "${pass + recorded}/${pass + recorded}".`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;

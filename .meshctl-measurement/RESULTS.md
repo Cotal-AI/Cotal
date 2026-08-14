@@ -11,7 +11,16 @@ denial cited here does have one. A blanket claim about evidence quality is itsel
 to be true of every row, and this one was not.
 
 Probes must run from the main checkout (they import per-package `node_modules`); they are kept
-here as the record. See "Reproduction" below.
+here as the record. **They do NOT run from this directory — their imports are package-relative, so
+each must be copied back to its package home first. The Reproduction block below gives the exact
+copy step; an earlier version gave commands naming files that were not at those paths.**
+
+**COUNTS IN THIS FILE DISTINGUISH ASSERTIONS FROM RECORDED OBSERVATIONS.** A probe answering an
+*open question* records what it observed rather than asserting an answer it was trying to discover.
+Those cells are real evidence of what was seen and are **not** evidence that a property holds, so
+they are no longer counted in a pass total. Cite `§7.2` as **7 asserted + 4 recorded** and `§7.2(b)`
+as **3 asserted + 2 recorded** — never as `11/11` or `5/5`, which is how they were first reported
+here. The probes now print that caveat themselves.
 
 ## Findings
 
@@ -208,7 +217,7 @@ re-target through the agent's own credential.** See DESIGN §7.2 for the saga th
 ### What HAS been run, named as suites
 **No repo-wide suite has been run and no gate has been released to this lane.** Scoped only:
 - Probes: M1 verb drive, M2 open-mode gate-bypass, M3 broker fence (9), M4 observer ghost,
-  M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (11/11)**.
+  M5 lease/in-flight, M6 durable membership (4/4), **§7.2 gap (7 asserted + 4 recorded)**.
 - Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
   `packages/core/smoke/connection-lifecycle.smoke.ts` **34/34 at `b1b757f7`** (re-run today, rc=0 captured),
   `extensions/connector-core/smoke/connection-control.smoke.ts` **19/19 at `ffc18c46`**,
@@ -255,13 +264,37 @@ are usually confused for each other:
 Neither is fixed by an install, and this program never runs one.
 
 ```
+# ⚠️ THE M-PROBES DO NOT RUN WHERE THEY SIT. Copy each one to its package home FIRST.
+# These files were run from the package directories and then collected into
+# `.meshctl-measurement/` as the record. Their imports are package-relative
+# (`./src/index.js`, `./src/agent.js`), so from here they resolve to nothing. The commands
+# below used to name `packages/core/meshctl-m3-fence.smoke.ts` — a path with no file at it.
+# Found by adversarial review; the runs were real, the RECORD could not re-derive them.
+
+# core probes — `./src/index.js` + `./smoke/_free-port.js` ⇒ home is packages/core/
+for f in meshctl-m3-fence.smoke.ts meshctl-m6-durable.smoke.ts meshctl-m5-lease.mts meshctl-m5-verify.mts; do
+  cp .meshctl-measurement/$f packages/core/$f
+done
 node_modules/.bin/tsx packages/core/meshctl-m3-fence.smoke.ts
 node_modules/.bin/tsx packages/core/meshctl-m5-lease.mts
+node_modules/.bin/tsx packages/core/meshctl-m5-verify.mts
 node_modules/.bin/tsx packages/core/meshctl-m6-durable.smoke.ts
-node_modules/.bin/tsx packages/core/smoke/request-strand.smoke.ts
+
+# connector probes — `./src/agent.js` ⇒ home is extensions/connector-core/
+for f in meshctl-m1-probe.mts meshctl-m2-gate.mts meshctl-m4-probe.mts; do
+  cp .meshctl-measurement/$f extensions/connector-core/$f
+done
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m1-probe.mts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m2-gate.mts
 cd extensions/connector-core && ../../node_modules/.bin/tsx meshctl-m4-probe.mts
+# then delete the copies — they are untracked and must not be committed twice
+
+# these two DO run where they sit (repo-root-relative imports), and need no copy:
+node_modules/.bin/tsx .meshctl-measurement/meshctl-72-gap.smoke.ts
+node_modules/.bin/tsx .meshctl-measurement/meshctl-72b-leak.smoke.ts
+# committed suites, which live in their real homes and always ran there:
+node_modules/.bin/tsx packages/core/smoke/request-strand.smoke.ts
+node_modules/.bin/tsx packages/core/smoke/connection-lifecycle.smoke.ts
 ```
 
 ## Correction: F9's blast radius (recorded, because it was overstated)

@@ -26,7 +26,7 @@ races the boot-join reconciler.
 > is the same ghost class this lane was created to close, and **reporting the partial state does not
 > repair it; it only attaches a better error message to the same broken state.**~~
 >
-> **STRUCK — REFUTED BY MEASUREMENT at `1e8ecd84` (`meshctl-72-gap.smoke.ts`, 11/11). Kept struck
+> **STRUCK — REFUTED BY MEASUREMENT at `1e8ecd84` (`meshctl-72-gap.smoke.ts`, **7 asserted + 4 recorded** — see the counting note in RESULTS.md). Kept struck
 > rather than deleted so the correction has something to be a correction of; the next reader would
 > otherwise re-propose exactly this.** The claim's second half — that the interval is unrecoverable —
 > is **false on replay-enabled channels**. Chat history is a **separate JetStream stream** from
@@ -45,7 +45,7 @@ paragraph bundled two different concerns. Only the second survives:
   agent that is never coming back. **This is a leak on the SOURCE, not a gap for the agent, and no
   amount of re-joining fixes it because the agent is gone. This alone is why re-target is deferred.**
 
-  > **MEASURED AND CONFIRMED** — `meshctl-72b-leak.smoke.ts` @ `c7359c37`, 5/5. Durable-join, abandon
+  > **MEASURED AND CONFIRMED** — `meshctl-72b-leak.smoke.ts` @ `c7359c37`, **3 asserted + 2 recorded** (B1/B2 RECORD an observation and are not assertions; C2 asserts `closed < open`, not the exact +5/+0). Durable-join, abandon
   > the agent, let its presence TTL lapse at the broker: **B1 nothing closes the membership** (no
   > reaper, no lease expiry, no presence-driven eviction), and **B2 the delivery stream grew by 5 for
   > 5 posts** with the member gone. **C2 is what carries it:** after an explicit `durableLeave` the
@@ -670,7 +670,7 @@ step of re-target; the operations available cannot do it safely:
   partial failure is not undoable, only reportable.
 
   > **MEASURED, AND THIS BULLET IS TRUE BUT LOAD-BEARING FOR LESS THAN IT LOOKS.**
-  > `.meshctl-measurement/meshctl-72-gap.smoke.ts` @ `1e8ecd84`, 11/11, ephemeral auth broker with a
+  > `.meshctl-measurement/meshctl-72-gap.smoke.ts` @ `1e8ecd84`, **7 asserted + 4 recorded**, ephemeral auth broker with a
   > real delivery daemon. Close a membership, post into the gap, re-open, ask both of the acceptance
   > questions fm-orchestrator set.
   > - **A durable re-join does NOT replay the gap** — the bullet above is confirmed exactly as
