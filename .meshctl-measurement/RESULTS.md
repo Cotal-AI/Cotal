@@ -1,6 +1,6 @@
 # Measurement: agent-driven mesh connection control
 
-Base `1aab1389`. All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
+Base `7cc74f50` (measured at `1aab1389`; delta since is release/docs only). All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
 target is not the live broker as its first action, and each denial has an inverse control through
 the same path. Refutation conditions are stated in each probe's header **before** any result.
 
@@ -65,13 +65,21 @@ the connection outright.
 ### 5. The authority is the mint, not the connect
 | check | result |
 | --- | --- |
-| F3 a cred minted from the same on-disk `SpaceAuth` with a **self-chosen** ACL → `chat.*.secret` (the exact subject denied at F1d) | ALLOWED |
+| F3 a cred minted from the same `SpaceAuth` with a **self-chosen** ACL → `chat.*.secret` (the exact subject denied at F1d) | ALLOWED |
 | F3b a `provisioner` cred → the space firehose | DENIED — least-privilege genuinely holds |
 
 Same broker, same subject, same probe as F1d; only the mint differs. The ACL is decided at mint
-time, so whoever can read the space trust material can issue any ACL. **A self-connect verb must
-re-present a held credential and must never reach the workspace mint path.** If it mints, "nothing
-it did not already hold" stops being true.
+time, so whoever can read the space trust material can issue any ACL.
+
+**CORRECTED (adversarial review):** this probe builds its `SpaceAuth` **in memory** and never opens
+`auth.json`. "The ACL is chosen at mint time" is measured **[M]**; "an agent can read the on-disk
+trust material" is a **[R]**. The first draft labelled the combination measured.
+
+**And the rule this finding produced was too weak.** "Never reach the mint path" is a ban on
+function names, and three paths obey its letter while still obtaining freshly minted authority
+(user-mode `bearerCmd` re-reads the current ledger per connect; the manager re-mints static creds;
+`cotal_spawn` mints indirectly). See DESIGN §1 for the replacement invariant, which is about grant
+SCOPE rather than function names.
 
 ### 6. `cotal_reconnect` cannot re-target, and a leave survives it
 `connectAndBind` (`endpoint.ts:821-855`) dials `this.servers` / `this.space`, both pinned at
@@ -82,8 +90,14 @@ in-process, but **not** across a process restart, where config re-seeds.
 `connId` is `private readonly` (`endpoint.ts:445`), assigned once. Reconnect is identity-preserving;
 the reply inbox namespace survives, though a reply arriving inside the rebuild's null window has no
 subscriber. A **re-target cannot be done in place**: space, servers, creds and `connId` are all
-constructor-pinned, so re-targeting means a new endpoint and therefore a new mesh identity — which
-is precisely how a ghost gets made if the old presence is not explicitly retired.
+constructor-pinned, so re-targeting builds a new endpoint.
+
+**CORRECTED (adversarial review) — "and therefore a new mesh identity" is FALSE.** Wire identity is
+the `owner.actor` principal, distinct from `connId`, and it derives from the CREDENTIAL
+(`endpoint.ts:493-534`). A new endpoint built from the same credential carries the same identity.
+The inference "readonly `connId` ⇒ new identity" does not follow — `connId` is the inbox nonce. It
+is the credential that decides, so a re-target to a different mesh differs in identity because it
+uses a different credential.
 
 ### 7. The client-side ACL check is defence-in-depth under auth, and the only fence in open mode
 The comment at `tool-specs.ts:470-471` claims "Auth mode also enforces this server-side; this is the
