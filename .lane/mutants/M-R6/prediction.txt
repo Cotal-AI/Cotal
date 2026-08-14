@@ -1,0 +1,34 @@
+M-R6 — PREDICTION, WRITTEN BEFORE THE MUTANT WAS APPLIED.
+
+This is REVIEW'S mutant, not mine. Their finding: my probe-as-writer arm only covers a second read
+placed AFTER the probe, because the writer is the probe. A second read placed BEFORE it survives —
+they preregistered it, `mutation-proof` said SURVIVED at 14/0, and a real concurrent writer then hit
+the violation at iteration 114 of 100,000.
+
+Mutant: read the record TWICE up front, probe the SECOND value, return the FIRST.
+
+  file    implementations/cli/src/lib/manager-proc.ts
+  edit 1  add `const recLate = read();` immediately after `const rec = read();`
+  edit 2  `return { state: probe(pid), pid, raw };`
+       -> `return { state: probe(parsePid(recLate.raw) ?? pid), pid, raw };`
+
+PREDICTED RED — exactly two, named:
+  R1: the pid record is read EXACTLY ONCE (a second read is the defect, whatever its position)
+  R2: the pid RETURNED is the pid PROBED, against a record that changes on every read
+
+PREDICTED GREEN — and this list is the POINT of the run, not a formality:
+  S5: the RETURNED pid is the pid that was probed, not the value written during the probe
+  S6: the returned raw bytes are the ones that were parsed, not a re-read
+  S4: the probe received the pid that was on disk when the call began
+  ...and the other 13.
+
+  **S5 STAYING GREEN IS THE REVIEWER'S FINDING, REPRODUCED.** The real-file arm has no writer before
+  the probe, so both reads return 101, the probe gets 101, and the returned pid is 101. The old
+  suite could not see this mutant at all. If S5 went RED here I would have mis-built the mutant, not
+  caught something extra.
+
+PREDICTED rc: 1. PREDICTED marks: 18 (baseline 20).
+
+NON-EQUIVALENCE: with the shifting reader the mutant probes 202 and returns 101 — a state the
+original cannot produce. Registered in advance: if R1 and R2 stayed green the mutation would still
+be non-equivalent and the repair would have FAILED to close the hole, to be reported as such.

@@ -11,9 +11,23 @@
  *
  * So this suite constructs the race instead of describing it. The probe IS the concurrent writer:
  * it rewrites the pidfile from inside the call, in the exact window between the read and the
- * return. Any second read introduced ANYWHERE below the caller — in the helper, in a callee of the
- * helper, in a future refactor that has not been written yet — returns the rewritten value and
- * reddens S5. That is the property; the grep was a proxy for it.
+ * return.
+ *
+ * ⚠️ THAT ARM ALONE COVERS ONE READ ORDER, AND AN EARLIER VERSION OF THIS FILE CLAIMED IT COVERED
+ * ALL OF THEM. The claim was that a second read introduced "anywhere below the caller" reddens S5.
+ * It is false: a probe-as-writer only writes once the probe is called, so a second read placed
+ * BEFORE `probe(...)` — read, read again, probe the second pid, return the first — never sees a
+ * changed file and survives. Review preregistered exactly that mutant and `mutation-proof` reported
+ * SURVIVED at 14/0; a real concurrent writer then hit the violation at iteration 114 of 100,000.
+ * **The suite was sound and the sentence describing it was not**, which is the same defect this lane
+ * keeps finding: a correct instrument filed under a claim it does not support.
+ *
+ * The repair is the SEAM, not more prose. `managerLivenessSnapshot` now takes its reader the way it
+ * already took its probe, so a cell can count the reads and hand back different bytes on each one.
+ * Both orders now fail deterministically — R1 kills any second read through the seam whatever its
+ * position, and R2 asserts the invariant itself (the pid returned is the pid probed) against a
+ * reader that changes underneath. The probe-as-writer arm is KEPT, because it covers what the seam
+ * cannot: a direct `readFileSync` that bypasses the injected reader entirely.
  *
  * WHAT IT DOES NOT CLAIM. It does not prove a real manager restart has ever been observed in this
  * window; nothing here schedules a real writer. It proves the reported pid and the reported state
@@ -113,6 +127,30 @@ const quiet = managerLivenessSnapshot((): "alive" => "alive");
 check("S9-inverse: a later call reports the CURRENT file's pid, so S5 is not a stale cache",
   quiet.pid === 303 && quiet.raw === "303");
 
+// ---- BOTH READ ORDERS, deterministically, through the injected seam ----------------------------
+// R1 counts. A second read anywhere — before the probe or after it — is one call too many, and
+// unlike the probe-as-writer arm above this does not depend on WHEN the second read happens.
+let reads = 0;
+const countingReader = (): { present: boolean; raw: string } => { reads++; return { present: true, raw: "101" }; };
+const r1 = managerLivenessSnapshot(() => "alive", countingReader);
+check("R1: the pid record is read EXACTLY ONCE (a second read is the defect, whatever its position)", reads === 1);
+check("R1-control: the injected reader was actually used (0 reads would satisfy any count check)", reads > 0);
+check("R1: the single read is the one that produced the answer", r1.pid === 101 && r1.raw === "101");
+
+// R2 asserts the INVARIANT rather than a call count, against a reader whose answer changes on every
+// call. Under the pre-probe mutant — read, read again, probe the second, return the first — the
+// returned pid is 101 while the probed pid is 202, and this reddens without any concurrency at all.
+const answers = ["101", "202", "303"];
+let idx = 0;
+const shiftingReader = (): { present: boolean; raw: string } => ({ present: true, raw: answers[Math.min(idx++, answers.length - 1)]! });
+let probedBy2: number | undefined;
+const r2 = managerLivenessSnapshot((pid) => { probedBy2 = pid; return "alive"; }, shiftingReader);
+check("R2: the pid RETURNED is the pid PROBED, against a record that changes on every read",
+  r2.pid === probedBy2);
+check("R2-control: the shifting reader really does return different bytes on successive calls",
+  shiftingReader().raw !== answers[0]);
+check("R2: with one read, the answer is the FIRST value the record gave", r2.pid === 101);
+
 // ---- the states that carry no pid, so the surface cannot render one it never had ---------------
 rmSync(pidPath, { force: true });
 const gone = managerLivenessSnapshot(() => { throw new Error("probe must not run without a record"); });
@@ -126,7 +164,7 @@ check("S11a: unattributable is NOT collapsed into absent", bad.state !== "absent
 
 // PIN THE COUNT. A cell that stops running takes its own failure with it, and "13 passed" says
 // nothing about how many were meant to run.
-const EXPECTED_CELLS = 14;
+const EXPECTED_CELLS = 20;
 if (pass + fail !== EXPECTED_CELLS) {
   fail++;
   console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);

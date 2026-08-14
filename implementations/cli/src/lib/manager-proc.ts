@@ -31,6 +31,25 @@ export function managerLiveness(probe: LivenessProbe = probeLiveness): ManagerLi
 
 export type ManagerLiveness = "alive" | "dead" | "unknown" | "absent" | "unattributable";
 
+/** One read of the pid record: whether it was there, and what it said. */
+export type PidRecordReader = () => { present: boolean; raw: string };
+
+/** The real read — ONE syscall path, not `existsSync` followed by `readFileSync`.
+ *
+ *  Collapsing the two is not only about counting: the pair is a TOCTOU. A record removed between
+ *  the check and the read made the old code throw out of a read-only status path, where "the file
+ *  went away" is an ordinary outcome and `absent` is the correct answer. ENOENT is that answer;
+ *  every other errno is a genuine failure and is left to throw rather than be flattened into
+ *  "no manager", which would be a claim about the world derived from a permissions error. */
+export const readPidRecord: PidRecordReader = () => {
+  try {
+    return { present: true, raw: readFileSync(PID_PATH(), "utf8").trim() };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { present: false, raw: "" };
+    throw e;
+  }
+};
+
 /** The liveness state TOGETHER WITH the pid it was derived from, read ONCE.
  *
  *  A caller that wants to display the pid must not read the pidfile a second time. Two reads can
@@ -42,10 +61,20 @@ export type ManagerLiveness = "alive" | "dead" | "unknown" | "absent" | "unattri
  *  This does not make the read atomic against a concurrent writer; nothing here can. It makes the
  *  reported pid and the reported state come from THE SAME BYTES, which is the only claim the caller
  *  is entitled to make: *this is the pid I probed*, not *this is the pid on disk now*. */
-export function managerLivenessSnapshot(probe: LivenessProbe = probeLiveness): { state: ManagerLiveness; pid: number | undefined; raw: string } {
-  const p = PID_PATH();
-  if (!existsSync(p)) return { state: "absent", pid: undefined, raw: "" };
-  const raw = readFileSync(p, "utf8").trim();
+export function managerLivenessSnapshot(
+  probe: LivenessProbe = probeLiveness,
+  read: PidRecordReader = readPidRecord,
+): { state: ManagerLiveness; pid: number | undefined; raw: string } {
+  // ONE call, and the seam is injectable for the same reason the probe is: the property that must
+  // hold — that the pid reported is the pid probed — is only violated when the record is read TWICE,
+  // and a test cannot construct a second read it has no way to observe. Review proved the gap by
+  // moving a second read BEFORE the probe, where a suite whose only concurrent writer is the probe
+  // itself can never reach it. With the read injected, a cell counts the calls and makes a reader
+  // return different bytes on each one, so both orders fail deterministically instead of waiting on
+  // a race that surfaced at iteration 114 of 100,000.
+  const rec = read();
+  if (!rec.present) return { state: "absent", pid: undefined, raw: "" };
+  const raw = rec.raw;
   if (raw === "") return { state: "absent", pid: undefined, raw }; // a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
