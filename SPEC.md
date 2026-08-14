@@ -1032,7 +1032,16 @@ durable **operation intent** `op = { opId, kind: activation | takeover | registr
 retirement, successor? }`: after a crash the intent alone
 decides WHICH operation a frozen gate belongs to and what may advance it, a retry or
 reconciler resumes the SAME `opId`, and a writer that is not that operation's executor
-MUST NOT advance, reopen, or terminalize the gate. A `retired` gate RETAINS the
+MUST NOT advance, reopen, or terminalize the gate.
+**A crash can leave the gate frozen under an operation whose executor no longer exists**, and
+fail-closed then blocks every restart while protecting nothing. An operator-facing reconciler
+MAY complete that dead operation's obligation — resuming its SAME `opId` and reopening at the
+UNCHANGED coordinate with `generation` advanced by one — but ONLY after it has AFFIRMATIVELY
+verified that the gate's freeze-holder principal is gone, via the same liveness machinery the
+barrier's eviction trusts (`principalLiveness`, §13.9). A holder that is alive, or whose
+liveness cannot be proven, MUST refuse; a timeout or an incomplete sweep is unknowability and
+MUST NOT be read as death. The affirmative check is a PRECONDITION ON TOP OF the barrier's own
+verified eviction, never a replacement for it. A `retired` gate RETAINS the
 terminalizing operation's intent as audit, and an idempotent terminal retry succeeds only
 for that SAME operation. **Successor coordinates are per-kind and derivable, never loose
 prose**: an `activation` or `retirement` intent carries NO `successor` (an activation's
@@ -3319,7 +3328,14 @@ single-function profiles, each granting only the verbs its function needs and no
   `evictPrincipal` on each revoked credential's `holderPrincipal` (§13.1) as their eviction
   step; agents are broker-denied. `evictPrincipal` is
   wired into those barriers, not
-  a standalone admin convenience. The former
+  a standalone admin convenience. Its READ-ONLY twin `principalLiveness` answers whether one
+  principal still holds a live connection (the same CONNZ sweep, observer credential only — the
+  KICK credential is never opened on that path), reporting `live` / `gone` / `unknown` with scan
+  completeness as a separate field and a reply bound to the exact principal queried. It exists
+  because eviction cannot serve as its own precondition: a repair that must REFUSE while a holder
+  is alive would, using `evictPrincipal` to find out, kill the holder before it could refuse.
+  `gone` requires a complete, single-server-proven sweep (§13.13); an under-reporting sweep is
+  `unknown`, which never authorizes. The former
   `delivery-admin` control tier is deleted with the v0 rail (§13.11).
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
