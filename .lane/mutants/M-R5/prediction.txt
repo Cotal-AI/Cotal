@@ -1,0 +1,33 @@
+M-R5 — PREDICTION, WRITTEN BEFORE THE MUTANT WAS APPLIED.
+
+The mutant is the one review demonstrated: inside `managerLivenessSnapshot`, probe the pid from the
+FIRST read, then re-read the pidfile and return the SECOND read's value for display. This is the
+defect moved one call below `managerRow`, which is exactly where the structural cells stop.
+
+  file    implementations/cli/src/lib/manager-proc.ts
+  find    return { state: probe(pid), pid, raw };
+  replace const st = probe(pid); const raw2 = readFileSync(p, "utf8").trim();
+          return { state: st, pid: parsePid(raw2), raw: raw2 };
+
+PREDICTED RED — named, not counted:
+  S5   the RETURNED pid is the pid that was probed, not the value written during the probe
+  S6   the returned raw bytes are the ones that were parsed, not a re-read
+
+PREDICTED GREEN (12): S1-anchor-control, S2-anchor, S2a-anchor, S3-control, S4, S7, S7-control,
+  S8, S9-inverse, S10, S11, S11a.
+  S4 stays green ON PURPOSE: the probe still receives 101. That is the whole shape of the defect —
+  the right pid is probed and a different one is reported, so a cell watching the probe cannot see
+  it and only a cell watching the RETURN can.
+  S9-inverse stays green because its probe does not write, so both reads agree.
+
+PREDICTED rc: 1.
+
+PREDICTED STILL FULLY GREEN: .lane/finding5-repair-cells.sh at 32/0. That is not a side note, it is
+the reviewer's finding restated — the structural cells R13/R13a scan `managerRow`, the mutant is not
+in `managerRow`, and they cannot see it. Demonstrating that they stay green is the evidence that the
+new behavioural cell is what closed the hole, rather than the hole having been imaginary.
+
+NON-EQUIVALENCE: the mutant returns a pid different from the one probed whenever a writer interleaves
+between the two reads. Registered in advance: if S5/S6 had stayed green, the mutation would STILL be
+non-equivalent and the suite simply BLIND to it — that would be recorded as a blind cell, not re-run
+until it looked right.
