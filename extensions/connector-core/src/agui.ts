@@ -19,25 +19,33 @@
  * writing `latest` is `0.0.57`, the active `canary` still carries the zod-3 runtime dep, and the
  * release that moves zod to a peer sits on no dist-tag at all.
  *
- * ## What is NOT here, and why the file is smaller than the build order's step 1
+ * ## What step 1 deferred, and where it now stands
  *
- * Step 1 also names `eventChannel()` and the `max_payload` preflight/split as parts of this module.
- * Both are deliberately absent, because both depend on decisions this lane does not yet hold:
+ * Step 1 names `eventChannel()` and the `max_payload` preflight/split as parts of this module. Both
+ * were deliberately absent when this file landed, because each depended on something that did not
+ * exist — and they were NAMED rather than stubbed, since a stub is a claim that the shape is known.
+ * Both prerequisites have since landed on this branch, so the record is updated rather than left to
+ * age into a false statement about the tree:
  *
- * - **The channel key is being replaced.** `eventChannel(name)` keys a per-agent isolation boundary
- *   on the DISPLAY NAME, which `packages/core/src/resolve.ts` states is not an identity. The ruling
- *   is to key on the principal-stable id, and the plan says to settle it BEFORE this file exists or
- *   the emitter gets built twice. Nothing here derives a channel, so nothing here has to be rebuilt
- *   when it lands.
- * - **Sizing cannot be done correctly from here yet.** The endpoint constructs `id`/`ts`/`space`/
- *   `from`/`channel` AFTER the publish call and sets two headers the broker counts against
- *   `max_payload`, so a caller splitting against a bare ceiling measures the frame while the broker
- *   measures the message. A raw `maxPayload` getter is not sufficient and the plan says so; the
- *   surface that measures exactly what will be sent does not exist.
+ * - **The channel key was replaced, and `eventChannel()` did NOT come here.** It keys on the
+ *   principal now (`events.<owner>.<actor>`) instead of the display name, which
+ *   `packages/core/src/resolve.ts` states is not an identity. It lives in `launch.ts`, beside the
+ *   launch plumbing that is its only caller, rather than in this module as §5.6 sketches. **That is
+ *   a deliberate divergence from the plan and it is recorded as one, not slipped:** moving a working
+ *   function across files to satisfy a section that predates the re-key is churn with no behavioural
+ *   gain, and §5.6's point — one module, not `tr-`'s three scattered copies — is already met. If a
+ *   second caller ever appears, move it and take the cells with it.
+ * - **Sizing arrived, and the split below is built on it.** `CotalEndpoint.encodedSize` measures the
+ *   exact bytes the client will send, headers included, on the same surface that builds the
+ *   envelope. That is what makes {@link splitFrames} implementable: it does not measure, it is
+ *   handed the measurement. A raw `maxPayload` getter never was sufficient, and the plan said so
+ *   before this lane confirmed it against a real 4096-byte broker.
  *
- * Writing either against today's surfaces would produce code that looks finished and is wrong in a
- * way no test written alongside it would catch. They are named here rather than stubbed, because a
- * stub is a claim that the shape is known.
+ * **Still absent, and named for the same reason: NOTHING IN THIS MODULE IS CALLED BY PRODUCTION
+ * CODE YET.** The vocabulary, the bracket machine and the splitter are all reachable only from this
+ * package's own smokes. No connector emits, and the `[P5]` R1 preflight has no production call site
+ * to start from because the emitter that §9 step 2a places it in has not been built. Read nothing
+ * here as evidence that anything runs.
  */
 
 import type {
@@ -372,6 +380,194 @@ export function aguiFrame(opts: {
     seq: opts.seq,
     events: opts.events,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sizing and splitting (plan §5.2).
+//
+// THIS DOES NOT MEASURE ANYTHING ITSELF, AND THAT IS THE WHOLE DESIGN. The bytes a frame puts on
+// the wire are decided by the surface that builds the envelope and sets the headers: the endpoint
+// adds `id`, `ts`, `space`, `from` and `channel` AFTER the publish call, and the JetStream client
+// adds `Nats-Msg-Id` and `Nats-Expected-Last-Subject-Sequence`, all of which the broker charges
+// against `max_payload`. A splitter that sized the frame from here would be measuring the FRAME
+// while the broker measures the MESSAGE — and it would be wrong in the dangerous direction, because
+// the part it produced would be REJECTED, and a rejected truncation makes the loss silent again,
+// which is the exact failure splitting exists to prevent. Measured against a 4096-byte broker, a
+// 3994-byte payload was refused while naive arithmetic said it fit by a hundred bytes.
+//
+// So `measure` is injected. In production it is `CotalEndpoint.encodedSize` bound to the real
+// channel and expectation; in a cell it is any function, which is what makes the algorithm testable
+// without a broker. Two places that both compute size WILL drift, and the drift is invisible until
+// a frame near the ceiling meets a real broker — the one case no unit test builds.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The fields a too-large event may be truncated on — NAMED, never inferred (plan §5.2).
+ *
+ * Inferring "the biggest string on the object" would eventually truncate an id, a role or a tool
+ * name, and produce a frame that fits and means something else. The plan names three, so three is
+ * what this table holds; an event carrying none of them cannot be truncated and says so.
+ */
+const TRUNCATABLE_FIELDS: ReadonlyArray<{ readonly type: string; readonly field: string }> = [
+  { type: AGUI_EVENT_TYPE.TOOL_CALL_ARGS, field: "delta" },
+  { type: AGUI_EVENT_TYPE.TOOL_CALL_RESULT, field: "content" },
+  { type: AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, field: "delta" },
+];
+
+/** Truncate to `codePoints` code points, never code UNITS. Slicing a JS string by index can cut a
+ *  surrogate pair in half and produce a lone surrogate, which is not well-formed UTF-16 — the exact
+ *  defect `fix(core)!: refuse names that are not well-formed UTF-16` landed on this branch for. A
+ *  splitter that reintroduced it here would emit a frame the wire layer is now obliged to refuse. */
+const takeCodePoints = (s: string, codePoints: number): string =>
+  Array.from(s).slice(0, codePoints).join("");
+
+/**
+ * Split `events` into as many frames as the wire requires, truncating only what physically cannot
+ * cross it, and LABELLING every truncation.
+ *
+ * **Say the uncomfortable thing** (plan §5.2): this is a content truncation, which is one of the
+ * sins `tr-` is being abolished for. The difference is not that we are gentler about it. `tr-` cut
+ * *every* result at 700 characters, silently and unconditionally, as a design choice; this cuts only
+ * what cannot physically be sent, three orders of magnitude higher, and records what it cut and how
+ * big it was. If routine results start tripping the ceiling the honest response is a
+ * content-addressed side channel, not a quieter limit.
+ *
+ * **Splitting happens on EVENT boundaries**, each part carrying its own `seq`, so a run may legally
+ * open in one frame and close in the next. That is why {@link AguiBrackets} checks the writer's
+ * stream and not the frame — a per-frame balance check would forbid the split this function
+ * performs.
+ *
+ * **`seq` is measured, not assumed.** Each candidate is measured at the `seq` it will actually carry,
+ * because `seq` is a header-adjacent value in the encoded body: sizing at 9 and publishing at 10 is
+ * one byte, and a frame one byte over the ceiling is refused. The same reason `encodedSize` takes
+ * `expectedLastSubjectSeq` as a parameter rather than sizing at zero.
+ *
+ * @param measure the EXACT encoded size of a candidate, headers included — `CotalEndpoint.encodedSize`
+ *   in production. Never re-implement it here.
+ * @param limit the broker's `max_payload`.
+ * @throws {AguiVocabularyError} if a single event cannot be made to fit even fully truncated, or
+ *   carries no truncatable field. Failing loud is required: the alternative is looping forever or
+ *   dropping the event, and a dropped event on this plane is the silent loss the plane exists to
+ *   make impossible.
+ */
+export function splitFrames(opts: {
+  threadId: string;
+  runId: string;
+  epoch: string;
+  /** The `seq` the FIRST emitted frame carries; each subsequent part takes the next. */
+  firstSeq: number;
+  events: AguiEvent[];
+  measure: (frame: AguiFrame) => number;
+  limit: number;
+}): AguiFrame[] {
+  if (!Number.isSafeInteger(opts.limit) || opts.limit <= 0)
+    throw new AguiVocabularyError(
+      `split limit must be a positive safe integer, got ${JSON.stringify(opts.limit)}`,
+    );
+  if (!Array.isArray(opts.events) || opts.events.length === 0)
+    throw new AguiVocabularyError("splitFrames requires at least one event");
+
+  const { threadId, runId, epoch, measure, limit } = opts;
+  const build = (seq: number, events: AguiEvent[]): AguiFrame =>
+    aguiFrame({ threadId, runId, epoch, seq, events });
+  const fits = (seq: number, events: AguiEvent[]): boolean => measure(build(seq, events)) <= limit;
+
+  const out: AguiFrame[] = [];
+  let seq = opts.firstSeq;
+  let batch: AguiEvent[] = [];
+
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    out.push(build(seq, batch));
+    seq += 1;
+    batch = [];
+  };
+
+  for (const event of opts.events) {
+    if (fits(seq, [...batch, event])) {
+      batch.push(event);
+      continue;
+    }
+    // It did not fit alongside what is already batched. Close the batch and reconsider the event
+    // ALONE — an event that is merely unlucky in its neighbours needs no truncation at all, and
+    // truncating it here would cut content that would have crossed the wire intact.
+    flush();
+    if (fits(seq, [event])) {
+      batch.push(event);
+      continue;
+    }
+    batch.push(truncateToFit(event, seq, fits, limit, measure, build));
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Shrink one event's single largest truncatable string until the frame carrying it alone fits.
+ *
+ * **Iterate to fit, never one pass** (plan §5.2). Shortening a string changes its JSON escaping and
+ * its UTF-8 length NONLINEARLY — one multi-byte character or one escaped quote is several bytes, so
+ * "cut it to the overage" both overshoots and undershoots depending on content. This binary-searches
+ * the code-point length and re-measures the WHOLE candidate each step, envelope and headers
+ * included, so the answer is measured rather than computed.
+ *
+ * The shortened value carries no ellipsis or marker. The label is `cotal.truncated`, which records
+ * the field path AND the original byte count — a marker inside the value would spend wire budget to
+ * say less, and a consumer parsing the field as JSON (`TOOL_CALL_ARGS.delta` is a JSON fragment)
+ * would have to strip it.
+ */
+function truncateToFit(
+  event: AguiEvent,
+  seq: number,
+  fits: (seq: number, events: AguiEvent[]) => boolean,
+  limit: number,
+  measure: (frame: AguiFrame) => number,
+  build: (seq: number, events: AguiEvent[]) => AguiFrame,
+): AguiEvent {
+  const record = event as unknown as Record<string, unknown>;
+  const spec = TRUNCATABLE_FIELDS.find(
+    (t) => t.type === record.type && typeof record[t.field] === "string",
+  );
+  if (!spec)
+    throw new AguiVocabularyError(
+      `a ${String(record.type)} event does not fit in ${limit} bytes and carries no truncatable ` +
+        `field. Measured ${measure(build(seq, [event]))} bytes for the frame carrying it alone. ` +
+        `Only ${TRUNCATABLE_FIELDS.map((t) => `${t.type}.${t.field}`).join(", ")} may be cut, ` +
+        `because cutting anything else would produce a frame that fits and means something else.`,
+    );
+
+  const original = record[spec.field] as string;
+  const originalBytes = Buffer.byteLength(original, "utf8");
+  const at = (codePoints: number): AguiEvent =>
+    ({
+      ...record,
+      [spec.field]: takeCodePoints(original, codePoints),
+      cotal: {
+        ...((record.cotal as CotalMeta | undefined) ?? {}),
+        truncated: { field: `${String(record.type)}.${spec.field}`, originalBytes },
+      },
+    }) as unknown as AguiEvent;
+
+  // Even emptied it must fit, or no truncation can help and looping would be the alternative. This
+  // is also the plan's "fixed envelope and headers alone exceed the ceiling" case, detected by
+  // measurement rather than by a second arithmetic path that could disagree with the first.
+  if (!fits(seq, [at(0)]))
+    throw new AguiVocabularyError(
+      `a ${String(record.type)} event does not fit in ${limit} bytes even with ${spec.field} ` +
+        `emptied — the envelope, the labelling metadata and the headers alone are ` +
+        `${measure(build(seq, [at(0)]))} bytes. No truncation can help, so this fails loudly ` +
+        `rather than dropping the event or looping.`,
+    );
+
+  // Binary search the largest code-point count that still fits. `lo` always fits, `hi` never does.
+  let lo = 0;
+  let hi = Array.from(original).length + 1;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(seq, [at(mid)])) lo = mid;
+    else hi = mid;
+  }
+  return at(lo);
 }
 
 // ---------------------------------------------------------------------------------------------
