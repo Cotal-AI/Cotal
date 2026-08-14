@@ -278,8 +278,26 @@ they now sit in different sections.
 
 ## Reproduction
 
-The probes import core via a relative path, so they exercise **the tree they sit in**. Run them from
-a checkout with `node_modules` reachable (this program never runs `pnpm install`).
+~~The probes import core via a relative path, so they exercise **the tree they sit in**.~~
+**STRUCK — THIS WAS WRONG FOR FIVE OF NINE PROBES, AND IT WAS THE SENTENCE THAT WOULD HAVE TOLD A
+READER THEY WERE SAFE.** Corrected `Fri Aug 14 08:53:21 PM UTC 2026`. Measured, per probe, from the
+import statements rather than from memory:
+
+| Leg | How it reaches core | Exposed to `dist/`? |
+| --- | --- | --- |
+| `connection-lifecycle.smoke.ts` | `../src/index.js` | **No** |
+| `meshctl-72-gap`, `meshctl-72b-leak` | `../packages/core/src/index.js` | **No** |
+| `meshctl-m3-fence`, `meshctl-m6-durable` | no core import — raw NATS **at the broker** | **No** |
+| `meshctl-m1-probe`, `meshctl-m2-gate`, `meshctl-m4-probe` | relative connector src, but `agent.ts:29` imports `@cotal-ai/core` | **YES, transitively** |
+| `meshctl-m5-lease`, `meshctl-m5-verify` | `@cotal-ai/core` directly **and** transitively | **YES** |
+| `connection-control.smoke.ts` | `@cotal-ai/core` | **YES** (now refuses on a stale build) |
+
+The transitive path is the one that hid: a probe can import nothing but relative connector source and
+still execute core from `dist/`, because the connector itself crosses the specifier. **"This probe's
+own imports are relative" is not an answer to the question** — the endpoint under test still came
+from a build.
+
+Run them from a checkout with `node_modules` reachable (this program never runs `pnpm install`).
 
 **Trap worth knowing, MEASURED on this box rather than reasoned about.** It has two faces and they
 are usually confused for each other:
@@ -298,7 +316,29 @@ are usually confused for each other:
    without rebuilding `dist` produces a NO-OP mutant, and a no-op mutant is byte-identical to a
    survivor.** That cost four runs here, recorded as VOID rather than banked as survivals. Suites
    importing `../src/index.js` relatively (the lifecycle, request-strand and §7.2 probes) do not have
-   this face at all; the connector suite does, and needs `tsc -p packages/core` before every run.
+   this face at all; ~~the connector suite does~~ **the connector suite AND the five m-probes above
+   do** (struck for the same reason as the heading: it named one leg where there are six), and it
+   needs `tsc -p packages/core` before every run.
+
+   **THE CONNECTOR SUITE NO LONGER RELIES ON THAT DISCIPLINE.** It refuses to run when
+   `packages/core/dist/endpoint.js` is older than any `packages/core/src/*.ts`, prints
+   `[provenance] core dist built at <iso>` when it proceeds, and both arms were driven: fresh dist →
+   30/0/0 rc=0; `touch packages/core/src/endpoint.ts` → `REFUSING TO RUN … stale vs: endpoint.ts`
+   rc=1, before any broker starts. A green with no build provenance is **UNGRADED, not passing**, and
+   a rule that has to be remembered before every run is not a rule.
+
+   **THE FIVE M-PROBES HAVE BEEN RE-DERIVED WITH PROVENANCE** rather than left ungraded. Core built
+   at `2026-08-14 22:50:53Z`, verified newer than every `packages/core/src/*.ts` at run time; each
+   probe copied to its package home per the block below and re-run `Fri Aug 14 08:53:21 PM UTC 2026`:
+   - `m1` — VERDICT-A `CLAIM FALSE` (the only-channel guard does not exist), VERDICT-B leave
+     survives reconnect. **Identical to the record.**
+   - `m2` — `CONFIRMED`: in open mode the tool's ACL check is the only fence. **Identical.**
+   - `m4` — Q1 `GHOST CONFIRMED`, Q2 `DM STILL DELIVERED`, Q3 control holds. **Identical.**
+   - `m5-verify` — Q1 `CONFIRMED` (a rebuild orphans the reply), Q2 `MARKED not deleted`. **Identical.**
+
+   All five reproduce exactly, so the findings stand **and now stand on a stated build** rather than
+   on the assumption that whichever `dist` was present happened to match. Re-derivation was the point:
+   these results were not wrong, they were **unestablished**, and those are different words.
 
 Neither is fixed by an install, and this program never runs one.
 
