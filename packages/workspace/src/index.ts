@@ -23,3 +23,4 @@ export * from "./secret-store-fs.js";
 export * from "./space.js";
 export * from "./system-rotation.js";
 export * from "./win-cmd.js";
+export * from "./pid.js";

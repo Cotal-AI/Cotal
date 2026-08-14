@@ -649,7 +649,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
-optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, or `@cotal-ai/cmux`) and
+optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 
 ## reconcile-gate
@@ -699,14 +699,15 @@ cotal runtimes
 ```
 
 Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
-(`orca`, `tmux`, `cmux`), and any custom provider installed via `cotal ext add`. Each installed
+(`orca`, `tmux`, `cmux`, `herdr`), and any custom provider installed via `cotal ext add`. Each installed
 provider is probed so you can see what is actually reachable on this machine before selecting it:
 
 ```
-pty   built in
-orca  installed · reachable   @cotal-ai/orca
-tmux  available · cotal ext add @cotal-ai/tmux
-cmux  available · cotal ext add @cotal-ai/cmux
+pty    built in
+orca   installed · reachable   @cotal-ai/orca
+tmux   available · cotal ext add @cotal-ai/tmux
+cmux   available · cotal ext add @cotal-ai/cmux
+herdr  available · cotal ext add @cotal-ai/herdr
 ```
 
 `installed · reachable` / `unreachable` is the provider's own `available()` probe; `available` means

@@ -1,5 +1,363 @@
 # @cotal-ai/core
 
+## 0.17.0
+
+### Minor Changes
+
+- 975cad1: Give each space an artifact object store, with a real size limit.
+
+  The `artifact` message part references bytes that live outside the message; this is where they live.
+  Every space now gets a JetStream Object Store alongside its other streams, created by the same setup
+  that creates them and removed by the same teardown.
+
+  It carries an explicit 4 GiB cap, which is the point rather than a detail. A fresh object store ships
+  unlimited, and a space's account is provisioned with unlimited disk, so "the account limit bounds it"
+  would have bounded nothing — artifacts could grow until the disk did, starving the chat and delivery
+  streams sharing it. Reaching the cap refuses the write instead of evicting older objects, so a
+  reference published yesterday cannot quietly stop resolving.
+
+  A space resource has to be listed in five separate places — created, deleted, granted, enumerated for
+  backup, and recreated on restore — and being in four of them is the failure that reads as correct.
+  Excluding the store from backups does not mean restore skips it: restore rebuilds every excluded
+  resource and then asserts each one exists, so a store left out would fail a restore rather than
+  quietly come back missing. The store is excluded under its own class rather than borrowed from an
+  existing one, because artifact bytes are neither transient, derived, nor a lease, and calling them
+  derived would suggest something could recompute them.
+
+  Two smokes join the gate. One proves the store against a real broker by enumerating what the broker
+  actually holds — created, matching the inventory exactly, carrying its cap, and gone after teardown —
+  because create and delete are claims about a broker and cannot be checked any other way. The second
+  was already in the repository, asserting the stream inventory, and no script had ever run it; it is
+  now registered and gated, and it fails correctly on this change.
+
+- c76a49d: Add the `artifact` message part: a reference to bytes too large to send.
+
+  Every Cotal message rides one NATS message under the broker's maximum payload, so moving a file
+  between agents has meant pasting bytes into chat until it breaks, or sharing a filesystem path that
+  stops working the moment two agents are not on the same machine. SPEC §5 reserved the answer; this
+  defines it. A message can now carry `{ kind: "artifact", name, mediaType, digest, size }` — the
+  content address of the bytes, and nothing about where they live, so the store behind it can change
+  without any message changing shape. This is the contract only: the transport that serves the bytes
+  lands separately.
+
+  The digest is the one field that is not taken on trust. `name`, `mediaType`, and `size` are
+  whatever the sender wrote, and a receiver that sizes a buffer from `size` or dispatches on
+  `mediaType` has believed a stranger; `verifyRawBytes` checks fetched bytes against the digest before
+  they reach a caller, which is what catches a store handing back a truncated object — otherwise
+  indistinguishable from a small one.
+
+  `artifact` is a bare core kind rather than a namespaced extension, because reverse-DNS kinds are for
+  wrapping vocabularies Cotal does not own, and this is Cotal's own reserved primitive. That
+  distinction has teeth: a core kind the message validator does not know is not a schema detail. The
+  validator gates the durable delivery frame, so an unrecognized core part means the backstop drops
+  the whole message, silently, and the loss shows up nowhere near the part that caused it. The
+  `artifact` guard is enforced there, and it checks the digest's form rather than only its type — a
+  malformed digest is not a reference to anything, and admitting one would turn a bad message into a
+  "missing artifact" that blames the store.
+
+  Message rendering moves to a single `partsToText` in core. The same one-line expression had been
+  copied into the connector inbox, `cotal join`, and the mesh view, and each copy fell back to
+  stringifying a part's `data` field — which an artifact part does not have, so all three would have
+  rendered it as the literal word "undefined". One renderer means a new core part kind is legible
+  everywhere at once, or nowhere, never in two surfaces out of three.
+
+- fd361fe: Serve the broker over TLS: the transport foundation, with the omission cases made unrepresentable.
+
+  `serverConfig` and the new `openServerConfig` take a REQUIRED `transport` discriminated union
+  (`plaintext` | `tls-required { certFile, keyFile }`) instead of an optional TLS field, and
+  `standaloneConnectOpts` now requires an explicit `tls` boolean with no default. Both are breaking,
+  and both are deliberate: an optional transport is omitted by default, and the omitted case is the
+  dangerous one. A client with no TLS requirement still connects to a TLS broker — it upgrades the
+  same socket after reading the server's unauthenticated `INFO` — so nothing looks wrong until an
+  on-path attacker forges an `INFO` without `tls_required` and collects the credentials that a NATS
+  client sends in its `CONNECT` line.
+
+  Also in this change:
+
+  - `cotal up`'s open (no-auth) mode now renders a config instead of launching from bare CLI flags, so
+    no path reaches a listener without naming its transport. Previously a cert/key pair given to an
+    open-mode `up` would have been accepted while the broker came up in cleartext.
+  - `validateTlsMaterial` checks readability, private-key mode, pair match, validity window and
+    dial-host SAN before the broker starts, because `nats-server` does not: it reports an expired
+    certificate valid, starts, and serves it, and only the client fails.
+  - `probeServedCert` / `assertServedCertMatches` complete a real STARTTLS upgrade and read back the
+    leaf actually being served, so a rotation is proved rather than assumed. Renewing files on disk
+    does not reload `nats-server`.
+  - A durable broker launch policy records the transport so a TLS decision survives `cotal down`, and
+    refuses rather than degrading when it cannot be honoured.
+  - `MeshEntry.tlsRequired` carries TLS-required client intent (never cert paths) through to
+    `Connection` and `endpointAuth`, so a CLI-resolved connection inherits the recorded decision.
+
+  `allow_non_tls` is never emitted: it is mixed mode, and a client that declines the upgrade is served
+  in cleartext. `handshake_first` and `verify`/`verify_and_map` are likewise never emitted — mTLS is a
+  deliberate non-goal, since identity here is JWT/NKey plus the auth callout.
+
+  ## What this guarantees, and what it does not
+
+  **The guarantee.** `cotal up --tls-cert <cert> --tls-key <key>` either serves TLS or refuses to
+  start. There is no third outcome. The transport is decided once, above every branch in `up`, so the
+  manifest (`-f`), `--detach`, refresh and restore routes cannot reach a listener without naming it;
+  each route re-checks the certificate against the host clients will actually dial. A running broker
+  cannot change its transport, so passing the flags to an already-running mesh is refused rather than
+  answered with a success line. The decision is recorded, so a later bare `cotal up` after a
+  `cotal down` keeps serving TLS instead of silently reverting to cleartext.
+
+  **A direct `CotalEndpoint` construction still defaults to plaintext.** `EndpointOptions.tls` remains
+  optional and absent still means "no TLS required". If you build an endpoint yourself rather than
+  going through `cotal up` or a resolved mesh record, you must pass `tls: true`; nothing will tell you
+  otherwise, and the connection will succeed either way against a TLS broker because a NATS client
+  upgrades the same socket once it reads the server's `INFO`. Making that field required is a tracked
+  follow-up. It is called out here because "Cotal supports TLS" is not something you should be able to
+  believe while your own client is connecting without requiring it.
+
+  **Client-side strictness is NOT complete, and the honest scope is wider than a short list.** The
+  broker refuses cleartext, so none of these connects in the clear against a healthy TLS broker — a
+  NATS client upgrades the same socket once it reads `tls_required`. What they lack is their own
+  requirement, which is the fence against a stripped or forged `INFO`, and that is the whole reason
+  this feature exists.
+
+  Two distinct cases, and the second is worse:
+
+  _Never had a TLS path / passes `tls: false` explicitly._ `waitForDeliveryLease`
+  (`packages/core/src/lease.ts`) builds its own `connect` options rather than going through
+  `standaloneConnectOpts`. The user-auth service and the membership feed connect the same way.
+  The **enumerated** `standaloneConnectOpts({ … tls: false })` sites at this tip (twelve, not a
+  prose list) are:
+
+  | File                                       | Lines              | Role                                                                                                                                                              |
+  | ------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `packages/core/src/channels.ts`            | 166, 192, 217, 238 | channel-registry helpers                                                                                                                                          |
+  | `packages/core/src/streams.ts`             | 322, 369, 398, 439 | stream/history helpers                                                                                                                                            |
+  | `implementations/cli/src/commands/up.ts`   | 1155, 1234         | `provePreparedRestoreListener` / `proveOrdinaryResumeListener` authenticated JetStream proof (restore + ordinary-resume adopt only — not bare `up` / bare `down`) |
+  | `implementations/cli/src/commands/down.ts` | 651, 691           | `assertControlPlaneQuiesced` / `readPresenceWithoutConsumer` — **only** on `down --preserve-state`, not bare `cotal down`                                         |
+
+  Bare `cotal down` does **not** hit those two `down.ts` sites: it stops via pidfiles
+  (`stopLocalProcess`) and never opens a broker wire. Live-checked twice: `up --detach --open
+--tls-cert/--tls-key` then bare `down` (with `NODE_EXTRA_CA_CERTS` stripped on the down step) stops
+  manager, delivery, and nats-server and leaves the port `ECONNREFUSED`. There is no silently-skipped
+  safety gate on ordinary teardown.
+
+  `down --preserve-state` is the only path that calls `assertControlPlaneQuiesced` (via
+  `isReachable(mesh.server)` at `down.ts:585`, then the `tls: false` connects at :651/:691). Bare
+  `isReachable(server)` is a plaintext INFO probe (`tcpInfoProbe`): on this branch's STARTTLS TLS it
+  still returns **true** (INFO precedes the upgrade), so the quiescence gate is **entered**, not
+  skipped, when the client trusts the CA. **Narrow residual (do not fix in this branch):**
+  `down --preserve-state` **and** a CA the client does not trust — then a stricter `{tls:true}` probe
+  would fail, the INFO probe still says up, and the subsequent authenticated connect without a trusted
+  CA fails or the cut proceeds without a completed wire-truth lease proof depending on the failure
+  mode. Same family as the private-CA diagnosis gap (S7); incomplete client fence, not an ordinary-path
+  break. Flagless sites mostly **work** via auto-upgrade and are **unfenced** (no own requirement
+  against a forged INFO), not "broken teardown."
+
+  _Resolves the decision and then drops it (partially closed)._ `cotal web` now passes
+  `tls: conn.tls` into its endpoint. `cotal status` carries `target.tlsRequired` on the Selected Mesh
+  preflight, the open/auth live snapshot, the user-mode connection probe and user live snapshot, and
+  the Recorded Meshes liveness check — a mesh recorded `tlsRequired: true` is not greened by a bare
+  TCP/INFO probe against a plaintext substitute. What still drops the decision: the mesh manager
+  (`startManagerDetached`'s options type has no `tls` field, so `ensureControlPlane` forwards `--tls`
+  to the delivery daemon and then launches the manager without it), plus the never-had-a-path sites
+  above.
+
+  Client-side strictness landed for: `cotal up` (every route to a listener), the recorded mesh record
+  (`MeshEntry.tlsRequired`), CLI-resolved connections that go through `resolveMeshTarget` /
+  `endpointAuth`, `cotal status`, `cotal web`, and the delivery daemon's three dials. It has not
+  landed for the manager process, the user-auth service, the membership feed, `waitForDeliveryLease`,
+  or the twelve helper sites tabulated above. That table is the residual enumeration; do not collapse
+  it back to prose.
+
+  The delivery daemon is strict on all three of its dials, including the every-two-seconds reachability
+  poll that re-presents its standing credential for the life of the process.
+
+  **Also not included:** the `cotals://` handout from `up`; a rotation command; and `tls://` as a
+  _server_ scheme enforcing anything (it is cosmetic at the client: nats.js connects plaintext to
+  `tls://host` with empty options, and only the explicit `tls` option refuses). **Changing transport
+  on a live broker is restart-only by construction:** passing `--tls-cert/--tls-key` (or dropping
+  them) against an already-running mesh is refused — `cotal down`, then `cotal up` with the desired
+  flags. A reload of `nats-server` is not offered, because it would leave established plaintext
+  sessions alive.
+
+  Operators using a private CA need `NODE_EXTRA_CA_CERTS`, because `EndpointOptions.tls` is a boolean
+  and cannot carry a CA file. The private-key permission check is POSIX-only.
+
+  **S10 (fixed in this change):** a `tlsRequired` registry entry used to be **pruned** when a
+  `connectOrExit` / `preflightOrExit` path ran without a trusted CA. `preflightTarget` probes with
+  `{tls:true}`; certificate verification failure was classified as `unreachable` (prune:true), so
+  `cotal send dm …` (and any other preflighted command) deleted a healthy mesh record on a recoverable
+  trust error — durable state destroyed because the operator forgot `NODE_EXTRA_CA_CERTS`. Fix: when
+  the recorded target requires TLS and the TLS probe fails as unreachable, confirm plaintext INFO
+  still advertises `tls_required: true` (with a second, longer read before condemning); if it does,
+  classify as `tls-trust` with **prune:false**. That proves a TLS-required NATS listener is present —
+  INFO is unauthenticated and is not mesh identity — so the record is conservatively kept and the
+  operator is told to fix the trust store (`NODE_EXTRA_CA_CERTS`). A plaintext substitute on the same
+  port does not advertise `tls_required` and still follows the normal unreachable/prune path.
+  Live-checked both ways.
+
+  **Named follow-ups (not fixed here):**
+
+  - Defence-in-depth only: pass `mesh.tlsRequired ? {tls:true}:{}` at `down.ts:418`/`:585` and thread
+    transport into `:651`/`:691` (measurement showed bare INFO already enters the preserve-state
+    quiescence gate when the CA is trusted).
+  - Bare `cotal down` pidfile-trust: hiding manager/delivery pidfiles while those processes still run
+    lets bare down stop the broker and report success (pre-existing; filed separately).
+
+- 2768f5b: Contract schema registration is bounded structurally, and an unrecognised keyword is now refused.
+
+  **This refuses more than before, and it can reject a contract that registered successfully in an
+  earlier version.** `compileContract` is exported from `@cotal-ai/core` in the released package, so
+  this is a break against schemas already in use, not an internal tightening. The 2020-12 execution
+  profile (SPEC §13.7/§13.8) now validates a schema document
+  against an explicit admitted vocabulary and raises `contract-invalid` for any keyword outside it.
+  JSON Schema says an unknown keyword is ignored as an annotation; this profile refuses it, because a
+  profile that enforces bounds cannot soundly bound what it does not recognise — counting only known
+  keywords silently skipped `dependencies`, whose legacy schema form holds subschemas the walk never
+  reached. The
+  admitted set covers the full 2020-12 assertion, applicator and annotation vocabulary, so
+  documentation keywords (`title`, `description`, `default`, `examples`, `deprecated`, `readOnly`,
+  `writeOnly`, `$comment`) and the `$`-identifiers are all accepted; a vendor extension or a keyword
+  newer than this release is not, and needs a line added to the profile. If you register contract
+  schemas, check them against the admitted list before upgrading.
+
+  Everything else in this change admits more, not less. The `maxSchemaNodes` and `maxClosureNodes`
+  ceilings are removed: neither candidate basis for the constant survived measurement, since compile
+  cost varies by an order of magnitude across schema shapes at one node count, and the compiler crash the bound was
+  meant to sit below is not a stable edge (the same document threw on a cold compile and succeeded on
+  the immediate warm retry in the same process). Registration remains bounded by document and closure
+  bytes, structural depth, reference-chain depth, pattern complexity, the admitted vocabulary, and the
+  compile-error catch that normalises any codegen failure to `contract-invalid`.
+
+  The §13.8 compile and validate time budgets are reported rather than enforced. No instrument on the
+  supported Node floor measures the intended quantity: elapsed time counts the whole machine, and
+  `process.cpuUsage()` sums every thread in the process, so background JIT threads and sibling Workers
+  are attributed to the compile being measured. Enforcing them refused valid arguments on the request
+  path and refused a manager's own service contract at startup.
+
+- 019afc3: The manager control surface gains three capabilities on the v0.4 endpoint rails: spawn as an action, multi-manager instance addressing, and attach as a mesh session.
+
+  Spawn and launch are now actions (SPEC 13.6). Asking the manager for an agent no longer blocks the caller while the process comes up: the manager accepts a spawn goal and returns the allocated identity at once (`{name, owner, actor, uid, goalId, fingerprint, executor{lifecycleUid, epoch}}`), then progress events follow the launch to a terminal outcome. Presence within the readiness window settles the goal `succeeded`, an early exit `failed`, and the window elapsing with neither is `uncertain` (a bounded, durable outcome a later `ps` settles against the live roster, never a silent hang). A persona-derived name collision auto-numbers; a hard-pinned `--name` colliding with a live agent refuses at accept, before anything is minted. The `--detach` CLI spawn, the manifest `-f` launch, and the connector's `cotal_spawn` submit and follow to the terminal, so their behavior is unchanged. The goal terminal is fenced to the executing manager's own gate epoch (the terminal lands on an epoch-scoped result subject), so a superseded incarnation's terminal is invisible to current readers; a durable reconcile index lets a restarted manager settle any goal a predecessor accepted but never terminalized. The goal-fact writer is a dedicated, family-staged, renewed credential disjoint from the serve credential.
+
+  One space can now run more than one manager. Each manager persists a stable logical instance id across restarts and advances its process epoch when it comes back, so peers address a specific manager regardless of which process currently serves it; a restart re-registers the same instance and evicts its predecessor's serve family through a scoped, one-registration eviction credential. `cotal spawn --on <instance>` pins one instance by its exact id, an untargeted spawn rides class anycast (the acceptance records which instance took it), and `cotal ps` / `status` become a class scatter that merges every registered instance's rows with per-instance attribution and labels a non-answering instance unreachable, never omitting it. The manager lease is demoted from a per-space singleton to per-instance liveness (loss stops only that instance's serving, never the space), reconcile touches only rows the instance owns, and the retirement rail authorizes on the registration gate rather than a name-derived holder, so a deposed predecessor cannot retire a target.
+
+  `cotal attach` no longer returns a `127.0.0.1` websocket URL. It creates a one-use, holder-bound session over the mesh: the reply carries a signed session grant (no URL, never logged), redeemed once, after which terminal bytes stream on session subjects scoped to the two parties, with backpressure surfaced as an explicit drop notice. A late attach still repaints the full screen from a replayed terminal snapshot, and close, expiry, target despawn, and manager restart are distinct, surfaced end states. The browser console is now a real mesh session client over a served bundle (the broker gains a localhost-default websocket listener), holding only a per-session, rails-only credential that expires with the session. The manager's session writer is a scoped, family-staged, renewed credential over a dedicated sessions store.
+
+- 3539f20: `freezeExpectedSet` and `epScatterService` no longer take a KV handle.
+
+  The freeze enumerates via `STREAM.INFO` + `subjects_filter` and reads slots via leader-served
+  `STREAM.MSG.GET` — both through the JetStream manager. The KV argument was unused after the
+  enumeration conversion; callers that only opened a records bucket to pass it in can drop that open.
+
+- f85ffbf: The manager now registers itself as an ordinary v0.4 `service` endpoint (`manager`) on every static auth mesh and dual-serves its FULL typed command surface on the endpoint rails beside the existing control tiers — nothing removed yet. The served commands mirror every control op through the same handler cores: `status`, `ps`, `inspect` (per-agent read), `models`, `spawn` (the full 16-field launch surface), targeted owner-mode `despawn`/`attach`, the baseline self-mode `stop`, `define-persona`, `purge`, `launch`, the resume/preservation family, and the reserved `describe`. `ps`/`inspect`/`spawn` replies now also carry each agent's `lifecycleUid` (the coordinate a targeted request pins). Core gains the production endpoint-serve credential subsystem over the durable auth store: the §13.1 endpoint issuance gate and serve ledger (`epgate…`/`epcred…`), the registration barrier with fail-closed eviction, and the serve-mint release fence — plus a key-pinned one-shot `endpoint-serve-executor` credential profile scoped to exactly one endpoint instance's gate, serve-ledger family, and registration record keys. The manager drives its registration and every serve-credential mint and renewal through that scoped executor connection (never its standing supervisor connection), applies one shared lifecycle-membership + maintenance admission gate on both control doors (the legacy `ctl` tiers and the new endpoint rails), and renews its bounded serve credential on the standing renewal pass. Registration also publishes the manager's §13.7 contract artifacts — every command's schema root, its closure manifest, and the cluster document — to the per-space content-addressed contract store (created create-or-verify at manager start alongside the authority stores), and every agent credential's baseline now carries the store's read grant, so any caller can fetch, verify, and recompile the registered schema digests without out-of-band contract sharing.
+
+  The control CONSUMERS now ride those rails (static-auth meshes): every CLI manager call (`spawn --detach`, `ps`, `stop`, `attach`, `models`, `down`/`up`'s resume and preservation phases) and every connector supervision tool (`cotal_spawn`/`cotal_despawn`/`cotal_persona`, self-stop, history purge) goes through the generic invoke path - describe, fetch the registered schemas from the contract store, recompile digest-verified validators, invoke - instead of hand-importing the manager's contracts; invoke currency is describe-bound (the answering incarnation's broker-authenticated identity), so a superseded or split-brain manager refuses instead of answering stale. New `cotal describe <endpoint>` and `cotal invoke <endpoint> <command>` expose the same generic surface to operators. Operator reach is now minted, not door-refined: `control-caller-privileged`/`control-caller-admin`/`deployer` instrument credentials carry tier-matched endpoint capability rows (the admin tier's cross-agent `despawn`/`attach` ride the operator-only `any` authorization mode, declared in the manager's revision-3 cluster document), the spawn capability additionally mints `define-persona` + `inspect`, and an `admin`-capability credential mirrors the full admin instrument set. Open meshes and user-mode bearers kept the legacy `ctl` path until the final slice below.
+
+  User-mode meshes join the migration end to end: the manager registers its v0.4 service on per-user meshes too (the registration/serve machinery is operator infrastructure riding the space's static trust material), the CLI's bearer path derives its caller triple from the bearer's ledger lifecycle claim, the connector's endpoint identity is its triple in every auth mode (no ctl branch left in the connector), and `spawn -f`'s deploy probe drives `ps`/`launch` over the generic invoke path for both the static admin credential and the user-mode deployer view. Serve-side hardening: every `manager.admin`-class command (purge, launch, and the resume/preservation family) re-checks operator reach at serve time against the caller's CURRENT ledger scope on user meshes, so a revoked `admin` scope demotes the next call instead of riding out the bearer's remaining row lifetime.
+
+  The migration is now complete: the manager's legacy `ctl` control rail is deleted. Core drops the `manager`/`self`/`admin` control tiers, the `ControlTier` type, and `controlSubject`; the server-side `ctl.delivery`/`ctl.delivery-admin`/`ctl.auth-admin` rails (the delivery daemon's and auth service's own carve-outs) are unchanged. Every credential profile is endpoint-only: agent baselines lose the `ctl.self` publish and control-reply subscribe rows, the supervisor serves no control tier, and the operator instruments carry endpoint capability rows only, so the old manager control subjects are unreachable end to end (publish rows, serve subscriptions, and handlers are all gone). The manager registers its `service` endpoint on EVERY mesh: auth meshes ride the scoped endpoint-serve executor; open meshes run the same gate/registration/serve-grant ceremony over bare one-shot connections (no credential is ever minted; the broker enforces nothing on an open mesh) and create-or-verify the authority stores at boot, so a raw broker no longer dies at the first gate write. The CLI's control layer replaces `ControlTier` with `ControlReach` (`owner`/`any`): the target's authorization mode derives from the resolved target owner (an own-domain target rides owner mode; a cross-owner target rides any mode, which the broker admits only for admin-instrument holders), open meshes ride a bare caller triple, and a raw `--creds` control caller without an endpoint caller identity refuses loud instead of falling back. `ps`/`inspect` rows pin `role` as optional (a manifest-launched agent declares none, and the reply schema previously failed the responder's own output).
+
+- 9e13648: Static meshes now run the full §13.1 lifecycle for manager-spawned agents. Every static spawn reserves a never-reused lifecycle uid and activates a durable, principal-keyed registry head through the same shared activation saga user mode runs; a durable slot row maps the agent name to its incarnation (name reuse is serialized by the slot + the manager's hold, never by trust in the name). Despawn drives the full retirement barrier: the incarnation's ledgered credentials are revoked, its footprint is torn down inside the barrier, and the name frees only at the terminal. Manager-spawned static agent credentials are now bounded (24h TTL) and ledgered; the manager renews live agents' credentials ahead of expiry (a copied credential cannot renew and is refused at the manager's control surface once its lifecycle retires — the new live-membership gate authorizes control by the authenticated incarnation principal, never by name or credential tier alone). Crashed spawns and manager restarts reconcile from the durable registry, so no active orphan survives. `cotal up` now seeds the two authority stores on every auth mesh, and provisioning gains a key-pinned one-shot `lifecycle-executor` credential profile scoped to a single incarnation's registry keys. Unit A of the same slice makes agent secret files lifecycle-owned (`<name>.<uid>.creds`) with roster-aware name allocation, closing the despawn/respawn teardown race.
+- 185e721: Renew the `$SYS` credentials without tearing the space down.
+
+  `membership-observer.creds` and `connection-evictor.creds` carry a 30-day expiry and are signed by
+  the system-account seed, which is never persisted, so nothing re-signs them in place. The only
+  repair the tooling named was "`cotal down` then a fresh `cotal up`", and that did nothing: `up`
+  mints the pair only on the branch that _creates_ the trust record, so re-upping a provisioned space
+  reused the same expired files and reported success. A long-running mesh therefore lost its
+  membership feed and live connection eviction every 30 days with no supported way back.
+
+  `cotal up --rotate-sys` is that way back. It issues a new system account under the same broker
+  operator, mints both `$SYS` creds against it, and renders the broker config from the rotated record,
+  so the broker it starts is the one that trusts them. The data account, the account signing key,
+  every agent credential minted from it and the JetStream store are untouched; what dies is the
+  retired system account, on every broker that loads the rotated config. It is refused wherever the
+  on-disk material and the broker could end up on different generations: a running mesh; an open mesh,
+  whether that comes from `--open` or from `broker.auth: false` in a manifest; `--restore`; an
+  unfinished restore or resume attempt on the root, including one a bare `cotal up` would recover,
+  since those paths can adopt a live listener and return without booting a broker; and a root hosting
+  more than one space, because the system account lives in the shared broker record and the rotation is
+  therefore broker-wide. `rotateSystemCreds` is exported from `@cotal-ai/workspace` and carries the
+  multi-tenant guard itself rather than at the CLI flag. It is deliberately a workstation operation and
+  takes no `SecretStore`: the `$SYS` pair has no store seam to be written through, and because a
+  `SecretStore` cannot be enumerated, accepting one would mean a broker-wide guard that reads a local
+  filesystem while enforcing nothing for the tenants actually at risk.
+
+  A rotation requires every broker for the root to be stopped, and three checks now say so: this root's
+  recorded mesh at the requested address, anything unidentified answering there (which refuses instead
+  of relocating to a free port), and the root's own ownership records: a live or unreadable `nats.pid`,
+  or any recorded mesh for this root still reachable. Without them a lost registry row, or a
+  `nats-server` started by hand against this root's `server.conf`, was enough to bypass the running-mesh
+  refusal: `up` found the port busy, picked a free one, rotated, and left the old broker serving the
+  retired config while a second one ran against the same JetStream store. These are Cotal's ownership
+  records rather than a scan of the process table, and the docs say so: a hand-started broker on a
+  different port writes none of them and is the named residual.
+
+  Two consequences the tooling now states rather than leaving to be discovered. The retirement is
+  config-load-bound, so a stale broker still running the previous config keeps honouring the old creds
+  until it is stopped. And a full backup binds to the trust chain it was taken against, which includes
+  the operator JWT and the system account, so every full artifact taken before a rotation refuses to
+  restore afterwards: the rotation says so as it happens, and `cotal up --restore` names the drift when
+  the data account still matches. The commit is a trust-record write plus two credential writes, so an
+  interrupted rotation leaves the record ahead of the creds; that split is detected rather than
+  silent. One shared check compares each `$SYS` cred's issuer against the persisted record, and it
+  runs on every auth-mesh boot as well as in `cotal doctor auth`, so the state cannot pass unremarked
+  by a mesh that simply never runs the doctor. The boot REFUSES rather than warning: a warning becomes an unread log line
+  under `--detach`'s success output, and live connection eviction rides the same credential pair, so
+  booting would silently downgrade revocation to deny-new for the life of the mesh. The delivery daemon, which never
+  loads the signer and so cannot read the record, compares the two creds against each other instead.
+
+  The recovery is covered end-to-end as well as in unit form: a suite drives the packaged binary
+  against a real broker, a real delivery daemon and a real manager, on a root whose `$SYS` pair is
+  already past its horizon. It asserts the reported symptom (the daemon's membership feed does not
+  start, and says which credential and which repair), that `down` + a plain `up` leaves both files
+  byte-identical and the doctor red, and that `down` + `up --rotate-sys` clears it in the daemon that
+  reported it. The survival claim is checked rather than asserted: an agent credential minted before
+  the rotation still connects afterwards, the CHAT stream returns at the same sequence and count, and
+  registry state written before the rotation reads back through the CLI after it.
+
+  Diagnosis now names the cause instead of the symptom. An expired observer cred used to surface as a
+  bare "Authorization Violation" in the delivery log and, one layer up, as a `membership-rw` adoption
+  refused with "membership feed is not running", neither of which mentions a credential. The daemon
+  checks the observer's own expiry before connecting and reports it, carries that reason into the
+  adoption reply, and the manager warns on every renewal pass from the 75% point onward rather than
+  letting the mesh discover the expiry at the horizon. `cotal doctor auth`, `evictPrincipal`,
+  `planeConnLiveness` and the two mint errors now print the repair that works. Where the feed is down
+  because its bundle is incomplete rather than expired, the daemon now names the missing files and
+  distinguishes the two cases: a missing `$SYS` observer is re-minted by a rotation, while a space
+  predating broker-sourced membership is missing the rw cred and the account id as well, which a
+  rotation does not write, so it is told the truth rather than sent through a stop/start that cannot
+  help it.
+
+### Patch Changes
+
+- 141c4dd: Read channel history through the delivery daemon instead of a consumer you create yourself.
+
+  Reading scrollback used to require the reader to hold consumer-create on the chat stream. That is a
+  lot of authority for a read-only surface: it is the one grant shape the protocol's mediated-reads
+  rule says an untrusted holder should not have, since it addresses the stream directly rather than the
+  messages you are allowed to see. A read-only dashboard or UI paid for a page of history with it.
+
+  `readHistory` moves that read behind the delivery daemon, which already holds the trusted reader and
+  the membership authority. The caller asks for a channel and gets its recent messages back; the daemon
+  is the one holding the consumer. The caller cannot claim to be someone else — the daemon takes the
+  principal from the authenticated request itself and ignores any identity in the payload.
+
+  The reason this is more than a reshuffle is when authorization is checked. A consumer decides what
+  you may read at the moment it is created and then keeps serving you, so revoking someone's access
+  mid-scroll does not stop the pages already flowing. The daemon re-reads the caller's permissions from
+  the durable registry on every single call, so a revocation stops the very next read.
+
+  A page is the newest N messages, with a flag saying whether older history remains behind it, because
+  "there is more above this" and "this is the beginning of the conversation" are different answers and
+  a UI that cannot tell them apart will render the first as the second. Asking for a channel you may
+  not read fails loudly, and so does a read that could not complete; neither comes back as an empty
+  page, which would look exactly like a channel nobody has posted to.
+
+  This is additive. Nothing is removed and no existing caller changes: reading history the previous way
+  still works, and moving to the mediated path is a separate migration. Chat channels only.
+
+  Authorization is the live registry row intersected with the mint-time ceiling. Revoking access
+  (narrowing the live row) stops the very next page. Widening the registry without re-minting the
+  caller's credential does not grant history the broker would still deny — the ceiling only rises
+  when the credential does.
+
 ## 0.16.0
 
 ### Minor Changes

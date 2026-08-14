@@ -3,29 +3,7 @@ import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFi
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
-import {
-  cacheCommand,
-  cacheExtension,
-  cacheLocalProcess,
-  bindExtensionPeers,
-  beginExtensionNpmMutation,
-  cmdSpawnSpec,
-  extensionPackageDir,
-  extensionLocalProcesses,
-  extensionProvides,
-  extensionsDir,
-  extensionsManifestPath,
-  loadMeshes,
-  localProcessPath,
-  installedExtensionVersion,
-  loadExtensionsManifest,
-  provenance,
-  RESERVED_CONNECTOR_NAMES,
-  saveExtensionsManifest,
-  type InstalledExtension,
-  type LocalProcess,
-  type LocalProcessContext,
-} from "@cotal-ai/workspace";
+import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -468,11 +446,22 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   const raw = readFileSync(pidPath, "utf8").trim();
   if (raw.startsWith("removing:"))
     return `${provider.name} (extension-removal reservation) in ${context.root} - clean ${pidPath} if its owner is gone`;
-  const pid = Number(raw);
-  let state = "stale pidfile";
-  if (Number.isInteger(pid) && pid > 0) {
-    try { process.kill(pid, 0); state = `pid ${pid}`; } catch { /* stale */ }
-  }
+  // "stale pidfile" is advice to delete it, so it must not be printed about a process that is
+  // merely unsignalable: the shared probe calls that alive, the old inline try/catch called it stale.
+  const pid = parsePid(raw);
+  // THREE labels, because two of them are advice and the third must not be. "stale pidfile" tells the
+  // operator to clean it; saying that about a record whose liveness the kernel would not answer for
+  // invites deleting a live holder. Indeterminate says so instead.
+  // FOUR labels. I wrote three and left `undefined` falling into "stale pidfile", which is the same
+  // defect one state over: content parsePid rejects is UNATTRIBUTABLE by this PR's own contract, and
+  // "stale" is advice to delete it. `down` refuses such a record correctly, so this line was telling
+  // the operator to run a command that would then refuse them.
+  const liveness = pid === undefined ? undefined : probeLiveness(pid);
+  const state =
+    pid === undefined ? `UNATTRIBUTABLE pidfile content ${JSON.stringify(raw)} - it may front a live process nobody can identify; inspect it, do not clean it blindly`
+    : liveness === "alive" ? `pid ${pid}`
+    : liveness === "unknown" ? `pid ${pid}, liveness INDETERMINATE - the kernel answered neither running nor gone (seccomp/LSM policy does this); verify before cleaning`
+    : "stale pidfile";
   return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
 }
 

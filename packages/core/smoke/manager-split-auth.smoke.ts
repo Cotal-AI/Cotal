@@ -58,6 +58,7 @@ import {
   DEV_OWNER,
   presenceBucket,
   managerBucket,
+  deliveryBucket,
   membersBucket,
   membershipBucket,
   aclBucket,
@@ -67,9 +68,13 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { assertEphemeralBroker } from "./_ephemeral-only.js";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
+// FIRST action, before any connection: this suite probes provisioner grants (incl. the #286
+// STREAM.UPDATE reconcile grant) and must only ever touch a throwaway broker it started itself.
+assertEphemeralBroker(SERVERS);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {
@@ -247,6 +252,15 @@ try {
   check("direct-get a DM body (STREAM.MSG.GET) DENIED", await tryPublish(provCreds, dmGet, prov.id) === "denied");
   check("STREAM.DELETE the presence bucket DENIED", await tryPublish(provCreds, `$JS.API.STREAM.DELETE.${PKV}`, prov.id) === "denied");
   check("STREAM.PURGE the DM stream DENIED (not a purger)", await tryPublish(provCreds, `$JS.API.STREAM.PURGE.${DM}`, prov.id) === "denied");
+  // #286: the provisioner reconciles the three TTL'd KV buckets' `max_age` at `cotal up` (STREAM.UPDATE on
+  // presence + the two leases) so a bucket predating the TTL still ages out dead presence / stale leases. The
+  // grant is scoped to exactly those three streams — a general stream UPDATE (e.g. the DM mailbox) stays denied.
+  check("STREAM.UPDATE the presence bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${PKV}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the manager-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${managerBucket(space)}`, prov.id) === "allowed");
+  // The THIRD TTL'd bucket. Its behavioural reconcile is covered elsewhere, but the grant matrix is
+  // what this suite is for, and a matrix missing one of the three streams it grants is not a matrix.
+  check("STREAM.UPDATE the delivery-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${deliveryBucket(space)}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
 
