@@ -39,6 +39,20 @@
  *        CONTROL D3c: after connect(), both DO rise again. Without it, a quiet endpoint is
  *        equally explained by a timer that was never armed.
  *
+ * ARM 3b THE CROSSING: a renewal already inside its source call when the disconnect lands is past
+ *        every timer fence, and the next thing it touches is the preflight. Reproduced by review at
+ *        an earlier tip. Held open, disconnected, released.
+ *        REFUTED IF: the broker's cumulative count rises after the release.
+ *        CONTROL D3k: the same held call released while CONNECTED must still dial. Without it,
+ *        "did not dial" is equally explained by a renewal that never fires.
+ *
+ * D3l    WHAT THE FIX COSTS. The crossing is fixed by DISCARDING the candidate unproven, so the
+ *        session keeps its old cached credential with no armed timer until connect(). Does a gap
+ *        past that credential's own expiry then leave it dead? Raised by review; driven, not argued.
+ *        CONTROL D3m: it must come back by RE-FETCHING, not by presenting the cached credential —
+ *        and the premise (that the cached one really was past `exp`) is read off the credential
+ *        itself rather than derived from the TTL, because the re-fetch count alone is only a proxy.
+ *
  * Run: tsx packages/core/smoke/connection-lifecycle.smoke.ts   (needs `nats-server` on PATH)
  */
 import { randomUUID } from "node:crypto";
@@ -48,7 +62,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid,
-  serverConfig, newIdentity, setupSpaceStreams,
+  serverConfig, newIdentity, setupSpaceStreams, credsClaims,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -316,6 +330,12 @@ try {
   release!(); // discarded
   await wait(TTL * 1000 + 1500); // now past the cached credential's own exp
   const mintsBeforeReturn = mints;
+  // DIRECT, not inferred: read the cached credential's own `exp` at the moment of the return. The
+  // re-fetch count below is a proxy — it says the source was called, not that the cached credential
+  // was actually dead — so establish the premise from the credential itself.
+  const cachedExpMs = (credsClaims((c as any).currentCreds as string).exp ?? 0) * 1000;
+  check("setup: the CACHED credential really is past its own exp at the moment of the return (D3m's premise, measured rather than derived from the TTL)",
+    cachedExpMs > 0 && cachedExpMs < Date.now(), { cachedExpMs, now: Date.now() });
   const r3c = await c.connect();
   check("D3l after a DISCARDED renewal and a gap past the cached credential's expiry, connect() still comes back",
     r3c.outcome === "connected", r3c);
