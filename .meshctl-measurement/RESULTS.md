@@ -758,3 +758,74 @@ and **0** `✗ FAIL PRE` lines against **4** `✓ PRE-USER`. **Nothing was ever 
 so the new branch cannot fire in it and the `11 passed / 1 failed / 0 VOID` stands untouched.** That
 is a bound derived from the surviving instrument — not a claim that the fix has been exercised. **It
 has not been, and the first run that contaminates an arm is the one that will test it.**
+
+## The 0305Z broker window — the two BLOCKING findings fixed, and the mutant that proved it
+
+Granted exclusive, announced on take and on release, released **2026-08-15T03:11:26Z** (`date -u`
+at the moment of writing, not derived). `ps -C nats-server` empty afterwards — no ephemeral broker
+survived. Five logs kept; every number below can be re-read rather than trusted.
+
+| log | what it is |
+| --- | --- |
+| `runs/2026-08-15T0305Z-connection-lifecycle.txt` | baseline, fix in: 48/0, roll call 37/37, rc=0 |
+| `runs/2026-08-15T0306Z-m11-startleak.txt` | baseline, fix in: 6/0, roll call 3/3, rc=0 |
+| `runs/2026-08-15T0308Z-MUTANT-connection-lifecycle.txt` | mutant: 43/5, roll call **37/37**, rc=1 |
+| `runs/2026-08-15T0309Z-MUTANT-m11-startleak.txt` | mutant: 4/2, roll call **3/3**, rc=1 |
+| `runs/2026-08-15T0311Z-connection-lifecycle-restored.txt` | restored + `D4e` strengthened: 48/0, rc=0 |
+| `runs/2026-08-15T0312Z-connection-control.txt` | **A FAILED RUN, KEPT ON PURPOSE** — see below |
+| `runs/2026-08-15T0314Z-connection-control.txt` | after the fixture repair: 45/0/0, rc=0 |
+
+Full proof in `MUTATION-STARTLEAK.md`; the design consequence is `DESIGN.md` §9.6. The headline
+number: **the mutant peaked at 18 live authenticated connections in five seconds and 17 survived
+`stop()`**, against 0 with the fix.
+
+### The instrument, because this is the objection that would land otherwise
+
+fm-orchestrator raised it during the window: the mesh broker's connection count has **~68 other
+authors**, so a raw total taken through it is not an instrument. **It does not reach this
+measurement, and the reason is structural rather than careful.** Every count came from a broker this
+suite SPAWNS ITSELF — fresh scratch dir, random free port, its own random monitoring port, killed by
+process GROUP and awaited before the scratch is removed. **A private broker is a per-account filter
+that cannot be got wrong.** And the same discipline is applied *inside* it: the counters are global
+even there, so each arm retires every other endpoint AND RESTARTS THE BROKER, then asserts
+`current === 0` as a named entry precondition before reading anything.
+
+**Direction of the one timing-shaped arm, stated rather than waved away:** m11 samples for a fixed
+window and takes the PEAK, so a loaded box sees FEWER retries — it can HIDE a leak, never
+manufacture one. It did not hide this one.
+
+### `runs/2026-08-15T0312Z-connection-control.txt` is a FAILURE, kept deliberately
+
+It is the run in which removing the open-mode disjunct broke the connector suite's own fixture:
+
+```
+SMOKE ERROR: Error: fixture failed: cotal_disconnect is not on the tool surface
+```
+
+**That is not a regression in the gate; it is the gate finding something.** The suite's subject is
+an open-mode agent with no capabilities, so **every `C1`/`A`/`E` cell in that file had been reaching
+the verbs through the bypass** — a surface no granted deployment presents — and the suite said so
+nowhere. Repaired by granting the fixture what a real caller must hold. **The log is kept because a
+suite that only keeps its green runs cannot show you the moment it learned something.**
+
+### And the mutant found a vacuous cell of mine
+
+**`D4e`, labelled CONTROL, PASSED UNDER THE MUTANT.** It asserted only that a second `connect()`
+answers `already-connected` — which the residual handle produces for a session that never connected
+at all. **An assertion true in both the safe and the unsafe state is not a control, however it is
+labelled.** Strengthened to carry its own premise in the same cell rather than inheriting it from
+the cell beside it in the log. **The green baseline could not have told me this: a vacuous cell is
+green exactly when a sound one is.**
+
+### Two cells reddened that were NOT predicted
+
+`D4d` and `D4f`, both cascade from `D4c` through the shared fixture. **Recorded as unpredicted
+rather than counted as confirmations** — the prediction was incomplete in a way that flattered the
+result, and five reds where three were earned is the arithmetic version of the same overclaim this
+file has already had to correct twice.
+
+### What this window did NOT measure
+
+`smoke:ci`, a whole-repo `typecheck`, and every other suite in the repo. Three suites were driven and
+are named as suites above. `packages/core/dist` was built with `tsc` invoked directly — **no package
+manager was invoked at all**, in any form.
