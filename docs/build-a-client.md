@@ -38,7 +38,7 @@ receive-side authenticity checks, and the presence/channel loops. See
   binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
   grants; see
   [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.md](run-a-mesh.md).
-  If your client will **receive** DMs or role anycasts (step 4), mint with `--provision`
+  If your client will **receive** DMs or role anycasts (step 6), mint with `--provision`
   (`--role <role>` for the anycast queue): the DM/task consumers are pre-created and
   bind-only, and the command prints the lifecycle uid your client binds them under.
 
