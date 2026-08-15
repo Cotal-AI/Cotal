@@ -18,7 +18,10 @@ export const CATALOG = {
   L1005: "Forbidden syntax: generator",
   L1006: "Forbidden syntax: `eval` or `Function`",
   L1007: "Forbidden syntax: regular expression literal",
-  L1008: "Missing semicolon",
+  // ASI itself is ALLOWED. The error is the two constructs where a newline changes what the code
+  // MEANS: a value on the line after a bare `return`, and a line opening with `(` or `[` that
+  // continues the statement above it. "Missing semicolon" named a rule this language does not have.
+  L1008: "Newline hazard",
   L1009: "Unbraced branch",
   L1010: "`switch` case does not terminate",
   L1011: "Computed property name",

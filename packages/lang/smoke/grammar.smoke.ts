@@ -7,7 +7,7 @@
  * those are the programs the rules have to catch.
  */
 import { validate } from "../src/grammar.js";
-import { LangErrors, type LangErrorCode } from "../src/errors.js";
+import { CATALOG, LangErrors, type LangErrorCode } from "../src/errors.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -306,6 +306,10 @@ rejects("no computed property names", "L1011", "function f(k) { return { [k]: 1 
 // is frequently semicolon-free, and ASI is parse-deterministic so determinism is untouched. Only
 // the two constructs where a newline genuinely changes meaning stay errors.
 accepts("semicolon-free source is ordinary", 'const a = await spawn("x")\nlog(a)\n');
+// The TITLE is part of the error, and it was naming a rule this language does not have: an author
+// reading "Missing semicolon" over semicolon-free code that the validator accepts everywhere else
+// is being told the opposite of what is true.
+ok("L1008 is titled for the hazard, not for a semicolon rule that does not exist", CATALOG.L1008 === "Newline hazard", CATALOG.L1008);
 accepts("explicit terminators are fine too", 'const a = await spawn("x");\nlog(a);\n');
 rejects(
   "a return whose value is on the next line is a hazard",
