@@ -35,11 +35,15 @@
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, mkdtempSync, cpSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+
+/** The subject-side resolution probe (see the gate below). Kept beside the harness so a caller
+ *  cannot forget it, and named here so a move breaks loudly rather than silently skipping the gate. */
+const PROBE = ".meshctl-measurement/meshctl-m15-resolution-probe.mts";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -132,23 +136,61 @@ function makePrivateBuild(projectDir, cwd) {
   const abs = join(cwd, projectDir);
   if (!existsSync(abs)) throw new Error(`--private-build: no such package dir: ${projectDir}`);
   const scratch = mkdtempSync(join(abs, ".privbuild-"));
+
+  // THE MUTATION IS APPLIED TO THIS COPY, NEVER TO THE TREE. Earlier this mutated the real source
+  // and rebuilt; the mutant then sat in the shared working tree for the length of the run, where a
+  // concurrent `tsc` would compile it into the fleet-linked build and an uncatchable signal would
+  // strand it. Copying first removes the window rather than narrowing it.
+  const srcRoot = join(abs, "src");
+  if (!existsSync(srcRoot)) throw new Error(`--private-build: ${projectDir} has no src/ to copy`);
+  cpSync(srcRoot, join(scratch, "src"), { recursive: true });
+  writeFileSync(join(scratch, "tsconfig.json"), JSON.stringify({
+    extends: relative(scratch, join(cwd, "tsconfig.base.json")),
+    compilerOptions: { rootDir: "./src", outDir: "./dist" },
+    include: ["src"],
+  }, null, 2));
+
+  const entry = join(scratch, "dist", "index.js");
   const build = () => {
-    const r = run(`./node_modules/.bin/tsc -p ${projectDir} --outDir ${scratch}`, cwd, 600_000);
+    const r = run(`./node_modules/.bin/tsc -p ${relative(cwd, scratch)}/tsconfig.json`, cwd, 600_000);
     if (r.status !== 0) throw new Error(`private build failed (exit ${r.status}):\n${r.output.slice(-2000)}`);
   };
-  return { scratch, build, env: { COTAL_CORE_ENTRY: join(scratch, "index.js") }, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
+  return {
+    scratch,
+    build,
+    srcRoot,
+    /** Where a tree path maps to inside the copy, or null if it is not part of this package's src. */
+    copyOf: (fileAbs) => (fileAbs.startsWith(srcRoot + "/") ? join(scratch, "src", relative(srcRoot, fileAbs)) : null),
+    env: {
+      // The suite's own import (opt-in seam) …
+      COTAL_CORE_ENTRY: entry,
+      // … and every OTHER importer in the process, including the connector the cells actually
+      // drive. Without this the subject resolves the bare specifier to the shared build and the
+      // proof grades unmutated code while reporting a clean SURVIVED.
+      COTAL_PRIVATE_CORE: entry,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--import ${join(cwd, "scripts", "private-core-register.mjs")}`,
+    },
+    cleanup: () => rmSync(scratch, { recursive: true, force: true }),
+  };
 }
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
   const path = join(cwd, m.file);
+  // WITH --private-build THE MUTATION GOES TO THE COPY, NEVER TO THE TREE. `makePrivateBuild`
+  // copied this package's src into its own scratch; mutating there means the working tree is never
+  // written, so there is no window for a concurrent build to compile the mutant and nothing for an
+  // uncatchable signal to strand. If the target is not part of that package, fall back to the tree.
+  const target = opts.priv?.copyOf(path) ?? path;
+  const inCopy = target !== path;
   const label = m.name ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`;
   say(`\n${C.dim}────────────────────────────────────────────────────────${C.off}`);
   say(`${label}`);
 
   if (!existsSync(path)) return { label, verdict: "ERROR", why: `target file not found: ${m.file}` };
+  if (inCopy && !existsSync(target)) return { label, verdict: "ERROR", why: `target missing from the private copy: ${target}` };
 
-  const before = readFileSync(path, "utf8");
+  const before = readFileSync(target, "utf8");
   const hits = countOccurrences(before, m.find);
   // Assert the target is present AND unambiguous BEFORE grading anything. Zero means the mutation
   // would be a no-op and the verdict would be an accusation about nothing; more than one means the
@@ -158,13 +200,13 @@ function proveOne(m, opts) {
     return { label, verdict: "ERROR", why: `target appears ${hits}× in ${m.file}; pass allowMultiple to mutate them all, or narrow it` };
   }
 
-  const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(path).digest("hex").slice(0, 12)}.bak`);
-  copyFileSync(path, backup);
-  const shaBefore = sha(path);
+  const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(target).digest("hex").slice(0, 12)}.bak`);
+  copyFileSync(target, backup);
+  const shaBefore = sha(target);
 
   const restore = () => {
-    copyFileSync(backup, path);
-    const ok = sha(path) === shaBefore;
+    copyFileSync(backup, target);
+    const ok = sha(target) === shaBefore;
     rmSync(backup, { force: true });
     return ok;
   };
@@ -211,10 +253,10 @@ function proveOne(m, opts) {
   const clearSignals = () => { for (const sig of SIGNALS) process.removeListener(sig, onSignal); };
 
   try {
-    writeFileSync(path, before.split(m.find).join(m.replace));
+    writeFileSync(target, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
     // sound only by accident.
-    if (sha(path) === shaBefore) {
+    if (sha(target) === shaBefore) {
       restore();
       clearSignals();
       return { label, verdict: "ERROR", why: "mutation produced an identical file — it did not apply" };
@@ -313,6 +355,14 @@ const base = run(opts.command, cwd, opts.timeoutMs, opts.priv?.env);
 // it, so every proof would have graded the SHARED build while reporting success. A fallback that is
 // correct behaviour in the normal case is a perfect disguise for a dead seam — no error, no warning,
 // no missing file. So REQUIRE the suite to say which build it loaded, and refuse if it says shared.
+//
+// ⚠ AND THAT IS NOT ENOUGH ON ITS OWN — it was the whole defect of the first private-build proof.
+// The line above is printed by the SUITE, about the SUITE'S OWN import. It proves a private build
+// was LOADED. It does not prove the CODE UNDER TEST resolved there, and for a suite whose cells
+// drive a connector — which imports the package by BARE specifier — it did not: the subject ran
+// the shared build and the proof reported a clean SURVIVED about code it never executed.
+// A GUARD THAT READS A MESSAGE THE SUBJECT PRINTS ABOUT ITSELF IS CHECKING THE MESSENGER.
+// So the real gate is the probe below, which asserts IDENTITY on the object the subject built.
 if (opts.priv) {
   if (!/PRIVATE build/.test(base.output)) {
     say(`${C.red}REFUSING: --private-build was requested but the suite never reported loading a PRIVATE build.${C.off}`);
@@ -321,7 +371,20 @@ if (opts.priv) {
     opts.priv.cleanup();
     process.exit(6);
   }
-  say(`${C.green}seam confirmed${C.off} — the suite reported loading the private build`);
+  say(`${C.dim}suite-side seam confirmed (weak: the suite's own import) — now checking the SUBJECT${C.off}`);
+
+  // THE SUBJECT-SIDE GATE. Constructs what the cells construct and asserts the class identity of
+  // the object it actually built, which cannot be satisfied by a printed message and fails closed.
+  const probe = run(`./node_modules/.bin/tsx ${PROBE}`, opts.cwd, 120_000, opts.priv.env);
+  const resolvedPrivate = /VERDICT: the subject resolves to the PRIVATE build/.test(probe.output);
+  if (probe.status !== 0 || !resolvedPrivate) {
+    say(`${C.red}REFUSING: the SUBJECT does not resolve to the private build — the mutation would not be on the graded path.${C.off}`);
+    say("This is the MX14 defect: mutant compiled, suite pointed at it, and the code under test still loading the shared build.");
+    say(probe.output.split("\n").filter((l) => /diagnostic|✗|VERDICT/.test(l)).join("\n"));
+    opts.priv.cleanup();
+    process.exit(7);
+  }
+  say(`${C.green}SUBJECT-SIDE CONFIRMED${C.off} — the object the subject constructs comes from the private build`);
 }
 const baseTicks = progressCount(base.output, opts.progressPattern);
 if (base.status !== 0) {
