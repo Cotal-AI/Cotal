@@ -123,6 +123,8 @@
     "smoke:manifest-launch": "tsx implementations/manager/smoke/manifest-launch.smoke.ts",
     "smoke:own-agent-control": "tsx implementations/manager/smoke/own-agent-control.smoke.ts",
     "smoke:views": "tsx implementations/auth/smoke/views.smoke.ts",
+    "smoke:connection-control": "tsx extensions/connector-core/smoke/connection-control.smoke.ts",
+    "smoke:connection-lifecycle": "tsx packages/core/smoke/connection-lifecycle.smoke.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
     "smoke:preflight": "tsx packages/workspace/smoke/preflight.smoke.ts",
     "smoke:pid-contract": "tsx packages/workspace/smoke/pid.smoke.ts",
