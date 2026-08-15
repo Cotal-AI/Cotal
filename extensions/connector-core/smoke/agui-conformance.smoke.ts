@@ -43,19 +43,42 @@
  * | M12 | `RUN_FINISHED` stops refusing dangling opens | `closing a run with a tool call still open is refused` |
  * | M13 | `openId` drops its already-open check | `re-opening a messageId that is already open is refused` AND `a provider id reused across two observations is refused as a re-open` |
  * | M14 | the CUSTOM gate accepts any name | `an undeclared CUSTOM name is refused rather than emitted` |
+ * | M15 | delete the three `REASONING_*` cases, so they fall to `default` | `a synthesized 3-turn sequence brackets cleanly` |
+ * | M16 | route all three `REASONING_*` cases to `this.text` | `the three id sets do not collide` AND `mid-split, the reasoning id opened in the FIRST frame is still outstanding` |
+ * | M17 | delete the `TOOL_CALL_RESULT` while-still-open guard | `a TOOL_CALL_RESULT arriving while its call is still open is refused` |
  *
- * All five landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the code
- * that runs), all five killed exactly their predicted set and nothing else, and the restore was
- * verified by a clean `git status` plus a return to the baseline tally.
+ * All eight landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the
+ * code that runs), all eight killed exactly their predicted set and nothing else, and the restore
+ * was verified by a clean `git status` plus a return to the baseline tally.
+ *
+ * **M15 and M17 are why M16 is phrased the way it is.** Before M15's cells existed, deleting the
+ * reasoning cases outright left this suite fully GREEN — the id space was claimed in the header and
+ * never entered by a fixture. M17 was the same shape one level down: the `TOOL_CALL_RESULT` guard is
+ * the only branch asserting an id is NOT open, and every happy path sends the result after
+ * `TOOL_CALL_END`, so deleting it also went unnoticed. M16 is the discriminating mutation the first
+ * two do not cover: it keeps all three cases present and merely misroutes them into the text set,
+ * which the multi-turn sequence CANNOT see, because `turn()` uses ids that differ across the sets.
+ * It was measured, not assumed — under M16 the multi-turn passes and exactly two cells fail, with
+ * the tally dropping 72 → 70 because two more stop reporting rather than failing.
+ *
+ * **A cell that throws is a cell that stops reporting** (this lane's own finding). M16's tally drop
+ * is that hazard visible in miniature: a reader watching only the failure list would see two
+ * failures and miss that two further assertions never ran at all. Compare the TALLY, not just the
+ * red lines.
  *
  * **M10 is the one worth keeping.** It is not a hypothetical: the constructor really did omit
  * `role`, and this suite caught it on its first execution. The mutation re-introduces a defect that
  * actually shipped in the first draft, which is the strongest form this proof takes.
  *
- * **What these mutations do NOT prove.** Every cell here builds its own input by hand — no connector
- * calls these constructors yet, because nothing emits. So a killed mutation shows the cells DEPEND
- * on this code; it does not show a real entry point REACHES it. That half is owed by the connector
- * cutover and is not claimed here.
+ * **What these mutations do NOT prove.** Every cell here builds its own input by hand, so a killed
+ * mutation shows the cells DEPEND on this code; it does not show a real entry point REACHES it.
+ * That half is owed by the connector cutover and is not claimed here.
+ *
+ * Stated precisely, because the loose version of it has already gone stale once. It is no longer
+ * true that "no connector calls these constructors": `connector-claude-code/src/agui-map.ts` calls
+ * them, and its own suite maps a REAL session. What is still true is narrower and is the part that
+ * matters — **nothing constructs an `AguiEmitter` outside a smoke**, so no connector PUBLISHES. The
+ * two claims are easy to conflate and only one of them survives this commit.
  *
  * Run: pnpm smoke:agui-conformance
  */
