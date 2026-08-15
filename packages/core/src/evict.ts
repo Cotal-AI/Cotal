@@ -32,7 +32,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { connzRequestSubject, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
+import { connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const MAX_PAGES = 64; // fan-out pagination guard (mirrors the membership feed's under-report ceiling)
@@ -110,11 +110,16 @@ async function scanLive(
   let unroutable = false; // a reply named no server id → its conns can't be KICKed → scan is not complete
   const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
   let seq = 0;
+  // See the lost-page check below: servers that owe a page after the previous round.
+  let owed = new Set<string>();
+  let lostPage = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * opts.pageLimit;
     const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
     if (replies.length) gotAnyReply = true;
     let fullPageSomewhere = false;
+    const deliveredThisRound = new Set<string>();
+    const owesAfterThisRound = new Set<string>();
     for (const r of replies) {
       const serverId = r.data?.server_id ?? r.server?.id;
       if (!serverId) {
@@ -140,12 +145,23 @@ async function scanLive(
         conns.push({ cid: c.cid, serverId, principal });
       }
       const total = r.data?.total ?? 0;
-      if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
+      // Same progress rule as `livenessSweep`: answering is not delivering (see there).
+      if (cs.length > 0 || offset >= total) deliveredThisRound.add(serverId);
+      if (cs.length >= opts.pageLimit && offset + cs.length < total) {
+        fullPageSomewhere = true;
+        owesAfterThisRound.add(serverId);
+      }
     }
+    // THE LOST-PAGE CHECK (same defect, same fix, as `livenessSweep`): a server that reported more
+    // data and then failed to deliver a page has gone silent mid-pagination, not ended. Reading
+    // that as an ending makes a scan that MISSED live connections report itself complete — and here
+    // that is `verifiedGone:true` for a principal still holding a connection past the first page.
+    for (const s of owed) if (!deliveredThisRound.has(s)) lostPage = true;
+    owed = owesAfterThisRound;
     if (!fullPageSomewhere) break; // no server still has a full page → done
     if (page === MAX_PAGES - 1) truncated = true;
   }
-  return { conns, complete: gotAnyReply && !truncated && !unroutable };
+  return { conns, complete: gotAnyReply && !truncated && !unroutable && !lostPage };
 }
 
 /** One CONNZ round: fan out the account request, collect every server's reply within the window. */
@@ -342,11 +358,147 @@ export function parsePlaneLivenessResult(v: unknown): PlaneLivenessResult | unde
   return { ledger, records, sweepComplete: r.sweepComplete, ...(r.note !== undefined ? { note: r.note } : {}) };
 }
 
-/** A CONNZ connection row as this sweep needs it: identity fields only. */
+/** A CONNZ connection row as this sweep needs it: identity fields only. `tags` is carried because
+ *  {@link principalFromConnz} reads the `principal:` tag a STATICALLY-minted user surfaces (a
+ *  callout-minted one surfaces the name-form in `authorized_user` and no tags at all). */
 interface PlaneConnzConn {
   cid?: number;
   name?: string;
+  tags?: string[];
   authorized_user?: string;
+}
+
+/** One swept connection, projected for BOTH liveness questions this module answers: the plane
+ *  reclaim keys on `(serverId, cid)` and the connection's user nkey, the freeze-holder probe keys
+ *  on the attributed `principal`. Captured in ONE pass so the two verdicts can never be drawn from
+ *  differently-validated observations. */
+interface SweptConn {
+  serverId: string;
+  cid: number;
+  userNkey?: string;
+  /** {@link principalFromConnz} attribution, absent when the row is unattributable (infra/open/nkey). */
+  principal?: string;
+}
+
+interface LivenessSweep {
+  conns: SweptConn[];
+  /** CONNZ OBSERVATION completeness: every round replied, well-formed, no truncation. */
+  sweepComplete: boolean;
+  /** The SPEC 13.13 single-server proof — see {@link observePlaneLiveness}'s doc for why absence
+   *  alone cannot yield `gone` without it. Never a reply-count guess: every responder must DECLARE
+   *  standalone topology, and exactly one must reply. */
+  singleServerProven: boolean;
+  clusterDeclared: boolean;
+  repliers: number;
+}
+
+/**
+ * The read-only CONNZ sweep both liveness verdicts are drawn from — ONE fail-closed observation,
+ * shared so a probe and the repair it authorizes can never disagree about what "gone" means.
+ *
+ * FAIL-CLOSED reply validation: only a SUCCESSFUL, well-formed CONNZ page may count toward an
+ * authorizing sweep. An API error, a missing/empty server envelope, a present but non-string (or
+ * empty-string) cluster declaration, an envelope/data server-id mismatch, or a structurally
+ * incomplete data page each mark the sweep malformed (⇒ every verdict `unknown`).
+ */
+async function livenessSweep(
+  observerConn: NatsConnection,
+  accountId: string,
+  options: EvictOptions = {},
+): Promise<LivenessSweep> {
+  const opts = {
+    settleMs: options.settleMs ?? 250,
+    maxWaitMs: options.maxWaitMs ?? 2000,
+    pageLimit: options.pageLimit ?? 1024,
+  };
+  const conns: SweptConn[] = [];
+  let gotAnyReply = false;
+  let truncated = false;
+  let malformed = false;
+  let clusterDeclared = false; // any responder DECLARED cluster membership — single-server unproven
+  const repliers = new Set<string>();
+  const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
+  let seq = 0;
+  // Servers that reported MORE data after the previous round, and therefore OWE a page on this one.
+  // A server that owes a page and does not deliver a well-formed one has UNDER-REPORTED — the sweep
+  // must not read that silence as the end of the data (see `lostPage`).
+  let owed = new Set<string>();
+  let lostPage = false;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const offset = page * opts.pageLimit;
+    const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
+    if (replies.length) gotAnyReply = true;
+    let fullPageSomewhere = false;
+    const deliveredThisRound = new Set<string>();
+    const owesAfterThisRound = new Set<string>();
+    for (const r of replies) {
+      const envId = r.server?.id;
+      const cluster = (r.server as { cluster?: unknown } | undefined)?.cluster;
+      if (
+        r.error !== undefined ||
+        typeof envId !== "string" || envId.length === 0 ||
+        (cluster !== undefined && (typeof cluster !== "string" || cluster.length === 0)) ||
+        (r.data?.server_id !== undefined && r.data.server_id !== envId) ||
+        r.data === undefined || !Array.isArray(r.data.connections) ||
+        typeof r.data.total !== "number" || !Number.isSafeInteger(r.data.total) || r.data.total < 0 ||
+        (r.data.offset !== undefined && (typeof r.data.offset !== "number" || !Number.isSafeInteger(r.data.offset) || r.data.offset < 0))
+      ) {
+        malformed = true;
+        continue;
+      }
+      const serverId = envId;
+      repliers.add(serverId);
+      if (typeof cluster === "string") clusterDeclared = true;
+      const cs = r.data.connections as PlaneConnzConn[];
+      for (const c of cs) {
+        if (typeof c.cid !== "number") {
+          malformed = true; // an id-less row could BE the claimed connection — fail safe
+          continue;
+        }
+        const principal = principalFromConnz(c);
+        conns.push({
+          serverId, cid: c.cid,
+          ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}),
+          ...(principal === null ? {} : { principal }),
+        });
+      }
+      const total = r.data.total;
+      // PROGRESS, not merely a reply: a server that owes the rest of its data discharges that debt
+      // only by handing some over (`cs.length > 0`) or by showing there is none left to hand
+      // (`offset >= total`). An empty page at an offset still short of `total` answers without
+      // delivering, and accepting it as an ending clears the debt exactly as silence used to.
+      if (cs.length > 0 || offset >= total) deliveredThisRound.add(serverId);
+      if (cs.length >= opts.pageLimit && offset + cs.length < total) {
+        fullPageSomewhere = true;
+        owesAfterThisRound.add(serverId);
+      }
+    }
+    // THE LOST-PAGE CHECK. A server that said "there is more" and then failed to deliver the rest
+    // has not ended its data — it has stopped mid-pagination, and its remaining connections were
+    // never seen. Reading that as the end is how a sweep that MISSED a live connection reports
+    // itself COMPLETE, and a complete-and-absent sweep is exactly what authorizes `gone`. Fail
+    // closed: the observation is an under-report, not an ending.
+    for (const s of owed) if (!deliveredThisRound.has(s)) lostPage = true;
+    owed = owesAfterThisRound;
+    if (!fullPageSomewhere) break;
+    if (page === MAX_PAGES - 1) truncated = true;
+  }
+  const sweepComplete = gotAnyReply && !truncated && !malformed && !lostPage;
+  return {
+    conns, sweepComplete, clusterDeclared, repliers: repliers.size,
+    singleServerProven: sweepComplete && !clusterDeclared && repliers.size === 1,
+  };
+}
+
+/** The one-line reason a sweep cannot yield `gone`, or undefined when it can. `decision` names what
+ *  the verdict was going to authorize, so the operator reads why THIS answer is withheld. */
+function sweepShortfallNote(s: LivenessSweep, decision: string): string | undefined {
+  if (!s.sweepComplete)
+    return "CONNZ sweep under-reported (no responder, truncation, an API error, or a malformed reply) - liveness UNKNOWN";
+  if (s.singleServerProven) return undefined;
+  return s.clusterDeclared
+    ? `the broker DECLARES cluster membership - a partitioned member could still hold the connection, so CONNZ liveness cannot adjudicate ${decision} outside the single-server mode (SPEC 13.13) - liveness UNKNOWN`
+    : `${s.repliers} distinct servers replied - the single-server mode the verdict requires is unproven (SPEC 13.13) - liveness UNKNOWN`;
 }
 
 /**
@@ -393,80 +545,17 @@ export async function observePlaneLiveness(
   query: PlaneLivenessQuery,
   options: EvictOptions = {},
 ): Promise<PlaneLivenessResult> {
-  const opts = {
-    settleMs: options.settleMs ?? 250,
-    maxWaitMs: options.maxWaitMs ?? 2000,
-    pageLimit: options.pageLimit ?? 1024,
-  };
-  const conns: { serverId: string; cid: number; userNkey?: string }[] = [];
-  let gotAnyReply = false;
-  let truncated = false;
-  let malformed = false;
-  let clusterDeclared = false; // any responder DECLARED cluster membership — single-server unproven
-  const repliers = new Set<string>();
-  const sweep = randomUUID(); // per-sweep reply-inbox nonce: concurrent sweeps must never cross-talk
-  let seq = 0;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const offset = page * opts.pageLimit;
-    const replies = await connzRound(observerConn, accountId, offset, opts, sweep, seq++);
-    if (replies.length) gotAnyReply = true;
-    let fullPageSomewhere = false;
-    for (const r of replies) {
-      // FAIL-CLOSED reply validation: only a SUCCESSFUL, well-formed CONNZ page may count toward a
-      // reclaim-authorizing sweep. An API error, a missing/empty server envelope, a present but
-      // non-string (or empty-string) cluster declaration, an envelope/data server-id mismatch, or a
-      // structurally incomplete data page each mark the sweep malformed (=> every verdict unknown).
-      const envId = r.server?.id;
-      const cluster = (r.server as { cluster?: unknown } | undefined)?.cluster;
-      if (
-        r.error !== undefined ||
-        typeof envId !== "string" || envId.length === 0 ||
-        (cluster !== undefined && (typeof cluster !== "string" || cluster.length === 0)) ||
-        (r.data?.server_id !== undefined && r.data.server_id !== envId) ||
-        r.data === undefined || !Array.isArray(r.data.connections) ||
-        typeof r.data.total !== "number" || !Number.isSafeInteger(r.data.total) || r.data.total < 0 ||
-        (r.data.offset !== undefined && (typeof r.data.offset !== "number" || !Number.isSafeInteger(r.data.offset) || r.data.offset < 0))
-      ) {
-        malformed = true;
-        continue;
-      }
-      const serverId = envId;
-      repliers.add(serverId);
-      if (typeof cluster === "string") clusterDeclared = true;
-      const cs = r.data.connections as PlaneConnzConn[];
-      for (const c of cs) {
-        if (typeof c.cid !== "number") {
-          malformed = true; // an id-less row could BE the claimed connection — fail safe
-          continue;
-        }
-        conns.push({ serverId, cid: c.cid, ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}) });
-      }
-      const total = r.data.total;
-      if (cs.length >= opts.pageLimit && offset + cs.length < total) fullPageSomewhere = true;
-    }
-    if (!fullPageSomewhere) break;
-    if (page === MAX_PAGES - 1) truncated = true;
-  }
-  const sweepComplete = gotAnyReply && !truncated && !malformed;
-  // The single-server proof (see the doc): `gone` is sound ONLY when every responder declared
-  // standalone topology and exactly one server replied — a declaration, never a reply-count guess.
-  const singleServerProven = sweepComplete && !clusterDeclared && repliers.size === 1;
+  const s = await livenessSweep(observerConn, accountId, options);
   const verdict = (tuple: PlaneConnTuple): PlaneRoleLiveness => {
-    const live = conns.some((c) => c.userNkey === tuple.userNkey || (c.serverId === tuple.serverId && c.cid === tuple.cid));
+    const live = s.conns.some((c) => c.userNkey === tuple.userNkey || (c.serverId === tuple.serverId && c.cid === tuple.cid));
     if (live) return "live";
-    return singleServerProven ? "gone" : "unknown";
+    return s.singleServerProven ? "gone" : "unknown";
   };
-  const note = !sweepComplete
-    ? "CONNZ sweep under-reported (no responder, truncation, an API error, or a malformed reply) - liveness UNKNOWN"
-    : !singleServerProven
-      ? clusterDeclared
-        ? "the broker DECLARES cluster membership - a partitioned member could still hold the claimed connections, so CONNZ liveness cannot adjudicate a plane reclaim outside the single-server mode (SPEC 13.13) - liveness UNKNOWN"
-        : `${repliers.size} distinct servers replied - the single-server mode the reclaim verdict requires is unproven (SPEC 13.13) - liveness UNKNOWN`
-      : undefined;
+  const note = sweepShortfallNote(s, "a plane reclaim");
   return {
     ledger: { tuple: query.ledger, state: verdict(query.ledger) },
     records: { tuple: query.records, state: verdict(query.records) },
-    sweepComplete,
+    sweepComplete: s.sweepComplete,
     ...(note === undefined ? {} : { note }),
   };
 }
@@ -489,6 +578,109 @@ export async function observePlaneLivenessWithCreds(opts: {
   });
   try {
     return await observePlaneLiveness(observer, opts.accountId, opts.query, opts.options ?? {});
+  } finally {
+    await observer.drain().catch(() => {});
+  }
+}
+
+// ---- Freeze-holder liveness: the READ half of principal eviction (Cotal #391) ----
+//
+// Until this existed, the ONLY principal-scoped liveness in the product was FUSED WITH THE KICK
+// inside `evictDeniedPrincipal` — `verifiedGone` is a product of scan→KICK→re-scan. A repair path
+// that must REFUSE while a holder is still alive therefore had no way to ask the question without
+// first killing the answer: using eviction as its own precheck kills a live holder before anything
+// can refuse on its behalf. That inverts the guard, so the read half is a separate primitive.
+//
+// Read-only by construction: this takes ONLY the observer connection. The kick-capable evictor
+// credential is not a parameter, so no future edit can quietly make the probe destructive.
+
+/** A principal's liveness verdict. `live` = a connection attributed to it exists NOW; `gone` = a
+ *  COMPLETE, single-server-proven sweep proves none does; `unknown` = the observation cannot decide.
+ *  A caller MUST treat `unknown` as "may still be live" — never as gone. */
+export type PrincipalLiveness = "live" | "gone" | "unknown";
+
+/** The probe's bound reply: the principal ECHOED back with its verdict (a reply that does not echo
+ *  the exact principal asked about never authorizes), plus `sweepComplete` — CONNZ observation
+ *  completeness, kept as its own field and NEVER folded into the verdict. */
+export interface PrincipalLivenessResult {
+  principal: string;
+  state: PrincipalLiveness;
+  sweepComplete: boolean;
+  note?: string;
+}
+
+/** Closed, ECHO-BOUND parse of a wire-crossing {@link PrincipalLivenessResult} — the caller
+ *  validates the delivery-admin rail's reply BEFORE reasoning over it. Exactly the v1 keys, the
+ *  state in the enum, and the echoed principal EQUAL to the one queried. Undefined on ANY
+ *  violation; the caller maps that to `unknown` (a garbled or foreign oracle must block the repair,
+ *  never authorize it). `expected` is required precisely so the echo cannot be forgotten. */
+export function parsePrincipalLivenessResult(v: unknown, expected: string): PrincipalLivenessResult | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  for (const k of Object.keys(v)) if (!["principal", "state", "sweepComplete", "note"].includes(k)) return undefined;
+  const r = v as Partial<PrincipalLivenessResult>;
+  if (typeof r.principal !== "string" || r.principal !== expected) return undefined;
+  if (r.state !== "live" && r.state !== "gone" && r.state !== "unknown") return undefined;
+  if (typeof r.sweepComplete !== "boolean") return undefined;
+  if (r.note !== undefined && (typeof r.note !== "string" || r.note.length === 0 || r.note.length > 2048)) return undefined;
+  return { principal: r.principal, state: r.state, sweepComplete: r.sweepComplete, ...(r.note !== undefined ? { note: r.note } : {}) };
+}
+
+/**
+ * Answer whether ONE principal holds any live connection — the read-only half of principal
+ * eviction, drawn from the SAME {@link livenessSweep} the plane oracle uses, so an observation good
+ * enough to authorize a repair is validated identically wherever it is read.
+ *
+ *  - `live`: a complete sweep attributed at least one connection to the principal.
+ *  - `gone`: the sweep is COMPLETE, the single-server mode is PROVEN (SPEC 13.13), and no connection
+ *    attributes to the principal. The single-server proof is required for the same reason the plane
+ *    reclaim requires it: in a clustered account, CONNZ absence cannot distinguish a genuinely dead
+ *    holder from a live one behind a partition, and reading the second as "gone" is exactly the
+ *    unsafe direction for a repair that revokes and evicts a credential family.
+ *  - `unknown`: the sweep under-reported, or the single-server mode is unproven.
+ *
+ * Refuses a non-principal loudly: CONNZ attribution only ever surfaces `local`/`u_…` owners, so a
+ * syntactically-valid non-principal would sweep clean and return a HEALTHY `gone` — false
+ * confidence for a typo'd target. Same boundary `executeEviction` applies to its filter.
+ */
+export async function observePrincipalLiveness(
+  observerConn: NatsConnection,
+  accountId: string,
+  principal: string,
+  options: EvictOptions = {},
+): Promise<PrincipalLivenessResult> {
+  const parsed = parsePrincipalKey(principal);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
+    throw new Error(`principalLiveness: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface); a clean sweep for it would be false confidence, not a verdict`);
+  const s = await livenessSweep(observerConn, accountId, options);
+  const live = s.conns.some((c) => c.principal === principal);
+  const note = sweepShortfallNote(s, "a freeze-holder repair");
+  return {
+    principal,
+    state: live ? "live" : s.singleServerProven ? "gone" : "unknown",
+    sweepComplete: s.sweepComplete,
+    // A `live` verdict is conclusive on its own — the shortfall note explains a WITHHELD `gone`.
+    ...(!live && note !== undefined ? { note } : {}),
+  };
+}
+
+/** Creds-level wrapper for the delivery daemon's admin-rail principal-liveness verb: open the $SYS
+ *  observer PER CALL (the eviction seam's rule — never a standing $SYS connection), run
+ *  {@link observePrincipalLiveness}, drain. Read-only: no evictor cred enters this path. */
+export async function observePrincipalLivenessWithCreds(opts: {
+  servers: string;
+  observerCreds: string;
+  accountId: string;
+  principal: string;
+  options?: EvictOptions;
+}): Promise<PrincipalLivenessResult> {
+  const observer = await connect({
+    servers: opts.servers,
+    authenticator: credsAuthenticator(enc(opts.observerCreds)),
+    inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    return await observePrincipalLiveness(observer, opts.accountId, opts.principal, opts.options ?? {});
   } finally {
     await observer.drain().catch(() => {});
   }

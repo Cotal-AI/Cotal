@@ -5,9 +5,10 @@
  *   cotal.<space>.svc.<service>       anycast to any one instance of a service (queue group)
  *   cotal.<space>.inst.<instance>     unicast to one specific instance
  *   cotal.<space>.ctl.<service>       control request/reply to a SERVER-SIDE service — the delivery
- *                                     daemon's delivery/delivery-admin + the auth-admin carve-outs.
- *                                     The manager's ctl tiers were deleted in 1d: it serves its
- *                                     control surface as a v0.4 `service` endpoint on the ep.* rails.
+ *                                     daemon's delivery/delivery-admin carve-outs ONLY.
+ *                                     The manager's ctl tiers were deleted in 1d, and the auth
+ *                                     plane's rail moved to ep.one.auth in #350: both serve their
+ *                                     control surface as v0.4 endpoints on the ep.* rails.
  *   cotal.<space>.trace.<instance>    ambient lifecycle trace (later)
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
@@ -653,8 +654,9 @@ export function anycastServeFilter(space: string, service: string): string {
 }
 
 /** Control request/reply to a service — since 1d ONLY the delivery daemon (`ctl.delivery` /
- *  `ctl.delivery-admin`) and the auth plane (`ctl.auth-admin`); the manager's own control moved to
- *  its v0.4 `service` endpoint on the `ep.*` rails. `ctl.<service>.<owner>.<actor>` — tagged with the
+ *  `ctl.delivery-admin`); the manager's own control moved to its v0.4 `service` endpoint on the
+ *  `ep.*` rails, and the auth plane's rail followed it there (#350).
+ *  `ctl.<service>.<owner>.<actor>` — tagged with the
  *  caller principal; anycast via queue group. Identity slots accept `*` (serve side: `ctl.<svc>.*.*`). */
 export function controlServiceSubject(space: string, service: string, owner: string, actor: string): string {
   return `${spacePrefix(space)}.ctl.${routeToken(service)}.${ownerToken(owner)}.${ownerToken(actor)}`;
@@ -676,16 +678,12 @@ export const CONTROL_DELIVERY = "delivery" as const;
  *  cred is default-denied — nats-server is the boundary);
  *  the `delivery` cred holds the serve + bounded-reply side. */
 export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
-/** The AUTH service's control rail (#29 piece 3; SPEC 13.2 reserved): lifecycle-authority ops the
- *  AUTH plane serves — the D5 split's other half (retirement is the auth plane's operation; it
- *  never rides the DELIVERY daemon's rail). The surface is GENERIC — "retire a lifecycle
- *  (owner, actor, lifecycleUid)" — never caller-specific: the manager's despawn is ONE caller,
- *  and the serve-time authz (the space-manager-lease holder check, leader-read fresh per
- *  request) is the auth service's, not the subject grammar's. Caller attribution is
- *  SUBJECT-derived (`ctl.auth-admin.<owner>.<actor>`, broker-ACL-enforced): only a credential
- *  minted with that principal's request-publish grant reaches it, and replies are bound under
- *  the sender's own `<request>.reply.>` subtree. */
-export const CONTROL_AUTH_ADMIN = "auth-admin" as const;
+// The AUTH service's rail is NO LONGER a `ctl` control service. §13.11 retires the v0 ctl rail in
+// full and "MUST NOT be handled"; the auth-admin rows that served on it were spec defects written
+// onto a deleted rail, and they are rewritten onto the v0.4 endpoint surface (Cotal #350). The
+// generic "retire a lifecycle" op now rides `ep.one.auth.retire-lifecycle.handle.…` — see
+// `AUTH_ENDPOINT` / `EP_CMD_RETIRE_LIFECYCLE` in `endpoint-subjects.ts`. No `CONTROL_AUTH_ADMIN`
+// token survives: a vocabulary constant is how a retired rail gets re-minted by the next lane.
 
 export function traceSubject(space: string, agentId: string): string {
   return `${spacePrefix(space)}.trace.${token(agentId)}`;
@@ -950,6 +948,24 @@ export function leaseKey(shardIndex: number): string {
  *  LEASE_TTL_MS) auto-expires a crashed instance's key so a replacement can re-acquire. */
 export function managerBucket(space: string): string {
   return `cotal_manager_${token(space)}`;
+}
+
+/** Name of the per-space **Object Store bucket** holding artifact bytes (SPEC §5's `artifact` part).
+ *
+ *  Its backing stream is `OBJ_<bucket>` over `$O.<bucket>.C.>` (chunks) and `$O.<bucket>.M.>`
+ *  (metadata) — a grammar owned by the Object Store, so it sits **outside** the `cotal.<space>.>`
+ *  subject tree while staying **inside** the per-space account. Account isolation therefore holds,
+ *  but the space's own subject audit cannot see it: it has to be enumerated by NAME everywhere a
+ *  space's resources are listed, never swept by prefix. {@link objectStoreStream} is that name. */
+export function artifactBucket(space: string): string {
+  return `cotal_artifacts_${token(space)}`;
+}
+
+/** The JetStream stream backing an Object Store bucket. The `OBJ_` prefix is the Object Store's own
+ *  convention, not Cotal's — measured against `@nats-io/obj` 3.4.0 rather than assumed, because this
+ *  name is what every stream inventory, teardown list and backup check matches on. */
+export function objectStoreStream(bucket: string): string {
+  return `OBJ_${bucket}`;
 }
 /** The lease-key PREFIX token in {@link managerBucket}. The demoted per-instance key is
  *  `${MANAGER_LEASE_KEY}.<instanceId>` ({@link managerLeaseKey}); this bare prefix is no longer written

@@ -190,7 +190,7 @@ try {
   ok("cotal runtimes shows orca as available before install", runtimesBefore.status === 0 && /orca\b.*available.*cotal ext add @cotal-ai\/orca/.test(runtimesBefore.stdout), runtimesBefore.stdout + runtimesBefore.stderr);
   // A truly unknown runtime name is named as such — never a made-up `@cotal-ai/<typo>` package.
   const bogus = cli(["up", "--detach", "--open", "--runtime", "notaruntime", "--space", BARE_SPACE, "--server", SERVER]);
-  ok("an unknown runtime fails with the known-list, not an invented package", bogus.status === 1 && /unknown runtime "notaruntime" \(known: pty, orca, tmux, cmux\)/.test(bogus.stderr) && !/@cotal-ai\/notaruntime/.test(bogus.stderr), bogus.stdout + bogus.stderr);
+  ok("an unknown runtime fails with the known-list, not an invented package", bogus.status === 1 && /unknown runtime "notaruntime" \(known: pty, orca, tmux, cmux, herdr\)/.test(bogus.stderr) && !/@cotal-ai\/notaruntime/.test(bogus.stderr), bogus.stdout + bogus.stderr);
 
   const add = cli(["ext", "add", ORCA_EXTENSION]);
   ok("real Orca package installs through cotal ext", add.status === 0 && /runtime:orca/.test(add.stdout), add.stdout + add.stderr);

@@ -14,6 +14,7 @@ import { completingFlagValue } from "../lib/completion.js";
 import { liveMeshOwner } from "./clean.js";
 import {
   candidateTarget,
+  checkDialPolicy,
   checkEnforcement,
   checkMode,
   checkRoot,
@@ -48,6 +49,7 @@ export const meshesFlags = [
   { name: "root", type: "string", value: "<dir>", description: "add: folder holding this mesh's .cotal/auth + .cotal/agents (default: this project)" },
   { name: "mode", type: "string", value: "<auth|open>", description: "add: how the broker authenticates (default: inferred from --root)" },
   { name: "force", type: "boolean", description: "add: record without verifying, replacing any existing record · rm: drop a running mesh's record" },
+  { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up (recorded on the entry)" },
 ] as const satisfies readonly FlagSpec[];
 
 type Values = FlagValues<typeof meshesFlags>;
@@ -121,7 +123,8 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   if ((!space || !v.server) && canPrompt()) {
     const done = await addWizard(
       { ...(space ? { space } : {}), ...(v.server ? { server: v.server } : {}), ...(v.root ? { root: v.root } : {}),
-        ...(v.mode ? { mode: v.mode } : {}), ...(v.force ? { force: true } : {}) },
+        ...(v.mode ? { mode: v.mode } : {}), ...(v.force ? { force: true } : {}),
+        ...(v["allow-unencrypted-overlay"] ? { allowUnencryptedOverlay: true } : {}) },
       process.cwd(),
     );
     if (!done) process.exitCode = 0; // backing out of a wizard is not a failure
@@ -132,10 +135,17 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     process.exit(1);
   }
   if (!v.server) {
-    console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://10.0.0.5:4222)"));
+    console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://100.90.12.34:4222, its address on your private overlay)"));
     process.exit(1);
   }
   const server = take(checkServer(v.server));
+  // Above the `--force` branch on purpose: this decides whether credentials may cross the network
+  // to that address at all, which `--force` ("the mesh is down right now") must never waive.
+  const dial = take(checkDialPolicy(server, Boolean(v["allow-unencrypted-overlay"])));
+  // A permitted-but-not-guaranteed target is SAID OUT LOUD, never recorded quietly. Today that is
+  // the overlay literal whose protection depends on a tunnel we cannot verify from here; the
+  // operator is the only one who can know whether it is up, so the operator is told.
+  if (dial.residual) console.error(c.yellow(`! ${dial.residual}`));
   const root = take(checkRoot(v.root, process.cwd()));
   const accounts = take(spacesAtRoot(root));
   const mode = take(checkMode(space, root, accounts, v.mode));
@@ -164,7 +174,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     }
   }
 
-  const result = writeRecord({ space, server, root, mode, origin: "manual", ts: new Date().toISOString() });
+  const result = writeRecord({ space, server, root, mode, origin: "manual", ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() });
   console.log(
     c.green(`✓ registered "${space}"`),
     // "recorded without verifying" describes THIS registration, not a durable property of the

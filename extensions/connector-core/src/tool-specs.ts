@@ -662,7 +662,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_persona",
       title: "Cotal: define a persona",
       description:
-        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md), then announce it on the mesh. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).",
+        "Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Silent by default — it posts nothing on the mesh unless you ask it to with `announce`. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).",
       schema: {
         name: z
           .string()
@@ -670,17 +670,53 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -."),
         prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is."),
         model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet)."),
+        announce: z
+          .string()
+          .optional()
+          .describe(
+            "Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message.",
+          ),
       },
       async run(
         agent,
         _config,
-        { name, prompt, model }: { name: string; prompt: string; model?: string },
+        { name, prompt, model, announce }: { name: string; prompt: string; model?: string; announce?: string },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, model });
+          const reply = await agent.definePersona({ name, prompt, model, announce });
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
-          return ok(`Persona \`${name}\` saved — spawn it with cotal_spawn(name="${name}") to bring it online.`);
+          const spawnHint = `spawn it with cotal_spawn(name="${name}") to bring it online`;
+          // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
+          // not a failure. Saying "couldn't define" would name the wrong remediation (the caller
+          // would fix its spawn capability, which was never the problem) and invite a retry — and a
+          // retry that succeeds posts the duplicate announcement this change exists to remove. Say
+          // what happened to each half, and point at the ACL that actually blocked the post.
+          // Two different partial successes, and conflating them is dangerous in the direction this
+          // change cares about. A permission denial PROVES nothing was published. Any other failure
+          // — a reconnect, a publish timeout — leaves the outcome UNKNOWN, because a chat publish
+          // rides JetStream request/PubAck and the stream may have stored the message while the ack
+          // was never observed. Telling someone "it did not go out, post it yourself" on an unknown
+          // outcome is how they post it twice.
+          if (reply.announceError && reply.announceOutcome === "denied")
+            return ok(
+              `Persona \`${name}\` saved — but the announcement to #${announce} was REFUSED and did not go out: ${reply.announceError}. ` +
+                `The persona is on disk; do not re-run this call. Check your \`allowPublish\` for #${announce}, then post it yourself if you still want to. You can ${spawnHint}.`,
+            );
+          if (reply.announceError)
+            return ok(
+              `Persona \`${name}\` saved — but I could NOT CONFIRM the announcement to #${announce}: ${reply.announceError}. ` +
+                `It may or may not have been delivered. The persona is on disk; do not re-run this call, and READ #${announce} before posting anything yourself — posting blind is how the channel gets it twice. You can ${spawnHint}.`,
+            );
+          // Report the destination when there was one, so the caller can tell a silent define from an
+          // announced one without having to go read the channel.
+          return ok(`Persona \`${name}\` saved${announce ? ` and announced on #${announce}` : ""} — ${spawnHint}.`);
         } catch (e) {
+          // A rejected `announce` throws before the manager write, so nothing was saved and the
+          // remediation is the argument, not a capability. controlFailure's spawn-capability advice
+          // would be actively misleading here.
+          const detail = (e as Error)?.message ?? String(e);
+          if (detail.startsWith("announce:"))
+            return err(`Couldn't define ${name}: ${detail}. Nothing was written.`);
           return controlFailure(`Couldn't define ${name}`, e);
         }
       },

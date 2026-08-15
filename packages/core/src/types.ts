@@ -277,9 +277,27 @@ export interface MembershipSnapshot {
  * @pattern ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ */
 export type ExtensionPartKind = `${string}.${string}`;
 
+/** Reference to bytes in the space's artifact store — SPEC §5's reserved slot, now defined. Bare
+ *  (not reverse-DNS) because it is Cotal's own core primitive: extension kinds wrap EXTERNAL
+ *  vocabularies, core kinds are the standard's own. The full contract, the guard, and the
+ *  object-store digest boundary live in `artifact.ts`.
+ *  @see ArtifactPart in ./artifact.js */
+interface ArtifactPartShape {
+  kind: "artifact";
+  /** Human name, e.g. `coverage-report.html`. A publisher's claim, not a checked fact. */
+  name: string;
+  /** MIME type. A publisher's claim. */
+  mediaType: string;
+  /** `sha256:<hex>` over the raw bytes — the artifact's identity. The only self-verifying field. */
+  digest: string;
+  /** Size in bytes. A publisher's claim: a receiver must never preallocate from it. */
+  size: number;
+}
+
 export type Part =
   | { kind: "text"; text: string }
   | { kind: "data"; data: unknown }
+  | ArtifactPartShape
   | { kind: ExtensionPartKind; [key: string]: unknown };
 
 export interface EndpointRef {

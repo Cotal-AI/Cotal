@@ -4,6 +4,7 @@ import {
   agentFilePath,
   loadAgentFile,
   mintCreds,
+  mintLifecycleUid,
   mkSecretDir,
   newIdentity,
   stripSpaceAuth,
@@ -84,15 +85,25 @@ export async function mint(args: ParsedArgs): Promise<void> {
   let allowSubscribe: string[] | undefined;
   let allowPublish: string[] | undefined;
   let role: string | undefined;
+  // The agent profile's dm/dlv/chathist grants are lifecycle-keyed exact names (SPEC 13.1), so
+  // `permissionsFor("agent")` REQUIRES a lifecycleUid and throws without one. This command never
+  // supplied it, which made `cotal mint <name> --profile agent` — the default profile, and the one
+  // its own usage line advertises first — fail on every space with:
+  //   permissionsFor(agent): a lifecycleUid is required
+  // Minting one HERE is the correct owner: a lifecycle uid identifies an incarnation, and an
+  // out-of-band mint IS the first incarnation of that identity. The alternative (accept one as a
+  // flag) would let a caller collide with a live agent's broker footprint by passing its uid.
+  let lifecycleUid: string | undefined;
   if (profile === "agent") {
     const f = agentFilePath(cotalRoot(), name);
     const def = existsSync(f) ? loadAgentFile(f) : undefined;
     allowSubscribe = splitList(values["allow-subscribe"]) ?? def?.allowSubscribe ?? def?.subscribe;
     allowPublish = splitList(values["allow-publish"]) ?? def?.allowPublish;
     role = def?.role;
+    lifecycleUid = mintLifecycleUid();
   }
   const identity = newIdentity();
-  const creds = await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role });
+  const creds = await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid });
   let out: string;
   if (values.out) {
     // An operator-directed EXPORT to an explicit path — outside the canonical kind location,

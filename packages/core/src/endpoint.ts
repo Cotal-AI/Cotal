@@ -23,6 +23,7 @@ import type { EpCaller } from "./endpoint-subjects.js";
 import { assertIdToken } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
+import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
 import {
@@ -356,6 +357,11 @@ export class CotalEndpoint extends EventEmitter {
      *  two claimed sealed-scanner connections are live/gone/unknown via the daemon's $SYS observer
      *  cred (opened per call; read-only, never the evictor). */
     planeConnLiveness?: (query: unknown) => Promise<unknown>;
+    /** Composition-root hook: the freeze-holder liveness probe (#391) — answer whether ONE
+     *  principal still holds any live connection, via the daemon's $SYS observer cred (opened per
+     *  call). The READ half of {@link evictPrincipal}: read-only by construction, so a repair path
+     *  can refuse on a live holder's behalf instead of killing it to find out. */
+    principalLiveness?: (principal: string) => Promise<unknown>;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -2777,10 +2783,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown> } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness };
     await this.armPlane3();
   }
 
@@ -3065,6 +3071,22 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: "planeConnLiveness: no plane-liveness oracle wired on this daemon" };
       try {
         return { ok: true, data: await this.plane3.planeConnLiveness(req.args?.query) };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "principalLiveness") {
+      // The freeze-holder liveness probe (#391): the READ-ONLY half of `evictPrincipal`. A repair
+      // that must REFUSE while the holder is alive cannot use eviction as its own precheck — that
+      // kills the holder before anything can refuse on its behalf. Same executor-hook shape as the
+      // verbs above (the $SYS observer cred lives outside this trust boundary); absent hook =
+      // refused loudly, and the caller maps a refusal to UNKNOWN and never repairs over it.
+      if (!this.plane3?.principalLiveness)
+        return { ok: false, error: "principalLiveness: no liveness oracle wired on this daemon" };
+      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+      if (!principal) return { ok: false, error: "principalLiveness: a principal (owner.actor dot-form) is required" };
+      try {
+        return { ok: true, data: await this.plane3.principalLiveness(principal) };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -4094,10 +4116,18 @@ function isEndpointRef(value: unknown): boolean {
     (value.role === undefined || typeof value.role === "string");
 }
 
+/** A conformant message part: the three CORE kinds, or a reverse-DNS extension kind (SPEC §5).
+ *
+ *  Reached from {@link isCotalMessage}, which gates the Plane-3 delivery frame — so a core kind
+ *  missing an arm here is not a schema nicety: the durable backstop DROPS every message carrying
+ *  it, silently, and the drop surfaces nowhere near the feature that added the part. `artifact`
+ *  was exactly that case before it was added (a bare kind has no dot, so it fell through to the
+ *  extension regex and failed). */
 function isMessagePart(value: unknown): boolean {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   if (value.kind === "text") return typeof value.text === "string";
   if (value.kind === "data") return Object.prototype.hasOwnProperty.call(value, "data");
+  if (value.kind === ARTIFACT_PART_KIND) return isArtifactPart(value);
   return /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(value.kind);
 }
 
@@ -4224,6 +4254,35 @@ export function isPermissionDenied(e: unknown): boolean {
   return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
 }
 
+/** True ONLY for a denial on a **publish** — the single case that proves the message was never
+ *  ACCEPTED or stored. (Not "never reached the server": the server necessarily received enough of
+ *  it to reject it. The distinction matters precisely here, because this helper exists to separate
+ *  provably-not-stored from possibly-stored, and the looser phrasing overstates the very thing
+ *  being measured.) {@link isPermissionDenied} deliberately does not look at the operation: it exists to
+ *  separate "denied" from "service down", and that answer is the same either way. The operation
+ *  matters enormously to a caller that reports *delivery*, because a JetStream publish is
+ *  request/PubAck and the subscription half is the reply inbox — a denial THERE rejects
+ *  `js.publish()` while the stream may already hold the message. Verified against a live broker: a
+ *  user allowed to publish but denied its `_INBOX` subscription got
+ *  `Permissions Violation for Subscription to "_INBOX.….*"` back from `js.publish()`, and an
+ *  unrestricted observer then read `messages: 1` off the stream.
+ *
+ *  Note what is deliberately NOT accepted: the untyped text fallback above. A permission-shaped
+ *  message string carries no operation, so it cannot prove non-delivery, and guessing "publish"
+ *  from wording would reintroduce exactly the false certainty this exists to prevent. Anything not
+ *  provably a publish denial is unknown, and a caller reporting delivery must fail toward
+ *  "I could not confirm" rather than toward "it did not happen" — the costly mistake is telling
+ *  someone to re-send a message that was in fact stored. */
+export function isPublishPermissionDenied(e: unknown): boolean {
+  const typed =
+    e instanceof PermissionViolationError
+      ? e
+      : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError
+        ? ((e as { cause: PermissionViolationError }).cause)
+        : undefined;
+  return typed?.operation === "publish";
+}
+
 /** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
  *  first entry wins) into a host+port for {@link tcpInfoProbe}. Defaults the port to 4222. */
 function hostPort(server: string): { host: string; port: number } {
@@ -4274,6 +4333,43 @@ function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
   });
 }
 
+/** Bounded TCP reachability on a socket we OWN: does a handshake to `server` complete within
+ *  `timeoutMs`? Deliberately narrower than {@link tcpInfoProbe} — it asks only whether the
+ *  transport can be reached, never whether NATS is speaking there, so the TLS-first listener that
+ *  `tcpInfoProbe` reports false for still passes this gate and goes on to a real connect.
+ *
+ *  It exists because `connect()` cannot be trusted to release a connection it never established.
+ *  `@nats-io/transport-node`'s `NodeTransport.dial()` keeps its socket in a local until the
+ *  handshake resolves (`this.socket = await this.dial(hp)`), so `this.socket` is STILL UNDEFINED
+ *  when the client's own connect timeout wins the race in `protocol.ts`'s `dial` and the catch
+ *  calls `transport.close()` — whose teardown is `this.socket?.destroy()`, i.e. a destroy of
+ *  nothing. Against an address that BLACKHOLES (SYN unanswered) rather than REFUSES (RST), the
+ *  socket is orphaned in libuv until the OS SYN timeout, and the process cannot exit for minutes
+ *  after the probe already returned its answer. That is issue #389, and it is upstream: nothing a
+ *  caller passes (`reconnect: false`, `timeout`) reaches the orphan. Our socket, our `destroy()`,
+ *  on every exit path — never an `unref`/force-exit, which would hide the symptom and a future
+ *  real hang with it. */
+function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let socket: ReturnType<typeof createConnection> | undefined;
+    let done = false;
+    const finish = (dialable: boolean) => {
+      if (done) return;
+      done = true;
+      try { socket?.destroy(); } catch { /* already gone */ }
+      resolve(dialable);
+    };
+    let host: string, port: number;
+    try { ({ host, port } = hostPort(server)); } catch { return resolve(false); }
+    socket = createConnection({ host, port });
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => finish(true));
+    socket.on("timeout", () => finish(false)); // blackhole: SYN unanswered inside our deadline
+    socket.on("error", () => finish(false)); // refused / reset / DNS failure
+    socket.on("close", () => finish(false));
+  });
+}
+
 /** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext
  *  liveness check ({@link tcpInfoProbe}): it reads the server's pre-auth `INFO` greeting and closes
  *  WITHOUT authenticating, so a live broker (open OR auth — INFO precedes auth) returns true while
@@ -4286,12 +4382,21 @@ export async function isReachable(
   servers: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? 1000;
   if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls)
-    return tcpInfoProbe(servers, opts.timeoutMs ?? 1000);
+    return tcpInfoProbe(servers, timeoutMs);
+  // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
+  // the same orphaned-socket defect probeConnect did (#389) and takes the same gate: reach the
+  // address on a socket we own first, and give `connect()` the remainder of the budget its own
+  // timeout always covered. A gate failure is a genuine connection failure, which is exactly the
+  // `false` the catch below already returns for one — an auth rejection cannot reach us from an
+  // address that never completed a handshake.
+  const started = Date.now();
+  if (!(await tcpDialable(servers, timeoutMs))) return false;
   try {
     const nc = await connect({
       servers,
-      timeout: opts.timeoutMs ?? 1000,
+      timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
       maxReconnectAttempts: 0,
       ...authOpts(opts),
@@ -4326,10 +4431,21 @@ export async function probeConnect(
   server: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<ProbeResult> {
+  const timeoutMs = opts.timeoutMs ?? 1000;
+  const started = Date.now();
+  // Reach the address on a socket we own BEFORE handing it to `connect()`, which orphans the
+  // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389).
+  // This cannot change any verdict: every address that gets past here had to complete a TCP
+  // handshake for `connect()` to have gotten anywhere either, and a gate failure is routed through
+  // the SAME classification the catch uses — so a locally-dead cred is still `stale-auth` and not
+  // silently downgraded to `unreachable` by the address being dark. The cost is one extra
+  // handshake on the reachable path; the deadline below is the REMAINDER of the budget, because
+  // `connect()`'s own `timeout` always covered its handshake too.
+  if (!(await tcpDialable(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
   try {
     const nc = await connect({
       servers: server,
-      timeout: opts.timeoutMs ?? 1000,
+      timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
       maxReconnectAttempts: 0,
       ...authOpts(opts),
@@ -4337,21 +4453,29 @@ export async function probeConnect(
     await nc.close();
     return { ok: true };
   } catch (e) {
-    // A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) —
-    // and that is knowable LOCALLY, without the network, so it is decided FIRST, before the error
-    // type. On the wire the broker's rejection and the socket close race: a slow CI/Windows handshake
-    // can surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError,
-    // which used to misclassify a dead cred. Reading the cred removes that timing dependency entirely,
-    // so the classification is deterministic. Unreadable content falls through to the wire truth (no
-    // false stale diagnosis from garbage).
-    if (typeof opts.creds === "string") {
-      try {
-        if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
-      } catch { /* not introspectable — keep the wire truth */ }
-    }
-    if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
-    // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
-    if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
-    return { ok: false, reason: "unreachable" };
+    return classifyProbeFailure(e, opts);
   }
+}
+
+/** Why a {@link probeConnect} attempt did not end in `ok`. Shared by the pre-connect reachability
+ *  gate and the connect catch so both classify identically — the gate must never turn a diagnosable
+ *  credential death into a bare `unreachable` just because the address went dark.
+ *
+ *  A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) — and
+ *  that is knowable LOCALLY, without the network, so it is decided FIRST, before the error type. On
+ *  the wire the broker's rejection and the socket close race: a slow CI/Windows handshake can
+ *  surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError, which
+ *  used to misclassify a dead cred. Reading the cred removes that timing dependency entirely, so the
+ *  classification is deterministic. Unreadable content falls through to the wire truth (no false
+ *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect. */
+function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
+  if (typeof opts.creds === "string") {
+    try {
+      if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
+    } catch { /* not introspectable — keep the wire truth */ }
+  }
+  if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
+  // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
+  if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
+  return { ok: false, reason: "unreachable" };
 }

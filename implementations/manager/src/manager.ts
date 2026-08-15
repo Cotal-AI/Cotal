@@ -35,7 +35,11 @@ import {
   resolveAuthProvider,
   saveAgentFile,
   subjectMatches,
-  CONTROL_AUTH_ADMIN,
+  AUTH_ENDPOINT,
+  EP_CMD_RETIRE_LIFECYCLE,
+  epRequestSubject,
+  epCallerReplyFilter,
+  parseEpSubject,
   controlServiceSubject,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
@@ -125,7 +129,7 @@ import {
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerStatus } from "./manager-service-contract.js";
-import type { NatsConnection } from "@nats-io/transport-node";
+import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
   staticLifecycleTransport,
@@ -563,6 +567,51 @@ export interface SpawnAcceptance {
   goalId: string;
   fingerprint: string;
   executor: { lifecycleUid: string; epoch: number };
+}
+
+/** One ep request/reply round-trip on the caller's OWN reply-plane filter (§13.2). The responder
+ *  derives the reply subject from the authenticated request, so there is no caller-selected reply
+ *  target to honour; the caller binds the answer off the reply SUBJECT — endpoint and nonce, both
+ *  broker-pinned by the responder's serve publish grant. A reply on another nonce belongs to a
+ *  different request (the rail is shared) and is ignored rather than allowed to fail this one. */
+export async function epAwaitReply(
+  nc: NatsConnection,
+  space: string,
+  caller: { owner: string; actor: string; uid: string },
+  nonce: string,
+  requestId: string,
+  requestSubject: string,
+  body: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+  let sub: Subscription | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const got = new Promise<{ ok: boolean; data?: unknown; error?: string }>((resolve, reject) => {
+      sub = nc.subscribe(epCallerReplyFilter(space, caller), {
+        callback: (err, msg) => {
+          if (err) { reject(new Error(`the retirement reply subscription failed: ${err.message}`)); return; }
+          const parsed = parseEpSubject(msg.subject);
+          if (!parsed || parsed.plane !== "reply" || parsed.endpoint !== AUTH_ENDPOINT || parsed.nonce !== nonce) return;
+          let body: { ok: boolean; id?: unknown; data?: unknown; error?: string };
+          try { body = JSON.parse(new TextDecoder().decode(msg.data)) as typeof body; }
+          catch { return; } // a malformed body on our nonce is not an answer; keep waiting
+          // REQUIRE THE ID ECHO. Binding on (endpoint, nonce) alone would accept a malformed or
+          // WRONG-ID `{ok:true}` and clear a retirement hold on it. Ignore rather than fail: the
+          // rail is shared across concurrent requests and a responder may publish at any nonce, so
+          // an unmatched reply is someone else's answer, never grounds to fail the honest one.
+          if (body.id !== requestId) return;
+          resolve(body);
+        },
+      });
+      timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      nc.publish(requestSubject, new TextEncoder().encode(body));
+    });
+    return await got;
+  } finally {
+    if (timer) clearTimeout(timer);
+    try { sub?.unsubscribe(); } catch { /* connection already down */ }
+  }
 }
 
 export class Manager {
@@ -1075,7 +1124,7 @@ export class Manager {
    *
    *  The manager is the renewal owner for every credential it CAN re-sign, and these two are the ones
    *  it cannot: they are `rotation-renewed`, so no resident process re-mints them and they simply die
-   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all —
+   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all,
    *  it discovered the expiry as an "Authorization Violation" in the delivery log and a refused
    *  membership adoption, weeks after the warning would have been actionable (#338). The pass runs
    *  every half-TTL of the 24h class, so this repeats about twice a day for the ~7 days between the
@@ -2329,8 +2378,10 @@ export class Manager {
     }
     await this.deprovisionBroker(a);
     // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
-    // the auth-admin rail. The rail re-checks the space-manager lease at serve time; the terminal
-    // (or an already-retired answer) clears the name reservation. Failures keep the hold with
+    // the auth endpoint rail. The rail re-checks the SERVE-ISSUANCE GATE at serve time (not the
+    // space-manager lease - that check was replaced in 02794b2f) and refuses unless the registration
+    // this request names belongs to our own principal; the terminal (or an already-retired answer)
+    // clears the name reservation. Failures keep the hold with
     // their operator copy — legible, retryable, never a silent half-state.
     await this.requestRetirement(a);
   }
@@ -2373,23 +2424,46 @@ export class Manager {
     const uncertain = (why: string) =>
       `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`;
     try {
-      const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", { retirementRequester: { owner: me.owner, actor: me.actor } });
+      // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
+      // rides the subject, so this ephemeral credential can ask to retire exactly this
+      // incarnation and nothing else.
+      const caller = { owner: me.owner, actor: me.actor, uid: this.managerLifecycleUid };
+      const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
+        retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
+      });
       const nc = await connect({ servers: this.servers ?? DEFAULT_SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
       try {
-        const subject = controlServiceSubject(this.space, CONTROL_AUTH_ADMIN, me.owner, me.actor);
-        const m = await nc.request(
-          subject,
-          // P2 item 3 (3b-3): declare THIS manager instance's current serve identity so the rail's
-          // holder check is registration-record-derived (the serve-issuance gate), not a name-derived
-          // "the manager". A superseded predecessor (same instanceId, OLD epoch after a restart) is
-          // then refused at the rail — its declared epoch no longer matches the gate's current one.
-          JSON.stringify({ op: "retireLifecycle", args: {
-            owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid, opId: retireOpId(a.lifecycleUid),
+        // §13.2 nonce: >=128 bits of CSPRNG entropy, base64url (the `endpoint-invoke` idiom).
+        const nonce = randomBytes(24).toString("base64url");
+        // The caller-chosen request id the reply MUST echo (the minimal correctness guard from the
+        // not-yet-migrated endpoint envelope - see the residual in the auth listener).
+        const requestId = randomBytes(16).toString("base64url");
+        const subject = epRequestSubject(this.space, {
+          route: { mode: "one" },
+          endpoint: AUTH_ENDPOINT,
+          command: EP_CMD_RETIRE_LIFECYCLE,
+          // The TARGET rides the subject (authz mode `handle`, arity 3) — broker-enforced, and
+          // pinned by the grant minted above, so it is not a body claim the caller can vary.
+          target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: a.lifecycleUid },
+          caller,
+          nonce,
+        });
+        // The responder derives its OWN reply subject from this request (caller triple + nonce,
+        // prefixed with the RESPONDER's instance identity), so a caller-supplied `reply` header
+        // would be ignored — that is the confused-deputy boundary being structural. The caller
+        // therefore reads its own reply-plane filter and binds the answer off the reply SUBJECT.
+        const m = await epAwaitReply(nc, this.space, caller, nonce, requestId, subject,
+          // Declare THIS manager instance's serve identity. Since #350 these SELECT the gate row;
+          // they no longer authorize — the rail refuses unless the row they name belongs to this
+          // caller's own subject-derived principal. A superseded predecessor (same instanceId, OLD
+          // epoch after a restart) is still refused by the epoch comparison.
+          JSON.stringify({ id: requestId, op: "retireLifecycle", args: {
+            opId: retireOpId(a.lifecycleUid),
             serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch: this.serviceServe?.grant.epoch ?? 0,
           } }),
-          { timeout: 20_000, noMux: true, reply: `${subject}.reply.${randomUUID()}` },
+          20_000,
         );
-        const r = m.json<{ ok: boolean; data?: unknown; error?: string }>();
+        const r = m as { ok: boolean; data?: unknown; error?: string };
         if (r.ok) {
           // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
           // lifecycle's - a late reply for a retired predecessor must never clear a successor's newer hold.
@@ -4693,6 +4767,21 @@ export class Manager {
     // fallback below must fire only when `onOutcome` never ran at all, never as a second attempt
     // behind a commit that threw.
     let terminalEntered = false;
+    // TWO DIFFERENT QUESTIONS, DELIBERATELY NOT ONE FLAG.
+    //
+    //   `terminalEntered`  HAS this goal already been settled (or claimed) by someone?
+    //   `ownsGoal`         MAY THIS ATTEMPT settle it at all?
+    //
+    // The second is the authority, and it is default-CLOSED: an attempt earns it by WINNING the
+    // create-only `bindGoal` CAS below, and nothing else grants it. That matters because the
+    // post-accept fallback exists to settle a goal nobody answered, so every new way of leaving
+    // this function is opted INTO committing a terminal unless something stops it. Deriving the
+    // right from the claim instead of from a running record means a losing attempt CANNOT commit
+    // down any unwind path, including ones added later that never thought about this. Collapsing
+    // the two into one boolean is what let a duplicate-goal loser steal the winner's terminal
+    // (#357): it had entered no terminal, so the fallback wrote one for it, using its own abort
+    // message as the caller-visible outcome.
+    let ownsGoal = false;
 
     // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
@@ -4705,6 +4794,11 @@ export class Manager {
     // path — one commit site, so the progress event, the index clear and the `agentGoals` cleanup
     // cannot drift between a normal outcome and a recovered one.
     const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<void> => {
+      // THE AUTHORITY CHECK, and the only one. An attempt that never won the bind provisioned
+      // nothing and has no outcome to report: the goal belongs to whoever won it, in this
+      // incarnation or a sibling. Refusing here rather than at each unwind site is the point --
+      // there is exactly one commit path, so this fences every route into it, present and future.
+      if (!ownsGoal) return;
       terminalEntered = true; // entered, not succeeded — see the catch below
       try {
         await this.assertGoalWriterEpochCurrent(epoch); // must-5 (a): a superseded corpse never commits
@@ -4753,6 +4847,7 @@ export class Manager {
         if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
           acceptance = this.acceptanceFromIndex(idx.existing, goalId, fingerprint, executor);
           resolveAccept(acceptance);
+          // No claim needed here: `ownsGoal` is still false, so the commit path refuses this attempt.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
         }
         // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
@@ -4765,10 +4860,16 @@ export class Manager {
           // (no second spawn). The throw unwinds to the finally, which releases this attempt's reserve.
           acceptance = this.goalAcceptances.get(goalId) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
           resolveAccept(acceptance);
+          // No claim needed here either. This attempt lost the CAS, so `ownsGoal` is still false and
+          // the single check in `onOutcome` refuses it. Before that check existed this site had to
+          // remember to claim the terminal by hand, and the one place that forgot is how a loser
+          // came to commit `failed` on the winner's goal, using its own abort text as the outcome.
           // Unwind the provision (the acceptance is already served); the code is discarded by the
           // caller (acceptance !== undefined), so it just aborts this attempt's side-effects.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already accepted; the cached acceptance is served`);
         }
+        // WON the claim: this attempt, and only this attempt, may settle this goal.
+        ownsGoal = true;
         await createGoal(gw.ctx, ref, {
           fingerprint,
           command: ctx.subject.command,

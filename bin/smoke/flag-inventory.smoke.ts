@@ -33,7 +33,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
       "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
-      // `--rotate-sys` (2026-08): the class-3 renewal — rotate the system account and re-mint the
+      // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
       "rotate-sys:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
@@ -46,7 +46,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `meshes` gained the registry-maintenance verbs (2026-08): `add <space> --server … [--root]
   // [--mode]` registers a mesh this machine did NOT start, `rm <space> …` drops records. `--force`
   // is add's unverified/replace escape and rm's running-mesh override. Bare `meshes` still lists.
-  meshes: { flags: ["force:boolean", "mode:string", "root:string", "server:string"], positionals: true },
+  // `--allow-unencrypted-overlay` (2026-08): registering an overlay address is refused unless the
+  // operator accepts, explicitly, that it is protected only while the tunnel is up. A printed
+  // warning was not a fence (stderr is unread by scripts, and it was not persisted).
+  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "mode:string", "root:string", "server:string"], positionals: true },
   status: { flags: ["server:string", "space:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
@@ -117,13 +120,21 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
+  // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391). It is
+  // a CLI command rather than a manager admin verb because the state it repairs IS "the manager
+  // cannot complete registration" — an endpoint-served repair would be unreachable exactly when it
+  // is needed. No `--force`: the only way it reopens a gate is by proving the holder is gone.
+  "reconcile-gate": {
+    flags: ["endpoint:string", "instance:string", "server:string", "space:string"],
+    positionals: false,
+  },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
-  stop: { flags: [...TARGET, "name:string"], positionals: false },
+  stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   ps: { flags: [...TARGET, "on:string"], positionals: false },
-  attach: { flags: [...TARGET, "name:string"], positionals: false },
+  attach: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   deliver: {
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped

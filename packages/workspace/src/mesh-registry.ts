@@ -75,6 +75,13 @@ export interface MeshEntry {
    *  merely found a broker already answering (it starts nothing, so it keeps the origin). A `cotal
    *  up` for that space anywhere else refuses outright rather than reclaim the name. */
   origin?: "up" | "manual";
+  /** Present and true when the operator EXPLICITLY accepted registering an overlay address that
+   *  this build cannot encrypt (`--allow-unencrypted-overlay`). Recorded rather than inferred: the
+   *  address class is re-derivable from `server`, but CONSENT is not, and a dial that happens long
+   *  after the tunnel went down should be able to tell that a human agreed to the dependency
+   *  rather than reading agreement out of an address. Absent means no such acceptance was given,
+   *  which is every record written before the flag existed. */
+  unencryptedOverlay?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
 }
@@ -222,7 +229,7 @@ export function pruneMesh(space: string): boolean {
  *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps
  *  the short form there rather than expanding it. realpath collapses both. Falls back to `resolve`
  *  for a root that no longer exists on disk. */
-function canonicalRoot(p: string): string {
+export function canonicalRoot(p: string): string {
   try { return realpathSync.native(p); } catch { return resolve(p); }
 }
 

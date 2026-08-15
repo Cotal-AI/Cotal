@@ -59,7 +59,7 @@ const STATUS_OUTPUT_SCHEMA = {
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
-    /** The runtime kind serving agents (pty/tmux/cmux/orca). */
+    /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
     /** How many agents this manager currently supervises. */
     agentCount: { type: "integer", minimum: 0 },

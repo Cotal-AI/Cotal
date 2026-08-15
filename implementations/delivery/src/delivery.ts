@@ -3,6 +3,7 @@ import {
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
+  accountFromCreds,
   credsClaims,
   idFromCreds,
   isReachable,
@@ -14,7 +15,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { executeEviction, executePlaneLiveness } from "./evict-exec.js";
+import { executeEviction, executePlaneLiveness, executePrincipalLiveness, type ScanTarget } from "./evict-exec.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -159,6 +160,16 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     process.exit(1);
   }
 
+  // PIN THE SCAN TARGET ONCE, HERE. The $SYS sweeps below resolve an ACCOUNT, and a complete sweep
+  // of the WRONG account is indistinguishable from "the principal is gone" — a healthy-looking
+  // answer that authorizes eviction and gate reconciliation. Resolving the root per request from
+  // `process.cwd()` let that drift; and a daemon started in a foreign mesh root would sweep a
+  // foreign tenant while looking entirely well. So: the root is fixed at start, and the account on
+  // disk is cross-checked against the account this daemon's OWN credential authenticates as — a
+  // fact that does not come from that root, which is what makes it an independent check.
+  const scanTarget: ScanTarget = { root: findCotalRoot(), expectedAccount: accountFromCreds(creds.initial) };
+  console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
+
   const ep = new CotalEndpoint({
     space,
     servers: server,
@@ -218,10 +229,14 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     },
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
-    evictPrincipal: (principal) => executeEviction(server, principal),
+    evictPrincipal: (principal) => executeEviction(server, scanTarget, principal),
     // Plane-claim liveness oracle (#29 HIGH 3): read-only $SYS CONNZ per call; the auth plane's
     // stale-claim reclaim gates on this verdict (any refusal/unknown blocks takeover, fail-closed).
-    planeConnLiveness: (query) => executePlaneLiveness(server, query),
+    planeConnLiveness: (query) => executePlaneLiveness(server, scanTarget, query),
+    // Freeze-holder liveness probe (#391): read-only $SYS CONNZ per call — the READ half of
+    // evictPrincipal, so gate reconciliation can refuse on a live holder's behalf rather than
+    // killing it to discover it was alive (any refusal/unknown blocks the repair, fail-closed).
+    principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
@@ -241,7 +256,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     ({ handle: membership, down: membershipDown } = await startMembership({ space, server }, store));
   } catch (e) {
     membershipDown = (e as Error).message;
-    console.error(`! membership: failed to start (${membershipDown}) — graph membership degraded, delivery unaffected`);
+    console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
   }
 
   let stopping = false;

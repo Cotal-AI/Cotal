@@ -260,6 +260,15 @@ importers:
         specifier: ^4.22.4
         version: 4.22.4
 
+  extensions/herdr:
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/orca:
     devDependencies:
       '@cotal-ai/core':
@@ -345,6 +354,9 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
       '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/obj':
         specifier: ^3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
@@ -492,6 +504,9 @@ importers:
       '@nats-io/nkeys':
         specifier: ^2.0.3
         version: 2.0.3
+      '@nats-io/obj':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
@@ -1350,6 +1365,9 @@ packages:
     resolution: {integrity: sha512-QbXZDrxmYlrn5AD06gYcUTmEHwxn96HBQMIk7XTjDlEcx6FPzVBBPjp4AMRh1lEv6B4iJ6Xb/Uz61JugPXFRQg==}
     engines: {node: '>= 22.x'}
 
+  '@nats-io/obj@3.4.0':
+    resolution: {integrity: sha512-zQRyrbxVtapKtqlxcA7qiMBN5aoo1aqSLNHyTZY9d6xBmBAYsw7sfYfSdHSguiR7GXtEjFgFnynTcv7Rw9MIrg==}
+
   '@nats-io/transport-node@3.4.0':
     resolution: {integrity: sha512-hH7u7ejIBTFEJIZ8rIcMrHJI6wl+HhpO5sVFs1+ppmXa8RuB2+Lh1+UwTzZ5xTNNm1TKcRkYy+2qCV56qp8RxA==}
     engines: {node: '>= 18.0.0'}
@@ -2120,6 +2138,9 @@ packages:
 
   jose@6.2.3:
     resolution: {integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==}
+
+  js-sha256@0.11.1:
+    resolution: {integrity: sha512-o6WSo/LUvY2uC4j7mO50a2ms7E/EAdbP0swigLV+nzHKTTaYnaLIWJ02VdXrsJX0vGedDESQnLsOekr94ryfjg==}
 
   js-yaml@3.15.0:
     resolution: {integrity: sha512-ttBQIIQPDeLjpPOohtUdXuXUVoA2uIB6fEH9HyJ7234s5mBJ5wTx20njxplLZQgLaOfpmPQA7X2t5AX6tIPbog==}
@@ -3596,6 +3617,12 @@ snapshots:
 
   '@nats-io/nuid@3.0.0': {}
 
+  '@nats-io/obj@3.4.0':
+    dependencies:
+      '@nats-io/jetstream': 3.4.0
+      '@nats-io/nats-core': 3.4.0
+      js-sha256: 0.11.1
+
   '@nats-io/transport-node@3.4.0':
     dependencies:
       '@nats-io/nats-core': 3.4.0
@@ -4372,6 +4399,8 @@ snapshots:
   jiti@2.7.0: {}
 
   jose@6.2.3: {}
+
+  js-sha256@0.11.1: {}
 
   js-yaml@3.15.0:
     dependencies:

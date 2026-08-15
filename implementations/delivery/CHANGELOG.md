@@ -1,5 +1,162 @@
 # @cotal-ai/delivery
 
+## 0.18.0
+
+### Minor Changes
+
+- 208ad1f: Add a guarded way out of an issuance gate left frozen by a crashed manager restart.
+
+  When a manager restart is killed between deregistration and the successor's completion, the
+  endpoint's issuance gate is left frozen under a registration operation whose holder no longer
+  exists. Failing closed there is correct — it is what stops two incarnations serving at once — but
+  until now nothing could lift it, so every subsequent restart failed the same way and the only exits
+  were driving the internals by hand or discarding state.
+
+  `cotal reconcile-gate` verifies the freeze-holder is gone, logs what it found, and then completes
+  the dead operation exactly as the interrupted restart would have: revoke the credential family,
+  verify-evict its holders, and reopen the gate at the unchanged coordinate with the generation
+  advanced by one. It is a CLI command rather than a verb on the manager endpoint because the state
+  it repairs is precisely "the manager cannot complete registration" — an endpoint-served repair
+  would be unreachable exactly when it is needed.
+
+  The affirmative check required a read half that did not exist. The only principal-scoped liveness
+  was fused with the KICK inside `evictPrincipal`, so using it as a precheck would have killed a live
+  holder before anything could refuse on its behalf. This adds a read-only `principalLiveness`
+  delivery-admin verb (observer credential only, closed query, a reply bound to the exact principal
+  asked about) reporting `live` / `gone` / `unknown` with scan completeness kept separate. Its sweep
+  is the strict one the plane-liveness oracle already used — full reply validation plus the
+  single-server proof — now extracted and shared by both, so a probe can never be laxer than the
+  repair it authorizes.
+
+  Every refusal names its condition (`holder-alive`, `holder-unknown`, `liveness-unestablishable`,
+  `not-frozen`, `wrong-op-kind`, `no-gate`, `eviction-unverified`, `raced`). A timeout is
+  unknowability rather than death, the probe is a precondition on top of the barrier's own verified
+  eviction rather than a replacement for it, and there is no force flag and no path that discards
+  gate state.
+
+  Two defects in the shared `$SYS` scan surface were found while proving this and are fixed here,
+  because the guarded command is only as good as the observation it stands on.
+
+  A paginated CONNZ sweep could read a **lost later page as sweep-complete**. The first page comes
+  back full with more promised, the next round is silent or answers with an empty page while its own
+  total still says there is more, and the loop treated that as the end of the data. Since "complete
+  sweep, principal not found" is the definition of verified-gone, a connection living on the page that
+  was never delivered read as absent — so verified eviction could report gone for a principal that was
+  alive. Both the read-only observation and the scan/kick/re-scan primitive had the same shape, which
+  also meant the two of them were not the independent checks they looked like. A sweep now tracks
+  which servers still owe it a page and fails closed when one stops delivering; a sweep that genuinely
+  finishes across several pages still concludes gone, so nothing wedges.
+
+  The delivery daemon's `$SYS` sweeps were **not bound to the account it serves**. All three
+  delivery-admin executors resolved their scan account from the working directory at request time, and
+  the detached daemon inherits its launcher's directory for life — so a daemon started from a tree
+  that resolves a different mesh root would sweep a foreign account and answer a confident, wrong
+  "gone". The root is now pinned once at start, and the account read from disk is cross-checked
+  against the account the daemon's own credential authenticates as.
+
+### Patch Changes
+
+- Updated dependencies [0ab9b4d]
+- Updated dependencies [208ad1f]
+- Updated dependencies [665b378]
+- Updated dependencies [4d14037]
+- Updated dependencies [f6b8b27]
+- Updated dependencies [d361951]
+  - @cotal-ai/core@0.18.0
+  - @cotal-ai/workspace@0.18.0
+
+## 0.17.0
+
+### Minor Changes
+
+- 185e721: Renew the `$SYS` credentials without tearing the space down.
+
+  `membership-observer.creds` and `connection-evictor.creds` carry a 30-day expiry and are signed by
+  the system-account seed, which is never persisted, so nothing re-signs them in place. The only
+  repair the tooling named was "`cotal down` then a fresh `cotal up`", and that did nothing: `up`
+  mints the pair only on the branch that _creates_ the trust record, so re-upping a provisioned space
+  reused the same expired files and reported success. A long-running mesh therefore lost its
+  membership feed and live connection eviction every 30 days with no supported way back.
+
+  `cotal up --rotate-sys` is that way back. It issues a new system account under the same broker
+  operator, mints both `$SYS` creds against it, and renders the broker config from the rotated record,
+  so the broker it starts is the one that trusts them. The data account, the account signing key,
+  every agent credential minted from it and the JetStream store are untouched; what dies is the
+  retired system account, on every broker that loads the rotated config. It is refused wherever the
+  on-disk material and the broker could end up on different generations: a running mesh; an open mesh,
+  whether that comes from `--open` or from `broker.auth: false` in a manifest; `--restore`; an
+  unfinished restore or resume attempt on the root, including one a bare `cotal up` would recover,
+  since those paths can adopt a live listener and return without booting a broker; and a root hosting
+  more than one space, because the system account lives in the shared broker record and the rotation is
+  therefore broker-wide. `rotateSystemCreds` is exported from `@cotal-ai/workspace` and carries the
+  multi-tenant guard itself rather than at the CLI flag. It is deliberately a workstation operation and
+  takes no `SecretStore`: the `$SYS` pair has no store seam to be written through, and because a
+  `SecretStore` cannot be enumerated, accepting one would mean a broker-wide guard that reads a local
+  filesystem while enforcing nothing for the tenants actually at risk.
+
+  A rotation requires every broker for the root to be stopped, and three checks now say so: this root's
+  recorded mesh at the requested address, anything unidentified answering there (which refuses instead
+  of relocating to a free port), and the root's own ownership records: a live or unreadable `nats.pid`,
+  or any recorded mesh for this root still reachable. Without them a lost registry row, or a
+  `nats-server` started by hand against this root's `server.conf`, was enough to bypass the running-mesh
+  refusal: `up` found the port busy, picked a free one, rotated, and left the old broker serving the
+  retired config while a second one ran against the same JetStream store. These are Cotal's ownership
+  records rather than a scan of the process table, and the docs say so: a hand-started broker on a
+  different port writes none of them and is the named residual.
+
+  Two consequences the tooling now states rather than leaving to be discovered. The retirement is
+  config-load-bound, so a stale broker still running the previous config keeps honouring the old creds
+  until it is stopped. And a full backup binds to the trust chain it was taken against, which includes
+  the operator JWT and the system account, so every full artifact taken before a rotation refuses to
+  restore afterwards: the rotation says so as it happens, and `cotal up --restore` names the drift when
+  the data account still matches. The commit is a trust-record write plus two credential writes, so an
+  interrupted rotation leaves the record ahead of the creds; that split is detected rather than
+  silent. One shared check compares each `$SYS` cred's issuer against the persisted record, and it
+  runs on every auth-mesh boot as well as in `cotal doctor auth`, so the state cannot pass unremarked
+  by a mesh that simply never runs the doctor. The boot REFUSES rather than warning: a warning becomes an unread log line
+  under `--detach`'s success output, and live connection eviction rides the same credential pair, so
+  booting would silently downgrade revocation to deny-new for the life of the mesh. The delivery daemon, which never
+  loads the signer and so cannot read the record, compares the two creds against each other instead.
+
+  The recovery is covered end-to-end as well as in unit form: a suite drives the packaged binary
+  against a real broker, a real delivery daemon and a real manager, on a root whose `$SYS` pair is
+  already past its horizon. It asserts the reported symptom (the daemon's membership feed does not
+  start, and says which credential and which repair), that `down` + a plain `up` leaves both files
+  byte-identical and the doctor red, and that `down` + `up --rotate-sys` clears it in the daemon that
+  reported it. The survival claim is checked rather than asserted: an agent credential minted before
+  the rotation still connects afterwards, the CHAT stream returns at the same sequence and count, and
+  registry state written before the rotation reads back through the CLI after it.
+
+  Diagnosis now names the cause instead of the symptom. An expired observer cred used to surface as a
+  bare "Authorization Violation" in the delivery log and, one layer up, as a `membership-rw` adoption
+  refused with "membership feed is not running", neither of which mentions a credential. The daemon
+  checks the observer's own expiry before connecting and reports it, carries that reason into the
+  adoption reply, and the manager warns on every renewal pass from the 75% point onward rather than
+  letting the mesh discover the expiry at the horizon. `cotal doctor auth`, `evictPrincipal`,
+  `planeConnLiveness` and the two mint errors now print the repair that works. Where the feed is down
+  because its bundle is incomplete rather than expired, the daemon now names the missing files and
+  distinguishes the two cases: a missing `$SYS` observer is re-minted by a rotation, while a space
+  predating broker-sourced membership is missing the rw cred and the account id as well, which a
+  rotation does not write, so it is told the truth rather than sent through a stop/start that cannot
+  help it.
+
+### Patch Changes
+
+- Updated dependencies [975cad1]
+- Updated dependencies [c76a49d]
+- Updated dependencies [fd361fe]
+- Updated dependencies [2768f5b]
+- Updated dependencies [019afc3]
+- Updated dependencies [3539f20]
+- Updated dependencies [f85ffbf]
+- Updated dependencies [141c4dd]
+- Updated dependencies [14ff831]
+- Updated dependencies [11cd652]
+- Updated dependencies [9e13648]
+- Updated dependencies [185e721]
+  - @cotal-ai/core@0.17.0
+  - @cotal-ai/workspace@0.17.0
+
 ## 0.16.0
 
 ### Patch Changes

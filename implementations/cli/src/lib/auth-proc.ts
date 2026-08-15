@@ -12,7 +12,9 @@ import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, 
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness } from "./pid.js";
+import { parsePid, probeLiveness, type LivenessProbe } from "@cotal-ai/workspace";
+import type { SignalFn } from "./manager-proc.js";
+
 import { selfArgv } from "./self-exec.js";
 import { cotalPath } from "./paths.js";
 
@@ -34,7 +36,7 @@ function readPidPath(space: string): string {
   return l && !c ? legacy : canonical;
 }
 
-// parsePid + probeLiveness (the pid-attribution contract) live in ./pid.js, shared with `down` so
+// parsePid + probeLiveness (the pid-attribution contract) live in @cotal-ai/workspace, shared so
 // there is exactly ONE parser + ONE tri-state probe across the pidfile subsystem.
 
 // Provider resolution now lives in core (the manager needs the identical resolution); re-exported
@@ -201,7 +203,8 @@ export async function ensureAuthService(opts: {
  *  that would make `process.kill` signal a whole process GROUP) is NEVER removed and fails loud -
  *  silently dropping it would orphan a live signer behind a torn/tampered pidfile while reporting a
  *  clean stop. */
-export function stopAuthService(space: string): void {
+export async function stopAuthService(space: string, probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
+  const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
   if (!existsSync(p)) return;
   const trimmed = readFileSync(p, "utf8").trim();
@@ -215,7 +218,7 @@ export function stopAuthService(space: string): void {
       `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
     );
   try {
-    process.kill(pid, "SIGTERM");
+    send(pid, "SIGTERM");
   } catch (e) {
     // ESRCH = already gone, so removing its record is safe. EPERM (exists, another user's) or any
     // other errno means we could NOT stop it - removing the record would orphan a live signer while
@@ -225,5 +228,16 @@ export function stopAuthService(space: string): void {
         `could not stop auth-service (pid ${pid}) at ${p} (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to remove a record for a process it could not signal; stop it manually`,
       );
   }
+  // A signal ACCEPTED is not a death. This deleted the record immediately after SIGTERM, so a
+  // service that ignores or is slow to handle it was reported stopped while still running, with its
+  // pidfile gone. Same shape as the manager and delivery helpers; proven with a child that installs
+  // a no-op SIGTERM handler. Preserve the record unless death is confirmed.
+  const deadline = Date.now() + 15_000;
+  // AWAIT: same reaping hazard as stopManager. A blocked event loop never reaps the child.
+  while (probe(pid) !== "dead" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  if (probe(pid) !== "dead")
+    throw new Error(
+      `auth-service (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile at ${p} was preserved rather than recording a stop that did not happen - check \`ps -p ${pid}\``,
+    );
   rmSync(p, { force: true });
 }

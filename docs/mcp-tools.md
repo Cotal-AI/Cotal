@@ -24,7 +24,7 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_spawn`](#cotalspawn) | spawn a new teammate | starts a new agent process via the manager |
 | [`cotal_feedback`](#cotalfeedback) | send beta feedback | sends data to an external HTTPS intake (network egress) |
 | [`cotal_despawn`](#cotaldespawn) | stop a teammate | stops a teammate (or yourself) |
-| [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable) |
+| [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
 
 ## `cotal_orientation`
@@ -271,17 +271,18 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 
 *define a persona*
 
-Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md), then announce it on the mesh. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
+Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). Silent by default — it posts nothing on the mesh unless you ask it to with `announce`. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. Use to grow the team with a custom persona you describe on the fly; set its role at spawn (cotal_spawn takes a role).
 
-- **Side-effect:** writes a persona file via the manager (becomes spawnable).
+- **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
-- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy.
+- Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. Defining is silent by default — `announce` is the only way it emits, and then only to the channel you name.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). |
+| `announce` | string | no | Optional channel to post a one-line note on once the persona is saved. Omit (the default) and defining is silent — nothing goes out on the mesh. Name the channel your team is actually working on, not `general`: a peer that did not ask for this persona has no way to judge whether spawning it is wanted, and a broadcast soliciting spawns from an unfamiliar principal reads as exactly the thing a peer should refuse. Your post ACL applies as it does to any other message. |
 
 ## `cotal_reconnect`
 

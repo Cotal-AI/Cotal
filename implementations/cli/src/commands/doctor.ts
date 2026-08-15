@@ -174,7 +174,7 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
         // branch that CREATES the trust record, so re-upping an existing space reuses the same
         // expired files and reports success. The rotation must be asked for.
       : `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
-  // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads —
+  // A $SYS cred is only usable if the system account that SIGNED it is the one the broker loads,
   // i.e. the one in this root's trust record. Expiry alone cannot see a RETIRED issuer: a rotation
   // that committed the record and then died leaves a file that is structurally valid and years from
   // expiry, yet broker-dead. Without this the doctor reported `auth: healthy` over exactly that

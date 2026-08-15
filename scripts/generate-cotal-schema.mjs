@@ -36,9 +36,24 @@ for (const variant of message.anyOf) {
 message.oneOf = message.anyOf;
 delete message.anyOf;
 
-if (!part?.anyOf || part.anyOf.length !== 3) {
-  throw new Error("expected Part to generate core text, core data, and extension variants");
+// One variant per CORE kind plus the reverse-DNS extension variant. The count is asserted rather
+// than inferred so adding a core kind cannot silently skip the `oneOf` conversion below — which is
+// what makes the variants mutually exclusive instead of merely permitted.
+const PART_VARIANTS = 4; // text, data, artifact, extension
+if (!part?.anyOf || part.anyOf.length !== PART_VARIANTS) {
+  throw new Error(`expected Part to generate ${PART_VARIANTS} variants (text, data, artifact, extension), got ${part?.anyOf?.length}`);
 }
+// The schema is AUTHORITATIVE for message shapes (SPEC §5), so it must not be looser than the
+// runtime guard — a schema admitting `digest: "banana"` while `isArtifactPart` refuses it means the
+// two disagree about what a conformant message is, and the spec says the schema wins. TypeScript
+// cannot express either constraint, so both are pinned here, the same way ExtensionPartKind's
+// pattern is below.
+const artifactPart = part.anyOf.find((v) => v.properties?.kind?.const === "artifact");
+if (!artifactPart) throw new Error("expected an artifact Part variant");
+artifactPart.properties.digest.pattern = "^sha256:[0-9a-f]{64}$";
+artifactPart.properties.size.type = "integer";
+artifactPart.properties.size.minimum = 0;
+
 part.oneOf = part.anyOf;
 delete part.anyOf;
 

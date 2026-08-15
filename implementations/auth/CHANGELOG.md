@@ -1,5 +1,149 @@
 # @cotal-ai/auth
 
+## 0.18.0
+
+### Minor Changes
+
+- 0ab9b4d: Move the auth plane's retirement rail off the retired `ctl` surface onto the endpoint subjects
+
+  The auth plane served its generic "retire a lifecycle" operation on
+  `ctl.auth-admin.<owner>.<actor>`, a rail the spec retires in full and states must
+  not be handled. Rows written onto a deleted rail are defects rather than
+  exceptions to it, so the rail moves to
+  `ep.one.auth.retire-lifecycle.handle.<target triple>.<caller triple>.<nonce>`
+  instead of the cut growing a carve-out.
+
+  Two things get stronger on the way. The reply is now derived from the parsed
+  request, so there is no argument through which a caller- or payload-supplied
+  reply target could arrive; and the request and reply planes are disjoint, so the
+  listener credential cannot express a request subject at all. The per-despawn
+  requester credential now pins both its caller triple and exactly one target
+  incarnation, so a leaked requester cannot be re-aimed at another lifecycle.
+
+  Serve-time authorization additionally requires that the serve registration a
+  request names belongs to the requesting principal. The previous two-token
+  subject could not express the caller beyond a recyclable alias, so the rail
+  accepted any registered instance's registration. This is alias-level binding:
+  the registration is keyed by an id that is stable across restarts and carries no
+  lifecycle uid, so a same-principal predecessor presenting the current epoch is
+  still accepted.
+
+  The spec rows also described an authorization mechanism the implementation had
+  already replaced, and now describe what ships.
+
+  This is a subject-plane migration, not a completed endpoint migration. The rail
+  carries the endpoint subjects but still exchanges the pre-v0.4 request and reply
+  bodies, registers no service record, serves no `describe`, and has no contract
+  artifact — so a generic endpoint client can neither discover nor invoke the
+  command. That gap is tracked separately, with the acceptance test being that a
+  generic client can do both. The one acceptance-path hole is closed here rather
+  than deferred: the request carries an id, the reply echoes it, and a reply that
+  does not echo is refused, so a wrong-id success cannot clear a retirement hold.
+
+  The requester's grant pins its target with the `handle` mode, which is normatively
+  redemption-minted. This path is not: there is no issuer-signed artifact, no
+  redemption step, and no lineage — the row is built directly from the minting
+  manager's coordinates under root authority. It is used because it is the only
+  target mode that can pin an exact incarnation, and the serve-time handler
+  re-checks that triple against the current mapping. This is a documented
+  deviation, not compliant handle semantics, and it is stated at the mint site and
+  in the ownership matrix row. It resolves with the same tracked work as the
+  envelope, since the mode and the envelope are one wire-conformance surface.
+
+### Patch Changes
+
+- Updated dependencies [0ab9b4d]
+- Updated dependencies [208ad1f]
+- Updated dependencies [665b378]
+- Updated dependencies [4d14037]
+- Updated dependencies [f6b8b27]
+- Updated dependencies [d361951]
+  - @cotal-ai/core@0.18.0
+  - @cotal-ai/workspace@0.18.0
+
+## 0.17.0
+
+### Patch Changes
+
+- 14ff831: Stop reading another user's live process as dead.
+
+  Asking the kernel about a process has three answers, not two: it is there, it is gone, or it is
+  there but not ours to signal (`EPERM`). A two-state probe folds the third into "gone", and the
+  caller then acts on a running process as if it had died.
+
+  The repo already had a tri-state contract that gets this right, documenting itself as "consumed
+  everywhere". Two production files imported it. Sixteen other production call sites probed inline,
+  and **seven of the fourteen files handled `EPERM` correctly on their own while seven did not**, so
+  this was a coin flip repeated fourteen times rather than one broken helper.
+
+  Fixed, with the wrong answer named at each site:
+
+  | site                       | what the old probe did                                                                        |
+  | -------------------------- | --------------------------------------------------------------------------------------------- |
+  | `manager-proc.managerUp`   | reported no manager, so `ensureManager` starts a second one onto a live one                   |
+  | `delivery-proc.deliveryUp` | same, for the delivery daemon: two daemons on one fanout                                      |
+  | `auth` `agent-bearer`      | "the user-auth service is not running, restart it with `cotal up`" about a service that is up |
+  | `auth` provider            | same misread on the readiness path                                                            |
+  | `cli ext`                  | printed "stale pidfile" about a live extension, which is advice to delete it                  |
+
+  Both `up` functions also parsed their pidfile with `Number.isFinite`, which admits fractional and
+  out-of-range values `process.kill` throws on. They now use the contract's bounded parser.
+
+  The contract moved from `implementations/cli/src/lib/pid.ts` to `@cotal-ai/workspace`, the widest
+  tier that may hold a local-process concept. **"Consumed everywhere" was never reachable and the
+  claim hid the gap:** `extensions/*` peer-depend `core` only, and a pid probe is not a wire concept,
+  so reaching them would mean leaking a local concern into the standard. The two extension-side
+  probes keep their own copies by construction, and the module now says so instead of overclaiming.
+
+  Presence questions require PROOF (`=== "alive"`); only destructive questions preserve on doubt
+  (`!== "dead"`, which is why `down.ts` is written that way and is untouched). An earlier revision of
+  this change had the presence sites preserving too, and review reproduced what that buys: a permanent,
+  silent, retry-proof false-up, where the control plane reports `running: true` three times over
+  against an unreachable manager. The demonstrated defect was `EPERM` alone, and widening past it was
+  unforced.
+
+  Covered by a new broker-free suite, `smoke:pid-contract`. The errno-to-state mapping is a pure
+  exported function tested exhaustively, so there is no fixture to skip: the first revision reached the
+  `EPERM` rule only by probing pid 1 and hoping the process was unprivileged, and as root or in a
+  container that cell skipped while the suite still printed a passing banner over a deliberately broken
+  implementation. The suite also drives the CONVERTED CALLERS through real pidfiles, because the first
+  revision tested only the primitive and a reviewer inverted all five call sites without reddening a
+  single check.
+
+  `unknown` is REACHABLE on a real kernel, not merely under a test shim. A Linux seccomp
+  `SECCOMP_RET_ERRNO` filter, or an LSM policy through `security_task_kill()`, can answer
+  `kill(pid, 0)` with an arbitrary errno without executing it, and libuv preserves it. Review proved
+  this with a live seccomp BPF filter and no interposition. So both ways of folding the third state
+  into a boolean are wrong, and both fail SILENTLY: preserving reports a control plane that is not
+  there and no retry clears it, while requiring proof launches a second manager over one that may be
+  live.
+
+  `ensureManager` and `ensureDelivery` therefore REFUSE on `unknown`, loudly, naming the pid, naming
+  seccomp/LSM as the expected cause inside sandboxes, and saying what to check. `managerLiveness` and
+  `deliveryLiveness` expose the state the booleans cannot carry; `managerUp`/`deliveryUp` remain
+  `=== "alive"` for display, with a doc note sending any caller that ACTS on the answer to the
+  tri-state.
+
+  Honest coverage limit, stated in the suite's own output rather than implied away: no cell here
+  exercises `unknown`, because no `parsePid`-accepted input produces one from this process. The refusal
+  is verified by a seccomp BPF harness outside the suite.
+
+- a74a768: Sandbox the temp root in the smokes that mint a mesh fixture there, so a `.cotal` left above the temp base (`/tmp/.cotal` on Linux CI runners) can no longer capture the fixture and make a suite grade a live mesh. One shared implementation in `bin/smoke/_scratch.ts`, used by `spawn-from-anywhere`, `down-target`, and both `ps` suites. The dead-manager cells now assert that the manager was found, was alive, and is dead, instead of skipping their own kill when the pid file is missing.
+- Updated dependencies [975cad1]
+- Updated dependencies [c76a49d]
+- Updated dependencies [fd361fe]
+- Updated dependencies [2768f5b]
+- Updated dependencies [019afc3]
+- Updated dependencies [3539f20]
+- Updated dependencies [f85ffbf]
+- Updated dependencies [141c4dd]
+- Updated dependencies [14ff831]
+- Updated dependencies [11cd652]
+- Updated dependencies [9e13648]
+- Updated dependencies [185e721]
+  - @cotal-ai/core@0.17.0
+  - @cotal-ai/workspace@0.17.0
+
 ## 0.16.0
 
 ### Patch Changes
