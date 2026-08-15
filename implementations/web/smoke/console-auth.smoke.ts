@@ -312,6 +312,33 @@ check("…and statements 4 and 5 are the REFUSAL and EXCHANGE handlers, so no ro
     && (ifCond(stmts[4]) ?? "").includes('"exchange" in verdict'),
   { third: ifCond(stmts[3]), fourth: ifCond(stmts[4]) });
 
+// THE NAME OF A STATEMENT IS NOT ITS CONTENT. Pinning statements 0-2 by their DECLARED NAMES left
+// their initializers unconstrained, and an initializer is code: a comma expression inside the still
+// named `path` declaration that writes the gate's own readiness nonce into `req.headers` self-
+// authorizes the request BEFORE the gate reads it. Measured against a REAL gate from makeAuthGate —
+// a bare unauthenticated request went from `401` to reaching the route, with all 114 cells green.
+// The prefix ahead of the gate is security-critical, so it is pinned by EXACT TEXT: it may parse the
+// request and do nothing else, and any edit to it — including an innocent one — must be deliberate.
+const initText = (s: ts.Statement | undefined): string =>
+  s !== undefined && ts.isVariableStatement(s)
+    ? s.declarationList.declarations[0]?.initializer?.getText() ?? "" : "";
+check("…and the path parse is EXACTLY a parse — its initializer reads the URL and does nothing else",
+  initText(stmts[0]) === `(req.url ?? "/").split("?")[0]`, { init: initText(stmts[0]) });
+check("…and the query parse likewise, so no side effect can run before the gate is consulted",
+  initText(stmts[1]) === `new URLSearchParams((req.url ?? "").split("?")[1] ?? "")`, { init: initText(stmts[1]) });
+
+// EQUALITY, NOT AN ENUMERATION OF FORBIDDEN SPELLINGS. The refusal condition used to be checked by
+// banning the substrings `path`, `req.`, `method` and `query` from it — and a list of spellings can
+// always be evaded by one more spelling. Measured: conjoining the refusal with
+// `req["headers"]?.["x-skip-auth"] === undefined` dodges every banned substring (bracket notation
+// contains no `req.`), stays green at 114/114, and gives any request carrying that header a free
+// pass while the gate's refusal is computed and discarded. The property is not "avoids these four
+// words", it is "depends on the verdict and NOTHING else", so it is asserted as equality.
+check("the refusal condition is EXACTLY verdict-only — not merely free of a list of forbidden spellings",
+  ifCond(stmts[3]) === `verdict !== undefined && "refuse" in verdict`, { cond: ifCond(stmts[3]) });
+check("…and so is the exchange condition",
+  ifCond(stmts[4]) === `verdict !== undefined && "exchange" in verdict`, { cond: ifCond(stmts[4]) });
+
 // ── 4b. WHAT THE SHIPPED HANDLER DOES WITH EACH VERDICT (behavioural) ───────────────────────────
 type Recorded = { status: number; headers: Record<string, string>; body: string; routeReached: boolean };
 // The METHOD is a fixture dimension too, and it was the next one held constant: `req` was `{}`, so
@@ -453,6 +480,76 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
   allowed.routeReached === true, allowed);
 
 
+// ── 4b2. THE GATE THE HANDLER ACTUALLY CLOSES OVER (INTERIM GUARD) ──────────────────────────────
+// A hole this suite CANNOT close from here, stated rather than papered over. Everything above builds
+// its own gate; the shipped handler closes over the one created inside `web()`. Overwriting that one
+// — `const gate = makeAuthGate(port); gate.check = () => undefined;` — opens the entire surface and
+// leaves every cell green, because no cell here ever touches web()'s closure. Measured on a real
+// gate: `check` goes from `{refuse:"unauthenticated"}` to `undefined`, i.e. allow-everything.
+//
+// The durable fix is an integration cell against the REAL server, which needs a running mesh and is
+// NOT done here. This is an INTERIM structural guard: it pins the gate's creation and its ADJACENCY
+// to the handler, so a statement inserted between them is caught. It does not stop a mutation
+// elsewhere in web() from reaching the same gate object, and it is not claimed to.
+{
+  const decl = "  const gate = makeAuthGate(port);\n\n  const handleRequest = async (req: IncomingMessage, res: ServerResponse)";
+  check("INTERIM: the handler's gate is created by makeAuthGate and NOTHING sits between that and the handler",
+    webTs.includes(decl), { found: webTs.includes(decl) });
+  check("CONTROL: the adjacency pin is not vacuous — a creation line that is not in the file is not found",
+    !webTs.includes("  const gate = makeAuthGateNothing(port);"));
+}
+
+// ── 4c. THE TWO LAYERS, CAUSALLY JOINED ─────────────────────────────────────────────────────────
+// Until now the gate was driven with real inputs and the handler was driven with HAND-BUILT
+// verdicts, so the suite could hand the handler a `{refuse: …}` the gate itself could never mint,
+// and a divergence between them was invisible. This drives a REAL `makeAuthGate` through the REAL
+// lifted prefix — the same statements the browser reaches — so a verdict is produced by the gate and
+// consumed by the handler in one causal chain, with no fixture in the middle.
+{
+  const handlerPrefix = webTs.slice(webTs.indexOf("\n", handlerAt) + 1, webTs.indexOf("\n\n", gateAt));
+  check("NON-VACUITY: the handler prefix through the exchange branch was lifted",
+    handlerPrefix.includes("gate.check(req, query)") && handlerPrefix.includes('"exchange" in verdict'),
+    { len: handlerPrefix.length });
+  const source = ts.transpileModule(`globalThis.__run = () => { ${handlerPrefix}\n__routeReached(); };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const drive = (gate: unknown, url: string, headers: Record<string, string> = {}) => {
+    const rec = { status: 0, headers: {} as Record<string, string>, body: "", routeReached: false };
+    const ctx: Record<string, unknown> = {
+      req: { url, method: "GET", headers }, gate, URLSearchParams,
+      res: {
+        writeHead: (s: number, h: Record<string, string>) => { rec.status = s; rec.headers = h ?? {}; },
+        end: (b?: string) => { rec.body = b ?? ""; },
+      },
+      CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session", READINESS_HEADER: "x-cotal-readiness",
+      __routeReached: () => { rec.routeReached = true; }, globalThis: undefined, console, JSON,
+    };
+    ctx.globalThis = ctx;
+    runInContext(source, createContext(ctx), { filename: "web.ts (handler prefix)" });
+    (ctx.__run as () => void)();
+    return rec;
+  };
+  const real = makeAuthGate(7799);
+  const bare = drive(real, "/api/roster");
+  check("REAL GATE → REAL HANDLER: a bare request is refused 401 and never reaches a route",
+    bare.status === 401 && JSON.parse(bare.body).error === UNAUTHENTICATED && bare.routeReached === false, bare);
+  const ex = drive(real, `/?k=${real.launchToken}`);
+  check("REAL GATE → REAL HANDLER: the REAL launch token is exchanged for a cookie and redirected to `/`",
+    ex.status === 302 && ex.headers.location === "/"
+      && (ex.headers["set-cookie"] ?? "").startsWith("cotal_web_session="), ex);
+  const session = (ex.headers["set-cookie"] ?? "").split(";")[0].split("=")[1];
+  const replay = drive(real, `/?k=${real.launchToken}`);
+  check("REAL GATE → REAL HANDLER: replaying the REAL spent token is refused as `launch-token-already-used`",
+    replay.status === 401 && JSON.parse(replay.body).error === LAUNCH_TOKEN_ALREADY_USED, replay);
+  const withNonce = drive(real, "/api/meta", { "x-cotal-readiness": real.readinessNonce });
+  check("REAL GATE → REAL HANDLER: the REAL readiness nonce is accepted and reaches the route",
+    withNonce.status === 0 && withNonce.routeReached === true, withNonce);
+  check("NON-VACUITY: the session the REAL exchange minted is a non-empty secret",
+    typeof session === "string" && session.length > 20, { len: session?.length });
+  const foreign = drive(real, "/api/roster", { origin: "https://evil.example" });
+  check("REAL GATE → REAL HANDLER: a cross-origin request is refused 403 by the condition the GATE chose",
+    foreign.status === 403 && JSON.parse(foreign.body).error === CROSS_ORIGIN, foreign);
+}
+
 // ── 5. CONSTANT-TIME COMPARISON ─────────────────────────────────────────────────────────────────
 // TIMING SAFETY IS NOT OBSERVABLE FROM OUTPUTS, so it cannot be tested functionally. Replacing the
 // comparison with plain `===` produces an identical boolean for every vector in this file — measured,
@@ -464,8 +561,29 @@ const secretEqualsSrc = webTs.slice(
 );
 check("NON-VACUITY: the shipped secretEquals body was located", secretEqualsSrc.includes("function secretEquals("),
   { len: secretEqualsSrc.length });
-check("secretEquals compares with timingSafeEqual — the constant-time property, which NO functional vector can prove",
-  secretEqualsSrc.includes("timingSafeEqual(ab, bb)"), { secretEqualsSrc });
+// PRESENCE ANYWHERE IS NOT THE PROPERTY. Asserting that the file CONTAINS `timingSafeEqual(ab, bb)`
+// was satisfied by an UNREACHABLE call: `if (ab.length < 0) return timingSafeEqual(ab, bb); return
+// ab.equals(bb);` keeps every text pin green at 114/114 and typechecks, while `Buffer.equals` is a
+// memcmp that exits at the first differing byte. Measured on the lifted helper, 200k calls/batch,
+// medians of 9 batches: a secret differing at index 0 vs index 42 cost 809ns/879ns with the shipped
+// code (ratio 1.09) and 572ns/720ns with `equals` (ratio 1.26) — a byte-position oracle.
+// So the cell asserts the DATAFLOW: the function's own final return returns that call.
+const secretEqualsFn = (() => {
+  const sf = ts.createSourceFile("web.ts", webTs, ts.ScriptTarget.ES2022, true);
+  let found: ts.FunctionDeclaration | undefined;
+  ts.forEachChild(sf, (n) => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === "secretEquals") found = n;
+  });
+  return found;
+})();
+const fnStmts = secretEqualsFn?.body?.statements ?? ts.factory.createNodeArray<ts.Statement>([]);
+const lastStmt = fnStmts[fnStmts.length - 1];
+check("NON-VACUITY: the shipped secretEquals was found IN THE AST with a body",
+  secretEqualsFn !== undefined && fnStmts.length > 0, { statements: fnStmts.length });
+check("secretEquals RETURNS the timing-safe comparison — its own final return, not a call parked somewhere unreachable",
+  lastStmt !== undefined && ts.isReturnStatement(lastStmt)
+    && lastStmt.expression?.getText() === "timingSafeEqual(ab, bb)",
+  { last: lastStmt?.getText() });
 check("…and does not short-circuit to a plain string comparison",
   !/return\s+a\s*===\s*b/.test(secretEqualsSrc), { secretEqualsSrc });
 // THE LENGTH-MISMATCH BRANCH IS A SEPARATE PROPERTY, and pinning the equal-length compare did not
