@@ -221,6 +221,36 @@ const VERIFIED = "policed-channel";
 // The answer is to stop extracting a statement at all and execute the whole CONTAINING FUNCTION, so
 // every guard around the assignment is inside the code under test by construction. Brace-matching
 // from the function header is a structural parse: it cannot return a fragment.
+//
+// ⚠️ BUT "NOT A FRAGMENT" IS NOT "IS CODE", AND THAT DISTINCTION COST THIS SUITE A SECOND FALSE
+// GREEN. `indexOf` takes the FIRST textual occurrence of the header, and a copy of the function
+// sitting inside a COMMENT is a first occurrence. MEASURED: with a commented copy of the safe
+// function placed above the real one, and the real one regressed to the guarded (vulnerable) clear,
+// `node --check` passed and this suite printed **82 checks passed, rc=0** — grading the comment
+// while the shipped page was exploitable. A positive control proves a pattern CAN match something;
+// it does NOT prove what it matched is CODE.
+//
+// Two cheap, local guards close it, and each has its own decoy control below:
+//   - the header must occur EXACTLY ONCE (a decoy copy makes it 2 and reddens a named cell), and
+//   - the occurrence must not sit inside a line or block comment.
+// Deliberately NOT a full-file tokenizer: mis-parsing one regex literal elsewhere in the file would
+// desync string state and corrupt every extraction, trading a known hole for a silent one.
+function countOccurrences(src: string, needle: string): number {
+  let n = 0;
+  for (let i = src.indexOf(needle); i >= 0; i = src.indexOf(needle, i + needle.length)) n++;
+  return n;
+}
+
+/** Is `offset` inside a line comment, or inside an unclosed block comment? */
+function isInsideComment(src: string, offset: number): boolean {
+  const before = src.slice(0, offset);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  if (before.slice(lineStart).includes("//")) return true;
+  const open = countOccurrences(before, "/*");
+  const close = countOccurrences(before, "*/");
+  return open > close;
+}
+
 function extractFunction(src: string, header: string): string | undefined {
   const start = src.indexOf(header);
   if (start < 0) return undefined;
@@ -267,6 +297,18 @@ const VICTIM = "victim-channel";
 // EXACTLY ONCE into a variable.
 const hostileDm = () => ({ mode: "unicast", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
 const hostileDmGraph = () => ({ mode: "unicast", senderId: "s-1", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
+
+// ⚠️ ANYCAST IS THE SECOND PLANE WITH NO AUTHORITATIVE CHANNEL, AND DRIVING ONLY `unicast` LEFT A
+// REAL EXPLOIT UNCOVERED. The server taps three planes (`web.ts`: chat / inst / svc) and `svc.rest`
+// is the ROUTE, not a channel — so anycast reaches the same fail-open case as a DM. Every hostile
+// vector here used to be hard-coded `mode:"unicast"`.
+//
+// MEASURED: mutating the shipped clear to `if (mode !== "anycast") msg.channel = entry.channel;`
+// left this suite at **82 checks passed, rc=0** while a forged anycast payload created the victim
+// channel and landed in its transcript (`channels:["victim-channel"], transcript:1`). The identical
+// hole existed on graph. Non-equivalent, surface-visible, and invisible to a unicast-only table.
+const hostileAnycast = () => ({ mode: "anycast", channel: undefined, msg: { id: "svc-1", toService: "reviewer", channel: VICTIM } });
+const hostileAnycastGraph = () => ({ mode: "anycast", senderId: "s-1", channel: undefined, msg: { id: "svc-1", toService: "reviewer", channel: VICTIM } });
 
 /**
  * Drive the WHOLE shipped `app.js` `onMessage` over real collections, and return what it did.
@@ -402,6 +444,46 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
     },
   },
 ];
+// The live-SSE ingress of each page, driven with an ANYCAST forgery. Only the two live ingresses
+// appear here: the backfill pair reads `/api/activity`, which carries no mode, so an anycast vector
+// would be indistinguishable from the unicast one already driven above.
+const HOSTILE_ANYCAST: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
+  {
+    file: "app.js", path: "live SSE feed (ANYCAST)",
+    extract: (src) => extractFunction(src, APP_ONMESSAGE),
+    run: (code) => runAppOnMessage(code, hostileAnycast()).activity[0]?.msg.channel,
+  },
+  {
+    file: "graph.js", path: "live SSE feed (ANYCAST)",
+    extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
+    run: (code) => runGraphOnMessage(code, hostileAnycastGraph()).recent[0]?.chan,
+  },
+];
+check("the anycast hostile table covers both live ingresses", HOSTILE_ANYCAST.length === 2, { length: HOSTILE_ANYCAST.length });
+for (const ing of HOSTILE_ANYCAST) {
+  const stmt = ing.extract(read(`../src/web/${ing.file}`));
+  check(`${ing.file} — ${ing.path} — the ingress statement is extractable`, Boolean(stmt), { stmt });
+  const got = ing.run(stmt!);
+  check(`${ing.file} — ${ing.path} — a FORGED channel on an ANYCAST message is CLEARED`,
+    got === undefined, { got, forged: VICTIM });
+}
+
+// Destination, for anycast, on the page that files messages into channels. Content alone would not
+// have caught the measured mutant: the point is that the forgery never reaches channel routing.
+const appAnycastPayload = hostileAnycast();
+check("app.js — the ANYCAST destination run receives a payload that STILL carries the forgery",
+  appAnycastPayload.msg.channel === VICTIM, { got: appAnycastPayload.msg.channel });
+const appAnycast = runAppOnMessage(extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!, appAnycastPayload, VICTIM);
+check("app.js — a forged ANYCAST message does NOT create the victim channel",
+  appAnycast.channels.has(VICTIM) === false, { keys: [...appAnycast.channels.keys()] });
+check("app.js — a forged ANYCAST message does NOT reach the victim channel's transcript",
+  appAnycast.channelMsgs.length === 0, { n: appAnycast.channelMsgs.length });
+
+const graphAnycastPayload = hostileAnycastGraph();
+const graphAnycast = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, graphAnycastPayload);
+check("graph.js — a forged ANYCAST message appears in the recent list with NO channel",
+  graphAnycast.recent.length === 1 && graphAnycast.recent[0].chan === undefined, { recent: graphAnycast.recent });
+
 check("the hostile table covers all four entry paths too", HOSTILE.length === 4, { length: HOSTILE.length });
 for (const ing of HOSTILE) {
   const stmt = ing.extract(read(`../src/web/${ing.file}`));
@@ -438,8 +520,23 @@ check("app.js — a forged DM does NOT create the victim channel in the channel 
   appHostile.channels.has(VICTIM) === false, { keys: [...appHostile.channels.keys()] });
 check("app.js — a forged DM does NOT reach the victim channel's transcript",
   appHostile.channelMsgs.length === 0, { n: appHostile.channelMsgs.length });
+// ⚠️ THE UNREAD CELL NEEDS ITS OWN RUN, AND FIXING THE TRANSCRIPT CELL IS WHAT BROKE IT.
+// Production routes a channel message to EITHER the transcript (when it is the selected channel) OR
+// the unread badge (when it is not) — `app.js`: `if (!dmSel && selected === msg.channel) … else …`.
+// So selecting the victim to make the transcript cell discriminate simultaneously made the unread
+// cell VACUOUS: under the original guarded vulnerability, with the victim selected, unread stays 0
+// and the cell passes on exploitable code. MEASURED both ways — selected=VICTIM gives 0 badges,
+// selected=elsewhere gives 1 on `victim-channel`. One fixture cannot serve both branches, so the
+// unread claim gets an OFF-SCREEN run of its own.
+const OFFSCREEN = "some-other-channel";
+const appHostileOffscreenPayload = hostileDm();
+check("app.js — the OFF-SCREEN unread run receives a payload that STILL carries the forgery",
+  appHostileOffscreenPayload.msg.channel === VICTIM, { got: appHostileOffscreenPayload.msg.channel });
+const appHostileOffscreen = runAppOnMessage(appFnSrc, appHostileOffscreenPayload, OFFSCREEN);
+check("app.js — the unread run has the victim OFF screen, so the badge branch is the one reached",
+  appHostileOffscreen.selected === OFFSCREEN && OFFSCREEN !== VICTIM, { selected: appHostileOffscreen.selected });
 check("app.js — a forged DM does NOT raise any unread badge",
-  appHostile.unread.size === 0, { keys: [...appHostile.unread.keys()] });
+  appHostileOffscreen.unread.size === 0, { keys: [...appHostileOffscreen.unread.keys()] });
 // The message must still ARRIVE — a fix that drops DMs would also pass the three cells above, so
 // the surviving-delivery half is asserted too. This is the "refusal must not become a silent
 // no-op" rule applied to routing rather than to sending.
@@ -450,7 +547,13 @@ const graphHostilePayload = hostileDmGraph();
 check("graph.js — the destination run receives a payload that STILL carries the forgery",
   graphHostilePayload.msg.channel === VICTIM, { got: graphHostilePayload.msg.channel, expected: VICTIM });
 const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, graphHostilePayload);
-check("graph.js — a forged DM creates NO hub for the victim channel",
+// HONEST LABEL: this cell CANNOT redden for the channel-authority fence, and pretending otherwise
+// is the same sin as a vacuous green. `ensureHub` is reachable only from the `mode === "chat"`
+// branch (`graph.js`), so a non-chat forgery cannot create a hub whether or not the channel was
+// cleared — MEASURED: under the original guarded vulnerability with a unicast fixture, hubs = 0.
+// It is kept because it pins the MODE GATE (a refactor that hoisted `ensureHub` above the mode
+// branch would redden it), and it is named for that property rather than for the clear.
+check("graph.js — hub creation stays gated on mode==='chat' (this pins the GATE, NOT the clear)",
   graphHostile.hubs.length === 0, { hubs: graphHostile.hubs });
 check("graph.js — the forged DM still appears in the recent list, with no channel",
   graphHostile.recent.length === 1 && graphHostile.recent[0].chan === undefined, { recent: graphHostile.recent });
@@ -499,5 +602,34 @@ for (const [label, fn] of [["app.js", appFn], ["graph.js", graphFn]] as const) {
 // negative control for the extractor, without which a renamed function would extract the next one.
 check("extractFunction returns undefined for a header that is not present (negative control)",
   extractFunction(read("../src/web/app.js"), "function noSuchFunctionExists(") === undefined);
+
+// ── 2f. THE ANCHOR IS CODE, NOT MERELY TEXT ─────────────────────────────────────────────────────
+// Balanced braces prove the extraction is not a FRAGMENT. They say nothing about whether it is
+// CODE. A commented copy of the function is balanced, parses, executes, and — because `indexOf`
+// takes the FIRST occurrence — is what this suite graded, at 82/82 rc=0, while the shipped page
+// carried the guarded vulnerability. These cells close that, and each one has a decoy control so
+// the cell cannot itself pass vacuously.
+for (const [label, file, header] of [
+  ["app.js", "../src/web/app.js", APP_ONMESSAGE],
+  ["graph.js", "../src/web/graph.js", GRAPH_ONMESSAGE],
+] as const) {
+  const src = read(file);
+  check(`${label} — the onMessage header occurs EXACTLY ONCE (a decoy copy makes it 2 and reddens this)`,
+    countOccurrences(src, header) === 1, { n: countOccurrences(src, header) });
+  check(`${label} — the extracted onMessage is NOT inside a comment`,
+    isInsideComment(src, src.indexOf(header)) === false);
+}
+// Decoy controls. Without these, both cells above would pass on a checker that can never fire.
+const realApp = read("../src/web/app.js");
+const decoyed = `/*\n${extractFunction(realApp, APP_ONMESSAGE)}\n*/\n${realApp}`;
+check("the uniqueness check DETECTS a commented decoy copy (positive control)",
+  countOccurrences(decoyed, APP_ONMESSAGE) === 2, { n: countOccurrences(decoyed, APP_ONMESSAGE) });
+check("the comment check DETECTS a header sitting inside a block comment (positive control)",
+  isInsideComment(decoyed, decoyed.indexOf(APP_ONMESSAGE)) === true);
+check("the comment check DETECTS a header sitting behind a line comment (positive control)",
+  isInsideComment(`// ${APP_ONMESSAGE}`, 3) === true);
+// And it must not cry wolf on the real file, or the cells above would be unfalsifiable.
+check("the comment check does NOT fire on the genuine, uncommented declaration (negative control)",
+  isInsideComment(realApp, realApp.indexOf(APP_ONMESSAGE)) === false);
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
