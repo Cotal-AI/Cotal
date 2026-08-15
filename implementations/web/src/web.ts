@@ -94,9 +94,14 @@ function releasePid(path: string): void {
 // OWN files, so a published/seeded copy is self-contained and never reaches into node_modules at
 // runtime — which is what lets web ship as a bundled first-party extension, seeded like the connectors.
 const jsType = "text/javascript; charset=utf-8";
-const PAGE: Record<string, { path: string; type: string }> = {
+/** Exported so a test can resolve what the browser is actually served, rather than restating the
+ *  route table in its own source and agreeing with itself. */
+export const PAGE: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
   "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
+  // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
+  // depends on this file is broken until it has a row here, whatever the HTML requests.
+  "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
