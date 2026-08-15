@@ -51,12 +51,24 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
-import {
-  CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid,
-  serverConfig, newIdentity, setupSpaceStreams,
-} from "../packages/core/dist/index.js";
+import { importCore } from "../packages/core/smoke/_core-entry.js";
 import { MeshAgent } from "../extensions/connector-core/src/agent.js";
 import { pickFreePort } from "../packages/core/smoke/_free-port.js";
+
+// ---- THE MUTATION-PROOF SEAM ------------------------------------------------------------------
+// Core is loaded through COTAL_CORE_ENTRY when a mutation proof sets it, so a MUTANT is compiled
+// into a private scratch build rather than into `packages/core/dist` — which two installed
+// connector extensions symlink, and which every claude and opencode seat on this box executes.
+// The default is the shared dist this file used before, so an ordinary run grades what users run.
+// Read BEFORE the scrub below, which would otherwise delete it and silently send the proof at the
+// shared build while it believed it was private.
+const CORE_ENTRY = process.env.COTAL_CORE_ENTRY
+  ?? new URL("../packages/core/dist/index.js", import.meta.url).href;
+const {
+  CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid,
+  serverConfig, newIdentity, setupSpaceStreams,
+} = await importCore(CORE_ENTRY);
+console.log(`[provenance] core loaded from ${process.env.COTAL_CORE_ENTRY ? "PRIVATE build" : "shared dist"}: ${CORE_ENTRY}`);
 
 // ---- FIRST ACTION: never the live broker, and never anything inherited -------------------------
 for (const k of Object.keys(process.env)) if (/^COTAL_(SERVERS|CREDS|SPACE|NAME|ID|CONTROL_|LIFECYCLE|CAPABILITIES)/.test(k)) delete process.env[k];

@@ -20,10 +20,15 @@
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
  *
+ *   --private-build <pkgDir>   Compile the mutant into a scratch dir INSIDE that package and point
+ *                              the suite at it via COTAL_CORE_ENTRY, instead of writing the shared
+ *                              dist/ that sibling worktrees and installed extensions execute. Use
+ *                              it whenever the suite loads the mutated package through a BUILD.
+ *
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -81,8 +86,8 @@ function assertCleanTree(cwd, allowDirty) {
 }
 
 /** Run a command, capture combined output, never let a pipe eat the status. */
-function run(command, cwd, timeoutMs) {
-  const r = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+function run(command, cwd, timeoutMs, env) {
+  const r = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, env: env ? { ...process.env, ...env } : process.env });
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
   return { status: r.status, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGTERM", output };
@@ -97,6 +102,34 @@ const progressCount = (output, pattern) => {
   const re = new RegExp(pattern ?? "✓", "g");
   return (output.match(re) ?? []).length;
 };
+
+/**
+ * PRIVATE BUILD — the reason this exists is a defect this harness caused.
+ *
+ * A mutation proof compiles a deliberately broken implementation. If that build lands in a
+ * package's shared `dist/`, it is not merely visible to other readers, it is the artifact they
+ * EXECUTE: installed extensions and sibling worktrees resolve the same path. On this box a mutant
+ * core was loaded by every claude and opencode seat for the length of a proof.
+ *
+ * So the mutant is compiled into a scratch directory created by THIS run, and the suite is pointed
+ * at it with COTAL_CORE_ENTRY. Exclusivity by construction: the path did not exist until now, so
+ * nothing else can already resolve it. That is the only available guarantee — you CANNOT enumerate
+ * who resolves a shared path (the filesystem keeps no reverse index of symlinks), so a check at the
+ * write site is not a fix.
+ *
+ * The scratch lives INSIDE the package, not in /tmp: node resolves bare specifiers by walking
+ * node_modules upward from the importing file, so a build outside the workspace compiles fine and
+ * fails to load its own dependencies.
+ */
+function makePrivateBuild(projectDir, cwd) {
+  const abs = join(cwd, projectDir);
+  const scratch = mkdtempSync(join(abs, ".privbuild-"));
+  const build = () => {
+    const r = run(`./node_modules/.bin/tsc -p ${projectDir} --outDir ${scratch}`, cwd, 600_000);
+    if (r.status !== 0) throw new Error(`private build failed (exit ${r.status}):\n${r.output.slice(-2000)}`);
+  };
+  return { scratch, build, env: { COTAL_CORE_ENTRY: join(scratch, "index.js") }, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
+}
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
@@ -138,7 +171,11 @@ function proveOne(m, opts) {
     }
     say(`${C.dim}  mutated ${hits}× · running: ${m.command ?? opts.command}${C.off}`);
 
-    const r = run(m.command ?? opts.command, cwd, opts.timeoutMs);
+    // The mutant is now in `src`; compile it into the PRIVATE build so the suite executes it.
+    // Without this the suite would load the last build and grade unmutated code — green for a
+    // reason unrelated to the mutation, which is a SURVIVED verdict that means nothing.
+    if (opts.priv) opts.priv.build();
+    const r = run(m.command ?? opts.command, cwd, opts.timeoutMs, opts.priv?.env);
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
@@ -192,6 +229,10 @@ let opts = {
   command: a.command,
   timeoutMs: Number(a.timeout ?? 900_000),
   progressPattern: a["progress-pattern"],
+  // --private-build <pkgDir>: compile the mutant into a scratch dir inside that package and point
+  // the suite at it, instead of writing the package's SHARED dist that other worktrees and
+  // installed extensions resolve.
+  priv: a["private-build"] ? makePrivateBuild(a["private-build"], cwd) : undefined,
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
 };
 
@@ -210,7 +251,11 @@ assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
 say(`${C.dim}baseline: ${opts.command}${C.off}`);
-const base = run(opts.command, cwd, opts.timeoutMs);
+if (opts.priv) {
+  say(`${C.dim}private build: ${opts.priv.env.COTAL_CORE_ENTRY}${C.off}`);
+  try { opts.priv.build(); } catch (e) { say(`${C.red}REFUSING: ${e.message}${C.off}`); opts.priv.cleanup(); process.exit(5); }
+}
+const base = run(opts.command, cwd, opts.timeoutMs, opts.priv?.env);
 const baseTicks = progressCount(base.output, opts.progressPattern);
 if (base.status !== 0) {
   say(`${C.red}REFUSING: the suite is red BEFORE any mutation (exit ${base.status}).${C.off}`);
@@ -236,6 +281,7 @@ for (const r of results) {
   say(`${colour}${r.verdict.padEnd(12)}${C.off} ${r.label}`);
   say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${baseTicks})` : ""}${C.off}`);
 }
+opts.priv?.cleanup();
 say("");
 if (bad === 0) {
   say(`${C.green}All ${results.length} mutation(s) killed. The suite discriminates.${C.off}`);

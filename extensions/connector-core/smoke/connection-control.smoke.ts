@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
+import { importCore } from "../../../packages/core/smoke/_core-entry.js";
 
 // ---- FIRST ACTION: never the live broker, and never anything inherited -------------------------
 // A manager-hosted seat exports COTAL_SERVERS=nats://broker.cotal.ai:4222 into every child it
@@ -43,6 +44,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 // affected; measured, not assumed. But a scrub that ENUMERATES keys is one new variable away from
 // being wrong, and the failure would be silent: the suite would read an ambient ACL or an ambient
 // capability and report green about a surface it did not choose. Delete the whole namespace instead.
+//
+// ONE EXEMPTION, READ BEFORE THE SCRUB RUNS. `COTAL_CORE_ENTRY` is the mutation-proof seam, and the
+// whole-namespace scrub below would delete it — the seam would be silently dead and the proof would
+// grade the SHARED build while believing it graded a private one. That is the exact failure the
+// seam exists to prevent, so it is captured here rather than exempted from the scrub: the variable
+// is still deleted from the environment, and nothing downstream (including any child process) can
+// read it back. Safe to honour because it names a BUILD PATH — not a server, credential, space,
+// ACL, or capability — so it cannot widen what this suite reaches or point it at a live broker.
+const privateEntry = process.env.COTAL_CORE_ENTRY;
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 
 const pickFreePort = (): Promise<number> =>
@@ -70,7 +80,18 @@ const pickFreePort = (): Promise<number> =>
 //
 // NOT fixed by pointing the import at `src/`: the published entry point resolves through `dist/`,
 // so that would trade a provenance gap for a coverage gap — green about code no user runs.
-const distStamp = statSync(join(import.meta.dirname, "../../../packages/core/dist/endpoint.js")).mtimeMs;
+// The guard's SUBJECT follows the seam. Under a mutation proof, core is loaded from a private
+// build (COTAL_CORE_ENTRY) and the shared dist is irrelevant — graded here it would refuse a run
+// whose actual build is fresh, or pass one whose private build is stale. Same question, whichever
+// artifact is really being executed.
+// Resolved from the value captured ABOVE the scrub, not re-read from the environment (which is
+// empty by now). The helper's own env lookup therefore finds nothing and uses this, which is the
+// correct answer in both modes.
+const CORE_ENTRY = privateEntry ?? "@cotal-ai/core";
+const gradedBuild = privateEntry
+  ? join(privateEntry, "..", "endpoint.js")
+  : join(import.meta.dirname, "../../../packages/core/dist/endpoint.js");
+const distStamp = statSync(gradedBuild).mtimeMs;
 const coreSrc = join(import.meta.dirname, "../../../packages/core/src");
 const newerThanDist = readdirSync(coreSrc, { recursive: true, withFileTypes: true })
   .filter((d) => d.isFile() && d.name.endsWith(".ts"))
@@ -78,13 +99,19 @@ const newerThanDist = readdirSync(coreSrc, { recursive: true, withFileTypes: tru
   .filter((f) => statSync(f).mtimeMs > distStamp);
 if (newerThanDist.length)
   throw new Error(
-    `REFUSING TO RUN: packages/core/dist is older than ${newerThanDist.length} source file(s) — ` +
+    `REFUSING TO RUN: ${gradedBuild} is older than ${newerThanDist.length} source file(s) — ` +
     `this suite would grade a build that does not contain them, and would report green for it. ` +
-    `Run \`./node_modules/.bin/tsc -p packages/core\` first.\n  stale vs: ` +
+    (privateEntry
+      ? `That is the PRIVATE build named by COTAL_CORE_ENTRY; the proof driving this run must rebuild it.`
+      : `Run \`./node_modules/.bin/tsc -p packages/core\` first.`) +
+    `\n  stale vs: ` +
     newerThanDist.slice(0, 5).map((f) => f.replace(`${coreSrc}/`, "")).join(", ") +
     (newerThanDist.length > 5 ? `, +${newerThanDist.length - 5} more` : ""),
   );
-console.log(`[provenance] core dist built at ${new Date(distStamp).toISOString()} — newer than every packages/core/src/*.ts`);
+console.log(
+  `[provenance] core loaded from ${privateEntry ? "PRIVATE build" : "shared dist"} ${gradedBuild}, ` +
+  `built ${new Date(distStamp).toISOString()} — newer than every packages/core/src/*.ts`,
+);
 
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -146,7 +173,7 @@ const seenBy = (B: any, name: string): { status?: string; activity?: string } | 
 };
 
 async function main() {
-  const { isReachable } = await import("@cotal-ai/core");
+  const { isReachable } = await importCore(CORE_ENTRY);
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) break; await sleep(150); }
 
   const { MeshAgent } = await import("../src/agent.js");
@@ -317,7 +344,7 @@ async function main() {
   const {
     CotalEndpoint, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid,
     serverConfig, newIdentity, setupSpaceStreams,
-  } = await import("@cotal-ai/core");
+  } = await importCore(CORE_ENTRY);
 
   const APORT = await pickFreePort();
   const ASERVER = `nats://127.0.0.1:${APORT}`;
