@@ -46,6 +46,7 @@ import {
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
   instancePinnedInstrumentCapabilities, respondedButUnbound, EP_UNBOUND_RESPONDER, CotalEndpoint,
+  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, MANAGER_READ_COMMANDS,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
@@ -323,6 +324,73 @@ try {
       if (cached2) cached2.responder.instanceId = ghost;
       const healed = await readTolerant("read-after-forced-split");
       check("a READ with the same forced split still self-heals — the guard did not widen", healed.ok, healed.last);
+    } finally { await ep.stop().catch(() => {}); }
+  }
+
+  // ---- 7. THE BOUNDARY IS "CHANGES ANYTHING", NOT "CREATES SOMETHING" ---------------------------
+  // The regression cell for a guard that was WRONG on its first attempt, and the reason the
+  // classification is an allowlist. That version withheld the retry only for GOAL_BEARING_COMMANDS
+  // (spawn/launch), on the theory that a duplicate only hurts when it creates. Adversarial review
+  // produced a measured counterexample: `purge` is not goal-bearing, is not convergent, and its
+  // second execution deletes messages published between the two — the manager's handler reaches
+  // `clearSpaceHistory`, i.e. a real STREAM.PURGE, so "the first one already deleted everything" is
+  // false the moment anyone is still publishing.
+  //
+  // Two assertions, and they fail for different reasons on purpose. The behavioural one proves the
+  // live path surfaces; the classification one proves the ALLOWLIST covers every destructive
+  // command in the vocabulary, including ones added after this was written. A denylist would pass
+  // the first and quietly fail the second.
+  console.log("\n7. a DESTRUCTIVE, non-creating command is retry-unsafe too (the purge counterexample)");
+  {
+    // Classification first — total over the vocabulary, and it needs no broker at all.
+    const unsafeAdmin = MANAGER_ADMIN_COMMANDS.filter((c) => !isRepeatSafeCommand(c));
+    check("EVERY manager.admin command is classified retry-unsafe, purge included",
+      unsafeAdmin.length === MANAGER_ADMIN_COMMANDS.length && !isRepeatSafeCommand("purge"),
+      { admin: MANAGER_ADMIN_COMMANDS, retrySafe: MANAGER_ADMIN_COMMANDS.filter(isRepeatSafeCommand) });
+    check("...while every manager.read command stays retry-safe (the guard did not widen)",
+      MANAGER_READ_COMMANDS.every(isRepeatSafeCommand),
+      MANAGER_READ_COMMANDS.filter((c) => !isRepeatSafeCommand(c)));
+    // An unknown command must default to UNSAFE. This is the fail-closed property, and it is the
+    // only assertion that goes red if someone re-inverts the guard into a denylist.
+    check("...and an unclassified command defaults to retry-UNSAFE, not safe",
+      !isRepeatSafeCommand("some-command-nobody-classified"));
+
+    // Behavioural — the same forced split as cell 6, on a command that MUTATES without creating.
+    // `purge` is manager.admin, so this needs the admin control tier; the privileged probe above
+    // would be refused at the broker and never reach a responder, which would grade nothing.
+    const id = newIdentity(); const uid = mintLifecycleUid();
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, creds: await mintCreds(auth, id, "control-caller-admin", { lifecycleUid: uid }),
+      card: { id: id.id, name: "pin-purge-probe", role: "operator", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, lifecycleUid: uid,
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    try {
+      // Resolve for real, then doctor the cached responder id — identical to cell 6, because the
+      // point is that the COMMAND changed the outcome, nothing else.
+      const warm = await ep.invokeService(MANAGER_ENDPOINT, "ps").catch(() => undefined);
+      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+      const cached = cache.get(MANAGER_ENDPOINT);
+      check("the admin probe resolved the manager (without this the cell grades nothing)",
+        warm !== undefined && cached !== undefined);
+      const ghost = `${"w".repeat(4)}${IID1.slice(4)}`;
+      if (cached) cached.responder.instanceId = ghost;
+
+      let threw: unknown;
+      let returned: unknown;
+      try {
+        returned = await ep.invokeService(MANAGER_ENDPOINT, "purge", { includeDms: false });
+      } catch (e) { threw = e; }
+      check("a DESTRUCTIVE non-creating command's split SURFACES — it is not purged a second time",
+        threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
+      check("...carrying the responder-answered marker (so the caller can tell it may already have run)",
+        respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
+      // The narrow-guard version of this code returned a SUCCESS here, having purged twice. Naming
+      // that explicitly so a future reader knows which way this cell fails.
+      check("...and does NOT return the second execution's success",
+        (returned as { reply?: { ok?: boolean } } | undefined)?.reply?.ok !== true,
+        (returned as { reply?: unknown } | undefined)?.reply);
     } finally { await ep.stop().catch(() => {}); }
   }
 

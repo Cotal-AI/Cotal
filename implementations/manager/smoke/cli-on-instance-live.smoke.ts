@@ -36,14 +36,21 @@
  * capability is constructed here and nothing is minted by hand — that is the whole point. If any
  * link in CLI → resolveControlTarget → connectOrExit → mint drops the instance, cell 3 goes red.
  *
- * COVERAGE BOUNDARY of THIS suite, stated so it is not over-read in turn. It invokes `ps` and
- * nothing else. Cell 3 proves the SHARED `resolveControlTarget` → `connectOrExit` → mint seam, and
- * that is all it proves: `spawn` and `stop`/`despawn` reach that seam through their OWN forwarding
- * sites (`spawn.ts` and `agents.ts` each pass `values.on` separately), and dropping the argument at
- * either of those leaves every cell in this file green. Do NOT read this suite as covering them
- * "transitively" — an earlier draft of this comment said exactly that and it was wrong, which is
- * the same over-read that let the original defect ship. Those two commands need their own cells.
- * This suite also does not grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
+ * COVERAGE BOUNDARY of THIS suite, stated so it is not over-read in turn. The chain splits in two
+ * and the cells cover it in two pieces, deliberately:
+ *   • the SHARED tail (`resolveControlTarget` → `connectOrExit` → mint) is graded ONCE, by cell 3,
+ *     which is the only cell that completes a real pinned call end to end;
+ *   • the PER-COMMAND heads are graded by cells 4 and 5 — `ps`, `spawn --detach`, `stop`, `attach`
+ *     each forward `--on` at their own call site, and each is checked separately because dropping
+ *     any one of them type-checks and leaves the others green.
+ * Read together they cover the whole path; neither covers it alone. An earlier draft claimed the
+ * lifecycle commands were covered "transitively" by the `ps` cells — they were not, and that
+ * over-read is the same one that let the original defect ship.
+ *
+ * What is still NOT graded here: cells 4 and 5 prove the pin ROUTES (an absent instance deadlines
+ * rather than falling through), not that a pinned `spawn`/`stop`/`attach` completes against a real
+ * instance — those mutate, and a live-mutation cell is a different fixture. And this suite does not
+ * grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
  *
  * Mutation-proof target: `cli-on-mint` — drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -241,6 +248,45 @@ try {
     ghost.status !== 0, { status: ghost.status, tail: ghostOut.slice(-300) });
   check("...and fails as an unanswered pinned describe (the no-fallbacks shape, not some other error)",
     /no describe reply from manager within/i.test(ghostOut), ghostOut.slice(-300));
+
+  // ---- 5. THE OTHER FORWARDING SITES ----------------------------------------------------------
+  // `ps` is not the only command with `--on`, and the other three do NOT reach the seam through it.
+  // Each passes the flag at its own call site — `spawn.ts` reads `values.on` directly, while
+  // `stop`/`attach` go through `pinForTarget`, which returns `v.on` when present and otherwise
+  // LOCATES the seat. Those are independent optional arguments: dropping any one of them
+  // type-checks (the parameter is optional by design) and leaves every cell above green. An earlier
+  // draft of this file's coverage note claimed they were covered "transitively"; they were not, and
+  // that over-read is the same one that let the original defect ship.
+  //
+  // The probe is cell 4's discriminator applied per command, and it is chosen because it is
+  // NON-MUTATING BY CONSTRUCTION: aimed at a valid-but-absent instance, an honoured pin has no
+  // responder on that rail and must deadline on the pinned describe — the command never reaches an
+  // execute. If the argument is dropped anywhere before the resolve, a live manager answers the
+  // class queue instead and the run fails (or succeeds) with some OTHER message, so the assertion
+  // is on the describe-deadline TEXT, not on exit status. Nothing is spawned, stopped, or attached
+  // in either direction.
+  //
+  // What this establishes, precisely: the argument reaches `resolveControlTarget` at each of the
+  // four sites. That it then reaches the MINT is cell 3, once, on the shared tail. Together those
+  // cover the whole chain; neither covers it alone.
+  console.log("\n5. every OTHER `--on` site forwards it too (spawn/stop/attach have their own)");
+  const pinnedDescribeDeadline = /no describe reply from manager within/i;
+  const sites: ReadonlyArray<{ what: string; argv: string[] }> = [
+    // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
+    // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
+    // worst case is a manager refusal, which is a DIFFERENT message and still fails this cell.
+    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space] },
+    { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+    { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+  ];
+  for (const site of sites) {
+    const r = await cotal(site.argv, root1);
+    mustHaveRun(r, `\`${site.what} --on <valid-but-absent>\``);
+    const out = strip(r.out);
+    check(`${site.what} HONOURS --on — it deadlines on the pinned rail instead of asking the class queue`,
+      pinnedDescribeDeadline.test(out),
+      { status: r.status, tail: out.slice(-400) });
+  }
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {

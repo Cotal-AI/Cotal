@@ -179,6 +179,42 @@ export const MANAGER_ADMIN_COMMANDS = Object.freeze([
 export const GOAL_BEARING_COMMANDS = Object.freeze(["spawn", "launch"] as const);
 const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 
+/** RETRY SAFETY (§13.2) — the commands a client may execute a SECOND time after a
+ *  responded-but-unbound split, because a second execution is observably indistinguishable from
+ *  one. Consulted by {@link isRepeatSafeCommand}; see `Endpoint.invokeService` for the decision it
+ *  gates.
+ *
+ *  THIS IS AN ALLOWLIST AND THE POLARITY IS THE WHOLE POINT. A denylist has to enumerate every
+ *  destructive command correctly, forever, and it fails OPEN: the next admin command added above
+ *  is auto-retried by default, and nothing goes red. This list fails CLOSED — a command nobody has
+ *  classified surfaces the split to its caller instead of running twice. Surfacing costs a caller
+ *  an error it can re-issue deliberately; the other direction cost `purge` a second STREAM.PURGE
+ *  that deleted messages published after the first one completed (measured, adversarial review).
+ *
+ *  Membership is a claim about the COMMAND'S EFFECT, so it is written out literally rather than
+ *  derived from a grant class. Deriving it from {@link MANAGER_READ_COMMANDS} would silently widen
+ *  retry safety the day a mutating command joins the `manager.read` tier for grant reasons; the two
+ *  vocabularies answer different questions and must be able to disagree.
+ *
+ *  A command belongs here only if re-running it is a no-op for every observer: these are reads
+ *  (`status`/`ps`/`inspect`/`models`, the delivery membership `list`) and `describe` itself.
+ *  Convergence is NOT sufficient on its own — `despawn` converges on a terminated agent, but its
+ *  second run is still a distinct despawn of whatever now holds that name, so it stays out.
+ *
+ *  This is a client-side heuristic standing in for something the wire does not carry. The general
+ *  fix is a safety/idempotency annotation on the command contract plus an effect-outcome in the
+ *  reply, so a caller can know whether the first execution landed instead of guessing; that is a
+ *  SPEC change and is deliberately not made here. */
+export const REPEAT_SAFE_COMMANDS = Object.freeze([
+  "describe", "status", "ps", "inspect", "models", "list",
+] as const);
+const REPEAT_SAFE_SET: ReadonlySet<string> = new Set(REPEAT_SAFE_COMMANDS);
+/** True only for a command whose re-execution is observably harmless ({@link REPEAT_SAFE_COMMANDS}).
+ *  Unknown commands are NOT repeat-safe — that is the intended default, not an oversight. */
+export function isRepeatSafeCommand(command: string): boolean {
+  return REPEAT_SAFE_SET.has(command);
+}
+
 // PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
 // never the live exports, so the minted surface survives even a hypothetical defeat of the
 // freezes above (the seam-snapshot half of the afa715b closure pattern).
