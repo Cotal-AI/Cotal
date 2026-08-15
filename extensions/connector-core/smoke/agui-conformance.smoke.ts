@@ -235,11 +235,19 @@ c("CONTROL: the outcome object is STRICT — an unknown key inside it is refused
 //    Multi-turn deliberately: a single turn cannot show that state is released at a run boundary,
 //    so a one-turn fixture would pass against a machine that never closes anything.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// All THREE id spaces, deliberately. The machine keys text, reasoning and tool calls in separate
+// sets (`src/agui.ts` `BracketState`), and a fixture that never emits a `REASONING_*` event leaves
+// a third of the machine unexecuted while every cell below still passes — the exact defect this
+// suite was graded on. The reasoning message sits between the prompt and the tool call because that
+// is where a real harness puts it.
 const turn = (n: number): AguiEvent[] => [
   runStarted({ threadId: "sess-1", runId: `turn-${n}`, timestamp: TS }),
   textMessageStart({ messageId: `u${n}#0`, timestamp: TS, role: "user" }),
   textMessageContent({ messageId: `u${n}#0`, delta: `prompt ${n}`, timestamp: TS }),
   textMessageEnd({ messageId: `u${n}#0`, timestamp: TS }),
+  reasoningMessageStart({ messageId: `th${n}#0`, timestamp: TS }),
+  reasoningMessageContent({ messageId: `th${n}#0`, delta: `thinking ${n}`, timestamp: TS }),
+  reasoningMessageEnd({ messageId: `th${n}#0`, timestamp: TS }),
   toolCallStart({ toolCallId: `tc-${n}`, toolCallName: "Read", timestamp: TS }),
   toolCallArgs({ toolCallId: `tc-${n}`, delta: '{"file":"a.ts"}', timestamp: TS }),
   toolCallEnd({ toolCallId: `tc-${n}`, timestamp: TS }),
@@ -265,6 +273,10 @@ c("and the machine reports itself closed at the end", brackets.open === false);
 // demanded per-frame balance would forbid a split the plan mandates — so this feeds ONE turn as two
 // frames and requires it to pass. Without this cell, "check bracketing per frame" is an easy and
 // wrong repair that every other cell here would accept.
+// The cut lands mid-REASONING on purpose: `slice(0, 5)` ends on `REASONING_MESSAGE_START`, so the
+// second frame opens with an id already outstanding. That is stricter than cutting between
+// messages, which would only prove the RUN survives a boundary — here a per-id set has to survive
+// it too, and `snapshot()`/`restore()` (what the WAL persists) is the reason that matters.
 const oneTurn = turn(9);
 const splitA = oneTurn.slice(0, 5), splitB = oneTurn.slice(5);
 let splitErr = "";
@@ -272,6 +284,8 @@ const splitBrackets = new AguiBrackets();
 try {
   for (const e of splitA) splitBrackets.accept(e);
   c("mid-split, the machine reports the run still OPEN", splitBrackets.open === true);
+  c("mid-split, the reasoning id opened in the FIRST frame is still outstanding",
+    splitBrackets.snapshot().reasoning.join(",") === "th9#0", splitBrackets.snapshot());
   for (const e of splitB) splitBrackets.accept(e);
   splitBrackets.assertClosed();
 } catch (e) { splitErr = (e as Error).message; }
@@ -320,10 +334,84 @@ refuses("content for a messageId that was never opened is refused",
   },
   /TEXT_MESSAGE_CONTENT for "ghost" which is not open/);
 
+// The reasoning id space gets its OWN refusals rather than riding the text ones. The three cases
+// share `openId`/`requireOpen`/`closeId`, so a mutation to a helper reddens text and reasoning
+// alike and proves nothing about the routing — these cells exist for the mutation that misroutes
+// `REASONING_MESSAGE_*` to another set, which every text cell would survive.
+refuses("re-opening a reasoning messageId that is already open is refused",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(turn(1)[0]!);
+    b.accept(reasoningMessageStart({ messageId: "th-dup", timestamp: TS }));
+    b.accept(reasoningMessageStart({ messageId: "th-dup", timestamp: TS }));
+  },
+  /REASONING_MESSAGE_START re-opened "th-dup" while already open/);
+
+refuses("reasoning content for a messageId that was never opened is refused",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(turn(1)[0]!);
+    b.accept(reasoningMessageContent({ messageId: "th-ghost", delta: "x", timestamp: TS }));
+  },
+  /REASONING_MESSAGE_CONTENT for "th-ghost" which is not open/);
+
+refuses("closing a reasoning message that was never opened is refused",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(turn(1)[0]!);
+    b.accept(reasoningMessageEnd({ messageId: "th-ghost", timestamp: TS }));
+  },
+  /REASONING_MESSAGE_END for "th-ghost" which is not open/);
+
+refuses("closing a run with a REASONING message still open is refused",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(turn(1)[0]!);
+    b.accept(reasoningMessageStart({ messageId: "th-leak", timestamp: TS }));
+    b.accept(runFinished({ threadId: "sess-1", runId: "turn-1", timestamp: TS }));
+  },
+  /RUN_FINISHED while still open: th-leak/);
+
+// The `TOOL_CALL_RESULT` guard, which is the one case that asserts an id is NOT open. Every happy
+// path sends the result after `TOOL_CALL_END`, so deleting the guard left the suite fully green —
+// an unexecuted branch inside an otherwise well-covered machine.
+refuses("a TOOL_CALL_RESULT arriving while its call is still open is refused",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(turn(1)[0]!);
+    b.accept(toolCallStart({ toolCallId: "tc-early", toolCallName: "Read", timestamp: TS }));
+    b.accept(toolCallResult({ messageId: "r#0", toolCallId: "tc-early", content: "ok", timestamp: TS }));
+  },
+  /TOOL_CALL_RESULT for "tc-early" while its call is still open/);
+
+// THE THREE ID SETS ARE SEPARATE, and nothing else here can see that. Every other cell uses ids
+// that differ across the sets, so a machine that routed all three into ONE set would pass the whole
+// file. This opens the SAME id as text and as reasoning at once and requires both to be legal:
+// they are different namespaces in the protocol, and a collision between them is not a re-open.
+let sharedIdErr = "";
+try {
+  const b = new AguiBrackets();
+  b.accept(turn(1)[0]!);
+  b.accept(textMessageStart({ messageId: "shared", timestamp: TS, role: "assistant" }));
+  b.accept(reasoningMessageStart({ messageId: "shared", timestamp: TS }));
+  b.accept(toolCallStart({ toolCallId: "shared", toolCallName: "Read", timestamp: TS }));
+  const snap = b.snapshot();
+  c("one id open in all THREE sets at once is legal — they are separate namespaces",
+    snap.text.join() === "shared" && snap.reasoning.join() === "shared" && snap.tools.join() === "shared", snap);
+  b.accept(textMessageEnd({ messageId: "shared", timestamp: TS }));
+  // After the TEXT id closes, the reasoning and tool ids of the same name must still be open —
+  // this is what separates three sets from one set that happens to be keyed loosely.
+  const after = b.snapshot();
+  c("closing the TEXT `shared` leaves the reasoning and tool `shared` open",
+    after.text.length === 0 && after.reasoning.join() === "shared" && after.tools.join() === "shared", after);
+} catch (e) { sharedIdErr = (e as Error).message; }
+c("the three id sets do not collide", sharedIdErr === "", sharedIdErr);
+
 // THE CONTROL for the whole refusal block — the inverse of the predicate under test. Every cell
 // above shows the machine refusing something; this shows it ACCEPTING the legitimate neighbour of
-// the thing it refuses. A machine broken so it refuses all input would satisfy all six refusals and
-// only this cell separates it from a correct one.
+// the thing it refuses. A machine broken so it refuses all input would satisfy every refusal above,
+// and only this cell separates it from a correct one. Counted by NAME, not by number: this comment
+// used to say "all six", which was already wrong by the time anyone read it.
 let controlErr = "";
 try {
   const b = new AguiBrackets();
@@ -388,11 +476,14 @@ refuses("an empty threadId is refused", () => aguiFrame({ threadId: "", runId: "
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 7. TWO PRINCIPALS THROUGH ONE CHANNEL STAY SEPARATE — AT THE ENVELOPE LAYER
 //
-//    ⚠️ Read the header warning before reading these cells. This is NOT channel isolation, which
-//    does not exist at this commit and cannot be asserted until the channel keys on the
-//    principal-stable id. What is asserted is the property that survives that change: two writers
-//    sharing one subject remain attributable, because every frame carries its own writer identity.
-//    Named this way so a later reader cannot mistake one for the other.
+//    ⚠️ Read the header warning before reading these cells. This is NOT channel isolation. That is
+//    a scope statement, not a statement about the tree: channel isolation DOES exist at this commit
+//    — the channel keys on the principal (`events.<owner>.<actor>`) and the header names the three
+//    suites that prove it. This comment used to say isolation "does not exist at this commit",
+//    which the re-key made false and which no cell here could catch, because a comment asserting
+//    something outside its own function is a test nobody wrote. What IS asserted below is the
+//    envelope half, which survives the re-key: two writers sharing one subject remain attributable,
+//    because every frame carries its own writer identity.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 const alpha = aguiFrame({ threadId: "sess-alpha", runId: "turn-1", epoch: "epoch-alpha", seq: 0, events: turn(1) });
 const beta  = aguiFrame({ threadId: "sess-beta",  runId: "turn-1", epoch: "epoch-beta",  seq: 0, events: turn(1) });
@@ -411,13 +502,16 @@ c("the (epoch, seq) pair separates them where (runId, seq) does not",
 // And each writer's own stream brackets independently — interleaving two principals' events into
 // ONE machine is what a channel-keyed-on-name consumer effectively does, and it must not appear
 // well-formed. This is the executable form of the co-mingling the plan measured.
-let interleaveRefused = false;
-try {
-  const b = new AguiBrackets();
-  b.accept(runStarted({ threadId: "sess-alpha", runId: "turn-1", timestamp: TS }));
-  b.accept(runStarted({ threadId: "sess-beta", runId: "turn-1", timestamp: TS }));
-} catch (e) { interleaveRefused = e instanceof AguiVocabularyError; }
-c("two principals' runs interleaved into one stream do NOT look well-formed", interleaveRefused);
+// Through `refuses()`, so it names WHICH refusal. It previously checked `instanceof
+// AguiVocabularyError` alone, which is the bar this file sets for every other refusal cell and did
+// not meet itself: a machine that refused its own legitimate second turn would have passed it.
+refuses("two principals' runs interleaved into one stream do NOT look well-formed",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(runStarted({ threadId: "sess-alpha", runId: "turn-1", timestamp: TS }));
+    b.accept(runStarted({ threadId: "sess-beta", runId: "turn-1", timestamp: TS }));
+  },
+  /RUN_STARTED for "turn-1" while run "turn-1" is still open/);
 
 // ---------------------------------------------------------------------------------------------
 // THE CONSUMER-SIDE VALIDATOR. This is the renderers' enforcement point, and it exists because the
