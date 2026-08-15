@@ -108,8 +108,13 @@ const key = (name: string) => new KeyScope().nextEffect("sleep", name);
   await nc2.close();
   let stalled: unknown;
   try { await journal.begin(key("two"), "h2", 2_000); } catch (e) { stalled = e; }
+  // L5010 alone does not discriminate — the journal wraps ANY store error into it — so what is
+  // actually being asked here is whether the STORE recognised a barrier state or let a raw
+  // transport error through under a durability label.
   c("losing the connection is a durability failure too, not a transport error the interpreter sees",
-    stalled instanceof JournalAppendRejected, `${(stalled as Error)?.name}`);
+    stalled instanceof JournalAppendRejected &&
+    (stalled as JournalAppendRejected).reason instanceof RunJournalUnavailable,
+    `${(stalled as Error)?.name}/${(stalled as JournalAppendRejected)?.reason?.name}`);
   c("and the store reports itself finished, so a driver can stop without waiting for the next entry",
     store.isFinished);
 }
