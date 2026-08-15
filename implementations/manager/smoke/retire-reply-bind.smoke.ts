@@ -20,10 +20,12 @@
 import { randomBytes } from "node:crypto";
 import { mintLifecycleUid, epReplySubject, AUTH_ENDPOINT } from "@cotal-ai/core";
 import { epAwaitReply } from "../src/manager.js";
+import { assertNoLiveBrokerInEnv, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 
-for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
-for (const [k, v] of Object.entries(process.env))
-  if (/broker\.cotal\.ai/.test(String(v))) throw new Error(`refusing to run: ${k} names the live broker`);
+// SCRUB THEN ASSERT, through the shared module rather than a copy of it. This used to be two
+// hand-rolled lines here; the value scan below is the one they contributed, and it is now shared.
+scrubAmbientBrokerEnv();
+assertNoLiveBrokerInEnv();
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, ctx?: unknown) => {

@@ -52,31 +52,30 @@ import {
 import { holderLivenessFromReply } from "../src/holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate, type GateReconcileCondition, type HolderLiveness } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import {
+  assertEphemeralBroker, assertNoLiveBrokerInEnv, scrubAmbientBrokerEnv,
+} from "../../../packages/core/smoke/_ephemeral-only.js";
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION, BEFORE ANY WORK: this smoke provisions credentials, revokes rows, and KICKs live
 // connections. It must never be able to do that to the real mesh, so the live host is refused here
 // — at the top, unconditionally — rather than trusted to be absent from the environment.
 // ---------------------------------------------------------------------------
+// SCRUB, THEN ASSERT — and the order is the point. This block used to REFUSE outright on an
+// inherited `COTAL_SERVERS`, which meant this smoke could not run in the environment every
+// mesh-connected agent on this box actually has: the connector exports the live coordinates, so the
+// gate stopped here on every operator machine and ran only where someone had unset them by hand.
+// A guard that fires in the normal environment does not protect the live broker — it protects
+// nothing, because a gate nobody can complete is a gate nobody runs. Scrubbing removes the
+// inherited coordinates from this process AND every child it spawns; the assert then still bites if
+// anything re-introduces a live target afterwards, which is the case that would actually reach
+// production. Refusing on ambient env catches the environment; asserting after scrubbing catches
+// the code.
+scrubAmbientBrokerEnv();
+assertNoLiveBrokerInEnv();
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
-const LIVE_HOSTS = ["broker.cotal.ai"];
-for (const host of LIVE_HOSTS) {
-  if (SERVERS.includes(host)) {
-    console.error(`✗ REFUSING TO RUN: the broker URL "${SERVERS}" names the live host "${host}". This smoke evicts connections and revokes credentials; it runs against ephemeral brokers only.`);
-    process.exit(1);
-  }
-  for (const [k, v] of Object.entries(process.env)) {
-    if (/^(COTAL_SERVER|COTAL_SERVERS|NATS_URL|COTAL_BROKER)$/.test(k) && typeof v === "string" && v.includes(host)) {
-      console.error(`✗ REFUSING TO RUN: ${k}="${v}" names the live host "${host}". Ephemeral brokers from scratch dirs only.`);
-      process.exit(1);
-    }
-  }
-}
-if (!/^nats:\/\/(127\.0\.0\.1|localhost):/.test(SERVERS)) {
-  console.error(`✗ REFUSING TO RUN: "${SERVERS}" is not a loopback ephemeral broker.`);
-  process.exit(1);
-}
+assertEphemeralBroker(SERVERS);
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));

@@ -15,8 +15,19 @@
 /** Hosts that must never be reached by a smoke, named so the failure is unmistakable. */
 const LIVE_HOSTS = ["broker.cotal.ai"];
 
-/** Broker coordinates a Cotal client resolves from the environment when not told otherwise. */
-const AMBIENT_KEYS = ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"] as const;
+/**
+ * Broker coordinates a Cotal client resolves from the environment when not told otherwise.
+ *
+ * SIX, AND THE LAST TWO ARE HERE BECAUSE CONSOLIDATION NEARLY DELETED THEM. `NATS_URL` and
+ * `COTAL_BROKER` were covered only by a hand-rolled denylist inside one manager smoke. Replacing
+ * that suite's bespoke guard with this module — the obvious tidy-up — would have silently narrowed
+ * the key list by two while every suite stayed green, because a shrinking coverage list has no
+ * symptom. The list is the union of every implementation that existed before this one, and it is
+ * stated as a list precisely so the next person can diff it rather than trust it.
+ */
+const AMBIENT_KEYS = [
+  "COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE", "NATS_URL", "COTAL_BROKER",
+] as const;
 
 /**
  * Remove the ambient broker coordinates from this process (and therefore from every child it
@@ -41,8 +52,42 @@ export function scrubAmbientBrokerEnv(): string[] {
 }
 
 /**
+ * Assert no REMAINING environment value names a live host — a catch-all over every variable, run
+ * AFTER {@link scrubAmbientBrokerEnv}.
+ *
+ * WHY A VALUE SCAN AND NOT A LONGER KEY LIST. {@link AMBIENT_KEYS} can only delete names somebody
+ * thought of. This scans every value in the environment, so a variable this module has never heard
+ * of — an operator's `MY_BROKER`, a runner injecting its own coordinates, a key added to a client
+ * after this file was last edited — is still caught. A key list goes stale silently; a value scan
+ * does not. It was carried by exactly one manager smoke as a hand-rolled line and would have been
+ * lost in the consolidation that produced this function.
+ *
+ * It is deliberately NOT folded into the scrub. Deleting an unknown variable because its value
+ * mentions a hostname is a side effect a caller cannot predict; refusing is honest and leaves the
+ * operator's environment intact for them to fix.
+ */
+export function assertNoLiveBrokerInEnv(): void {
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v !== "string") continue;
+    for (const host of LIVE_HOSTS) {
+      if (v.toLowerCase().includes(host))
+        throw new Error(
+          `REFUSING TO RUN: environment variable ${k} names the LIVE broker (${host}). These smokes ` +
+            `provision credentials, revoke rows and evict connections; any client or child process ` +
+            `that resolves its target from the environment would reach production.`,
+        );
+    }
+  }
+}
+
+/**
  * Assert `servers` is a throwaway loopback broker. Throws (never warns) — a smoke that cannot
  * prove its target is disposable must not proceed to open a connection.
+ *
+ * NOTE FOR ANYONE TEMPTED TO TREAT THIS AND THE SCRUB AS INTERCHANGEABLE: **this function never
+ * reads the environment.** It judges a URL it is handed. So it cannot protect a child process, and
+ * the scrub cannot protect a caller that passes a live URL explicitly. Each covers a case the other
+ * is blind to, which is why `ephemeral-guard.smoke.ts` kills them with separate cells.
  */
 export function assertEphemeralBroker(servers: string): void {
   const targets = servers.split(",").map((s) => s.trim()).filter(Boolean);
