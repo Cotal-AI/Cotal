@@ -930,6 +930,21 @@ console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateF
 // judgement in one paragraph launders the judgement: the reader grants the whole block the authority
 // of the checked half. So each claim is filed by WHAT WOULD CATCH IT IF IT WERE WRONG — a cell, a
 // person, or nothing at all — and the third band is named rather than quietly folded into the first.
+//
+// WHY RECORDED IS NOT A SUBSET OF JUDGEMENT, which is the only interesting line of the three:
+// **JUDGEMENT cannot be re-derived even in principle. RECORDED could be, and simply was not.** That
+// difference is operational rather than taxonomic — **RECORDED IS A PROMOTION QUEUE.** Every item in
+// it is a candidate to become a cell in CHECKED on the day someone is willing to pay for it, and
+// nothing in JUDGEMENT ever will be. Collapsing the two would bury a work list inside a list of
+// opinions and hand a stale measurement the permanence of a considered view.
+//
+// **A reader who cannot tell "nobody has automated this yet" from "this cannot be automated" will
+// treat both as settled.** That is the whole reason for the third heading.
+//
+// A RULING GOES IN RECORDED, NOT IN CHECKED, even when it is the orchestrator's own. A ruling is a
+// decision made on evidence at a moment, not a measurement; filing it as checked would lend this
+// suite's credibility to an authority it never tested, and would let a decision be inherited rather
+// than re-opened when its evidence moves.
 console.log(
   "\n════ CHECKED — every line here is a [disclosure] cell in THIS run. A wrong one goes RED above;\n" +
     "     it does not merely mislead. The cells are the claim; this is the index to them.\n" +
@@ -952,7 +967,8 @@ console.log(
     "    The string every cell above grades is " + consoleRendered.length + " characters — BELOW that clamp — so no\n" +
     "    cell in this file has ever exercised the collapsed path.\n" +
     "\n" +
-    "════ JUDGEMENT — NOT CHECKED, CANNOT GO RED. Weigh it; never cite it as a measurement.\n" +
+    "════ JUDGEMENT — CANNOT BE RE-DERIVED EVEN IN PRINCIPLE, so it will never become a cell.\n" +
+    "     Weigh it; never cite it as a measurement.\n" +
     "  · A frame carrying a real turn is far larger than this three-event fixture, so in practice a\n" +
     "    correct frame lands in a COLLAPSED body while every cell here still passes. Not quantified:\n" +
     "    doing so means choosing a representative frame, and a claim resting on one chosen fixture is\n" +
@@ -966,6 +982,10 @@ console.log(
     "\n" +
     "════ RECORDED — true when made, by a person or a past run. NOT re-derived here, so it can rot\n" +
     "     exactly the way the paragraph this section replaced did.\n" +
+    "     THIS BAND IS A PROMOTION QUEUE, and that is what separates it from JUDGEMENT above: each\n" +
+    "     item COULD be re-derived and merely was not, so each is a candidate to become a CHECKED\n" +
+    "     cell the day someone pays for it. Nothing in JUDGEMENT ever can be. Do not read the two as\n" +
+    "     one — \"nobody has automated this yet\" and \"this cannot be automated\" are different debts.\n" +
     "  · RULED (fm-orchestrator): the reader-side direction is PART KIND, not channel name.\n" +
     "    `ag-ui.frame` is a core concept, so a surface identifies event traffic by the part it\n" +
     "    carries and needs no naming guarantee. Making the prefix normative was REJECTED: it would\n" +
