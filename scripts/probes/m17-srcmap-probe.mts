@@ -23,8 +23,13 @@ const [FROM, TO] = MAP.split("::");
 // specifier OUTSIDE the mapped prefix. Both are parameters rather than constants: the gate has to
 // name the subject of the run it is gating, and a probe hard-wired to one package would quietly
 // certify a different one. Defaults cover the connector suite; core runs pass the pair explicitly.
-const SUBJECT = process.env.COTAL_PROBE_SUBJECT ?? "../../extensions/connector-core/src/agent.js";
-const CONTROL = process.env.COTAL_PROBE_CONTROL ?? "../../packages/core/src/index.js";
+// Resolved against the REPO ROOT (this process's cwd — the harness runs there), never against this
+// file's location. Moving the probe re-based its own defaults once already, and a caller passing
+// `../packages/...` would then be silently resolving somewhere else while the gate still printed a
+// verdict. A specifier's meaning must not depend on where the instrument happens to live.
+const asRootSpec = (p: string) => (p.startsWith(".") ? new URL(p, `file://${process.cwd()}/`).href : p);
+const SUBJECT = asRootSpec(process.env.COTAL_PROBE_SUBJECT ?? "./extensions/connector-core/src/agent.js");
+const CONTROL = asRootSpec(process.env.COTAL_PROBE_CONTROL ?? "./packages/core/src/index.js");
 if (SUBJECT === CONTROL) { console.log("VERDICT: probe misconfigured — subject and control are the same specifier"); process.exit(1); }
 
 const subjectUrl = import.meta.resolve(SUBJECT);
