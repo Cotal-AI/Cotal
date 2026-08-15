@@ -703,6 +703,28 @@ test would take the permissive arm and hand the verbs to an ungranted authed ses
 that because the broker denies it at the wire; **a disconnect closes this client's own socket, which
 no broker can police, so this gate is the only gate** — hence G3.
 
+⚠️ **AMENDMENT: the permissive open-mode arm described above is GONE.** `connection` is required in
+every mode; see §9.4. What survives from this paragraph is the reasoning, not the code it described.
+
+### 5.1 What the grant does NOT protect against — an honest bound, graded by review
+
+`mc-rev-cleanup` confirmed `cotal_reconnect` is **correctly outside** the `connection` grant: it is
+an always-available recovery rebuild, takes no target, and refuses to reverse a deliberate
+self-disconnect, so it cannot create the persistent unreachable state the grant controls.
+
+**But it named the residual, and it belongs here rather than in a findings list, because it bounds
+what this grant can honestly claim:** a compromised agent can repeatedly churn recovery and cause
+**transient self-unavailability**, with or without `connection`.
+
+> **WITHHOLDING `connection` IS OPERATIONAL POLICY, NOT PROTECTION FROM A PROCESS THAT CAN CLOSE ITS
+> OWN SOCKET.**
+
+That is the honest description of the grant's reach. **An agent's own process can always stop
+answering; what the grant controls is whether it can do so DURABLY, announce it, and choose when to
+return.** A reader who takes `connection` for a containment boundary has read it wrong, and this
+section is where they would otherwise have formed that reading. **An honest bound on a capability is
+worth more than the capability's description.**
+
 ---
 
 ## 6. Findings 1 and 2 (ruled)
@@ -952,6 +974,12 @@ both the safe and the unsafe state.**
 
 ### 9.2 Typed caller outcomes for the refusal taxonomy — clears the §2 BLOCK
 
+⚠️ **STILL OPEN, AND CONFIRMED OPEN BY THE CLEANUP FIX'S OWN REVIEWER.** After the fix, a publish
+against a session whose start was rejected throws verbatim `endpoint not started` — *"a bare core
+throw, not a named `ConnectionOutcome` or tool refusal … the result proves authority removal, not
+caller taxonomy."* **The cleanup work did not narrow this slice, and it must not be read as having
+done so** because it happens to touch the same call path.
+
 **Why, in one measurement:** holding the phase constant before any dial, a credential source throwing
 `vault unavailable` classified as **`broker-unreachable`**; changing **only its English** to
 `credential source unavailable` classified as **`credential-source-unavailable`**.
@@ -1073,3 +1101,46 @@ logged to stderr, relabelled `mesh unreachable` and retried forever, so no calle
 real reason — is **not fixed here**. It shares a symptom with the above and is a different defect;
 it belongs with §9.1/§9.2, and the connect/startup half of it is the same gap `mc-rev-supervisor`
 identified independently.
+
+### 9.7 What the pre-fix leak could REACH — graded independently, and it is the lane's central answer
+
+`mc-rev-cleanup` drove the question this lane deliberately left unclaimed about its own fix: **a
+half-bound connection is an AUTHENTICATED one.** Before the cleanup, those orphaned sockets had
+completed the handshake and only the BIND had failed. If they could publish or subscribe outside the
+agent's grant, this was an **authorization** defect and not a resource one.
+
+**They could not. Measured, both arms, on the SAME half-bound socket, with the refutation stated
+before the result was cited:**
+
+| arm | subject | outcome |
+| --- | --- | --- |
+| in-grant | `#general` | **PubAck** — `"inAclAccepted": true` |
+| out-of-grant | `#secret` | **threw** — verbatim `Permissions Violation for Publish to "cotal.<space>.chat.local.<uid>.secret"`, `"outAclDenied": true` |
+
+**Both arms matter and the first is the one people skip.** Without the in-grant PubAck, "it could
+publish only within its grant" is equally explained by a socket that could not publish AT ALL — in
+which case the fence was never exercised and the sentence is true and meaningless. The refusal is
+**BROKER-side**, a verbatim permissions violation, not a client-side decline: **the fence lives in
+the component whose bookkeeping the leak had already corrupted.**
+
+> **THE BRIEF'S REQUIREMENT IS "NOTHING IT DID NOT ALREADY HOLD", AND THIS DEMONSTRATES IT IN THE
+> FAILURE MODE RATHER THAN THE HAPPY PATH.** On a session **the broker had REJECTED**, the forbidden
+> subject stayed forbidden. That is a stronger statement than the fix makes: **the boundary does not
+> depend on the client's bookkeeping being correct.**
+
+**THE CLASSIFICATION, IN THE REVIEWER'S WORDS, BECAUSE BOTH OF THE LABELS ON OFFER WERE WRONG.** This
+was framed as "resource leak OR authorization defect". It is neither: it is **an admission/resource
+failure with LIVE AUTHORITY** — *"a rejected session retained its already-granted broker authority
+… not a broker-authorization widening: the forbidden subject stayed forbidden."* A rejected session
+is **not inert**. Different severity from a leak, different audience from a widening. **When a
+finding fits neither available label, the labels are the thing to fix.**
+
+**TWO BOUNDS, CARRIED VERBATIM, BECAUSE A FINDING QUOTED WITHOUT ITS BOUNDS BECOMES A BROADER CLAIM
+WITHIN ONE HOP.** Both were volunteered by the reviewer against the result that most flattered the
+code it was grading:
+
+1. *"I drove publish; I did not promote that into a universal claim about every raw subscribe
+   shape."* **The claim is bounded to PUBLISH.** Subscribe is not measured.
+2. On the post-fix behaviour: *"the in-grant publish then threw verbatim `endpoint not started`.
+   That is a **bare core throw**, not a named `ConnectionOutcome` or tool refusal. I am not claiming
+   §9.2 closed; the result proves authority removal, not caller taxonomy."* **§9.2 REMAINS OPEN.**
