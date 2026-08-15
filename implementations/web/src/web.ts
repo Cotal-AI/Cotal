@@ -105,11 +105,14 @@ export function makeAuthGate(port: number) {
   const sessions = new Set<string>();
   // The full ORIGIN, not the host: `https://localhost:7799` and `http://localhost:7799` are
   // different origins to a browser, and comparing only the host would treat them as one.
-  const allowedOrigins = new Set([
-    `http://cotal.localhost:${port}`,
-    `http://127.0.0.1:${port}`,
-    `http://localhost:${port}`,
-  ]);
+  // Built through `new URL(...).origin` so the allow-list is in the SAME serialization the incoming
+  // header is normalized into. A hand-written `http://localhost:80` never matches, because WHATWG
+  // origin serialization drops the default port — so on `--port 80` the console would refuse its own
+  // browser. Normalizing both sides is the only way the comparison means what it reads as.
+  const allowedOrigins = new Set(
+    [`http://cotal.localhost:${port}`, `http://127.0.0.1:${port}`, `http://localhost:${port}`]
+      .map((o) => new URL(o).origin),
+  );
 
   return {
     launchToken: launchToken!,

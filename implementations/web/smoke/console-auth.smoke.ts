@@ -76,14 +76,16 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   // …and a SAME-LENGTH forgery, derived from the real session. The literal above is SHORTER than a
   // minted session, so `sessions.has(session)` could be replaced by a length check and survive:
   // measured, that mutant went 68/68 green while authenticating any cookie of the right size.
-  const nearMiss = `${session.slice(0, -1)}${session.slice(-1) === "A" ? "B" : "A"}`;
-  check("NON-VACUITY: the near-miss session is the same LENGTH as a real one and a different VALUE",
-    nearMiss.length === session.length && nearMiss !== session, { len: nearMiss.length });
-  check("a same-length session cookie differing in ONE character is refused (membership, not shape)",
-    (() => {
-      const r = gate.check(req({ cookie: `cotal_web_session=${nearMiss}` }) as never, q());
-      return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
-    })());
+  const sessIdx = [...session].map((_, i) => i);
+  check("NON-VACUITY: the session sweep covers EVERY index of a real minted session",
+    sessIdx.length === session.length && sessIdx.length > 3, { n: sessIdx.length });
+  const sessSurvivors = sessIdx.filter((i) => {
+    const near = `${session.slice(0, i)}${session[i] === "A" ? "B" : "A"}${session.slice(i + 1)}`;
+    const r = gate.check(req({ cookie: `cotal_web_session=${near}` }) as never, q());
+    return !(r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED);
+  });
+  check("a same-length session cookie differing at ANY SINGLE index is refused (membership, not shape, not length)",
+    sessSurvivors.length === 0, { acceptedAtPositions: sessSurvivors });
 }
 
 // ── 2. ORIGIN ───────────────────────────────────────────────────────────────────────────────────
@@ -112,6 +114,20 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
     const wrongScheme = g2s.check(req({ origin: `https://${host}` }) as never, q(`k=${g2s.launchToken}`));
     check(`…but https://${host} is a DIFFERENT origin and is refused as \`cross-origin\``,
       wrongScheme !== undefined && "refuse" in wrongScheme && wrongScheme.refuse === CROSS_ORIGIN, { host, wrongScheme });
+  }
+
+  // DEFAULT-PORT SERIALIZATION. `new URL("http://localhost:80").origin` is `http://localhost` — the
+  // WHATWG serializer drops the default port — so an allow-list built by string concatenation stored
+  // `http://localhost:80` and could never match a real browser's Origin header. On `--port 80` the
+  // console refused its own page. Both sides must be normalized the same way.
+  {
+    const g80 = makeAuthGate(80);
+    const ok80 = g80.check(req({ origin: "http://localhost" }) as never, q(`k=${g80.launchToken}`));
+    check("on --port 80 the console accepts its OWN origin, which a browser sends without the default port",
+      ok80 !== undefined && "exchange" in ok80, ok80);
+    const evil80 = makeAuthGate(80).check(req({ origin: "http://evil.example" }) as never, q());
+    check("…and still refuses another origin on port 80 (the normalization did not widen the set)",
+      evil80 !== undefined && "refuse" in evil80 && evil80.refuse === CROSS_ORIGIN, evil80);
   }
 
   // ORDERING, and it is load-bearing: a cross-site request arrives WITHOUT the cookie (SameSite),
@@ -157,17 +173,19 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   // `length + final byte` equality passing: measured, that mutant survived 68/68 while accepting any
   // secret sharing one byte. One-off negatives must sweep first, middle and last.
   const flip = (s: string, i: number) => `${s.slice(0, i)}${s[i] === "A" ? "B" : "A"}${s.slice(i + 1)}`;
-  const positions = (s: string) => [0, Math.floor(s.length / 2), s.length - 1];
-  for (const i of positions(gate.readinessNonce)) {
-    const nonceOneOff = flip(gate.readinessNonce, i);
-    check(`NON-VACUITY: the nonce differing at position ${i} is the same LENGTH and a different VALUE`,
-      nonceOneOff.length === gate.readinessNonce.length && nonceOneOff !== gate.readinessNonce, { i });
-    check(`a same-length readiness nonce differing at position ${i} is refused (content, not length, not one byte)`,
-      (() => {
-        const r = gate.check(req({ "x-cotal-readiness": nonceOneOff }) as never, q());
-        return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
-      })());
-  }
+  const positions = (s: string) => [...s].map((_, i) => i);
+  // EVERY index, not a sample of three. A comparator checking length plus three fixed positions
+  // rejects a 0/middle/last negative and accepts everything else — sampling positions is the same
+  // mistake as sampling routes, one type down.
+  const nonceIdx = positions(gate.readinessNonce);
+  check("NON-VACUITY: the nonce sweep covers EVERY index, not a sample",
+    nonceIdx.length === gate.readinessNonce.length && nonceIdx.length > 3, { n: nonceIdx.length });
+  const nonceSurvivors = nonceIdx.filter((i) => {
+    const r = gate.check(req({ "x-cotal-readiness": flip(gate.readinessNonce, i) }) as never, q());
+    return !(r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED);
+  });
+  check("a same-length readiness nonce differing at ANY SINGLE index is refused (content, not length, not some bytes)",
+    nonceSurvivors.length === 0, { acceptedAtPositions: nonceSurvivors });
   check("the readiness nonce does NOT consume the launch token (the parent polls; the browser still needs it)",
     (() => {
       gate.check(req({ "x-cotal-readiness": gate.readinessNonce }) as never, q());
@@ -181,14 +199,15 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   // which never reaches the comparison because the token is already undefined by then.
   {
     const g5 = makeAuthGate(PORT);
-    for (const i of positions(g5.launchToken)) {
-      const tokenOneOff = flip(g5.launchToken, i);
-      check(`NON-VACUITY: the launch token differing at position ${i} is the same LENGTH and a different VALUE`,
-        tokenOneOff.length === g5.launchToken.length && tokenOneOff !== g5.launchToken, { i });
-      const wrongAt = g5.check(req() as never, q(`k=${tokenOneOff}`));
-      check(`a same-length WRONG launch token differing at position ${i} is refused as \`unauthenticated\``,
-        wrongAt !== undefined && "refuse" in wrongAt && wrongAt.refuse === UNAUTHENTICATED, wrongAt);
-    }
+    const tokenIdx = positions(g5.launchToken);
+    check("NON-VACUITY: the launch-token sweep covers EVERY index, not a sample",
+      tokenIdx.length === g5.launchToken.length && tokenIdx.length > 3, { n: tokenIdx.length });
+    const tokenSurvivors = tokenIdx.filter((i) => {
+      const r = g5.check(req() as never, q(`k=${flip(g5.launchToken, i)}`));
+      return !(r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED);
+    });
+    check("a same-length WRONG launch token differing at ANY SINGLE index is refused as `unauthenticated`",
+      tokenSurvivors.length === 0, { acceptedAtPositions: tokenSurvivors });
     const wrong = g5.check(req() as never, q(`k=${flip(g5.launchToken, 0)}`));
     check("a same-length WRONG launch token is refused as `unauthenticated`, not exchanged",
       wrong !== undefined && "refuse" in wrong && wrong.refuse === UNAUTHENTICATED, wrong);
@@ -310,6 +329,18 @@ check("…and EXECUTION STOPS after the redirect (the exchange answers; it does 
 const ROUTE_PATHS = ["/", "/feed", "/app.js", "/api/meta", "/api/roster", "/api/channel/delete"];
 check("NON-VACUITY: the refusal sweep covers several paths INCLUDING the destructive one",
   ROUTE_PATHS.length > 1 && ROUTE_PATHS.includes("/api/channel/delete"), ROUTE_PATHS);
+// STRUCTURAL INDEPENDENCE, because a sweep is a SAMPLE and a sample can always be evaded — the path
+// list omits `/api/dms`, `/api/activity`, the history route, and a predicate conjoined with
+// `path !== "/api/dms"` refuses all six sampled paths while letting DMs through. Sampling cannot fix
+// that; the property can. The refusal branch must depend on the VERDICT ALONE.
+const refusalCond = gateBlock.slice(gateBlock.indexOf("if ("), gateBlock.indexOf(") {"));
+check("NON-VACUITY: the refusal condition was extracted and mentions the verdict",
+  refusalCond.includes("verdict"), { refusalCond });
+for (const forbidden of ["path", "req.", "method", "query"]) {
+  check(`the refusal branch does NOT depend on \`${forbidden}\` — it refuses on the verdict alone, for every route and method`,
+    !refusalCond.includes(forbidden), { refusalCond, forbidden });
+}
+
 const ROUTE_METHODS = ["GET", "POST"];
 check("NON-VACUITY: the sweep varies the METHOD as well as the path",
   ROUTE_METHODS.length > 1 && ROUTE_METHODS.includes("POST"), ROUTE_METHODS);
@@ -346,17 +377,23 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
 // A list of route shapes can always omit one, and the omission is invisible. So this asserts the
 // property directly instead: between parsing the path/query and the gate there is NOTHING —
 // no statement of any syntax, present or future. Comments and blank lines are allowed; code is not.
+// Anchored at the HANDLER'S OPENING BRACE, not at the query line. Measuring from the query line left
+// the space BETWEEN the path and query declarations unguarded: the static block could be moved there
+// and `between` stayed empty with 84 cells green. The window has to start where the handler starts.
 const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
-const queryAt = webTs.indexOf('const query = new URLSearchParams(');
-check("NON-VACUITY: both anchors were located in the shipped source", gateAt !== -1 && queryAt !== -1,
-  { gateAt, queryAt });
-const between = webTs
-  .slice(webTs.indexOf("\n", queryAt) + 1, gateAt)
+const handlerAt = webTs.indexOf("const handleRequest = async (req: IncomingMessage, res: ServerResponse)");
+check("NON-VACUITY: the handler's start and the gate were both located in the shipped source",
+  gateAt !== -1 && handlerAt !== -1 && handlerAt < gateAt, { handlerAt, gateAt });
+const firstStatements = webTs
+  .slice(webTs.indexOf("\n", handlerAt) + 1, gateAt)
   .split("\n")
   .map((l) => l.trim())
   .filter((l) => l !== "" && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"));
-check("the gate is the FIRST executable statement after the path/query parse — nothing dispatches above it",
-  between.length === 0, { between });
+check("the handler's first TWO executable statements are the path and query parse — nothing else precedes the gate",
+  firstStatements.length === 2
+    && firstStatements[0].startsWith("const path =")
+    && firstStatements[1].startsWith("const query ="),
+  { firstStatements });
 
 // ── 6. THE SESSION FILE'S MODE, DRIVEN AGAINST A REAL FILE ──────────────────────────────────────
 // This file holds the launch URL and the readiness nonce, so its mode is a credential boundary. No
