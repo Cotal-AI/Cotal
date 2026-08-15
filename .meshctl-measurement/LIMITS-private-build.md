@@ -6,6 +6,24 @@ Written because **a remedy whose limits are unstated gets cited later as though 
 private build (`packages/core/smoke/_core-entry.ts`, `mutation-proof --private-build`, verified by
 `meshctl-m12-seam-control.mts`) closes one specific hole. It is narrower than its name suggests.
 
+## Read this table first: the five limits are NOT the same kind of thing
+
+**Three of these will never be closed and two are open work.** They read at the same weight in the
+sections below, and they should not — one is a proof, one is a deliberate design boundary, one
+belongs to a different owner, and only two are a backlog.
+
+| # | limit | kind | who closes it |
+| --- | --- | --- | --- |
+| 1 | does not stop an ordinary build | **PERMANENT BY DESIGN** — closing it would destroy the distinction the whole rule rests on (different vs. deliberately wrong). **The freeze covers this, and the two are disjoint, not redundant.** | nobody; it is correct as it stands |
+| 4 | detects nothing, and nothing can | **PERMANENT — PROVEN IMPOSSIBLE**, three ways. Not a backlog item and not worth another attempt. | nobody; the impossibility is the finding |
+| 5 | symlinks unchanged; the fleet still runs an unmerged core | **NOT THIS CHANGE'S TO CLOSE** — a different decision with an irreversible edge | the human ruling on the links |
+| 2 | `connection-lifecycle` uncovered | **OPEN, deliberately deferred.** Closable. Named rather than fixed on instruction, to keep this change scoped. | this lane, when unblocked |
+| 3 | no other lane, package or harness covered | **OPEN, scope decision.** Closable by wiring more packages or making the flag the default. | whoever owns those harnesses |
+
+**If you are inheriting this branch: #2 and #3 are the only entries that are work.** Treating #1 or
+#4 as a to-do will waste your time, and treating #5 as this lane's to-do will have you making a
+decision that is not yours.
+
 ---
 
 ## What it DOES close
