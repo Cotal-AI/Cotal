@@ -30,15 +30,18 @@ import {
   CotalEndpoint, createSpaceAuth, idFromCreds, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, LEASE_TTL_MS,
 } from "@cotal-ai/core";
-// REACHES AROUND core's `exports` map ON PURPOSE, and this import is a TRIPWIRE rather than a smell
-// to be tidied away. `health.js` is deliberately not exported from `@cotal-ai/core`: it has no
-// consumer, and publishing an unread shape freezes it without serving anyone. This relative path
-// works only because tsx resolves source directly; the package specifier would not resolve, since
-// core's `exports` map lists only `.` and `./session-browser`.
+// THE TRIPWIRE THIS COMMENT DESCRIBED HAS FIRED, AND THE CONDITION IT SET WAS MET. It used to read:
+// "`health.js` is deliberately not exported from `@cotal-ai/core`: it has no consumer … if this file
+// ever NEEDS the package specifier, that is the signal the type has acquired a real consumer and
+// should be exported properly — with a changeset."
 //
-// SO: if this file ever NEEDS the package specifier, that is the signal the type has acquired a real
-// consumer and should be exported properly — with a changeset. Do not "fix" this by adding a
-// `./health` subpath; that publishes the same shape at a different specifier and buys nothing.
+// A real consumer now exists — `implementations/cli/src/lib/delivery-guard.ts` — so `health.js` IS
+// exported from core, with the changeset that comment demanded. The relative path is kept here only
+// because it still resolves and changing it is churn; it is no longer reaching around anything.
+//
+// The rule the old comment protected still stands and is worth restating: an export is made correct
+// by a consumer, not by tidiness. Exporting a shape nobody reads to silence a comment would have
+// been the dishonest way to close it.
 import { assessDeliveryHealth, type DeliveryHealth } from "../../../packages/core/src/health.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -272,17 +275,24 @@ try {
   // The observer reads the lease bucket and publishes the ctl.delivery probe, which is the AGENT
   // grant (the lease bucket is read-only for an agent — Component 6 health); a provisioner cred
   // holds neither, and using one gets a broker PermissionViolation on the KV read.
-  // The agent grants are lifecycle-keyed exact names (SPEC 13.1), so the cred and the endpoint card
-  // must carry the SAME uid or the broker denies the very reads this observer exists to make.
+  // The agent grants are lifecycle-keyed exact names (SPEC 13.1), and it is the CRED that carries the
+  // uid the broker checks — `mintCreds(..., { lifecycleUid })` below is the half that gates these
+  // reads. The endpoint's OWN `lifecycleUid` is a separate option (a sibling of `card` in
+  // `EndpointOptions`, endpoint.ts:157 — `AgentCard` has no such field) and it is what makes the
+  // health probe send THIS endpoint's identity instead of the `?? "health-probe"` placeholder at
+  // endpoint.ts:1433. This observer binds no lifecycle-keyed durable (consume:false,
+  // registerPresence:false, channels:[]), so it needs none of them to read the lease — but a probe
+  // that reports under a placeholder identity is exactly the source-less fact this lane exists to
+  // refuse, so it carries its own.
   const OBSERVER_UID = randomUUID().replace(/-/g, ""); // 32 lowercase hex — the [a-z0-9]{26,32} lifecycle token shape
   const agentCreds = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: OBSERVER_UID });
   writeFileSync(credsPath, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
 
   // The OBSERVER: a separate endpoint that reads the lease exactly as a health surface would.
   observer = new CotalEndpoint({
-    space, servers: SERVERS, creds: agentCreds, channels: [], consume: false,
+    space, servers: SERVERS, creds: agentCreds, lifecycleUid: OBSERVER_UID, channels: [], consume: false,
     watchPresence: false, registerPresence: false,
-    card: { id: idFromCreds(agentCreds), name: "health-observer", role: "agent", kind: "endpoint", lifecycleUid: OBSERVER_UID },
+    card: { id: idFromCreds(agentCreds), name: "health-observer", role: "agent", kind: "endpoint" },
   });
   await observer.start();
 
