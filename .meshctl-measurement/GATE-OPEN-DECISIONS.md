@@ -71,6 +71,11 @@ named the wrong artifact on first writing and was corrected in place).
 **Carried as a NAMED GAP by prior agreement, not as an omission.** Do not read a green board as E2E
 coverage.
 
+**Item 8 belongs to this stage.** It is stated there and NOT restated here on purpose — two copies
+of an open question drift, and the copy the E2E team reads would be the stale one. That is the
+defect this lane just fixed between two doc pages; repeating it inside the register that exists to
+prevent it would be absurd.
+
 ## 6. Limits #2 and #3 on the private build — OWNER: #2 this lane, #3 other harness owners
 
 `LIMITS-private-build.md` classifies its five limits by kind. **#1, #4 and #5 will never be closed**
@@ -86,3 +91,27 @@ removed**, and persists in the local object store until it is gc'd.
 
 **Stated rather than quietly left**, because "not in the history" and "not in the repository" are
 different claims and only the first is true.
+
+## 8. Is a credential revoked mid-disconnect caught on return? — OWNER: whoever runs the E2E live half
+
+**UNMEASURED, and it is the sharpest open question on this surface.**
+
+`cotal_connect` takes no target and re-presents the credential the session was launched with. What
+was measured is that a disconnect/connect pair re-presented the **cached** credential without
+fetching a new one. **What was never measured is whether a credential revoked while the agent was
+away is caught on the way back.**
+
+> **It is the difference between "connect asks for nothing new" as a BOUND and as a GUARANTEE.**
+> A bound describes what was observed; a guarantee describes what cannot happen. **The same sentence
+> serves as both until someone has to rely on it** — and the person relying on it is an operator
+> deciding whether to grant `connection`.
+
+**Docs already take the narrow side** (`docs/agent-files.md`, and the generated `docs/mcp-tools.md`
+from `tool-specs.ts`): assume a revocation is NOT re-checked on return until someone measures it.
+Fixed in `02e9df9e`, where the two pages had contradicted each other on exactly this.
+
+**Why it is not settled here:** it needs a broker and a live revocation, and the box is serialized.
+It cannot be answered by reading the client — the fence is the broker.
+
+**Owner is the E2E live half (item 5), not this lane**, because that stage is where a live broker
+and a real revocation exist. Item 5 points here rather than restating it.
