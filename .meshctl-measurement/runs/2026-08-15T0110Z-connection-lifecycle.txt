@@ -1,0 +1,64 @@
+[safety] inherited COTAL_* cleared; target=nats://127.0.0.1:40339 monitor=127.0.0.1:40531
+  ✓ setup: the observer sees the subject online
+
+=== ARM 2: teardown-failed ===
+  ✓ PRE-ARM 2: the subject is connected, not self-disconnected, and visible to the observer
+  ✓ D2a it refuses as THAT refusal — teardown-failed, not a generic error
+  ✓ D2b the retraction is reported only if it was SENT (a broker revision came back)
+  ✓ D2c the observer does NOT see the subject offline — the announcement really was retracted
+  ✓ D2d and the endpoint is not stranded in a third state (connection still held, not self-disconnected)
+
+--- INVERSE CONTROL: with the fault removed, the same call succeeds ---
+  ✓ D2e CONTROL: the same disconnect now SUCCEEDS (so D2a's refusal was the fault, not the path)
+  ✓ D2f CONTROL: and the observer DOES see offline (so D2c could have failed)
+
+--- D2g/D2h: the agent comes BACK — no ghost may survive it ---
+  ✓ D2g it comes back through the same path
+  ✓ D2h and an INDEPENDENT observer no longer sees it offline — coming back left no ghost
+
+--- D2i/D2j: a disconnect landing inside reconnect's null window ---
+  ✓ D2i a disconnect inside reconnect's window refuses TRANSITION-IN-PROGRESS, not the false 'not-connected'
+  ✓ D2j DISCRIMINATION: with no transition in flight and the endpoint genuinely off, the SAME call refuses NOT-CONNECTED
+  ✓ D2k the fixture is restored to connected after the discrimination arm
+
+=== ARM 1: refused connect leaves nothing live ===
+  ✓ PRE-ARM 1: ARM 1's OWN subject is deliberately off holding no connection, and nothing else is live at the broker
+  ✓ D1a it refuses as bind-failed — the broker answered, so 'broker-unreachable' would be a lie
+  ✓ D1-ctl CONTROL: the broker's CUMULATIVE count ROSE — it accepted an authenticated connection, so this is a post-dial failure and not an auth rejection
+  ✓ D1b nothing is left live at the broker after the refusal
+  ✓ D1c the endpoint holds no connection and is still deliberately off, not in a third state
+
+--- INVERSE CONTROL: with JetStream restored, the SAME call succeeds ---
+  ✓ D1d CONTROL: connect() through the same path SUCCEEDS (so D1a's refusal was the bind, not the verb)
+  ✓ D1e CONTROL: and the broker now shows a live connection (so D1b could have failed)
+
+=== ARM 3: credential renewal does not outlive a deliberate disconnect (core API only) ===
+  ✓ PRE-ARM 3: the creds-source endpoint fetched once before its first connect, and it is the ONLY endpoint live at the broker
+  ✓ D3a it disconnects cleanly
+  ✓ D3b the credential source is NOT called while the endpoint is deliberately off
+  ✓ D3c the broker sees NO new connection while it is off — the renewal preflight did not dial
+
+--- INVERSE CONTROL: after connect(), renewal really is armed and really does dial ---
+  ✓ D3d CONTROL: it comes back
+  ✓ D3e CONTROL: the timer re-armed — the source is called AGAIN without another connect()
+  ✓ D3f CONTROL: and the broker's cumulative count rose (so D3c could have failed)
+
+=== ARM 3b: a renewal already inside its source call when disconnect lands ===
+  ✓ setup: a renewal is HELD inside its source call (the state a fresh run cannot produce)
+  ✓ D3g it disconnects while that renewal is mid-flight
+  ✓ D3h the crossed renewal does NOT dial the broker — the candidate is discarded unproven
+  ✓ D3i and it did not re-arm behind the disconnect
+
+--- INVERSE CONTROL: the same held call, WITHOUT a disconnect, DOES dial ---
+  ✓ D3j CONTROL: it comes back
+  ✓ setup: a second renewal is held, this time with no disconnect
+  ✓ D3k CONTROL: released with the endpoint CONNECTED, the renewal DOES reach the broker (so D3h could have failed)
+
+=== D3l: a discarded renewal, then a gap past the cached credential's expiry ===
+  ✓ setup: a third renewal is held
+  ✓ setup: disconnected while it was held
+  ✓ setup: the CACHED credential really is past its own exp at the moment of the return (D3m's premise, measured rather than derived from the TTL)
+  ✓ D3l after a DISCARDED renewal and a gap past the cached credential's expiry, connect() still comes back
+  ✓ D3m CONTROL: it came back by RE-FETCHING (the cached credential was treated as stale) — without this, D3l is equally explained by a credential that never expired
+
+CONNECTION-LIFECYCLE OK ✅  (39 passed, 0 failed)

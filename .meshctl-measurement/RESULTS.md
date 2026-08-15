@@ -11,6 +11,12 @@
 > which makes "the suite still passes" an **inference**, and this file does not cite inferences.
 > Until the suites below are re-driven against ephemeral brokers, treat every count here as
 > **stamped, not confirmed**. Re-running is broker-backed and this lane does not hold a window.
+>
+> **PARTIALLY DISCHARGED, `Sat Aug 15 01:09:22 AM UTC 2026` → `01:10:57 AM UTC`, at `fe279b94`.**
+> The window opened and the three **committed** suites were re-driven. Their counts are now
+> **confirmed, not stamped** — logs in `runs/`, cell-by-cell roll-call in §"Re-drive at fe279b94".
+> **The m-probes in this directory were NOT re-driven in that pass and remain stamped.** Which
+> rows moved is stated in that section; do not read one discharged suite as discharging the file.
 
 Base `7cc74f50` (measured at `1aab1389`; delta since is release/docs only). All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
 target is not the live broker as its first action. Refutation conditions are stated in each probe's
@@ -448,3 +454,57 @@ The defect is real and measured for the three `nc.request` sites (`requestContro
 `requestDelivery`, `requestDeliveryAdmin`) and those are what M5 drove. **The spawn impact was an
 inference I did not test and it does not hold.** The fix stands on the measured sites; the severity
 I attached to it did not.
+
+## Re-drive at `fe279b94` — the committed suites, confirmed rather than stamped
+
+Broker window held by this lane; no other lane running broker-backed suites against the box.
+Wall clock read from `date -u` **at the moment of each run**, not derived: start
+`Sat Aug 15 01:09:22 AM UTC 2026`, last suite ended `01:10:57 AM UTC 2026`. Tree `fe279b94`, clean
+at run time. Node `v22.23.2`, `nats-server v2.12.1`.
+
+**Invoked `node_modules/.bin/tsx` directly — never through `pnpm`.** In a worktree `pnpm` tries to
+remove the symlinked `node_modules`, and a lane tonight took `EXIT=1` with **zero cells run** from
+exactly that, which reads identically to a mutation kill if you grade on the exit code alone.
+**The cell count is what separates a mutant that was caught from a suite that never asked**, so
+each suite below is roll-called **by cell name** from its own log, not summarised by a total.
+
+| suite | exit | cells green | red | VOID |
+| --- | --- | --- | --- | --- |
+| `extensions/connector-core/smoke/connection-control.smoke.ts` | `0` | **45** | 0 | 0 |
+| `packages/core/smoke/connection-lifecycle.smoke.ts` | `0` | **39** | 0 | 0 |
+| `packages/core/smoke/request-strand.smoke.ts` | `0` | **9** | 0 | 0 |
+
+93 named cells, 0 red, **0 VOID** — no cell was skipped behind a contaminated fixture, which is the
+failure mode `armCheck` exists to make visible. Full roll-call: `runs/*.txt`, committed here because
+`/tmp` is volatile by policy and the commit is the authoritative copy. **The extension is `.txt` and
+that is deliberate:** these were written as `.log`, and `.gitignore:5` is `*.log`, so citing
+`runs/*.log` here would have pointed at three files git was never going to commit — and a pointer to
+an absent file does not read as stale, it reads as "there is nothing here". Caught with
+`git check-ignore -v` before the commit, not after.
+
+**Named cells confirmed present in the output** (not inferred from the totals) — the load-bearing
+ones, each read back from its log line:
+
+- `connection-control`: `G1`,`G2`,`G3`,`G4`,`G5`,`G6` (the grant gate and its three controls);
+  `C1a`,`C1b`,`C1c`; `A1`,`A2`,`A3`,`A3b`,`A3c`,`A3d`,`A3d-univ`; `R1`,`R2`,`R3` (the three named
+  refusals); `C2a`,`C2b`,`C2c`; `EX`,`E0` (authed preconditions); `E1`–`E18`, including
+  `E16` (the publish/DM asymmetry) and `E17`/`E18` (the space fence with its inverse control).
+  **`A3c` ran and passed** — the cell the `TS2367` finding is about; see `FINDING-smoke-unchecked.md`.
+- `connection-lifecycle`: `D1a`–`D1e`, `D2a`–`D2k`, `D3a`–`D3m`, plus the four `PRE-ARM`
+  preconditions. `D2i`/`D2j` are the discrimination pair; `D3l`/`D3m` are the stale-credential
+  return and the control that keeps it from being explained by a credential that never expired.
+- `request-strand`: the `CONTROL` arm, the REBUILD arm, the STOP arm, and `ARM3` (admission refusal).
+
+**The two first actions are witnessed in the log, for two of three.** `connection-control` prints
+both `[provenance]` (core `dist` built `2026-08-15T00:37:55.373Z`, newer than every
+`packages/core/src/*.ts`) and `[safety]` (`nats://127.0.0.1:44063`, asserted not `broker.cotal.ai`,
+loopback-only, inherited `COTAL_*` deleted). `connection-lifecycle` prints `[safety]`.
+**`request-strand` prints neither.** Its guard is real — `request-strand.smoke.ts:29-30` refuses the
+live host and refuses a non-loopback target — and it reads no `process.env` at all, so its target
+**cannot** be the inherited `COTAL_SERVERS`. But a guard that prints nothing leaves **no witness in
+the run log**, and this file does not upgrade "I read the source" into "the run demonstrated it".
+Recorded as a gap in that suite's reporting, not repaired here.
+
+**What this does NOT discharge.** The `meshctl-m*`, `72`, `72b` and `m10` probes in this directory
+were not re-driven in this pass; every count sourced from them is still **stamped**. `pnpm smoke:ci`
+was not run — no gate until fm-orchestrator releases one.
