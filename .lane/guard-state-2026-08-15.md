@@ -85,3 +85,38 @@ this lane's design note and the running system, stated as one sentence.
 - No gate. No `smoke:ci`. The box lock is held by another lane and this lane is sequenced after
   `fm-agui`. Nothing here is a gate claim.
 - No push. No fetch, no rebase.
+
+---
+
+## ADDENDUM — the guard reaches no operator, and that is the charter's complaint located exactly
+
+Measured after the guard shipped at `135c7fff`, with a positive control first.
+
+The charter says: *"An operator has no way to ask 'is delivery actually working right now'."* That is
+literally true on this tree, and here is where:
+
+| surface | what it says about delivery |
+| --- | --- |
+| `cotal status` (`status.ts`) | **NOTHING about delivery health.** It prints rows for NATS, the Claude plugin, skills, the web extension and the web process. The only occurrence of the word is `managerHasDeliveryMarker()` at `:169` — a **build marker**, i.e. whether the manager binary is delivery-aware. Not whether delivery is serving. |
+| `cotal doctor` (`doctor.ts`) | only `delivery.creds` as a **credential file** to check (`:144`) and a renewal component status (`:254`). A valid credential says nothing about a serving daemon. |
+| `cotal up` (`up.ts:2060`) | `delivery: useAuth && deliveryUp()` — **a pid-existence boolean**, the exact signal a SIGSTOPped daemon satisfies. |
+
+**The instrument, with its control:**
+
+| arm | scope | result |
+| --- | --- | --- |
+| **positive control** | does an affirmative health ROW exist in any CLI surface? | **YES, real code** — `setup.ts:375` `managerHealthRow(…)`, wired into the card at `:449` via `managerClaim(state, health)` |
+| **target** | `assessDeliveryHealth\|guardReport\|renderGuard\|deliveryHealth` across `implementations/cli/src/commands/` | **ZERO** |
+
+**The asymmetry is the same one, one layer up.** The manager got an affirmative, attributed health row
+on the ready card — this lane built it. **Delivery has no health row anywhere**, and the only thing
+resembling one is a pid boolean in a boot path.
+
+So the guard built at `135c7fff` is **correct, mutation-proven, and wired to nothing** — which is
+precisely the state `health.ts` was in before the guard consumed it. **Proving a component and
+reaching an operator are different achievements, and only the first is done.**
+
+**NOT DONE, and not claimed:** wiring the guard into `cotal status`. It needs the same non-exiting
+caller-mint pattern the ready card uses (`getSpaceAuth` + `mintCreds` + instance-pinned rows), it
+changes a shipped command, and this lane currently has **no reviewer** — the seat could not be
+launched. Located and reported rather than attempted unsupervised.
