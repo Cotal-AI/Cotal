@@ -272,6 +272,23 @@ check("…and redirects to the same path WITHOUT the token, so the spent secret 
 check("…and EXECUTION STOPS after the redirect (the exchange answers; it does not also serve the route)",
   ex.routeReached === false, ex);
 
+// PATH INDEPENDENCE, and the gap it closes was found by mutating rather than by reading. Every
+// refusal fixture above uses runGateBlock's DEFAULT path, so the suite varied the VERDICT and held
+// the PATH constant — while the code can branch on either. Conjoining the handler's refusal
+// predicate with `path === "/api/roster"` therefore refused exactly the cases the suite drove and
+// let `/feed`, the static assets and the channel-delete POST fall straight through, surviving 49/49.
+// A gate is worthless if it is a gate for one path.
+const ROUTE_PATHS = ["/", "/feed", "/app.js", "/api/meta", "/api/roster", "/api/channel/delete"];
+check("NON-VACUITY: the refusal sweep covers several paths INCLUDING the destructive one",
+  ROUTE_PATHS.length > 1 && ROUTE_PATHS.includes("/api/channel/delete"), ROUTE_PATHS);
+for (const refusal of [UNAUTHENTICATED, CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED]) {
+  for (const routePath of ROUTE_PATHS) {
+    const r = runGateBlock({ refuse: refusal }, routePath);
+    check(`\`${refusal}\` refuses ${routePath} AND never reaches the route (a gate for one path is not a gate)`,
+      r.status !== 0 && r.body !== "" && r.routeReached === false, { routePath, r });
+  }
+}
+
 const allowed = runGateBlock(undefined);
 check("an allowed request writes NOTHING and falls through to the routes",
   allowed.status === 0 && allowed.body === "", allowed);
