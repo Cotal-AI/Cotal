@@ -718,7 +718,16 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    await this.connectAndBind();
+    try {
+      await this.connectAndBind();
+    } catch (e) {
+      // A FIRST connect that fails AFTER the handshake leaves a live, authenticated, unsupervised
+      // connection behind unless it is closed here — see {@link discardHalfBound}. The caller's
+      // retry loop calls start() again, so without this every attempt orphans one more socket, and
+      // the residual handle makes connect() answer `already-connected` for a session that is not.
+      await this.discardHalfBound();
+      throw e;
+    }
     // nats.js auto-reconnects transient drops; when it exhausts its attempts and the
     // connection closes for good, rebuild from scratch so an in-process agent (e.g. the
     // OpenCode plugin) recovers without a host respawn. Armed only after a successful first
@@ -1120,6 +1129,56 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("connection", { connected: true });
   }
 
+  /** Close and forget a connection {@link connectAndBind} opened but did not finish binding.
+   *  Returns whether there WAS such a connection — i.e. whether the failure happened after the
+   *  handshake was accepted.
+   *
+   *  `connectAndBind` assigns `this.nc` as soon as the handshake is accepted and THEN does the
+   *  fallible work (KV opens, JetStream binds, consumer binds, the first presence put). A throw from
+   *  any of those leaves a live, AUTHENTICATED connection on `this.nc` that nothing is supervising:
+   *  the supervisor is armed after the caller returns, so it never gets armed at all. Measured by
+   *  review at two independent sites — an injected presence throw, and a broker restarted with
+   *  JetStream disabled (no injection): the caller was told the connect was refused while that
+   *  connection stayed open and flushing.
+   *
+   *  THIS USED TO LIVE INSIDE `doRebuild` ONLY, AND THAT WAS THE WHOLE BUG. `start()` reaches
+   *  `connectAndBind` directly and had no such arm, so a failed FIRST connect left the half-bound
+   *  handle in place — which produced two separate reported defects from one root:
+   *
+   *   1. `connect()` treats a residual `nc` as proof of being on the mesh, so it answered the named
+   *      refusal `already-connected` for a session that had never finished connecting. A refusal
+   *      naming a condition that is not true is worse than a generic one: the caller acts on it.
+   *   2. `MeshAgent` retries a failed start forever, and each attempt overwrote `this.nc` with a new
+   *      handle. `stop()` can only drain the handle it can still see, so every prior attempt's
+   *      authenticated socket was orphaned — measured at the broker as 1 -> 4 current connections
+   *      over three failed starts, with 2 still live after both endpoints were stopped. A permanent
+   *      permission mismatch therefore grew live authenticated sockets without bound.
+   *
+   *  So it is extracted here and called from BOTH paths: the transition that opens a connection is
+   *  the one that closes it. `close()` rather than `drain()` — there is nothing worth flushing on a
+   *  half-bound session, and a drain against the very subsystem that just failed can hang. */
+  private async discardHalfBound(): Promise<boolean> {
+    // Annotated because TS inlines connectAndBind's assignment and narrows a bare `this.nc` at the
+    // call sites to `never` — the same quirk the tearDownIfStopped comment records.
+    const halfBound = this.nc as NatsConnection | undefined;
+    this.clearConnectionScoped();
+    this.nc = undefined;
+    this.js = undefined;
+    this.jsm = undefined;
+    this.kv = undefined;
+    this.channelKv = undefined;
+    // Plane-3 KV handles are bound to the dead connection too.
+    this.membersKv = undefined;
+    this.aclKv = undefined;
+    this.deliveryKv = undefined;
+    try {
+      await halfBound?.close();
+    } catch {
+      /* it is already failing; the point is that we do not keep a reference to it */
+    }
+    return halfBound !== undefined;
+  }
+
   /** Tear down everything {@link connectAndBind} (re)creates, so a rebind can't leak a
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
@@ -1245,35 +1304,7 @@ export class CotalEndpoint extends EventEmitter {
       try {
         await this.connectAndBind();
       } catch (e) {
-        // connectAndBind assigns `this.nc` as soon as the handshake is accepted and THEN does the
-        // fallible work (KV opens, JetStream binds, consumer binds, the first presence put). A throw
-        // from any of those leaves a live, AUTHENTICATED connection on `this.nc` that nothing is
-        // supervising: the supervisor is armed after this method returns, so it never gets armed at
-        // all. Measured by review at two independent sites — an injected presence throw, and a
-        // broker restarted with JetStream disabled (no injection): the caller was told the connect
-        // was refused while that connection stayed open and flushing.
-        //
-        // Close it HERE, in the transition that opened it. `close()` rather than `drain()`: there is
-        // nothing worth flushing on a half-bound session, and a drain against the very subsystem
-        // that just failed can hang.
-        // Annotated because TS inlines connectAndBind's assignment and narrows a bare `this.nc`
-        // here to `never` — the same quirk the tearDownIfStopped comment below records.
-        const halfBound = this.nc as NatsConnection | undefined;
-        this.lastRebuildFailedPostDial = halfBound !== undefined;
-        this.clearConnectionScoped();
-        this.nc = undefined;
-        this.js = undefined;
-        this.jsm = undefined;
-        this.kv = undefined;
-        this.channelKv = undefined;
-        this.membersKv = undefined;
-        this.aclKv = undefined;
-        this.deliveryKv = undefined;
-        try {
-          await halfBound?.close();
-        } catch {
-          /* it is already failing; the point is that we do not keep a reference to it */
-        }
+        this.lastRebuildFailedPostDial = await this.discardHalfBound();
         throw e;
       }
       // stop() may have run during the await — don't leave a live connection + heartbeat +

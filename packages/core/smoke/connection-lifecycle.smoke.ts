@@ -168,7 +168,9 @@ const stopBroker = async (): Promise<void> => {
 };
 
 let mgr: CotalEndpoint | undefined, obs: CotalEndpoint | undefined, a: CotalEndpoint | undefined,
-    b: CotalEndpoint | undefined, c: CotalEndpoint | undefined;
+    b: CotalEndpoint | undefined, c: CotalEndpoint | undefined, d: CotalEndpoint | undefined;
+/** ARM 4's credential and lifecycle uid, minted early — see the note where they are filled in. */
+let dCreds: string | undefined, dId: ReturnType<typeof newIdentity> | undefined, uidD: string | undefined;
 try {
   await startBroker(true);
 
@@ -309,6 +311,14 @@ try {
   b.on("error", () => { /* this arm breaks its connection on purpose */ });
   await b.start();
   const dB = await b.disconnect("arm1-setup");
+
+  // ARM 4's credential is minted HERE for the same reason `b`'s is: provisioning needs the manager
+  // alive and JetStream on, and ARM 4 runs against a broker with JetStream OFF and every other
+  // endpoint retired. Its endpoint is NOT constructed yet — ARM 4 needs an endpoint that has never
+  // connected, and constructing it here would only invite a later edit to start it early.
+  dId = newIdentity();
+  uidD = mintLifecycleUid();
+  dCreds = await provisionAgent(mgr!, auth, dId, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uidD });
 
   // The broker's connection counters are GLOBAL. Retire every other endpoint so that what they
   // report is attributable to `b` and to nothing else — otherwise the manager and the observer
@@ -494,6 +504,87 @@ try {
   armCheck("ARM 3", "D3m CONTROL: it came back by RE-FETCHING (the cached credential was treated as stale) — without this, D3l is equally explained by a credential that never expired",
     mints > mintsBeforeReturn, { before: mintsBeforeReturn, after: mints });
 
+  // ══ ARM 4 — a FAILED FIRST START must leave nothing behind ═══════════════════════════════════
+  // ARM 1 proves the REBUILD path cleans up after a post-dial failure. This arm proves the FIRST
+  // START path does, and until the fix it did not: the cleanup lived only inside `doRebuild()`,
+  // while `start()` called `connectAndBind()` directly. One missing arm, two reported defects —
+  // a false `already-connected` refusal, and one orphaned authenticated socket per retry.
+  //
+  // WHAT IS ASSERTED IS THE POSITIVE, AND THAT CHOICE IS THE WHOLE ARM. "start() failed" is true in
+  // the leaking state and in the fixed state alike, so it discriminates nothing. What separates them
+  // is whether the broker's CURRENT connection count comes back to baseline afterwards — and it is
+  // read AT THE BROKER, not at the endpoint. The endpoint is the thing that lost the handle; asking
+  // it how many sockets it holds is asking the defect to report itself.
+  //
+  // REFUTATION CONDITIONS, stated before any result below is cited:
+  //  - D4a is REFUTED if current connections stays above baseline after the failed starts.
+  //  - D4a is NOT EVIDENCE unless D4-ctl shows the cumulative count ROSE by at least one per
+  //    attempt: if the broker never accepted the connections, "back to baseline" is a statement
+  //    about a broker that counted nothing, and would be true of any code at all.
+  //  - D4c is REFUTED if `connect()` answers `already-connected` for this never-connected session,
+  //    and it is NOT EVIDENCE unless D4e shows the same call DOES answer `already-connected` when
+  //    the session really is on the mesh.
+  console.log("\n=== ARM 4: N failed FIRST starts leave nothing behind ===");
+  // Same attributability discipline as ARM 1 and ARM 3: the counters are GLOBAL, so retire the
+  // previous arm's endpoint AND restart the broker. A stray socket from ARM 3 would be
+  // indistinguishable from a leaked one here, which is the only thing this arm measures.
+  await c!.stop(); c = undefined;
+  await stopBroker();
+  await startBroker(false); // JetStream OFF — the same NATURAL post-dial failure ARM 1 uses, no injection
+  let base4 = (await varz()).current;
+  for (let i = 0; i < 30 && base4 !== 0; i++) { await wait(100); base4 = (await varz()).current; }
+  precondition("ARM 4", "nothing is live at the broker before the first start, so the counts below are about ARM 4 alone",
+    base4 === 0, { current: base4 });
+
+  d = new CotalEndpoint({
+    space, servers: SERVERS, creds: dCreds!,
+    card: { id: dId!.id, name: "subject-arm4", kind: "agent" },
+    channels: ["general"], lifecycleUid: uidD!, heartbeatMs: 400, ttlMs: 3000,
+  });
+  d.on("error", () => { /* this arm fails its connect on purpose */ });
+
+  const FAILED_STARTS = 3;
+  const before4 = await varz();
+  const threw: string[] = [];
+  // The exact call `MeshAgent.connectLoop` repeats: `await this.ep.start()` on the SAME endpoint
+  // object, forever, on every failure (extensions/connector-core/src/agent.ts:246-263). Core cannot
+  // import the connector, so this reproduces that loop rather than driving it; the connector-level
+  // reach is measured separately in the m11 probe, which drives `MeshAgent` itself.
+  for (let i = 0; i < FAILED_STARTS; i++) {
+    try { await d.start(); threw.push("(no throw)"); }
+    catch (e) { threw.push((e as Error).message); }
+  }
+  precondition("ARM 4", `all ${FAILED_STARTS} starts really did fail (a start that SUCCEEDED would make every cell below meaningless)`,
+    threw.length === FAILED_STARTS && threw.every((m) => m !== "(no throw)"), { threw });
+  const after4 = await varz();
+  armCheck("ARM 4", `D4-ctl CONTROL: the broker's CUMULATIVE count rose by at least ${FAILED_STARTS} — it ACCEPTED an authenticated connection each time, so these are post-dial failures and D4a could have failed`,
+    after4.total - before4.total >= FAILED_STARTS, { before: before4.total, after: after4.total, threw });
+  let current4 = (await varz()).current;
+  for (let i = 0; i < 30 && current4 !== 0; i++) { await wait(100); current4 = (await varz()).current; }
+  armCheck("ARM 4", `D4a THE POSITIVE: after ${FAILED_STARTS} failed starts the broker's CURRENT connections is back to baseline — no half-bound socket was orphaned`,
+    current4 === base4, { baseline: base4, current: current4, accepted: after4.total - before4.total });
+  armCheck("ARM 4", "D4b and the endpoint itself holds no connection — the in-process half of the same fact",
+    (d as any).nc === undefined, { hasNc: (d as any).nc !== undefined });
+
+  // The refusal half of the same root: a residual `nc` made `connect()` answer `already-connected`
+  // for a session that had never finished connecting. JetStream is still off, so the honest answer
+  // is the one that names what actually failed.
+  const r4 = await d.connect();
+  armCheck("ARM 4", "D4c connect() on a never-connected session does NOT claim `already-connected` — it names the condition that actually failed",
+    r4.outcome === "refused" && (r4 as any).reason === "bind-failed", r4);
+
+  console.log("\n--- INVERSE CONTROLS: with JetStream restored, the same call succeeds and the same refusal appears where it IS true ---");
+  await stopBroker();
+  await startBroker(true);
+  const r4ok = await d.connect();
+  armCheck("ARM 4", "D4d CONTROL: connect() through the same path SUCCEEDS (so D4c's refusal was the bind, not the verb)",
+    r4ok.outcome === "connected", r4ok);
+  const r4again = await d.connect();
+  armCheck("ARM 4", "D4e CONTROL: a SECOND connect() on the now genuinely-connected session DOES answer `already-connected` (so D4c's arms can differ — it is not that the reason is never produced)",
+    r4again.outcome === "refused" && (r4again as any).reason === "already-connected", r4again);
+  armCheck("ARM 4", "D4f CONTROL: the broker now shows a live connection (so D4a could have failed)",
+    (await varz()).current > 0, await varz());
+
   // VOID is reported separately and never folded into either column. A voided arm is not a pass
   // (nothing was proven) and not a failure (nothing was disproven) — it is a run that did not
   // happen, and a suite that hides that behind a green total is lying by arithmetic.
@@ -505,7 +596,7 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  for (const ep of [c, b, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
+  for (const ep of [d, c, b, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
   await stopBroker(); // await the exit BEFORE removing the scratch it is running out of
   rmSync(dir, { recursive: true, force: true });
 }
