@@ -82,6 +82,12 @@ this lane's design note and the running system, stated as one sentence.
   absence of a restart path is a controlled *static* result. The decisive live form — kill a real
   daemon on an ephemeral broker and observe that no process returns — is the next cell, and until it
   runs, "nothing restarts it" is an argument from the launcher's code, not an observation.
+  > **SUPERSEDED at 04:52:32Z by `72784e3a`** — the live arm RAN: `smoke:delivery-health-live`
+  > 20 passed / 0 failed, rc 0, on ephemeral `nats://127.0.0.1:38673`, with the three cells predicted
+  > by name first. "Nothing restarts it" is now an OBSERVATION, **bounded to a ~3s sampled window and
+  > still not a claim of "never"**. See `.lane/no-restart-result.md`. The paragraph above is left
+  > unedited: it is the record of what was known when the static finding was reported, and the report
+  > was believed on the strength of saying so.
 - No gate. No `smoke:ci`. The box lock is held by another lane and this lane is sequenced after
   `fm-agui`. Nothing here is a gate claim.
 - No push. No fetch, no rebase.
