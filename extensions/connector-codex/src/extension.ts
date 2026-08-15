@@ -156,7 +156,7 @@ export const codexConnector: Connector = {
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.events === true) env.COTAL_EVENTS = "1"; // gate the host's transcript mirror
-    // The event WAL's state root (`agui-events.md:676-687`), forwarded on every launch path so the
+    // The event WAL's state root, forwarded on every launch path so the
     // root is present before the connector that consumes it cuts over. No `?? process.cwd()`
     // fallback: this root exists precisely to keep durable per-agent state out of a working
     // directory that can point at any repo, and a default would silently reintroduce that.

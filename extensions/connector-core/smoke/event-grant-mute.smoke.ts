@@ -225,7 +225,7 @@ for (const [name, pattern] of LIVE) c(name, allowed([pattern]) === "OK", allowed
 //    working one. `*.>` is deliberately included: it is not spelled in the event namespace, and it
 //    genuinely covers, so refusing it would turn a guard against mute streams into a guard against
 //    working ones.
-const FOREIGN = ["chat.>", "review.fm-agui", "*.>", "eventsomething.x", "ev.u_a.b"];
+const FOREIGN = ["chat.>", "review.example", "*.>", "eventsomething.x", "ev.u_a.b"];
 c("foreign:untouched", allowed(FOREIGN) === "OK", allowed(FOREIGN));
 
 // ── A MIXED LIST IS REFUSED ON THE OFFENDING ENTRY, not on the first entry it sees ────────────────

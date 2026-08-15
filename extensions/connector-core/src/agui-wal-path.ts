@@ -1,7 +1,7 @@
 /**
  * Where a principal's event WAL lives on disk, and making that location durable before it is used.
  *
- * The layout is fixed by `agui-events.md:683-687`:
+ * The layout is fixed, and `resolveEventWalPath` below is the only place it is spelled:
  *
  * ```
  * <workspaceRoot>/.cotal/events/<h(space)>/<h(principal)>/

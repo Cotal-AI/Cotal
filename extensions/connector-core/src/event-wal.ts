@@ -90,7 +90,7 @@ export interface WalDoc {
   v: number;
   /**
    * The space this WAL belongs to — stored because it is a PATH COMPONENT and a path component is
-   * not a trusted input (`agui-events.md:683-692`). `principal` and `threadId` were verified on
+   * not a trusted input. `principal` and `threadId` were verified on
    * load and `space` was not, so a WAL copied or mis-resolved between two space directories under
    * the same principal and thread LOADED, and one space's frontier was adopted as another's. Two
    * thirds of a three-part guard is not the guard.

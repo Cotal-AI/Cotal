@@ -42,20 +42,20 @@
  * and 0 for this worktree. The two sources agree, so zero matches is the CORRECT result on these
  * captures and NOT evidence the rule is wrong. **The rule is unexercised here, not disproven.**
  *
- * **AND IT IS EXERCISED ELSEWHERE — read `plans/agui-events.md` §3.1 before reading these numbers as
+ * **AND IT IS EXERCISED ELSEWHERE — read the mapping rationale below before reading these numbers as
  * a defect.** That section measured a real session a person was driving and counted `kind:"human"`
  * **44 times**, with `promptSource: "typed"`/`"queued"`, beside 3068 `kind:"channel"` injections. So
  * the predicate does select, on a session that contains the thing it selects. The three captures
  * here simply contain none. **Both numbers belong together; either alone misleads.**
  *
  * **THIS WAS A COVERAGE GAP, IT WAS RULED, AND THE RULING IS IMPLEMENTED BELOW.** It read: on
- * agent-driven sessions no run is ever opened and the connector emits nothing, because §3.1's table
- * sent every non-`human` origin to *nothing*. §3.1's session had a human typing 44 times alongside
+ * agent-driven sessions no run is ever opened and the connector emits nothing, because the mapping table
+ * sent every non-`human` origin to *nothing*. The session it was derived from had a human typing 44 times alongside
  * its 3068 mesh messages; a spawned lane seat has **0 and 67**, so the open question was **what
  * opens a run when nobody types**.
  *
- * **RULED (fm-orchestrator, `agui-events.md` §3.1): run-opening and attribution are two predicates,
- * and that row was one predicate doing both jobs.** A run opens on
+ * **THE RULING: run-opening and attribution are two predicates, and that row was one predicate
+ * doing both jobs.** A run opens on
  * `origin.kind ∈ { human, channel }`, ENUMERATED and never inferred; `task-notification` is named as
  * known-and-not-a-turn; absent `origin` gets its own enumeration over `promptSource`. Attribution
  * rides as `cotal.turnSource` — **a field on the run, never a gate on it**. The privacy argument is
@@ -157,7 +157,7 @@ export interface ClaudeEntry {
  * a `null` means "known, and NOT a turn"; a string means "a turn, attributed thus".
  *
  * **ENUMERATED, NEVER INFERRED.** Every key here was read off a real session or off
- * `plans/agui-events.md` §3.1's own measurement. `task-notification` is harness plumbing and is
+ * the measurement this mapping was derived from. `task-notification` is harness plumbing and is
  * named as not-a-turn rather than left to fall through — the distinction between "we decided no"
  * and "nothing matched" is the whole difference between a rule and an accident.
  *
