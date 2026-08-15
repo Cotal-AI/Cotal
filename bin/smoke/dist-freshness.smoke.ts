@@ -36,13 +36,23 @@
  * why it does not go there. Recorded as a residual: the real fix is a shared smoke harness that
  * creates the chokepoint, which is a project rather than a patch.
  *
+ * WHAT IT MISSED, AND WHY THAT IS A DIFFERENT DEFECT FROM THE ONE ABOVE. Its subject list named two
+ * packages while eighteen compile to a `dist/`, so for sixteen of them it was not weak evidence — it
+ * was NO evidence, reported in the same green as the rest. That is how it missed a live case: a CLI
+ * `src` edited at 07:50Z against a `dist` built at 07:42Z, with two suites green against `src` while
+ * the shipped command printed the previous build's text. A hand-maintained subject list decays
+ * silently and in the direction that looks fine, so the list's COMPLETENESS is now asserted against
+ * the tree (`discoverBuiltPackages`) and an omission is a FAIL. Note the ordering limitation above
+ * is unchanged and still applies to all eighteen: this widens the subject set, it does not
+ * strengthen the predicate, and it still would not have caught a `dist` built from the wrong source.
+ *
  * NOTE FOR THE NEXT PERSON WHO VERIFIES THIS CHECK: demonstrating it requires touching a source
  * file, which puts your own worktree into the state it detects. That is the check working, not a
  * defect. Content is unchanged, only the mtime moved, and the next build clears it.
  *
  * Run: pnpm smoke:dist-freshness
  */
-import { readdirSync, statSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,10 +77,93 @@ function newestMtime(dir: string, exts: string[]): { path: string; ms: number } 
   return best;
 }
 
-const PACKAGES = ["packages/core", "packages/workspace"];
+/**
+ * Every package whose `src/` is compiled to a `dist/` that another package imports through
+ * `exports`. The list is EXPLICIT rather than derived, so a reader can see its scope without
+ * running it — but see {@link discoverBuiltPackages}: an omission from this list is asserted, not
+ * trusted, because the list previously named two packages while eighteen shipped a `dist/`.
+ */
+const PACKAGES = [
+  "packages/core",
+  "packages/lang",
+  "packages/workspace",
+  "extensions/cmux",
+  "extensions/connector-claude-code",
+  "extensions/connector-codex",
+  "extensions/connector-core",
+  "extensions/connector-hermes",
+  "extensions/connector-opencode",
+  "extensions/herdr",
+  "extensions/orca",
+  "extensions/pi",
+  "extensions/tmux",
+  "implementations/auth",
+  "implementations/cli",
+  "implementations/delivery",
+  "implementations/manager",
+  "implementations/web",
+];
+
+/**
+ * Every directory under the three package roots that has a `src/` and a `build` script — that is,
+ * every package this check OUGHT to cover, computed from the tree rather than from memory.
+ *
+ * THIS EXISTS BECAUSE THE OMISSION WAS THE DEFECT, NOT THE PREDICATE. The predicate above was
+ * correct and had been correct all along; it simply was not pointed at sixteen of the eighteen
+ * packages that compile to a `dist/`, including `implementations/cli`. A hand-maintained list of
+ * subjects fails silently and in the safe-looking direction: it goes GREEN while covering less and
+ * less, and nothing in its output distinguishes "checked everything" from "checked two of
+ * eighteen". So the list's COMPLETENESS is now itself a cell.
+ */
+function discoverBuiltPackages(): string[] {
+  const found: string[] = [];
+  for (const root of ["packages", "extensions", "implementations"]) {
+    const abs = join(ROOT, root);
+    if (!existsSync(abs)) continue;
+    for (const e of readdirSync(abs, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      const rel = `${root}/${e.name}`;
+      if (!existsSync(join(ROOT, rel, "src"))) continue;
+      const manifest = join(ROOT, rel, "package.json");
+      if (!existsSync(manifest)) continue;
+      const pkg = JSON.parse(readFileSync(manifest, "utf8")) as { scripts?: Record<string, string> };
+      if (!pkg.scripts?.build) continue;
+      found.push(rel);
+    }
+  }
+  return found.sort();
+}
 
 let fail = 0;
 console.log("dist freshness (a manager/CLI/delivery smoke tests the LAST BUILD, not your edit)\n");
+
+// ── COMPLETENESS, asserted before freshness, because a freshness verdict over the wrong subject
+//    set is worth nothing and reads exactly like one over the right set.
+const discovered = discoverBuiltPackages();
+// REFUSE on an empty or implausible discovery rather than pass. "Every discovered package is in
+// PACKAGES" is VACUOUSLY TRUE when discovery finds nothing — and discovery finding nothing is
+// precisely what a broken glob, a moved root, or a bad ROOT would produce, so the vacuous state is
+// correlated with the instrument being broken. An empty set is a refusal here, never a pass.
+if (discovered.length < PACKAGES.length) {
+  fail++;
+  console.log(`  ✗ FAIL: discovery found ${discovered.length} built package(s) but the list names ${PACKAGES.length}.`);
+  console.log(`      This is a REFUSAL, not a pass: the completeness check below is vacuous over an`);
+  console.log(`      empty or truncated discovery, and a broken discovery is what produces one.`);
+} else {
+  const missing = discovered.filter((p) => !PACKAGES.includes(p));
+  const stale = PACKAGES.filter((p) => !discovered.includes(p));
+  if (missing.length > 0) {
+    fail++;
+    console.log(`  ✗ FAIL: ${missing.length} package(s) compile to dist/ but are NOT checked: ${missing.join(", ")}`);
+    console.log(`      Add them to PACKAGES. An unchecked package is not a passing package.`);
+  }
+  if (stale.length > 0) {
+    fail++;
+    console.log(`  ✗ FAIL: PACKAGES names ${stale.length} package(s) that no longer build: ${stale.join(", ")}`);
+  }
+  if (missing.length === 0 && stale.length === 0)
+    console.log(`  ✓ completeness: all ${discovered.length} packages that compile to dist/ are covered\n`);
+}
 
 for (const pkg of PACKAGES) {
   const src = newestMtime(join(ROOT, pkg, "src"), [".ts"]);
