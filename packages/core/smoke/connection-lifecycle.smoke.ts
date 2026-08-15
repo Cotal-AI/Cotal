@@ -96,7 +96,10 @@ const awaitExit = (p: ReturnType<typeof spawn>, ms = 4000): Promise<void> =>
     p.once("exit", () => res()); setTimeout(res, ms);
   });
 let pass = 0, fail = 0, voided = 0;
+/** Every cell name that actually reached a verdict, in order — the input to the roll call below. */
+const ran: string[] = [];
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  ran.push(name);
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 
@@ -127,9 +130,20 @@ const precondition = (arm: string, name: string, cond: boolean, extra?: unknown)
   else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
 };
 const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => {
-  if (contaminated.has(arm)) { voided++; console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
+  if (contaminated.has(arm)) { voided++; ran.push(name); console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
   check(name, cond, extra);
 };
+
+// ---- CELLS-RUN vs CELLS-DECLARED --------------------------------------------------------------
+// A run that dies before a cell is indistinguishable from a cell that failed, by exit code alone —
+// both are non-zero, and on a MUTATION arm the vanished cell reads as the catch. So the cells are
+// declared by name up front and reconciled in `finally`, where a throw cannot skip the reconcile.
+// A cell that never ran is reported as MISSING, which is neither a pass nor a failure but a
+// statement that the question was never asked.
+const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e",
+                  "D2a", "D2b", "D2c", "D2d", "D2e", "D2f", "D2g", "D2h", "D2i", "D2j", "D2k",
+                  "D3a", "D3b", "D3c", "D3d", "D3e", "D3f", "D3g", "D3h", "D3i", "D3j", "D3k", "D3l", "D3m",
+                  "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f"];
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
  *  connection that has since been closed); `num_connections` is CURRENT. The pair is what
@@ -596,6 +610,16 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
+  // THE ROLL CALL, in `finally` so a throw cannot skip it. Without this a mutation that kills the
+  // suite partway looks exactly like a mutation the suite caught: both exit non-zero, and the cells
+  // that were supposed to answer simply are not in the log to be missed.
+  const missing = DECLARED.filter((id) => !ran.some((n) => n === id || n.startsWith(`${id} `)));
+  if (missing.length) {
+    console.log(`\n  ⚠ ${missing.length} DECLARED CELL(S) NEVER RAN — not a pass and not a failure, a question never asked: ${missing.join(", ")}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`\n  ✓ ROLL CALL: all ${DECLARED.length} declared cells reached a verdict.`);
+  }
   for (const ep of [d, c, b, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
   await stopBroker(); // await the exit BEFORE removing the scratch it is running out of
   rmSync(dir, { recursive: true, force: true });

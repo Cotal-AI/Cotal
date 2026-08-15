@@ -70,7 +70,14 @@ console.log(`[safety] dialling ${SERVERS} (monitor 127.0.0.1:${MON}) — asserte
 
 let pass = 0, fail = 0, voided = 0;
 let contaminated = false;
+/** Every cell that reached a verdict, and the cells declared up front. A run that DIES before a
+ *  cell exits non-zero exactly like a run whose cell FAILED, so the exit code cannot tell them
+ *  apart — and on a mutation arm the vanished cell reads as the catch. The reconcile lives in
+ *  `finally`, where a throw cannot skip it. */
+const ran: string[] = [];
+const DECLARED = ["M11-ctl", "M11a", "M11b"];
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  ran.push(name);
   if (contaminated) { voided++; console.log(`  ⊘ VOID (fixture contaminated upstream — observed, not evidence): ${name}`, extra ?? ""); return; }
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
@@ -208,6 +215,13 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
+  const missing = DECLARED.filter((id) => !ran.some((n) => n === id || n.startsWith(`${id} `)));
+  if (missing.length) {
+    console.log(`\n  ⚠ ${missing.length} DECLARED CELL(S) NEVER RAN — not a pass and not a failure, a question never asked: ${missing.join(", ")}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`\n  ✓ ROLL CALL: all ${DECLARED.length} declared cells reached a verdict.`);
+  }
   try { await agent?.stop(); } catch { /* ignore */ }
   try { await mgr?.stop(); } catch { /* ignore */ }
   await stopBroker(); // await the exit BEFORE removing the scratch it is running out of
