@@ -53,10 +53,10 @@ Rendered to the agent at `extensions/connector-core/src/tool-specs.ts:418-422`:
 record survives with `ready: true` and a heartbeat well inside its TTL. Measured: heartbeat **311ms
 old** at the moment the surface was read, with the daemon's process group confirmed absent.
 
-**`hasDurableMembership(channel)`** — `packages/core/src/endpoint.ts:3187-3188` is
+**`hasDurableMembership(channel)`** — `packages/core/src/endpoint.ts:3168-3169` is
 `return this.plane3Channels.has(channel)`, an **in-memory Map on the agent's own session**, not a
-broker read. Its three `.set` sites (`:1596`, `:3144`, `:3171`) are all membership-established paths;
-its two `.delete` sites are `:1633` (an explicit durable leave) and `:3084` (refused-subscription
+broker read. Its three `.set` sites (`:1577`, `:3125`, `:3152`) are all membership-established paths;
+its two `.delete` sites are `:1614` (an explicit durable leave) and `:3065` (refused-subscription
 cleanup); there is no `.clear()`. **Neither delete is driven by daemon liveness.** A session that
 established membership while the daemon was alive keeps it after the daemon dies.
 
@@ -95,6 +95,58 @@ expression; the actual code path an agent uses.
 **A1 and A5 are why A4 counts.** A1 establishes the field *can* be `"active"`; A5 establishes it *can*
 be something else. Without both, an `"active"` reading over a corpse could be a constant rather than a
 verdict. Final run: 16 cells, 0 failures, exit code 0 read from an EXIT-trap artifact.
+
+## Measured residue window: 30.07 seconds
+
+The 311ms reading above is ~1% into the lease TTL, so on its own it could be dismissed as a guard
+given no chance to fire rather than one that failed. Sampling the whole window settles it. The lease
+TTL is `LEASE_TTL_MS = 30_000` (`packages/core/src/streams.ts:83`), the bucket-level `max_age` on the
+delivery lease bucket.
+
+Elapsed measured from a clock read at the kill, never counted in loop iterations:
+
+    t+    11ms  deliveryHealth=active     lease=ready=true
+    t+ 10029ms  deliveryHealth=active     lease=ready=true
+    t+ 20051ms  deliveryHealth=active     lease=ready=true
+    t+ 28067ms  deliveryHealth=active     lease=ready=true
+    t+ 30072ms  deliveryHealth=degraded   lease=no-record
+
+**The false `active` is available for essentially the entire 30-second window, not just as a race at
+the moment of the kill.** The window is BOUNDED — this is not an indefinite lie, and the report
+should not be read as claiming one.
+
+Two further facts from the same run:
+
+- **What clears it is the lease TTL expiring, and nothing else.** At the transition the lease read
+  returns no record at all.
+- **The membership conjunct never cleared.** `hasDurableMembership` was still `true` at the end of
+  the run, after the surface had already moved to `degraded`. Only the lease expiry moved it, which
+  is what the absent `.clear()` predicts.
+
+So the surface self-corrects after ~30s, and it self-corrects to `degraded` — not to any named
+refusal, and not to the empty state. For a surface an agent consults before relying on a backstop,
+30 seconds of confident wrong answer is long relative to the requests it is about to make.
+
+## Provenance — which artifact was measured
+
+Presence on `main` was established by reading the BLOB at origin/main
+(`git show <main>:extensions/connector-core/src/agent.ts`), NOT a working tree, because the measuring
+tree carried unrelated in-progress work. The expression is at line 1020 of that blob.
+
+NEGATIVE CONTROL for that read: `requestDeliveryHealthProbe` — a symbol that exists only in the
+in-progress work — occurs ZERO times in the blob. That establishes both that the read was of shipped
+code without local additions, and that the search discriminates rather than matching everything.
+
+**A CORRECTION IS RECORDED HERE RATHER THAN SWALLOWED.** An earlier draft carried `endpoint.ts` line
+numbers uniformly **+19** off the shipped positions — `:3187-3188`, `:1596`/`:3144`/`:3171`,
+`:1633`/`:3084`. Those came from the working tree, not the blob. The numbers in this report are the
+shipped ones, verified site by site. **The substance was unchanged by the correction** — three sets,
+two deletes, no `.clear()`, neither delete driven by daemon liveness — and it was independently
+re-derived by a second party before filing.
+
+The negative control above could not have caught this, and it is worth naming why: it tested whether
+local additions were PRESENT in the text being read, not whether the line numbers came from the same
+artifact as the quoted code. A control answers the question it was built for and no other.
 
 ## Reproduction
 
