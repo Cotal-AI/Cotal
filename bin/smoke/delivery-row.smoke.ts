@@ -12,7 +12,7 @@
  *
  * Run: pnpm exec tsx bin/smoke/delivery-row.smoke.ts
  */
-import { deliveryRow, renderDeliveryRow, type DeliveryRow } from "../../implementations/cli/src/lib/delivery-row.js";
+import { deliveryRow, deliveryRowText, renderDeliveryRow, type DeliveryRow } from "../../implementations/cli/src/lib/delivery-row.js";
 import type { DeliveryHealth } from "../../packages/core/src/health.js";
 
 let pass = 0, fail = 0;
@@ -93,6 +93,24 @@ const stale = await deliveryRow({
 check("a SERVING observation older than the card's freshness bound LOSES its ✓", stale.marker === "?");
 check("and the row says the reading is not current rather than hiding it",
   stale.kind === "assessed" && /NOT current/.test(stale.text));
+
+// ---- THE CARD SEAM: the marker and the text must be separable WITHOUT slicing a rendered line.
+// The card renders the marker in its own column, so it needs the text alone. Taking it by
+// `renderDeliveryRow(row).slice(2)` encodes the render format in a second place and silently eats
+// the first characters of the message the moment a marker is not one unit wide — and on this
+// surface the message IS the refusal, so losing its head is the worst available failure.
+check("every row composes as marker + ' ' + text, so the two have ONE definition between them",
+  all.every((r) => renderDeliveryRow(r) === `${r.marker} ${deliveryRowText(r)}`));
+check("the text alone NEVER begins with a marker — the card would print it twice",
+  all.every((r) => !/^[✓?!○·]/.test(deliveryRowText(r))));
+// The naive implementation this replaced. Asserted as a NEGATIVE so the cell fails if someone
+// reintroduces the slice: for a multi-unit marker the two disagree, and that disagreement is the
+// defect. A positive control on the same data proves the comparison can distinguish at all.
+const widened = all.map((r) => ({ ...r, marker: "??" }) as typeof r);
+check("POSITIVE CONTROL: with a 2-unit marker, slice(2) and deliveryRowText DISAGREE — the comparison discriminates",
+  widened.some((r) => renderDeliveryRow(r).slice(2) !== deliveryRowText(r)));
+check("and with the real 1-unit markers the two agree, so this suite is not asserting a permanent inequality",
+  all.every((r) => renderDeliveryRow(r).slice(2) === deliveryRowText(r)));
 
 console.log(
   fail === 0

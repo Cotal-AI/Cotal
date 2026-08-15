@@ -90,9 +90,21 @@ export async function deliveryRow(deps: DeliveryRowDeps): Promise<DeliveryRow> {
   };
 }
 
-/** The one-line operator rendering for the card. */
+/** The row's text WITHOUT its marker.
+ *
+ *  Exists because the card renders the marker in its own column and needs the text alone. The
+ *  obvious alternative — rendering the full line and slicing the marker back off — encodes the
+ *  render format in a second place and silently truncates the message the moment a marker is not
+ *  one character wide. On a surface whose entire purpose is to state a refusal precisely, quietly
+ *  losing the first characters of that refusal is the worst available failure. */
+export function deliveryRowText(row: DeliveryRow): string {
+  return row.kind === "no-auth" ? row.detail : row.text;
+}
+
+/** The one-line operator rendering for the card. Composed from {@link deliveryRowText} so the marker
+ *  and the text have exactly one definition between them. */
 export function renderDeliveryRow(row: DeliveryRow): string {
-  return row.kind === "no-auth" ? `${row.marker} ${row.detail}` : `${row.marker} ${row.text}`;
+  return `${row.marker} ${deliveryRowText(row)}`;
 }
 
 /** Assemble the seams for one assessment from an endpoint-like reader and prober.

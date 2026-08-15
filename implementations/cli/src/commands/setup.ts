@@ -17,7 +17,7 @@ import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status
 import { managerLivenessSnapshot } from "../lib/manager-proc.js";
 import { managerClaim, mintHealthCaller, probeManagerHealth } from "../lib/manager-health.js";
 import { mintDeliveryCaller } from "../lib/delivery-caller.js";
-import { deliveryRow, renderDeliveryRow } from "../lib/delivery-row.js";
+import { deliveryRow, deliveryRowText } from "../lib/delivery-row.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 
@@ -434,7 +434,10 @@ async function deliveryHealthRow(mesh: { server: string; space: string }): Promi
       mintCaller: async () => (caller === undefined ? undefined : { check: caller.check }),
       now: () => Date.now(),
     });
-    return { marker: row.marker === "✓" ? ok("✓") : row.marker, text: renderDeliveryRow(row).slice(2) };
+    // The marker is taken from the row and the text from `deliveryRowText`, never by slicing a
+    // rendered line apart: `?` must survive intact, since it is the marker that means "cannot
+    // establish" and it is deliberately NOT dimmed.
+    return { marker: row.marker === "✓" ? ok("✓") : row.marker, text: deliveryRowText(row) };
   } finally {
     await caller?.close();
   }
