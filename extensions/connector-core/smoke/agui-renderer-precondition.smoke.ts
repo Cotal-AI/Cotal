@@ -147,15 +147,41 @@ if (existsSync(sharedBrowserRenderer)) {
   console.log("  tree carries NO shared browser renderer; pages hold their own copies");
 }
 
-/** One surface: does the frame's text reach the string this surface hands its body renderer? */
+/**
+ * One surface: does the frame's text reach the string this surface hands its body renderer?
+ *
+ * ⚠️ **WHAT THE CONSOLE-FAMILY CELLS BELOW ARE CONDITIONAL ON, AND IT IS NOT SATISFIED IN
+ * PRODUCTION TODAY.** They ask: *given a registered `part-renderer` for `ag-ui.frame`, does this
+ * surface's rendering path carry the payload through?* **This suite registers that renderer itself,
+ * by importing the provider.** Nothing that ships does.
+ *
+ * Confirmed by execution, with a positive control, against the binary's own link tree (all packages
+ * resolving to `dist/index.js` via `bin/node_modules`):
+ *
+ *   binary's graph (cli + manager + delivery + auth)   registered = FALSE
+ *   after explicitly loading connector-core            registered = TRUE   <- the control
+ *
+ * Mechanism: no production file under `bin/`, `implementations/` or `packages/` imports
+ * `@cotal-ai/connector-core`; extensions materialise per-command from `requiredExtensions`
+ * (`command.ts:195`); and **no CLI command declares any** — `console` and `join` least of all.
+ *
+ * **SO A GREEN HERE DOES NOT MEAN `cotal console` DISPLAYS A FRAME. It means core's Registry and
+ * this surface's rendering path are correct GIVEN a registration production never performs.**
+ *
+ * An earlier version of this note said the gap was "until something drives the dist path end to
+ * end", which implied the problem was WHICH BUILD. **That was too kind and it was wrong: the
+ * provider is never loaded at all, in any build.** The fix is a composition-root decision (a static
+ * import in `bin/run.ts`, or `requiredExtensions` on the viewing commands) and is owned by whoever
+ * owns `bin/`, not by this suite.
+ */
 function gradeSurface(surface: string, rendered: string | null) {
   if (rendered === null) {
-    c(`[GATE] ${surface} rendered output CONTAINS the frame's text`, false, "rendering path not found in this tree");
+    c(`[GATE] ${surface} rendered output CONTAINS the frame's text [given a registered renderer — production registers none]`, false, "rendering path not found in this tree");
     return;
   }
   console.log(`  ${surface} -> ${JSON.stringify(rendered)}  (len ${rendered.length})`);
   // THE GATE CELL. Not "did it produce something" — did it produce THE FRAME.
-  c(`[GATE] ${surface} rendered output CONTAINS the frame's text`, rendered.includes(CANARY));
+  c(`[GATE] ${surface} rendered output CONTAINS the frame's text [given a registered renderer — production registers none]`, rendered.includes(CANARY));
   // The weaker, separately-ruled property: an undrawable part must not render as nothing. Graded as
   // its own cell because the two answers are different facts and a reader who sees one must not
   // conclude the other — a surface can be perfectly non-silent and still display no frame.
@@ -682,7 +708,19 @@ console.log(
     "  is without an implementation importing an extension, or a new seam on core's public surface.\n" +
     "  Neither was done: a gate cell is not a reason to move an architectural boundary. `examples/02`\n" +
     "  closes normally because an example is a composition root and may reach the extension.\n" +
-    "  These two cells are a PLAN defect, not unfinished work, and they stay red until that is ruled.",
+    "  These two cells are a PLAN defect, not unfinished work, and they stay red until that is ruled.\n" +
+    "\n" +
+    "A GREEN HERE IS NOT A PRODUCTION CLAIM — the strongest limit on this suite, so read it last:\n" +
+    "  The cells ask whether a surface's rendering path carries a frame's payload GIVEN a registered\n" +
+    "  part-renderer for `ag-ui.frame`. THIS SUITE REGISTERS THAT RENDERER ITSELF. Nothing that ships\n" +
+    "  does. Confirmed by execution against the binary's own link tree, with a positive control:\n" +
+    "    binary's graph (cli+manager+delivery+auth)  registered = FALSE\n" +
+    "    after explicitly loading connector-core     registered = TRUE    <- the control\n" +
+    "  No production file under bin/, implementations/ or packages/ imports @cotal-ai/connector-core;\n" +
+    "  extensions materialise per-command from requiredExtensions (command.ts:195); and no CLI command\n" +
+    "  declares any. So `cotal console` and `cotal join` render a frame as the unrenderable marker.\n" +
+    "  A green above means core's Registry and the rendering paths are correct — NOT that any shipped\n" +
+    "  surface displays a frame. The fix is a composition-root decision owned by whoever owns bin/.",
 );
 if (gateFail > 0) {
   console.log(
