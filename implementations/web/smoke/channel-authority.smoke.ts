@@ -253,6 +253,8 @@ const VERIFIED = "policed-channel";
 // string contents are tokenized properly; and the match is on the DECLARATION, so whitespace
 // spelling is irrelevant. This cannot return a fragment, a comment, or a string.
 function findDeclarations(src: string, file: string, name: string): { text: string; start: number }[] {
+  // Same refusal as the backfill finder, and for the same measured reason — see HTML_COMMENT_FORM.
+  if (HTML_COMMENT_FORM.test(src)) return [];
   const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
   const found: { text: string; start: number }[] = [];
   const visit = (n: ts.Node): void => {
@@ -269,58 +271,77 @@ function extractFunction(src: string, file: string): string | undefined {
   return all.length === 1 ? all[0].text : undefined;
 }
 
-/** The source with every COMMENT blanked to spaces, offsets and all other characters preserved.
- *
- *  Comment positions come from the PARSER, not a raw scanner. `ts.createScanner` alone cannot decide
- *  regex-literal vs division without parser context, so a regex containing `//` desyncs it — which
- *  would be this same class of bug for a third time. `createSourceFile` resolves that, and every
- *  comment is leading trivia of some token, so walking tokens finds them all.
- *
- *  Blanking ONLY comments (rather than keeping only node ranges) is deliberate: structural
- *  punctuation such as the `.` in `msg.channel` belongs to no leaf node, and dropping it would
- *  silently break every pattern searched here. Measured — an earlier attempt produced
- *  `msg channel = entry channel`. */
-function codeOnly(src: string): string {
-  const sf = ts.createSourceFile("x.js", src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const out = src.split("");
-  const blank = (from: number, to: number) => {
-    for (let i = from; i < to && i < out.length; i++) if (out[i] !== "\n") out[i] = " ";
-  };
-  const seen = new Set<number>();
-  const visit = (n: ts.Node): void => {
-    const full = n.getFullStart();
-    if (!seen.has(full)) {
-      seen.add(full);
-      // BOTH kinds. A comment on the SAME LINE as the preceding token is TRAILING trivia and
-      // `getLeadingCommentRanges` does not return it — measured: a decoy appended to the graph
-      // backfill's single-line `for` body survived the whole suite because of exactly this.
-      for (const r of ts.getLeadingCommentRanges(src, full) ?? []) blank(r.pos, r.end);
-    }
-    if (!seen.has(n.end)) {
-      seen.add(n.end);
-      for (const r of ts.getTrailingCommentRanges(src, n.end) ?? []) blank(r.pos, r.end);
-    }
-    ts.forEachChild(n, visit);
-  };
-  visit(sf);
-  // Trailing comments after the last token are trivia of EOF, which the walk above does not reach.
-  for (const r of ts.getLeadingCommentRanges(src, sf.endOfFileToken.getFullStart()) ?? []) blank(r.pos, r.end);
-  return out.join("");
-}
-
 // (The header-string constants that used to live here are gone. Anchoring on an exact spelling was
 // itself an exploited defect: changing the real declaration to `function onMessage (entry) {` moved
 // the only textual match into a commented decoy. The parser matches the DECLARATION, so there is no
 // spelling to vary.)
 
-// The two backfill ingresses are single statements inside a long async function, and these patterns
-// stay regex-based. That is a DIFFERENT risk to the one above and it is checked rather than assumed:
-// both require the loop head and the guard to be CONTIGUOUS (`activity) if (`, `) m.`), so a braced
-// rewrite makes them match NOTHING and the extraction cell goes red. They fail SAFE where the SSE
-// patterns failed OPEN. That asymmetry is the reason the SSE pair had to move to whole-function
-// execution and these two did not — and it is driven by `BRACED_*` below, not asserted here.
-const BACKFILL_APP = /for \(const e of activity\) if \(e\?\.msg[^;]*;/;
-const BACKFILL_GRAPH = /if \(m[^)]*\) m\.[^;]*;/;
+/** Every `for (… of activity)` loop in `src` that assigns one `.channel` from another — the backfill
+ *  ingress, identified STRUCTURALLY rather than by pattern.
+ *
+ *  This replaced a regex searched over comment-blanked text, and the reason is the whole lesson of
+ *  this file: **blanking comments is a list of trivia forms, and a list is never finished.** The
+ *  text approach was defeated three times, each time by a form the previous fix had not enumerated —
+ *  a plain block comment, a `*&#47;` inside an ordinary string, and finally a leading `#!` hashbang
+ *  plus the classic-script `<!--` form, both of which the browser accepts and neither of which is a
+ *  comment range. Trivia cannot produce a `ForOfStatement`, so no form of it — enumerated or not —
+ *  can be mistaken for this. The refusal is the same as `extractFunction`'s: absent OR ambiguous
+ *  yields `undefined`, never a guess. */
+/** The one form a parser cannot rescue: the classic-script `<!--` comment.
+ *
+ *  MEASURED, and it is worse than a blanking gap. TypeScript parses the text after `<!--` as CODE;
+ *  the BROWSER, which loads these files as classic scripts, treats it as a comment. **The suite's
+ *  model of what is code is then not the page's**, and no amount of AST work reconciles that — a
+ *  safe copy hidden behind `<!--`, with the real overwrite DELETED, is found as the single match
+ *  and graded as though it ran, while the shipped page performs no overwrite at all.
+ *
+ *  So its presence is a REFUSAL, not something to blank or to enumerate. The match is deliberately
+ *  crude and unanchored: a false positive (the sequence inside a string) refuses and costs a red
+ *  cell, while a false negative grades a page that does not exist. Those are not symmetric, and the
+ *  cheap direction is the safe one. The shipped files contain none — asserted below, not assumed. */
+const HTML_COMMENT_FORM = /<!--|-->/;
+
+function findBackfillLoops(src: string, file: string): string[] {
+  if (HTML_COMMENT_FORM.test(src)) return [];
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const assignsChannelFromChannel = (root: ts.Node): boolean => {
+    let hit = false;
+    const walk = (x: ts.Node): void => {
+      if (
+        ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(x.left) && x.left.name.text === "channel" &&
+        ts.isPropertyAccessExpression(x.right) && x.right.name.text === "channel"
+      ) hit = true;
+      ts.forEachChild(x, walk);
+    };
+    walk(root);
+    return hit;
+  };
+  const out: string[] = [];
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isForOfStatement(n) && ts.isIdentifier(n.expression) && n.expression.text === "activity" &&
+      assignsChannelFromChannel(n.statement)
+    ) out.push(src.slice(n.getStart(sf), n.end));
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/** The one backfill loop in `file`. `undefined` if absent OR ambiguous — never a guess. */
+function extractBackfill(src: string, file: string): string | undefined {
+  const all = findBackfillLoops(src, file);
+  return all.length === 1 ? all[0] : undefined;
+}
+
+/** Context for executing an extracted backfill loop. The loop bodies reference a few page-locals
+ *  besides `activity`; they are stubbed rather than removed, because executing the WHOLE loop is
+ *  what makes a fail-open guard rewrite observable. Extracting only the assignment would pass under
+ *  exactly the regression this file exists to catch. */
+function backfillContext(entries: { channel?: string; msg?: { channel?: string } }[]) {
+  return { activity: entries, agents: new Map(), chatHit() {}, dmHit() {}, now: () => 0 };
+}
 
 // A unicast DM carrying a forged `channel`. `mode` comes from the server's `deliveryOf(subject)`,
 // never from the payload, so the attacker controls only `msg.*` — and on `inst` the server sends no
@@ -407,11 +428,11 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "app.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_APP.exec(codeOnly(src))?.[0],
+    extract: (src) => extractBackfill(src, "app.js"),
     run(stmt) {
-      const ctx = { activity: [{ channel: VERIFIED, msg: { channel: CLAIMED } }] };
+      const ctx = backfillContext([{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
-      return ctx.activity[0].msg.channel;
+      return ctx.activity[0].msg?.channel;
     },
   },
   {
@@ -421,11 +442,11 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_GRAPH.exec(codeOnly(src))?.[0],
+    extract: (src) => extractBackfill(src, "graph.js"),
     run(stmt) {
-      const ctx = { m: { channel: CLAIMED }, e: { channel: VERIFIED } };
+      const ctx = backfillContext([{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
-      return ctx.m.channel;
+      return ctx.activity[0].msg?.channel;
     },
   },
 ];
@@ -467,11 +488,11 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "app.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_APP.exec(codeOnly(src))?.[0],
+    extract: (src) => extractBackfill(src, "app.js"),
     run(stmt) {
-      const ctx = { activity: [{ msg: { channel: CLAIMED } }] as { channel?: string; msg: { channel?: string } }[] };
+      const ctx = backfillContext([{ msg: { channel: CLAIMED } }]);
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
-      return ctx.activity[0].msg.channel;
+      return ctx.activity[0].msg?.channel;
     },
   },
   {
@@ -481,11 +502,11 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_GRAPH.exec(codeOnly(src))?.[0],
+    extract: (src) => extractBackfill(src, "graph.js"),
     run(stmt) {
-      const ctx = { m: { channel: CLAIMED } as { channel?: string }, e: {} as { channel?: string } };
+      const ctx = backfillContext([{ msg: { channel: CLAIMED } }]);
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
-      return ctx.m.channel;
+      return ctx.activity[0].msg?.channel;
     },
   },
 ];
@@ -615,23 +636,22 @@ const appBenign = runAppOnMessage(extractFunction(read("../src/web/app.js"), "ap
 check("app.js — a POLICED chat message DOES reach its channel, keyed on the verified name",
   appBenign.channels.has(VERIFIED) && !appBenign.channels.has(CLAIMED), { keys: [...appBenign.channels.keys()] });
 
-// ── 2d. THE PATTERNS THAT REMAIN REGEX-BASED MUST FAIL SAFE, AND THAT IS RECOMPUTED ──────────────
-// The two backfill ingresses are still matched by pattern. The claim made for them above is that a
-// braced rewrite makes them match NOTHING (red) rather than match a correct-behaving fragment
-// (green) — the exact failure that let the SSE pair survive. A claim about a regex is worthless
-// unless something runs the regex, so the braced forms are built here and matched.
+// ── 2d. THE BACKFILL FINDER SURVIVES A REWRITE THAT THE PATTERN DID NOT ─────────────────────────
+// The regex this replaced required the loop head and its guard to be CONTIGUOUS, so a braced
+// rewrite made it match nothing. That failed SAFE, but it also meant the behaviour cell was never
+// reached — a fail-open guard was caught as a shape failure rather than as the routing defect it
+// is. The structural finder still identifies the braced form, so the regression is now observable
+// where it actually matters: in what the loop DOES.
 const BRACED_APP = "for (const e of activity) {\n  if (e?.msg) {\n    e.msg.channel = e.channel;\n  }\n}";
-const BRACED_GRAPH = "if (m) {\n  m.channel = e.channel;\n}";
-check("app.js backfill pattern FAILS SAFE on a braced rewrite (matches nothing, so the cell reddens)",
-  BACKFILL_APP.exec(BRACED_APP) === null, { matched: BACKFILL_APP.exec(BRACED_APP)?.[0] });
-check("graph.js backfill pattern FAILS SAFE on a braced rewrite",
-  BACKFILL_GRAPH.exec(BRACED_GRAPH) === null, { matched: BACKFILL_GRAPH.exec(BRACED_GRAPH)?.[0] });
-// A pattern that matches NOTHING AT ALL would pass both cells vacuously, so each is paired with a
-// positive control proving it still matches the form actually shipped.
-check("app.js backfill pattern still matches the shipped statement (positive control)",
-  BACKFILL_APP.exec(read("../src/web/app.js")) !== null);
-check("graph.js backfill pattern still matches the shipped statement (positive control)",
-  BACKFILL_GRAPH.exec(read("../src/web/graph.js")) !== null);
+check("a BRACED rewrite of the backfill loop is still identified (the pattern it replaced matched nothing)",
+  findBackfillLoops(BRACED_APP, "synthetic.js").length === 1,
+  { n: findBackfillLoops(BRACED_APP, "synthetic.js").length });
+// A finder that identifies EVERY for-of would also return 1 here for the wrong reason, so the
+// discriminator is driven: a loop over `activity` that does NOT assign a channel is not a backfill.
+check("a for-of over `activity` that assigns no channel is NOT identified (the predicate discriminates)",
+  findBackfillLoops("for (const e of activity) idName.set(e.msg.from.id, e.msg.from.name);", "synthetic.js").length === 0);
+check("a channel assignment OUTSIDE any `activity` loop is NOT identified",
+  findBackfillLoops("msg.channel = entry.channel;", "synthetic.js").length === 0);
 
 // ── 2e. THE EXTRACTOR ITSELF ────────────────────────────────────────────────────────────────────
 // `extractFunction` is load-bearing for every executed cell, so its own failure modes are driven.
@@ -680,34 +700,63 @@ check("a `*/` inside a STRING cannot smuggle a commented handler past the parser
 check("a whitespace-varied declaration is still found (the anchor is the DECLARATION, not a spelling)",
   fromBalanced !== undefined && fromBalanced.startsWith("function onMessage (entry)"), { head: fromBalanced?.slice(0, 50) });
 
-// ── 2g. THE BACKFILL PATTERNS, SEARCHED IN CODE ONLY ─────────────────────────────────────────────
-// The two backfill ingresses are matched by regex, and `exec` is as happy to match inside a comment
-// as the old `indexOf` was — the same hole one layer down. They are therefore matched against
-// `codeOnly()`, which blanks comments using the toolchain's scanner, and each guard has a control.
-for (const [label, file, re] of [
-  ["app.js backfill", "../src/web/app.js", BACKFILL_APP],
-  ["graph.js backfill", "../src/web/graph.js", BACKFILL_GRAPH],
+// ── 2g. THE BACKFILL FINDER IGNORES EVERY TRIVIA FORM, INCLUDING THE ONES NOT ENUMERATED ────────
+// Three text-based versions of this guard shipped a false green, each beaten by a trivia form its
+// predecessor had not listed. The last two are the reason the approach changed rather than grew:
+// a leading `#!` hashbang and the classic-script `<!--` form are BOTH accepted by the browser that
+// runs these files, and NEITHER is a comment range, so a comment-blanker leaves them searchable.
+// Enumerating trivia is a losing game; a `ForOfStatement` is not something trivia can be.
+//
+// Each control is built from a SYNTHETIC source rather than the file under test: deriving a control
+// from the file means a mutation to that file changes the control too, which has already happened
+// here — a decoy made a control fire instead of the behaviour cell it exists to protect, masking
+// which cell caught the regression.
+const SYNTH_BF = "for (const e of activity) if (e?.msg) e.msg.channel = e.channel;";
+const SYNTH_REGRESSED = "for (const e of activity) if (e?.msg && e.channel) e.msg.channel = e.channel;";
+for (const [form, decoyed] of [
+  ["a block comment", `/* ${SYNTH_BF} */\n${SYNTH_REGRESSED}`],
+  ["a line comment", `// ${SYNTH_BF}\n${SYNTH_REGRESSED}`],
+  ["a leading #! hashbang", `#! ${SYNTH_BF}\n${SYNTH_REGRESSED}`],
 ] as const) {
-  const code = codeOnly(read(file));
-  const all = [...code.matchAll(new RegExp(re.source, "g"))];
-  check(`${label} — the pattern matches EXACTLY ONE site in CODE (comments blanked first)`,
-    all.length === 1, { n: all.length });
+  const found = findBackfillLoops(decoyed, "synthetic.js");
+  // EXACTLY ONE, and it must be the REGRESSED loop — not the safe copy hidden in the trivia. A cell
+  // asserting only the count would pass while grading the decoy, which is the defect three times over.
+  check(`${form} cannot hide a safe backfill copy from the finder (it identifies the REAL loop)`,
+    found.length === 1 && found[0].includes("e.channel)"), { n: found.length, head: found[0]?.slice(0, 60) });
 }
-// Controls, built from a SYNTHETIC source rather than the file under test. Deriving a control from
-// the file means a mutation to that file changes the control too — which happened: a backfill decoy
-// mutation made this control fire instead of the behaviour cell it exists to protect, masking which
-// cell actually caught the regression.
-const SYNTH_BF = 'for (const e of activity) if (e?.msg) e.msg.channel = e.channel;';
-const synthDecoyed = `// ${SYNTH_BF}\n  ${SYNTH_BF}`;
-check("a commented copy of the backfill statement is NOT counted (positive control)",
-  [...codeOnly(synthDecoyed).matchAll(new RegExp(BACKFILL_APP.source, "g"))].length === 1,
-  { n: [...codeOnly(synthDecoyed).matchAll(new RegExp(BACKFILL_APP.source, "g"))].length });
-check("and the RAW text WOULD have counted it twice (proving the control is not vacuous)",
-  [...synthDecoyed.matchAll(new RegExp(BACKFILL_APP.source, "g"))].length === 2);
-// `codeOnly` must not blank real code, or every cell above would pass on an empty string.
-check("codeOnly preserves executable source (a blanking bug would make every match vanish)",
-  codeOnly(realApp).includes("msg.channel = entry.channel;"));
-check("codeOnly blanks a comment body (positive control)",
-  codeOnly(`/* msg.channel = entry.channel; */`).includes("msg.channel") === false);
+
+// The `<!--` form is handled differently BECAUSE IT IS DIFFERENT, and the distinction was measured
+// rather than assumed. TS parses what follows it as code while the browser does not, so the finder
+// cannot identify "the real loop" — there is no agreement about which loop is real. It REFUSES.
+const htmlDecoyed = `<!-- ${SYNTH_BF}\n${SYNTH_REGRESSED}`;
+check("a classic-script <!-- comment makes the finder REFUSE (parser and browser disagree on what is code)",
+  findBackfillLoops(htmlDecoyed, "synthetic.js").length === 0);
+// THE CASE THAT PROVES WHY REFUSAL AND NOT DEDUPLICATION: with the real overwrite DELETED rather
+// than regressed, the hidden copy is the ONLY structural match. Without the refusal this is a
+// single unambiguous find, executed, green — over a page that performs no overwrite at all.
+const htmlWorst = `<!-- ${SYNTH_BF}\nfor (const e of activity) { const m = e.msg; if (m) renderOnly(m); }`;
+check("a <!--hidden copy with the REAL overwrite deleted also refuses (it would otherwise grade a page that does not exist)",
+  extractBackfill(htmlWorst, "synthetic.js") === undefined);
+// The refusal must not be vacuous: the same source WITHOUT the opener is found normally.
+check("the same source without the <!-- opener IS found (the refusal is not swallowing everything)",
+  findBackfillLoops(htmlWorst.replace("<!-- ", ""), "synthetic.js").length === 1,
+  { n: findBackfillLoops(htmlWorst.replace("<!-- ", ""), "synthetic.js").length });
+// And the shipped files must carry none of it, or the extractors silently return nothing.
+for (const [label, file] of [["app.js", "../src/web/app.js"], ["graph.js", "../src/web/graph.js"]] as const) {
+  check(`${label} — the shipped file contains NO HTML-comment syntax (or every executed cell would refuse)`,
+    HTML_COMMENT_FORM.test(read(file)) === false);
+}
+// AMBIGUITY IS NOT RESOLVED BY GUESSING, exactly as for `extractFunction`. Two real backfill loops
+// must yield undefined rather than whichever comes first.
+check("extractBackfill returns undefined when TWO real backfill loops exist (never guesses)",
+  extractBackfill(`${SYNTH_BF}\n${SYNTH_BF}`, "synthetic.js") === undefined);
+check("extractBackfill returns undefined when the loop is absent (negative control)",
+  extractBackfill("for (const e of activity) idName.set(e.id, e.name);", "synthetic.js") === undefined);
+// And the positive control: the shipped files each yield exactly one, or every cell above is
+// asserting about a finder that never finds anything.
+for (const [label, file] of [["app.js", "../src/web/app.js"], ["graph.js", "../src/web/graph.js"]] as const) {
+  check(`${label} — exactly ONE backfill loop is identified in the shipped file (positive control)`,
+    findBackfillLoops(read(file), label).length === 1, { n: findBackfillLoops(read(file), label).length });
+}
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
