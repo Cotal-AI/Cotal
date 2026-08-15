@@ -39,9 +39,12 @@ import {
   possessionBucket,
   attachmentBucket,
   ensureArtifactIndexStores,
-  putAttachmentIfAbsent,
   attachmentKey,
 } from "../src/index.js";
+// From the MODULE, never the barrel — `putAttachmentIfAbsent` is deliberately absent from the public
+// surface of `@cotal-ai/core`, and `artifact-single-writer` asserts that absence. Importing it
+// through `../src/index.js` killed this suite at module instantiation: no failing cell, NO CELLS.
+import { putAttachmentIfAbsent } from "../src/artifact-index.js";
 import { pickFreePort } from "./_free-port.js";
 import { stopBrokerAndClean } from "./_stop-broker.js";
 

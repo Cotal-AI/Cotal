@@ -45,14 +45,18 @@ import {
   parseSubject,
   possessionKey,
   principalKey,
-  putAttachmentIfAbsent,
-  deleteAttachment,
   readAclForAlias,
   readPossession,
   setupSpaceStreams,
   type ConfirmAttachDeps,
   type CotalMessage,
 } from "../src/index.js";
+// From the MODULE, never the barrel. `putAttachmentIfAbsent` and `deleteAttachment` are deliberately
+// not on the public surface of `@cotal-ai/core` — the sweep in `artifact-single-writer` asserts their
+// absence there — so this suite reaches the module directly, exactly as `artifact-attach.ts` does.
+// Importing them through `../src/index.js` is what broke this suite at module instantiation: the
+// SyntaxError produced NO failing cell, it produced NO CELLS AT ALL.
+import { putAttachmentIfAbsent, deleteAttachment } from "../src/artifact-index.js";
 import { pickFreePort } from "./_free-port.js";
 import { stopBrokerAndClean } from "./_stop-broker.js";
 
