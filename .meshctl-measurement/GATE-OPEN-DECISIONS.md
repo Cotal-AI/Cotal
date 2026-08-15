@@ -254,3 +254,28 @@ addendum).
 **fm-orchestrator has recorded the sequencing half as its own error (§187): fm-artifact-4's arm was
 queued after this lane's window on the belief that its chain READS this artifact.** That is recorded
 there and is not restated here as this lane's finding.
+
+### RE-CHECKED 2026-08-15T09:1xZ — the membership, with indices, and a warning about my own method
+
+Three lanes agreed on **eight** and did not agree on **which eight**. Re-measured here with a strict
+classifier (`pnpm [-r] [--filter X] build\b` — a build *invocation*, not the substring "build"):
+
+```
+this tip's smoke:ci chain: 215 entries
+entry 105  smoke:delivery-renewal          entry 161  smoke:setup-failloud
+entry 129  smoke:codex-installed           entry 162  smoke:agent-skills
+entry 159  smoke:materialize-concurrency   entry 163  smoke:ext-seed-help
+entry 160  smoke:seed                      entry 205  smoke:persona-announce
+`smoke:build-current` is NOT DEFINED in this tree and is NOT in this chain.
+```
+
+**Membership matches the corrected set by name.** The indices differ between lanes because the chain
+length differs per tip — 215 here, others report 222/223/240. **Each is right about its own tip and
+they are not reconcilable into one number; do not try.**
+
+> **⚠ MY ORIGINAL CLASSIFIER WAS THE FLAWED ONE, AND IT AGREED BY LUCK.** I matched the substring
+> `build` anywhere in the body — the same rule that misclassifies `smoke:build-current`, whose *name*
+> contains it. It returned the right eight **only because that entry does not exist in this tree.**
+> Re-run here, loose and strict give an identical set, difference `[]`. **An independent
+> reproduction that agrees on the number is not independent evidence about the membership**, and
+> mine reproduced a correct answer with an incorrect method.
