@@ -72,6 +72,51 @@ const svc = parseSubject(`${spacePrefix(SPACE)}.svc.someroute.${OWNER}.${ACTOR}`
 check("an anycast subject is NOT kind chat", svc?.kind !== "chat", svc?.kind);
 check("an anycast rest is the ROUTE, not a channel", svc?.rest === "someroute", svc?.rest);
 
+// ── 1b. WHAT THE BLOCK ABOVE ACTUALLY EXECUTED ──────────────────────────────────────────────────
+// `@cotal-ai/core` resolves through its exports map to `dist/index.js`, which is GITIGNORED
+// (`.gitignore:3`, and `import.meta.resolve` confirms the path). So every cell above drives the last
+// BUILD, not the source in this tree. Calling that block "driven" was true but not the whole truth:
+// a stale or wrong build would make all of it a statement about code nobody is editing, and the
+// gate's `smoke:dist-freshness` guard checks ORDERING only — a newer-but-wrong dist passes it.
+//
+// `subjects.ts` imports nothing first-party (only `node:crypto`, verified before relying on it), so
+// it loads standalone and the two can be driven side by side on the same vectors. If the artifact
+// and the source disagree, that reddens HERE instead of silently grading the wrong one.
+//
+// EVERY PLANE IS COVERED, not just chat. The kind-gate's whole job is what happens on `inst` and
+// `svc`, so agreement on chat alone would leave the gate's own premise ungraded.
+const srcSubjects = await import("../../../packages/core/src/subjects.ts");
+check("core SOURCE loaded directly (an unloadable source would skip this entire block)",
+  typeof srcSubjects.parseSubject === "function" && typeof srcSubjects.chatSubject === "function");
+
+const CHAT_VECTORS = ["general", "team.backend", "team.backend.eu", `events.${OWNER}.${ACTOR}`];
+check("the chat differential table is populated (an empty loop grades nothing)",
+  CHAT_VECTORS.length === 4, { n: CHAT_VECTORS.length });
+for (const ch of CHAT_VECTORS) {
+  const built = chatSubject(SPACE, OWNER, ACTOR, ch);
+  const fromSource = srcSubjects.chatSubject(SPACE, OWNER, ACTOR, ch);
+  check(`artifact and source BUILD the same subject — ${ch.slice(0, 24)}`, built === fromSource, { built, fromSource });
+  const pd = parseSubject(built);
+  const ps = srcSubjects.parseSubject(fromSource);
+  check(`artifact and source PARSE the same channel — ${ch.slice(0, 24)}`, pd?.rest === ps?.rest, { dist: pd?.rest, src: ps?.rest });
+  check(`artifact and source agree on kind — ${ch.slice(0, 24)}`, pd?.kind === ps?.kind, { dist: pd?.kind, src: ps?.kind });
+}
+
+// The non-chat planes, which is where the gate actually decides something.
+const PLANE_VECTORS = [
+  ["inst", `${spacePrefix(SPACE)}.inst.${OWNER}.RECIPIENTACTOR.${OWNER}.${ACTOR}`],
+  ["svc", `${spacePrefix(SPACE)}.svc.someroute.${OWNER}.${ACTOR}`],
+  ["unparseable", "not.a.cotal.subject"],
+] as const;
+check("the non-chat differential table is populated", PLANE_VECTORS.length === 3, { n: PLANE_VECTORS.length });
+for (const [label, subject] of PLANE_VECTORS) {
+  const pd = parseSubject(subject);
+  const ps = srcSubjects.parseSubject(subject);
+  check(`artifact and source agree on kind for ${label} (the gate's own premise)`,
+    pd?.kind === ps?.kind, { dist: pd?.kind, src: ps?.kind });
+  check(`artifact and source agree on rest for ${label}`, pd?.rest === ps?.rest, { dist: pd?.rest, src: ps?.rest });
+}
+
 // ── 2. EXECUTED: the shipped decision statements, lifted out of the files that ship them ─────────
 // The server's derivation. Extracted from web.ts and run against the REAL parsed subjects above, so
 // this measures what the expression computes rather than how it is spelled.
@@ -100,12 +145,43 @@ check("the shipped derivation yields undefined for anycast (a route must never b
 check("the shipped derivation survives an unparseable subject without inventing a channel",
   runDerivation(parseSubject("garbage")) === undefined, { got: runDerivation(parseSubject("garbage")) });
 
-// The server must actually FORWARD it, and tag the backfill with what it requested rather than what
-// the payload claims. These two remain structural: both are shapes inside `web()`, which cannot be
-// invoked without a broker, and no broker is started here.
-check("the server forwards the derived channel to the browser",
-  webTs.includes('broadcast("message", { mode, senderId, channel, msg })'));
-check("history backfill is tagged with the channel the server REQUESTED", webTs.includes("channel: ch.channel,"));
+// Deriving the value is useless if it is not FORWARDED, and tagging the backfill with the requested
+// channel is the same trust rule on the other path. Both live inside `web()`, which cannot be
+// invoked without a broker — so the statements are extracted and executed against stubs rather than
+// asserted as text. A substring cell here would prove the line was typed and nothing more.
+const forwardStmt = /broadcast\("message", \{[^}]*\}\);/.exec(webTs)?.[0];
+check("web.ts declares the forward in one extractable statement", Boolean(forwardStmt), { forwardStmt });
+{
+  // `channel` (server-derived) disagrees with `msg.channel` (the publisher's claim), so a forward
+  // that shipped the claim instead would fail rather than look identical.
+  const ctx: { broadcast(ev: string, payload: Record<string, unknown>): void; out?: Record<string, unknown>; ev?: string;
+    mode: string; senderId: string; channel: string; msg: Record<string, unknown> } = {
+    broadcast(ev, payload) { ctx.ev = ev; ctx.out = payload; },
+    mode: "chat", senderId: "local.SENDER", channel: "policed-channel",
+    msg: { channel: "attacker-claimed" },
+  };
+  runInContext(forwardStmt!, createContext(ctx), { filename: "web.ts (forward)" });
+  check("the forward carries the SERVER-derived channel as its own field, beside the untrusted payload",
+    ctx.out?.channel === "policed-channel", { got: ctx.out?.channel });
+  check("the forward is the `message` event the browser listens for", ctx.ev === "message", { got: ctx.ev });
+  check("and it still carries the verified sender token", ctx.out?.senderId === "local.SENDER", { got: ctx.out?.senderId });
+}
+
+// The backfill mapper. Extracted and executed with a stub `ch`, so the cell measures which channel
+// the entry ends up tagged with. `as const` is a type-only annotation and is stripped to run it;
+// that is the one transform applied, and it cannot change the value produced.
+const mapper = /\.map\(\(msg\) => \(\{[\s\S]*?\}\)\)/.exec(webTs)?.[0];
+check("web.ts declares the backfill mapper in one extractable expression", Boolean(mapper), { mapper });
+{
+  const expr = mapper!.replace(/^\.map\(/, "").replace(/\)$/, "").replace(/ as const/g, "");
+  const ctx: { ch: { channel: string }; out?: Record<string, unknown> } = { ch: { channel: "requested-by-server" } };
+  runInContext(`out = (${expr})({ channel: "attacker-claimed", id: "m1" });`, createContext(ctx),
+    { filename: "web.ts (backfill mapper)" });
+  check("a backfilled entry is tagged with the channel the SERVER requested, not the payload's",
+    ctx.out?.channel === "requested-by-server", { got: ctx.out?.channel });
+  check("and the untouched payload travels alongside it for the client to overwrite at ingress",
+    (ctx.out?.msg as { channel?: string })?.channel === "attacker-claimed", { got: ctx.out?.msg });
+}
 
 // All four browser ingresses. Each shipped statement is executed against a payload whose claim
 // DISAGREES with the server-derived value, and the cell requires the verified value to win. A cell
