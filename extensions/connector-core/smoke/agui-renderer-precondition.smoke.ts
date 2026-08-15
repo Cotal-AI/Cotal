@@ -357,6 +357,11 @@ for (const kind of derivedKinds) {
  * `epoch` and `seq`, so the ONLY thing that can differ between two renderings is the events. Without
  * that, a renderer printing the frame's `seq` would make every family render differently while
  * displaying no event at all, and the distinctness cell would certify it.
+ *
+ * > ***A distinctness assertion is only as good as the sameness of everything else.*** The envelope
+ * > is not incidental setup — it is the control the distinctness cell is measured against, and any
+ * > future field added to `aguiFrame`'s envelope must be held constant here or that cell silently
+ * > stops testing what its name says.
  */
 const FAMILY_ENVELOPE = { threadId: "t-family", runId: "r-family", epoch: "e1", seq: 1 } as const;
 const TS = 1;
