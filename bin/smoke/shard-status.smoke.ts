@@ -117,8 +117,12 @@ try {
   check("A2.1 rc is 3 (DECLINED), distinct from both 0 and 1", a2.rc === 3);
   check("A2.2 the word 'passed' does NOT appear", !a2.out.includes("passed"));
   check("A2.3 summary says INCOMPLETE", a2.out.includes("INCOMPLETE"));
-  check("A2.4 the declining member is NAMED in the summary",
-    new RegExp(`⊘ .*${declining}`).test(a2.out));
+  // Deliberately anchored to the SUMMARY list (four-space indent under INCOMPLETE), not to the
+  // per-member `⊘ DECLINED …` echo. M-WD1 proved the looser form was not a control: the collapse
+  // mutant left the per-member echo in place, so a regex matching either one stayed green while
+  // the shard reported "passed". A cell has to be false in the unsafe state or it is decoration.
+  check("A2.4 the declining member is NAMED in the summary list",
+    a2.out.includes(`\n    ⊘ ${members[1]}`));
   check("A2.5 output states it is not a pass", a2.out.includes("This is NOT a pass"));
   const c2 = counts(a2.out);
   check("A2.6 measured is 2, NOT 3", c2?.measured === 2);
