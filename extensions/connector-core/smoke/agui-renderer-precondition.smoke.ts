@@ -50,9 +50,18 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TREE = resolve(process.env.COTAL_RENDERER_TREE ?? join(HERE, "..", "..", ".."));
 
-let ok = 0, fail = 0;
+let ok = 0, fail = 0, gateFail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
-  if (v) ok++; else { fail++; console.log("  x FAIL:", n, extra ?? ""); }
+  if (v) ok++;
+  else {
+    fail++;
+    // The precondition cells are counted apart from the rest. A reader must be able to tell "the
+    // merge gate is shut" from "some other property of the renderers is unmet" without parsing
+    // names, or the two get reported as one number and the gate's status becomes a matter of
+    // interpretation.
+    if (n.startsWith("[GATE]")) gateFail++;
+    console.log("  x FAIL:", n, extra ?? "");
+  }
 };
 
 /** The canary. Chosen so it cannot occur incidentally in a marker, a path or a kind name. */
@@ -130,15 +139,53 @@ try {
 } catch (e) {
   console.log(`  core partsToText unavailable: ${(e as Error).message}`);
 }
-gradeSurface("cli console / join / examples-02 (core partsToText)", corePartsToText ? corePartsToText(parts) : null);
 
 // ── The two web pages, each through whatever chain it actually ships.
 const bodyText = lift(join(WEB, "app.js"), "bodyText");
-gradeSurface("implementations/web app.js", bodyText ? bodyText({ parts }) : null);
-
 const partsText = lift(join(WEB, "graph.js"), "partsText");
-const graphBody = partsText ? partsText({ parts }) : null;
-gradeSurface("implementations/web graph.js", graphBody);
+
+/** Every shipped rendering path, so each is graded on every part kind rather than on one. */
+const SURFACES: readonly { name: string; render: ((p: unknown[]) => string) | null }[] = [
+  { name: "cli console / join / examples-02 (core partsToText)", render: corePartsToText },
+  { name: "implementations/web app.js", render: bodyText ? (p) => bodyText({ parts: p }) : null },
+  { name: "implementations/web graph.js", render: partsText ? (p) => partsText({ parts: p }) : null },
+];
+
+for (const s of SURFACES) gradeSurface(s.name, s.render ? s.render(parts) : null);
+const graphBody = SURFACES[2].render ? SURFACES[2].render(parts) : null;
+
+/**
+ * THE KIND EVERY OTHER CELL IS BLIND TO.
+ *
+ * Every assertion above uses `ag-ui.frame`, which carries NO `data` field — and on that one input
+ * two materially different renderers produce byte-identical output. Core names the kind and
+ * DISCARDS the payload of a data-bearing extension part; the browser copy names the kind and KEEPS
+ * it. Across 9 + 8 graded assertions on two trees, nothing could tell them apart: the difference was
+ * found by READING, not by grading.
+ *
+ * **A suite can be exhaustive across surfaces and blind across kinds.** Every cell ran, every cell
+ * passed or failed for the right reason, and the whole surface exercised the single input that
+ * collapses the distinction. So the discriminating kind gets its own cells, and they are kept
+ * separate from the `[GATE]` cells because they grade a different property: the frame gate asks
+ * whether a frame is DISPLAYED, these ask whether an extension part's payload SURVIVES.
+ */
+const DATA_CANARY = "CANARY-DATA-BEARING-PAYLOAD";
+const DATA_KIND = "com.acme.snapshot";
+const dataParts = [{ kind: DATA_KIND, data: { note: DATA_CANARY } } as unknown as { kind: string }];
+
+for (const s of SURFACES) {
+  if (!s.render) {
+    c(`[data-kind] ${s.name} preserves a data-bearing extension part's payload`, false, "path not found");
+    c(`[data-kind] ${s.name} names the kind of a data-bearing extension part`, false, "path not found");
+    continue;
+  }
+  const out = s.render(dataParts);
+  console.log(`  [data-kind] ${s.name} -> ${JSON.stringify(out)}`);
+  // Losing the payload while printing a marker is the worse failure of the two: the output LOOKS
+  // like successful rendering, which is the exact defect class this lane's gate is shut over.
+  c(`[data-kind] ${s.name} preserves a data-bearing extension part's payload`, out.includes(DATA_CANARY));
+  c(`[data-kind] ${s.name} names the kind of a data-bearing extension part`, out.includes(DATA_KIND));
+}
 
 // The graph's detail row substitutes a visible dash for an empty body, so an empty rendering there
 // is a placeholder rather than a blank. Graded separately because it changes what an OPERATOR sees
@@ -165,12 +212,17 @@ for (const [surface, rel] of [
   c(`[GATE] ${surface} honours the events.* filter`, /events\.\*|eventChannel|AGUI_FRAME_KIND|ag-ui\.frame/.test(code));
 }
 
-console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed`);
-if (fail > 0) {
+console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateFail} of them [GATE])`);
+if (gateFail > 0) {
   console.log(
     "\nTHE PRECONDITION IS NOT MET, so the AG-UI cutover does not merge. This suite is expected to\n" +
       "be red until the renderer work lands; that is what it is for. Gate it in gate-inventory when\n" +
       "it goes green.",
   );
-  process.exit(1);
+} else if (fail > 0) {
+  console.log(
+    "\nThe frame precondition is MET. The remaining failures are NOT the merge gate — they are the\n" +
+      "payload-preservation cells, and they must be read as their own finding rather than folded in.",
+  );
 }
+if (fail > 0) process.exit(1);
