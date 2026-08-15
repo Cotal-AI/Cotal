@@ -168,6 +168,13 @@ if (existsSync(sharedBrowserRenderer)) {
  * **SO A GREEN HERE DOES NOT MEAN `cotal console` DISPLAYS A FRAME. It means core's Registry and
  * this surface's rendering path are correct GIVEN a registration production never performs.**
  *
+ * **RESIDUAL, so the next reader knows what was and was not tested without having to ask:** the
+ * probe loads the binary's module graph; it does not RUN a command. A runtime dynamic import in a
+ * live `cotal console` session is therefore not excluded by execution — it is bounded by
+ * `requiredExtensions` being declared nowhere, which is the mechanism that would have to carry it.
+ * A live end-to-end was authorised and deliberately not spent: it costs a broker, a publishing
+ * agent and exclusivity to probe a path already bounded by a static measurement of its own bound.
+ *
  * An earlier version of this note said the gap was "until something drives the dist path end to
  * end", which implied the problem was WHICH BUILD. **That was too kind and it was wrong: the
  * provider is never loaded at all, in any build.** The fix is a composition-root decision (a static
