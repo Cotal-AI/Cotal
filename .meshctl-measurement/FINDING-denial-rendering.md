@@ -1,7 +1,7 @@
 # Finding: the repo has four purpose-built ways to name a permission denial, and the verb every seat uses has none of them
 
 Recorded `Fri Aug 14 10:06:55 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
-`5156e248`. Filed as its own record, on fm-orchestrator's suggestion, because it was found inside a
+`21aaac12`. Filed as its own record, on fm-orchestrator's suggestion, because it was found inside a
 mutation round and would be lost there. **It is a property of the shipped surface, not of a test.**
 
 ## What was measured

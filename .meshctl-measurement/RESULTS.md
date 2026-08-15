@@ -1,5 +1,17 @@
 # Measurement: agent-driven mesh connection control
 
+> **⚠️ POST-REWRITE PROVENANCE, `Sat Aug 15 12:30:46 AM UTC 2026`.** This lane's history was
+> rewritten by fm-orchestrator (`c076eb41..d591bb80`, 38 commits; tip `d591bb80` → `305f04de`).
+> **Every run-stamp sha in this file was re-pointed to the rewritten graph in one pass** — the
+> mapping was reconstructed from the two graphs (the `.git/filter-branch/map/` this lane was told
+> to use does not exist on this box) and validated with a shift-by-one control that mismatched
+> 37/37, so the aligned 0/38 means something.
+>
+> **THE SHAS ARE FIXED. THE COUNTS ARE NOT RE-RUN.** Old and new tips carry a byte-identical tree,
+> which makes "the suite still passes" an **inference**, and this file does not cite inferences.
+> Until the suites below are re-driven against ephemeral brokers, treat every count here as
+> **stamped, not confirmed**. Re-running is broker-backed and this lane does not hold a window.
+
 Base `7cc74f50` (measured at `1aab1389`; delta since is release/docs only). All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
 target is not the live broker as its first action. Refutation conditions are stated in each probe's
 header **before** any result.
@@ -260,11 +272,11 @@ complete. It found the following, and they are recorded here in its framing rath
 - Committed suites, **each named with the tip it was last RUN at, not the tip it was last edited at**:
   `packages/core/smoke/connection-lifecycle.smoke.ts` **39/39 at `e15b6e36`** (re-run today, rc=0 captured),
   `extensions/connector-core/smoke/connection-control.smoke.ts` **45 passed / 0 failed / 0 VOID at
-  `2cc77347`** (run `Fri Aug 14 10:57:18 PM UTC 2026`, ephemeral loopback broker; **counted in three
+  `a89dc6e4`** (run `Fri Aug 14 10:57:18 PM UTC 2026`, ephemeral loopback broker; **counted in three
   columns, not one — passes, failures and VOIDs are never summed, and the run additionally printed
-  2 RECORDED observations which are not passes**; E18 was re-asserted and re-run at `2b2ceea4`
+  2 RECORDED observations which are not passes**; E18 was re-asserted and re-run at `10f19a6a`
   after it SURVIVED its mutation — see below),
-  `.meshctl-measurement/meshctl-m10-twoviews.smoke.ts` **5 passed / 0 failed at `9142ddd3`**
+  `.meshctl-measurement/meshctl-m10-twoviews.smoke.ts` **5 passed / 0 failed at `dd74dd2b`**
   (run `Fri Aug 14 11:10:05 PM UTC 2026`; 2 RECORDED observations, and **its headline is not usable
   — the fixture's "long-lived" view lived ~100s against a hypothesis about a session hours old**),
   `packages/core/smoke/request-strand.smoke.ts` **9/9 at `ffc18c46`** (was 7/7 before ARM 3 was added).

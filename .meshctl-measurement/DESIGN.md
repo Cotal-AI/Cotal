@@ -105,7 +105,7 @@ This is forced by measurement, not preference:
   outright. **[M — F1a-d, F2; and independently E17/E18]**
   **Strengthened, and the strengthening is the point:** `F1a-d` originally classified *any* connect
   or flush failure as `denied`, so a non-permission failure could satisfy a permission cell. Fixed
-  (`ca01c01c`) to track unreachability apart; **re-run 9/9, so those four were genuine denials** —
+  (`a891d868`) to track unreachability apart; **re-run 9/9, so those four were genuine denials** —
   cells that could now have reported otherwise. **E17/E18** measure the same fence from the other
   end, through the connect path this feature actually uses, **with a permitted twin** (identical
   constructor, identical credential, only the space string differs) **and a surviving-then-killed

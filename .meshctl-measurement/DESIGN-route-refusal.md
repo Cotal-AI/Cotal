@@ -1,7 +1,7 @@
 # Design note: what a seat with no route should be able to ask, and what refusal it should get
 
 Written `Fri Aug 14 09:34:50 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
-`9a62c405`. Commissioned by fm-orchestrator as a **design note, not code**. Adjacent to the
+`5e43bf7a`. Commissioned by fm-orchestrator as a **design note, not code**. Adjacent to the
 `capabilities` gate this lane owns; seat provisioning is not this lane's to change unilaterally.
 
 ## 0. ⚠️ THE PREMISE I WAS GIVEN IS PARTLY REFUTED, AND THE DESIGN CHANGES BECAUSE OF IT
@@ -37,7 +37,7 @@ of the seat. What is missing is narrower and, I think, more interesting:
 ## 0a. THE OWED MEASUREMENT, NOW DRIVEN — IT REJECTS, SO THE NOTE'S SCOPE HOLDS
 
 Driven `Fri Aug 14 09:44:58 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
-`0a2a4ae6`, under an exclusivity ack from fm-orchestrator. Suite:
+`2e9595bf`, under an exclusivity ack from fm-orchestrator. Suite:
 `extensions/connector-core/smoke/connection-control.smoke.ts`, **39 passed / 0 failed / 0 VOID,
 rc=0**, against an ephemeral loopback broker (`nats://127.0.0.1:44043`, asserted not the live host
 as the run's first action; core `dist` provenance asserted as its second).
@@ -88,7 +88,7 @@ anycast path.
 ## 0d. ⚠️ I DROVE MY OWN CENTRAL CLAIM AND IT IS REFUTED
 
 Driven `Fri Aug 14 10:24:53 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
-`8c9c57f3`, under an exclusivity ack, by `.meshctl-measurement/meshctl-m8-outage.smoke.ts` —
+`730a6c18`, under an exclusivity ack, by `.meshctl-measurement/meshctl-m8-outage.smoke.ts` —
 **committed unrun beforehand with four outcomes pre-declared**, so no result could be back-fitted to
 the sentence it was testing. **5 passed / 0 failed / 0 hung.**
 
@@ -334,7 +334,7 @@ publish grant is the compromise this lane spent the evening proving does not cur
    ~~**Caveat, held deliberately:** this is a code reading. I have not driven either DM branch, and
    this lane has spent the evening on the difference between those two things.~~
    **NOW DRIVEN** (`connection-control.smoke.ts` E14–E18, run `Fri Aug 14 10:57:18 PM UTC 2026`,
-   45 passed / 0 failed / 0 VOID at `2cc77347`; E18 re-asserted and re-run at `2b2ceea4`). **And the
+   45 passed / 0 failed / 0 VOID at `a89dc6e4`; E18 re-asserted and re-run at `10f19a6a`). **And the
    driving found something the reading could not have: the peer verbs are not fenced the way the
    channel verbs are.**
 

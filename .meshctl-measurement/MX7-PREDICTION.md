@@ -277,7 +277,7 @@ MX3a and MX5 survivors.
 
 # MX8b — prediction, written BEFORE the mutant runs
 
-Written `Fri Aug 14 09:12:45 PM UTC 2026`. Base `fc457043`, tree clean.
+Written `Fri Aug 14 09:12:45 PM UTC 2026`. Base `95b77b31`, tree clean.
 
 ## Why re-run a mutant that already died
 
@@ -390,7 +390,7 @@ MX1, MX2, MX3, MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`;
 
 # MX9 — prediction, written BEFORE the mutant runs
 
-Written `Fri Aug 14 09:18:02 PM UTC 2026`. Base `47363bfa`, tree clean.
+Written `Fri Aug 14 09:18:02 PM UTC 2026`. Base `a493d1e3`, tree clean.
 
 ## The claim under test
 
@@ -493,7 +493,7 @@ MX1–MX4 killed; MX6 on the flip; MX7b on its named cell; MX8 on `E8`; MX8c on 
 
 # MX10 — prediction, written BEFORE the mutant runs
 
-Written `Fri Aug 14 09:21:50 PM UTC 2026`. Base `8aef90e8`, tree clean.
+Written `Fri Aug 14 09:21:50 PM UTC 2026`. Base `27477f30`, tree clean.
 
 ## The claim under test — a guard, not a property
 
@@ -600,7 +600,7 @@ refuted my prediction and is kept as the reason MX8c exists**; MX3a and MX5 surv
 
 # MX11 — prediction, written BEFORE the mutant runs
 
-Written `Fri Aug 14 09:26:19 PM UTC 2026`. Base `0f9443b0`, tree clean.
+Written `Fri Aug 14 09:26:19 PM UTC 2026`. Base `29cd5489`, tree clean.
 
 ## The claim under test
 
@@ -700,7 +700,7 @@ harness recorded**; MX7a blunt (superseded, kept); MX8b refuted (kept); MX3a and
 
 # MX12 — prediction, written BEFORE the mutant runs
 
-Written `Fri Aug 14 09:28:23 PM UTC 2026`. Base `7c988779`, tree clean.
+Written `Fri Aug 14 09:28:23 PM UTC 2026`. Base `4ce384ad`, tree clean.
 
 ## The last named-but-undriven guard
 

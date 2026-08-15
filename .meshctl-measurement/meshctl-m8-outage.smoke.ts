@@ -50,12 +50,12 @@
  * REAL ENTRY POINT: `cotalToolSpecs(...).run(...)` — the same call `registerCotalTools` makes.
  * Not `agent.send`, not `ep.multicast`.
  *
- * ✅ RUN STAMP: driven `Fri Aug 14 10:24:53 PM UTC 2026` at tip `8c9c57f3`, under an exclusivity ack,
+ * ✅ RUN STAMP: driven `Fri Aug 14 10:24:53 PM UTC 2026` at tip `730a6c18`, under an exclusivity ack,
  * against an ephemeral loopback broker on port 37827. **5 passed / 0 failed / 0 hung, rc=0.**
  *   DENIAL : Couldn't send: Permissions Violation for Publish to "cotal.<space>.chat.local.<uid>.secret"
  *   OUTAGE : Couldn't send: timeout
  * **PRE-DECLARED OUTCOME 1 — the author's own claim is REFUTED and struck from the design note.**
- * (Committed UNRUN at `2a318c4f` with all four outcomes fixed in advance, so nothing here was
+ * (Committed UNRUN at `b2eaa899` with all four outcomes fixed in advance, so nothing here was
  * back-fitted to the result. The pre-registration was right about the direction and wrong about the
  * mechanism: the expected string was `notLiveMsg()`'s "reconnecting - try again shortly"; the actual
  * one is a bare `timeout`.)

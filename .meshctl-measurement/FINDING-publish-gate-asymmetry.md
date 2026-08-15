@@ -1,7 +1,7 @@
 # Finding: the publish side has no client gate, so a widened publish grant is silent
 
 Recorded `Fri Aug 14 09:33:32 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
-`32dbab12`. Filed as its own record rather than as a subsection of a mutation report, because it is
+`f22be861`. Filed as its own record rather than as a subsection of a mutation report, because it is
 a property of the shipped surface and will outlive the round that found it.
 
 ## The asymmetry, at the two lines
@@ -71,7 +71,7 @@ detects it with an independent witness the product does not have.
 
 ## Addendum: the denied direction IS signalled — which sharpens the asymmetry rather than softening it
 
-Added after driving `E13` at tip `0a2a4ae6` (`Fri Aug 14 09:44:58 PM UTC 2026`). The finding above
+Added after driving `E13` at tip `2e9595bf` (`Fri Aug 14 09:44:58 PM UTC 2026`). The finding above
 measures what happens when the grant is **too wide**. `E13` measures the other direction — the grant
 correctly **narrow**, the post correctly **denied**:
 

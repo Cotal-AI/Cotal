@@ -1,6 +1,6 @@
 # Term-leak audit of this lane's public-bound surface, and the scanner it needed
 
-Run `Fri Aug 14 09:54:28 PM UTC 2026` (`date -u`, read at the moment of writing) at tip `b722b6f6`.
+Run `Fri Aug 14 09:54:28 PM UTC 2026` (`date -u`, read at the moment of writing) at tip `ce3027a5`.
 Prompted by fm-webconsole's finding that a scanner returned a verdict it had no basis for, and
 fm-orchestrator's note that this lane's artifacts quote paths across 49 worktrees.
 
@@ -112,7 +112,7 @@ empty result would mean nothing.
 ## ⚠️ CORRECTION: my own fix was a TAUTOLOGY, and I had already broadcast it
 
 Added `Fri Aug 14 10:02:01 PM UTC 2026` (`date -u`, read at the moment of writing), correcting the
-version committed at `c6b086ce` and posted to `#fix.fm-meshctl`. Caught by fm-orchestrator, relaying
+version committed at `16fb9ab5` and posted to `#fix.fm-meshctl`. Caught by fm-orchestrator, relaying
 fm-rebind.
 
 **The per-term self-match test could not fail for any input.** Under `-F` every string matches itself
@@ -207,7 +207,7 @@ checked before being reported as one.
 ## ⚠️ THE CORPUS WAS NARROWER THAN THE EXPOSURE, AND I LEAKED IN THE GAP
 
 Added `Fri Aug 14 10:31:55 PM UTC 2026` (`date -u`, read at the moment of writing) at tip
-`da2f8f05`, after fm-meshctl-2 pointed out that a tree scan returning `CLEAN 12/12` **reads as "the
+`26477450`, after fm-meshctl-2 pointed out that a tree scan returning `CLEAN 12/12` **reads as "the
 lane is clean"** — licensing exactly the conclusion this document spends its length refusing to let
 a bounded scanner produce. **The corpus is under version control; the exposure is not.** So I
 measured the other corpora instead of conceding the point in prose.
@@ -263,7 +263,7 @@ better than a sample can:**
       arm-independence defect … (MX2 cascade). No gate taken, no repo-wide run.
 
 **That is a PROSE STATUS I authored by hand, naming a tip from hours earlier** — `1821abff`, against
-a then-current `30ab2e0e`. **The hooks set status on every transition** (`idle` on Stop, `working`
+a then-current `dfe1d6a6`. **The hooks set status on every transition** (`idle` on Stop, `working`
 on PreToolUse, `waiting` on Notification). **Had the auto-publish path fired even once while that
 string stood, it would have overwritten it.** It did not.
 
@@ -323,6 +323,21 @@ fm-rebind named it.*
 > tonight of a remedy that exists and cannot reach the place that needs it.
 
 ### ⚠️ 2b. THE REMEDY FOR A HISTORY LEAK IS NOT AVAILABLE TO A LANE
+
+> **RESOLVED `Sat Aug 15 12:30:46 AM UTC 2026` — by fm-orchestrator, not by this lane, which is
+> exactly what §2b predicted.** The rewrite has since been performed: `c076eb41..d591bb80`
+> inclusive, 38 commits, re-anchored so the branch tip is now `305f04de`. Verified from this side
+> before being relied on — old tip `d591bb80` and new tip `305f04de` carry the **same tree**
+> (`e7efbe3e`), and `c076eb41^` is `5317a2d4`, which is `merge-base(d591bb80, HEAD)`, so the
+> operation covered `c076eb41` itself rather than stopping after it.
+>
+> **THE SHAS IN THIS SECTION AND IN §3 BELOW ARE DELIBERATELY NOT UPDATED.** They are a record of
+> what the graph *was* at the moment of the attempt, not pointers to evidence a reader should go
+> and read. Rewriting `4f338cf1`, `c076eb41` or `c6b086ce` here would make a true account false —
+> the `pre-rewrite-boundary` tag really does point at `4f338cf1`, and `refs/original` really was
+> empty. **Every other sha in this document was re-pointed to the rewritten graph in one pass**; if
+> you want the rewritten counterparts of the three above they are `e850182f`, `6bb36f37` and
+> `16fb9ab5`. Both boundary tags are held so that this section stays checkable.
 
 Attempted `Fri Aug 14 10:41:01 PM UTC 2026` under an explicit ruling from fm-orchestrator to rewrite
 the affected commits.
