@@ -113,10 +113,26 @@ for (const [page, consumer] of [["index.html", "app.js"], ["graph.html", "graph.
 // ── The copies are actually GONE, read from the shipped files rather than assumed ─────────────────
 // Deleting the duplicated expression is the point of the change; a surface that still carries its
 // own copy is unfixed no matter what the shared renderer does.
+// A substring check proves the shared call was TYPED, not that the consumer reaches the marker. So
+// each consumer's own declaration is LIFTED OUT OF THE SHIPPED FILE and executed against the real
+// renderer. Neither page can be evaluated whole — both drive the DOM at load — so the declaration
+// is extracted rather than the module imported; it is still the shipped text, never a copy of it.
 for (const [file, callsite] of [["app.js", "bodyText"], ["graph.js", "partsText"]] as const) {
   const src = readFileSync(join(webSrc, file), "utf8");
-  ok(`${file} routes ${callsite} through the shared renderer`,
-    src.includes("window.COTAL_PARTS.partsToText"), { file });
+  const decl = new RegExp(`const ${callsite} = [^;]*;`).exec(src)?.[0];
+  ok(`${file} declares ${callsite} in one extractable statement`, Boolean(decl), { decl });
+
+  // The consumer runs in a context holding the REAL renderer, so this executes the exact path the
+  // browser takes: page expression → shared renderer → text.
+  const ctx: { window: Record<string, unknown>; out?: string } = { window: {} };
+  const c = createContext(ctx);
+  runInContext(partsSource, c, { filename: "parts.js" });
+  runInContext(`${decl}\nout = ${callsite}({ parts: [{ kind: "ag-ui.frame", frame: {} }] });`, c,
+    { filename: `${file} (${callsite})` });
+  ok(`${file}'s own ${callsite} renders the marker for a frame (DESTINATION, not just the call site)`,
+    ctx.out === '[unrenderable part kind "ag-ui.frame" — no renderer for it on this surface]',
+    { got: ctx.out });
+
   // Matched on the vanishing FALLBACK, not on the whole expression: that is the part that erased
   // the message, and a reformatted copy would still carry it.
   ok(`${file} no longer carries the vanishing JSON.stringify(p.data) fallback`,
