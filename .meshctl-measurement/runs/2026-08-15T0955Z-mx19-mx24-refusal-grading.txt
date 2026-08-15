@@ -58,3 +58,48 @@ dissolution demonstrated by accident rather than argued.
 - Only the named cells are graded. connection-lifecycle has 48 declared cells and
   connection-control 54; twelve of those are now mutation-graded between them.
 - `no-grant` is not here because it cannot be: unreachable by construction, removed at 2979c8aa.
+
+## ADDENDUM — PRODUCER UNIQUENESS, AND MX25's PREDICTED SURVIVED
+Asked before trusting any KILL: does each tag have exactly ONE producer? A pair is only
+discriminating if each half is attributable, and "not-the-other" does not establish that.
+
+FIRST PROBE WAS WRONG AND ITS ZERO WAS A MISS, NOT A MEASUREMENT. It required `return` on the same
+line as the tag, so multi-line `refusal(` calls were invisible: `in-flight-request` read ZERO and is
+produced at endpoint.ts:1426. The control (a tag with no producers reading 0) could not tell a real
+zero from an unseen one — the same instrument shape this branch has now filed four times.
+
+RE-RUN, every occurrence minus type-union members and comments:
+  credential-source-unavailable  1 site   endpoint.ts:398    attributable
+  broker-unreachable             1 site   endpoint.ts:401    attributable
+  in-flight-request              1 site   endpoint.ts:1426   attributable
+  transition-unconfirmed         2 SITES  endpoint.ts:1452 and :1463
+  shutting-down                  6 sites  (already known — this is why S1b asserts the SITE)
+  no-grant                       0 sites  (removed at 2979c8aa; the control for this probe)
+
+MX25 — THE PARTITION TEST, and its GREEN half is the evidence.
+transition-unconfirmed has two producers, so MX23's kill on D5c does not by itself say WHICH one the
+cell depends on. MX25 mutates the OTHER site (the catch branch, retagged teardown-failed) and
+PREDICTS SURVIVED.
+  result: SURVIVED, 63 marks vs baseline 63 — not one cell moved.
+So D5c is attributable to :1463, the site MX23 disabled. A kill on one site plus a survival on the
+other partitions the tag; the kill alone does not.
+
+This is fm-persona-2's defect mirrored: it changed two sites and observed one failure (proving their
+union while reporting it as binding both). Here one tag had two sites and one observation. Same
+shape, opposite direction, and the repair is the same — partition, and let the green half carry it.
+
+## 🔴 A FINDING THAT BLOCKS THE PR STRIP, FOUND BY THE CHECK THAT WAS ASKED FOR
+Before removing `.meshctl-measurement/` from PR #441: does any cell or tool read a path under it?
+  scripts/mutation-proof.mjs:46   PROBE     = ".meshctl-measurement/meshctl-m15-resolution-probe.mts"
+  scripts/mutation-proof.mjs:414  SRC_PROBE = ".meshctl-measurement/meshctl-m17-srcmap-probe.mts"
+  (two further hits are prose in comments and are not dependencies)
+  CONTROL: the same sweep for "cotal" returns 843 files, so the search is not silently empty.
+
+THE SUBJECT-SIDE GATE LIVES INSIDE THE DIRECTORY THE PR WOULD STRIP. Both probes are what make a
+mutation verdict trustworthy at all, and `scripts/mutation-proof.mjs` is shipped tooling. Stripping
+the directory leaves the harness pointing at absent files: `--private-build` and `--private-src`
+would fail closed, which is the safe direction and still leaves the tool unusable.
+
+=> The two probes are TOOLING, not measurement, and must move before the strip. The rest of the
+directory is measurement and can go. Not done here: it is a PR-shaping decision with a human
+waiting, and it is not this run's subject.
