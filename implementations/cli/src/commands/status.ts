@@ -291,9 +291,17 @@ async function printTarget(
   if (!preflight.ok) {
     row("connection", c.red(`${preflight.kind}${preflight.prune ? " (stale registry entry)" : ""}`));
     // Same reason as the user-auth path: an early return that prints no delivery line at all is the
-    // silent-omission defect, not a saving. The connection failed, so the daemon was never asked, and
-    // the row says which of those two facts it is reporting.
-    row("delivery", c.yellow(`cannot establish health — the mesh connection failed above (${preflight.kind}), so this surface never reached the daemon. Says nothing about delivery.`));
+    // silent-omission defect, not a saving. Preflight failed, so the daemon was never asked, and the
+    // row says which of those two facts it is reporting.
+    //
+    // THE WORD "preflight" HERE IS LOAD-BEARING AND MUST NOT BE "connection". `up-tls-routes-live`
+    // asserts its SECURITY verdict with `/connection\s+.*unreachable/` over this command's whole
+    // output — that a substituted plaintext broker is reported unreachable. Phrased as "the mesh
+    // connection failed above (unreachable)", THIS row matches that regex on its own, so an additive
+    // health line would satisfy a security gate that the connection row itself had failed. Caught by
+    // reading the asserting suite before adding the row, not by running it (it needs a broker).
+    // Any rewording here must keep "connection" and "unreachable" out of the same line.
+    row("delivery", c.yellow(`cannot establish health — the mesh preflight failed above (${preflight.kind}), so this surface never reached the daemon. Says nothing about delivery.`));
     return;
   }
   row("connection", c.green("ok"));

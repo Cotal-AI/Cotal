@@ -102,7 +102,17 @@ const value = dl.replace(/^\s*delivery\s*/, "").trim();
 check("the delivery row's VALUE is non-empty — never the empty-string rendering of #445",
   value.length > 0, JSON.stringify(value));
 check("it says health could not be established, by name", /cannot establish health/i.test(value), value);
-check("it names the CONNECTION as what failed", /connection failed/i.test(value), value);
+check("it names the PREFLIGHT as what failed", /preflight failed/i.test(value), value);
+// REGRESSION GUARD FOR A NEAR-MISS, not a style rule. `up-tls-routes-live` asserts its SECURITY
+// verdict with `/connection\s+.*unreachable/` over this command's entire output. The first draft of
+// this row read "the mesh connection failed above (unreachable)", which matches that regex BY
+// ITSELF — so an additive health line would have satisfied a security gate that the connection row
+// had failed. It was caught by reading the asserting suite, since that suite needs a broker and
+// could not be run here. Keep the two tokens off the same line.
+check("the delivery row does NOT satisfy the TLS suite's security regex on its own",
+  !/connection\s+.*unreachable/.test(value), value);
+check("POSITIVE CONTROL: that regex DOES match the phrasing this row used to have",
+  /connection\s+.*unreachable/.test("connection failed above (unreachable)"));
 check("it disclaims any statement about the daemon — absence of evidence is not a verdict",
   /says nothing about delivery/i.test(value), value);
 // INVERSE CONTROL on the message's content: a connection failure must NOT be described as a
