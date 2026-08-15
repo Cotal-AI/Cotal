@@ -42,12 +42,15 @@ export * from "./acls.js";
 export * from "./membership-feed.js";
 export * from "./evict.js";
 export * from "./lease.js";
-// `./health.js` is DELIBERATELY NOT EXPORTED. It has no consumer: measured across every `src/` file
-// in the repo, nothing reads `HealthFact` — not core, not the CLI, not delivery. Publishing a shape
-// nobody reads freezes it without serving anyone, and this type proved that concretely: its first
-// real stress test forced a breaking change (`ageMs: number` -> `number | null`). Adding an export
-// later is a non-breaking one-line change; removing one is a breaking change. Re-export it when a
-// real consumer exists, and write the changeset then.
+// `./health.js` WAS deliberately not exported while it had no consumer, on the rule that publishing
+// a shape nobody reads freezes it without serving anyone — a rule this type earned, since its first
+// real stress test forced a breaking change (`ageMs: number` -> `number | null`). The condition that
+// comment set for reversing itself has now been met: `implementations/cli/src/lib/delivery-guard.ts`
+// is a real consumer, reading `DeliveryHealth` and `renderHealth` to report on the delivery daemon.
+// Exported here with the changeset that comment asked for. Note the alternative would have been the
+// dishonest close: exporting a shape nobody reads to tidy the comment away. A consumer is what makes
+// the export correct, not the other way round.
+export * from "./health.js";
 export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
