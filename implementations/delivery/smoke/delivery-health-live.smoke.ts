@@ -68,17 +68,22 @@ if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(SERVERS)) {
 // nothing. Node on Windows cannot deliver SIGSTOP at all, so the wedged state cannot be constructed
 // and the suite would report a fault of the harness as a fault of the daemon.
 //
-// This exits 0, following the repo's existing convention for a POSIX-only fault injection
-// (implementations/auth/smoke/int2-revoke-hold.smoke.ts:62-65), and that is a compromise this suite
-// should not be allowed to hide: a skip that exits 0 is counted as a pass by the runner, which is
-// the exact defect class this lane exists to catch. What is available is the OUTPUT — the condition
-// is named, the cell count is stated as zero, and the terminal marker does not read as OK. Fixing it
-// properly needs a third status that bin/smoke/shard.mjs understands, which is a repo-wide change.
+// This exits DECLINED (3), NOT 0. An earlier version of this block exited 0 and said in its own
+// comment that doing so was "a compromise this suite should not be allowed to hide", then shipped
+// it anyway — writing the disclosure and shipping the false green is worse than not noticing, since
+// it proves the lane saw it. Measured, not argued: `node bin/smoke/shard.mjs 218 221` over this
+// member printed "NOTHING WAS MEASURED" and, two lines later, "✓ smoke:ci shard 218/221 passed" at
+// rc=0 (.lane/windows-decline/RESULT.md). Absence of evidence is a REFUSAL, not a pass.
+//
+// bin/smoke/shard.mjs now understands the third status: the member is carried as declined, named in
+// the summary, reconciled against the declared count, and the shard cannot end in a bare green.
+const DECLINED = 3;
 if (process.platform === "win32") {
   console.log("\nDELIVERY-HEALTH LIVE SMOKE — NOT RUN, 0 cells executed.");
   console.log("  CONDITION: platform is win32; the residue is built with SIGKILL/SIGSTOP/SIGCONT.");
   console.log("  NOTHING WAS MEASURED. Do not read this as a pass — read it as absence of evidence.");
-  process.exit(0);
+  console.log(`  Exiting DECLINED (${DECLINED}); the runner must not count this as a passed member.`);
+  process.exit(DECLINED);
 }
 
 console.log(`\ndelivery-health live — ephemeral broker ${SERVERS} (asserted not ${LIVE})\n`);

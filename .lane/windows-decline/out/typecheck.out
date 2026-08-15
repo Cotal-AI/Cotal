@@ -1,0 +1,124 @@
+$ pnpm -r build
+Scope: 22 of 23 workspace projects
+packages/core build$ tsc -p tsconfig.json
+packages/lang build$ tsc -p tsconfig.json
+packages/lang build: Done
+packages/core build: Done
+extensions/cmux build$ tsc -p tsconfig.json
+extensions/connector-core build$ tsc -p tsconfig.json
+extensions/herdr build$ tsc -p tsconfig.json
+extensions/orca build$ tsc -p tsconfig.json
+extensions/orca build: Done
+extensions/tmux build$ tsc -p tsconfig.json
+extensions/herdr build: Done
+packages/workspace build$ tsc -p tsconfig.json
+extensions/cmux build: Done
+extensions/connector-core build: Done
+extensions/tmux build: Done
+packages/workspace build: Done
+extensions/connector-claude-code build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-codex build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-hermes build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-opencode build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-hermes build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/launch.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/launch.js --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);" && esbuild src/standalone.ts --bundle --platform=node --format=cjs --target=node20 --outfile=plugin/cotal/_sidecar/standalone.cjs
+extensions/connector-claude-code build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outdir=dist --out-extension:.js=.cjs
+extensions/connector-hermes build:   dist/index.js  753.6kb
+extensions/connector-hermes build: ⚡ Done in 47ms
+extensions/connector-opencode build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/plugin.bundle.js && esbuild src/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/serve.js
+extensions/connector-claude-code build:   dist/index.js  756.3kb
+extensions/connector-claude-code build: ⚡ Done in 44ms
+extensions/connector-opencode build:   dist/index.js  758.6kb
+extensions/connector-opencode build: ⚡ Done in 48ms
+extensions/connector-hermes build:   dist/launch.js  2.7mb ⚠️
+extensions/connector-hermes build: ⚡ Done in 103ms
+extensions/connector-opencode build:   dist/plugin.bundle.js  2.7mb ⚠️
+extensions/connector-opencode build: ⚡ Done in 130ms
+extensions/connector-claude-code build:   dist/mcp.cjs   3.1mb ⚠️
+extensions/connector-claude-code build:   dist/hook.cjs  1.6mb ⚠️
+extensions/connector-claude-code build: ⚡ Done in 172ms
+extensions/connector-codex build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);"
+extensions/connector-opencode build:   dist/serve.js  5.8kb
+extensions/connector-opencode build: ⚡ Done in 3ms
+extensions/connector-hermes build:   plugin/cotal/_sidecar/standalone.cjs  2.7mb ⚠️
+extensions/connector-hermes build: ⚡ Done in 115ms
+extensions/connector-claude-code build: Done
+extensions/pi build$ node -e "require('node:fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle
+extensions/connector-opencode build: Done
+implementations/auth build$ tsc -p tsconfig.json
+extensions/connector-hermes build: Done
+implementations/cli build$ tsc -p tsconfig.json
+extensions/connector-codex build:   dist/index.js  758.4kb
+extensions/connector-codex build: ⚡ Done in 47ms
+extensions/connector-codex build:   dist/host.js  3.3mb ⚠️
+extensions/connector-codex build: ⚡ Done in 96ms
+extensions/connector-codex build: Done
+implementations/delivery build$ tsc -p tsconfig.json
+implementations/delivery build: Done
+implementations/manager build$ tsc -p tsconfig.json && node -e "const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })" && pnpm run build:console-bundle
+implementations/auth build: Done
+implementations/web build$ tsc -p tsconfig.json && rm -rf dist/web && cp -R src/web dist/web && node scripts/copy-vendor.mjs
+extensions/pi build: $ esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/standalone.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/standalone.js --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --banner:js="import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);"
+extensions/pi build:   dist/index.js  1.6mb ⚠️
+extensions/pi build: ⚡ Done in 108ms
+extensions/pi build:   dist/standalone.js  2.9mb ⚠️
+extensions/pi build: ⚡ Done in 180ms
+extensions/pi build: Done
+implementations/web build: dist/web/vendor/marked.umd.js  <-  /home/david/Cotal-wt-fm-health/node_modules/.pnpm/marked@18.0.6/node_modules/marked/lib/marked.umd.js
+implementations/web build: dist/web/vendor/purify.min.js  <-  /home/david/Cotal-wt-fm-health/node_modules/.pnpm/dompurify@3.4.12/node_modules/dompurify/dist/purify.min.js
+implementations/web build: dist/web/vendor/vendor-manifest.json  (2 libs)
+implementations/web build: Done
+implementations/manager build: $ esbuild src/console-session-entry.ts --bundle --format=iife --platform=browser --target=es2020 --alias:node:crypto=./src/console-crypto-shim.ts --outfile=dist/console/session-bundle.js && node scripts/console-bundle-loadtest.mjs
+implementations/manager build:   dist/console/session-bundle.js  336.5kb
+implementations/manager build: ⚡ Done in 21ms
+implementations/manager build: console session-bundle.js load-test OK (browser-like context, no Buffer/process; CotalSession complete; codec byte-exact)
+implementations/manager build: Done
+implementations/cli build: Done
+bin build$ tsc -p tsconfig.json
+examples/01-lateral-coordination build$ tsc -p tsconfig.json
+examples/02-self-improving-console build$ tsc -p tsconfig.json
+bin build: Done
+examples/02-self-improving-console build: Done
+examples/01-lateral-coordination build: Done
+Scope: 22 of 23 workspace projects
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/lang typecheck$ tsc -p tsconfig.json --noEmit
+packages/lang typecheck: Done
+packages/core typecheck: Done
+extensions/cmux typecheck$ tsc -p tsconfig.json --noEmit
+extensions/herdr typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-core typecheck$ tsc -p tsconfig.json --noEmit
+extensions/orca typecheck$ tsc -p tsconfig.json --noEmit
+extensions/cmux typecheck: Done
+extensions/tmux typecheck$ tsc -p tsconfig.json --noEmit
+extensions/orca typecheck: Done
+packages/workspace typecheck$ tsc -p tsconfig.json --noEmit
+extensions/herdr typecheck: Done
+extensions/connector-core typecheck: Done
+extensions/tmux typecheck: Done
+packages/workspace typecheck: Done
+extensions/connector-codex typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-claude-code typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-hermes typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-opencode typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-hermes typecheck: Done
+extensions/pi typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-claude-code typecheck: Done
+implementations/auth typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-opencode typecheck: Done
+implementations/cli typecheck$ tsc -p tsconfig.json --noEmit
+extensions/connector-codex typecheck: Done
+implementations/delivery typecheck$ tsc -p tsconfig.json --noEmit
+implementations/delivery typecheck: Done
+implementations/manager typecheck$ tsc -p tsconfig.json --noEmit
+implementations/auth typecheck: Done
+implementations/web typecheck$ tsc -p tsconfig.json --noEmit
+extensions/pi typecheck: Done
+implementations/web typecheck: Done
+implementations/manager typecheck: Done
+implementations/cli typecheck: Done
+bin typecheck$ tsc -p tsconfig.json --noEmit
+examples/01-lateral-coordination typecheck$ tsc -p tsconfig.json --noEmit
+examples/02-self-improving-console typecheck$ tsc -p tsconfig.json --noEmit
+examples/02-self-improving-console typecheck: Done
+bin typecheck: Done
+examples/01-lateral-coordination typecheck: Done
