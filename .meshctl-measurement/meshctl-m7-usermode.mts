@@ -52,6 +52,34 @@
  * attributable: `S` runs alone in its own window, then `BAD` starts against a log cursor taken
  * after `S` settled. What that costs and what it preserves is stated at the arms themselves.
  *
+ * **DEFECT 4 — FOUND BY THE SEQUENCED RUN, and it is what actually fails `U0`.** With attribution
+ * fixed, the run said: `[diag] S window: bearer execs 0 -> 1, callout said []`. **The good bearer
+ * was fetched, and the callout said NOTHING about it** — every `signature verification failed` line
+ * arrives after `BAD` starts. So the withdrawn sentence was not merely unsupported, it is
+ * **refuted**: the callout never refused the correctly-signed bearer.
+ *
+ * What refuses is one line further down, repeated ~30 times in the same log:
+ *   `cannot publish "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker" - check this endpoint's ACLs`
+ * The bearer authenticates; the MINTED PERMISSIONS do not reach the role consumer. Cause: this
+ * fixture's ACL resolver omitted `role`, so the mint took the `opts.role ? … : undefined` branch
+ * (`packages/core/src/provision.ts:1073`) and never granted the bind — while the fixture had
+ * already provisioned `svc_worker` and built the agent with `role: "worker"`. **A FIXTURE bug, the
+ * twin of defect 1: the real path supplies `role` from the ledger row (`ledgerAclResolver`,
+ * `implementations/auth/src/service.ts:461`), so nothing here indicts the product.** Fixed below.
+ *
+ * **PREDICTION, WRITTEN BEFORE THE RE-RUN so it cannot be fitted to a result:**
+ *  1. `U0 CONTROL` flips **FAIL → pass**;
+ *  2. occurrences of `JS.API.CONSUMER.INFO.TASK` in the run log go from **111 → 0** — a named,
+ *     discriminating string with a COUNTED baseline (`grep -c` over
+ *     `runs/2026-08-15T0226Z-m7-usermode.txt`), not "the suite got greener". The number is 111 and
+ *     not the "~30" I first wrote from reading the log: each failure prints two lines, and an
+ *     eyeballed count is the kind of estimate this lane is not allowed to make;
+ *  3. the seven `U2`–`U8` cells stop being **VOID** and report real results, whatever they are.
+ * **Refutation:** if `U0` still fails, `role` was not the cause and I say so rather than adjusting
+ * the claim. If (2) holds while `U0` still fails, there is a THIRD condition and it will be named
+ * from the log, not guessed. **Cells `U2`–`U8` reporting green is NOT part of this prediction** —
+ * they have never once run, and a first run is a measurement, not a confirmation.
+ *
  * **DEFECT 3 — the probe printed its verdict and never exited**, sitting in the connector's
  * reconnect loop until a 10-minute timeout killed it at `143`. `143` is the timeout's number, not a
  * verdict. Handled at the end of `finally`, where the reason is written out.
@@ -157,7 +185,17 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => {},
-    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: uid, scope: [] })),
+    // DEFECT 4, and it is defect 1's twin: the fixture asked the product for LESS than it then
+    // required. `role` was omitted from this resolver, so the mint took the `opts.role ? … :
+    // undefined` branch (`packages/core/src/provision.ts:1073`) and granted no bind on the role's
+    // TASK durable — while the same fixture had already provisioned `svc_worker` and constructed
+    // the subject with `role: "worker"`. The bearer was ACCEPTED and the session then could not
+    // bind, retrying forever on
+    //   `cannot publish "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker"`.
+    // That string was printed ~30 times in the previous run, next to the single callout line that
+    // was read instead — the evidence was never missing, it was passed over for one that named a
+    // cause instead of a condition.
+    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], role: "worker", lifecycleUid: uid, scope: [] })),
     // Captured, not just printed. The arms below slice this by cursor to attribute a denial to the
     // connection that caused it — `req.user_nkey` is per-connect and names no agent, so ordering is
     // the only attribution available without changing the product.

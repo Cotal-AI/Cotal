@@ -48,7 +48,9 @@ agents:
 
 Per-agent keys: `persona`, `agent` (harness override), `model`, `variant`, `role`,
 `description`, `instructions`, `prompt`, `capabilities` (`spawn`,
-[what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
+[what it grants](identity-and-auth.md); `connection`, which lets the agent take itself off the
+mesh and bring itself back — see [agent files](agent-files.md), which explains why that one is
+enforced differently; on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to
 the harness as-is: for Claude use the short form (`opus`, `sonnet`) or the full id; for
