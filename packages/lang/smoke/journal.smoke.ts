@@ -285,4 +285,92 @@ const H = (v: unknown) => digest(v);
   ok("and its settled entry only after the handler returned", settledAt > handlerAt, order);
 }
 
+// ---- 10) a REFUSED append is a durability failure, not an effect failure -----------------------
+
+/**
+ * The store saying no and the world saying no are different facts, and the journal used to record
+ * them as the same one. A handler that completed plus an append the store rejected produced the
+ * durable sequence `[pending, settled:failed]` — a permanent record that work which really happened
+ * had failed — because one `try` covered both the dispatch and the settling append, and the map was
+ * mutated before the append was awaited.
+ *
+ * So: nothing recorded, nothing moved in memory, and the error travels as itself.
+ */
+
+/** A handler built method by method, counting the dispatches the interpreter actually made. */
+const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
+  now: () => sim.now(),
+  spawn: (req, ctx) => sim.spawn(req, ctx),
+  turn: (req, ctx) => sim.turn(req, ctx),
+  ask: (req, ctx) => sim.ask(req, ctx),
+  checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
+  sleep: async (req, ctx) => {
+    calls.push("sleep");
+    return await sim.sleep(req, ctx);
+  },
+  wait: (req, ctx) => sim.wait(req, ctx),
+  notify: (req, ctx) => sim.notify(req, ctx),
+  monitor: (req, ctx) => sim.monitor(req, ctx),
+  openConclave: (req, ctx) => sim.openConclave(req, ctx),
+  closeConclave: (req, ctx) => sim.closeConclave(req, ctx),
+});
+
+{
+  // The store accepts the pending half and refuses the settling one: the effect succeeded, the log
+  // would not take the completion.
+  const calls: string[] = [];
+  const accepted: string[] = [];
+  const store = {
+    append: async (e: JournalEntry) => {
+      if (e.state === "settled") throw new Error("stream said no");
+      accepted.push(e.state);
+    },
+  };
+  const journal = new Journal({ run: "r-10", store });
+  let caught: unknown;
+  try {
+    await run('await sleep("1m", { name: "s" });', {
+      runId: "r-10",
+      journal,
+      handler: counting(new SimHandler({}), calls),
+    });
+  } catch (e) {
+    caught = e;
+  }
+
+  ok("the handler really did complete, or this cell is about nothing", calls.length === 1, calls);
+  ok("a refused append is raised as a durability failure", (caught as Error)?.name === "JournalAppendRejected", String(caught).slice(0, 60));
+  ok("under its own code, not as a handler fault", (caught as { code?: string })?.code === "L5010");
+  ok("naming the step and the half that was refused", (caught as { stepKey?: string })?.stepKey === "/sleep:s#0"
+    && (caught as { state?: string })?.state === "settled", [(caught as { stepKey?: string })?.stepKey, (caught as { state?: string })?.state]);
+  // The lie this replaces: `settled:failed` for work that succeeded.
+  ok("and NOTHING is recorded as failed", journal.entries().every((e) => e.status !== "failed"),
+    journal.entries().map((e) => `${e.state}:${e.status ?? ""}`));
+  ok("the entry stays exactly as durable as the store left it: pending", journal.entries().length === 1
+    && journal.entries()[0]?.state === "pending", journal.entries().map((e) => e.state));
+  ok("the store was asked once and accepted once", accepted.length === 1, accepted);
+}
+
+{
+  // The other half. A refused PENDING append must leave no entry at all: an in-memory `pending` the
+  // store never took reads to a later lookup as recoverable work, and there is no work.
+  const calls: string[] = [];
+  const store = { append: async (_e: JournalEntry) => { throw new Error("stream said no"); } };
+  const journal = new Journal({ run: "r-10b", store });
+  let caught: unknown;
+  try {
+    await run('await sleep("1m", { name: "s" });', {
+      runId: "r-10b",
+      journal,
+      handler: counting(new SimHandler({}), calls),
+    });
+  } catch (e) {
+    caught = e;
+  }
+  ok("a refused pending append also raises the durability failure", (caught as { code?: string })?.code === "L5010");
+  ok("and the effect was never dispatched, because its identity never became durable", calls.length === 0, calls);
+  ok("leaving no entry behind for a resume to try to recover", journal.entries().length === 0,
+    journal.entries().map((e) => e.state));
+}
+
 console.log(`journal.smoke: ${pass} checks passed`);

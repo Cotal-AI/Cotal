@@ -386,4 +386,77 @@ await race({
     scopeOf(j, "conclave")?.status);
 }
 
+// ---- 7) a race arm that FAILS is still a settle ------------------------------------------------
+
+{
+  /**
+   * The signal a `race` waits on used to be `p.then(() => undefined)`, which propagates a rejection.
+   * So the first arm to FAIL threw straight out of the await — past the cancellation of its
+   * siblings, past `allSettled`, and into a scope entry recorded as failed with no losers on it.
+   * The run terminated while a sibling was still performing effects: the run says it is over, an
+   * agent keeps working, and nothing durable says the two disagree.
+   *
+   * `bad` fails in microtasks while `slow` is parked in the watched handler's macrotask sleep, so
+   * which arm settles first is decided here rather than by the event loop. `slow` then has a SECOND
+   * effect after the park, which is where a cancelled branch learns it lost.
+   */
+  const FAILING_RACE = `
+const a = await spawn("a", { name: "a" });
+await race({
+  bad: async () => { await turn(a, { name: "boom" }); return 1; },
+  slow: async () => { await sleep("1m", { name: "s1" }); await sleep("1m", { name: "s2" }); return 2; },
+}, { name: "r" });
+`;
+  const { handler } = watching(
+    new SimHandler({ faults: [{ at: "/race:r#0/b:bad/turn:boom#0", kind: "agent-down" }] }),
+    true,
+  );
+  const j = new Journal({ run: "c-5" });
+  let caught: unknown;
+  try {
+    await run(FAILING_RACE, { runId: "c-5", journal: j, handler });
+  } catch (e) {
+    caught = e;
+  }
+  // Give the losing branch every chance to keep going. Without the cancellation it is a detached
+  // promise that resumes from its macrotask AFTER the run has already thrown, which is precisely
+  // the "run is over, agent is still working" state — and asserting before it wakes would let that
+  // state pass as clean.
+  await new Promise<void>((r) => setTimeout(r, 5));
+
+  ok("a rejecting arm fails the race", caught !== undefined);
+  const scope = scopeOf(j, "race");
+  ok("and the scope is journalled as failed", scope?.status === "failed", scope?.status);
+  ok("carrying the sibling it cancelled, because a failing arm owes its losers exactly as a winning one does",
+    JSON.stringify(scope?.cancel?.losers) === '["slow"]', scope?.cancel);
+  ok("with the cancellation still undischarged", scope?.cancel?.issued === false);
+  ok("the loser really was mid-flight when the race ended", j.entries().some((e) => e.name === "s1"),
+    j.entries().map((e) => e.name));
+  ok("and it performed NO effect after the race ended", !j.entries().some((e) => e.name === "s2"),
+    j.entries().map((e) => `${e.name}:${e.state}`));
+}
+
+{
+  // The other half of the same rule. A branch that rejected with `Cancelled` is not a candidate to
+  // win: that is not an outcome it reached, it is what losing did to it. Counting it would let a
+  // loser cut short at an early step outrank the winner that ran longer — and on a re-entered scope
+  // the recorded clocks make that a durable wrong answer rather than a transient one.
+  const entries = raceJournal.entries().map((e): JournalEntry => {
+    if (e.kind === "race") {
+      return { v: 1, seq: e.seq, run: e.run, scope: e.scope, kind: e.kind, name: e.name, occurrence: e.occurrence, inputHash: e.inputHash, state: "pending", startedAt: e.startedAt };
+    }
+    if (e.kind === "sleep" && e.scope.endsWith("/b:fast")) {
+      // `fast` was cancelled at 10ms — far earlier than either real arm finished.
+      return { ...e, startedAt: 0, endedAt: 10, status: "cancelled", result: undefined };
+    }
+    if (e.kind === "sleep") return { ...e, startedAt: 0, endedAt: 300_000 };
+    return e;
+  });
+  logged.length = 0;
+  const jj = new Journal({ run: "r-1", entries });
+  await resume(RACE, jj, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+  const said = logged.find((l) => l.length === 2);
+  ok("a branch recorded as cancelled does not win the race it lost", said?.[0] === "slow", logged);
+}
+
 console.log(`scopes.smoke: ${pass} checks passed`);

@@ -18,7 +18,7 @@
 import { validate } from "./grammar.js";
 import { LangError, LangErrors } from "./errors.js";
 import { KeyScope, digest, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
-import { Journal, RunClock, type EntryError } from "./journal.js";
+import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
 import { parseDuration } from "./duration.js";
 import { PRIMITIVES, type EffectKind } from "./primitives.js";
@@ -401,15 +401,24 @@ class Interpreter {
       },
     };
 
+    // TWO FAILURE DOMAINS, AND THE TERMINAL APPEND IS NOT IN THE HANDLER'S.
+    //
+    // This was one `try` around both the dispatch and the settle, and the bug it produced is the
+    // worst kind a journal can have: the handler completed, the store refused the settling append,
+    // the catch below recorded that refusal as a handler fault, and the durable sequence became
+    // `[pending, settled:failed]` for work the world had actually done. Every later replay then
+    // reported failure for a real success. So the handler's outcome is decided first, alone, and
+    // the append that records it happens outside — where a rejection is a durability failure that
+    // travels as itself and settles nothing.
+    let result: unknown;
     try {
-      const result = await perform(ctx, inputHash);
+      result = await perform(ctx, inputHash);
       assertCrossable(result, `the result of ${stepKeyString(key)}`);
-      const endedAt = this.options.handler.now();
-      await this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
-      frame.clock.advance(endedAt);
-      return result;
     } catch (e) {
       const endedAt = this.options.handler.now();
+      // A journal that just refused an append cannot be asked to record why. It leaves by its own
+      // door, unwrapped, before anything tries to settle on top of it.
+      if (e instanceof JournalAppendRejected) throw e;
       if (e instanceof Cancelled) {
         await this.journal.settle(key, { status: "cancelled" }, endedAt);
         throw e;
@@ -431,6 +440,11 @@ class Interpreter {
       frame.clock.advance(endedAt);
       throw e instanceof EffectError ? e : new EffectError(error.code, error.kind, error.message);
     }
+
+    const endedAt = this.options.handler.now();
+    await this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
+    frame.clock.advance(endedAt);
+    return result;
   }
 
   // ---- expressions ------------------------------------------------------------------------------
@@ -1023,17 +1037,14 @@ class Interpreter {
         await this.journal.bind(scopeKey, external);
       },
     };
+    // The same two domains as {@link Interpreter.performEffect}, for the same reason: a scope whose
+    // branches all succeeded and whose settling append was refused must not be recorded as failed.
+    let outcome: ScopeOutcome;
     try {
-      const outcome = await body(ctx);
-      await this.journal.settle(
-        scopeKey,
-        { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
-        this.options.handler.now(),
-        outcome.cancel,
-      );
-      return outcome.value;
+      outcome = await body(ctx);
     } catch (e) {
       const endedAt = this.options.handler.now();
+      if (e instanceof JournalAppendRejected) throw e;
       if (e instanceof Cancelled) {
         await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt);
         throw e;
@@ -1047,6 +1058,14 @@ class Interpreter {
       await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, (e as { cancel?: { losers: readonly string[]; issued: boolean } }).cancel);
       throw e;
     }
+
+    await this.journal.settle(
+      scopeKey,
+      { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+      this.options.handler.now(),
+      outcome.cancel,
+    );
+    return outcome.value;
   }
 
   private async runScope(
@@ -1101,7 +1120,12 @@ class Interpreter {
       // race: first to settle wins, and the losers are cancelled BY SEMANTICS, not by an API the
       // program calls. A cancelled branch performs no new effects; an agent reply already in
       // flight completes and is ignored, which is the documented answer rather than an accident.
-      await Promise.race(running.map((p) => p.then(() => undefined)));
+      // BOTH HANDLERS, and the rejection handler is the whole point. `p.then(() => undefined)`
+      // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the
+      // cancellation below, past `allSettled`, and into a scope entry recorded as failed with no
+      // losers on it. The run terminated while a sibling was still performing effects, which is the
+      // exact defect §3.4 says the scope entry exists to prevent. A rejection is a settle.
+      await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
       for (const f of frames) f.signal.cancel("a sibling branch won the race");
       const settled = await Promise.allSettled(running);
       frame.clock.join(frames.map((f) => f.clock));
@@ -1114,10 +1138,15 @@ class Interpreter {
       // journal could resolve a different arm on every attempt. The branch clock is the max endedAt
       // of the effects that branch awaited, which is recorded, so this tie-break is a function of
       // the journal. Equal clocks fall back to declaration order, which is also recorded.
+      // A FAILURE IS A SETTLE, so a rejecting arm is a candidate to win — it just wins by failing
+      // the scope. What is NOT a candidate is a branch that rejected with `Cancelled`, because that
+      // is not an outcome the branch reached, it is what losing did to it. Counting those would let
+      // a loser cut short at an early step outrank the winner that ran longer.
       let winnerAt = -1;
       let winnerIndex = -1;
       for (let i = 0; i < settled.length; i += 1) {
-        if ((settled[i] as PromiseSettledResult<unknown>).status !== "fulfilled") continue;
+        const r = settled[i] as PromiseSettledResult<unknown>;
+        if (r.status === "rejected" && r.reason instanceof Cancelled) continue;
         const at = (frames[i] as Frame).clock.now();
         if (winnerIndex === -1 || at < winnerAt) {
           winnerAt = at;
@@ -1125,11 +1154,20 @@ class Interpreter {
         }
       }
       if (winnerIndex === -1) {
-        // Every arm rejected: there is no winner to journal, so the scope fails as its branches did.
-        const firstRejection = settled.find((r) => r.status === "rejected") as PromiseRejectedResult;
-        throw Object.assign(firstRejection.reason as object, { cancel: { losers: branches, issued: false } });
+        // Every arm was cancelled, so the race itself was: nothing here decided anything.
+        const first = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+        throw first === undefined ? new Cancelled("every branch was cancelled") : (first.reason as Error);
       }
       const index = entries[winnerIndex]?.[0] as string;
+      const won = settled[winnerIndex] as PromiseSettledResult<unknown>;
+      if (won.status === "rejected") {
+        // The earliest branch to settle FAILED. The scope fails with it, carrying the siblings it
+        // cancelled — a losing arm can crash before the cancellation reaches it, so the intent has
+        // to travel with the outcome exactly as it does for a winning race.
+        throw Object.assign(won.reason as object, {
+          cancel: { losers: branches.filter((k) => k !== index), issued: false },
+        });
+      }
       return {
         branches,
         // BOTH the index and the value. The index alone is not enough: an edit to an arm's returned

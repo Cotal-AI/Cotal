@@ -115,6 +115,34 @@ export interface JournalInit {
   readonly store?: JournalStore;
 }
 
+/**
+ * A durable append the store REFUSED.
+ *
+ * This is not an effect failure, and conflating the two is not cosmetic. A handler that completed
+ * plus a log that would not accept the completion used to produce an entry saying the work FAILED,
+ * so a later replay reported failure for work the world had actually done — the journal lying about
+ * the one thing it exists to remember. The domains are separate: "the world said no" is the run's
+ * result, "the log said no" is the run losing its ability to have one. A driver reads the second as
+ * "stop, and do not record anything else", never as an outcome.
+ *
+ * Nothing was written and nothing in memory moved, so a caller holding this error knows exactly as
+ * much as it did before the call.
+ */
+export class JournalAppendRejected extends Error {
+  readonly code = "L5010";
+
+  constructor(
+    readonly stepKey: string,
+    readonly state: EntryState,
+    readonly reason: Error,
+  ) {
+    super(
+      `L5010 Journal append rejected\n\n  step  ${stepKey}   ${state}\n\n${reason.message}\n\nThe entry was not recorded and the in-memory journal was left as it was. This is a durability failure, not an effect failure: whatever the effect did, it stands, and this run can no longer say so.`,
+    );
+    this.name = "JournalAppendRejected";
+  }
+}
+
 export class JournalReadOnlyError extends Error {
   constructor(key: StepKey) {
     super(`journal is read-only; ${stepKeyString(key)} would have been appended`);
@@ -172,16 +200,25 @@ export class Journal {
   }
 
   /**
-   * Durably record one entry, after the in-memory map already holds it.
+   * Durably record one entry, BEFORE the in-memory map is allowed to hold it.
    *
-   * The map is updated by the caller BEFORE this is awaited, so a journal with no store behaves
-   * exactly as it did when every mutator was synchronous, and a caller that does not await still
-   * sees its own write. What awaiting buys is the only thing a store is for: that a crash after
-   * this point finds the entry, and a crash before it finds nothing to be confused by.
+   * The order is the whole point and it was the other way round once. Mutating first leaves a
+   * volatile transition behind when the store refuses: a `begin` whose append was rejected still
+   * read as `pending`, and a `settle` whose append was rejected still read as settled, so the
+   * in-memory journal claimed a durability the store had explicitly declined to provide. Persisting
+   * first means a rejected append changes nothing at all, which is the only state a caller can
+   * reason about.
+   *
+   * A journal with no store keeps the old behaviour exactly: `persist` returns, the map is updated,
+   * and nothing is awaited that could fail.
    */
-  private async persist(entry: JournalEntry): Promise<void> {
+  private async persist(k: string, entry: JournalEntry): Promise<void> {
     if (this.store === undefined) return;
-    await this.store.append(entry);
+    try {
+      await this.store.append(entry);
+    } catch (e) {
+      throw new JournalAppendRejected(k, entry.state, e as Error);
+    }
   }
 
   /**
@@ -206,10 +243,10 @@ export class Journal {
       state: "pending",
       startedAt,
     };
+    await this.persist(k, entry);
     this.byKey.set(k, entry);
     this.order.push(k);
     this.consumed.add(k);
-    await this.persist(entry);
     return entry;
   }
 
@@ -231,8 +268,8 @@ export class Journal {
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`reissueAs before begin for ${k}`);
     const next = { ...entry, requestId, attempt };
+    await this.persist(k, next);
     this.byKey.set(k, next);
-    await this.persist(next);
   }
 
   async bind(key: StepKey, external: Readonly<Record<string, unknown>>): Promise<void> {
@@ -241,8 +278,8 @@ export class Journal {
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`bind before begin for ${k}`);
     const next = { ...entry, external };
+    await this.persist(k, next);
     this.byKey.set(k, next);
-    await this.persist(next);
   }
 
   /**
@@ -274,8 +311,8 @@ export class Journal {
       ...(outcome.status === "failed" ? { error: outcome.error } : {}),
       ...(cancel !== undefined ? { cancel } : {}),
     };
+    await this.persist(k, settled);
     this.byKey.set(k, settled);
-    await this.persist(settled);
     return settled;
   }
 
@@ -301,8 +338,8 @@ export class Journal {
       const entry = this.byKey.get(k);
       if (entry === undefined || entry.state !== "pending") continue;
       const cancelled: JournalEntry = { ...entry, state: "settled", status: "cancelled", endedAt };
+      await this.persist(k, cancelled);
       this.byKey.set(k, cancelled);
-      await this.persist(cancelled);
     }
     return touched;
   }

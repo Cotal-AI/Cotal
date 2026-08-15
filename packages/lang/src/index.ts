@@ -110,6 +110,7 @@ export {
 
 export {
   Journal,
+  JournalAppendRejected,
   JournalReadOnlyError,
   RunClock,
   type EntryError,

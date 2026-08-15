@@ -85,6 +85,10 @@ export const CATALOG = {
   L5007: "Lease lost",
   L5008: "Resume under a different language version",
   L5009: "Resume pin mismatch",
+  // The log said no, which is not the world saying no. Recorded separately because a run that
+  // cannot append has no result to report, and reporting one anyway is how a completed effect
+  // comes to be replayed as a failure.
+  L5010: "Journal append rejected",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
