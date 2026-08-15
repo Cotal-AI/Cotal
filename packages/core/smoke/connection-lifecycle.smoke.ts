@@ -144,7 +144,7 @@ const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e",
                   "D2a", "D2b", "D2c", "D2d", "D2e", "D2f", "D2g", "D2h", "D2i", "D2j", "D2k",
                   "D3a", "D3b", "D3c", "D3d", "D3e", "D3f", "D3g", "D3h", "D3i", "D3j", "D3k", "D3l", "D3m",
                   "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f",
-                  "D5a", "D5b", "D5-ctl", "D5c", "D5d", "D5-ctl2",
+                  "D5e", "D5a", "D5b", "D5f", "D5-ctl", "D5c", "D5d", "D5-ctl2",
                   "D6-ctl", "D6a", "D6b", "D6c", "D6d"];
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
@@ -340,7 +340,11 @@ try {
   dId = newIdentity();
   uidD = mintLifecycleUid();
   dCreds = await provisionAgent(mgr!, auth, dId, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uidD });
-  id6 = newIdentity("subject-arm6", "agent");
+  // `newIdentity()` takes no arguments — the name/kind ARM 6 needs are carried on the presence card
+  // at its connect, not on the identity. Two arguments used to be passed here and were discarded in
+  // silence: tsx strips types, so the suite never saw it, and the per-package typecheck covers `src`
+  // only, so nothing in the repo's own gate typechecks a smoke file at all (see below).
+  id6 = newIdentity();
   uid6 = mintLifecycleUid();
   creds6 = await provisionAgent(mgr!, auth, id6, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid6 });
 
@@ -629,30 +633,48 @@ try {
     (e as any).nc !== undefined && (e as any).transitionInFlight !== true && e.isSelfDisconnected() === false,
     { hasNc: (e as any).nc !== undefined, inFlight: (e as any).transitionInFlight, self: e.isSelfDisconnected() });
 
-  // ── D5a/D5b — in-flight-request ──────────────────────────────────────────────────────────────
-  // ⚠ FIXTURE-BUILT INPUT, STATED RATHER THAN HIDDEN: `pendingRequests` is a Set of rejector
-  // functions registered for the lifetime of a control-plane request, and the entry here is planted
-  // rather than produced by a real unanswered one — this fixture has no delivery daemon to leave a
-  // request outstanding against, so a genuine call returns NoResponders instead of hanging.
-  // SO THIS ARM PROVES: the endpoint refuses on that condition and names it correctly. IT DOES NOT
-  // PROVE: that a real request path populates the set. Separate claims; only the first is made, and
-  // the second is named as a residual rather than implied by the first passing.
+  // ── D5e/D5a/D5b/D5f — in-flight-request, from a REAL request ─────────────────────────────────
+  // THIS ARM USED TO PLANT ITS OWN INPUT. It added a rejector to `pendingRequests` by hand and
+  // asserted the refusal — which certified the manufacture: it proved the endpoint refuses when that
+  // set is non-empty, and said nothing about whether any real code path ever fills it. A cell whose
+  // subject is built by the cell can survive the removal of everything that would populate it.
+  //
+  // So the input is now produced by the PUBLIC entry point. `requestControl()` is the caller-facing
+  // control-plane verb; `pendingRequests.add(reject)` happens SYNCHRONOUSLY inside `requestBounded`
+  // before its first await, and `disconnect()`'s inspection is likewise synchronous — no await
+  // precedes it — so an un-awaited `requestControl()` followed by `disconnect()` observes the real
+  // registration deterministically, in one microtask, with no sleep and no timing race.
+  //
+  // WHAT IS AND IS NOT REAL HERE, stated rather than blurred: the request is published on the real
+  // connection through the real path and is genuinely awaiting a reply, but no responder exists for
+  // it in this fixture, so it ends in NoResponders rather than in an answer. At the instant of the
+  // disconnect the endpoint's state is exactly the state a real outstanding request produces — that
+  // is the claim. RESIDUAL, much smaller than the one it replaces: a request that completes a full
+  // round-trip against a live responder is not exercised here.
   const pending: Set<(reason: Error) => void> = (e as any).pendingRequests;
-  const planted = (_reason: Error) => { /* never settled; removed by this arm, not by a reply */ };
-  pending.add(planted);
+  precondition("ARM 5", "nothing is outstanding before the real request, so D5e's arms can differ",
+    pending.size === 0, { size: pending.size });
+  // Not awaited on purpose: this is the in-flight window, and it is entered synchronously.
+  const inflight = e.requestControl("delivery", { op: "listMemberships" }, 3000);
+  armCheck("ARM 5", "D5e a REAL requestControl() registers exactly one pending rejector (the set is filled by the code, not by this cell)",
+    pending.size === 1, { size: pending.size });
   const d5 = await e.disconnect("arm5-inflight");
   armCheck("ARM 5", "D5a a disconnect with a reply still outstanding refuses as in-flight-request",
     d5.outcome === "refused" && (d5 as any).reason === "in-flight-request", d5);
   armCheck("ARM 5", "D5b and it says how many, so the caller can tell 'retry shortly' from 'something is wedged'",
     d5.outcome === "refused" && /1 request\(s\)/.test((d5 as any).detail), d5);
+  // The refusal left the endpoint UP, so this request settles on its own terms rather than being
+  // stranded by a teardown — which is what makes the control below a removal of the CONDITION.
+  const inflightSettled = await inflight.then(() => "answered" as const, (err: Error) => err);
+  armCheck("ARM 5", "D5f once that request settles the set drains itself — the arm's own cleanup did not empty it",
+    pending.size === 0, { size: pending.size, settled: String(inflightSettled) });
   // The latch is taken BEFORE the inspection, so the refusal leaves it set. Clearing it here is
   // fixture teardown, not part of the assertion — without it every later cell would answer
   // `transition-in-progress` and the arm would prove only that it had wedged itself.
-  pending.delete(planted);
   (e as any).transitionInFlight = false;
   (e as any).admissionClosed = false;
   const d5ctl = await e.disconnect("arm5-inflight-control");
-  armCheck("ARM 5", "D5-ctl CONTROL: with nothing outstanding the SAME call succeeds (so D5a's refusal was the condition, not the path)",
+  armCheck("ARM 5", "D5-ctl CONTROL: with the request settled the SAME call succeeds (so D5a's refusal was the condition, not the path)",
     d5ctl.outcome === "disconnected", d5ctl);
 
   // ── D5c/D5d — transition-unconfirmed ─────────────────────────────────────────────────────────
