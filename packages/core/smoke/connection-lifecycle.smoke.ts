@@ -655,7 +655,12 @@ try {
   precondition("ARM 5", "nothing is outstanding before the real request, so D5e's arms can differ",
     pending.size === 0, { size: pending.size });
   // Not awaited on purpose: this is the in-flight window, and it is entered synchronously.
+  // The handler is attached in the SAME statement, not at D5f: this request rejects (NoResponders),
+  // and a rejection that lands before a handler exists kills the process. Under the unmutated code
+  // the refusal returns fast enough that it never did — which is timing, not design, and a mutation
+  // run proved it by crashing the suite here instead of reddening the cells it should have.
   const inflight = e.requestControl("delivery", { op: "listMemberships" }, 3000);
+  const inflightOutcome = inflight.then(() => "answered" as const, (err: Error) => err);
   armCheck("ARM 5", "D5e a REAL requestControl() registers exactly one pending rejector (the set is filled by the code, not by this cell)",
     pending.size === 1, { size: pending.size });
   const d5 = await e.disconnect("arm5-inflight");
@@ -665,7 +670,7 @@ try {
     d5.outcome === "refused" && /1 request\(s\)/.test((d5 as any).detail), d5);
   // The refusal left the endpoint UP, so this request settles on its own terms rather than being
   // stranded by a teardown — which is what makes the control below a removal of the CONDITION.
-  const inflightSettled = await inflight.then(() => "answered" as const, (err: Error) => err);
+  const inflightSettled = await inflightOutcome;
   armCheck("ARM 5", "D5f once that request settles the set drains itself — the arm's own cleanup did not empty it",
     pending.size === 0, { size: pending.size, settled: String(inflightSettled) });
   // The latch is taken BEFORE the inspection, so the refusal leaves it set. Clearing it here is
