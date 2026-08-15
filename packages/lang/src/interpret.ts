@@ -1195,12 +1195,15 @@ class Interpreter {
       // name. The channel is HANDLER-DERIVED — the simulator and the mesh mint different ones — so
       // keying the journal namespace by it would make a journal replayable only under the handler
       // that wrote it, which is the one thing the effect seam exists to prevent.
-      const branch = frame.branch(scopeKind, scopeName, occurrence, "in");
+      // ONE constant, used for both the namespace and the recorded branch list, so the entry cannot
+      // claim a key the body's steps were not actually filed under.
+      const branchKey = "in";
+      const branch = frame.branch(scopeKind, scopeName, occurrence, branchKey);
       try {
         const value = await fn(branch, [handle]);
         frame.clock.join([branch.clock]);
         await handler.closeConclave(req, ctx);
-        return { branches: ["in"], value };
+        return { branches: [branchKey], value };
       } catch (e) {
         frame.clock.join([branch.clock]);
         // A CANCELLED branch performs no new effects (§5.8), so a cancelled conclave does not close

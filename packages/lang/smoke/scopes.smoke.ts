@@ -278,9 +278,18 @@ let conclaveJournal: Journal;
   ok("it is journalled as ONE entry of its own kind, not as an open and a close", scope !== undefined
     && r.journal.entries().filter((e) => e.kind === "conclave").length === 1);
   ok("settled, which is the durable answer to 'did this sub-team close'", scope?.status === "ok");
-  ok("recording its single branch under a key that does not depend on the handler-minted channel",
-    JSON.stringify((scope?.result as { branches: string[] }).branches) === '["in"]',
+  ok("recording its single branch", JSON.stringify((scope?.result as { branches: string[] }).branches) === '["in"]',
     scope?.result);
+  // And the branch key is checked WHERE IT BITES: on the scope path the body's own steps were filed
+  // under. The recorded `branches` list is a claim, and a first version of this section asserted
+  // only the claim — which a namespace keyed by the handler-minted channel satisfies while filing
+  // every step somewhere else. A mutation run said so.
+  const inner = conclaveJournal.entries().find((e) => e.kind === "sleep");
+  ok(
+    "and the body's steps are filed under that key, not under the handler-minted channel name",
+    inner?.scope === "/conclave:huddle#0/b:in",
+    inner?.scope,
+  );
   ok("and it carries a request id, because it DISPATCHED: a crash after the mint must not lose who opened the room",
     typeof scope?.requestId === "string" && (scope?.requestId as string).length > 0, scope?.requestId);
   // The control. A scope that launches thunks and calls no handler has no request to identify, and
