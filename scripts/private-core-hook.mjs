@@ -37,6 +37,23 @@ const CORE = process.env.COTAL_PRIVATE_SPECIFIER ?? "@cotal-ai/core";
  *  is the failure mode this file was written to remove. */
 if (!TARGET) throw new Error("private-core-hook: COTAL_PRIVATE_CORE is unset — refusing to load a hook that would silently no-op");
 
+/** ── THE SECOND KEY: redirect by RESOLVED URL, not by specifier ────────────────────────────────
+ *  A bare-specifier redirect cannot reach a suite that imports its subject by RELATIVE PATH, and
+ *  `connection-control.smoke.ts` imports the connector as `../src/agent.js` — source, compiled in
+ *  memory by tsx, never through `@cotal-ai/*`. So a connector mutation was ungradeable by the same
+ *  mechanism that made a core mutation gradeable: `LIMITS-private-build.md` #2 had a sibling.
+ *
+ *  A PREFIX map rather than a file list, deliberately: the copy's own internal imports (`./x.js`)
+ *  already resolve inside the copy, and a per-file list would silently miss any module the mutated
+ *  one pulls in — the same partial-redirect failure that produced a vacuous SURVIVED once already.
+ *  Set by the harness as `<treeSrcRoot>::<copySrcRoot>`; absent means no URL redirect at all. */
+const URLMAP = process.env.COTAL_PRIVATE_SRC_MAP;
+const [FROM_ROOT, TO_ROOT] = URLMAP ? URLMAP.split("::") : [];
+if (URLMAP && (!FROM_ROOT || !TO_ROOT))
+  throw new Error(`private-core-hook: COTAL_PRIVATE_SRC_MAP is malformed (${URLMAP}) — refusing to load a half-configured redirect`);
+const FROM_URL = FROM_ROOT ? `${pathToFileURL(FROM_ROOT).href}/` : undefined;
+const TO_URL = TO_ROOT ? `${pathToFileURL(TO_ROOT).href}/` : undefined;
+
 export async function resolve(specifier, context, next) {
   if (specifier === CORE) return { url: pathToFileURL(TARGET).href, shortCircuit: true };
   if (specifier.startsWith(`${CORE}/`)) {
@@ -45,5 +62,10 @@ export async function resolve(specifier, context, next) {
     const sub = specifier.slice(CORE.length + 1);
     return { url: pathToFileURL(join(dirname(TARGET), `${sub}.js`)).href, shortCircuit: true };
   }
-  return next(specifier, context);
+  const resolved = await next(specifier, context);
+  // Applied to the RESOLVED url, so it catches relative, absolute and specifier-mapped imports
+  // alike — whatever route the importer took to name the file, this is where it landed.
+  if (FROM_URL && resolved?.url?.startsWith(FROM_URL))
+    return { ...resolved, url: `${TO_URL}${resolved.url.slice(FROM_URL.length)}`, shortCircuit: true };
+  return resolved;
 }

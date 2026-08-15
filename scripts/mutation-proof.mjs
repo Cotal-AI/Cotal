@@ -180,6 +180,40 @@ function makePrivateBuild(projectDir, cwd) {
   };
 }
 
+/** The SOURCE-COPY counterpart of {@link makePrivateBuild}, for a package whose suites consume its
+ *  `src` directly (tsx, relative imports) rather than its compiled output. Same guarantee and the
+ *  same reason: the mutation goes to a copy, so the working tree is never written — no window for a
+ *  concurrent build to compile the mutant, and nothing for an uncatchable signal to strand.
+ *
+ *  There is no `build` step, because there is nothing to compile: the redirect is at RESOLUTION,
+ *  and tsx compiles the copy in memory exactly as it would the original. */
+function makePrivateSrc(projectDir, cwd) {
+  const abs = join(cwd, projectDir);
+  const srcRoot = join(abs, "src");
+  if (!existsSync(srcRoot)) throw new Error(`--private-src: ${projectDir} has no src/ to copy`);
+  // INSIDE the package, for the same reason the private build is: a copy in /tmp walks up out of
+  // the workspace and finds none of the package's own runtime dependencies.
+  const scratch = mkdtempSync(join(abs, ".privsrc-"));
+  const copyRoot = join(scratch, "src");
+  cpSync(srcRoot, copyRoot, { recursive: true });
+  return {
+    scratch,
+    srcRoot,
+    build: () => {},
+    copyOf: (fileAbs) => (fileAbs.startsWith(srcRoot + "/") ? join(copyRoot, relative(srcRoot, fileAbs)) : null),
+    env: {
+      COTAL_PRIVATE_SRC_MAP: `${srcRoot}::${copyRoot}`,
+      // The hook refuses to load without a core target, and this mode has none: point it at the
+      // package's own entry so the specifier branch is a no-op rather than a throw. A redirect that
+      // silently did nothing is the failure this file exists to remove, so it must not be unset.
+      COTAL_PRIVATE_CORE: join(copyRoot, "index.js"),
+      COTAL_PRIVATE_SPECIFIER: "\u0000no-such-specifier",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--import ${join(cwd, "scripts", "private-core-register.mjs")}`,
+    },
+    cleanup: () => rmSync(scratch, { recursive: true, force: true }),
+  };
+}
+
 function proveOne(m, opts) {
   const cwd = opts.cwd;
   const path = join(cwd, m.file);
@@ -332,7 +366,9 @@ let opts = {
   // --private-build <pkgDir>: compile the mutant into a scratch dir inside that package and point
   // the suite at it, instead of writing the package's SHARED dist that other worktrees and
   // installed extensions resolve.
-  priv: a["private-build"] ? makePrivateBuild(a["private-build"], cwd) : undefined,
+  priv: a["private-build"] ? makePrivateBuild(a["private-build"], cwd)
+      : a["private-src"] ? makePrivateSrc(a["private-src"], cwd)
+      : undefined,
   // Which subject-side probe proves the code under test resolved to the private build. Package
   // specific by nature — it must construct what the CELLS construct — so it is nameable.
   probe: a["probe"],
@@ -355,7 +391,7 @@ assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
 say(`${C.dim}baseline: ${opts.command}${C.off}`);
 if (opts.priv) {
-  say(`${C.dim}private build: ${opts.priv.env.COTAL_CORE_ENTRY}${C.off}`);
+  say(`${C.dim}private ${opts.priv.env.COTAL_CORE_ENTRY ? `build: ${opts.priv.env.COTAL_CORE_ENTRY}` : `src copy: ${opts.priv.env.COTAL_PRIVATE_SRC_MAP.split("::")[1]}`}${C.off}`);
   try { opts.priv.build(); } catch (e) { say(`${C.red}REFUSING: ${e.message}${C.off}`); opts.priv.cleanup(); process.exit(5); }
 }
 const base = run(opts.command, cwd, opts.timeoutMs, opts.priv?.env);
@@ -372,20 +408,28 @@ const base = run(opts.command, cwd, opts.timeoutMs, opts.priv?.env);
 // the shared build and the proof reported a clean SURVIVED about code it never executed.
 // A GUARD THAT READS A MESSAGE THE SUBJECT PRINTS ABOUT ITSELF IS CHECKING THE MESSENGER.
 // So the real gate is the probe below, which asserts IDENTITY on the object the subject built.
+const SRC_PROBE = ".meshctl-measurement/meshctl-m17-srcmap-probe.mts";
+const srcMode = Boolean(opts.priv?.env.COTAL_PRIVATE_SRC_MAP);
 if (opts.priv) {
-  if (!/PRIVATE build/.test(base.output)) {
+  // The weak suite-side check only exists for the build seam: a src-copy run redirects at
+  // RESOLUTION and the suite prints nothing about itself, which is the point — there is no message
+  // to check, only the subject. Skipping it here removes a check that could not fail, not one that
+  // could have caught something.
+  if (!srcMode && !/PRIVATE build/.test(base.output)) {
     say(`${C.red}REFUSING: --private-build was requested but the suite never reported loading a PRIVATE build.${C.off}`);
     say("Either the suite does not honour COTAL_CORE_ENTRY, or something stripped it from the environment.");
     say("Grading would compile the mutant into the SHARED dist's place while reporting a private run.");
     opts.priv.cleanup();
     process.exit(6);
   }
-  say(`${C.dim}suite-side seam confirmed (weak: the suite's own import) — now checking the SUBJECT${C.off}`);
+  say(`${C.dim}${srcMode ? "no suite-side seam in src mode (by design) — the SUBJECT is the only gate" : "suite-side seam confirmed (weak: the suite's own import) — now checking the SUBJECT"}${C.off}`);
 
   // THE SUBJECT-SIDE GATE. Constructs what the cells construct and asserts the class identity of
   // the object it actually built, which cannot be satisfied by a printed message and fails closed.
-  const probe = run(`./node_modules/.bin/tsx ${opts.probe ?? PROBE}`, opts.cwd, 120_000, opts.priv.env);
-  const resolvedPrivate = /VERDICT: the subject resolves to the PRIVATE build/.test(probe.output);
+  const probe = run(`./node_modules/.bin/tsx ${opts.probe ?? (srcMode ? SRC_PROBE : PROBE)}`, opts.cwd, 120_000, opts.priv.env);
+  const resolvedPrivate = srcMode
+    ? /VERDICT: the subject resolves to the PRIVATE src copy/.test(probe.output)
+    : /VERDICT: the subject resolves to the PRIVATE build/.test(probe.output);
   if (probe.status !== 0 || !resolvedPrivate) {
     say(`${C.red}REFUSING: the SUBJECT does not resolve to the private build — the mutation would not be on the graded path.${C.off}`);
     say("This is the MX14 defect: mutant compiled, suite pointed at it, and the code under test still loading the shared build.");

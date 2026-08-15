@@ -15,6 +15,7 @@ scratch/
 # packages/*/dist, which other worktrees and installed extensions resolve. Ignored because the
 # scratch would otherwise dirty the tree, and `pnpm mutation-proof` refuses a dirty tree.
 .privbuild-*/
+.privsrc-*/
 examples/02-self-improving-console/harness/.*.log
 examples/04-frontier-faces/assets/
 product
