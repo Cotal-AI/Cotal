@@ -56,3 +56,36 @@ not on timing: under load the failure mode is a timeout graded INCONCLUSIVE, not
 - It says NOTHING about the other 44 cells. Only R1 was graded.
 - It says nothing about connection-lifecycle.smoke.ts, which needs no substitution and is untested
   by this mechanism.
+
+## ADDENDUM 2026-08-15T08:46Z — THE SCOPE OF CONTAINMENT FACT 1, AND A CORRECTION TO WHAT IT PROVES
+Raised by fm-orchestrator: `smoke:setup-pure:live` on another branch gained a dependency-inclusive
+`pnpm --filter … build`, so a script named "smoke" REBUILDS packages/core/dist. Register item 10;
+the script is not to be changed. Fifteen such scripts already exist in THIS tree, twelve named
+`smoke:*`.
+
+SCOPE, now stated where the result is written: containment fact 1 (dist byte-identical, 276 files)
+is valid ONLY IF no build ran in the interval — including one reached through a `smoke:*` script.
+
+CORRECTION — byte-identity does NOT establish that, and I am not importing it as an assumption.
+  fm-orchestrator read the byte-identity as ALSO proving nobody ran `:live` during the window.
+  It does not. `tsc` over unchanged source is deterministic: a rebuild rewrites all 276 files with
+  the SAME bytes. A byte comparison is blind to exactly this event. The conclusion is right; the
+  instrument cited for it cannot see the thing.
+
+MEASURED INSTEAD, read-only, 08:46:26Z — mtime, which a rewrite cannot leave untouched:
+  every one of the 276 dist files      mtime 2026-08-15T05:08:52.90Z .. 05:08:53.88Z
+  files newer than 08:35:24Z (open)    0
+  files newer than 07:24:00Z (MX14)    0
+  POSITIVE CONTROL, same probe:
+  files newer than 05:08:00Z           276   <- the probe CAN return non-zero
+  files newer than 05:08:53Z           256   <- and discriminates at sub-second resolution
+  Refutation condition, stated before citing the result: ANY dist file with mtime >= 08:35:24Z.
+
+SO: nothing has rewritten packages/core/dist since 05:08:53Z — three and a half hours before the
+window opened, and before MX14 as well. The claim is therefore WIDER than "no `:live` ran in the
+91-second window": no build of core, by any entry point, has run in this worktree since 05:08:53Z.
+Established by measurement taken after the fact, not assumed, and not inherited from fact 1.
+
+LIMIT: mtime is evidence about a WRITE, not about a READ, and it is forgeable (`touch`, `cp -p`).
+Nothing here suggests forgery; it is stated because "no file changed" and "no process ran" are
+different claims and only the first is measured.

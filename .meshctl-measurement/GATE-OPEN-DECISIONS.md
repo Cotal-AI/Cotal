@@ -51,7 +51,7 @@ by the permission layer for every seat, including the orchestrator's.**
 **Still open:** the push itself. **A denial in a seat's session is the human's decision about that
 session** — this lane did not decompose the operation or route around it, and should not.
 
-## 4. The `SIGKILL` residual on mutation proofs — OWNER: fm-orchestrator. ACCEPTED.
+## 4. The `SIGKILL` residual on mutation proofs — OWNER: fm-orchestrator. ACCEPTED, then DISSOLVED.
 
 `SIGKILL` is uncatchable and strands a mutant in `packages/core/src`. Accepted on stated reasons:
 the consequence is **source, not build** (nothing executes it until a `tsc`, which the freeze
@@ -60,6 +60,18 @@ independently prevents — two disjoint failures required); recovery is driven, 
 
 **Closed as a decision. Left open as a fact** — see `SIGNAL-SAFETY-mutation-proof.md`. The change
 that removes the residual entirely is limit #2's closure route, recorded and deliberately not built.
+
+### DISSOLVED 2026-08-15T08:36Z — and the distinction from *resolved* is load-bearing
+
+Limit #2's closure route was built. **The harness mutates a COPY of `src` and never the tree**, so
+**there is no shared write left for a `SIGKILL` to strand.** Proven in MX16 by an mtime that did not
+move, not by a diff (`runs/2026-08-15T0835Z-mx16-window.txt`, containment fact 3).
+
+**Recorded as DISSOLVED, not RESOLVED, on fm-orchestrator's instruction, because the two decay
+differently:** a *resolved* risk returns the moment its fix is reverted — a one-line change nobody
+announces. A *dissolved* one returns only if the **architecture** changes back to writing a shared
+artifact, **which is a loud event.** Anyone reading this later should treat a future proposal to
+mutate in place as re-opening item 4, and should expect to see it argued rather than merged.
 
 ## 5. The E2E live half — OWNER: this lane, BLOCKED
 
@@ -163,3 +175,42 @@ today, and this lane did not and will not change that.
 `src` and never the tree, which closes `LIMITS-private-build.md` #2 and retires the `SIGKILL`
 residual in item 4 as a practical matter (item 4's acceptance stands as written; the residual it
 accepted no longer has a shared write to strand).
+
+## 10. `packages/core/dist` has writers whose names do not say "build" — OWNER: nobody yet, and that is the point
+
+**Raised by fm-orchestrator 2026-08-15T08:4xZ, from fm-webconsole's scan of its own branch.** A
+`:live` smoke on another branch gained `pnpm --filter @cotal-ai/workspace... build && …`. The `...`
+suffix means *"and its dependencies"*, and workspace depends on core — **so a script named
+`smoke:setup-pure:live` rebuilds `packages/core/dist`.** It was added for a correct reason (the
+smoke was reading a stale build) and it predates the current rulings. **It is not to be changed:
+removing a stale-build fix to protect a measurement trades a real defect for a convenient one.**
+
+### The finding is wider than the script that surfaced it — measured in THIS tree, at tip `e5e84366`
+
+`package.json` here, on this lane's own branch, has **fifteen scripts whose body invokes a build**,
+every one of them via the dependency-inclusive `...` form that reaches `packages/core`:
+
+- **twelve are named `smoke:*`** — `smoke:codex-installed`, `smoke:manager-console`,
+  `smoke:orca-e2e:live`, `smoke:delivery-renewal`, `smoke:update-concurrency`,
+  `smoke:materialize-concurrency`, `smoke:setup-failloud`, `smoke:agent-skills`,
+  `smoke:ext-seed-help`, `smoke:seed`, `smoke:seed-tarball:live`, `smoke:persona-announce`;
+- **two are `ci:*`**, and **one is `typecheck`** — already a standing item, and the reason it is
+  standing is the same reason as this one.
+
+**So the writer set is not "`pnpm build`, plus one surprise on someone else's branch". It is at
+minimum sixteen entry points, most of them named for something other than building, already present
+here.** Read from `package.json` text; **`pnpm` was not invoked to confirm the expansion** (no
+`pnpm` in this worktree, standing order), so the `...`-includes-core step rests on documented pnpm
+filter semantics, not on an observed run.
+
+### What this changes about every containment argument on this branch
+
+> **A containment argument inherits every writer of the artifact it contains.** This branch bounded
+> the writers it knew about; this one arrived through a script whose name says "smoke".
+
+`packages/core/dist is stable` was being used as a **property**. It is a **measurement**, valid at
+the moment it is taken. Every place this branch cites dist stability now carries its scope with it.
+
+**What the decision actually is, and why it is not this lane's:** whether a `smoke:*` script may
+write the fleet-linked artifact at all — and if so, whether the name should say so. Fixing it inside
+one script fixes one of sixteen.

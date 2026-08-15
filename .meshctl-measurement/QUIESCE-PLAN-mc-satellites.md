@@ -172,6 +172,25 @@ behind as a stale registration.
 `git rev-parse 66bb07d1^{commit}` still resolves from the principal checkout** — the positive
 control that removal took the worktree and not the history.
 
+### Step 1.5 — WHAT GOES WRONG IF THIS IS DONE IN THE WRONG ORDER, per satellite
+
+**Added because a plan that gives an order without the failure it prevents gets reordered by the
+first person under time pressure.** Each row is the *observable*, because the failures here do not
+announce themselves as ordering failures.
+
+| satellite | wrong order | what actually goes wrong | how it presents to whoever is looking |
+| --- | --- | --- | --- |
+| all six | **this lane's worktree removed before the satellite** | its `node_modules` target vanishes; the link stays, now dangling | **`ERR_MODULE_NOT_FOUND` on a bare specifier, on unchanged source.** Reads as a broken install and invites a `pnpm install`, which is forbidden here and would repopulate a directory six trees resolve |
+| all six | **worktree removed before the seat is stood down** | the seat's cwd is unlinked underneath it; it keeps running | **a ghost: present on the roster, no working tree.** Its next file read fails in a way its own logs attribute to the repo, and its DMs still route to it |
+| `mc-cleanup` | **root link cleared, package-level links left** | eighteen package-level links still resolve into this lane; root resolution no longer does | **partial resolution** — some imports work, some do not, in the same process. Worse than total failure, which at least stops |
+| `mc-authority`, `mc-cleanup` | **removed while their local `packages/core/dist` is assumed shared** | nothing; their dist is theirs alone (§1.5 found nothing resolving into them) | **no observable.** Listed so nobody preserves it "just in case" and leaves a worktree standing for a copy of a build |
+| any | **`rm -rf` instead of `git worktree remove`** | the administrative entry under `.git/worktrees` survives | `git worktree list` reports a path that does not exist; **`git worktree add` later refuses the name**, with an error about the wrong thing |
+| any | **the shared stash dropped as "the satellite's unsaved work"** | it is one repository-wide object (§1.2), not that satellite's | **whoever owns it loses it silently**, and the loss is attributed to a seat that never had it |
+
+**The single sentence, if the table is skipped: nothing in step 2 fails loudly at the moment the
+order is broken.** Every failure above surfaces later, somewhere else, as a different kind of
+problem — which is precisely why the order is written down.
+
 ### Step 3 — the links need no separate step, and here is why that is not an oversight
 
 Every link measured in §1.3 lives **inside** a satellite worktree. Removing the worktree removes

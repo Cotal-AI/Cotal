@@ -85,6 +85,12 @@ ordinary builds would be wrong.
 **But it means the freeze currently in force is doing work the seam cannot do.** They are not
 redundant, and lifting the freeze on the strength of the seam would be a mistake.
 
+**And "an ordinary build" is a wider category than it sounds.** At this tip, **fifteen scripts in
+this `package.json` invoke a build through the dependency-inclusive `...` filter, and twelve of them
+are named `smoke:*`** — see register item 10. **So this limit is not a corner case reachable only by
+someone typing `pnpm build`; it is reachable by running a smoke.** Every citation of dist stability
+on this branch carries that scope, and the MX16 record now states it where the result is written.
+
 ### 2. It does not cover `connection-lifecycle.smoke.ts`
 
 That suite imports core as `../src/index.js` — **direct source, compiled in-memory by `tsx`.** It
