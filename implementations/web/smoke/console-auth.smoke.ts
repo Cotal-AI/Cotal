@@ -230,7 +230,7 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   }
 }
 
-// ── 4. WHAT THE SHIPPED HANDLER DOES WITH EACH VERDICT ──────────────────────────────────────────
+// ── 4. THE SHIPPED HANDLER: ITS STRUCTURE FIRST, THEN ITS BEHAVIOUR ─────────────────────────────
 // Lifted out of `web.ts` and executed. A correct gate wired to a handler that ignores it is an
 // unauthenticated surface with a passing test — that exact shape survived a green suite on this
 // surface once already.
@@ -275,6 +275,44 @@ const gateInit = stmts[2] !== undefined && ts.isVariableStatement(stmts[2])
   ? stmts[2].declarationList.declarations[0]?.initializer?.getText() ?? ""
   : "";
 
+// ── 4a. THE GATE RUNS BEFORE EVERY ROUTE (structural, over the parsed handler) ──────────────────
+// Asserted BEFORE the behavioural cells below, because they consume the parsed statements: with
+// these cells running later, a route inserted into the refusal slot tripped the extraction guard
+// first and the suite reported "the refusal condition was extracted" — true, and useless. The cell
+// that NAMES the defect has to be the cell that fires.
+// Positional, over the shipped source: the first route must come AFTER the gate. A gate placed below
+// a route leaves that route unauthenticated, and nothing in its own behaviour would say so.
+// STRUCTURAL, not an enumeration of route syntax. Two earlier versions of this cell were beaten by
+// the same move: the first compared the gate against ONE named route (`/feed`), and the second
+// against every `if (path === "` / `if (path.startsWith("` dispatch — which silently omitted the
+// SHIPPED STATIC DISPATCH (`PAGE[path]` then `if (file)`), so moving that block above the gate left
+// `/`, `/graph` and every asset unauthenticated with all 68 cells green.
+//
+// A list of route shapes can always omit one, and the omission is invisible. So this asserts the
+// property directly instead: between the handler's opening brace and the gate there is NOTHING but
+// the path and query parses — no statement of any syntax, present or future.
+//
+// OVER THE AST, not over lines. The line-based version of this cell counted trimmed source lines, so
+// a route dispatch appended to the END of the query line — after its semicolon, same line — left
+// `firstStatements` at exactly two entries starting `const path` / `const query`. Measured: 110/110
+// green while an unauthenticated `GET /api/meta` answered `200 {}` and `gate.check` was never called
+// at all. Line position is not statement position, and only one of them is the property.
+const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
+const handlerAt = webTs.indexOf("const handleRequest = async (req: IncomingMessage, res: ServerResponse)");
+check("NON-VACUITY: the handler's start and the gate were both located in the shipped source",
+  gateAt !== -1 && handlerAt !== -1 && handlerAt < gateAt, { handlerAt, gateAt });
+check("NON-VACUITY: the shipped handleRequest was found IN THE AST and has a statement body",
+  handlerBody !== undefined && handlerBody.statements.length > 3, { statements: handlerBody?.statements.length });
+check("the handler's first THREE STATEMENTS are the path parse, the query parse, and the gate call — nothing else precedes the gate",
+  declName(stmts[0]) === "path" && declName(stmts[1]) === "query"
+    && declName(stmts[2]) === "verdict" && gateInit.includes("gate.check(req, query)"),
+  { first: [declName(stmts[0]), declName(stmts[1]), declName(stmts[2])], gateInit });
+check("…and statements 4 and 5 are the REFUSAL and EXCHANGE handlers, so no route can sit between the gate and its refusal",
+  (ifCond(stmts[3]) ?? "").includes('"refuse" in verdict')
+    && (ifCond(stmts[4]) ?? "").includes('"exchange" in verdict'),
+  { third: ifCond(stmts[3]), fourth: ifCond(stmts[4]) });
+
+// ── 4b. WHAT THE SHIPPED HANDLER DOES WITH EACH VERDICT (behavioural) ───────────────────────────
 type Recorded = { status: number; headers: Record<string, string>; body: string; routeReached: boolean };
 // The METHOD is a fixture dimension too, and it was the next one held constant: `req` was `{}`, so
 // `req.method` was `undefined` in every cell. Gating the refusal predicate on `req.method !== "POST"`
@@ -414,39 +452,8 @@ check("an allowed request writes NOTHING and falls through to the routes",
 check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the routes, so the three non-reaches above are real",
   allowed.routeReached === true, allowed);
 
-// ── 5. THE GATE RUNS BEFORE EVERY ROUTE ─────────────────────────────────────────────────────────
-// Positional, over the shipped source: the first route must come AFTER the gate. A gate placed below
-// a route leaves that route unauthenticated, and nothing in its own behaviour would say so.
-// STRUCTURAL, not an enumeration of route syntax. Two earlier versions of this cell were beaten by
-// the same move: the first compared the gate against ONE named route (`/feed`), and the second
-// against every `if (path === "` / `if (path.startsWith("` dispatch — which silently omitted the
-// SHIPPED STATIC DISPATCH (`PAGE[path]` then `if (file)`), so moving that block above the gate left
-// `/`, `/graph` and every asset unauthenticated with all 68 cells green.
-//
-// A list of route shapes can always omit one, and the omission is invisible. So this asserts the
-// property directly instead: between the handler's opening brace and the gate there is NOTHING but
-// the path and query parses — no statement of any syntax, present or future.
-//
-// OVER THE AST, not over lines. The line-based version of this cell counted trimmed source lines, so
-// a route dispatch appended to the END of the query line — after its semicolon, same line — left
-// `firstStatements` at exactly two entries starting `const path` / `const query`. Measured: 110/110
-// green while an unauthenticated `GET /api/meta` answered `200 {}` and `gate.check` was never called
-// at all. Line position is not statement position, and only one of them is the property.
-const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
-const handlerAt = webTs.indexOf("const handleRequest = async (req: IncomingMessage, res: ServerResponse)");
-check("NON-VACUITY: the handler's start and the gate were both located in the shipped source",
-  gateAt !== -1 && handlerAt !== -1 && handlerAt < gateAt, { handlerAt, gateAt });
-check("NON-VACUITY: the shipped handleRequest was found IN THE AST and has a statement body",
-  handlerBody !== undefined && handlerBody.statements.length > 3, { statements: handlerBody?.statements.length });
-check("the handler's first THREE STATEMENTS are the path parse, the query parse, and the gate call — nothing else precedes the gate",
-  declName(stmts[0]) === "path" && declName(stmts[1]) === "query"
-    && declName(stmts[2]) === "verdict" && gateInit.includes("gate.check(req, query)"),
-  { first: [declName(stmts[0]), declName(stmts[1]), declName(stmts[2])], gateInit });
-check("…and statements 4 and 5 are the REFUSAL and EXCHANGE handlers, so no route can sit between the gate and its refusal",
-  (ifCond(stmts[3]) ?? "").includes('"refuse" in verdict')
-    && (ifCond(stmts[4]) ?? "").includes('"exchange" in verdict'),
-  { third: ifCond(stmts[3]), fourth: ifCond(stmts[4]) });
 
+// ── 5. CONSTANT-TIME COMPARISON ─────────────────────────────────────────────────────────────────
 // TIMING SAFETY IS NOT OBSERVABLE FROM OUTPUTS, so it cannot be tested functionally. Replacing the
 // comparison with plain `===` produces an identical boolean for every vector in this file — measured,
 // 103 cells stayed green while the constant-time property was gone. **A functional suite cannot see
