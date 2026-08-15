@@ -1,0 +1,3 @@
+implementations/delivery/smoke/delivery-health-live.smoke.ts(170,91): error TS7053: Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ COTAL_DELIVERY_BROKER_GONE_MS: string; }'.
+  No index signature with a parameter of type 'string' was found on type '{ COTAL_DELIVERY_BROKER_GONE_MS: string; }'.
+implementations/delivery/smoke/delivery-health-live.smoke.ts(227,100): error TS2353: Object literal may only specify known properties, and 'lifecycleUid' does not exist in type 'Omit<AgentCard, "id"> & { id?: string | undefined; }'.
