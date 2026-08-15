@@ -440,7 +440,7 @@ if (opts.priv) {
     opts.priv.cleanup();
     process.exit(7);
   }
-  say(`${C.green}SUBJECT-SIDE CONFIRMED${C.off} — the object the subject constructs comes from the private build`);
+  say(`${C.green}SUBJECT-SIDE CONFIRMED${C.off} — the subject resolves to the private ${srcMode ? "src copy" : "build"}`);
 }
 const baseTicks = progressCount(base.output, opts.progressPattern);
 if (base.status !== 0) {
