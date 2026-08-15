@@ -46,12 +46,13 @@ const servers = `nats://127.0.0.1:${PORT}`;
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 
-process.on("exit", (code) => {
-  try { broker.kill(); } catch { /* already gone */ }
+/** The broker is a child process, so it holds the event loop open: the suite has to end itself, and
+ *  an EXIT trap is what makes a THROWN failure clean up too rather than leaking a server. */
+const done = () => {
+  try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });
-  console.log(`run-journal.smoke: ${ok} checks passed, ${fail} failed`);
-  if (code === 0 && fail > 0) process.exitCode = 1;
-});
+};
+process.on("exit", done);
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let up = false;
@@ -342,3 +343,6 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
 }
 
 await nc.drain();
+done();
+console.log(`run-journal.smoke: ${ok} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
