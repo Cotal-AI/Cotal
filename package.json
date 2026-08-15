@@ -337,6 +337,7 @@
     "smoke:advisory-lock-identity": "tsx bin/smoke/advisory-lock-identity.smoke.ts",
     "smoke:event-channel-resolve": "tsx extensions/connector-core/smoke/event-channel-resolve.smoke.ts",
     "smoke:agui-conformance": "tsx extensions/connector-core/smoke/agui-conformance.smoke.ts",
+    "smoke:agui-renderer-precondition": "tsx extensions/connector-core/smoke/agui-renderer-precondition.smoke.ts",
     "smoke:mutation-reachable": "tsx extensions/connector-core/smoke/mutation-reachable.smoke.ts",
     "smoke:resume-version-refusal": "tsx implementations/cli/smoke/resume-version-refusal.smoke.ts",
     "smoke:valid-name": "tsx packages/core/smoke/valid-name.smoke.ts",

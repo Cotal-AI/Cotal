@@ -51,6 +51,17 @@ const UNGATED: Record<string, string> = {
   // one machine on one day.
   "smoke:agui-map":
     "maps a REAL ~/.claude/projects session JSONL and refuses a fixture by design; input is operator-local and irreproducible on a CI box",
+  // The second uncomfortable one, and it is ungated for the OPPOSITE reason to everything else here:
+  // not that it cannot run on a CI box, but that it is RED ON PURPOSE. It grades fm-orchestrator's
+  // binding precondition — the AG-UI cutover does not merge until `cotal console`,
+  // `implementations/web` and `examples/02` can DISPLAY a frame — and that work is not done, so the
+  // suite fails today by design. Gating it would either normalise a red gate or force it to assert
+  // the CURRENT broken state, which inverts its polarity: green today, red the day the renderers are
+  // finished. A suite that fights its own fix is worse than no suite.
+  // THE ENTRY IS THE DECISION, NOT A DODGE: it is here so the set stops growing silently, and
+  // REMOVING this line is part of the renderer work. When it goes green, gate it.
+  "smoke:agui-renderer-precondition":
+    "red by design until the renderer precondition is met; asserting the current broken state instead would invert its polarity. Gate it when it goes green",
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
