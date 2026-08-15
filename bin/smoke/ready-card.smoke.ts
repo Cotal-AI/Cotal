@@ -28,6 +28,7 @@
 import { spawnSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { assertBuildCurrent } from "./_build-current.js";
 
@@ -94,16 +95,84 @@ function card(): string {
 // — `.agents` follows HOME, `onboarded.json` follows COTAL_HOME, and a mutant that moves one leaves
 // the other's witness green.
 const HOME_MARKERS = [".agents", ".claude", "claude-plugin", "agent-skills.json", "onboarded.json"] as const;
-/** Presence AND mtime: presence alone cannot see a rewrite, mtime alone cannot see a creation. */
-function homeFingerprint(dir: string): string {
-  return HOME_MARKERS.map((m) => {
-    try { const s = statSync(join(dir, m)); return `${m}:${s.mtimeMs}`; } catch { return `${m}:absent`; }
+
+/** The subset the CLI itself writes under HOME — and the ONLY set the operator-home invariance may
+ *  walk recursively.
+ *
+ *  MEASURED, not assumed: walking all of `HOME_MARKERS` recursively against a real home on this box
+ *  reported 18 changed entries during one suite run, and every one of them was another tool's —
+ *  `.claude/projects/*.jsonl` transcripts from concurrently running sessions and `.claude/backups/`
+ *  rotations. `cotal` writes none of those; a grep of the CLI source for HOME-rooted targets yields
+ *  `.agents`, `claude-plugin`/`.claude-plugin`, `agent-skills.json`, `onboarded.json` and no
+ *  `.claude` path at all.
+ *
+ *  So including `.claude` would make this cell red for reasons unrelated to the code under test, on
+ *  any machine where a Claude session is live. A cell that reddens for unrelated reasons is not
+ *  strictness — it trains its reader to ignore a red, which costs exactly what a false green costs.
+ *
+ *  RESIDUAL LIMIT, named rather than implied: a regression that wrote into `~/.claude/projects` or
+ *  `~/.claude/backups` specifically would not be caught by this cell. Those are not paths the CLI
+ *  has any code to write, and the scratch-home witnesses below still cover `.claude` in a quiet
+ *  directory where churn cannot occur. */
+const COTAL_WRITE_MARKERS = [".agents", "claude-plugin", ".claude-plugin", "agent-skills.json", "onboarded.json"] as const;
+
+/** Presence AND mtime, RECURSIVELY over each marker tree.
+ *
+ *  The previous form stat'd only the five top-level marker paths. Review reproduced the hole: with
+ *  `.agents/skills` already present, a child writing `.agents/skills/team-topology/SKILL.md` does
+ *  not change `.agents`'s own mtime, so the comparator returned an identical string and the whole
+ *  suite stayed green while a run wrote HOME-rooted state outside the scratch. Proving a comparator
+ *  can see a top-level creation does NOT prove it can see a protected descendant write — that is
+ *  the shape of a sound argument without its substance, and the cells below now drive both.
+ *
+ *  Bounded, and the bound THROWS rather than truncating: a fingerprint that silently covered part
+ *  of a tree would report "unchanged" for a region it never read, which is this lane's own defect. */
+const FINGERPRINT_MAX_ENTRIES = 50_000;
+function homeFingerprint(dir: string, markers: readonly string[] = HOME_MARKERS): string {
+  const parts: string[] = [];
+  let seen = 0;
+  const walk = (abs: string, rel: string): void => {
+    let s;
+    try { s = statSync(abs); } catch { parts.push(`${rel}:absent`); return; }
+    if (++seen > FINGERPRINT_MAX_ENTRIES) {
+      throw new Error(`CANNOT MEASURE: more than ${FINGERPRINT_MAX_ENTRIES} entries under the marker paths of ${dir} — a partial fingerprint would report "unchanged" for a region it never read`);
+    }
+    if (s.isDirectory()) {
+      parts.push(`${rel}/:${s.mtimeMs}`);
+      for (const e of readdirSync(abs).sort()) walk(join(abs, e), `${rel}/${e}`);
+    } else {
+      parts.push(`${rel}:${s.mtimeMs}:${s.size}`);
+    }
+  };
+  for (const m of markers) walk(join(dir, m), m);
+  return createHash("sha256").update(parts.join("|")).digest("hex");
+}
+
+/** The comparator's OWN sensitivity, driven on a throwaway tree — never on anyone's real home.
+ *  An invariance cell is only worth its green if the comparator would have moved; these two cells
+ *  establish that it moves for a DESCENDANT write, and that the old top-level-only form did not. */
+{
+  const probe = mkdtempSync(join(tmpdir(), "cotal-fingerprint-probe-"));
+  const deep = join(probe, ".agents", "skills", "team-topology");
+  mkdirSync(deep, { recursive: true });          // the marker dir ALREADY EXISTS, as in the real hole
+  const before = homeFingerprint(probe, COTAL_WRITE_MARKERS);
+  const beforeTopOnly = COTAL_WRITE_MARKERS.map((m) => {
+    try { return `${m}:${statSync(join(probe, m)).mtimeMs}`; } catch { return `${m}:absent`; }
   }).join("|");
+  writeFileSync(join(deep, "SKILL.md"), "planted descendant write");
+  const afterTopOnly = COTAL_WRITE_MARKERS.map((m) => {
+    try { return `${m}:${statSync(join(probe, m)).mtimeMs}`; } catch { return `${m}:absent`; }
+  }).join("|");
+  check("COMPARATOR: the fingerprint SEES a write to a descendant of an already-existing marker dir",
+    homeFingerprint(probe, COTAL_WRITE_MARKERS) !== before);
+  check("COMPARATOR-control: the old top-level-only form does NOT see it (so the repair is non-equivalent)",
+    afterTopOnly === beforeTopOnly);
+  rmSync(probe, { recursive: true, force: true });
 }
 const REAL_HOME = process.env.HOME;
 if (REAL_HOME === undefined || REAL_HOME === "") throw new Error("CANNOT MEASURE: no HOME in this environment — the protected path cannot be identified, so its invariance cannot be asserted");
 if (REAL_HOME === HOME_D) throw new Error(`CANNOT MEASURE: the scratch HOME is the real HOME (${REAL_HOME})`);
-const realHomeBefore = homeFingerprint(REAL_HOME);
+const realHomeBefore = homeFingerprint(REAL_HOME, COTAL_WRITE_MARKERS);
 const scratchHomeBefore = homeFingerprint(HOME_D);
 // The witnesses must not pre-date the run, or every assertion below is satisfied by this suite's own
 // mkdir. This is the cell whose absence made the old pair vacuous.
@@ -212,14 +281,14 @@ check("HERMETIC: the run's COTAL_HOME-rooted state landed there too (onboarded.j
   existsSync(join(HOME_D, "onboarded.json")));
 // The protected path, asserted directly rather than by proxy.
 check("HERMETIC: the OPERATOR's real home is byte-for-byte unchanged across every run above",
-  homeFingerprint(REAL_HOME) === realHomeBefore);
+  homeFingerprint(REAL_HOME, COTAL_WRITE_MARKERS) === realHomeBefore);
 // ⚠️ The inverse. Without it, the cell above passes for a fingerprint function that can see nothing —
 // which is exactly how the pair it replaced failed. Same comparator, a directory that DID change.
 check("HERMETIC-control: the same comparator DOES report a change for the scratch home (else invariance is vacuous)",
   homeFingerprint(HOME_D) !== scratchHomeBefore);
 check("HERMETIC: the project state landed in the scratch project root", existsSync(join(PROJ, ".cotal")));
 
-const EXPECTED_CELLS = 26;
+const EXPECTED_CELLS = 28;
 if (pass + fail !== EXPECTED_CELLS) {
   fail++;
   console.log(`  ✗ FAIL: CELL COUNT: expected ${EXPECTED_CELLS} cells, ran ${pass + fail - 1}`);
