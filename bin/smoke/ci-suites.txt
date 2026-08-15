@@ -256,3 +256,4 @@ smoke:ep-rail-failure
 smoke:bind-fence:live
 smoke:claude-launch-model
 smoke:ci-suites
+smoke:web-console-auth

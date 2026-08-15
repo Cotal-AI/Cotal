@@ -47,6 +47,7 @@
     "smoke:web-harness": "tsx implementations/web/smoke/harness.smoke.ts",
     "smoke:web-parts": "tsx implementations/web/smoke/parts-non-silence.smoke.ts",
     "smoke:web-channel-authority": "tsx implementations/web/smoke/channel-authority.smoke.ts",
+    "smoke:web-console-auth": "tsx implementations/web/smoke/console-auth.smoke.ts",
     "smoke:web-registration-seam": "tsx implementations/web/smoke/registration-seam.smoke.ts",
     "smoke:codex-installed": "pnpm --filter cotal-ai... build && tsx extensions/connector-codex/smoke/codex-installed.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
