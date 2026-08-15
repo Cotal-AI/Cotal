@@ -210,11 +210,18 @@ try {
   // "BAD did not connect" still cannot mean "the broker/callout was not answering yet".
   S = new MeshAgent(cfg);
   const cursorS = calloutLog.length;
+  const execsAtStart = execCount();
   S.start(300);
   for (let i = 0; i < 90 && !S.connected; i++) await sleep(150);
   const deniedS = calloutLog.slice(cursorS);
+  // Diagnostic, not an assertion: if U0 fails again, this says in the SAME window whether the
+  // failure is upstream or downstream of the callout. Bearer execs > 0 means the session fetched a
+  // token and something rejected it; execs == 0 means it never got that far and the callout was
+  // never the thing refusing — a distinction the last run could not make, and the reason it needed
+  // a second window to learn anything.
+  console.log(`  [diag] S window: bearer execs ${execsAtStart} -> ${execCount()}, callout said ${JSON.stringify(deniedS)}`);
   precondition("USER", "U0 CONTROL: the SAME fixture with a correctly-signed bearer DOES connect (so UX's arms could differ)",
-    S.connected, { connected: S.connected, calloutSaidWhileOnlyThisArmWasConnecting: deniedS });
+    S.connected, { connected: S.connected, bearerExecs: execCount() - execsAtStart, calloutSaidWhileOnlyThisArmWasConnecting: deniedS });
 
   BAD = new MeshAgent(badCfg);
   const cursorBad = calloutLog.length;
