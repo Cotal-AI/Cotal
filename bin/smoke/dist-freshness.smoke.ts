@@ -29,8 +29,18 @@
  * being compared against a different tree). So a
  * green here describes the tree as it stood before entry 2, and says nothing about what any suite
  * after entry 105 is reading. The check cannot see a rebuild that happens after it; nothing in its
- * output suggests otherwise, which is the part worth fixing. Re-running the same check after the
- * last mid-chain build would close it, and is not done here.
+ * output suggests otherwise, which is the part worth fixing. THAT IS WHY THE SAME PREDICATE NOW RUNS
+ * TWICE: `smoke:dist-freshness` at entry 1 and `smoke:dist-freshness-late` immediately after the last
+ * mid-chain build, the two runs labelled so a failure says which position it came from.
+ *
+ * THE LATE RUN CATCHES A DIFFERENT DEFECT, AND IT IS WORTH NAMING PRECISELY BECAUSE IT IS NARROW.
+ * Nothing in a normal chain edits `src`, so the late run is usually a no-op — say that plainly rather
+ * than let its green imply more. What it catches is `src` MOVING WHILE THE CHAIN RUNS, and the
+ * realistic source of that is a mutate-and-restore: restoring a file stamps it with the current time,
+ * so a suite that mutates a source file and puts it back leaves `src` NEWER than every `dist` built
+ * before it. From that point the chain's remaining suites read a `dist` that no longer corresponds to
+ * the tree, and the entry-1 run has long since passed. It also catches a mid-chain build that
+ * silently produced nothing for a package.
  *
  * IF YOU WRITE THAT RE-RUN, IT GOES AFTER ENTRY 205, AND THE TRAP IS THE ENTRY NAMED `build`.
  * `smoke:build-current` does NOT build: its script body is a plain `tsx` run and it works in a
@@ -156,8 +166,16 @@ function discoverBuiltPackages(): string[] {
   return found.sort();
 }
 
+/**
+ * WHERE IN THE CHAIN THIS RUN SITS. The same predicate runs at two positions and a reader who meets
+ * a failure needs to know which one failed — the two mean different things. At the start it means
+ * "you edited and did not rebuild". After the last mid-chain build it means "something moved `src`
+ * while the chain was running", which is a different defect with a different cause.
+ */
+const POSITION = process.argv[2] === "--late" ? "AFTER the last mid-chain build" : "at the START of the chain";
+
 let fail = 0;
-console.log("dist freshness (a manager/CLI/delivery smoke tests the LAST BUILD, not your edit)\n");
+console.log(`dist freshness [${POSITION}] (a manager/CLI/delivery smoke tests the LAST BUILD, not your edit)\n`);
 
 // ── COMPLETENESS, asserted before freshness, because a freshness verdict over the wrong subject
 //    set is worth nothing and reads exactly like one over the right set.
@@ -210,5 +228,5 @@ for (const pkg of PACKAGES) {
   }
 }
 
-console.log(`\nDIST FRESHNESS ${fail === 0 ? "OK ✅" : "FAILED ❌"}`);
+console.log(`\nDIST FRESHNESS [${POSITION}] ${fail === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(fail === 0 ? 0 : 1);
