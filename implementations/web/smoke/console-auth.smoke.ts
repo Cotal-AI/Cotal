@@ -489,8 +489,12 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
 //
 // The durable fix is an integration cell against the REAL server, which needs a running mesh and is
 // NOT done here. This is an INTERIM structural guard: it pins the gate's creation and its ADJACENCY
-// to the handler, so a statement inserted between them is caught. It does not stop a mutation
-// elsewhere in web() from reaching the same gate object, and it is not claimed to.
+// to the handler, so a statement inserted between them is caught.
+//
+// ITS BOUNDARY IS MEASURED, not estimated: the SAME overwrite moved BELOW the handler, just above
+// `createServer`, leaves the adjacency intact and SURVIVES 128/128. So this guard catches insertion
+// between the gate and the handler and nothing else. Anyone reading it should know that, which is
+// why the survivor is written down here instead of being left for the next reviewer to rediscover.
 {
   const decl = "  const gate = makeAuthGate(port);\n\n  const handleRequest = async (req: IncomingMessage, res: ServerResponse)";
   check("INTERIM: the handler's gate is created by makeAuthGate and NOTHING sits between that and the handler",
