@@ -608,9 +608,17 @@ await conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t"
 log(notes);
 `;
   logged.length = 0;
-  await run(IN_CONCLAVE, { runId: "c-8", handler: new SimHandler({}), onLog: sink });
+  // Caught: a conclave that DID raise the depth refuses the write, and an uncaught throw would kill
+  // the suite from outside every assertion rather than reddening this claim.
+  let caught: unknown;
+  try {
+    await run(IN_CONCLAVE, { runId: "c-8", handler: new SimHandler({}), onLog: sink });
+  } catch (e) {
+    caught = e;
+  }
   ok("a conclave body may write an outer binding at runtime too, not just past the validator",
-    typeof logged[0]?.[0] === "string" && (logged[0][0] as string).length > 0, logged);
+    caught === undefined && typeof logged[0]?.[0] === "string" && (logged[0][0] as string).length > 0,
+    caught === undefined ? logged : String(caught).slice(0, 80));
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);

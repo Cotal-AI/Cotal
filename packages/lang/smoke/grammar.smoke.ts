@@ -347,6 +347,13 @@ accepts(
   "but a helper that only touches its own locals stays ordinary shared code",
   'function label(x) { let out = x; out = out + "!"; return out; }\nawait parallel({ a: async () => label("a"), b: async () => label("b") }, { name: "p" });',
 );
+// A NAME the branch declared is that name, not the program-level function that happens to share it.
+// Without this, following the call graph would reach a function the branch never calls and blame it
+// — the failure mode that turns a real rule into one authors work around.
+accepts(
+  "a name a branch bound itself is not the program function of the same name",
+  'let flag = 0;\nfunction bump() { flag = 1; }\nfunction apply(bump) { return bump(1); }\nawait parallel({ a: async () => apply((x) => x), b: async () => 2 }, { name: "p" });',
+);
 accepts(
   "and a helper called only from sequential code is not a branch at all",
   'let notes = "";\nfunction note(x) { notes = x; }\nnote("start");\nawait parallel({ a: async () => 1 }, { name: "p" });',
