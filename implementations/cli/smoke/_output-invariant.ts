@@ -70,6 +70,42 @@ export function evidenceComesOnlyFrom(
     : { ok: false, kind: "violated", offenders, matched };
 }
 
+/** The verdict for a "must not say X" assertion. `no-subject` is a REFUSAL — see {@link mustNotSay}. */
+export type AbsenceVerdict =
+  | { ok: true; kind: "absent" }
+  | { ok: false; kind: "present"; detail: string }
+  | { ok: false; kind: "no-subject"; detail: string };
+
+/**
+ * Assert that `subject` does not say `pattern` — and REFUSE when there is no subject to say it.
+ *
+ * THIS EXISTS BECAUSE THE DEFECT IT PREVENTS ALREADY SHIPPED INTO THIS LANE'S OWN CELLS, STAYED
+ * GREEN, AND WAS FOUND BY LUCK. A cell asserted that the delivery row does not blame a credential for
+ * a connection failure, written as `!/credential/i.test(value)`. When the row was missing entirely,
+ * `value` was the empty string and the assertion PASSED — trivially, because the empty string does
+ * not contain "credential". It was noticed only because a different assertion in the same run failed
+ * and the output was read closely enough to ask why this one had not.
+ *
+ * **A "does not say X" assertion is satisfied by a surface that says nothing at all.** That is the
+ * same family as `.every()` over an empty set, but it hides better: the empty-set version at least
+ * looks like a set operation, while this one looks like a specific claim about specific text.
+ * Guarding it by hand — `value.length > 0 && !pattern.test(value)` — works exactly as long as every
+ * future author remembers, which is the thing this lane has established does not hold.
+ *
+ * So absence-of-subject is its own outcome and cannot be read as a pass.
+ */
+export function mustNotSay(subject: string, pattern: RegExp): AbsenceVerdict {
+  if (subject.trim().length === 0)
+    return {
+      ok: false,
+      kind: "no-subject",
+      detail: `there is no subject to test: a "must not say ${String(pattern)}" assertion is satisfied by a surface that says nothing at all, so an empty subject is a REFUSAL and never a pass`,
+    };
+  return pattern.test(subject)
+    ? { ok: false, kind: "present", detail: `the subject says ${String(pattern)}: ${subject.slice(0, 200)}` }
+    : { ok: true, kind: "absent" };
+}
+
 /**
  * The negative-polarity twin: no line may match `pattern` at all.
  *

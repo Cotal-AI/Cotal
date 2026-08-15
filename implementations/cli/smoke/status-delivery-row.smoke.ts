@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findCotalRoot, recordMesh } from "@cotal-ai/workspace";
 import { status } from "../src/commands/status.js";
-import { evidenceComesOnlyFrom, nothingMatches, rowLabel } from "./_output-invariant.js";
+import { evidenceComesOnlyFrom, mustNotSay, nothingMatches, rowLabel } from "./_output-invariant.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, detail?: unknown): void => {
@@ -128,8 +128,13 @@ check("it disclaims any statement about the daemon — absence of evidence is no
 // and this assertion PASSED — `!/credential/` is trivially true of the empty string. A "does not say
 // X" cell is satisfied by a surface that says nothing at all, which is the same vacuity this suite
 // polices elsewhere, committed here by me.
+// NOW DRIVEN THROUGH `mustNotSay`, WHICH REFUSES ON AN ABSENT SUBJECT BY CONSTRUCTION. The hand
+// guard `value.length > 0 && …` that used to sit here was correct, and correct-by-remembering is the
+// thing this lane has established does not hold across authors. The helper cannot be satisfied by an
+// empty subject at all.
+const noCred = mustNotSay(value, /credential/i);
 check("INVERSE CONTROL: it does NOT blame a credential for a connection failure",
-  value.length > 0 && !/credential/i.test(value), value);
+  noCred.ok, noCred.ok ? "" : noCred.detail);
 // CONTROLS ON THE MATCHER ITSELF, run against crafted strings rather than against the row, so they
 // prove the regex discriminates whether or not the row is present.
 check("POSITIVE CONTROL: the matcher matches a message of the expected shape",
@@ -171,6 +176,23 @@ check("NEGATIVE TWIN: an output containing one does not",
   !nothingMatches(violating, /connection\s+ok/).ok);
 check("rowLabel returns undefined for non-rows, so headers cannot be mistaken for a labelled row",
   rowLabel("Selected Mesh") === undefined && rowLabel("  connection   x") === "connection");
+
+// ---- `mustNotSay`: the instrument for the one defect in this lane that was caught BY LUCK.
+// The cell below reconstructs that defect exactly. Written as `!/credential/i.test("")` it passes;
+// through the helper it refuses.
+check("ABSENCE: an EMPTY subject REFUSES — this is the defect that shipped into this lane's cells",
+  mustNotSay("", /credential/i).kind === "no-subject");
+check("ABSENCE: a whitespace-only subject refuses too — trimming, not truthiness",
+  mustNotSay("   ", /credential/i).kind === "no-subject");
+check("…and the refusal explains why an empty subject is not a pass",
+  (() => { const v = mustNotSay("", /credential/i); return v.kind === "no-subject" && /says nothing at all/.test(v.detail); })());
+check("ABSENCE: a subject that DOES say it is a failure naming the term",
+  (() => { const v = mustNotSay("no caller credential could be built", /credential/i); return v.kind === "present" && /credential/.test(v.detail); })());
+check("ABSENCE: a real subject that does not say it PASSES", mustNotSay("the mesh preflight failed above (unreachable)", /credential/i).ok);
+// POSITIVE CONTROL on the raw form, showing WHAT the helper is protecting against rather than
+// asserting it abstractly: the naive expression is satisfied by the empty string.
+check("POSITIVE CONTROL: the naive `!pattern.test(\"\")` really does pass — the helper is not solving a hypothetical",
+  !/credential/i.test(""));
 
 rmSync(scratch, { recursive: true, force: true });
 
