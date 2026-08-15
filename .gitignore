@@ -14,3 +14,8 @@ scratch/
 examples/02-self-improving-console/harness/.*.log
 examples/04-frontier-faces/assets/
 product
+
+# Per-lane working notes and measurement artifacts. Kept on disk, never tracked: they carry
+# absolute host paths and machine-specific traces, and they are diary, not product.
+.lane/
+.observations/

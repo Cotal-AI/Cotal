@@ -11,7 +11,7 @@
  * SO NOTHING HERE IS BUILT BY HAND. A real space auth mints a real agent-class caller, which
  * connects to a real broker and reads a real daemon's lease over a real round-trip.
  *
- * Predictions are registered in `.lane/card-row-predictions.md` and were committed before this ran.
+ * Predictions were registered outside this repo and committed before this ran.
  * NOT A GATE — this is one scoped suite.
  */
 import { spawn, type ChildProcess } from "node:child_process";

@@ -1,5 +1,0 @@
-forced process.platform = win32
-
-DELIVERY-HEALTH LIVE SMOKE — NOT RUN, 0 cells executed.
-  CONDITION: platform is win32; the residue is built with SIGKILL/SIGSTOP/SIGCONT.
-  NOTHING WAS MEASURED. Do not read this as a pass — read it as absence of evidence.

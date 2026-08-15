@@ -1,2 +1,0 @@
-serving=true
-serving — daemon daemon-A, answered in 0ms, last heartbeat 0ms ago (source: lease-kv)

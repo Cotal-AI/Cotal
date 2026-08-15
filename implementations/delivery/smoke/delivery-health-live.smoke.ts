@@ -76,7 +76,7 @@ if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(SERVERS)) {
 // it anyway — writing the disclosure and shipping the false green is worse than not noticing, since
 // it proves the lane saw it. Measured, not argued: `node bin/smoke/shard.mjs 218 221` over this
 // member printed "NOTHING WAS MEASURED" and, two lines later, "✓ smoke:ci shard 218/221 passed" at
-// rc=0 (.lane/windows-decline/RESULT.md). Absence of evidence is a REFUSAL, not a pass.
+// rc=0 (recorded outside this repo). Absence of evidence is a REFUSAL, not a pass.
 //
 // bin/smoke/shard.mjs now understands the third status: the member is carried as declined, named in
 // the summary, reconciled against the declared count, and the shard cannot end in a bare green.
@@ -147,7 +147,7 @@ const signalGroup = (pid: number | undefined, sig: NodeJS.Signals): void => {
  *  which a zombie is still a group member that `kill(-pgid, 0)` answers for. Reading the two at that
  *  instant made the "really gone" cell FLAKY BY CONSTRUCTION.
  *
- *  Measured at `1e2e4435` by `.lane/groupalive-race-probe.mts`, 12 rounds: 8 raced (the cell would
+ *  Measured at `1e2e4435` by a probe kept outside this repo, 12 rounds: 8 raced (the cell would
  *  have failed), `daemonExited` false 0 times, and the group cleared after ~4-5ms every time, never
  *  past 1s. Both registered refutation conditions held, so this is a reaping race and not a survivor
  *  being papered over. The bound is 2000ms — ~400x the observed clearance — so exhausting it means

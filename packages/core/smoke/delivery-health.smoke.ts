@@ -197,7 +197,7 @@ console.log("\ndelivery-health assessment\n");
   console.log("  · NOT MEASURED: `unreachable` has no producer in this suite (documented, not asserted)");
 }
 
-// ---- CLOCK SKEW: the age that could not be established. C1-C5, predicted in .lane/clamp-predictions.md
+// ---- CLOCK SKEW: the age that could not be established. C1-C5, predicted outside this repo
 // ---- BEFORE the fix. `evidenceAt` is a FOREIGN clock, so it can run ahead of ours.
 {
   const now = 1_000_000;

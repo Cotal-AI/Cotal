@@ -13,7 +13,7 @@
  *
  * WHAT IT DOES NOT PROVE, NAMED RATHER THAN IMPLIED: it exercises the path where preflight FAILS, so
  * it never reaches `deliveryStatusRow` → `mintDeliveryCaller` → `deliveryRow`. Reaching those needs a
- * broker that answers preflight, which is the owed live cell in `.lane/broker-work-owed.md`. This
+ * broker that answers preflight, which is the owed live cell on this lane's list. This
  * cell closes "does the command print a delivery line at all", which nothing previously proved, and
  * it does not close "does the command reach the health assessment".
  *

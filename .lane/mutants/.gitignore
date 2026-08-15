@@ -1,3 +1,0 @@
-# The mutation record is EVIDENCE, not build noise. Root .gitignore `*.log` silently excluded
-# two build logs from a `git add` that exited 0, while the result file claimed they were preserved.
-!*.log

@@ -21,7 +21,7 @@
  *   prevent, and it would do it quietly.
  *
  * So the caller mint is injected, the measurement that picks it is registered in
- * `.lane/credclass-predictions.md`, and this module cannot be wired into the card until that
+ * a measurement kept outside this repo, and this module cannot be wired into the card until that
  * measurement names a profile. The unknown is held in one place instead of being spread as a guess.
  */
 import { assessDeliveryHealth, type DeliveryHealth } from "@cotal-ai/core";
@@ -59,7 +59,7 @@ function isCaller(r: Pick<GuardSeams, "check"> | CallerUnavailable): r is Pick<G
 }
 
 export interface DeliveryRowDeps {
-  /** RESOLVED BY MEASUREMENT, and it stays injected. The arms (`.lane/window-result-2026-08-15.md`)
+  /** RESOLVED BY MEASUREMENT, and it stays injected. The arms (recorded outside this repo)
    *  drove each candidate against a real daemon on an ephemeral broker: `agent` → SERVING, `probe` →
    *  `refused`, **`control-caller-privileged` → `refused`** (the manager row's class, denied at the
    *  broker on the lease KV read), and `agent` against a SIGKILLed daemon → `no-responder`.

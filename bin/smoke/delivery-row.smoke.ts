@@ -7,7 +7,7 @@
  * `manager-claim.smoke.ts` applies to `startHint` for the same reason.
  *
  * What is NOT covered here: whether any real credential profile can perform the read and the
- * round-trip. That is an open measurement (`.lane/credclass-predictions.md`) and the row takes its
+ * round-trip. That is an open measurement, recorded outside this repo, and the row takes its
  * caller mint as a required parameter precisely so this suite cannot silently assume one.
  *
  * Run: pnpm exec tsx bin/smoke/delivery-row.smoke.ts

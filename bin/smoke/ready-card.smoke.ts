@@ -19,7 +19,7 @@
  * WHAT IS NOT COVERED HERE, named rather than implied:
  *   - the `unknown` liveness state. It is unreachable through any pidfile content (`parsePid` caps
  *     out to `unattributable`) and needs a kernel seccomp filter to produce. That arm is real and
- *     lives in `.lane/finding5-repair-cells.sh`; it is not portable and is not duplicated here.
+ *     lives outside this repo; it is not portable and is not duplicated here.
  *   - the WEDGE. A SIGSTOPped real manager needs a broker and a live manager; this suite starts
  *     neither. What it covers is the pid-evidence rendering, which is where the false green was.
  *

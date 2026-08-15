@@ -17,7 +17,7 @@
  *
  * STATUS: the checker below is EXERCISED (see `status-delivery-row.smoke.ts`). The live cell that
  * feeds it real `cotal status` output on the preflight-OK path is OWED and needs a broker —
- * `.lane/broker-work-owed.md` item 0.
+ * this lane's owed-work list, item 0, kept outside this repo.
  */
 
 /** Rows are rendered as `  ${name.padEnd(16)} ${value}` (`status.ts:495-497`). The label is the

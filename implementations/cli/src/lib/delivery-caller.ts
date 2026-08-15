@@ -5,7 +5,7 @@
  * credential class as a required parameter rather than a default, because an under-granted caller
  * does not fail loudly on this surface: it renders `no-responder` — *the daemon did not answer* —
  * when the truth is *I was never permitted to ask*. The arms that settled it ran against a real
- * broker with a real daemon, and are recorded in `.lane/window-result-2026-08-15.md`:
+ * broker with a real daemon, and are recorded in this lane's measurement notes:
  *
  *     agent                            -> SERVING
  *     probe (connect-only)             -> refused
@@ -31,7 +31,7 @@
  * occurrences are two lane harnesses that merely print it. So the two-path claim rested on an
  * uninspected collection, and it has been narrowed to what the measurement supports rather than left
  * standing. Constructing a real denial needs a broker, so the cell that would settle it is OWED, not
- * skipped — see `.lane/review-brief-guard.md`.
+ * skipped — see this lane's review brief.
  */
 import { CotalEndpoint, idFromCreds, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
