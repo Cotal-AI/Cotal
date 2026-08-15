@@ -43,11 +43,20 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const auth = await createSpaceAuth("doctor-smoke");
 const sysObserver = await mintMembershipObserverCreds(auth, newIdentity()); // while the $SYS seed is in memory
 const now = Math.floor(Date.now() / 1000);
-const bounded = await mintCreds(auth, newIdentity(), "probe", { expiresInSeconds: 100 }); // iat=now, exp=now+100
-check("healthy before the 75% renewal point", inspectCredHealth(bounded, now + 60).state === "healthy");
-check("near-expiry past the 75% renewal point", inspectCredHealth(bounded, now + 80).state === "near-expiry");
-check("expired at/after exp", inspectCredHealth(bounded, now + 100).state === "expired");
-check("renewAt is 75% of the iat→exp lifetime", Math.abs(inspectCredHealth(bounded, now).renewAt! - (now + 75)) <= 2, inspectCredHealth(bounded, now));
+const bounded = await mintCreds(auth, newIdentity(), "probe", { expiresInSeconds: 100 });
+// Probe against the cred's OWN iat/exp, never against `now`. The smoke's clock
+// and the mint's clock are two separate reads of Date.now(); when a second
+// boundary falls between them the mint stamps exp = now + 101, and a probe at
+// now + 100 reads near-expiry. Reproduced 400/400 by starting the two statements
+// with under a millisecond left in the second; CI hit it on a loaded runner.
+const stamped = inspectCredHealth(bounded);
+const iat = stamped.iat!;
+const exp = stamped.exp!;
+check("a bounded mint carries iat and exp", Number.isInteger(iat) && Number.isInteger(exp) && exp > iat, stamped);
+check("healthy before the 75% renewal point", inspectCredHealth(bounded, iat + 60).state === "healthy");
+check("near-expiry past the 75% renewal point", inspectCredHealth(bounded, iat + 80).state === "near-expiry");
+check("expired at/after exp", inspectCredHealth(bounded, exp).state === "expired");
+check("renewAt is 75% of the iat→exp lifetime", Math.abs(stamped.renewAt! - (iat + 75)) <= 2, stamped);
 const unbounded = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
 check("unbounded when the JWT has no exp", inspectCredHealth(unbounded, now).state === "unbounded");
 check("unreadable on garbage (reported, not thrown)", inspectCredHealth("not a creds file", now).state === "unreadable");
