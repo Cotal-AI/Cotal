@@ -46,10 +46,19 @@
  * | M15 | delete the three `REASONING_*` cases, so they fall to `default` | `a synthesized 3-turn sequence brackets cleanly` |
  * | M16 | route all three `REASONING_*` cases to `this.text` | `the three id sets do not collide` AND `mid-split, the reasoning id opened in the FIRST frame is still outstanding` |
  * | M17 | delete the `TOOL_CALL_RESULT` while-still-open guard | `a TOOL_CALL_RESULT arriving while its call is still open is refused` |
+ * | M18 | drop the `cotal` spread from `toolCallEnd` ALONE | `and on EVERY one the `cotal` key SURVIVES the parse rather than being stripped` |
  *
- * All eight landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the
- * code that runs), all eight killed exactly their predicted set and nothing else, and the restore
+ * All nine landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the
+ * code that runs), all nine killed exactly their predicted set and nothing else, and the restore
  * was verified by a clean `git status` plus a return to the baseline tally.
+ *
+ * **M18 is the passthrough sweep's justification, and it was EXECUTED rather than argued.** The
+ * obvious defence of replacing a one-schema sample with a fourteen-schema sweep is "the sample
+ * would have missed a defect in the other thirteen" — which is a claim, and this lane does not get
+ * to bank claims. So it was run both ways: M18 drops `cotal` from `toolCallEnd` and nothing else,
+ * the sweep KILLS it, and against the previous commit's sampled version of this file the identical
+ * mutation left the suite at **72 passed, 0 failed**. The sample did not merely cover less; it was
+ * blind to a real defect that the sweep sees.
  *
  * **M15 and M17 are why M16 is phrased the way it is.** Before M15's cells existed, deleting the
  * reasoning cases outright left this suite fully GREEN — the id space was claimed in the header and
