@@ -425,15 +425,17 @@ await race({
   await new Promise<void>((r) => setTimeout(r, 5));
 
   ok("a rejecting arm fails the race", caught !== undefined);
+  ok("the loser really was mid-flight when the race ended", j.entries().some((e) => e.name === "s1"),
+    j.entries().map((e) => e.name));
+  // FIRST, because it is the claim that matters: the run being over and the sibling still working
+  // is the state the scope entry exists to make impossible.
+  ok("and it performed NO effect after the race ended", !j.entries().some((e) => e.name === "s2"),
+    j.entries().map((e) => `${e.name}:${e.state}`));
   const scope = scopeOf(j, "race");
-  ok("and the scope is journalled as failed", scope?.status === "failed", scope?.status);
+  ok("the scope is journalled as failed", scope?.status === "failed", scope?.status);
   ok("carrying the sibling it cancelled, because a failing arm owes its losers exactly as a winning one does",
     JSON.stringify(scope?.cancel?.losers) === '["slow"]', scope?.cancel);
   ok("with the cancellation still undischarged", scope?.cancel?.issued === false);
-  ok("the loser really was mid-flight when the race ended", j.entries().some((e) => e.name === "s1"),
-    j.entries().map((e) => e.name));
-  ok("and it performed NO effect after the race ended", !j.entries().some((e) => e.name === "s2"),
-    j.entries().map((e) => `${e.name}:${e.state}`));
 }
 
 {
@@ -454,9 +456,17 @@ await race({
   });
   logged.length = 0;
   const jj = new Journal({ run: "r-1", entries });
-  await resume(RACE, jj, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
-  const said = logged.find((l) => l.length === 2);
-  ok("a branch recorded as cancelled does not win the race it lost", said?.[0] === "slow", logged);
+  // Admitting the cancelled arm does not merely pick the wrong winner: the winner is a rejection,
+  // so the whole scope re-settles as cancelled and the resume throws. Caught here so the failure
+  // lands on this cell rather than killing the suite from outside any assertion.
+  let winner: unknown;
+  try {
+    await resume(RACE, jj, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+    winner = logged.find((l) => l.length === 2)?.[0];
+  } catch (e) {
+    winner = `threw:${(e as Error).name}`;
+  }
+  ok("a branch recorded as cancelled does not win the race it lost", winner === "slow", winner);
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);

@@ -373,4 +373,41 @@ const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
     journal.entries().map((e) => e.state));
 }
 
+{
+  // The third place a refusal can land: `ctx.bind`, which a handler calls from INSIDE its own
+  // dispatch to record the external resource it just created. That append is inside the handler's
+  // try by construction, so without a domain check it comes back as a handler fault — the run
+  // blaming the agent for something the log did.
+  const sim = new SimHandler({});
+  const binding: EffectHandler = {
+    ...counting(sim, []),
+    turn: async (_req, ctx) => {
+      await ctx.bind({ goalId: "g-1" });
+      return { status: "done", at: 0 };
+    },
+  };
+  const store = {
+    append: async (e: JournalEntry) => {
+      if (e.external !== undefined) throw new Error("stream said no");
+    },
+  };
+  const journal = new Journal({ run: "r-10c", store });
+  let caught: unknown;
+  try {
+    await run('const b = await spawn("b");\nawait turn(b, { name: "build" });', {
+      runId: "r-10c",
+      journal,
+      handler: binding,
+    });
+  } catch (e) {
+    caught = e;
+  }
+  ok("a refusal raised from inside the handler's own dispatch is still a durability failure",
+    (caught as { code?: string })?.code === "L5010", String(caught).slice(0, 60));
+  ok("not an effect failure blamed on the agent", (caught as Error)?.name !== "EffectError", (caught as Error)?.name);
+  ok("and the external resource is not recorded, because recording it is what was refused",
+    journal.entries().every((e) => e.external === undefined),
+    journal.entries().map((e) => e.external));
+}
+
 console.log(`journal.smoke: ${pass} checks passed`);
