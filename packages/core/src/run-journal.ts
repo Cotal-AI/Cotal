@@ -43,8 +43,9 @@
  * publishes carrying the same expectation cannot both land: the server accepts one and refuses the
  * other, which under the rule above would make a driver declare ITSELF superseded while it is the
  * only writer. So the appender owns one queue and one head, publishes one entry at a time, and
- * advances the head only from each PubAck. A refusal poisons it: everything queued behind fails
- * with the same terminal error and never reaches the wire.
+ * advances the head only from each PubAck. Any outcome without a PubAck — a refusal, a timeout, a
+ * dropped connection — poisons it: everything queued behind fails with the same terminal error and
+ * never reaches the wire.
  *
  * **ONE SUBJECT PER RUN**, `<spacePrefix>.wfj.<runId>`, where the design's §7.6 writes
  * `…wfj.<runId>.<entryId>`. This is a deviation, and it is NOT because a per-entry subject cannot be
@@ -124,6 +125,34 @@ export class RunSuperseded extends Error {
     );
     this.name = "RunSuperseded";
   }
+}
+
+/**
+ * An append ended without a PubAck for a reason that is not a refusal.
+ *
+ * A timeout, a dropped connection, a serialization failure: the entry may be on disk, may not be,
+ * and the appender cannot tell. Either way its head is no longer known to match the subject's, so
+ * every later append would carry an expectation it invented. That is the read-then-publish window
+ * the barrier exists to close, so this is terminal in exactly the way {@link RunSuperseded} is —
+ * distinct only because nobody else has necessarily taken the run, and the same driver may recover
+ * it by replaying and activating again, which is what re-reads the true head.
+ */
+export class RunJournalStalled extends Error {
+  constructor(
+    readonly run: string,
+    readonly subject: string,
+    readonly expectedSeq: number,
+    override readonly cause: unknown,
+  ) {
+    super(
+      `run ${run} lost the head of ${subject}: an append expecting last sequence ${expectedSeq} ended without a PubAck (${messageOfCause(cause)}). Whether it landed is unknown — this appender is finished. Replay and activate again to learn the real head.`,
+    );
+    this.name = "RunJournalStalled";
+  }
+}
+
+function messageOfCause(cause: unknown): string {
+  return cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
 }
 
 /**
@@ -277,7 +306,7 @@ async function publishFenced(
  */
 export class RunJournalAppender {
   /** Set once the stream refuses an append. Terminal, and checked before the wire is touched. */
-  private dead: RunSuperseded | undefined;
+  private dead: RunSuperseded | RunJournalStalled | undefined;
   /** The serial pump. Every append waits for the one before it, so one expectation is in flight. */
   private chain: Promise<void> = Promise.resolve();
 
@@ -306,8 +335,16 @@ export class RunJournalAppender {
     return this.seq;
   }
 
-  /** True once the stream has refused an append. The driver stops; nothing here recovers. */
+  /** True once the stream has REFUSED an append: someone else holds the run. */
   get isSuperseded(): boolean {
+    return this.dead instanceof RunSuperseded;
+  }
+
+  /**
+   * True once this appender has stopped writing, for either reason. Drivers test this; only the
+   * recovery path cares which of the two it was.
+   */
+  get isFinished(): boolean {
     return this.dead !== undefined;
   }
 
@@ -341,7 +378,17 @@ export class RunJournalAppender {
     // again, which is the one thing the barrier forbids.
     if (this.dead !== undefined) throw this.dead;
     const record: RunJournalStep = { v: 1, kind: "step", run: this.run, at, entry };
-    const r = await publishFenced(this.js, this.subject, record, this.seq);
+    // EVERY outcome without a PubAck is terminal, not just a refusal. A publish that throws leaves
+    // the head unknown, and the next queued append would reuse the stale expectation: measured, an
+    // entry that failed to serialize was followed by the NEXT entry landing at the same head, so the
+    // journal read back {n:0},{n:2} with a live appender and a hole where {n:1} should be.
+    let r: { ok: true; seq: number } | { ok: false; cause: unknown };
+    try {
+      r = await publishFenced(this.js, this.subject, record, this.seq);
+    } catch (e) {
+      this.dead = new RunJournalStalled(this.run, this.subject, this.seq, e);
+      throw this.dead;
+    }
     if (!r.ok) {
       this.dead = new RunSuperseded(this.run, this.subject, this.seq, r.cause);
       throw this.dead;

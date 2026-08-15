@@ -31,6 +31,7 @@ import {
   activateRun,
   replayRunJournal,
   RunSuperseded,
+  RunJournalStalled,
   ActivationRaced,
   parseRunJournalRecord,
   type RunJournalActivation,
@@ -270,6 +271,56 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   try { await stale.append({ n: 2 }, 2); } catch (e) { afterClose = e; }
   c("and it is STILL superseded with no broker to ask: the refusal is its own state, not a round trip",
     afterClose instanceof RunSuperseded, `${(afterClose as Error)?.name}: ${String((afterClose as Error)?.message).slice(0, 60)}`);
+}
+
+// ── 5c) an append that ends without a PubAck is terminal too, refusal or not ──────────────────
+//
+// The first barrier poisoned the pump only on a CAS refusal, and everything else — a timeout, a
+// dropped connection, an entry that will not serialize — was rethrown with the head untouched and
+// the appender still live. Measured, that is not a lost write but a HOLE: the failed entry's
+// successor was published at the same expectation, landed, and the journal read back {n:0},{n:2}
+// with no indication anything was missing. A replay resumes from a prefix that never happened.
+{
+  const a = await activateRun(js, jsm, takeover("r-5c", "d1", 1));
+  await a.append({ n: 0 }, 0);
+  // Two appends issued together: the first cannot be serialized (a bigint), the second is ordinary.
+  const results = await Promise.allSettled([a.append({ n: 1, bad: 1n }, 1), a.append({ n: 2 }, 2)]);
+  c("an append that never reached the broker fails as a lost head, not as a raw TypeError",
+    results[0]!.status === "rejected" && (results[0] as PromiseRejectedResult).reason instanceof RunJournalStalled,
+    String((results[0] as PromiseRejectedResult)?.reason).slice(0, 80));
+  c("and it carries the underlying cause rather than hiding it",
+    ((results[0] as PromiseRejectedResult)?.reason as RunJournalStalled)?.cause instanceof TypeError);
+  c("the NEXT queued append does not reuse the stale expectation", results[1]!.status === "rejected",
+    results[1]!.status === "fulfilled" ? `landed at seq ${(results[1] as PromiseFulfilledResult<number>).value}` : "rejected");
+  c("the appender is finished, though nobody superseded it", a.isFinished && !a.isSuperseded);
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5c");
+  const steps = back.records.filter((r) => r.record.kind === "step").map((r) => (r.record as { entry: unknown }).entry);
+  c("and the journal has no hole: the entry after the failure is absent, not written over its gap",
+    steps.length === 1 && (steps[0] as { n: number }).n === 0, JSON.stringify(steps));
+}
+
+// ── 5d) the same, when the connection is what went away ───────────────────────────────────────
+//
+// The ambiguous case, and the reason this is terminal rather than retryable: a publish that dies in
+// flight may already be on disk. The appender cannot tell, so it must not guess — the only thing
+// that re-establishes a true head is replaying and activating again.
+{
+  const nc3 = await connect({ servers });
+  const jsm3 = await jetstreamManager(nc3);
+  const js3 = jetstream(nc3);
+  const a = await activateRun(js3, jsm3, takeover("r-5d", "d1", 1));
+  await a.append({ n: 0 }, 0);
+  await nc3.close();
+  let lost: unknown;
+  try { await a.append({ n: 1 }, 1); } catch (e) { lost = e; }
+  c("an append into a dead connection stalls the appender", lost instanceof RunJournalStalled,
+    `${(lost as Error)?.name}`);
+  c("and it stays stalled without asking anyone", a.isFinished);
+  // Recovery is the ordinary takeover path, by the SAME holder: replay, learn the real head, activate.
+  const again = await activateRun(js, jsm, takeover("r-5d", "d1", 2));
+  c("a fresh activation recovers the run and knows the prefix", again.steps().length === 1);
+  const seq = await again.append({ n: 2 }, 2);
+  c("and it can write again", seq > 0 && !again.isFinished);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
