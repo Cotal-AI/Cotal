@@ -74,9 +74,21 @@ const frame = aguiFrame({
   epoch: "e1",
   seq: 1,
   events: [
-    textMessageStart({ messageId: "m1", role: "assistant" }),
-    textMessageContent({ messageId: "m1", delta: CANARY }),
-    textMessageEnd({ messageId: "m1" }),
+    // `timestamp` is REQUIRED by all three of these constructors and this file omitted it on all
+    // three. THREE INDEPENDENT GUARDS, NONE OF WHICH HAD JURISDICTION over this file:
+    //   - `tsx` strips types without checking them;
+    //   - this package's tsconfig is `"include": ["src"]`, so `smoke/` is outside its typecheck;
+    //   - the suite is deliberately ungated, so no gate run exercises it.
+    // Not one failure of care — an uncovered intersection nothing was ever responsible for, in the
+    // file that IS the merge gate.
+    //
+    // AND NEITHER VOCABULARY VALIDATOR WOULD HAVE CAUGHT IT, which is a separate fact and is not
+    // part of the set above: `aguiFrame` validates the ENVELOPE only (`:449-466`), and
+    // `parseAguiFrame` validates each event's `type` against `AGUI_EVENT_TYPE` and nothing else
+    // (`:542-553`). A frame of structurally invalid events passes producer and consumer alike.
+    textMessageStart({ messageId: "m1", role: "assistant", timestamp: 1 }),
+    textMessageContent({ messageId: "m1", delta: CANARY, timestamp: 2 }),
+    textMessageEnd({ messageId: "m1", timestamp: 3 }),
   ],
 });
 const parts = [frame as unknown as { kind: string }];
