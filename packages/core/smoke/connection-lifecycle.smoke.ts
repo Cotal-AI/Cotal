@@ -594,8 +594,16 @@ try {
   armCheck("ARM 4", "D4d CONTROL: connect() through the same path SUCCEEDS (so D4c's refusal was the bind, not the verb)",
     r4ok.outcome === "connected", r4ok);
   const r4again = await d.connect();
-  armCheck("ARM 4", "D4e CONTROL: a SECOND connect() on the now genuinely-connected session DOES answer `already-connected` (so D4c's arms can differ — it is not that the reason is never produced)",
-    r4again.outcome === "refused" && (r4again as any).reason === "already-connected", r4again);
+  // FOUND BY THE MUTANT, and it is the reason the mutation run was worth more than the green one.
+  // This cell used to assert only that the second connect answers `already-connected`. Under the
+  // mutant it PASSED — because the residual half-bound handle produces that same reason for a
+  // session that never connected at all. A cell whose assertion holds in both the safe and the
+  // unsafe state is not a control, however it is labelled. So it now carries its own premise: the
+  // FIRST connect must have genuinely succeeded, in this cell, rather than being inherited from
+  // D4d standing next to it in the log.
+  armCheck("ARM 4", "D4e CONTROL: a SECOND connect() on a session that GENUINELY connected does answer `already-connected` (so D4c's arms can differ — it is not that the reason is never produced)",
+    r4ok.outcome === "connected" && r4again.outcome === "refused" && (r4again as any).reason === "already-connected",
+    { first: r4ok, second: r4again });
   armCheck("ARM 4", "D4f CONTROL: the broker now shows a live connection (so D4a could have failed)",
     (await varz()).current > 0, await varz());
 

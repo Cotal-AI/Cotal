@@ -1,0 +1,76 @@
+# connection-control (gate fix + fixture granted) — tip 2f92d932+wip — Sat Aug 15 03:10:22 AM UTC 2026
+[provenance] core dist built at 2026-08-15T03:08:53.743Z — newer than every packages/core/src/*.ts
+[safety] dialling nats://127.0.0.1:38995 — asserted not broker.cotal.ai, loopback only; inherited COTAL_* deleted
+[cotal-connector] connected to nats://127.0.0.1:38995 as observer-b/supervisor in space "meshctl-conn" on #general
+[cotal-connector] connected to nats://127.0.0.1:38995 as subject-a/worker in space "meshctl-conn" on #general
+
+=== the grant gate (tool-surface visibility) ===
+  ✓ G1 without `capabilities: [connection]` the verbs are ABSENT from the surface
+  ✓ G2 CONTROL: with the grant they ARE present (so G1's arms could differ)
+  ✓ G3 an UNGRANTED USER-MODE session does not see the verbs either
+  ✓ G4 CONTROL: a granted user-mode session does (so G3's arms could differ)
+  ✓ G5 an OPEN-MODE session with NO grant does NOT see the verbs — no carve-out; the capability is required in every mode
+  ✓ G6 CONTROL: the SAME open-mode config WITH the grant does see them (so G5 is the capability deciding, not the verbs being absent)
+
+=== C1 CONTROL: a granted, connected agent disconnects itself ===
+  ✓ A3d-univ CONTROL: this inbox read DOES deliver a DM while connected (so A3d's later silence is the disconnect, not a dead read)
+  ✓ C1a CONTROL: observer-B sees subject-a PRESENT and not offline beforehand
+  ✓ C1b disconnect through the real tool SUCCEEDS
+  ✓ C1c it reports the departure, not a silent no-op
+
+=== A1/A2 what the SUPERVISOR sees (asserted at the broker, via observer-B) ===
+  ✓ A1 observer-B sees subject-a OFFLINE — a deliberate departure is visible, not inferred from silence
+  ✓ A2 the CAUSE STRING reaches observer-B — it can READ the text (which is not the same as being able to trust it; DESIGN 9.1)
+
+=== A3 the disconnect STICKS: the self-heal must not undo a deliberate departure ===
+  ✓ A3 still offline after the self-heal's retry window elapsed
+  ✓ A3b and the agent itself agrees it is deliberately off
+  ✓ A3c the connection is actually DOWN, not merely reported down
+  ✓ A3d nothing is delivered live while disconnected (the functional arm)
+
+=== named refusals (each asserted as THAT refusal) ===
+  ✓ R1 disconnecting again refuses as [not-connected]
+  ✓ R2 the RECOVERY path refuses to silently reverse a deliberate state, and names the verb that does
+
+=== C2 CONTROL (inverse): the agent brings ITSELF back through the same surface ===
+  ✓ C2a connect through the real tool SUCCEEDS
+  ✓ C2b it reports the space it returned to
+  ✓ C2c observer-B sees subject-a BACK (so A1's offline was the disconnect, not a dead fixture)
+  ✓ R3 connecting again refuses as [already-connected]
+
+=== THE AUTHED ARM: the same verbs, with a real credential and a real grant ===
+  ✓ PRE-AUTHED: EX the broker is REALLY enforcing auth — a credential-less client is REFUSED
+     └─ credential-less connect → rejected: Authorization Violation
+[cotal-connector] connected to nats://127.0.0.1:39175 as authed-subject/worker in space "meshctl-authed" on #general
+  ✓ PRE-AUTHED: E0 the AUTHED session connected with a real minted credential
+  ✓ E1 the verbs are on the surface of a REAL authed+granted session (not just a synthesized config)
+  ✓ E2 CONTROL: the authed observer can see the authed subject at all, BEFORE anything is claimed about its departure
+  ✓ E3 an AUTHED self-disconnect succeeds through the real tool
+  ✓ E4 and an INDEPENDENT AUTHED observer sees it offline — the supervisor property holds under auth, not just in open mode
+  ✓ E5 the cause STRING is displayed on the authed path too (display only — does NOT distinguish a departure from a stale heartbeat; see DESIGN 9.1)
+  ✓ E6 the authed agent brings ITSELF back through the same surface
+  ✓ E7 CONTROL: the observer sees it back (so E4's offline was the disconnect, not a dead fixture)
+  ✓ PRE-AUTHED: E8-pre the out-of-ACL post was actually PUBLISHED, so there is something for the broker to withhold
+  ✓ E9 CONTROL: the IN-ACL post IS delivered (so E8's silence is a denial, not a dead probe)
+  ✓ E8 an out-of-ACL read is STILL denied after the self-reconnect — the credential came back no wider than it left
+  ✓ PRE-AUTHED: E10-pre the subtree post was actually PUBLISHED, so there is something to withhold
+  ✓ E10-univ CONTROL: THIS inbox read is non-empty and still shows the in-ACL message (so E10's absence is measured against a live universe)
+  ✓ E10 a SUBTREE grab outside the ACL is denied after the reconnect too — the return did not widen the credential by shape either
+[cotal-connector] endpoint error: NATS permission denied: cannot publish "cotal.meshctl-authed.chat.local.UCRX7RSQJQ474BZVM4B3OVH5ABKVAA2RPSVZJB3LOK2AE4RTTMU2L262.secret" - check this endpoint's ACLs (a denied peer looks "absent" rather than blocked)
+  ✓ E11 CONTROL: the subject's IN-ACL post IS witnessed at the broker (so E12's silence is a denial, not a dead witness)
+  ✓ E12 the subject still CANNOT post outside its publish ACL after the self-reconnect — the return did not widen what it may SAY, only what it may hear was checked before
+  ▸ RECORDED (not asserted) — what the caller is told when it posts outside its publish ACL:
+      isError=true  text="Couldn't send: Permissions Violation for Publish to \"cotal.meshctl-authed.chat.local.UCRX7RSQJQ474BZVM4B3OVH5ABKVAA2RPSVZJB3LOK2AE4RTTMU2L262.secret\""
+  ✓ PRE-AUTHED: E14-pre the subject can RESOLVE the stranger by name (so a DM failure below would be an AUTHORITY result, not a lookup miss)
+  ✓ E14 the subject CAN DM a peer it shares no channel and holds no grant about — witnessed AT THE RECIPIENT, not self-reported
+  ✓ E15 the subject CAN anycast a role it holds no grant about — witnessed at the role's server
+  ▸ RECORDED (not asserted) — anycast to a role with NO server bound:
+      isError=false  text="Sent to one @nobody-serves-this."
+  ✓ E16 SUMMARY (derived from E12 ∧ E14 — drives nothing new, cannot fail if both passed): denied one word to #secret, delivered a DM to that channel's only member — `allowPublish` bounds broadcast, not peer reach
+     └─ re-target own space "meshctl-authed" → PERMITTED: the publish was accepted by the broker
+     └─ re-target other space "meshctl-elsewhere" → publish-refused: Permissions Violation for Publish to "cotal.meshctl-elsewhere.chat.local.UCRX7RSQJQ474BZVM4B3OVH5ABKVAA2RPSVZJB3LOK2AE4RTTMU2L262.general"
+  ✓ E17 CONTROL: the same credential through the same constructor DOES reach its OWN space (so E18 is a bounded credential, not a broken probe)
+  ✓ E18 THE FENCE: the same credential re-pointed at ANOTHER space is refused BY THE BROKER'S PERMISSIONS, naming the foreign subject — a self-connect cannot widen which space the agent reaches, whatever the client asks for
+
+CONNECTION-CONTROL SMOKE OK ✅  (45 passed, 0 failed, 0 VOID)
+# rc=0

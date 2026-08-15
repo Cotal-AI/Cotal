@@ -142,7 +142,13 @@ async function main() {
   const { MeshAgent } = await import("../src/agent.js");
   const { cotalToolSpecs } = await import("../src/tool-specs.js");
 
-  const cfgA = mk("subject-a", "worker");
+  // ⚠️ THE GRANT IS EXPLICIT HERE NOW, AND IT WAS NOT BEFORE — the removal of the open-mode
+  // disjunct is what exposed it. This suite's subject is an OPEN-MODE agent with no capabilities,
+  // so every C1/A/E cell below reached the verbs THROUGH THE BYPASS the gate fix removed. The suite
+  // was therefore exercising a surface no granted deployment would present, and it said so nowhere.
+  // The right repair is to grant the fixture what a real caller must hold, not to restore the
+  // carve-out: a suite that needs the permissive arm to reach its subject is measuring the arm.
+  const cfgA = { ...mk("subject-a", "worker"), capabilities: ["connection"] };
   const cfgB = mk("observer-b", "supervisor");
   const A = new MeshAgent(cfgA as any);
   const B = new MeshAgent(cfgB as any);
