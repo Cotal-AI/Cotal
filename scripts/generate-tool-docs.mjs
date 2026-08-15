@@ -15,8 +15,20 @@ import { cotalToolSpecs } from "../extensions/connector-core/src/tool-specs.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "..", "docs", "mcp-tools.md");
 
-// A representative config: open-mode-ish (no creds ⇒ the capability-gated tools are
-// included and marked below), default channel `general`.
+// A representative config. This page documents EVERY tool and marks each one's availability in its
+// annotation, so the config has to be the one that sees them all — it is a documentation fixture,
+// not a deployment.
+//
+// ⚠️ IT DECLARES THE GATING CAPABILITIES EXPLICITLY, AND IT DID NOT USED TO. The old comment here
+// read "open-mode-ish (no creds ⇒ the capability-gated tools are included)" — i.e. this generator
+// was relying on the open-mode arm of the capability gate to hand it tools it had not asked for.
+// When that arm was removed (`connection` is now required in every mode), the verbs vanished from
+// the spec list while their annotations remained, and the generator died on `orphaned annotation
+// cotal_disconnect` — taking `check:docsbundle` and `ci:version` with it.
+//
+// Found by review, in the gap between two suites: one measured the tool surface, the other the
+// broker, and neither executed this script. Naming it here because it is the SECOND consumer of
+// that bypass to surface — the first was a smoke fixture — and a third is more likely than not.
 const config = {
   space: "main",
   name: "you",
@@ -25,6 +37,7 @@ const config = {
   allowSubscribe: ["general"],
   allowPublish: ["general"],
   kind: "agent",
+  capabilities: ["connection", "spawn"],
 };
 
 /** Side-effect + availability annotations, keyed by tool name. Every spec MUST have one. */
