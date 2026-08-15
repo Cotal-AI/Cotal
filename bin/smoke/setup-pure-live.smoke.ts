@@ -71,11 +71,23 @@ ok("resolution is CONTAINED in the project dir (an escaped root writes into a re
 const runtimeArtifact = (name: string) => localProcessPath(name, { root: proj, space: "main" });
 
 // MUST-PASS CONTROL, before any of the absence cells run. `all absence cells green` and `the suite
-// never reached them` are the same output, so prove the detection path is live: plant a file at the
-// exact path the product would write, require it to be SEEN, remove it, require it to be gone.
+// never reached them` are the same output, so the detection path must be proved live.
+//
+// The plant/detect pair below is necessary but NOT sufficient, and saying so is the point: it writes
+// a path and then reads THE SAME path, which is self-consistent for ANY writable location. It proves
+// `writeFileSync`/`existsSync` work; it does NOT prove the path is the product's. That was measured,
+// not reasoned — with `runtimeArtifact` redirected back to the old `join(home, name)`, the suite
+// stayed green at 26/26 and both plant/detect cells passed, so the control as first written would
+// NOT have caught the very drift it was added to catch.
+//
+// So pin the SHAPE of the resolved path first, against the layout `localProcessPath` documents
+// (`<root>/.cotal/<name>`, local-process.ts:50). A wrong root or a lost `.cotal` segment reddens
+// this cell, which is exactly the defect class the B-cells below drifted into.
 const pidProbe = runtimeArtifact("manager.pid");
+ok("CONTROL: the probed path IS the product's — under the project's own `.cotal/`, not hand-built",
+  pidProbe === join(proj, ".cotal", "manager.pid"), { pidProbe, expected: join(proj, ".cotal", "manager.pid") });
 writeFileSync(pidProbe, "0\n");
-ok("CONTROL: a pidfile at the product's own path IS detected (else every absence cell is vacuous)",
+ok("CONTROL: a planted pidfile at that path IS detected (else every absence cell is vacuous)",
   existsSync(pidProbe), { pidProbe });
 rmSync(pidProbe);
 ok("CONTROL: and detection clears once it is removed", !existsSync(pidProbe), { pidProbe });

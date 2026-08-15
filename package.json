@@ -268,7 +268,7 @@
     "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
     "smoke:spawn-detach:live": "tsx bin/smoke/spawn-detach-live.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
-    "smoke:setup-pure:live": "tsx bin/smoke/setup-pure-live.smoke.ts",
+    "smoke:setup-pure:live": "pnpm --filter @cotal-ai/workspace... build && tsx bin/smoke/setup-pure-live.smoke.ts",
     "smoke:up-stack:live": "tsx bin/smoke/up-stack-live.smoke.ts",
     "smoke:ext:live": "tsx bin/smoke/ext-live.smoke.ts",
     "smoke:dogfood:live": "tsx bin/smoke/dogfood-live.smoke.ts",
