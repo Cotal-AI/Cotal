@@ -14,7 +14,7 @@
  * silently. A type-only import keeps the bundle self-contained.
  */
 import type { ToolDefinition } from "@opencode-ai/plugin";
-import { cotalToolSpecs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, parseToolArgs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 
 /** Build the cotal_* tool map wired to one mesh agent, rendered from the shared specs. */
 export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<string, ToolDefinition> {
@@ -34,10 +34,22 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
     }
     tools[spec.name] = {
       description: spec.description,
-      // The shared spec carries a Zod raw shape, which is what OpenCode's tool `args` takes.
-      args: (spec.schema ?? {}) as Record<string, never>,
+      // OpenCode's `args` is a raw SHAPE at runtime, not a schema: handed the shared spec's closed
+      // object it walks that object's own properties as if they were fields, and the whole
+      // `tool.list` response then fails to serialize — every cotal_* tool disappears, not just one.
+      // So this host is advertised open, and closed below instead.
+      args: (spec.schema?.shape ?? {}) as Record<string, never>,
       async execute(args: unknown) {
-        const r = await spec.run(agent, config, (args ?? {}) as any);
+        // OpenCode passes the model's object through UNVALIDATED (its `execute` type claims
+        // otherwise), so this is the only place the closed object bites on this host. A stray
+        // `owner`/`actor` is refused by name rather than silently reaching `run`.
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = parseToolArgs(spec, args);
+        } catch (e) {
+          return `⚠ ${(e as Error).message}`;
+        }
+        const r = await spec.run(agent, config, parsed);
         return r.isError ? `⚠ ${r.text}` : r.text;
       },
     };

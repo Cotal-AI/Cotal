@@ -27,7 +27,14 @@
  */
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
-import { cotalToolSpecs, type MeshAgent, type AgentConfig, type InboxItem, type CotalToolSpec } from "@cotal-ai/connector-core";
+import {
+  cotalToolSpecs,
+  parseToolArgs,
+  type MeshAgent,
+  type AgentConfig,
+  type InboxItem,
+  type CotalToolSpec,
+} from "@cotal-ai/connector-core";
 
 /** Reply routing target the adapter derives from a turn's session/chat id. */
 interface ReplyTarget {
@@ -111,11 +118,17 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   };
 
   /** Run a cotal_* tool by name against the shared specs. cotal_inbox consumes only pull-only
-   *  quiet traffic, so it cannot race the connector's automatic per-turn delivery ack. */
+   *  quiet traffic, so it cannot race the connector's automatic per-turn delivery ack.
+   *
+   *  The args arrive raw off the sidecar socket — nothing above us has validated them against the
+   *  descriptor we published, so this is the only place the spec's closed object can bite. An
+   *  unmodelled key is refused by name rather than dropped: on the MCP and pi hosts the host
+   *  itself refuses one, and a key the model believes it sent (`owner`, `actor`) must not go
+   *  silently missing here just because Hermes's validation lives outside our process. */
   const onTool = async (name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
     const spec = specs.get(name);
     if (!spec) throw new Error(`unknown cotal tool: ${name}`);
-    const a = name === "cotal_inbox" ? { scope: "pull-only" } : (args ?? {});
+    const a = name === "cotal_inbox" ? { scope: "pull-only" } : parseToolArgs(spec, args);
     const r = await spec.run(agent, config, a);
     return { text: r.text, isError: !!r.isError };
   };

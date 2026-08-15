@@ -1,0 +1,90 @@
+/**
+ * OPENCODE ADVERTISES OPEN AND ENFORCES CLOSED, AND BOTH HALVES OF THAT ARE MEASURED, NOT CHOSEN.
+ *
+ * The shared specs carry a CLOSED input object so an unmodelled key — `owner`, `actor` — is refused
+ * by name instead of silently stripped. On the MCP hosts and pi the host itself refuses one and the
+ * tool is never reached. OpenCode is neither of those things, in two ways that pull in opposite
+ * directions:
+ *
+ *   ADVERTISE. Its `args` is a raw SHAPE at runtime, not a schema. Handed the closed object it
+ *   walks that OBJECT's own properties as if they were the field map, and the whole `tool.list`
+ *   response then fails to serialize — every cotal_* tool disappears from the session, not just the
+ *   one. So the adapter renders `spec.schema.shape`, and what OpenCode publishes stays open.
+ *
+ *   ENFORCE. It does NOT validate before calling us. Its plugin type says `execute(args:
+ *   z.infer<z.ZodObject<Args>>)`, but a real call through a real OpenCode session delivered
+ *   `{text, owner, actor}` to `execute` intact. Nothing above the adapter has touched those args,
+ *   so the adapter's own dispatch is the boundary — closing there is the genuine enforcement point,
+ *   not a stand-in for one.
+ *
+ * The asymmetry is the cost of the host and is worth stating: the model is not told up front that
+ * the key is disallowed, it learns from the refusal at call time. That makes the refusal the whole
+ * interface, so it names the rejected keys AND lists what the tool does accept — enough for the
+ * next attempt to be right without a second guess.
+ *
+ * WHAT THIS FILE ASSERTS:
+ *   1. the rendered `args` is a raw shape, NOT the closed object   <- or the tool list 400s
+ *   2. a call carrying identity-shaped extras is REFUSED
+ *   3. the refusal names the rejected keys and the accepted ones
+ *   4. ...and the tool's `run` never executes
+ *
+ * WHAT IT DOES NOT COVER: that OpenCode still passes args through unvalidated. That is the host's
+ * behaviour, not ours, and if a future OpenCode starts stripping, (2)-(4) keep passing while the
+ * key is dropped upstream — the assertions here would then be measuring our parse against args the
+ * host already cleaned. Re-measure through a live session before relying on this as host coverage.
+ *
+ * Run: pnpm smoke:opencode-tool-closed
+ */
+import { configFromEnv, cotalToolSpecs, type MeshAgent } from "@cotal-ai/connector-core";
+import { buildCotalTools } from "../src/tools.js";
+
+process.env.COTAL_SPACE ||= "toolclosed";
+process.env.COTAL_NAME ||= "oc-1";
+process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
+
+let failures = 0;
+const check = (label: string, ok: boolean, extra?: unknown): void => {
+  if (ok) { console.log(`  ok    ${label}`); return; }
+  failures++;
+  console.log(`  FAIL  ${label}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+};
+
+const config = configFromEnv();
+// Any use of the agent means the refusal did not bite: fail loudly rather than let a mutated
+// fixture pass quietly.
+const agent = new Proxy({} as MeshAgent, {
+  get(_t, prop) { throw new Error(`the tool reached the mesh agent (${String(prop)}) — it should have been refused`); },
+});
+
+const TOOL = "cotal_status"; // takes only optional args, so the extras are the ONLY reason to fail
+const spec = cotalToolSpecs(config, "opencode").find((s) => s.name === TOOL);
+if (!spec?.schema) throw new Error(`${TOOL} is no longer a schema-bearing tool — repoint this suite`);
+const accepted = Object.keys(spec.schema.shape);
+
+const tools = buildCotalTools(agent, config);
+const tool = tools[TOOL];
+check(`${TOOL} is rendered onto the OpenCode surface`, !!tool);
+
+// 1. A raw shape, not the closed object. `safeParse` is the discriminator: the closed object has
+// it, a field map does not — and handing OpenCode the object with it is what breaks tool.list.
+const args = tool.args as unknown as Record<string, unknown> & { safeParse?: unknown };
+check("the rendered args is a raw SHAPE, not the closed object OpenCode cannot serialize",
+  typeof args?.safeParse !== "function" && Object.keys(args ?? {}).length === accepted.length,
+  { keys: Object.keys(args ?? {}), accepted });
+
+// 2-4. The dispatch closes what the host left open.
+const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
+const out = String(await tool.execute({ ...IDENTITY_EXTRA }, {} as never));
+
+check("a call carrying identity-shaped extras is REFUSED at the adapter's dispatch",
+  out.startsWith("⚠"), { out });
+check("the refusal names the rejected keys AND lists what the tool accepts",
+  Object.keys(IDENTITY_EXTRA).every((k) => out.includes(k)) && accepted.every((k) => out.includes(k)),
+  { out, accepted });
+// The agent Proxy throws on any access, so a reached `run` would have surfaced as a thrown error
+// rather than a refusal string — which is precisely what the assertion above would have caught.
+check("...and the refusal precedes the effect: the tool never reached the mesh agent",
+  !out.includes("reached the mesh agent"), { out });
+
+console.log(`\n${failures === 0 ? "OPENCODE-TOOL-CLOSED SMOKE OK ✅" : "OPENCODE-TOOL-CLOSED SMOKE FAILED"}  (${failures} failed)`);
+process.exit(failures === 0 ? 0 : 1);

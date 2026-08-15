@@ -2,8 +2,8 @@
  * Render the shared Cotal tool surface as Hermes plugin-tool descriptors.
  *
  * One source of truth: {@link cotalToolSpecs} (connector-core). We do NOT hand-write the Hermes
- * tool list — we generate `{name, description, parameters}` from each spec (Zod raw shape →
- * JSON Schema via Zod 4's `toJSONSchema`) so a Hermes peer gets exactly the same `cotal_*`
+ * tool list — we generate `{name, description, parameters}` from each spec (the spec's closed Zod
+ * object → JSON Schema via Zod 4's `toJSONSchema`) so a Hermes peer gets exactly the same `cotal_*`
  * surface as Claude Code / OpenCode, and `parity.smoke.ts` fails if the two ever drift.
  *
  * The descriptors are written to a file the launcher hands the gateway (`COTAL_TOOLS_FILE`); the
@@ -32,9 +32,7 @@ export function hermesToolDescriptors(config: AgentConfig): HermesToolDescriptor
     if (spec.name === "cotal_inbox") {
       return { name: spec.name, description: PULL_INBOX_DESCRIPTION, parameters: EMPTY_PARAMS };
     }
-    const parameters = spec.schema
-      ? (z.toJSONSchema(z.object(spec.schema)) as Record<string, unknown>)
-      : EMPTY_PARAMS;
+    const parameters = spec.schema ? (z.toJSONSchema(spec.schema) as Record<string, unknown>) : EMPTY_PARAMS;
     return { name: spec.name, description: spec.description, parameters };
   });
 }
