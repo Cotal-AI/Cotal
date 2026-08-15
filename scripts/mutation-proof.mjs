@@ -43,7 +43,7 @@ import { join, relative } from "node:path";
 
 /** The subject-side resolution probe (see the gate below). Kept beside the harness so a caller
  *  cannot forget it, and named here so a move breaks loudly rather than silently skipping the gate. */
-const PROBE = ".meshctl-measurement/meshctl-m15-resolution-probe.mts";
+const PROBE = "scripts/probes/m15-resolution-probe.mts";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -411,7 +411,7 @@ const base = run(opts.command, cwd, opts.timeoutMs, opts.priv?.env);
 // the shared build and the proof reported a clean SURVIVED about code it never executed.
 // A GUARD THAT READS A MESSAGE THE SUBJECT PRINTS ABOUT ITSELF IS CHECKING THE MESSENGER.
 // So the real gate is the probe below, which asserts IDENTITY on the object the subject built.
-const SRC_PROBE = ".meshctl-measurement/meshctl-m17-srcmap-probe.mts";
+const SRC_PROBE = "scripts/probes/m17-srcmap-probe.mts";
 const srcMode = Boolean(opts.priv?.env.COTAL_PRIVATE_SRC_MAP);
 if (opts.priv) {
   // The weak suite-side check only exists for the build seam: a src-copy run redirects at

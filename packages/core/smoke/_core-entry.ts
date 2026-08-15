@@ -6,7 +6,7 @@
  * is the artifact they EXECUTE. On this box two installed connector extensions symlink
  * `@cotal-ai/core` into a worktree, so a mutant compiled to the shared path was loaded by every
  * Claude and OpenCode seat for the length of the proof. See
- * `.meshctl-measurement/FINDING-mutation-on-shared-dist.md`.
+ * the lane's mutation-on-shared-dist finding (measurement notes, not carried in this branch).
  *
  * THE DEFAULT IS THE SHARED BUILD, DELIBERATELY. An ordinary run resolves exactly what a user
  * executes, so this trades no coverage for its provenance. Only a mutation proof sets

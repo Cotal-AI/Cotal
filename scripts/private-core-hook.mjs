@@ -7,7 +7,7 @@
  * drive a `MeshAgent`, `connector-core` imports core by BARE specifier, and a bare specifier
  * resolves through the workspace link to the SHARED `packages/core/dist`. So the suite ran the
  * mutant and the subject ran the shipped build, and the proof graded nothing while reporting a
- * clean SURVIVED. See `.meshctl-measurement/FINDING-mx14-survived-vacuously.md`.
+ * clean SURVIVED — measured, not reasoned: the run reported green about code it never executed.
  *
  * WHY A HOOK AND NOT THE TWO OBVIOUS ALTERNATIVES — both were considered and both are unsafe:
  *

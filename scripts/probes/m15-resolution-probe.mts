@@ -23,14 +23,14 @@
  * registers listeners; it does not dial. No broker, no network, no writes.
  *
  * Run BOTH ways, which is the whole point:
- *   node_modules/.bin/tsx .meshctl-measurement/meshctl-m15-resolution-probe.mts
+ *   node_modules/.bin/tsx scripts/probes/m15-resolution-probe.mts
  *     -> expect SHARED: the arms can differ, so a later PRIVATE result means something
  *   COTAL_PRIVATE_CORE=<abs>/index.js NODE_OPTIONS="--import ./scripts/private-core-register.mjs" \
- *     node_modules/.bin/tsx .meshctl-measurement/meshctl-m15-resolution-probe.mts
+ *     node_modules/.bin/tsx scripts/probes/m15-resolution-probe.mts
  *     -> expect PRIVATE
  */
 import { CotalEndpoint } from "@cotal-ai/core";
-import { MeshAgent } from "../extensions/connector-core/src/agent.js";
+import { MeshAgent } from "../../extensions/connector-core/src/agent.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -70,7 +70,7 @@ check("SUBJECT-SIDE: agent.ep instanceof CotalEndpoint — the subject's core IS
 // travel together and `instanceof` above is true in both arms. That is agreement, not evidence of
 // privateness. So reach the SHARED build by absolute path, which the hook does not touch, and
 // require the two classes to be distinguishable exactly when they are different artifacts.
-const sharedUrl = new URL("../packages/core/dist/index.js", import.meta.url).href;
+const sharedUrl = new URL("../../packages/core/dist/index.js", import.meta.url).href;
 const { CotalEndpoint: SharedEndpoint } = (await import(sharedUrl)) as { CotalEndpoint: unknown };
 const sameAsShared = agent.ep instanceof (SharedEndpoint as new () => unknown);
 check(wanted

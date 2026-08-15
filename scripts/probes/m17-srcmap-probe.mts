@@ -23,8 +23,8 @@ const [FROM, TO] = MAP.split("::");
 // specifier OUTSIDE the mapped prefix. Both are parameters rather than constants: the gate has to
 // name the subject of the run it is gating, and a probe hard-wired to one package would quietly
 // certify a different one. Defaults cover the connector suite; core runs pass the pair explicitly.
-const SUBJECT = process.env.COTAL_PROBE_SUBJECT ?? "../extensions/connector-core/src/agent.js";
-const CONTROL = process.env.COTAL_PROBE_CONTROL ?? "../packages/core/src/index.js";
+const SUBJECT = process.env.COTAL_PROBE_SUBJECT ?? "../../extensions/connector-core/src/agent.js";
+const CONTROL = process.env.COTAL_PROBE_CONTROL ?? "../../packages/core/src/index.js";
 if (SUBJECT === CONTROL) { console.log("VERDICT: probe misconfigured — subject and control are the same specifier"); process.exit(1); }
 
 const subjectUrl = import.meta.resolve(SUBJECT);
