@@ -228,6 +228,70 @@ for (const s of SURFACES) {
     siblingSurvived && frameLeftSomething, JSON.stringify(out));
 }
 
+/**
+ * THE KINDS NOBODY ENUMERATED — and the census cell that stops this file going blind again.
+ *
+ * Twice now this suite has been blind in a way no count of cells reduced: every cell rendered one
+ * `ag-ui.frame`, then every cell rendered a SINGLE part. Both times the fixture shape was uniform
+ * across the whole file, and **a uniform fixture shape is a blind spot that adding cells cannot
+ * fix.** The third instance was already here waiting: core's `Part` union has FOUR arms and this
+ * file exercised two of them.
+ *
+ * **So the kind list is DERIVED FROM THE SHIPPED TYPE, never written down here.** Hardcoding it
+ * would rebuild the exact defect: a kind added to `packages/core/src/types.ts` tomorrow would be
+ * ungraded, and nothing would say so. The census cell below fails when the union gains an arm this
+ * file has no fixture for — so the blindness becomes a red cell instead of a silence.
+ *
+ * It also **refuses an arm it cannot resolve** rather than skipping it. A parser that quietly drops
+ * what it does not understand is how an unenumerated kind stays unenumerated.
+ */
+const typesSrc = readFileSync(join(TREE, "packages", "core", "src", "types.js").replace(/\.js$/, ".ts"), "utf8");
+const unionBlock = typesSrc.match(/export type Part =([\s\S]*?);\n/)?.[1] ?? "";
+const derivedKinds: string[] = [];
+let unresolvedArm: string | null = null;
+for (const arm of unionBlock.split("|").map((a) => a.trim()).filter(Boolean)) {
+  const inline = arm.match(/kind:\s*"([^"]+)"/);
+  if (inline) { derivedKinds.push(inline[1]); continue; }
+  // A named shape — resolve it to its own `kind` literal rather than passing over it.
+  const named = arm.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+  const shape = named && typesSrc.match(new RegExp(`interface ${named[1]}\\s*\\{[\\s\\S]*?kind:\\s*"([^"]+)"`));
+  if (shape) { derivedKinds.push(shape[1]); continue; }
+  // The open extension arm is `kind: ExtensionPartKind`, deliberately not a literal — it is already
+  // graded above by BOTH of its sub-cases (data-bearing and data-less), so it is named, not skipped.
+  if (/ExtensionPartKind/.test(arm)) continue;
+  unresolvedArm = arm;
+}
+console.log(`  derived closed kinds from core's Part union: ${JSON.stringify(derivedKinds)}`);
+c("[census] every arm of core's Part union resolved to a kind or a named open arm", unresolvedArm === null, unresolvedArm);
+
+/** One fixture per closed kind, each carrying something a renderer must not lose. */
+const KIND_FIXTURES: Record<string, { part: unknown; must: string }> = {
+  text: { part: { kind: "text", text: "CANARY-TEXT-KIND" }, must: "CANARY-TEXT-KIND" },
+  data: { part: { kind: "data", data: { note: "CANARY-DATA-KIND" } }, must: "CANARY-DATA-KIND" },
+  // An artifact's digest is the only self-verifying field it has and the only handle a reader can
+  // act on, so that is what must survive — not merely "something non-empty".
+  artifact: {
+    part: { kind: "artifact", name: "report.html", mediaType: "text/html", size: 12, digest: "sha256:CANARYDIGEST" },
+    must: "sha256:CANARYDIGEST",
+  },
+};
+
+c("[census] this file has a fixture for every derived kind",
+  derivedKinds.every((k) => k in KIND_FIXTURES),
+  `derived ${JSON.stringify(derivedKinds)} vs fixtures ${JSON.stringify(Object.keys(KIND_FIXTURES))}`);
+
+for (const kind of derivedKinds) {
+  const fx = KIND_FIXTURES[kind];
+  if (!fx) continue; // already failed the census cell above; do not also report a phantom per surface
+  for (const s of SURFACES) {
+    if (!s.render) { c(`[kind:${kind}] ${s.name} renders it`, false, "path not found"); continue; }
+    const out = s.render([fx.part as { kind: string }]);
+    const held = out.includes(fx.must);
+    if (!held) console.log(`  [kind:${kind}] ${s.name} -> ${JSON.stringify(out)}`);
+    c(`[kind:${kind}] ${s.name} renders it without losing its identifying content`, held, JSON.stringify(out));
+  }
+}
+
 // ── The precondition's second half. A surface that can draw a frame but never subscribes to the
 //    channel carrying one has not met it either.
 for (const [surface, rel] of [
