@@ -28,6 +28,15 @@
  * NOT DRIVEN, and no cell implies it: that a live broker with no membership stream makes
  * `readMembership` reject. These cells stand on the narrower fact that WHEN it rejects, the refusal
  * is distinguishable from data at every surface that carries it.
+ *
+ * WHAT THIS FILE MISSED ON ITS FIRST PASS, kept here because the shape recurs. The original 18 cells
+ * covered the HTTP route and the pill and claimed to cover the boot path and the events too. They did
+ * not: `pillText` hand-injects `{unreadable: true}`, which proves the pill RENDERS that state and says
+ * nothing about anything PRODUCING it. Two mutations therefore survived with every cell green —
+ * dropping the boot status gate, and restoring `.catch(() => {})` on the event push — and both were
+ * confirmed by execution (rc=0, 18/18) before the cells below were written. **A cell that stops one
+ * step short of the surface under test is the same defect this file exists to fix: it reports success
+ * for a path it never reached.** Found by an adversarial reviewer, not by the author.
  */
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -54,6 +63,26 @@ const lift = (src: string, anchor: string): string | null => {
   for (let j = i; j < src.length; j++) {
     if (src[j] === "{") depth++;
     else if (src[j] === "}" && --depth === 0) return src.slice(start, j + 1);
+  }
+  return null;
+};
+
+/** Lift a STATEMENT — anchor through the first terminator at paren/brace depth zero. The chained
+ *  expressions this file drives are not braced constructs, so `lift` cannot reach them, which is
+ *  how two whole paths came to be uncovered while the suite read as complete. `nth` selects among
+ *  repeated anchors (the two server-sent-event calls are spelled identically). */
+const liftStmt = (src: string, anchor: string, terminator: string, nth = 0): string | null => {
+  let start = -1;
+  for (let k = 0; k <= nth; k++) {
+    start = src.indexOf(anchor, start + 1);
+    if (start === -1) return null;
+  }
+  let depth = 0;
+  for (let j = start; j < src.length; j++) {
+    const ch = src[j];
+    if (ch === "(" || ch === "{" || ch === "[") depth++;
+    else if (ch === ")" || ch === "}" || ch === "]") depth--;
+    else if (ch === terminator && depth === 0) return src.slice(start, j);
   }
   return null;
 };
@@ -153,5 +182,130 @@ check("THE PILL DISTINGUISHES 'could not read' FROM 'nothing to read' (the displ
 check("an unreadable feed reports unreadable EVEN THOUGH it is also unavailable (ordering is load-bearing)",
   pillText({ unreadable: true, available: false }) === "membership: unreadable",
   pillText({ unreadable: true, available: false }));
+
+// ── THE TWO PATHS THIS SUITE ORIGINALLY MISSED ──────────────────────────────────────────────────
+// Both were found by an adversarial reviewer and CONFIRMED BY EXECUTION before these cells existed:
+// each mutation left all 18 earlier cells green, rc=0. They are named here because the cells above
+// look like they cover them and do not — `pillText` injects `{unreadable: true}` by hand, so it
+// proves the pill RENDERS the state and says nothing about anything ever PRODUCING it.
+//
+//   M4  graph.js boot: drop the status gate  -> a 503 body parses as a snapshot -> traffic-only
+//   M5  web.ts SSE push: restore `.catch(() => {})` -> the rejection vanishes again
+//
+// A cell that stops one step short of the surface under test is the same defect as the one being
+// fixed: it reports success for a path it never reached.
+const bootFetch = liftStmt(graphJs, 'fetch("/api/membership")', ",");
+// The dispatch is an if/else PAIR across two lines, so it is matched as a pair. Lifting to the
+// first newline silently captured the `if` alone — the 200 cases then rendered nothing at all and
+// the empty-snapshot cell reddened. That is what an over-narrow extraction looks like when a cell
+// is watching; the same mistake in a cell nobody checks is a green that measures half a statement.
+const bootDispatch = /if \(membership && membership\.unreadable\) membershipUnreadable\(\);\s*\n\s*else applyMembership\(membership\);/.exec(graphJs)?.[0] ?? null;
+const ssePush = liftStmt(webTs, "void ep.readMembership()", ";", 0);
+const sseSeed = liftStmt(webTs, "void ep.readMembership()", ";", 1);
+
+check("the boot fetch expression was lifted out of graph.js", Boolean(bootFetch), { len: bootFetch?.length });
+check("the boot dispatch was lifted out of graph.js", Boolean(bootDispatch), { len: bootDispatch?.length });
+check("the SSE push statement was lifted out of web.ts", Boolean(ssePush), { len: ssePush?.length });
+check("the SSE seed statement was lifted out of web.ts (a DIFFERENT one from the push)",
+  Boolean(sseSeed) && sseSeed !== ssePush);
+check("CONTROL: liftStmt on an absent anchor returns null (its miss is reachable)",
+  liftStmt(graphJs, 'fetch("/api/not-a-route")', ",") === null);
+
+/** Drive the SHIPPED boot fetch against a response of our choosing, then the SHIPPED dispatch, then
+ *  the SHIPPED pill — the whole browser path, end to end, with nothing hand-seeded. */
+const bootPill = async (response: { ok: boolean; json: () => unknown }): Promise<string> => {
+  let text = "";
+  const el = { hidden: true, className: "", querySelector: () => ({ set textContent(v: string) { text = v; } }) };
+  const feed: Record<string, unknown> = { asOf: undefined, available: false };
+  const ctx: Record<string, unknown> = {
+    fetch: async () => response,
+    feed,
+    FEED_STALE_MS: 45000,
+    now: () => 1700000000000,
+    $: (id: string) => (id === "feed" ? el : null),
+    // The parts of `applyMembership` that touch the graph are not what is under test here, so the
+    // dispatch is driven with a recording stand-in for it and the REAL `membershipUnreadable`.
+    applyMembership: (snap: { asOf?: number; members?: unknown[] }) => {
+      feed.unreadable = false;
+      feed.asOf = snap?.asOf;
+      feed.available = snap?.asOf !== undefined || (Array.isArray(snap?.members) && snap.members.length > 0);
+      runInContext("setFeed();", ctxRef);
+    },
+    out: undefined,
+  };
+  const ctxRef = createContext(ctx);
+  runInContext(`${pill}\n${lift(graphJs, "function membershipUnreadable()")}`, ctxRef, { filename: "graph.js" });
+  runInContext(`(async () => { const membership = await (${bootFetch}); ${bootDispatch} })()`, ctxRef, { filename: "graph.js (boot)" })
+    ;
+  await new Promise((r) => setImmediate(r));
+  return text;
+};
+
+const refusalBody = JSON.parse(failed.body) as unknown;
+check("M4: a 503 refusal reaching the boot path renders 'unreadable', not 'traffic-only'",
+  (await bootPill({ ok: false, json: () => refusalBody })) === "membership: unreadable",
+  await bootPill({ ok: false, json: () => refusalBody }));
+check("M4: a 200 empty snapshot still renders traffic-only through the same path",
+  (await bootPill({ ok: true, json: () => ({ members: [] }) })) === "membership: traffic-only");
+check("M4: a 200 populated snapshot still renders live through the same path",
+  (await bootPill({ ok: true, json: () => ({ asOf: 1700000000000, members: [{ id: "a" }] }) })) === "membership: live");
+
+/** Drive a SHIPPED server-sent-event statement against a rejecting read and record the event NAME
+ *  it emits — the name is the contract the browser listens on, so the name is what is asserted. */
+const sseEventName = async (stmt: string): Promise<string> => {
+  let emitted = "";
+  const source = ts.transpileModule(
+    `globalThis.__run = async () => { ${stmt}; };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const ctx: Record<string, unknown> = {
+    ep: { readMembership: async () => { throw new Error("membership stream not found"); } },
+    broadcast: (event: string) => { emitted = event; },
+    send: (_res: unknown, event: string) => { emitted = event; },
+    res: { writableEnded: false },
+    MEMBERSHIP_READ_FAILED,
+    globalThis: undefined,
+    console,
+  };
+  ctx.globalThis = ctx;
+  runInContext(source, createContext(ctx), { filename: "web.ts (sse)" });
+  // Awaited INSIDE, so no caller can read `emitted` before the rejection has settled. Reading it
+  // synchronously would return "" for the fixed code as well — a cell that passes for M5 too.
+  await (ctx.__run as () => Promise<void>)();
+  return emitted;
+};
+
+const pushName = await sseEventName(ssePush!);
+const seedName = await sseEventName(sseSeed!);
+check("M5: the SSE push emits a named event when the read rejects (a swallowed rejection emits none)",
+  pushName === MEMBERSHIP_READ_FAILED, { pushName });
+check("M5: the SSE seed does the same for a client that connects while the feed is broken",
+  seedName === MEMBERSHIP_READ_FAILED, { seedName });
+// The success case proves the harness can observe an emission at all, so the two cells above are
+// measuring the refusal rather than a stand-in that never fires.
+check("CONTROL: the same harness sees the SUCCESS event name, so an emission is observable here",
+  (await (async () => {
+    let seen = "";
+    const src = ts.transpileModule(`globalThis.__run = async () => { ${ssePush}; };`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const c: Record<string, unknown> = {
+      ep: { readMembership: async () => ({ members: [] }) },
+      broadcast: (event: string) => { seen = event; },
+      MEMBERSHIP_READ_FAILED, globalThis: undefined, console,
+    };
+    c.globalThis = c;
+    runInContext(src, createContext(c), { filename: "web.ts (sse control)" });
+    await (c.__run as () => Promise<void>)();
+    return seen;
+  })()) === "membership");
+
+// ── The client listens on the name the server emits, and nothing checked that before ────────────
+// `graph.js` restates the literal rather than importing it (a classic script cannot import), so the
+// two can drift silently: rename the constant and the browser stops listening, with every other cell
+// still green.
+const listened = /addEventListener\("([a-z-]+)", \(\) => membershipUnreadable\(\)\)/.exec(graphJs)?.[1];
+check("graph.js registers a listener for the refusal event", Boolean(listened), { listened });
+check("the listener's event name IS the server's exported constant (a restated literal can drift)",
+  listened === MEMBERSHIP_READ_FAILED, { listened, exported: MEMBERSHIP_READ_FAILED });
 
 console.log(`\nMEMBERSHIP REFUSAL SMOKE OK ✅  (${pass} passed, 0 failed)`);
