@@ -21,7 +21,7 @@ import type { EndpointRef } from "./types.js";
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
 // every existing `@cotal-ai/core` consumer keeps its import path.
 import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail } from "./endpoint-error.js";
-export { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail } from "./endpoint-error.js";
+export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, type EpErrorCode, type EpError, type EpErrorDetail } from "./endpoint-error.js";
 
 /** The envelope schema version — independent of the wire `protocolVersion`; starts at its own
  *  v1 inside the v0.4 revision. Other values are rejected (`unsupported-version`). */

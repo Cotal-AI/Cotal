@@ -19,7 +19,7 @@
 import { randomBytes } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_UNBOUND_RESPONDER } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   contractStoreContext, fetchContractClosure, contractRefToHex, contractArtifactDigestHex,
@@ -96,6 +96,8 @@ export async function describeEndpoint(
   };
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** The status stream itself, kept because `stop()` — not `return()` — is what releases it. */
+  let statusStream: { [Symbol.asyncIterator](): AsyncIterator<{ type: string; error?: unknown }>; stop(err?: Error): void } | undefined;
   let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
   try {
     // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. `nc.status()` registers a
@@ -105,7 +107,18 @@ export async function describeEndpoint(
     // exists to eliminate. The window is almost certainly unreachable today, since the violation is
     // a server frame and cannot dispatch inside our own synchronous run; ordering it correctly
     // costs one hoisted line and removes the need for that argument to stay true.
-    statusIter = nc.status()[Symbol.asyncIterator]();
+    //
+    // RELEASE IS `stop()`, NOT `return()`. The transport's status stream is a `QueuedIterator`
+    // (core.d.ts declares `stop(err?)` on it) whose generator parks on an internal signal await; a
+    // queued `return()` therefore does not run until the NEXT status event, which on a healthy
+    // connection may never come — so `return()` alone leaves the listener registered for the life
+    // of the connection, one per resolve. `status()` is typed as a bare `AsyncIterable`, so reach
+    // the declared `stop` structurally, and fail loud HERE rather than leak quietly if a transport
+    // ever hands back a stream that cannot be released.
+    statusStream = nc.status() as typeof statusStream;
+    if (typeof statusStream?.stop !== "function")
+      throw new EpEnvelopeError("unavailable", "the NATS connection's status() stream does not expose stop(); the describe's permission watch cannot be released and would leak a listener per resolve");
+    statusIter = statusStream[Symbol.asyncIterator]();
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
@@ -169,8 +182,10 @@ export async function describeEndpoint(
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
-    // Close the status iterator on EVERY exit, success included — otherwise the describe returns
-    // while its listener stays parked on the connection for the connection's whole life.
+    // Release on EVERY exit, success included. `stop()` resolves the generator's signal and its
+    // `iterClosed`, which is what the transport splices the listener on; `return()` is kept only to
+    // settle the parked `next()` it wakes.
+    statusStream?.stop();
     void statusIter?.return?.(undefined);
   }
 }
@@ -365,9 +380,13 @@ export async function invokeCommand(
       // The old text's remedy is also not executable by the surfaces that print it most (`stop`,
       // `despawn` and `attach` have no adopt path and no pin), so it advised an action the caller
       // could not take. Say which case this is, and stop asserting a cause that is usually wrong.
+      // The marker, not the prose, is what stops an automatic re-invoke: reaching here means a
+      // responder ANSWERED, so a retry is a second execution rather than a repair. Callers that
+      // recover from `failed-precondition` by re-resolving must consult `respondedButUnbound`.
       throw new EpEnvelopeError("failed-precondition", service.pinnedInstanceId !== undefined
-        ? `the ${service.endpoint} instance ${instanceId} answered but this handle is PINNED to ${service.pinnedInstanceId}; a pinned call names its instance and never accepts another (SPEC 13.2)`
-        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner. THIS SAYS NOTHING ABOUT WHETHER THE EFFECT LANDED: ${instanceId} received the request and may have executed it, possibly after this error was raised. Verify the outcome ('ps'/'inspect'/roster) before retrying; a retry that assumes failure duplicates the effect. Address one instance with --on to avoid the split entirely (SPEC 13.2)`);
+        ? `the ${service.endpoint} instance ${instanceId} answered but this handle is PINNED to ${service.pinnedInstanceId}; a pinned call names its instance and never accepts another. ${instanceId} did receive and handle the request, so if "${command}" mutates, that effect may already have landed - verify before re-issuing (SPEC 13.2)`
+        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${instanceId} received the request and handled it, possibly after this error was raised. For a read that is harmless and re-issuing is safe; if "${command}" mutates, verify the outcome ('ps'/'inspect'/roster) before re-issuing, because a retry that assumes failure duplicates the effect. Address one instance with --on to avoid the split entirely (SPEC 13.2)`,
+        [{ kind: EP_UNBOUND_RESPONDER, endpoint: service.endpoint, command, answeredBy: instanceId, boundTo: service.responder.instanceId, pinned: service.pinnedInstanceId !== undefined }]);
     }
     return service.responder.epoch;
   };

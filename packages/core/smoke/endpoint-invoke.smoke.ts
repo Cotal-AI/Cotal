@@ -50,21 +50,23 @@ function fakeNc(crafted: (req: { nonce: string; id: string }) => Array<{ subject
       queueMicrotask(() => { for (const m of crafted(req)) cb?.(null, m); });
     },
     // The describe watches this stream to tell a broker-REFUSED publish from an unanswered one, so
-    // the double has to model it or it stops being a NatsConnection. A healthy connection emits no
-    // status here: park forever and settle only on `return()`, which is what the describe calls in
-    // its finally — mirroring the real transport, where the listener is deregistered on close.
+    // the double has to model it or it stops being a NatsConnection. Modelled after the real
+    // transport's QueuedIterator, INCLUDING the part that matters: a healthy connection emits no
+    // status, so `next()` parks, and only `stop()` releases it — a queued `return()` on a parked
+    // generator does not run until the next event, which is exactly the leak this shape exists to
+    // keep honest. A double that settled on `return()` would let that regression back in silently.
     status() {
       let release: (() => void) | undefined;
-      const closed = new Promise<void>((r) => { release = r; });
+      const stopped = new Promise<void>((r) => { release = r; });
       return {
+        stop() { release?.(); },
         [Symbol.asyncIterator]() {
           return {
             async next(): Promise<IteratorResult<{ type: string; error?: unknown }>> {
-              await closed;
+              await stopped;
               return { done: true, value: undefined };
             },
             async return(): Promise<IteratorResult<{ type: string; error?: unknown }>> {
-              release?.();
               return { done: true, value: undefined };
             },
           };
