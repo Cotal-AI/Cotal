@@ -52,8 +52,14 @@
  * green. **Asserting what a function was CALLED WITH is not asserting what it DID.** The cells now
  * drive the shipped encoder and broadcaster over a recording response and assert the bytes.
  *
- * Four passes, four variants of one mistake: the fixture reached one step less far than the sentence
- * describing it. Each was found by a reader who could not run the suite at all.
+ * AND A FIFTH, in the assertion rather than the fixture. The wire cells used `.includes()`, which is
+ * satisfied by `xevent: membership-read-failed` — and that one character is the difference between a
+ * NAMED event and the DEFAULT `message` event, which `onMessage` drops for having no `msg`. The
+ * refusal goes silent again with every cell green. **A substring match establishes neither a field
+ * boundary nor a complete frame.** The frames are now asserted byte for byte.
+ *
+ * Five passes, five variants of one mistake: the assertion reached one step less far than the
+ * sentence describing it. Each was found by a reader who could not run the suite at all.
  */
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -293,6 +299,7 @@ check("the SSE broadcaster was lifted out of web.ts", Boolean(sseBroadcast), { l
  *  That measured the argument, not the wire: a `send` that returned early for this one event left
  *  both refusal paths calling the right helper with the right token and writing nothing, and every
  *  cell stayed green. **Asserting what a function was CALLED WITH is not asserting what it DID.** */
+const REASON = "membership stream not found";
 const sseWire = async (stmt: string): Promise<string> => {
   let bytes = "";
   const client = { writableEnded: false, write: (chunk: string) => { bytes += chunk; } };
@@ -301,7 +308,7 @@ const sseWire = async (stmt: string): Promise<string> => {
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const ctx: Record<string, unknown> = {
-    ep: { readMembership: async () => { throw new Error("membership stream not found"); } },
+    ep: { readMembership: async () => { throw new Error(REASON); } },
     clients: new Set([client]),
     res: client,
     MEMBERSHIP_READ_FAILED,
@@ -318,13 +325,21 @@ const sseWire = async (stmt: string): Promise<string> => {
 
 const pushBytes = await sseWire(ssePush!);
 const seedBytes = await sseWire(sseSeed!);
-const REFUSAL_LINE = `event: ${MEMBERSHIP_READ_FAILED}\n`;
-check("M5: the SSE push WRITES the refusal event to the client (not merely names it to a helper)",
-  pushBytes.includes(REFUSAL_LINE), { pushBytes });
-check("M5: the SSE seed does the same for a client that connects while the feed is broken",
-  seedBytes.includes(REFUSAL_LINE), { seedBytes });
-check("M5: the refusal frame carries a reason for the operator to act on",
-  /data: \{"reason":"[^"]+"\}/.test(pushBytes), { pushBytes });
+
+// THE WHOLE FRAME, byte for byte — not a substring of it. `.includes("event: …")` was satisfied by
+// `xevent: membership-read-failed`, and that one character is the difference between a named event
+// and the DEFAULT `message` event: EventSource would hand the payload to `onMessage`, which drops it
+// for having no `msg`, and the refusal goes silent again while the cells stay green. A substring
+// match establishes neither the field boundary nor a complete frame.
+const REFUSAL_FRAME = `event: ${MEMBERSHIP_READ_FAILED}\ndata: ${JSON.stringify({ reason: REASON })}\n\n`;
+check("M5: the SSE push writes EXACTLY the refusal frame (field at byte 0, one data line, blank terminator)",
+  pushBytes === REFUSAL_FRAME, { pushBytes });
+check("M5: the SSE seed writes exactly the same frame for a client connecting while the feed is broken",
+  seedBytes === REFUSAL_FRAME, { seedBytes });
+// Named separately from the equality above because it is a different claim: the reason must be the
+// THROWN message reaching the wire, not a constant the encoder could supply on its own.
+check("M5: the frame carries the thrown reason, so the operator sees WHY rather than only THAT",
+  pushBytes.includes(`"reason":${JSON.stringify(REASON)}`), { pushBytes });
 // POSITIVE CONTROL, now on the wire too: the same harness, with a read that SUCCEEDS, must produce
 // the ordinary membership frame. Without it, a harness that wrote nothing at all would fail the two
 // cells above for a reason that has nothing to do with the code under test.
@@ -344,10 +359,10 @@ const okBytes = await (async () => {
   await (c.__run as () => Promise<void>)();
   return bytes;
 })();
-check("CONTROL: a SUCCESSFUL read writes the ordinary membership frame through the same encoder",
-  okBytes.includes("event: membership\n"), { okBytes });
+check("CONTROL: a SUCCESSFUL read writes exactly the ordinary membership frame through the same encoder",
+  okBytes === `event: membership\ndata: {"members":[]}\n\n`, { okBytes });
 check("CONTROL: and that frame is NOT the refusal frame (the two are distinguishable on the wire)",
-  !okBytes.includes(REFUSAL_LINE));
+  okBytes !== REFUSAL_FRAME && !okBytes.includes(MEMBERSHIP_READ_FAILED));
 
 // ── The client listens on the name the server emits, and nothing checked that before ────────────
 // `graph.js` restates the literal rather than importing it (a classic script cannot import), so the
