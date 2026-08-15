@@ -279,15 +279,28 @@ try {
     check("A2: a legitimate confirmAttach SUCCEEDS against the real minted delivery credential", r.ok === true, r);
   }
 
-  // ---- A3 — read back through a DIFFERENT credential than the one that wrote it -----------------
-  {
+  /**
+   * Read the attachment row through the SEEDER credential — never the one under test.
+   *
+   * A row read back through the credential that wrote it proves the write path agreed with itself.
+   * Reading through a different credential is what makes it a statement about the BUCKET.
+   */
+  const readAttachment = async (): Promise<{ attacherLifecycleUid?: string; createdAt?: number } | undefined> => {
     const r = await drive(() => seedAttachments.get(attachmentKey(D, CHANNEL)));
-    const row = r.kind === "ok" && r.value !== null
-      ? JSON.parse(new TextDecoder().decode((r.value as { value: Uint8Array }).value)) as { attacherLifecycleUid?: string }
+    return r.kind === "ok" && r.value !== null
+      ? JSON.parse(new TextDecoder().decode((r.value as { value: Uint8Array }).value)) as { attacherLifecycleUid?: string; createdAt?: number }
       : undefined;
-    check("A3: the attachment row is really in the bucket, carrying the CONFIRMING lifecycle",
-      row?.attacherLifecycleUid === uidA, { r: r.kind, row });
-  }
+  };
+
+  // ---- A3 — read back through a DIFFERENT credential than the one that wrote it -----------------
+  const rowAfterFirstConfirm = await readAttachment();
+  check("A3: the attachment row is really in the bucket, carrying the CONFIRMING lifecycle",
+    rowAfterFirstConfirm?.attacherLifecycleUid === uidA, rowAfterFirstConfirm);
+  // A12 below compares against this. Asserted here rather than trusted, because a comparison whose
+  // BASELINE is undefined passes for the wrong reason: `undefined === undefined` is a green cell
+  // over two rows that never existed.
+  check("A12-BASELINE: the first confirm wrote a usable numeric createdAt to compare against",
+    typeof rowAfterFirstConfirm?.createdAt === "number", rowAfterFirstConfirm);
 
   // ---- A4 — the repeat confirm, which is the only thing that exercises the attachment READ ------
   // The second call loses `kv.create` and must confirm the row through `kv.get`. Without the
@@ -296,6 +309,48 @@ try {
     const r = await rail("confirmAttach", { digest: D, channel: CHANNEL, seq: ack.seq });
     check("A4: a REPEAT confirm still succeeds (create-lost → confirming get on the attachment bucket)",
       r.ok === true, r);
+  }
+
+  // ---- A12 — LIFETIME NEUTRALITY, END TO END, WHICH NOTHING ELSE IN THIS SUITE HOLDS -----------
+  // A4 above asserts the repeat confirm returns `ok:true`. **AN UPSERTING VERB RETURNS `ok:true`
+  // TOO**, so A4 passes either way — it measures the attachment READ grant, which is what it was
+  // built for, and lifetime-neutrality is simply not in its reach. A3 reads the row back but looks
+  // only at `attacherLifecycleUid`.
+  //
+  // So before this cell, the end-to-end claim that attach is lifetime-neutral rested on
+  // `putAttachmentIfAbsent` choosing `kv.create` plus a reading of the source. That invariant is
+  // the whole of §7: `createdAt` is the field a row ages from, and refreshing it on every confirm
+  // turns any legitimate publisher into an unbounded-retention primitive without it ever calling
+  // `pin`. Its own doc records that it "was stated in a comment and enforced NOWHERE" until a
+  // driven attack rewrote it — this is the cell that keeps that from being true again one level up.
+  {
+    const after = await readAttachment();
+    check("A12: a REPEAT confirm did NOT refresh createdAt — attach is lifetime-neutral at the broker",
+      typeof after?.createdAt === "number"
+        && after.createdAt === rowAfterFirstConfirm?.createdAt,
+      { before: rowAfterFirstConfirm?.createdAt, after: after?.createdAt });
+  }
+
+  // ---- A13 — WHAT THE ATTACHMENT GRANT LICENSES BEYOND THE TWO CALLS THAT MOTIVATED IT ---------
+  // `provision.ts` grants `$KV.<attachmentBucket>.>` and documents it as covering `kv.create`
+  // (insert-if-absent) and `kv.delete` (the lost-race rollback). Both are real. But KV create-only
+  // semantics ride the `Nats-Expected-Last-Subject-Sequence: 0` HEADER, not the subject, so the
+  // same row equally licenses a plain PUT — an OVERWRITE the verb never performs.
+  //
+  // THIS CELL IS NOT A DEFECT CELL AND MUST NOT BE READ AS ONE. NATS cannot express insert-only at
+  // subject arity, and the attachment index genuinely needs write, so no ABSENCE is available here
+  // the way it is for possession (A5). The point is to state the true shape of the boundary so the
+  // comment above the grant stops implying a confinement the subject cannot express: the
+  // lifetime-neutrality invariant is enforced by `putAttachmentIfAbsent` in client code, NOT by the
+  // credential. A12 is what guards it; this cell says why A12 has to.
+  //
+  // A1-CONTROL is this cell's control in the ALLOWED direction — same connection, same client, same
+  // `kv.put` shape at a known-granted bucket — so an `ok` here is a statement about this subject
+  // rather than about a probe that happens to succeed at everything.
+  {
+    const r = await drive(() => dlvAttachments.put(attachmentKey(D_OTHER, CHANNEL), enc({ overwritten: true })));
+    check("A13: the delivery cred IS ALLOWED a raw attachment PUT — the grant is not insert-only, and only client code makes it so",
+      r.kind === "ok", r);
   }
 
   // ---- A10 — a refusal must still be a REFUSAL, not a broker denial wearing `ok:false` ----------
