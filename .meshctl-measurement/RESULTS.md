@@ -12,11 +12,23 @@
 > Until the suites below are re-driven against ephemeral brokers, treat every count here as
 > **stamped, not confirmed**. Re-running is broker-backed and this lane does not hold a window.
 >
-> **DISCHARGED, `Sat Aug 15 01:09:22 AM UTC 2026` → `01:18:10 AM UTC`, at `fe279b94`.** The window
-> opened and everything re-runnable was re-driven: the three **committed** suites (45 + 39 + 9 named
-> cells, all `EXIT=0`) and **eight of the nine m-probes**, all reproducing identically. Those counts
-> are now **confirmed, not stamped** — logs in `runs/`, roll-calls in §"Re-drive at `fe279b94`" and
-> §"Re-drive of the m-probes".
+> **PARTIALLY DISCHARGED, `Sat Aug 15 01:09:22 AM UTC 2026` → `01:18:10 AM UTC`, at `fe279b94`.**
+> The window opened and everything re-runnable was re-driven: the three **committed** suites
+> (45 + 39 + 9 named cells, all `EXIT=0`) and **eight of the nine m-probes**, all reproducing
+> identically.
+>
+> ⚠️ **CORRECTED — THIS BANNER SAID ALL OF THAT WAS "confirmed, not stamped — logs in `runs/`".
+> ONLY THE THREE SUITES ARE. `runs/` holds three suite logs and no m-probe log at all.** Found by
+> `mc-rev-evidence` against this lane's interest, and it is right: **the eight m-probe counts have
+> no surviving instrument, so they are STILL STAMPED.** Re-running them is not what confirms a
+> count — *keeping the log* is. **This lane wrote the discarded-log rule and then broke it inside
+> the same banner that announced the discharge.** The same correction applies to `74 → 0`
+> (§m7 defect 1), to the `m7d2` A1/A2 result cited below as `EXIT=0`, and to every `MX*` mutation
+> kill in `MUTATION-LIFECYCLE.md` / `MX7-PREDICTION.md`.
+>
+> **What IS confirmed by a kept log:** the three suites (`runs/2026-08-15T01*`) and both `m7` windows
+> (`runs/2026-08-15T0226Z-*`, `runs/2026-08-15T0232Z-*`). **Everything else in this file is stamped
+> until its log is kept**, and no re-run without a preserved log will be allowed to change that.
 >
 > **ONE ROW GOT WORSE, and it is the row nothing else covers.** `m7-usermode` recorded itself as
 > never-run; it now runs and **FAILS** (`EXIT=1`, 2 passed, 1 failed, 7 VOID). **The user/bearer
