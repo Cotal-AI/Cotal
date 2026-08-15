@@ -148,7 +148,7 @@ try {
   check("a malformed instance id is refused AT MINT, never widened into a subject", malformed === "refused", malformed);
 
   // ---- 3. LIVE: the pinned instrument works; the unpinned one is the before-state ---------------
-  const liveResolve = async (label: string, pin: boolean, iid: string): Promise<{ ok: boolean; why?: string; answered?: string }> => {
+  const liveResolve = async (label: string, pin: boolean, iid: string): Promise<{ ok: boolean; why?: string; detail?: string; answered?: string }> => {
     const id = newIdentity(); const uid = mintLifecycleUid();
     const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
     const creds = await mintCreds(auth, id, "control-caller-privileged", {
@@ -161,7 +161,11 @@ try {
       const reply = await invokeCommand(nc, space, svc, "status", undefined, { deadlineMs: 8_000 });
       return { ok: true, answered: reply.responder.instanceId };
     } catch (e) {
-      return { ok: false, why: e instanceof EpEnvelopeError ? `${e.code}` : (e as Error).message.slice(0, 60) };
+      return {
+        ok: false,
+        why: e instanceof EpEnvelopeError ? `${e.code}` : (e as Error).message.slice(0, 60),
+        detail: (e as Error).message,
+      };
     } finally { await nc.drain().catch(() => nc.close()); }
   };
 
@@ -181,6 +185,22 @@ try {
   console.log(`   unpinned instrument -> ${noPin.ok ? "OK (UNEXPECTED)" : noPin.why}`);
   check("an UNPINNED instrument still cannot address an instance — the fix is the pin, not the plumbing",
     !noPin.ok, noPin.answered);
+
+  // ---- 4. THE REFUSAL SAYS IT IS A REFUSAL -----------------------------------------------------
+  // The cell above only asks that the unpinned call FAILS. HOW it fails is the load-bearing part,
+  // and for a long time it failed as a bare `deadline-exceeded`: the broker refuses the publish on
+  // the connection, asynchronously, so the caller observed nothing but silence and read it as "that
+  // instance is not there". A missing GRANT and a missing RESPONDER need opposite responses, and
+  // this is the only place the two are distinguishable, so assert the distinction rather than
+  // trusting the message. Without this, the reworded refusal could stop firing and nothing notices.
+  console.log("\n4. the denied publish is LOUD — a missing grant never reads as an absent responder");
+  check("it is reported as permission-denied, NOT a describe deadline",
+    noPin.why === "permission-denied", { got: noPin.why, detail: noPin.detail?.slice(0, 200) });
+  check("...and it names the subject the credential lacked, so the remedy is readable off the error",
+    (noPin.detail ?? "").includes(`.ep.inst.manager.${IID1}.describe.`), noPin.detail?.slice(0, 260));
+  check("...and says the responder may be healthy (the wrong conclusion is the expensive one)",
+    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /grant is what is missing/.test(noPin.detail ?? ""),
+    noPin.detail?.slice(0, 260));
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {

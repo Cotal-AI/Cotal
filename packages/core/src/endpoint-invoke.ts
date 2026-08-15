@@ -17,7 +17,7 @@
  *    the schema the caller validated against.
  */
 import { randomBytes } from "node:crypto";
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
@@ -120,7 +120,30 @@ export async function describeEndpoint(
       nc.publish(subject, enc.encode(JSON.stringify(env)));
     });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`)), deadlineMs); });
-    const { body: reply, responder } = await Promise.race([got, timeout]);
+    // A REFUSED PUBLISH MUST NOT MASQUERADE AS AN ABSENT RESPONDER. `nc.publish` is fire-and-forget:
+    // if the caller's credential lacks this subject, the broker answers the CONNECTION
+    // asynchronously and the publish itself returns normally, so the only observable is that no
+    // reply ever comes — i.e. a deadline that reads as "that endpoint isn't there". Those two need
+    // opposite responses (mint the grant vs. find the responder), and the silence hid a real
+    // shipped defect: a `--on` describe addressed the `ep.inst` rail with a credential granted only
+    // the class rail, and every caller read the resulting 10s timeout as an unresponsive manager.
+    //
+    // Watch only for OUR subject — the connection is shared, and another component's denial is not
+    // this describe's business. Not racing the whole status stream either: an unrelated transport
+    // error must not fail an otherwise healthy describe.
+    const denied = new Promise<never>((_, reject) => {
+      void (async () => {
+        for await (const s of nc.status()) {
+          if (s.type !== "error") continue;
+          if (s.error instanceof PermissionViolationError && s.error.subject === subject) {
+            reject(new EpEnvelopeError("permission-denied",
+              `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId} — an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`));
+            return;
+          }
+        }
+      })().catch(() => { /* the status stream ending is not a describe failure; the deadline still governs */ });
+    });
+    const { body: reply, responder } = await Promise.race([got, timeout, denied]);
     if (reply.ok !== true) {
       const e = reply.error as { code?: string; message?: string } | undefined;
       throw new EpEnvelopeError((e?.code as never) ?? "unavailable", `describe(${endpoint}) failed: ${e?.message ?? "unknown"}`);
@@ -324,7 +347,7 @@ export async function invokeCommand(
       // could not take. Say which case this is, and stop asserting a cause that is usually wrong.
       throw new EpEnvelopeError("failed-precondition", service.pinnedInstanceId !== undefined
         ? `the ${service.endpoint} instance ${instanceId} answered but this handle is PINNED to ${service.pinnedInstanceId}; a pinned call names its instance and never accepts another (SPEC 13.2)`
-        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner (SPEC 13.2)`);
+        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner. THIS SAYS NOTHING ABOUT WHETHER THE EFFECT LANDED: ${instanceId} received the request and may have executed it, possibly after this error was raised. Verify the outcome ('ps'/'inspect'/roster) before retrying; a retry that assumes failure duplicates the effect. Address one instance with --on to avoid the split entirely (SPEC 13.2)`);
     }
     return service.responder.epoch;
   };
@@ -383,7 +406,13 @@ export async function submitAndFollowGoal(
       waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
     });
     if (terminal === undefined)
-      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" produced no terminal within ${deadlineMs}ms; read its outcome with 'ps'/'inspect' (SPEC 13.6)` } } };
+      // WHAT THIS PROVED: nothing about the goal. The goal was ACCEPTED (the submit above returned
+      // ok) — only its terminal did not arrive here in time, which a slow runtime or a dropped
+      // progress subscription produces just as readily as a real failure. Observed live: seats that
+      // reported this had already come up and were messaging peers. So say the deadline is about
+      // the WAIT, not the work, and warn about the one action that turns a false negative into real
+      // damage — a retry, which submits a SECOND goal and duplicates whatever the first one did.
+      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" was accepted but produced no terminal within ${deadlineMs}ms; this is a timeout on the WAIT, not evidence the goal failed - it may already have succeeded, and may still succeed. Read its outcome with 'ps'/'inspect' before acting; do NOT retry on this alone, a retry submits a second goal and duplicates the effect (SPEC 13.6)` } } };
     if (terminal.state === "succeeded")
       return { ...attributed, reply: { ...attributed.reply, ok: true, ...(terminal.data !== undefined ? { data: terminal.data } : { data: undefined }), error: undefined } };
     const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown };
