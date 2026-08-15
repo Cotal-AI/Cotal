@@ -14,10 +14,22 @@
  * The attachment is written to the REAL attachment bucket through the shipped insert-if-absent
  * helper. If any of those disagrees with the double it replaced, this suite is where it shows.
  *
- * WHAT IT STILL DOES NOT COVER, stated so a green here is not over-read: the verbs are not wired
- * into `handleDeliveryControl` or fan-out, and delivery holds no `$KV` value grant on the index
- * buckets, so this drives the verb with a broker underneath it rather than a request arriving on the
- * control rail. That last wiring step remains unproven by any suite.
+ * WHAT THIS SUITE CANNOT SEE, stated so a green here is not over-read. It calls `confirmAttach`
+ * DIRECTLY, and its broker is OPEN — the daemon holds full authority. So this proves the verb's
+ * LOGIC against real storage and is structurally incapable of measuring an authorization boundary:
+ * a test that holds every grant measures the code path with that boundary REMOVED. That is not
+ * hypothetical here — `smoke:artifact-control-rail` was 14/14 green while the rail was UNUSABLE in
+ * production, both true at once.
+ *
+ * The boundary is covered ELSEWHERE rather than left open, and the PAIR is the claim:
+ * `smoke:artifact-rail-authz:auth` drives a REQUEST ARRIVING ON THE RAIL, on the real minted
+ * delivery credential, against a JWT-auth broker. This suite proves the logic; that one proves the
+ * authority. Neither alone is enough and neither substitutes for the other.
+ *
+ * DO NOT restore the older note that said the verb is unwired and ungranted. It described the tree
+ * before `c8d66fc5` (the verb served on `handleDeliveryControl`) and `bd11fb98` (the four broker
+ * subjects its call graph needs, folded into the shipped allow-list), and it outlived both as a
+ * SCOPE-LIMITING comment — the kind that points a reader AWAY from coverage that already exists.
  *
  * Run: pnpm smoke:artifact-e2e   (needs nats-server on PATH; part of smoke:ci)
  */
