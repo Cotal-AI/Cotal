@@ -34,6 +34,18 @@
  *       defect: it is what a caller doing its own arithmetic already computes.
  *   M9  size the expectation header at a fixed 0 — kills "the expectation's DIGITS are charged".
  *       A frame sized one digit short of the ceiling is precisely the frame that gets refused.
+ *   M10 make the empty-parts guard throw the WILDCARD message instead of its own — kills "sizing
+ *       with EMPTY parts is refused", and nothing else. The guard still fires, still refuses, and
+ *       still refuses the right input; only its REASON is wrong. That is the whole point of the
+ *       cell naming which refusal it expects, and it was proven both ways rather than argued: the
+ *       same mutation against the previous commit's unnamed cells left this suite at 15 passed,
+ *       0 failed. Four cells that assert only "it threw" cannot tell a guard that is correct from
+ *       one that is broken, because those are identical from the refusing side.
+ *
+ *   NOT a usable mutation, recorded so nobody spends the round re-deriving it: forcing the WILDCARD
+ *   guard to fire for every channel (`if (true)`) is WRONG-RED, not a kill. `encodedSize` is called
+ *   by the calibration cells long before the refusal block, so the suite dies early and the red has
+ *   nothing to do with the cell you named. The mutation has to reach the cell to grade it.
  *
  * Run: pnpm smoke:frame-size   (needs nats-server on PATH)
  */
