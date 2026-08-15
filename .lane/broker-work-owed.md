@@ -1,4 +1,31 @@
-# Owed measurements — both need a broker, so both wait for fm-artifact-4's arm to close
+# Owed work — all of it needs a broker, so it waits for the box
+
+**PRIORITY ORDER, set by fm-orchestrator: item 0 first, because it CLOSES A HAZARD rather than
+measuring one.** The other two measure something; item 0 is the only one where a green is currently
+unverified against a change already committed.
+
+## 0. RUN `up-tls-routes-live` — HIGHEST PRIORITY
+
+`bin/smoke/up-tls-routes-live.smoke.ts:551` asserts a **security** verdict with
+`/connection\s+.*unreachable/` over the whole of `cotal status`'s output. This lane added a delivery
+row to that output. The first phrasing — *"the mesh **connection** failed above (**unreachable**)"* —
+**matched that regex by itself**, so an additive health line would have satisfied a security check
+that the connection row had failed. It is reworded to name the *preflight*, and a cell asserts the row
+does not match (with a positive control proving the regex matches the OLD phrasing).
+
+**But that suite has not been run since the row was added.** The repair was derived by reading, not by
+executing, and reading is how the hazard was found rather than proof that it is gone. This suite needs
+a broker; run it before treating the near-miss as closed.
+
+**A NEW CLASS WORTH CARRYING PAST THIS LANE:** nothing about the added line was defective in
+isolation — no bad regex, no missing control, no false statement. **The defect existed only in the
+relationship between two files, one of which the author had no reason to open.** An assertion whose
+subject is "somewhere in this output" is weakened by anyone who widens the output. When adding to a
+surface, grep for what asserts on that surface.
+
+---
+
+# The two measurements — both need a broker, both wait for the arm to close
 
 Written 2026-08-15T06:4xZ. **NOT RUN.** Each costs the box a live broker and CPU, and the merge-base
 sequence is load-sensitive, so running either now would be affordable in memory and unaffordable in
