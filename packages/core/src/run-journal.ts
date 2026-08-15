@@ -79,8 +79,12 @@ export interface RunJournalActivation {
   readonly run: string;
   /** The driver principal taking the run over. */
   readonly holder: string;
-  /** The work-pool lease's fencing token this takeover is authorized by. */
-  readonly fencingToken: string;
+  /**
+   * The work-pool lease's fencing token this takeover is authorized by — `WorkLease.fencingToken`,
+   * a positive integer that only ever increases for a given work item. It is recorded so that the
+   * NEXT takeover can refuse to activate under an older one: see {@link activateRun}.
+   */
+  readonly fencingToken: number;
   /** The holder's process epoch: two takeovers by one principal are still two drivers. */
   readonly epoch: number;
   readonly replayedTo: number;
@@ -221,6 +225,26 @@ export class RunJournalReplayRaced extends Error {
  * Its counts were consistent and its last sequence may well be the subject's true head — that is
  * exactly why this check exists separately from {@link RunJournalReplayIncomplete}.
  */
+/**
+ * A takeover was attempted under a lease token older than the one the run is already held under.
+ *
+ * Terminal for this driver: it does not hold the lease, and the fix is not to try again but to stop
+ * driving. The activation barrier cannot catch this on its own — a stale holder that replays learns
+ * the head like anyone else — so the ordering is enforced against the journal's own record of who
+ * activated, which the replay has just read.
+ */
+export class StaleLeaseToken extends Error {
+  constructor(
+    readonly run: string,
+    readonly offered: number,
+    readonly held: number,
+    readonly holder: string,
+  ) {
+    super(`run ${run} is held under fencing token ${held} by ${holder}; a takeover offering ${offered} is stale. This driver's lease is gone — stop driving.`);
+    this.name = "StaleLeaseToken";
+  }
+}
+
 export class RunJournalPrefixTruncated extends Error {
   constructor(
     readonly run: string,
@@ -281,11 +305,12 @@ export function parseRunJournalRecord(raw: unknown, subject: string): RunJournal
   }
   if (raw.kind === "activation") {
     assertKeys(raw, ["v", "kind", "run", "holder", "fencingToken", "epoch", "replayedTo", "at"], `run-journal activation on ${subject}`);
-    for (const k of ["holder", "fencingToken"] as const)
-      if (typeof raw[k] !== "string" || (raw[k] as string).length === 0)
-        throw new Error(`run-journal activation on ${subject} has no ${k}`);
+    if (typeof raw.holder !== "string" || raw.holder.length === 0)
+      throw new Error(`run-journal activation on ${subject} has no holder`);
     for (const k of ["epoch", "replayedTo"] as const)
       if (typeof raw[k] !== "number") throw new Error(`run-journal activation on ${subject} has no ${k}`);
+    if (typeof raw.fencingToken !== "number" || !Number.isInteger(raw.fencingToken) || raw.fencingToken < 1)
+      throw new Error(`run-journal activation on ${subject} has no fencingToken`);
     return raw as unknown as RunJournalActivation;
   }
   throw new Error(`run-journal record on ${subject} has unknown kind ${JSON.stringify(raw.kind)}`);
@@ -481,7 +506,8 @@ export interface RunTakeover {
   readonly space: string;
   readonly runId: string;
   readonly holder: string;
-  readonly fencingToken: string;
+  /** The work-pool lease's fencing token. A takeover under an OLDER one is refused. */
+  readonly fencingToken: number;
   readonly epoch: number;
   readonly at: number;
 }
@@ -516,6 +542,15 @@ export interface ActivateOptions {
  * may try again while it holds the lease. It never throws {@link RunSuperseded}: not having won the
  * subject yet is not the same as having lost it.
  */
+/** The last activation in a replayed prefix, i.e. whoever currently holds the run. */
+function lastActivation(records: readonly StoredRunJournalRecord[]): RunJournalActivation | undefined {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const r = records[i]!.record;
+    if (r.kind === "activation") return r;
+  }
+  return undefined;
+}
+
 export async function activateRun(
   js: JetStreamClient,
   jsm: JetStreamManager,
@@ -539,6 +574,16 @@ export async function activateRun(
     }
     const { records, lastSeq } = replay;
     lastExpected = lastSeq;
+    // The barrier by itself fences KNOWLEDGE OF THE HEAD, not authority: anyone who replays learns
+    // the head, so a driver whose lease expired long ago can activate over the current holder just
+    // by reading. Measured before this check: activations [2, 1] on one run, the token-1 driver's
+    // append landing at seq 4. The replayed prefix is where the answer already is — it contains
+    // every activation, and it is current as of the CAS that follows — so a takeover under a token
+    // older than the last one recorded is refused here rather than after the damage.
+    const held = lastActivation(records);
+    if (held !== undefined && t.fencingToken < held.fencingToken) {
+      throw new StaleLeaseToken(t.runId, t.fencingToken, held.fencingToken, held.holder);
+    }
     if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
     const activation: RunJournalActivation = {
       v: 1,

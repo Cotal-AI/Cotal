@@ -34,6 +34,7 @@ import {
   RunJournalStalled,
   RunJournalReplayRaced,
   RunJournalPrefixTruncated,
+  StaleLeaseToken,
   assertReplayConsumerFresh,
   isConsumerNotFound,
   runJournalConsumerConfig,
@@ -72,7 +73,7 @@ await createEndpointStreams(jsm, new Kvm(nc), SPACE);
 const STREAM = wfjStreamName(SPACE);
 
 const takeover = (runId: string, holder: string, epoch: number) => ({
-  space: SPACE, runId, holder, fencingToken: `t-${holder}-${epoch}`, epoch, at: 1_700_000_000_000,
+  space: SPACE, runId, holder, fencingToken: epoch, epoch, at: 1_700_000_000_000,
 });
 /** Publish straight to the run's subject with a chosen expectation: a driver the barrier does not
  *  know about, which is what a superseded process IS from the stream's point of view. */
@@ -115,7 +116,7 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
     lastSeq === records[records.length - 1]!.seq && lastSeq === a.lastSeq, `${lastSeq} vs ${a.lastSeq}`);
   const act = records[0]!.record as RunJournalActivation;
   c("the activation records who took over, under which lease token and epoch",
-    act.holder === "d1" && act.fencingToken === "t-d1-1" && act.epoch === 1, act);
+    act.holder === "d1" && act.fencingToken === 1 && act.epoch === 1, act);
 }
 
 // ── 2) THE HANDOFF, ordering A: the activation wins ───────────────────────────────────────────
@@ -180,7 +181,7 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   const late = await rawAppend("r-3", head, step("r-3", 99));
   c("the predecessor's delayed packet lands first, taking the sequence the successor read", late.landed, late);
   const stale = await rawAppend("r-3", head, {
-    v: 1, kind: "activation", run: "r-3", holder: "d3", fencingToken: "t-d3-3", epoch: 3, replayedTo: head, at: 1,
+    v: 1, kind: "activation", run: "r-3", holder: "d3", fencingToken: 3, epoch: 3, replayedTo: head, at: 1,
   });
   c("so the successor's ACTIVATION at that same head is refused by the stream", !stale.landed && stale.code === 10071, stale);
 
@@ -434,6 +435,36 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   try { await replayRunJournal(js, jsm, SPACE, "r-5g"); } catch (e) { truncated = e; }
   c("and the replay still refuses it: an activation is not the genesis activation",
     truncated instanceof RunJournalPrefixTruncated, `${(truncated as Error)?.name}`);
+}
+
+// ── 5h) the lease token ORDERS takeovers; the barrier alone does not ─────────────────────────
+//
+// The barrier fences knowledge of the head, and knowledge is free: anyone who replays has it. So a
+// driver whose lease expired long ago could activate over the current holder just by reading first
+// — measured, before this check, as activations [2, 1] on one run with the token-1 driver's append
+// landing afterwards. The replayed prefix is the answer, and it is current as of the CAS.
+{
+  const cur = await activateRun(js, jsm, takeover("r-5h", "d2", 2));
+  await cur.append({ n: 0 }, 0);
+  let stale: unknown;
+  try { await activateRun(js, jsm, takeover("r-5h", "d1", 1)); } catch (e) { stale = e; }
+  c("a takeover under an older lease token is refused", stale instanceof StaleLeaseToken,
+    `${(stale as Error)?.name}`);
+  c("and it names who actually holds the run",
+    (stale as StaleLeaseToken)?.held === 2 && (stale as StaleLeaseToken)?.holder === "d2");
+  c("the current holder is untouched and still driving", !cur.isFinished);
+  c("and can still append", (await cur.append({ n: 1 }, 1)) > 0);
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5h");
+  c("nothing of the stale driver reached the journal",
+    back.records.filter((r) => r.record.kind === "activation").length === 1,
+    back.records.map((r) => r.record.kind));
+  // Equal is allowed: a lease is renewed under the SAME token, and the holder that lost its
+  // appender to a stalled publish recovers by activating again under the lease it still has.
+  const again = await activateRun(js, jsm, takeover("r-5h", "d2", 2));
+  c("the same token can activate again: that is one holder recovering, not two drivers",
+    again.steps().length === 2);
+  const newer = await activateRun(js, jsm, takeover("r-5h", "d3", 3));
+  c("and a NEWER token takes the run over as before", newer.lastSeq > again.lastSeq);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
