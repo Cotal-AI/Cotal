@@ -1,5 +1,20 @@
 # Mutation proofs must build into a private artifact — design, UNIMPLEMENTED
 
+> ## ⚠ THIS NOTE'S CENTRAL CLAIM IS QUALIFIED — READ THIS FIRST
+>
+> **`--private-build` cannot grade `packages/core` through `connection-control.smoke.ts`.** The
+> mutant reaches the private build; the cells drive a `MeshAgent`, whose `@cotal-ai/core` import
+> resolves to the shared `dist`. **A core mutation run that way SURVIVES regardless of cell
+> quality.** Measured in MX14 — see **`FINDING-mx14-survived-vacuously.md`**, commit `5231e102`.
+>
+> **What the design got right stands:** the proof cannot write the fleet-linked build (proven, 276
+> files byte-identical). **What it did not see is that safety and reach were the same property** —
+> mutations reached the connector *because* they were written to the shared build.
+>
+> **This banner is a qualification, not a revision.** The note is otherwise unedited; the full
+> correction waits on the resolver-hook decision (register item 9) rather than being written
+> against it.
+
 **Stamped `2026-08-15T05:3xZ` (`date -u` at writing), lane tip `a9676eb5`.**
 **DESIGNED, NOT APPLIED.** Applying any of this writes `packages/core/dist`, which is constrained
 pending a ruling on the extension symlinks. Nothing here has been executed; the one place a claim

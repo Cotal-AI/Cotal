@@ -115,3 +115,24 @@ It cannot be answered by reading the client — the fence is the broker.
 
 **Owner is the E2E live half (item 5), not this lane**, because that stage is where a live broker
 and a real revocation exist. Item 5 points here rather than restating it.
+
+## 9. Should the mutation harness redirect the bare specifier for the whole process? — OWNER: the human
+
+**The problem is measured, not proposed.** `--private-build` cannot grade `packages/core` through
+`connection-control.smoke.ts`: the mutant reaches the private build, the cells drive a `MeshAgent`,
+and the connector's `@cotal-ai/core` resolves to the shared `dist`. **Any core mutation run that way
+survives regardless of cell quality** (`FINDING-mx14-survived-vacuously.md`, `5231e102`).
+
+**The candidate fix, recorded and NOT started:** register a Node resolver hook via
+`--import`/`module.register` mapping the bare `@cotal-ai/core` to `COTAL_CORE_ENTRY`, so **every**
+importer in the process is redirected rather than only the ones that opted in through
+`_core-entry.ts`.
+
+**And the harness's confirmation must then assert the thing it claims:**
+
+> **Assert that the module under test RESOLVED there — not that the suite PRINTED a line.**
+> `mutation-proof.mjs:310` matches `/PRIVATE build/` in output the *suite* prints about its *own*
+> import. **A guard that reads a message the subject prints about itself is checking the messenger.**
+
+**Why it is the human's:** it changes how every suite in the tree resolves core, not just this
+lane's. **Not started, and not to be started by this lane on its own reading.**

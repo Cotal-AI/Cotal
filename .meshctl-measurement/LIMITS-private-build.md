@@ -1,5 +1,24 @@
 # What the private build closes, and what it does not
 
+> ## ⚠ THIS LIST IS INCOMPLETE — A SIXTH LIMIT WAS MEASURED AFTER IT WAS WRITTEN
+>
+> **`--private-build` cannot grade `packages/core` through `connection-control.smoke.ts`.** The
+> mutant lands in the private build; the cells drive a `MeshAgent`, whose `@cotal-ai/core` import
+> resolves to the shared `dist`, so the graded run executes unmutated core. **Any core mutation run
+> that way SURVIVES regardless of cell quality.** MX14, `FINDING-mx14-survived-vacuously.md`,
+> commit `5231e102`.
+>
+> **This is not one of the five below and it is not a variant of them.** They are limits on what the
+> remedy *covers*; this is a limit on what the remedy can *grade at all*. **Do not read the table
+> below as exhaustive.**
+>
+> **The section header "What it DOES close" is the one to read sceptically:** it closes the blast
+> radius, and it closed the reach along with it — mutations reached the connector *because* they
+> were written to the shared build.
+>
+> **A qualification, not a revision.** The rest is unedited pending the resolver-hook decision
+> (register item 9).
+
 **Stamped `2026-08-15T06:4xZ` (`date -u` at writing), lane tip `a7743ea6`.**
 
 Written because **a remedy whose limits are unstated gets cited later as though it had none.** The
