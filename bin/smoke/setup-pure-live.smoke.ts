@@ -53,7 +53,8 @@ const proj = mkdtempSync(join(tmpdir(), "cotal-setup-proj-"));
 // this resolution at all, so sandboxing the home does NOT sandbox the root: on a box where a
 // `.cotal` exists anywhere above the temp dir, every PROJECT-ROOT write this suite makes lands in
 // THAT tree. Not every write: the onboarded stamp and the extension manifest are checked under
-// `home`/`configHome` (:110-112) and are sandboxed by COTAL_HOME/XDG_CONFIG_HOME, which root
+// `home`/`configHome` by the C-block's stamp and extension-manifest cells, and are sandboxed by
+// COTAL_HOME/XDG_CONFIG_HOME, which root
 // resolution never consults. The project-root case is not hypothetical — it is what happens on a
 // developer box with a `/tmp/.cotal`, which is where broker credentials and logs live.
 //
@@ -84,8 +85,9 @@ const runtimeArtifact = (name: string) => localProcessPath(name, { root: proj, s
 
 // MUST-PASS CONTROLS, before any of the absence cells run. They are POSITIVE CONTROLS on the path
 // SHAPE and on the detector. They prove NOTHING about whether the later absence cells were reached,
-// and running before the first subprocess (:96) they could not. Reach is carried by the exit code
-// instead: `ok` THROWS on a red cell (:24) and the cells are straight-line top-level statements over
+// and running before the first `cotal setup` subprocess (the A block below) they could not. Reach is
+// carried by the exit code instead: `ok` THROWS on a red cell and the cells are straight-line
+// top-level statements over
 // fixed-size loops, so rc=0 means the last line executed and therefore every cell above it did. The
 // printed completion count is a human-readable echo of that, not an enforced marker — nothing
 // asserts it (package.json:268 is a bare `tsx` invocation).
