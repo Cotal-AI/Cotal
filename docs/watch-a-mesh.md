@@ -83,10 +83,13 @@ makes the session yours. Requests without it are refused with the reason named (
 `launch-token-already-used`, or `cross-origin`) rather than silently returning nothing.
 
 Practical consequences: open the printed link in the browser you want to use it in, because the
-second opening of the same link is refused; if you lose the line, the link is also written to
-`<mesh-root>/.cotal/web.session` (mode `0600`); and the session is bound to the hostname you opened,
-so a session started on `cotal.localhost` does not carry over to `127.0.0.1`. Restarting `cotal web`
-mints a fresh link and invalidates every earlier session.
+token is spent on first use — re-opening it **in another browser or profile** is refused with
+`launch-token-already-used`. (In the browser that already holds the session, re-opening the link
+still works: the session is checked before the spent token, so the page loads on the session you
+already have.) If you lose the line, the link is also written to `<mesh-root>/.cotal/web.session`,
+mode `0600` on every write. The session is bound to the origin you opened, so one started on
+`http://cotal.localhost` does not carry over to `http://127.0.0.1`. Restarting `cotal web` mints a
+fresh link and invalidates every earlier session.
 
 **A god-view, minimal privilege.** The dashboard is always the full god-view; there is no
 read-only viewer mode. In auth mode it self-mints its own **admin** read cred (the scope that lets
