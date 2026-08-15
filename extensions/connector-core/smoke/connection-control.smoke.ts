@@ -323,6 +323,53 @@ async function main() {
   const c2 = await run("cotal_connect", A, cfgA, {});
   check("R3 connecting again refuses as [already-connected]", c2.isError === true && c2.text.includes("[already-connected]"), c2.text);
 
+  // ══ [shutting-down] — THE MOST-PRODUCED REFUSAL IN THIS FEATURE, PREVIOUSLY ASSERTED NOWHERE ══
+  // Seven production sites (agent.ts disconnect/connect/reconnect, endpoint.ts ×4) and no suite in
+  // the repo named it. A refusal nothing asserts is a refusal nothing keeps honest: `shutting-down`
+  // could be renamed, widened to swallow a different condition, or dropped for a generic error and
+  // every suite would stay green.
+  //
+  // CONTROL ARM FIRST. The condition is `agent.stopping`, so the same three calls through the same
+  // tools, taken while stopping is FALSE, must NOT produce it. Without this arm "refuses as
+  // [shutting-down]" is satisfiable by a surface that answers [shutting-down] to everything — the
+  // failure mode this branch already caught once in the endpoint's transition vocabulary.
+  console.log("\n=== S CONTROL (inverse): the same calls, same tools, while NOT shutting down ===");
+  check("S0a stopping is false — the control arm can actually differ from the assertion arm",
+    (A as any).stopping !== true);
+  const sd0 = await run("cotal_disconnect", A, cfgA, {});
+  check("S0b disconnect does NOT refuse as [shutting-down] on a healthy session",
+    !sd0.text.includes("[shutting-down]"), sd0.text);
+  const sc0 = await run("cotal_connect", A, cfgA, {});
+  check("S0c connect does NOT refuse as [shutting-down] on a healthy session",
+    !sc0.text.includes("[shutting-down]"), sc0.text);
+  const sr0 = await run("cotal_reconnect", A, cfgA, {});
+  check("S0d reconnect does NOT report shutting down on a healthy session",
+    !/shutting down/i.test(sr0.text), sr0.text);
+
+  console.log("\n=== S ASSERTION: the session is tearing down; each verb names THAT condition ===");
+  // `stop()` sets `stopping` synchronously and then awaits the endpoint teardown, so the window
+  // this refusal exists for is reached by NOT awaiting it — which is also the real shape of the
+  // race: a host tearing the session down while the agent is still taking tool calls.
+  const stopping = A.stop();
+  check("S1a the condition under test is actually established",
+    (A as any).stopping === true);
+  const sd1 = await run("cotal_disconnect", A, cfgA, {});
+  check("S1b disconnect during teardown refuses as [shutting-down]",
+    sd1.isError === true && sd1.text.includes("[shutting-down]"), sd1.text);
+  const sc1 = await run("cotal_connect", A, cfgA, {});
+  check("S1c connect during teardown refuses as [shutting-down], NOT [already-connected]",
+    sc1.isError === true && sc1.text.includes("[shutting-down]") && !sc1.text.includes("[already-connected]"), sc1.text);
+  const sr1 = await run("cotal_reconnect", A, cfgA, {});
+  // NOTE, and it is a finding rather than a preference: `agent.reconnect()` carries a `reason` field
+  // added so a caller could branch instead of matching English, and `cotal_reconnect`'s runner
+  // returns `err(r.message)` — dropping it. So at the TOOL boundary, where a caller actually lives,
+  // this refusal is prose only. Asserted here as what it IS, not as what it should be.
+  check("S1d reconnect during teardown refuses, and says which condition — in ENGLISH ONLY (see note)",
+    sr1.isError === true && /shutting down/i.test(sr1.text), sr1.text);
+  check("S1e and that is the gap: the tool drops the named reason its own agent returned",
+    !sr1.text.includes("[shutting-down]"), sr1.text);
+  await stopping;
+
   await A.stop();
   await B.stop();
 
