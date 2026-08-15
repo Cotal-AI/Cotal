@@ -4,20 +4,106 @@
  * This exists because the expression it replaces was copied verbatim into three surfaces (the
  * connector inbox, `cotal join`, and the mesh view), and adding the `artifact` core kind broke all
  * three the same way: an artifact part has no `data` field, so the old `JSON.stringify(p.data)`
- * fallback rendered it as the literal string "undefined". One renderer means a new core part kind
- * is legible everywhere at once, or nowhere — never in two surfaces out of three.
+ * fallback rendered it as an EMPTY STRING. One renderer means a new core part kind is legible
+ * everywhere at once, or nowhere — never in two surfaces out of three.
+ *
+ * **TWO CORRECTIONS TO THAT PARAGRAPH, BOTH MEASURED, BOTH THE REASON THIS FILE CHANGED AGAIN.**
+ *
+ * **1. It said the old fallback "rendered it as the literal string `undefined`". It did not.**
+ * `JSON.stringify(undefined)` returns the *value* `undefined`, and `Array.prototype.join` coerces
+ * that to `""`. **A literal `"undefined"` in a message body is visible and gets reported the same
+ * day; an empty body never does.** The comment understated the defect it was written to fix, and
+ * understating it is part of why the shape survived — a defect described as more visible than it is
+ * gets prioritised as though somebody would have noticed.
+ *
+ * **2. It names THREE surfaces. There are SEVEN.** **The consolidation was produced by a sweep that
+ * matched the EXPRESSION**, so it missed the copies nobody had grepped for and could never have
+ * found the filter form at all. Measured at `7cc74f50`, by the outcome predicate below:
+ *
+ *   - **3 ADOPTED** this function — `connector-core/src/agent.ts`, `cli/src/commands/join.ts`,
+ *     `cli/src/view/mesh-view.ts`. These are the only three, and so they are the only three a fix
+ *     here reaches.
+ *   - **2 STRINGIFY-FORM copies** — `implementations/web/src/web/app.js` and `.../graph.js`.
+ *   - **2 FILTER-FORM** — `examples/02-self-improving-console/harness/observer.ts` and
+ *     `examples/04-frontier-faces/tools/studio.mjs`, which drop non-text parts before mapping.
+ *
+ * ***A fix to the shared renderer cannot reach a surface whose defect is that it does not use the
+ * shared renderer.*** The four it misses are exactly the four that never adopted it — that is the
+ * definition of the set, not bad luck. **This function closes THREE OF SEVEN and nothing wider, and
+ * that is the number to check the box against.**
+ *
+ * > **Sweep for the OUTCOME — a part kind that reaches neither a reader nor an error — not for the
+ * > expression.** The stringify form leaves a stray separator behind; the filter form leaves no
+ * > trace at all. Re-run it with the disjunction, not one arm:
+ * > `kind === "text"` alongside `JSON.stringify(p.data)`.
+ *
+ * ⚠️ **THE OUTCOME SWEEP HAS ITS OWN ELSE-BRANCH: it mints LOOKALIKES, and only a TYPE check
+ * excludes them.** `examples/04-frontier-faces/web/studio.html:477` iterates `m.parts` and reads
+ * like an eighth instance. It is not one: those are OpenCode session parts, discriminated on
+ * `p.type` (`reasoning` / `text` / `tool`), not Cotal `Part` values, which discriminate on `p.kind`.
+ * Different type, different producer. **A count inflated by a lookalike is as wrong as one deflated
+ * by a miss, and it is the more tempting error, because it makes the finding look bigger.**
+ * Excluded deliberately; the exclusion is evidence and is recorded rather than dropped.
+ *
+ * **A separate class, named because it is the instrument rather than the product: the SUITES render
+ * a non-text part as `""` too — 23 sites across 20 files**, spanning `packages/core`'s own smoke
+ * suites, the CLI's, the codex and opencode connectors', and `bin/smoke`. They are harnesses, not
+ * reader-facing surfaces, so they are not part of the seven. But it means **the suites cannot see a
+ * part that vanishes**: a cell asserting on received text passes identically whether the non-text
+ * part arrived or was dropped. Left as found and flagged here rather than changed, because widening
+ * this commit into the suites that grade it is how a fix stops being reviewable.
+ *
+ * ⚠️ **THAT NUMBER WAS FIRST WRITTEN HERE AS "FOUR", AND THE WAY IT WAS WRONG IS THE POINT.** The
+ * sweep that produced it piped through `grep -v "/smoke/"` — **an exclusion that removed exactly the
+ * population being counted.** The habit is sound (test files are noise when you are sweeping for a
+ * product defect) and it was carried, unexamined, into the one sweep whose subject was the tests.
+ *
+ * > ***An exclusion inherited from the previous sweep is a filter nobody re-justified. Check what a
+ * > sweep DROPS against what it is looking for, not against what the last one was looking for.***
+ *
+ * **Second correction, from the same re-run:** on these seats `grep` is a **shell function** wrapping
+ * ugrep with `--ignore-files`, so a bare `grep -r` is blind to everything gitignored. Two-arm control:
+ * one marker in a tracked file and one in a gitignored file is found **once** by bare `grep -r` and
+ * **twice** by `/usr/bin/grep -r`. **The three-call-site count above is unaffected and was re-derived
+ * both ways** — pinned `/usr/bin/grep` and `git grep` agree exactly — because those files are all
+ * tracked. **Sweeps that conclude an ABSENCE want the pinned binary or `git grep`.**
  */
 import type { Part } from "./types.js";
 
-/** One part as display text. An unknown extension kind still falls back to its `data`, which is
- *  the pre-existing behaviour and deliberately unchanged: extensions are opaque here. */
+/**
+ * One part as display text.
+ *
+ * **NO PART RENDERS AS NOTHING.** That is the rule this function now enforces, and it is
+ * `AGENTS.md`'s "No fallbacks. Throw if something is not supported in the current environment or
+ * config, rather than silently degrading" applied at the only layer that can see every kind at
+ * once. It is a visible marker rather than a throw ON PURPOSE: **a throw here is swallowable.** A
+ * caller that wraps this in a try/catch and skips the message reinstates exactly the silence being
+ * removed, one layer further up, where it is harder to see. *A refusal that is not delivered is not
+ * a refusal* — so the refusal is delivered as content, into the same string the reader is already
+ * looking at.
+ *
+ * Extension kinds stay OPAQUE here, which is unchanged and deliberate: core does not know how to
+ * render `ag-ui.frame` or anything else an extension defines, and it must not pretend to. What
+ * changes is that not knowing now says so.
+ */
 function partText(p: Part): string {
   if (p.kind === "text") return p.text;
   // The digest is verbose, and it is not optional: it is the only handle a reader can act on to
   // actually fetch the bytes. Name and size come from the publisher, so they are shown as the
   // claims they are, not as facts the reader should size a buffer from.
   if (p.kind === "artifact") return `[artifact ${p.name} (${p.mediaType}, ${p.size} bytes) ${p.digest}]`;
-  return JSON.stringify((p as { data?: unknown }).data);
+  if (p.kind === "data") {
+    const encoded = JSON.stringify((p as { data?: unknown }).data);
+    // `JSON.stringify(undefined)` returns `undefined`, so a `data` part carrying no data hits the
+    // same vanishing act as an unknown kind. Named separately from the kind marker below, because
+    // "a data part with nothing in it" and "a kind this build cannot render" are different facts
+    // and a reader who sees one must not conclude the other.
+    return encoded === undefined ? `[empty data part]` : encoded;
+  }
+  // An extension kind. Not renderable here and not silently droppable either: the marker names the
+  // kind, so a reader who meets one knows exactly which renderer is missing rather than seeing a
+  // message that looks like it was sent blank.
+  return `[unrenderable part kind ${JSON.stringify(p.kind)} — no renderer for it on this surface]`;
 }
 
 /** A message's parts as one flat string, space-joined. */
