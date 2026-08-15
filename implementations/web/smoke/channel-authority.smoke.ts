@@ -301,6 +301,24 @@ function extractFunction(src: string, file: string): string | undefined {
  *  cheap direction is the safe one. The shipped files contain none — asserted below, not assumed. */
 const HTML_COMMENT_FORM = /<!--|-->/;
 
+function isBackfillLoop(n: ts.Node): boolean {
+  const assignsChannelFromChannel = (root: ts.Node): boolean => {
+    let hit = false;
+    const walk = (x: ts.Node): void => {
+      if (
+        ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(x.left) && x.left.name.text === "channel" &&
+        ts.isPropertyAccessExpression(x.right) && x.right.name.text === "channel"
+      ) hit = true;
+      ts.forEachChild(x, walk);
+    };
+    walk(root);
+    return hit;
+  };
+  return ts.isForOfStatement(n) && ts.isIdentifier(n.expression) && n.expression.text === "activity" &&
+    assignsChannelFromChannel(n.statement);
+}
+
 function findBackfillLoops(src: string, file: string): string[] {
   if (HTML_COMMENT_FORM.test(src)) return [];
   const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
@@ -335,17 +353,65 @@ function extractBackfill(src: string, file: string): string | undefined {
   return all.length === 1 ? all[0] : undefined;
 }
 
-/** Context for executing an extracted backfill loop. The loop bodies reference a few page-locals
- *  besides `activity`; they are stubbed rather than removed, because executing the WHOLE loop is
- *  what makes a fail-open guard rewrite observable. Extracting only the assignment would pass under
- *  exactly the regression this file exists to catch. */
-function backfillContext(entries: { channel?: string; msg?: { channel?: string } }[]) {
-  return { activity: entries, agents: new Map(), chatHit() {}, dmHit() {}, now: () => 0 };
+/** The FUNCTION that contains the backfill loop, whole.
+ *
+ *  Identifying the loop is not the same as identifying a LIVE loop, and slicing the loop alone
+ *  discards the control flow that decides whether it runs. Measured: prefixing the shipped loop
+ *  with five characters — `if(0)` — left the finder returning one match, the suite executing the
+ *  stripped loop, and all 109 cells green while the live page kept the forgery. Deadness INSIDE the
+ *  slice was visible; deadness AROUND it was not.
+ *
+ *  Carrying just the enclosing statement is not enough either, and that was measured too: in
+ *  `app.js` the loop sits in the `else` arm of a live four-way chain, so the enclosing statement is
+ *  real page logic containing `await`. The honest unit is therefore the whole function — the same
+ *  move already made for `onMessage`, and it covers the class rather than enumerating it: `if(0)`,
+ *  `while(0)`, an early `return`, or any future spelling of "this never runs" all fail the same
+ *  behaviour cell, because the function is executed rather than inspected. */
+function extractBackfillFunction(src: string, file: string): string | undefined {
+  if (HTML_COMMENT_FORM.test(src)) return undefined;
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const found: string[] = [];
+  const visit = (n: ts.Node): void => {
+    if (isBackfillLoop(n)) {
+      let p: ts.Node | undefined = n;
+      while (p !== undefined && !ts.isFunctionDeclaration(p)) p = p.parent;
+      if (p !== undefined && ts.isFunctionDeclaration(p)) found.push(src.slice(p.getStart(sf), p.end));
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return found.length === 1 ? found[0] : undefined;
 }
 
-// A unicast DM carrying a forged `channel`. `mode` comes from the server's `deliveryOf(subject)`,
-// never from the payload, so the attacker controls only `msg.*` — and on `inst` the server sends no
-// channel at all, which is precisely the case a guarded overwrite fails open on.
+/** Executes an extracted async backfill function by NAME and returns the entry list it mutated.
+ *  The stubs are deliberately inert: every one of them is a no-op or an empty collection, so the
+ *  only thing that can put a channel on a message is the shipped code under test. */
+async function runBackfillFunction(code: string, fnName: string, file: string, entries: unknown[]) {
+  const json = (u: string): unknown =>
+    u.includes("/api/activity") ? entries : u.includes("/api/membership") ? { members: [] } : [];
+  const ctx: Record<string, unknown> = {
+    fetch: async (u: string) => ({ json: async () => json(u) }),
+    // app.js
+    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {},
+    roster: [], channels: null, dms: [], activity: [], agentSel: null, dmSel: null, selected: "*",
+    // graph.js
+    $: () => ({ textContent: "" }), ensureHub: () => ({}), updateRoster() {}, applyMembership() {},
+    agents: new Map(), chatHit() {}, dmHit() {}, now: () => 0, recent: [] as unknown[],
+    partsText: () => "", shortId: (x: unknown) => x, physics() {}, fitTarget: () => ({ x: 0, y: 0, scale: 1 }),
+    cam: { x: 0, y: 0, scale: 1 }, alpha: 0,
+    __p: undefined,
+  };
+  const c = createContext(ctx);
+  runInContext(`${code}\n__p = ${fnName}();`, c, { filename: file });
+  await (ctx.__p as Promise<void>);
+  // `entries` is returned rather than `ctx.activity` ON PURPOSE. In `app.js` the backfill assigns
+  // to a page-global and the two are the same array; in `graph.js` `activity` is a LOCAL from a
+  // destructured `Promise.all`, so `ctx.activity` would never be touched and every cell reading it
+  // would pass vacuously on the untouched empty default. The entries array is the object the
+  // shipped code actually mutates in both.
+  return entries as { msg?: { channel?: string } }[];
+}
+
 const VICTIM = "victim-channel";
 
 // ⚠️ FRESH PER RUN — THESE ARE FACTORIES, AND THAT IS LOAD-BEARING, NOT STYLE.
@@ -428,11 +494,10 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "app.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfill(src, "app.js"),
-    run(stmt) {
-      const ctx = backfillContext([{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
-      runInContext(stmt, createContext(ctx), { filename: "app.js" });
-      return ctx.activity[0].msg?.channel;
+    extract: (src) => extractBackfillFunction(src, "app.js"),
+    async run(code) {
+      const out = await runBackfillFunction(code, "refresh", "app.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
+      return out[0]?.msg?.channel;
     },
   },
   {
@@ -442,11 +507,10 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfill(src, "graph.js"),
-    run(stmt) {
-      const ctx = backfillContext([{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
-      runInContext(stmt, createContext(ctx), { filename: "graph.js" });
-      return ctx.activity[0].msg?.channel;
+    extract: (src) => extractBackfillFunction(src, "graph.js"),
+    async run(code) {
+      const out = await runBackfillFunction(code, "load", "graph.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
+      return out[0]?.msg?.channel;
     },
   },
 ];
@@ -460,7 +524,7 @@ for (const ing of INGRESS) {
   // ONE evaluation, reused for both the predicate and the diagnostic. Calling `run` a second time
   // to build `{got}` would execute the shipped function again over a fresh context — and, worse,
   // over an already-mutated payload — so the value reported would not be the value asserted.
-  const got = ing.run(stmt!);
+  const got = await ing.run(stmt!);
   check(`${ing.file} — ${ing.path} — the VERIFIED channel overwrites the publisher's claim`,
     got === VERIFIED, { got, claimed: CLAIMED, verified: VERIFIED });
 }
@@ -488,11 +552,10 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "app.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfill(src, "app.js"),
-    run(stmt) {
-      const ctx = backfillContext([{ msg: { channel: CLAIMED } }]);
-      runInContext(stmt, createContext(ctx), { filename: "app.js" });
-      return ctx.activity[0].msg?.channel;
+    extract: (src) => extractBackfillFunction(src, "app.js"),
+    async run(code) {
+      const out = await runBackfillFunction(code, "refresh", "app.js", [{ msg: { channel: CLAIMED } }]);
+      return out[0]?.msg?.channel;
     },
   },
   {
@@ -502,11 +565,10 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfill(src, "graph.js"),
-    run(stmt) {
-      const ctx = backfillContext([{ msg: { channel: CLAIMED } }]);
-      runInContext(stmt, createContext(ctx), { filename: "graph.js" });
-      return ctx.activity[0].msg?.channel;
+    extract: (src) => extractBackfillFunction(src, "graph.js"),
+    async run(code) {
+      const out = await runBackfillFunction(code, "load", "graph.js", [{ msg: { channel: CLAIMED } }]);
+      return out[0]?.msg?.channel;
     },
   },
 ];
@@ -535,7 +597,7 @@ check("the anycast hostile table covers both live ingresses", HOSTILE_ANYCAST.le
 for (const ing of HOSTILE_ANYCAST) {
   const stmt = ing.extract(read(`../src/web/${ing.file}`));
   check(`${ing.file} — ${ing.path} — the ingress statement is extractable`, Boolean(stmt), { stmt });
-  const got = ing.run(stmt!);
+  const got = await ing.run(stmt!);
   check(`${ing.file} — ${ing.path} — a FORGED channel on an ANYCAST message is CLEARED`,
     got === undefined, { got, forged: VICTIM });
 }
@@ -562,7 +624,7 @@ for (const ing of HOSTILE) {
   check(`${ing.file} — ${ing.path} — the hostile statement is extractable`, Boolean(stmt), { stmt });
   // ONE evaluation — see the INGRESS loop. Here it mattered doubly: the second call used to run
   // against a payload the first call had already sanitized.
-  const got = ing.run(stmt!);
+  const got = await ing.run(stmt!);
   // `undefined`, not merely "not the forgery": a non-chat message HAS no channel, and any other
   // value here would be the surface inventing one.
   check(`${ing.file} — ${ing.path} — a FORGED channel is CLEARED when nothing authoritative exists`,
