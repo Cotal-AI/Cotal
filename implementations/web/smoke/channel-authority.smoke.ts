@@ -198,7 +198,7 @@ const CLAIMED = "attacker-claimed";
 const VERIFIED = "policed-channel";
 const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): unknown }[] = [
   {
-    file: "app.js", path: "live SSE feed", find: /msg\.channel = entry\.channel;/,
+    file: "app.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = entry\.channel;/m,
     run(stmt) {
       const ctx = { entry: { channel: VERIFIED }, msg: { channel: CLAIMED } };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -214,7 +214,7 @@ const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "live SSE feed", find: /^ *msg\.channel = channel;/m,
+    file: "graph.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = channel;/m,
     run(stmt) {
       const ctx = { channel: VERIFIED, msg: { channel: CLAIMED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -222,7 +222,7 @@ const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "/api/activity backfill", find: /if \(m\) m\.[^;]*;/,
+    file: "graph.js", path: "/api/activity backfill", find: /if \(m[^)]*\) m\.[^;]*;/,
     run(stmt) {
       const ctx = { m: { channel: CLAIMED }, e: { channel: VERIFIED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -258,7 +258,7 @@ for (const ing of INGRESS) {
 // MISSING case, which is the whole point of this block.
 const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): unknown }[] = [
   {
-    file: "app.js", path: "live SSE feed", find: /msg\.channel = entry\.channel;/,
+    file: "app.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = entry\.channel;/m,
     run(stmt) {
       const ctx = { entry: { channel: undefined }, msg: { channel: CLAIMED, id: "dm-1" } };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -274,7 +274,7 @@ const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "live SSE feed", find: /^ *msg\.channel = channel;/m,
+    file: "graph.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = channel;/m,
     run(stmt) {
       const ctx = { channel: undefined, msg: { channel: CLAIMED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -282,7 +282,7 @@ const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "/api/activity backfill", find: /if \(m\) m\.[^;]*;/,
+    file: "graph.js", path: "/api/activity backfill", find: /if \(m[^)]*\) m\.[^;]*;/,
     run(stmt) {
       const ctx = { m: { channel: CLAIMED } as { channel?: string }, e: {} as { channel?: string } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
