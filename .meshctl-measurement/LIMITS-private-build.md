@@ -68,6 +68,27 @@ the moment ANYONE runs `tsc`.** The mutant source sits in the tree for the lengt
 concurrent build in this worktree — another lane's, a tool's, a habit — compiles it into the
 fleet-linked dist. The proof itself never builds, so nothing in the proof is watching for that.
 
+#### What would move #2 from OPEN to CLOSED — recorded, NOT built
+
+**Mutate a private COPY of the source, never the shared source.** The harness would copy
+`packages/core/src` into the run's own scratch, apply the `--find`/`--replace` there, compile that
+copy, and point the suite at it through the existing `COTAL_CORE_ENTRY` seam. **The shared
+`packages/core/src` is then never written at all** — so there is no window in which a concurrent
+`tsc` can compile a mutant, and `tsx`-direct suites like `connection-lifecycle.smoke.ts` become
+coverable by the same mechanism instead of being the exception.
+
+It also collapses the signal residual below: with no shared-tree write there is nothing for a
+`SIGKILL` to strand (`SIGNAL-SAFETY-mutation-proof.md`). Restore stops being a recovery obligation
+and becomes a `rm -rf` of a directory nobody else resolves.
+
+**Two things it does not close**, so it is not a silver bullet: a suite that imports the shared
+source by a relative path must still be re-pointed (the seam already does this, but every such
+suite has to carry it), and the copy's own `node_modules` resolution has to work — the reason the
+current scratch lives *inside* the package rather than in `/tmp`.
+
+**Recorded on instruction and deliberately not built tonight.** Building it now would be a second
+untested mechanism inside the same window the first one is about to be proven in.
+
 ### 3. It does not cover any other lane, package, or harness
 
 Only this lane's two suites carry the seam, and only `packages/core` has been wired. **Any mutation

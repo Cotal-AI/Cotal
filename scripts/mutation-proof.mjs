@@ -162,12 +162,35 @@ function proveOne(m, opts) {
     return ok;
   };
 
+  // SIGNAL SAFETY. try/catch does not run on SIGINT or SIGTERM, so before this existed a Ctrl-C
+  // during a run left the MUTANT in the working tree indefinitely, with only a .bak in tmpdir and
+  // nothing said about it. That is the worst form of this hazard: the tree is wrong, `git status`
+  // shows a modification nobody reads as a mutant, and on a shared checkout the next `tsc` compiles
+  // it. Restore on the way out of the process, then re-raise so the exit status still reports the
+  // signal rather than being swallowed.
+  const onSignal = (sig) => {
+    try {
+      const ok = restore();
+      say(`\n${ok ? C.yellow : C.red}${sig}: ${ok ? "restored" : "RESTORE FAILED for"} ${m.file}${C.off}`);
+      if (!ok) say(`${C.red}THE MUTANT MAY STILL BE IN THE TREE — check ${m.file} before anything builds.${C.off}`);
+    } catch (e) {
+      say(`\n${C.red}${sig}: restore threw (${e.message}); the mutant may still be in ${m.file}.${C.off}`);
+    }
+    opts.priv?.cleanup();
+    process.removeListener(sig, onSignal);
+    process.kill(process.pid, sig);
+  };
+  const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const sig of SIGNALS) process.on(sig, onSignal);
+  const clearSignals = () => { for (const sig of SIGNALS) process.removeListener(sig, onSignal); };
+
   try {
     writeFileSync(path, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
     // sound only by accident.
     if (sha(path) === shaBefore) {
       restore();
+      clearSignals();
       return { label, verdict: "ERROR", why: "mutation produced an identical file — it did not apply" };
     }
     say(`${C.dim}  mutated ${hits}× · running: ${m.command ?? opts.command}${C.off}`);
@@ -180,6 +203,7 @@ function proveOne(m, opts) {
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
+    clearSignals();
     if (!restored) return { label, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
 
     if (r.timedOut) return { label, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
@@ -217,6 +241,7 @@ function proveOne(m, opts) {
     return { label, verdict: "KILLED", why: m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`, ticks };
   } catch (e) {
     restore();
+    clearSignals();
     return { label, verdict: "ERROR", why: `harness threw: ${e.message}` };
   }
 }
