@@ -89,3 +89,29 @@ Established by measurement taken after the fact, not assumed, and not inherited 
 LIMIT: mtime is evidence about a WRITE, not about a READ, and it is forgeable (`touch`, `cp -p`).
 Nothing here suggests forgery; it is stated because "no file changed" and "no process ran" are
 different claims and only the first is measured.
+
+## ADDENDUM 2 — 2026-08-15T09:0xZ — THE WRITER SET IS THE GATE CHAIN, AND THE SCOPE LINE IS RESTATED
+The single writer routed to me was wrong in scale, not in kind. Census (fm-artifact-4, static; and
+reproduced here by parsing this tree's package.json): `smoke:ci` has 215 entries of which EIGHT
+invoke a dependency-inclusive build reaching packages/core. `check` adds `typecheck` (whose body IS
+`pnpm build`), `smoke:update-concurrency` and `smoke:setup-pure:live` — so ONE `pnpm check` rewrites
+packages/core/dist AT LEAST TEN TIMES. Register item 10.
+
+SCOPE OF CONTAINMENT FACT 1, RESTATED IN FULL:
+  valid only if NO GATE RUN and NO `:live` TASK overlapped this interval.
+
+CAN I ESTABLISH THAT, OR AM I IMPORTING IT? — ESTABLISHED, and NOT by fact 1.
+  It was put to me that the byte-identity ALSO proves no gate run overlapped. It does not, and the
+  reason is the same one as before, only sharper now that the writers are known: those eight builds
+  compile the SAME UNCHANGED SOURCE, and `tsc` is deterministic, so they rewrite all 276 files with
+  IDENTICAL BYTES. A byte comparison sees neither the escape it was built for nor the gate run that
+  would mask it. Accepting that inference would have made a blind instrument the basis of the claim.
+
+  ESTABLISHED BY MTIME (addendum 1, 08:46:26Z, positive control included): every dist file sits at
+  05:08:52.90Z..05:08:53.88Z; zero files newer than the 08:35:24Z open; zero newer than 07:24:00Z.
+  A build rewrites a file, and a rewrite moves mtime. => No gate run, no `:live` task, and no build
+  of any kind touched packages/core/dist in this worktree after 05:08:53Z.
+
+NET EFFECT ON THIS RUN: none of the four containment facts changes, and the interval is clean by a
+wider margin than the window. What changed is that fact 1 no longer carries the claim alone, and the
+claim now names the writers it is quantified over instead of leaving them unstated.

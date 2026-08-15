@@ -214,3 +214,43 @@ the moment it is taken. Every place this branch cites dist stability now carries
 **What the decision actually is, and why it is not this lane's:** whether a `smoke:*` script may
 write the fleet-linked artifact at all — and if so, whether the name should say so. Fixing it inside
 one script fixes one of sixteen.
+
+### AMENDED 2026-08-15T09:0xZ — it is not "a `:live` smoke can write it". THE GATE CHAIN WRITES IT.
+
+Census by fm-artifact-4, read statically from the gate manifest with no builder invoked.
+**Independently reproduced here** by parsing this tree's own `package.json` — same eight, same
+names, arrived at without seeing the other census's method:
+
+```
+smoke:ci  ->  215 entries, of which EIGHT invoke a build:
+  smoke:delivery-renewal   smoke:codex-installed    smoke:materialize-concurrency
+  smoke:seed               smoke:setup-failloud     smoke:agent-skills
+  smoke:ext-seed-help      smoke:persona-announce
+Both filter roots reach core: `cotal-ai...` (core among ten workspace deps)
+                              `@cotal-ai/workspace...` (core its only one)
+```
+
+**And `check` is worse than `smoke:ci`.** `check` opens with `typecheck`, whose body is
+`pnpm build && pnpm -r typecheck` — **a full build, entry one** — then runs `smoke:update-concurrency`
+(builds), then `smoke:ci` (eight more), then `smoke:setup-pure:live`. **A single `pnpm check` writes
+`packages/core/dist` at least ten times.**
+
+**`smoke:dist-freshness` is entry 1 of the gate chain, and it VALIDATES that `packages/core/dist` is
+fresh.** The chain checks the artifact once and then rewrites it eight times afterwards. **The gate
+validates a state the gate itself does not preserve.**
+
+### The consequence for any lane watching that artifact
+
+> **`packages/core/dist` byte-identity is not violated by an escape during a gate run. It is
+> violated BY the gate run** — eight times — **and a byte-identity check cannot tell you which cause
+> it saw.**
+
+Except that in this repo it cannot even see the gate run: **`tsc` over unchanged source is
+deterministic, so those eight rewrites produce identical bytes.** A byte comparison sees neither the
+escape it was built for nor the gate that would mask it. **The instrument that sees both is `mtime`**
+— which is why the MX16 record was re-grounded on it (`runs/2026-08-15T0835Z-mx16-window.txt`,
+addendum).
+
+**fm-orchestrator has recorded the sequencing half as its own error (§187): fm-artifact-4's arm was
+queued after this lane's window on the belief that its chain READS this artifact.** That is recorded
+there and is not restated here as this lane's finding.
