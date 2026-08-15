@@ -1,4 +1,41 @@
-# PUSH PRECONDITION — SATISFIED for `f757acbd..4d40fd27`, and narrower than it looks
+# PUSH PRECONDITION — SATISFIED for the real push range, after the first verdict named the wrong one
+
+## THE BASE REF IS THE SUBJECT — READ THIS BEFORE RUNNING THE SCAN
+
+The first two verdicts in this file were CLEAN over **7 commits / 7 files**, anchored at
+`4067aece~1` — the commit where one seat's turn began. **A push publishes everything the remote does
+not have, which was 80 commits / 143 files.** Seventy-three of them had never been scanned by anyone,
+and the verdict said nothing about that; it just said CLEAN.
+
+**Rule: a pre-push scan's base ref must be the REMOTE's current tip for this branch, never a
+convenient local landmark.** Get it read-only and without fetching:
+
+    git ls-remote --heads origin '<branch>'      # -> the remote tip, e.g. 66af9671
+    .lane/boundary-scan.sh <terms-path> 66af9671
+
+A base ref chosen from what you were working on describes your SESSION. The thing being authorised
+is the PUBLICATION. Those differ by everything anyone else pushed, and by everything you did in
+earlier turns — and a turn-scoped seat has no memory of its earlier turns, so it will reach for its
+own starting commit every time unless this file stops it.
+
+**Verdict of record**, re-run against the true range:
+
+    positive control: PASSED for all 12 terms (each seeded into the real corpus and caught)
+    scanned: 80 commits, 143 files, against 66af9671
+    SCAN-END rc=0 verdict=CLEAN
+
+## PUSH IS STILL NOT AUTHORISED, AND THE SCAN IS NOT WHAT BLOCKS IT
+
+fm-orchestrator has ungated the range. Push is separately **denied at box level for every seat**, with
+a standing instruction not to re-attempt it. That denial belongs to the human's permission layer,
+which an orchestrator's clearance does not lift, and a ruling on the conflict was requested and not
+given. **A missing answer is not a clearance** — the same rule this lane's whole surface is built on:
+absence of evidence is a refusal, not a pass. Do not push on the strength of the CLEAN below; it
+answers a different question.
+
+---
+
+## Earlier entry: SATISFIED for `f757acbd..4d40fd27`, and narrower than it looks
 
 **RESOLVED 2026-08-15 (`date -u`).** The canonical terms file exists outside every worktree at mode
 600; fm-orchestrator supplied the path. The scan was re-run against it:
