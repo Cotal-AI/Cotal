@@ -2594,6 +2594,8 @@ async function authSetup(
     // true, not in a doc the operator reads after the restore has already failed.
     console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
   }
+  // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
+  await healMembershipDataCreds(auth, cotalRoot());
   // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
   // A rotation that committed the trust record and then died leaves them stale, unexpired, and
   // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
@@ -2723,6 +2725,47 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
  *  its write/read/delete all go through the {@link SecretStore} seam (here, the feed reader, and clean),
  *  so the renewal owner can re-sign it into a hosted store. The observer / evictor / config stay on the
  *  raw FS (static $SYS creds + non-secret config, not renewable kinds). */
+/** Provision the DATA-account half of the membership bundle, on EVERY `up` rather than only a fresh
+ *  space. Idempotent: it writes only what is absent and is silent when both are present.
+ *
+ *  WHY THIS IS SEPARATE FROM {@link provisionMembershipCreds}. That function mints the whole bundle
+ *  in the fresh-space branch because the `$SYS` signing seed exists only there and is never
+ *  persisted — true of `membership-observer.creds` and `connection-evictor.creds`, and the reason
+ *  they can only be re-minted by a system-account rotation. It is NOT true of the other two.
+ *  `membership-rw.creds` is signed by the DATA account, whose signing seed IS persisted, and
+ *  `membership.json` is just that account's public id. Neither needs the `$SYS` window, so binding
+ *  them to it left every space provisioned before the feature permanently without the feed.
+ *
+ *  That gap was not theoretical. A space with a complete `$SYS` pair, missing only the rw cred,
+ *  reported `the membership bundle is incomplete here (missing membership-rw.creds)` on every
+ *  delivery-daemon start and served a traffic-only graph, and the documented remedy did not work:
+ *  `--rotate-sys` re-mints the `$SYS` pair and never calls the provisioner, so it wrote neither the
+ *  rw cred nor the account id. `mintMembershipObserverCreds` even names that rotation as the fix in
+ *  its own error text — advice that could not succeed. Healing here fixes both spellings at once:
+ *  the ordinary `up` repairs the data half with no rotation at all, and a rotation now repairs it
+ *  too, because this runs after both branches converge. */
+async function healMembershipDataCreds(auth: SpaceAuth, root: string): Promise<void> {
+  try {
+    const store = workspaceSecretStore(root);
+    const wrote: string[] = [];
+    if ((await store.get(MEMBERSHIP_RW_CREDS_KEY)) === undefined) {
+      await store.put(MEMBERSHIP_RW_CREDS_KEY, await mintCreds(auth, newIdentity(), "membership-rw"));
+      wrote.push(MEMBERSHIP_RW_CREDS_KEY);
+    }
+    if (!existsSync(cotalPath("membership.json"))) {
+      mkSecretDir(cotalPath()); // harden .cotal/ before the file lands, as the fresh path does
+      writeSecretFile(cotalPath("membership.json"), JSON.stringify({ accountId: auth.account.pub }));
+      wrote.push("membership.json");
+    }
+    if (wrote.length)
+      console.log(c.dim(`• membership: provisioned ${wrote.join(" + ")} - the data-account half needs no system-account rotation`));
+  } catch (e) {
+    // Best-effort, exactly like the fresh-space provisioner: a failure here leaves the graph on
+    // traffic-only and leaves delivery untouched. It must never keep the mesh from starting.
+    console.error(c.dim(`• broker-sourced membership not repaired: ${(e as Error).message}`));
+  }
+}
+
 async function provisionMembershipCreds(auth: SpaceAuth, root: string): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());

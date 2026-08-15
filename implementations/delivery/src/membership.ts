@@ -43,15 +43,26 @@ export async function startMembership(opts: { space: string; server: string }, s
     existsSync(cfgPath) ? undefined : "membership.json",
   ].filter((f): f is string => f !== undefined);
   if (missing.length) {
-    // Name the missing piece AND a repair that reaches it. `cotal up --rotate-sys` re-mints the $SYS
-    // pair, since it holds a system-account signing seed for exactly that moment, but it writes neither
-    // the DATA-account rw cred nor the account-id config: those are written once, when a space is
-    // first provisioned. So a rotation repairs a missing OBSERVER and nothing else, and pointing a
-    // pre-feature space at one would send an operator through a stop/start that cannot help it.
+    // Name the missing piece AND a repair that reaches it. The bundle has two halves with two
+    // different repairs, and naming the wrong one costs an operator a full mesh stop for nothing.
+    // The $SYS-signed half (observer, evictor) can only be minted while the never-persisted system
+    // signing seed is in memory, so it takes a rotation. The DATA half (rw cred, account id) is
+    // signed by the data account, whose seed IS persisted, so a plain `cotal up` heals it — that is
+    // what `healMembershipDataCreds` in `up` does, on every path rather than only a fresh space.
     const down =
       missing.length === 1 && missing[0] === "membership-observer.creds"
         ? "the $SYS observer cred is missing - re-mint it with `cotal down` then `cotal up --rotate-sys`"
-        : `the membership bundle is incomplete here (missing ${missing.join(", ")}) - a space created before broker-sourced membership gains the feed only when its auth is regenerated; \`cotal up --rotate-sys\` re-mints the $SYS pair but writes neither the rw cred nor the account id`;
+        // Name the remedy that matches the MISSING piece, because the two halves are repaired by
+        // different acts. The data half (`membership-rw.creds`, `membership.json`) is signed by the
+        // data account, whose seed is persisted, so a plain `cotal up` mints it. The $SYS half
+        // (observer, evictor) can only be re-minted while the never-persisted $SYS seed is in
+        // memory, which is a system-account rotation. Telling an operator to rotate when a plain
+        // `up` would do it sends them through a full mesh stop for nothing.
+        : `the membership bundle is incomplete here (missing ${missing.join(", ")}) - ${
+            missing.every((m) => m === MEMBERSHIP_RW_CREDS_KEY || m === "membership.json")
+              ? "run `cotal up` to provision the data-account half (no rotation needed)"
+              : "the $SYS-signed creds can only be re-minted while the system account is being provisioned: `cotal down` then `cotal up --rotate-sys`"
+          }`;
     console.error(`• membership: ${down}. The graph falls back to traffic-only; delivery is unaffected.`);
     return { down };
   }
