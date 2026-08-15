@@ -3,7 +3,15 @@
 **Why this file exists:** the force-push to `feat/agent-connection-control` is blocked by a
 permission denial in this lane's session and has been taken to the human. This body is drafted now
 so that clearing the verb is **one action, not a conversation**. Numbers below are measured at
-`a9cf56f0`; re-derive them if the branch moves before it lands.
+`f0ec7e0b`, against base **`7cc74f50`** = `git merge-base <origin/main> HEAD`; re-derive them if the
+branch moves before it lands.
+
+**Get the base right or every number below is wrong.** Derived against a stale *local* `main` this
+diff appears to carry eight other lanes' changesets and a repo-wide version bump — an alarming and
+entirely false reading, caused by the local ref being behind. `git ls-remote origin refs/heads/main`
+read **`a4aabbe4`** at `2026-08-15T07:2xZ`, which already contains that release. **Note that this
+lane's standing orders name `1aab1389` as `origin/main`; the remote has moved since. Reported, not
+acted on — fetching and rebasing are not this lane's to do.**
 
 **Do not post the section above this line.** Everything below the rule is the body.
 
@@ -19,10 +27,10 @@ self-directed connect can reach, and the probes that drive those fences against 
 
 | half | files | lines | what it is |
 | --- | --- | --- | --- |
-| **product** | **13** | **+2,310 / −35** | the feature, its suites, its docs, the changeset |
-| `.meshctl-measurement/` | 48 | +8,916 | this lane's **working records** — measurements, predictions, panel verdicts, run logs |
+| **product** | **17** | **+2,488 / −40** | the feature, its suites, its docs, the harness, the changeset |
+| `.meshctl-measurement/` | 58 | +10,198 | this lane's **working records** — measurements, predictions, panel verdicts, run logs |
 
-**79% of this PR by line count is a notebook, not a product change.** It is called out here rather
+**80% of this PR by line count is a notebook, not a product change.** It is called out here rather
 than left to be discovered at review, because AGENTS.md puts working build-plans and research in
 `.internal/` and keeps `docs/` protocol-only — so **whether that directory should merge at all is a
 real question, and it is the merger's to answer, not the author's.** The material is already public
@@ -32,13 +40,19 @@ own if the directory is dropped.
 The product half:
 
 ```
-packages/core/src/endpoint.ts                                  scripts/generate-tool-docs.mjs
-packages/core/smoke/connection-lifecycle.smoke.ts              extensions/connector-core/src/agent.ts
-packages/core/smoke/request-strand.smoke.ts                    extensions/connector-core/src/config.ts
-extensions/connector-core/smoke/connection-control.smoke.ts    extensions/connector-core/src/tool-specs.ts
-docs/agent-files.md  docs/manifest.md  docs/mcp-tools.md       .../src/docs-bundle.generated.ts
-.changeset/quiet-moons-attend.md
+packages/core/src/endpoint.ts                                  extensions/connector-core/src/agent.ts
+packages/core/smoke/connection-lifecycle.smoke.ts              extensions/connector-core/src/config.ts
+packages/core/smoke/request-strand.smoke.ts                    extensions/connector-core/src/tool-specs.ts
+packages/core/smoke/_core-entry.ts                             .../src/docs-bundle.generated.ts
+extensions/connector-core/smoke/connection-control.smoke.ts    scripts/generate-tool-docs.mjs
+docs/agent-files.md  docs/manifest.md  docs/mcp-tools.md       scripts/mutation-proof.mjs
+package.json  .gitignore  .changeset/quiet-moons-attend.md
 ```
+
+`scripts/mutation-proof.mjs`, `packages/core/smoke/_core-entry.ts` and the two `.gitignore` /
+`package.json` lines are **test-infrastructure, not feature code** — the private-build seam and the
+suites' names. They are in the product half because they ship; they are described under
+*Verification* below.
 
 ## The authority question, and its answer
 
@@ -59,9 +73,18 @@ the operator did not grant, and reach no mesh the agent was not already on.
   reads, on subtree shape, and on publish — each paired with a live control arm (E9, E10-univ, E11)
   so the silences are denials and not dead probes.
 
-Credential renewal no longer outlives a deliberate disconnect, and a stale credential is re-read on
-the way back, so **access revoked while the agent was away returns as a refusal rather than as a key
-that still works.**
+Credential renewal no longer outlives a deliberate disconnect, and a stale cached credential is
+re-read on the way back.
+
+**Do not read that as a revocation guarantee — it is not one, and the docs say so.** What was
+measured is narrower: a disconnect/connect pair re-presented the **cached** credential without
+fetching a new one. **Whether a credential revoked while the agent was away is caught on return is
+not measured**, because settling it needs a live broker and a real revocation. It is registered as
+an open question against the E2E stage, and both doc pages tell the reader to assume it is *not*
+re-checked until someone measures it.
+
+**The distinction is the point:** "connect asks for nothing new" is a **bound** on what was
+observed, not a **guarantee** about what cannot happen. The bound is what this change claims.
 
 ## Refusals are named, and a refusal is hard to mistake for success
 
@@ -130,6 +153,25 @@ supervisor runs from the checkout — so this is a **per-call-path** statement, 
 - `connection-lifecycle`: **48 / 0**. `request-strand` and the start-leak probe driven and green.
 - **Mutation-proofed with named predicted cells**, with the mutant shown non-equivalent at the
   broker — not merely reddening a cell.
+- **Both suites now have names** (`smoke:connection-control`, `smoke:connection-lifecycle`). They
+  had none: 45 cells and a lifecycle suite reachable from no `package.json` script, runnable only by
+  someone who remembered a path. Deliberately **not** added to the `check` chain — naming a suite is
+  an author's call; changing what the aggregate gate runs is not, and it is flagged for the merger.
+- **The mutation harness no longer writes the shared build.** A proof of this lane's own compiled a
+  deliberately broken `@cotal-ai/core` into `packages/core/dist`, which two installed connectors
+  symlink — so every agent session on that host executed a knowingly defective core for the length
+  of the run. `--private-build` now compiles the mutant into a scratch directory and points the
+  suite at it through a `COTAL_CORE_ENTRY` seam; the harness refuses to grade unless the suite
+  confirms it loaded the private build. Filed against this lane in
+  `.meshctl-measurement/FINDING-mutation-on-shared-dist.md`, with its limits stated separately so
+  the remedy is not cited as broader than it is.
+- **The harness survives an interrupt.** It had no signal handlers, so a plain Ctrl-C left the
+  mutated source in the working tree. Registering listeners fixes it — and the mechanism is not the
+  obvious one: the handler body never runs, because `spawnSync` blocks the event loop for the whole
+  window. What protects the tree is that registering a listener replaces the signal's default
+  disposition. That is recorded next to the listener, because the body looks dead and is not.
+  `SIGKILL` remains uncatchable; recovery is `git checkout --`, which is why the harness refuses a
+  dirty tree.
 - Reviewed by a **five-seat panel** in independent worktrees; verdicts are in
   `.meshctl-measurement/verdicts/` verbatim, including the ones that blocked. The final re-anchored
   verdict is CLEAR.
@@ -149,6 +191,14 @@ supervisor runs from the checkout — so this is a **per-call-path** statement, 
    artifact that actually served the seat. Same zero, wrong subject — corrected in place.
 2. **The most recent suite re-drive did not capture an observed exit code**, and its log is
    tail-only. Both faults are recorded in the run file itself rather than left to be assumed away.
+3. **Revocation-on-return is UNMEASURED** — see the authority section. It needs a live broker and a
+   real revocation, so it belongs to the E2E stage, and the docs already take the unsafe-until-proven
+   side. This is the sharpest open question on the surface and it is stated, not buried.
+
+**The open decisions this branch does not close** — including whether these suites join the `check`
+chain, and two connector symlinks that point installed extensions at this worktree — are collected
+with an owner each in `.meshctl-measurement/GATE-OPEN-DECISIONS.md`, rather than left in the
+conversation that produced them.
 
 ## Not ready to merge on my say-so
 
