@@ -197,8 +197,10 @@
   function heatFanOut(channel, from) {
     for (const e of edges.values()) if (e.chan === channel && e.a !== from) e.heat = 1;
   }
-  function onMessage({ mode, senderId, msg }) {
+  function onMessage({ mode, senderId, channel, msg }) {
     if (!msg) return;
+    // Trust decided once (see app.js): the subject-derived channel replaces the payload claim.
+    if (channel) msg.channel = channel;
     const from = ensureAgent(senderId ? { id: senderId, name: msg.from?.name, role: msg.from?.role } : msg.from);
     if (from) { from.ts = now(); from.present = true; } // a live sender is a live presence (roster event may lag)
     // Visual gate: pause chip, mode filter, AND tab visibility. State (heat/recent/roster) always applies.
@@ -666,7 +668,7 @@
     for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
     updateRoster(roster);
     applyMembership(membership); // authoritative spokes BEFORE traffic seeding (no skeleton flicker)
-    for (const e of activity) { const m = e.msg; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }
+    for (const e of activity) { const m = e.msg; if (m && e.channel) m.channel = e.channel; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
     // Seed the `recent` buffer from the activity backfill so the channel detail's "recently active" tags +
     // the "recent" section aren't empty until the first live SSE message arrives (norman).

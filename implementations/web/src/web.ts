@@ -209,8 +209,18 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (!mode || !msg) return;
     // senderId is the subject's sender token — the *verified* publisher (the server
     // policed who could publish it), vs the advisory `from` in the payload.
-    const senderId = parseSubject(subject)?.sender;
-    broadcast("message", { mode, senderId, msg });
+    const parsed = parseSubject(subject);
+    const senderId = parsed?.sender;
+    // The channel the broker actually POLICED, taken from the subject rather than the payload: a
+    // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
+    // minted grant, while `msg.channel` is publisher-supplied and backed by nothing. The verified
+    // value was already parsed on the line above and was being dropped.
+    //
+    // Gated on kind, and the gate is load-bearing rather than defensive: `rest` is the channel only
+    // on the chat plane. On `inst` it is the RECIPIENT (`subjects.ts:599`) and on `svc` the route
+    // (`:603`), so forwarding it ungated would label a DM's recipient as a channel.
+    const channel = parsed?.kind === "chat" ? parsed.rest : undefined;
+    broadcast("message", { mode, senderId, channel, msg });
   };
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
@@ -273,9 +283,19 @@ export async function web(args: ParsedArgs): Promise<void> {
       // Correctness first: fetch a full page per channel and merge.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
       const chans = await ep.listChannels();
-      const chat = (await Promise.all(chans.map((ch) => ep.channelHistory(ch.channel, { limit }))))
-        .flat()
-        .map((msg) => ({ mode: "chat" as const, msg }));
+      // Each message is tagged with the channel this server REQUESTED, so the backfill path does
+      // not depend on the payload claim either.
+      const chat = (
+        await Promise.all(
+          chans.map(async (ch) =>
+            (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({
+              mode: "chat" as const,
+              channel: ch.channel,
+              msg,
+            })),
+          ),
+        )
+      ).flat();
       const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
       const all = [...chat, ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
       return json(res, all.slice(-limit));
