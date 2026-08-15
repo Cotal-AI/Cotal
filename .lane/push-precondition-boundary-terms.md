@@ -1,4 +1,43 @@
-# PUSH PRECONDITION — the boundary scan has NOT been run against the real terms, and cannot be from here
+# PUSH PRECONDITION — SATISFIED for `f757acbd..4d40fd27`, and narrower than it looks
+
+**RESOLVED 2026-08-15 (`date -u`).** The canonical terms file exists outside every worktree at mode
+600; fm-orchestrator supplied the path. The scan was re-run against it:
+
+    positive control: PASSED for all 12 terms (each seeded into the real corpus and caught)
+    scanned: 6 commits, 7 files, against 4067aece~1
+    SCAN-END rc=0 verdict=CLEAN
+
+The control names **12** terms and the file contains **12** — the equality this document required,
+because a control passing for fewer terms than supplied means one was never exercised.
+
+**STATE THE SUBJECT EXACTLY: this verdict is about these six commits. It is not a statement about the
+repository.** The canonical list is itself a tracked file elsewhere, and 27 tracked files at that
+repo's HEAD contain at least one term, in history a later ignore rule cannot reach. That is the
+human's to resolve and is untouched here. **The guard is protecting a tree that is already dirty by
+its own definition, so a CLEAN here means only that these six commits add nothing to it.**
+
+**ON TIGHTENING THE MATCH — DO NOT INVERT THE POLARITY.** The scan gates on `grep -i -F`, a
+case-insensitive SUBSTRING match. That is why it produces false positives where a term falls inside
+an unrelated camelCase identifier or inside base64, and the proposed repair is to gate on word
+boundaries and demote substring to a warning. **That repair is the wrong way round.** Substring is
+strictly MORE
+inclusive than word-boundary: every word-boundary hit is also a substring hit, and not conversely. So
+
+- a CLEAN under substring is a STRICTLY STRONGER clean than a CLEAN under word boundaries, and the
+  verdict above needs no re-run to survive the change; but
+- gating on word boundaries would let a term embedded inside an identifier, a slug, or a hyphenated
+  compound pass with only a warning — and a project name reaching a tree usually arrives embedded in
+  exactly that shape, not standing alone between spaces.
+
+By the stated asymmetry — *a false positive costs a red cell, a false negative ships the name* — the
+gating tier must stay the inclusive one. Word-boundary matching belongs in the OUTPUT, as triage that
+tells a human which hits are likely artifacts, never as the thing that decides.
+
+---
+
+## Original entry, kept because the failure is the useful part
+
+# The boundary scan had NOT been run against the real terms
 
 Written by fm-health, 2026-08-15 08:1xZ (`date -u`). **Read this before pushing this branch.**
 
