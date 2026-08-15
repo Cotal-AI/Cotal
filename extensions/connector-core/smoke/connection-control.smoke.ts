@@ -123,9 +123,32 @@ console.log(`[safety] dialling ${SERVER} — asserted not ${LIVE}, loopback only
 let pass = 0;
 let fail = 0;
 let voided = 0;
+/** Every cell that reached a VERDICT, and separately every cell that was reached and NOT evaluated.
+ *  The two lists are never merged: the roll call below asks whether each declared cell was
+ *  answered, and a VOID name in the answered list makes it report a clean sweep over cells that
+ *  never ran. */
+const ran: string[] = [];
+const voidedNames: string[] = [];
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  ran.push(name);
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
+
+// ---- CELLS-RUN vs CELLS-DECLARED --------------------------------------------------------------
+// This suite reported a PASS COUNT and nothing else, which two independent readers found in the
+// same hour: `54 passed, 0 failed` is consistent with 54 cells green AND with the run dying after
+// cell 54 of 61, because a cell that never ran leaves no trace to be missed. A count is a claim
+// about arithmetic; a roll call is a claim about coverage, and only the second one is what a
+// reviewer is being asked to believe.
+const DECLARED = [
+  "G1", "G2", "G3", "G4", "G5", "G6",
+  "A3d-univ", "C1a", "C1b", "C1c", "A1", "A2", "A3", "A3b", "A3c", "A3d",
+  "R1", "R2", "C2a", "C2b", "C2c", "R3",
+  "S0a", "S0b", "S0c", "S0d", "S1a", "S1b", "S1c", "S1d", "S1e",
+  "EX", "E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7",
+  "E8-pre", "E9", "E8", "E10-pre", "E10-univ", "E10", "E11", "E12",
+  "E14-pre", "E14", "E15", "E16", "E17", "E18",
+];
 
 // ---- arm contamination: a green cell on a dead fixture is worse than a red one ------------------
 // Measured, not anticipated: the authed arm's first run had its subject fail to connect, and E4
@@ -144,16 +167,43 @@ const contaminated = new Set<string>();
 // that ran on a dead fixture must not be able to argue the fixture was alive.
 const precondition = (arm: string, name: string, cond: boolean, extra?: unknown) => {
   if (contaminated.has(arm)) {
-    voided++;
+    voided++; voidedNames.push(name);
     console.log(`  ⊘ VOID (${arm} contaminated by an earlier precondition — observed, not evidence): ${name}`, extra ?? "");
     return;
   }
+  ran.push(name);
   if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
   else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
 };
 const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => {
-  if (contaminated.has(arm)) { voided++; console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
+  if (contaminated.has(arm)) { voided++; voidedNames.push(name); console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
   check(name, cond, extra);
+};
+
+/** The roll call, printed from the outer `finally` so a throw — including one from the entry
+ *  refusals above — cannot skip it. A run that dies partway and a run that answered every question
+ *  both exit non-zero under a mutation; only this tells them apart. */
+const rollCall = () => {
+  const hit = (ids: string[], n: string) => ids.some((id) => n === id || n.startsWith(`${id} `));
+  const evaluated = DECLARED.filter((id) => ran.some((n) => n === id || n.startsWith(`${id} `)));
+  const voidedDeclared = DECLARED.filter((id) => !evaluated.includes(id) && voidedNames.some((n) => n === id || n.startsWith(`${id} `)));
+  const missing = DECLARED.filter((id) => !evaluated.includes(id) && !voidedDeclared.includes(id));
+  const undeclared = [...ran, ...voidedNames].filter((n) => !hit(DECLARED, n));
+  console.log(
+    `\n  ROLL CALL: ${DECLARED.length} declared — ${evaluated.length} EVALUATED, ` +
+    `${voidedDeclared.length} VOID (reached, not evaluated), ${missing.length} NEVER RAN.`,
+  );
+  if (voidedDeclared.length) console.log(`  ⊘ VOID: ${voidedDeclared.join(", ")}`);
+  if (missing.length) {
+    console.log(`  ⚠ NEVER RAN — not a pass and not a failure, a question never asked: ${missing.join(", ")}`);
+    process.exitCode = 1;
+  }
+  if (undeclared.length) {
+    console.log(`  ⚠ ${undeclared.length} cell(s) ran under an UNDECLARED name (the declaration and the code have drifted): ${undeclared.join(" | ")}`);
+    process.exitCode = 1;
+  }
+  if (!voidedDeclared.length && !missing.length && !undeclared.length)
+    console.log(`  ✓ all ${DECLARED.length} declared cells were EVALUATED — none reached-but-void, none absent, none undeclared.`);
 };
 
 const store = mkdtempSync(join(tmpdir(), "meshctl-conn-"));
@@ -173,7 +223,8 @@ const seenBy = (B: any, name: string): { status?: string; activity?: string } | 
 };
 
 async function main() {
-  const { isReachable } = await importCore(CORE_ENTRY);
+  const core = await importCore(CORE_ENTRY);
+  const { isReachable } = core;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) break; await sleep(150); }
 
   const { MeshAgent } = await import("../src/agent.js");
@@ -189,6 +240,39 @@ async function main() {
   const cfgB = mk("observer-b", "supervisor");
   const A = new MeshAgent(cfgA as any);
   const B = new MeshAgent(cfgB as any);
+
+  // ---- THIRD REFUSAL: the stamp must name the build the SUBJECT executes ------------------------
+  // The provenance line above names the module THIS FILE loaded through the seam. `agent.ts`
+  // imports `CotalEndpoint` by BARE SPECIFIER, which resolves through `node_modules` and NOT
+  // through the seam — so wherever those two disagree, the stamp says PRIVATE and every verb below
+  // executes something else entirely. MEASURED, not anticipated: a review seat compiled an
+  // unmissable throw into its private dist's `disconnect()`, ran this suite through the seam, and
+  // got `[provenance] core loaded from PRIVATE build …` over 54 passed / 0 failed. The throw never
+  // fired because it was never loaded. This tree's own results were sound for a reason that is a
+  // property of its layout — a real `node_modules` pointing back at this checkout — and the seam has
+  // therefore only ever been exercised in the one configuration where it cannot fail.
+  //
+  // The check is IDENTITY, not a resolution argument. Two byte-identical copies of a module produce
+  // two distinct classes, so `instanceof` is false across them however they were found; that turns
+  // "which file did the specifier resolve to" — which this file cannot answer for another file —
+  // into "is the object the subject actually built an instance of the class we graded", which it
+  // can. It fails CLOSED: an unrecognised layout refuses rather than reporting green.
+  if (!(A.ep instanceof (core as any).CotalEndpoint))
+    throw new Error(
+      `REFUSING TO RUN: MeshAgent built its endpoint from a DIFFERENT copy of core than the one ` +
+      `this suite graded (${gradedBuild}). agent.ts resolves "@cotal-ai/core" through node_modules; ` +
+      `the provenance stamp above names the seam target. They disagree here, so every cell below ` +
+      `would be reported against a module no verb executes.` +
+      (privateEntry
+        ? `\n  Fix: drive this through \`mutation-proof --private-build\`, which also registers the ` +
+          `resolve hook that redirects the BARE specifier (scripts/private-core-hook.mjs). ` +
+          `COTAL_CORE_ENTRY alone moves only this file's import, never the subject's.`
+        : `\n  Fix: rebuild packages/core so the shared dist and the resolved package are the same artifact.`),
+    );
+  console.log(
+    `[provenance] subject check: the MeshAgent under test built its endpoint from the graded module ` +
+    `itself (class identity, not path equality) — the stamp and the verb path are the same build`,
+  );
   // A short retry so the "the self-heal did not undo it" arm is a real wait, not a hopeful one.
   A.start(300); B.start(300);
   for (let i = 0; i < 90 && !(A.connected && B.connected); i++) await sleep(150);
@@ -780,14 +864,20 @@ async function main() {
     try { rmSync(astore, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 
-  console.log(`\nCONNECTION-CONTROL SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, ${voided} VOID)`);
-  if (voided) console.log(`  ⚠ ${voided} cell(s) VOID — they did not run, so they are not evidence of anything. Do not read this as coverage.`);
   if (fail) process.exitCode = 1;
 }
 
 main()
   .catch((e) => { console.error("SMOKE ERROR:", e); process.exitCode = 1; })
   .finally(async () => {
+    // The verdict line and the roll call are printed HERE, not at the end of `main`, so that a run
+    // which throws partway still says how many of its declared questions it managed to ask. Printed
+    // before teardown for the same reason the roll call exists: teardown can itself throw.
+    // Roll call FIRST: it can itself set a non-zero exit (a declared cell that never ran), and a
+    // verdict line printed before that would read OK about a run it had not finished judging.
+    rollCall();
+    console.log(`\nCONNECTION-CONTROL SMOKE ${fail === 0 && !process.exitCode ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, ${voided} VOID)`);
+    if (voided) console.log(`  ⚠ ${voided} cell(s) VOID — they did not run, so they are not evidence of anything. Do not read this as coverage.`);
     try { process.kill(-pgid, "SIGTERM"); } catch { /* already gone */ }
     // Await the child's exit before deleting the scratch it is still writing into.
     for (let i = 0; i < 20 && nats.exitCode === null && nats.signalCode === null; i++) await sleep(100);
