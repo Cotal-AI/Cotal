@@ -150,6 +150,11 @@ function makePrivateBuild(projectDir, cwd) {
     include: ["src"],
   }, null, 2));
 
+  // The specifier to redirect is the package's OWN name, read from its manifest rather than
+  // hard-coded, so the hook is not tied to one package and a fixture exercises this same path.
+  const pkgName = JSON.parse(readFileSync(join(abs, "package.json"), "utf8")).name;
+  if (!pkgName) throw new Error(`--private-build: ${projectDir}/package.json has no name to redirect`);
+
   const entry = join(scratch, "dist", "index.js");
   const build = () => {
     const r = run(`./node_modules/.bin/tsc -p ${relative(cwd, scratch)}/tsconfig.json`, cwd, 600_000);
@@ -168,6 +173,7 @@ function makePrivateBuild(projectDir, cwd) {
       // drive. Without this the subject resolves the bare specifier to the shared build and the
       // proof grades unmutated code while reporting a clean SURVIVED.
       COTAL_PRIVATE_CORE: entry,
+      COTAL_PRIVATE_SPECIFIER: pkgName,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--import ${join(cwd, "scripts", "private-core-register.mjs")}`,
     },
     cleanup: () => rmSync(scratch, { recursive: true, force: true }),
@@ -327,6 +333,9 @@ let opts = {
   // the suite at it, instead of writing the package's SHARED dist that other worktrees and
   // installed extensions resolve.
   priv: a["private-build"] ? makePrivateBuild(a["private-build"], cwd) : undefined,
+  // Which subject-side probe proves the code under test resolved to the private build. Package
+  // specific by nature — it must construct what the CELLS construct — so it is nameable.
+  probe: a["probe"],
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
 };
 
@@ -375,7 +384,7 @@ if (opts.priv) {
 
   // THE SUBJECT-SIDE GATE. Constructs what the cells construct and asserts the class identity of
   // the object it actually built, which cannot be satisfied by a printed message and fails closed.
-  const probe = run(`./node_modules/.bin/tsx ${PROBE}`, opts.cwd, 120_000, opts.priv.env);
+  const probe = run(`./node_modules/.bin/tsx ${opts.probe ?? PROBE}`, opts.cwd, 120_000, opts.priv.env);
   const resolvedPrivate = /VERDICT: the subject resolves to the PRIVATE build/.test(probe.output);
   if (probe.status !== 0 || !resolvedPrivate) {
     say(`${C.red}REFUSING: the SUBJECT does not resolve to the private build — the mutation would not be on the graded path.${C.off}`);

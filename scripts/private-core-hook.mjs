@@ -28,12 +28,14 @@ import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const TARGET = process.env.COTAL_PRIVATE_CORE;
+/** Which bare specifier to redirect. Supplied by the harness from the mutated package's own
+ *  package.json `name`, so the hook is not hard-wired to one package and a fixture can exercise
+ *  exactly this code path rather than a lookalike. */
+const CORE = process.env.COTAL_PRIVATE_SPECIFIER ?? "@cotal-ai/core";
 
 /** Fail loud rather than silently resolving to the shared build: a hook that quietly does nothing
  *  is the failure mode this file was written to remove. */
 if (!TARGET) throw new Error("private-core-hook: COTAL_PRIVATE_CORE is unset — refusing to load a hook that would silently no-op");
-
-const CORE = "@cotal-ai/core";
 
 export async function resolve(specifier, context, next) {
   if (specifier === CORE) return { url: pathToFileURL(TARGET).href, shortCircuit: true };
