@@ -388,25 +388,48 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
 // `/`, `/graph` and every asset unauthenticated with all 68 cells green.
 //
 // A list of route shapes can always omit one, and the omission is invisible. So this asserts the
-// property directly instead: between parsing the path/query and the gate there is NOTHING —
-// no statement of any syntax, present or future. Comments and blank lines are allowed; code is not.
-// Anchored at the HANDLER'S OPENING BRACE, not at the query line. Measuring from the query line left
-// the space BETWEEN the path and query declarations unguarded: the static block could be moved there
-// and `between` stayed empty with 84 cells green. The window has to start where the handler starts.
+// property directly instead: between the handler's opening brace and the gate there is NOTHING but
+// the path and query parses — no statement of any syntax, present or future.
+//
+// OVER THE AST, not over lines. The line-based version of this cell counted trimmed source lines, so
+// a route dispatch appended to the END of the query line — after its semicolon, same line — left
+// `firstStatements` at exactly two entries starting `const path` / `const query`. Measured: 110/110
+// green while an unauthenticated `GET /api/meta` answered `200 {}` and `gate.check` was never called
+// at all. Line position is not statement position, and only one of them is the property.
 const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
 const handlerAt = webTs.indexOf("const handleRequest = async (req: IncomingMessage, res: ServerResponse)");
 check("NON-VACUITY: the handler's start and the gate were both located in the shipped source",
   gateAt !== -1 && handlerAt !== -1 && handlerAt < gateAt, { handlerAt, gateAt });
-const firstStatements = webTs
-  .slice(webTs.indexOf("\n", handlerAt) + 1, gateAt)
-  .split("\n")
-  .map((l) => l.trim())
-  .filter((l) => l !== "" && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"));
-check("the handler's first TWO executable statements are the path and query parse — nothing else precedes the gate",
-  firstStatements.length === 2
-    && firstStatements[0].startsWith("const path =")
-    && firstStatements[1].startsWith("const query ="),
-  { firstStatements });
+const handlerBody = (() => {
+  const sf = ts.createSourceFile("web.ts", webTs, ts.ScriptTarget.ES2022, true);
+  let found: ts.Block | undefined;
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "handleRequest"
+      && n.initializer && ts.isArrowFunction(n.initializer) && ts.isBlock(n.initializer.body)
+    ) found = n.initializer.body;
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return found;
+})();
+check("NON-VACUITY: the shipped handleRequest was found IN THE AST and has a statement body",
+  handlerBody !== undefined && handlerBody.statements.length > 3, { statements: handlerBody?.statements.length });
+// A `const <name> = …` statement whose declared name matches, or undefined for anything else. Any
+// other statement kind in one of the first three slots fails the cell by returning undefined.
+const declName = (s: ts.Statement | undefined): string | undefined =>
+  s !== undefined && ts.isVariableStatement(s) && s.declarationList.declarations.length === 1
+    && ts.isIdentifier(s.declarationList.declarations[0].name)
+    ? s.declarationList.declarations[0].name.text
+    : undefined;
+const stmts = handlerBody?.statements ?? ts.factory.createNodeArray<ts.Statement>([]);
+const gateInit = stmts[2] !== undefined && ts.isVariableStatement(stmts[2])
+  ? stmts[2].declarationList.declarations[0]?.initializer?.getText() ?? ""
+  : "";
+check("the handler's first THREE STATEMENTS are the path parse, the query parse, and the gate call — nothing else precedes the gate",
+  declName(stmts[0]) === "path" && declName(stmts[1]) === "query"
+    && declName(stmts[2]) === "verdict" && gateInit.includes("gate.check(req, query)"),
+  { first: [declName(stmts[0]), declName(stmts[1]), declName(stmts[2])], gateInit });
 
 // TIMING SAFETY IS NOT OBSERVABLE FROM OUTPUTS, so it cannot be tested functionally. Replacing the
 // comparison with plain `===` produces an identical boolean for every vector in this file — measured,
@@ -442,7 +465,14 @@ check("…and does not short-circuit to a plain string comparison",
   const sessionPath = join(dir, "web.session");
   // PRE-CREATE IT PERMISSIVE. This is the whole point: a fresh file would pass even with the chmod
   // deleted, so a cell that only ever writes a new file proves nothing about the defect.
-  writeFileSync(sessionPath, "stale", { mode: 0o644 });
+  // fchmod ON THE DESCRIPTOR, because `mode:` at creation is masked by the process umask — under
+  // `umask 077` the "permissive" fixture was created 0600 and the non-vacuity cell below failed
+  // before any shipped code ran. A suite whose result depends on the operator's umask is not a
+  // suite; the fixture has to set the mode it claims to set.
+  {
+    const pfd = openSync(sessionPath, "w");
+    try { fchmodSync(pfd, 0o644); writeFileSync(pfd, "stale"); } finally { closeSync(pfd); }
+  }
   check("NON-VACUITY: the stale file really is permissive before the shipped block runs",
     (statSync(sessionPath).mode & 0o777) === 0o644, (statSync(sessionPath).mode & 0o777).toString(8));
 
@@ -471,8 +501,15 @@ check("…and does not short-circuit to a plain string comparison",
     modeAtWrite === 0o600, { modeAtWrite: modeAtWrite?.toString(8) });
   check("the shipped write NARROWS a stale permissive session file to 0600 (mode is enforced on every write, not only at creation)",
     (statSync(sessionPath).mode & 0o777) === 0o600, (statSync(sessionPath).mode & 0o777).toString(8));
+  // BOTH FIELDS. The file is a two-field credential and only one of them was asserted: dropping
+  // `readiness` from the written JSON left the mode cells and the launch-URL cell green at 110/110,
+  // while the parent's reader derived `undefined` — measured — so `--detach` would send no readiness
+  // header, poll a surface that correctly refuses it, and time out. Parse once, assert both.
+  const written = JSON.parse(readFileSync(sessionPath, "utf8")) as Record<string, unknown>;
   check("…and the file still holds the launch URL it was asked to write",
-    JSON.parse(readFileSync(sessionPath, "utf8")).launchUrl === "http://127.0.0.1:7799/?k=x");
+    written.launchUrl === "http://127.0.0.1:7799/?k=x", written);
+  check("…AND the readiness nonce, the second credential `--detach` polls with (without it the parent sends no header and never sees ready)",
+    written.readiness === "n", written);
   rmSync(dir, { recursive: true, force: true });
 }
 
