@@ -4,10 +4,11 @@
 //   (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ")
 // and that expression DELETES any part it cannot draw. `JSON.stringify(undefined)` returns the
 // VALUE `undefined` — not the string "undefined" — and `Array.prototype.join` coerces that to the
-// empty string. So a part with no `data` field (any extension kind, `ag-ui.frame` among them)
-// rendered as nothing: a stray separator between its neighbours, or an empty string when it was the
-// only part. In every case the KIND went unnamed, so a reader could not tell which renderer was
-// missing — that is what this file fixes, and it is the claim to hold it to.
+// empty string. So a part with no `data` field — `ag-ui.frame` among them, but NOT every extension
+// kind, since a data-bearing one rendered its JSON perfectly well — vanished: a stray separator
+// between its neighbours, or an empty string when it was the only part. In every case the KIND went
+// unnamed, so a reader could not tell which renderer was missing. Those two are what this file
+// fixes, and they are the claims to hold it to.
 //
 // THE CONSEQUENCE DIFFERS BY SURFACE, AND AN EARLIER VERSION OF THIS COMMENT GOT IT WRONG. It said
 // both surfaces told the operator that nothing arrived. That is true of ONE of them:
@@ -36,8 +37,11 @@
 // for the case this file exists to fix. The browser runs ahead on purpose, and converges to core's
 // wording when that lands. The strings below are the contract under test.
 //
-// SCOPE, and nothing wider: this makes an undrawable part SAY SO. It does not teach either page to
-// RENDER an AG-UI frame and it adds no `events.*` filter. Both are separate, unowned work.
+// SCOPE: this makes an undrawable part SAY SO, and preserves everything that was already visible.
+// It does not teach either page to RENDER an AG-UI frame and it adds no `events.*` filter; both are
+// separate, unowned work. An earlier version of this line read "and nothing wider", which was FALSE
+// while the extension branch discarded data — the scope sentence was wider than the code in one
+// direction and narrower in the other.
 //
 // Neither page republishes this text — `graph.js` only issues GETs and `app.js`'s single POST is
 // `/api/channel/delete`, which carries a channel name — so the marker is safe to place in the body
@@ -57,9 +61,23 @@ window.COTAL_PARTS = (() => {
       // sees one must not conclude the other.
       return encoded === undefined ? "[empty data part]" : encoded;
     }
-    // An extension kind. Not drawable here and not silently droppable either: name the kind, so a
-    // reader who meets one knows exactly which renderer is missing instead of seeing a message that
-    // looks like it was sent blank.
+    // An extension kind. Not drawable here and not silently droppable either.
+    //
+    // BUT DATA-BEARING EXTENSIONS MUST KEEP THEIR DATA. The first version of this file sent every
+    // non-core kind straight to the marker, which THREW AWAY content the old expression had been
+    // showing: `{kind:"com.acme.snapshot", data:{x:1}}` rendered `{"x":1}` before and the marker
+    // after. That is a regression wearing a fix's clothes — it removes information while claiming
+    // to add it, and it made this file's own "scope is nothing wider" claim false. Core is explicit
+    // that an unknown extension kind still falls back to its `data` and that this is deliberate
+    // (`packages/core/src/parts.ts:12-13`); that behaviour is preserved here.
+    //
+    // So: name the kind AND keep the data. That is strictly more than either did alone — the old
+    // expression showed the data but never said what it was, and the marker alone said what it was
+    // while discarding it.
+    const encoded = JSON.stringify(p.data);
+    if (encoded !== undefined) return `[${p.kind}] ${encoded}`;
+    // No data to keep. This is the case the file exists for: name the kind, so a reader knows which
+    // renderer is missing instead of seeing a message that looks like it was sent blank.
     return `[unrenderable part kind ${JSON.stringify(p.kind)} — no renderer for it on this surface]`;
   }
 
