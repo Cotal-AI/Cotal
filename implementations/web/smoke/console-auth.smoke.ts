@@ -227,7 +227,11 @@ check("CONTROL: a block that is not in the file lifts nothing",
   webTs.indexOf("    const verdict = gate.checkNothing(") === -1);
 
 type Recorded = { status: number; headers: Record<string, string>; body: string; routeReached: boolean };
-const runGateBlock = (verdict: unknown, path = "/api/roster"): Recorded => {
+// The METHOD is a fixture dimension too, and it was the next one held constant: `req` was `{}`, so
+// `req.method` was `undefined` in every cell. Gating the refusal predicate on `req.method !== "POST"`
+// therefore left all 84 cells green while the real channel-delete POST — the one destructive route on
+// this surface — skipped the refusal entirely. Same shape as the path survivor, one dimension over.
+const runGateBlock = (verdict: unknown, path = "/api/roster", method = "GET"): Recorded => {
   const rec: Recorded = { status: 0, headers: {}, body: "", routeReached: false };
   const res = {
     writeHead: (status: number, headers: Record<string, string>) => { rec.status = status; rec.headers = headers; },
@@ -245,7 +249,7 @@ const runGateBlock = (verdict: unknown, path = "/api/roster"): Recorded => {
   ).outputText;
   const ctx: Record<string, unknown> = {
     gate: { check: () => verdict },
-    req: {}, query: q(), path, res,
+    req: { method }, query: q(), path, res,
     CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session",
     __routeReached: () => { rec.routeReached = true; },
     globalThis: undefined, console,
@@ -306,13 +310,23 @@ check("…and EXECUTION STOPS after the redirect (the exchange answers; it does 
 const ROUTE_PATHS = ["/", "/feed", "/app.js", "/api/meta", "/api/roster", "/api/channel/delete"];
 check("NON-VACUITY: the refusal sweep covers several paths INCLUDING the destructive one",
   ROUTE_PATHS.length > 1 && ROUTE_PATHS.includes("/api/channel/delete"), ROUTE_PATHS);
+const ROUTE_METHODS = ["GET", "POST"];
+check("NON-VACUITY: the sweep varies the METHOD as well as the path",
+  ROUTE_METHODS.length > 1 && ROUTE_METHODS.includes("POST"), ROUTE_METHODS);
 for (const refusal of [UNAUTHENTICATED, CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED]) {
   for (const routePath of ROUTE_PATHS) {
-    const r = runGateBlock({ refuse: refusal }, routePath);
-    check(`\`${refusal}\` refuses ${routePath} AND never reaches the route (a gate for one path is not a gate)`,
-      r.status !== 0 && r.body !== "" && r.routeReached === false, { routePath, r });
+    for (const method of ROUTE_METHODS) {
+      const r = runGateBlock({ refuse: refusal }, routePath, method);
+      check(`\`${refusal}\` refuses ${method} ${routePath} AND never reaches the route (a gate for one path or one method is not a gate)`,
+        r.status !== 0 && r.body !== "" && r.routeReached === false, { routePath, method, r });
+    }
   }
 }
+// Named separately from the sweep because it is THE destructive request on this surface, and a
+// reader looking for "is the channel-delete gated?" should find a cell that says so.
+const del = runGateBlock({ refuse: UNAUTHENTICATED }, "/api/channel/delete", "POST");
+check("the channel-delete POST — the one destructive route here — is refused and never reached",
+  del.status === 401 && del.routeReached === false, del);
 
 const allowed = runGateBlock(undefined);
 check("an allowed request writes NOTHING and falls through to the routes",
