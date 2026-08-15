@@ -172,7 +172,7 @@ function proveOne(m, opts) {
   // with them it came back original.
   //
   // ⚠ BUT THE BODY BELOW IS NOT WHAT SAVES THE TREE, AND IT HAS NEVER RUN IN EITHER ARM.
-  // `runSuite` blocks in `spawnSync` (see below) for the WHOLE mutant window, and node cannot
+  // `runSuite` blocks in `spawnSync` (line ~90, above) for the WHOLE mutant window, and node cannot
   // dispatch a JS signal handler while the event loop is blocked. What actually protects the tree
   // is that REGISTERING A LISTENER REPLACES THE SIGNAL'S DEFAULT DISPOSITION: with no listener
   // SIGINT is SIG_DFL and the kernel kills node mid-spawnSync; with one, the process survives, the
