@@ -26,7 +26,14 @@
 //
 // ONE renderer for both pages, not two copies, for the reason core's own `partsToText` gives: the
 // duplicated form broke identically everywhere when a new part kind appeared, because each copy had
-// to be found and fixed separately. `index.html` and `graph.html` both load this file BEFORE their
+// to be found and fixed separately.
+//
+// AND ON THIS SURFACE NOTHING ELSE WOULD HAVE CAUGHT IT. `implementations/web/tsconfig.json` sets
+// `"exclude": ["src/web"]`, so every file in this directory is plain JS that `tsc` never reads. The
+// two copies of the broken expression were the same mistake, in the same words, in two files, and
+// **no compiler in this repo could see either one**. That is not an argument about style; it is why
+// the checks on this directory have to be executable cells that run the shipped file, because they
+// are the only enforcement this surface has. `index.html` and `graph.html` both load this file BEFORE their
 // page script, and `web.ts` serves it from the PAGE allow-list — a file missing from that map is a
 // 404 no matter what the HTML says.
 //

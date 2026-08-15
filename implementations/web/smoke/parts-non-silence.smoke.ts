@@ -79,6 +79,33 @@ ok("a frame-only message names the kind it cannot draw",
 ok("that rendering is not empty and not whitespace (the exact old failure)",
   frameOnly.trim().length > 0, { got: frameOnly });
 
+// THE REAL FRAME SHAPE, not the reduced fixture above. A sibling lane measured an actual AG-UI
+// frame and reported its key set — kind, protocol, threadId, runId, epoch, seq, events — with NO
+// `data` field anywhere, which is exactly why the old expression erased it. The fixture above is a
+// simplification, and a simplification is a place for a defect to hide, so the reported shape gets
+// its own cell. Re-measured here rather than taken on report: the old expression yields a
+// zero-length string for this input.
+//
+// The frame's `events` are deliberately NOT rendered and that is not a second defect. They were
+// never visible — the old expression produced "" — so naming the kind is a strict improvement and
+// showing the run's contents would be RENDERING a frame, which is separate, unowned work. This is
+// the line between an honest gap and a regression: preserve what was visible, do not invent what
+// was not.
+const realFrame = {
+  kind: "ag-ui.frame", protocol: "ag-ui/1", threadId: "t1", runId: "r1", epoch: 3, seq: 7,
+  events: [{ type: "RUN_STARTED" }, { type: "TEXT_MESSAGE_CONTENT", delta: "hi" }, { type: "RUN_FINISHED" }],
+};
+ok("a REAL ag-ui frame carries no `data` field (the precondition the old expression tripped on)",
+  (realFrame as { data?: unknown }).data === undefined);
+// The old expression itself, applied — not a conditional standing in for it.
+const oldExpression = (parts: { kind: string; text?: string; data?: unknown }[]) =>
+  parts.map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ");
+ok("REGRESSION ORACLE: the old expression renders a real frame as ZERO characters",
+  oldExpression([realFrame]).length === 0, { got: oldExpression([realFrame]) });
+ok("a real frame is NAMED by the shipped renderer instead of vanishing",
+  render([realFrame]) === '[unrenderable part kind "ag-ui.frame" — no renderer for it on this surface]',
+  { got: render([realFrame]) });
+
 // The old expression's other visible symptom: a frame BETWEEN two text parts collapsed to a double
 // space, so the message looked merely oddly spaced rather than incomplete. Pin both that the marker
 // is present and that the neighbouring text survives it.
