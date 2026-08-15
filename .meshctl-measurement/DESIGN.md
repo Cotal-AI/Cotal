@@ -148,9 +148,20 @@ So the authority boundary is the **mint path**, not the connect call. The specif
 hold. Three paths obey its letter and still obtain freshly minted authority:**
 
 1. **User mode is a credential SOURCE, not bytes.** `MeshAgent` passes a bearer *function* that
-   execs `bearerCmd` (`agent.ts:197-200`), and `connectAndBind` invokes it before every connect
-   (`endpoint.ts:826-830`). The auth callout mints a fresh scoped JWT against the **current** ledger.
-   So a connect re-reads authority rather than replaying it.
+   execs `bearerCmd` (`agent.ts:202` — the closure; `:197-200` was a stale citation and is
+   `pass`/`creds`). ~~and `connectAndBind` invokes it before every connect
+   (`endpoint.ts:826-830`)~~ ⚠️ **THAT CLAUSE IS FALSE AND ITS CITATION WAS STALE — struck, not
+   softened.** `connectAndBind` starts at `endpoint.ts:990` (`:826-830` is the creds txn helper),
+   and at `:995-998` it fetches **only** when there is no cached bearer or the cached one is inside
+   `BEARER_REFRESH_MARGIN_MS` of expiry; otherwise it **reuses the cache**. **Measured, not argued:
+   `U8` is RED with `{ execsBefore: 1, execsAfter: 1 }` across a `cotal_disconnect` →
+   `cotal_connect` pair (`runs/2026-08-15T0232Z-m7-usermode-rerun.txt`).** The code and the
+   measurement agree with each other and against the sentence I wrote.
+   **What survives, and it is narrower but still load-bearing:** the callout mints a fresh scoped
+   JWT against the **current** ledger row on every accepted connection
+   (`implementations/auth/src/permissions.ts`, fresh-row re-read at the mint). **So authority IS
+   re-read on connect — by the callout, not by a fresh exchange.** Whether a *revoked bearer* is
+   caught on return is **NOT measured** and no probe covers it.
 2. **Static credentials are renewed too** — the manager re-mints a live agent from its recorded grant
    and rewrites the file (`manager.ts:3061-3073, 4868-4923`). Credentials expire; something must
    re-read them, and this note defined no renewal or adoption semantics for an off-target mesh.

@@ -58,7 +58,9 @@
  * arrives after `BAD` starts. So the withdrawn sentence was not merely unsupported, it is
  * **refuted**: the callout never refused the correctly-signed bearer.
  *
- * What refuses is one line further down, repeated ~30 times in the same log:
+ * What refuses is one line further down, counted (not eyeballed) at 111 occurrences in the
+ * same log — and 56 of those fall in S's OWN window, i.e. before `BAD` had started, which is what
+ * makes them S's rather than the log's:
  *   `cannot publish "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker" - check this endpoint's ACLs`
  * The bearer authenticates; the MINTED PERMISSIONS do not reach the role consumer. Cause: this
  * fixture's ACL resolver omitted `role`, so the mint took the `opts.role ? … : undefined` branch
@@ -192,7 +194,8 @@ try {
     // the subject with `role: "worker"`. The bearer was ACCEPTED and the session then could not
     // bind, retrying forever on
     //   `cannot publish "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker"`.
-    // That string was printed ~30 times in the previous run, next to the single callout line that
+    // That string was printed 111 times in the previous run (`grep -c`, not read off the screen),
+    // next to the single callout line that
     // was read instead — the evidence was never missing, it was passed over for one that named a
     // cause instead of a condition.
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], role: "worker", lifecycleUid: uid, scope: [] })),
