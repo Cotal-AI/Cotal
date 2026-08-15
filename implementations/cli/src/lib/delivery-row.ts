@@ -41,11 +41,16 @@ const CARD_FRESHNESS_MS = 5_000;
  *  about the daemon. That distinction is the same one `mintHealthCaller` already draws for the
  *  manager row, and it is the reason this is a nullable return rather than a throw. */
 export interface DeliveryRowDeps {
-  /** ⚠️ UNRESOLVED: which credential profile this mints is an OPEN QUESTION, pending the measurement
-   *  in `.lane/credclass-predictions.md`. Read from `provision.ts:1440`, `control-caller-privileged`
-   *  (what the manager row uses) carries NO delivery-lease read row and NO `ctl.delivery` publish, so
-   *  reusing it is predicted to yield a refusal. The live suite drives an `agent`-profile caller
-   *  green. **Do not resolve this by picking the convenient one — the arms decide it.** */
+  /** RESOLVED BY MEASUREMENT, and it stays injected. The arms (`.lane/window-result-2026-08-15.md`)
+   *  drove each candidate against a real daemon on an ephemeral broker: `agent` → SERVING, `probe` →
+   *  `refused`, **`control-caller-privileged` → `refused`** (the manager row's class, denied at the
+   *  broker on the lease KV read), and `agent` against a SIGKILLed daemon → `no-responder`.
+   *
+   *  So the convenient reuse was the wrong one, and reusing it would have made this row report an
+   *  unreachable daemon on a healthy mesh. `mintDeliveryCaller` (`delivery-caller.ts`) mints the
+   *  agent-class caller the measurement selected. This stays a parameter rather than becoming a
+   *  hardcoded default so the cells can drive the row's DECISION without a broker, and so the next
+   *  change to the cred layer breaks a named seam instead of silently re-introducing the refusal. */
   mintCaller: () => Promise<Pick<GuardSeams, "check"> | undefined>;
   now: () => number;
 }

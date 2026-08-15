@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { LEASE_TTL_MS, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, installedExtensionVersion, loadExtensionsManifest, loadManagerInstanceIdentity, manifestExtensionNames, provenance } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, canonicalSkillNames, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
@@ -16,6 +16,8 @@ import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerLivenessSnapshot } from "../lib/manager-proc.js";
 import { managerClaim, mintHealthCaller, probeManagerHealth } from "../lib/manager-health.js";
+import { mintDeliveryCaller } from "../lib/delivery-caller.js";
+import { deliveryRow, renderDeliveryRow } from "../lib/delivery-row.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 
@@ -410,6 +412,34 @@ async function managerHealthRow(cmd: string, mesh: { server: string; space: stri
   }
 }
 
+/** The DELIVERY row — the operator's answer to "is delivery actually working right now".
+ *
+ *  The incident this answers: the delivery daemon went down and nothing noticed for three hours.
+ *  Messages were accepted, senders were told they had been sent, and there were no log entries for
+ *  the affected peers. Until this row, no operator surface asked the daemon anything — `up.ts`
+ *  renders a pid boolean and `status.ts` reads a BUILD marker, neither of which a stopped daemon
+ *  fails.
+ *
+ *  `?` is never dim. "Cannot establish" must not read as quietly fine, and every non-affirmative
+ *  path names WHICH condition failed rather than reporting a bare unknown. The caller is closed
+ *  whatever happens — a card that leaks a broker connection is a card that changed the system it
+ *  was only supposed to observe. */
+async function deliveryHealthRow(mesh: { server: string; space: string }): Promise<{ marker: string; text: string }> {
+  const caller = await mintDeliveryCaller({
+    root: cotalRoot(), space: mesh.space, servers: mesh.server,
+    ttlMs: LEASE_TTL_MS, now: () => Date.now(),
+  });
+  try {
+    const row = await deliveryRow({
+      mintCaller: async () => (caller === undefined ? undefined : { check: caller.check }),
+      now: () => Date.now(),
+    });
+    return { marker: row.marker === "✓" ? ok("✓") : row.marker, text: renderDeliveryRow(row).slice(2) };
+  } finally {
+    await caller?.close();
+  }
+}
+
 function managerRow(cmd: string): { marker: string; text: string } {
   const start = `start: ${cmd} up, or: ${cmd} supervise`;
   // Named relative, not absolute. The source must be unambiguous, but this is a one-glance card and
@@ -447,6 +477,7 @@ async function readyCard(cwd: string): Promise<void> {
   // deliberately not dim: "cannot establish" must not read as quietly fine.
   const mark = (m: string, text: string) => `${m} ${text}`;
   const mgr = await managerHealthRow(cmd, mesh);
+  const dlv = await deliveryHealthRow(mesh);
   note(
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
@@ -454,6 +485,7 @@ async function readyCard(cwd: string): Promise<void> {
       line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down · start: ${cmd} up --detach`)}`),
       line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
       mark(mgr.marker, `manager  ${dim(mgr.text)}`),
+      mark(dlv.marker, `delivery ${dim(dlv.text)}`),
       "",
       `start the mesh:  ${dim(`${cmd} up --detach`)}`,
       // Match the hint to what's actually on disk: the guided team (with --demo) vs the one default agent.

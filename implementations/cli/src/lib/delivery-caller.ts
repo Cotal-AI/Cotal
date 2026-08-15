@@ -1,0 +1,106 @@
+/**
+ * The caller the delivery row asks THROUGH — an agent-class endpoint, chosen by measurement.
+ *
+ * WHICH PROFILE, AND WHY IT IS NOT THE CONVENIENT ONE. `delivery-row.ts` deliberately left the
+ * credential class as a required parameter rather than a default, because an under-granted caller
+ * does not fail loudly on this surface: it renders `no-responder` — *the daemon did not answer* —
+ * when the truth is *I was never permitted to ask*. The arms that settled it ran against a real
+ * broker with a real daemon, and are recorded in `.lane/window-result-2026-08-15.md`:
+ *
+ *     agent                            -> SERVING
+ *     probe (connect-only)             -> refused
+ *     control-caller-privileged        -> refused      <- what the MANAGER row mints
+ *     agent, vs a SIGKILLed daemon     -> no-responder
+ *
+ * `control-caller-privileged` — the tempting reuse, since the manager row already mints it — is
+ * DENIED AT THE BROKER on the delivery-lease KV read. Had this row reused it, it would have reported
+ * the daemon as unreachable on a perfectly healthy mesh, which is this lane's own defect class
+ * arriving through the credential layer. `refused` and `no-responder` were confirmed to be DISTINCT
+ * conditions in the same run under load, so the row can tell "denied" from "absent".
+ *
+ * THE ERROR LISTENER IS NOT DEFENSIVE BOILERPLATE. A denied read surfaces on TWO paths: the
+ * assessment returns a refusal AND the endpoint emits an `'error'` event. An unhandled `'error'` on
+ * an EventEmitter is fatal to the process — measured, not argued: it killed the arms harness before
+ * its teardown ran and orphaned a broker. A health surface that dies while reporting a refusal is
+ * strictly worse than one that reports nothing, so the listener is attached BEFORE `start()` — a
+ * denial can arrive during connect.
+ */
+import { CotalEndpoint, idFromCreds, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
+import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { deliverySeams } from "./delivery-row.js";
+import type { GuardSeams } from "./delivery-guard.js";
+
+/** How long the affirmative round-trip may take before it is a refusal. Deliberately short: this is
+ *  a card rendered while an operator waits, and a slow answer that arrives is still not "right now".
+ *  A timeout here is reported as a named refusal, never as health. */
+const PROBE_DEADLINE_MS = 1_500;
+/** The lease shard the row reads. Shard 0 is the only shard a single-daemon deployment writes. */
+const SHARD = 0;
+
+/** A live caller plus the handle that closes it. `close` is separate because the row must not leak a
+ *  broker connection into a CLI process that is about to print one line and exit. */
+export interface DeliveryCaller {
+  check: Pick<GuardSeams, "check">["check"];
+  close: () => Promise<void>;
+  /** Async denials seen on this endpoint. Captured so a caller CAN report them; never thrown. */
+  asyncErrors: string[];
+}
+
+/**
+ * Mint an agent-class caller for one delivery health read.
+ *
+ * Returns `undefined` when no caller could be built at all. That is a fact about OUR credentials,
+ * and `deliveryRow` renders it as `no-auth` rather than as anything about the daemon — the same
+ * distinction `mintHealthCaller` draws for the manager row.
+ */
+export async function mintDeliveryCaller(o: {
+  root: string;
+  space: string;
+  servers: string;
+  ttlMs: number;
+  now: () => number;
+}): Promise<DeliveryCaller | undefined> {
+  let ep: CotalEndpoint | undefined;
+  try {
+    const auth = await getSpaceAuth(workspaceSecretStore(o.root), o.space);
+    // No space auth on disk means an OPEN mesh. Unlike the manager row, there is nothing to ask
+    // there: the delivery lease bucket is part of the auth-mode delivery plane, so a read will
+    // refuse and the row will say so by name. We still build the caller rather than short-circuit,
+    // because `no-auth` means "could not build a caller" and that is not what happened.
+    const uid = mintLifecycleUid();
+    const creds = auth === undefined
+      ? undefined
+      : await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: uid });
+
+    ep = new CotalEndpoint({
+      space: o.space,
+      servers: o.servers,
+      ...(creds !== undefined ? { creds } : {}),
+      lifecycleUid: uid,
+      // Read-only instrument: it subscribes to nothing, consumes nothing, and does not register
+      // presence. A health reader that advertises itself in the roster would add a peer to the mesh
+      // every time an operator ran `setup`.
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: {
+        ...(creds !== undefined ? { id: idFromCreds(creds) } : {}),
+        name: "delivery-health-reader", role: "instrument", kind: "endpoint",
+      },
+    });
+    const asyncErrors: string[] = [];
+    // BEFORE start(): see the header. A denial can arrive during connect.
+    ep.on("error", (e: Error) => asyncErrors.push(e.message));
+    await ep.start();
+
+    const bound = ep;
+    return {
+      ...deliverySeams(bound, { shard: SHARD, ttlMs: o.ttlMs, deadlineMs: PROBE_DEADLINE_MS, now: o.now }),
+      asyncErrors,
+      close: async () => { try { await bound.stop(); } catch { /* already closing */ } },
+    };
+  } catch {
+    // The mint or the connect failed. That is a fact about our own credentials or our reach, not
+    // about the daemon, and the row renders it as such rather than as a daemon verdict.
+    if (ep) { try { await ep.stop(); } catch { /* already closing */ } }
+    return undefined;
+  }
+}
