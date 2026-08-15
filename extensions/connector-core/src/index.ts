@@ -7,7 +7,6 @@ export * from "./event-wal.js";
 export * from "./agui.js";
 // importing registers the `ag-ui.frame` part renderer with the core Registry, so any surface that
 // renders parts through core's `partsToText` can display a frame without depending on this package
-export * from "./agui-render.js";
 export * from "./agui-holder.js";
 export * from "./agui-wal-path.js";
 export * from "./tool-specs.js";

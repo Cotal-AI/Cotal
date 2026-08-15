@@ -26,7 +26,7 @@
  *
  * Run: npx tsx extensions/connector-core/smoke/agui-render-lines.smoke.ts
  */
-import { LINE_START_SAFE, aguiFramePartRenderer } from "../src/agui-render.js";
+import { LINE_START_SAFE, aguiFramePartRenderer } from "@cotal-ai/core";
 import {
   aguiFrame, runStarted, runFinished, runError,
   textMessageStart, textMessageContent, textMessageEnd,

@@ -71,6 +71,14 @@ import type {
   ToolCallResultEvent,
   ToolCallStartEvent,
 } from "@ag-ui/core";
+
+// The frame's wire identity now lives in `@cotal-ai/core`: an adopted vocabulary is a standard
+// concept, and core must be able to RENDER a frame without depending on an extension. Re-exported
+// here so every existing importer of this module keeps working and the producer-side vocabulary
+// still reads as one surface. The emitter, the constructors, the envelope and all zod validation
+// stay in this file — only the identity moved. See `packages/core/src/agui-kind.ts`.
+export { AGUI_FRAME_KIND, AGUI_EVENT_TYPE, isAguiFramePart } from "@cotal-ai/core";
+import { AGUI_FRAME_KIND, AGUI_EVENT_TYPE, isAguiFramePart } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { isCasLoss, principalKey, type Part } from "@cotal-ai/core";
 import type { DurableSource } from "./durable-source.js";
@@ -104,31 +112,6 @@ export type AguiEvent =
   | ReasoningMessageEndEvent
   | CustomEvent;
 
-/**
- * The `type` discriminators, as literals.
- *
- * `EventType` in `@ag-ui/core` is a real (non-const) enum, so reading `EventType.RUN_STARTED` as a
- * VALUE would be a runtime import of the package this module is forbidden to depend on at runtime.
- * So the literals are written out — and the conformance smoke asserts each one against the real
- * enum member, because a hand-copied literal that nothing compares to its source is exactly the
- * drift this lane has already shipped once.
- */
-export const AGUI_EVENT_TYPE = {
-  RUN_STARTED: "RUN_STARTED",
-  RUN_FINISHED: "RUN_FINISHED",
-  RUN_ERROR: "RUN_ERROR",
-  TEXT_MESSAGE_START: "TEXT_MESSAGE_START",
-  TEXT_MESSAGE_CONTENT: "TEXT_MESSAGE_CONTENT",
-  TEXT_MESSAGE_END: "TEXT_MESSAGE_END",
-  TOOL_CALL_START: "TOOL_CALL_START",
-  TOOL_CALL_ARGS: "TOOL_CALL_ARGS",
-  TOOL_CALL_END: "TOOL_CALL_END",
-  TOOL_CALL_RESULT: "TOOL_CALL_RESULT",
-  REASONING_MESSAGE_START: "REASONING_MESSAGE_START",
-  REASONING_MESSAGE_CONTENT: "REASONING_MESSAGE_CONTENT",
-  REASONING_MESSAGE_END: "REASONING_MESSAGE_END",
-  CUSTOM: "CUSTOM",
-} as const;
 
 /**
  * Cotal metadata rides ONE key on a standard event.
@@ -191,8 +174,6 @@ export const COTAL_CUSTOM_EVENTS: readonly string[] = [];
 /** The envelope version. One frame declares the AG-UI vocabulary version it was built against. */
 export const AGUI_PROTOCOL = "ag-ui/0.0.57";
 
-/** The frame's `kind`, distinguishing it from every other part a Cotal message can carry. */
-export const AGUI_FRAME_KIND = "ag-ui.frame";
 
 /**
  * One Cotal message = one frame (plan §5.2).
@@ -494,9 +475,6 @@ export function aguiFrame(opts: {
  * {@link isAguiFramePart} answers the routing question with a boolean and never throws, and
  * {@link parseAguiFrame} answers the validity question and throws with the field named.
  */
-export function isAguiFramePart(part: unknown): boolean {
-  return typeof part === "object" && part !== null && (part as { kind?: unknown }).kind === AGUI_FRAME_KIND;
-}
 
 /**
  * Validate an incoming frame, or throw {@link AguiVocabularyError} naming the field that failed.

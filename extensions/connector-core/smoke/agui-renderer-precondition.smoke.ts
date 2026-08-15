@@ -275,10 +275,20 @@ function gradeSurface(surface: string, registration: string, rendered: string | 
  * PACKAGE, and the provider imported for its registration side effect, the way a composition root
  * imports a connector.
  */
+// CORE REGISTERS THE FRAME RENDERER ITSELF NOW, and this suite no longer supplies it.
+//
+// It used to import the provider from `connector-core` for its registration side effect, and the
+// console cells were clamped "[given a registered renderer — production registers none]" because
+// that was TRUE: the suite performed a registration nothing shipped. `ag-ui.frame` has since been
+// ruled a CORE concept and the renderer moved to `packages/core/src/agui-render.ts`, which registers
+// on import of core. So the single import below is now the whole production configuration for the
+// console family — the same import `cotal console`, `join` and `examples/02` already do.
+//
+// **The side-effect import was DELETED rather than repointed at core, deliberately.** Repointing it
+// would keep the suite supplying its own precondition, and the cells would stay green whether or not
+// core registered anything — a green light wired to this file instead of to production. Removing it
+// is what makes the console cells falsifiable: they now fail if core stops registering.
 import { partsToText as corePartsToText } from "@cotal-ai/core";
-// Registers the `ag-ui.frame` part renderer into the SAME core instance the line above resolved.
-// Importing for a side effect is the point, not an accident of ordering.
-import "../src/agui-render.js";
 
 // ── The two web pages, each through whatever chain it actually ships.
 const bodyText = lift(join(WEB, "app.js"), "bodyText");
@@ -322,7 +332,7 @@ if (GRADING_FOREIGN_TREE)
  * MEANS, and two surfaces meaning different things by it is exactly the drift this file was built to
  * refuse elsewhere.
  */
-const CONSOLE_CLAMP = "[given a registered renderer — production registers none]";
+const CONSOLE_CLAMP = "[renderer registered as production does, by core itself on import]";
 const WEB_CLAMP = "[renderer registered as production does, via the page's own script tag]";
 
 const SURFACES: readonly { name: string; registration: string; render: ((p: unknown[]) => string) | null }[] = [

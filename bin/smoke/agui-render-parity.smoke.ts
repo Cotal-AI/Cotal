@@ -4,7 +4,7 @@
  *
  * WHY TWO IMPLEMENTATIONS EXIST, since the repo otherwise refuses duplication.
  * `implementations/web/src/web/*.js` are classic <script> files served to a browser. They cannot
- * import `@cotal-ai/core`, so they cannot reach `extensions/connector-core/src/agui-render.ts`. The
+ * import `@cotal-ai/core`, so they cannot reach `packages/core/src/agui-render.ts`. The
  * constraint is the module system, not a design preference, and no seam removes it. This is the same
  * situation `launch-parity.smoke.ts` documents for the launch grammar — the tier rule forbids the
  * shared import, so parity is enforced HERE, by test — and it lives in `bin/smoke` for the same
@@ -46,7 +46,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
-import { aguiFramePartRenderer, LINE_START_SAFE, AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/connector-core";
+import { aguiFramePartRenderer, LINE_START_SAFE, AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const browserFile = join(here, "..", "..", "implementations", "web", "src", "web", "agui-frame.js");

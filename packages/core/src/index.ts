@@ -1,4 +1,8 @@
 export * from "./types.js";
+// The AG-UI frame: its wire identity, and the renderer core resolves for it. See agui-kind.ts for
+// why an adopted vocabulary is a core concept and what deliberately stayed in connector-core.
+export * from "./agui-kind.js";
+export * from "./agui-render.js";
 export * from "./subjects.js";
 export * from "./endpoint-subjects.js";
 export * from "./endpoint-grants.js";

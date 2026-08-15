@@ -36,9 +36,10 @@
  * frame** — the two cannot be confused, because the routing is on the part kind and not on a guess
  * about shape.
  */
-import type { Part } from "@cotal-ai/core";
-import { registry, type PartRenderer } from "@cotal-ai/core";
-import { AGUI_FRAME_KIND, AGUI_EVENT_TYPE, isAguiFramePart } from "./agui.js";
+import type { Part } from "./types.js";
+import { registry } from "./registry.js";
+import type { PartRenderer } from "./parts.js";
+import { AGUI_FRAME_KIND, AGUI_EVENT_TYPE, isAguiFramePart } from "./agui-kind.js";
 
 /** One event, as untrusted input. Every read is guarded; nothing here trusts a producer. */
 type LooseEvent = Record<string, unknown>;
