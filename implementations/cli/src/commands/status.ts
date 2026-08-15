@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   CotalEndpoint,
+  LEASE_TTL_MS,
   isReachable,
   mintCreds,
   newIdentity,
@@ -15,6 +16,8 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { mintDeliveryCaller } from "../lib/delivery-caller.js";
+import { deliveryRow, deliveryRowText } from "../lib/delivery-row.js";
 import { machineStatus, resolveSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -273,16 +276,64 @@ async function printTarget(
     } else {
       row("live snapshot", c.dim(live ? "needs a signed-in, granted login (see above)" : "broker unreachable"));
     }
+    // THE THIRD STATE, NAMED RATHER THAN OMITTED. A user-auth mesh cannot be probed from here: this
+    // command deliberately never static-mints on the flip (see the note above), and the delivery
+    // caller mints. Printing NOTHING here would be the #445 defect exactly — a health clause that
+    // vanishes reads as "delivery health does not apply", not as "I was not able to ask". It is also
+    // NOT reported through `CallerUnavailable`: this is a refusal by THIS COMMAND's own policy, not a
+    // mint failure or an unreachable broker, and reusing one of those names would put the wrong fact
+    // behind a familiar label — which is the `daemonKnown` mistake.
+    row("delivery", c.yellow("cannot establish health — this command does not static-mint on a user-auth mesh, so it never asked the daemon. Says nothing about delivery."));
     return;
   }
 
   const preflight = await preflightTarget(target);
   if (!preflight.ok) {
     row("connection", c.red(`${preflight.kind}${preflight.prune ? " (stale registry entry)" : ""}`));
+    // Same reason as the user-auth path: an early return that prints no delivery line at all is the
+    // silent-omission defect, not a saving. The connection failed, so the daemon was never asked, and
+    // the row says which of those two facts it is reporting.
+    row("delivery", c.yellow(`cannot establish health — the mesh connection failed above (${preflight.kind}), so this surface never reached the daemon. Says nothing about delivery.`));
     return;
   }
   row("connection", c.green("ok"));
   await liveSnapshot(target).catch((e) => row("live snapshot", c.dim(`unavailable (${(e as Error).message})`)));
+  row("delivery", await deliveryStatusRow(target));
+}
+
+/** The `delivery` row — the operator's answer to "is delivery actually working right now", on the
+ *  command where that question is actually asked.
+ *
+ *  WHY IT IS HERE AND NOT ONLY ON THE SETUP CARD. The same row was first wired into `readyCard`,
+ *  which renders during `cotal setup` and nowhere else, so the question stayed unanswerable from
+ *  `cotal status`. This command's only prior delivery reference is `managerHasDeliveryMarker()` — a
+ *  BUILD marker rendering `· delivery-aware`, which is a fact about which binary is installed and
+ *  not about whether delivery works. A build marker wearing a health name is the same defect class
+ *  this row exists to close, so the row is added rather than the marker reinterpreted; the marker is
+ *  left exactly as it was.
+ *
+ *  IT NEVER RENDERS AN EMPTY STRING. Every path returns a non-empty line naming what could not be
+ *  established, because a health clause that silently disappears is indistinguishable from one that
+ *  never applied — the defect measured in `tool-specs.ts:418-422` and filed as #445. Green is
+ *  reachable ONLY from an affirmative round-trip inside a current observation; everything else is
+ *  yellow and says so by name. */
+async function deliveryStatusRow(target: { root: string; space: string; server: string }): Promise<string> {
+  const caller = await mintDeliveryCaller({
+    root: target.root, space: target.space, servers: target.server,
+    ttlMs: LEASE_TTL_MS, now: () => Date.now(),
+  });
+  try {
+    const r = await deliveryRow({
+      // The mint result is passed THROUGH, never collapsed to a bare absence: that collapse is what
+      // made an unreachable broker report itself as a missing credential.
+      mintCaller: async () => ("check" in caller ? { check: caller.check } : caller),
+      now: () => Date.now(),
+    });
+    const text = deliveryRowText(r);
+    return r.marker === "✓" ? c.green(text) : c.yellow(text);
+  } finally {
+    if ("close" in caller) await caller.close();
+  }
 }
 
 async function liveSnapshot(target: ReturnType<typeof resolveMeshTarget>): Promise<void> {
