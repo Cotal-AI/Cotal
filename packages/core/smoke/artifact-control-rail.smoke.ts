@@ -19,11 +19,19 @@
  * The absence of the parameter is the enforcement — a parameter that is present and ignored is a
  * defect waiting for a refactor to honour it.
  *
- * WHAT IS STILL NOT COVERED, so a green here is not over-read: this suite proves the RAIL, not the
- * GRANT. The daemon runs with the broker's full credential, so it says nothing about whether a
- * least-privilege delivery cred holds read on possession and read+create+delete on attachment and
- * NOTHING on possession-write. That asymmetry is argued in the plan and is still unproven by any
- * suite. Fan-out is also untouched.
+ * WHAT THIS SUITE CANNOT SEE, AND IT ONCE SHIPPED A BLOCKING DEFECT BEHIND EXACTLY THIS SENTENCE.
+ * The daemon below runs on an OPEN BROKER with full authority. **A test that holds every grant cannot
+ * measure an authorization boundary; it measures the code path with that boundary removed.** This
+ * file was 14/14 green while the shipped delivery credential could not execute the verb at all — a
+ * real auth-mode request was broker-denied on the handler's FIRST call, before the possession fence.
+ * Both facts were true at once and neither was a mistake about the other.
+ *
+ * So a green here is a statement about the RAIL and never about the GRANT. The grant is now held by
+ * two suites that can see it: `smoke:artifact-grant-shape` inspects the shipped builder's output, and
+ * `smoke:artifact-rail-authz:auth` drives this same verb end-to-end on the REAL minted delivery
+ * credential against a JWT-auth broker — including the read/write asymmetry (possession readable,
+ * possession UNWRITABLE, attachment read+create+delete). Do not extend this file to cover that;
+ * it structurally cannot. Fan-out is untouched by all three.
  *
  * Run: pnpm smoke:artifact-control-rail   (needs nats-server on PATH)
  */

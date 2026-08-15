@@ -2036,7 +2036,9 @@ function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionT
 /** The scoped `delivery` daemon permission set (server-side Plane-3 infra; NEVER allow-all, never
  *  minted for an agent — `cotal mint` excludes it, like `manager`). Least-privilege: exactly what the
  *  fan-out writer + trusted reader + activation catch-up + membership/ACL reads + members-KV writes +
- *  the lease + the `ctl.delivery` control service touch. `sub.allow` is the per-identity inbox (all JS
+ *  the lease + the `ctl.delivery` control service (INCLUDING its `confirmAttach` verb: the CHAT entry
+ *  get, the possession READ, and the attachment index read/create/delete — never a possession WRITE)
+ *  touch. `sub.allow` is the per-identity inbox (all JS
  *  pull delivery / KV-watch / request replies land there) PLUS the `ctl.delivery` control subtree it
  *  serves; ALL stream/KV reads ride the JS API (publishes), so there is NO native `chat`/`dinbox`/`dlv`
  *  subscription — a leaked cred can't natively sniff the mixed pre-auth store. Honest blast radius
@@ -2097,6 +2099,41 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // SPEC 13.1; NATS subject arity is exact, so the old two-token form is broker-denied on every
     // three-token write).
     `${p}.dinbox.*.*.*`, `${p}.dlv.*.*.*`,
+    // ---------------------------------------------------------------------------------------------
+    // THE `confirmAttach` CALL GRAPH (§13.7 artifact plane). The verb was served on this rail without
+    // these four subjects, and the failure is the reason they carry this much comment: the open-broker
+    // rail suite was 14/14 GREEN while a real auth-mode request was broker-denied on the FIRST line of
+    // the handler. **A test that holds every grant cannot measure an authorization boundary; it
+    // measures the code path with the boundary removed.** `smoke:artifact-rail-authz:auth` is the
+    // suite that can, and it drives this exact credential.
+    //
+    // FOUR, AND EXACTLY FOUR — measured by driving the shipped client, not read off its source:
+    //  - `Kvm.open()` sets `bindOnly`, so it takes `Bucket.bind()`: no `streams.info` call, hence NO
+    //    `STREAM.INFO` grant on either index bucket, and `checkAPI:false`, hence no extra `$JS.API.INFO`.
+    //  - bind leaves `direct=false`, so `kv.get` rides `STREAM.MSG.GET` and NEVER `$JS.API.DIRECT.GET`.
+    //    A `DIRECT.GET` row here would be a grant for a call that is never made.
+    // The first prediction made against this gap was "denied on possession STREAM.INFO". It was a MISS
+    // for exactly that reason, and the miss is on the ledger.
+    //
+    // `MSG.GET` carries the key in the request BODY, so neither read can be key-pinned the way the
+    // deprovisioner's `$JS.API.DIRECT.GET.KV_<REC>.$KV.<REC>.<k>` rows are. The confinement here is
+    // READ-ONLY, not per-key; the exactness of the possession lookup is a property of `readPossession`,
+    // never of this allow-list.
+    `$JS.API.STREAM.MSG.GET.${CHAT}`, // entryBySeq: load the published CHAT entry the caller names
+    `$JS.API.STREAM.MSG.GET.KV_${possessionBucket(space)}`, // readPossession (the fence; read twice)
+    `$JS.API.STREAM.MSG.GET.KV_${attachmentBucket(space)}`, // putAttachmentIfAbsent's confirming get
+    // Attachment index WRITE: `kv.create` (insert-if-absent) + `kv.delete` (the lost-race rollback).
+    // Both ride `$KV.<bucket>.<key>`, so one row covers them.
+    `$KV.${attachmentBucket(space)}.>`,
+    //
+    // ⚠️ POSSESSION VALUE-WRITE IS ABSENT AND THAT ABSENCE IS THE FENCE, NOT AN OVERSIGHT. Possession
+    // is EARNED by putting the bytes and is the only thing `confirmAttach`'s succession check reads. A
+    // delivery daemon that could write it could manufacture possession for any principal at any
+    // lifecycle, after which the verb is a formality and the tombstone semantics protect nothing. There
+    // is no `$KV.${possessionBucket(space)}` row here, and the symmetry a reviewer will propose between
+    // the two buckets is exactly what must be refused. `smoke:artifact-grant-shape` G2/G3 hold it as a
+    // string in this array; `smoke:artifact-rail-authz:auth` A5 holds it as an answer from the broker.
+    // ---------------------------------------------------------------------------------------------
     // ctl.delivery control REPLIES ONLY (requests arrive on the sub below; the daemon only ever
     // m.respond()s to a requester's reply subject `ctl.delivery.<owner>.<actor>.reply.<n>`). Scoped to
     // the `.reply.>` leaf so the daemon can't publish to the request subjects themselves — tighter than a
