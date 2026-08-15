@@ -191,28 +191,55 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  an error it can re-issue deliberately; the other direction cost `purge` a second STREAM.PURGE
  *  that deleted messages published after the first one completed (measured, adversarial review).
  *
+ *  KEYED BY ENDPOINT, not by bare command name, and that is not decoration. `invokeService` is
+ *  endpoint-agnostic, so a flat name list hands every endpoint in the mesh a judgement derived from
+ *  the manager's vocabulary: a third-party endpoint that happens to call something `list` or `ps`
+ *  would inherit "safe to run twice" for free, from a table that has never seen it. An unknown
+ *  endpoint therefore has NO repeat-safe commands, which is the same fail-closed default applied
+ *  one level up.
+ *
  *  Membership is a claim about the COMMAND'S EFFECT, so it is written out literally rather than
  *  derived from a grant class. Deriving it from {@link MANAGER_READ_COMMANDS} would silently widen
  *  retry safety the day a mutating command joins the `manager.read` tier for grant reasons; the two
- *  vocabularies answer different questions and must be able to disagree.
+ *  vocabularies answer different questions and must be able to disagree — and they already do.
  *
- *  A command belongs here only if re-running it is a no-op for every observer: these are reads
- *  (`status`/`ps`/`inspect`/`models`, the delivery membership `list`) and `describe` itself.
- *  Convergence is NOT sufficient on its own — `despawn` converges on a terminated agent, but its
- *  second run is still a distinct despawn of whatever now holds that name, so it stays out.
+ *  A command belongs here only if re-running it is a no-op FOR EVERY OBSERVER. Convergence is not
+ *  sufficient: `despawn` converges on a terminated agent, but its second run is still a distinct
+ *  despawn of whatever now holds that name.
  *
- *  This is a client-side heuristic standing in for something the wire does not carry. The general
- *  fix is a safety/idempotency annotation on the command contract plus an effect-outcome in the
- *  reply, so a caller can know whether the first execution landed instead of guessing; that is a
- *  SPEC change and is deliberately not made here. */
-export const REPEAT_SAFE_COMMANDS = Object.freeze([
-  "describe", "status", "ps", "inspect", "models", "list",
-] as const);
-const REPEAT_SAFE_SET: ReadonlySet<string> = new Set(REPEAT_SAFE_COMMANDS);
-/** True only for a command whose re-execution is observably harmless ({@link REPEAT_SAFE_COMMANDS}).
- *  Unknown commands are NOT repeat-safe — that is the intended default, not an oversight. */
-export function isRepeatSafeCommand(command: string): boolean {
-  return REPEAT_SAFE_SET.has(command);
+ *  `models` is the instructive exclusion, and it is why this list cannot simply mirror
+ *  `manager.read`. It reads a catalog — unless called with `{refresh: true}`, which reaches the
+ *  connector's `listModels({refresh})` and, for OpenCode, shells out to `opencode models --refresh`:
+ *  a provider round-trip that rewrites a cache. Same command name, same grant class, opposite
+ *  answer, decided by an ARGUMENT this table cannot see. Rather than encode per-command argument
+ *  rules here — the fail-open shape all over again — `models` is simply not repeat-safe. The cost
+ *  is that a plain `cotal models` surfaces a split instead of absorbing it in a multi-instance
+ *  space; the alternative was a wrong answer for the refreshing caller.
+ *
+ *  That exclusion is also the clearest statement of what this whole table is: a client-side
+ *  heuristic standing in for something the wire does not carry. The general fix is a safety
+ *  annotation on the command contract plus an effect-outcome in the reply, so a caller can KNOW
+ *  whether the first execution landed rather than guessing from a name. That is a SPEC change and
+ *  is deliberately not made here. */
+export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect"]),
+  [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
+});
+/** `describe` is a read on EVERY endpoint by construction (§13.7 — it is served by the machinery,
+ *  never a cluster command), so it is the one name that is repeat-safe without an endpoint. */
+const REPEAT_SAFE_ANY_ENDPOINT = "describe";
+// PRIVATE module-load snapshot, same discipline as the vocabularies above: the predicate reads
+// THIS, never the live export, so a post-import mutation of the exported table cannot widen what
+// the client is willing to run twice.
+const REPEAT_SAFE_SNAP: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  Object.entries(REPEAT_SAFE_COMMANDS).map(([endpoint, commands]) => [endpoint, new Set(commands)]),
+);
+/** True only for a command whose re-execution is observably harmless on THAT endpoint
+ *  ({@link REPEAT_SAFE_COMMANDS}). An unknown endpoint, or an unlisted command, is NOT repeat-safe
+ *  — that is the intended default, not an oversight. */
+export function isRepeatSafeCommand(endpoint: string, command: string): boolean {
+  if (command === REPEAT_SAFE_ANY_ENDPOINT) return true;
+  return REPEAT_SAFE_SNAP.get(endpoint)?.has(command) === true;
 }
 
 // PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
