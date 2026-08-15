@@ -124,9 +124,9 @@ try {
   }
 
   const plain = lines.map(stripAnsi);
-  const deliveryLine = plain.find((l) => rowLabel(l) === "delivery") ?? "";
+  const deliveryLine = plain.find((l) => rowLabel(l) === "delivery-health") ?? "";
   const connLine = plain.find((l) => rowLabel(l) === "connection") ?? "";
-  const deliveryValue = deliveryLine.replace(/^\s*delivery\s*/, "").trim();
+  const deliveryValue = deliveryLine.replace(/^\s*delivery-health\s*/, "").trim();
 
   // ═══ PATH WITNESSES ═══
   console.log("\n  — path witnesses (the invariant below means nothing without these) —");

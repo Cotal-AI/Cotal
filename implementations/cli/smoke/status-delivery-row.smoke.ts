@@ -91,13 +91,13 @@ check("it produced output at all — a silent command would satisfy every 'does 
 
 const strip = (s: string): string => s.replace(/\[[0-9;]*m/g, "");
 const plain = lines.map(strip);
-const deliveryLines = plain.filter((l) => /^\s*delivery\b/.test(l));
+const deliveryLines = plain.filter((l) => /^\s*delivery-health\b/.test(l));
 
 check("STATUS PRINTS A DELIVERY ROW — the gap this cell exists to close", deliveryLines.length >= 1,
   plain.join(" | ").slice(0, 400));
 
 const dl = deliveryLines[0] ?? "";
-const value = dl.replace(/^\s*delivery\s*/, "").trim();
+const value = dl.replace(/^\s*delivery-health\s*/, "").trim();
 // THE THIRD STATE IS THE POINT. #445's defect is a health clause rendered as the empty string, which
 // a reader cannot tell from "delivery health does not apply here".
 check("the delivery row's VALUE is non-empty — never the empty-string rendering of #445",

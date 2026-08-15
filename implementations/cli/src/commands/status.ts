@@ -296,7 +296,7 @@ async function printTarget(
     // NOT reported through `CallerUnavailable`: this is a refusal by THIS COMMAND's own policy, not a
     // mint failure or an unreachable broker, and reusing one of those names would put the wrong fact
     // behind a familiar label — which is the `daemonKnown` mistake.
-    row("delivery", c.yellow("cannot establish health — this command does not static-mint on a user-auth mesh, so it never asked the daemon. Says nothing about delivery."));
+    row("delivery-health", c.yellow("cannot establish health — this command does not static-mint on a user-auth mesh, so it never asked the daemon. Says nothing about delivery."));
     return;
   }
 
@@ -339,12 +339,12 @@ async function printTarget(
     // FILE for the pattern hits these lines. A comment is never written to stdout and the assertion
     // reads the command's output, so it is inert — but the hit is expected, and clearing it by hand
     // costs the reader the same two minutes twice.
-    row("delivery", c.yellow(`cannot establish health — the mesh preflight failed above (${preflight.kind}), so this surface never reached the daemon. Says nothing about delivery.`));
+    row("delivery-health", c.yellow(`cannot establish health — the mesh preflight failed above (${preflight.kind}), so this surface never reached the daemon. Says nothing about delivery.`));
     return;
   }
   row("connection", c.green("ok"));
   await liveSnapshot(target).catch((e) => row("live snapshot", c.dim(`unavailable (${(e as Error).message})`)));
-  row("delivery", await deliveryStatusRow(target));
+  row("delivery-health", await deliveryStatusRow(target));
 }
 
 /** The `delivery` row — the operator's answer to "is delivery actually working right now", on the
