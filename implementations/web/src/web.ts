@@ -102,6 +102,10 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
   // depends on this file is broken until it has a row here, whatever the HTML requests.
   "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
+  // Registers an `ag-ui.frame` renderer into the map `parts.js` consults. Served to both pages: a
+  // frame is as likely to arrive on the graph's detail row as in the console body, and a kind that
+  // draws on one page and shows a marker on the other is worse than one that shows a marker on both.
+  "/agui-frame.js": { path: join(here, "web/agui-frame.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },

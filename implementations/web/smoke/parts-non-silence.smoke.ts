@@ -20,8 +20,12 @@
  * re-declares the renderer, so a cell cannot pass against a version of the function that no longer
  * exists. The route table is likewise the REAL `PAGE` export from `web.ts`, not a copy of its keys.
  *
- * WHAT THEY DO NOT CLAIM. Rendering an AG-UI frame, and the `events.*` filter, are separate work
- * and untouched. These cells prove nothing about how a frame should eventually be drawn.
+ * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path — the fallbacks `parts.js` takes
+ * for a kind nothing has taught it — and that is now a precondition rather than the only case, since
+ * `parts.js` consults a renderer registry and `agui-frame.js` registers into it. The precondition is
+ * asserted below, not assumed. Frame RENDERING and its parity with the node renderer belong to
+ * `agui-frame-dispatch.smoke.ts` and `bin/smoke/agui-render-parity.smoke.ts`; the `events.*` filter
+ * is still separate, unowned work. Nothing here says how a frame should be drawn.
  *
  * AND THE EXACT EDGE OF THE REACH CLAIM, because it moved once already and could be overread again.
  * Three things are checked and they are not the same thing: the shared renderer is SERVED and LOADED
@@ -60,6 +64,17 @@ const api = sandbox.window.COTAL_PARTS as { partsToText(parts: unknown[]): strin
 ok("parts.js publishes COTAL_PARTS.partsToText on window (classic-script contract)",
   typeof api?.partsToText === "function", { got: typeof api?.partsToText });
 const render = (parts: unknown[]) => api!.partsToText(parts);
+
+// ── THE PRECONDITION EVERY MARKER CELL BELOW DEPENDS ON, MADE EXECUTABLE ─────────────────────────
+// `parts.js` now CONSULTS `window.COTAL_PART_RENDERERS` before falling back, and `agui-frame.js`
+// registers an `ag-ui.frame` renderer into it. This sandbox loads parts.js ALONE, so that map is
+// empty and the frame cells below measure the no-renderer path — which is still exactly the path a
+// page takes for a kind nobody taught it. Left implicit, those cells would silently change meaning
+// the day a renderer appeared in the same context, and would keep their old names while doing it.
+// Asserted rather than commented, so the precondition fails loudly instead of quietly dissolving.
+ok("PRECONDITION: no part renderers are registered in this sandbox (marker cells measure the no-renderer path)",
+  sandbox.window.COTAL_PART_RENDERERS === undefined,
+  { registered: sandbox.window.COTAL_PART_RENDERERS });
 
 // ── POSITIVE CONTROL on the detector, before any absence-shaped claim ────────────────────────────
 // If the renderer could not produce the ordinary case, every marker cell below would be measuring a

@@ -44,11 +44,16 @@
 // for the case this file exists to fix. The browser runs ahead on purpose, and converges to core's
 // wording when that lands. The strings below are the contract under test.
 //
-// SCOPE: this makes an undrawable part SAY SO, and preserves everything that was already visible.
-// It does not teach either page to RENDER an AG-UI frame and it adds no `events.*` filter; both are
-// separate, unowned work. An earlier version of this line read "and nothing wider", which was FALSE
-// while the extension branch discarded data — the scope sentence was wider than the code in one
-// direction and narrower in the other.
+// SCOPE: this makes an undrawable part SAY SO, preserves everything that was already visible, and
+// CONSULTS a per-kind renderer registry so a surface can be taught to draw a kind without this file
+// learning what the kind is. It does not itself know how to render an AG-UI frame — `agui-frame.js`
+// does, and it registers — and it still adds no `events.*` filter, which remains separate, unowned
+// work. An earlier version of this line read "and nothing wider", which was FALSE while the
+// extension branch discarded data — the scope sentence was wider than the code in one direction and
+// narrower in the other. It then read "does not teach either page to RENDER an AG-UI frame", which
+// went false in the other direction the moment the lookup landed: the page can now draw one, via a
+// file this one has never heard of. A scope sentence is only worth having if it is re-read every
+// time the code under it moves.
 //
 // Neither page republishes this text — `graph.js` only issues GETs and `app.js`'s single POST is
 // `/api/channel/delete`, which carries a channel name — so the marker is safe to place in the body
@@ -68,7 +73,36 @@ window.COTAL_PARTS = (() => {
       // sees one must not conclude the other.
       return encoded === undefined ? "[empty data part]" : encoded;
     }
-    // An extension kind. Not drawable here and not silently droppable either.
+    // An extension kind. A surface may have been TAUGHT to draw one, by registering a function
+    // under its kind in `window.COTAL_PART_RENDERERS` (see `agui-frame.js`). Consulted here, first,
+    // because a renderer that exists is strictly more specific than either fallback below.
+    //
+    // READ AT CALL TIME, not when this closure was built, so registration may happen in any script
+    // order. That is the whole reason this is a lookup and not an import: this file stays ignorant of
+    // every kind anyone teaches it, which is what keeps the dispatcher a dispatcher.
+    //
+    // A THROWING RENDERER MUST NOT TAKE THE PAGE DOWN, and must not silently become a blank body
+    // either — that is precisely the failure this file exists to remove, and re-introducing it
+    // through the extension seam would be the same bug with a new door. It degrades to a NAMED
+    // marker carrying the error, and the data fallback below is not reached: a renderer that
+    // registered and then failed is a different fact from no renderer at all, and a reader who sees
+    // raw JSON would conclude the second.
+    const renderers = window.COTAL_PART_RENDERERS;
+    const render = renderers && renderers[p.kind];
+    if (typeof render === "function") {
+      let out;
+      try {
+        out = render(p);
+      } catch (err) {
+        return `[renderer for part kind ${JSON.stringify(p.kind)} failed: ${err && err.message ? err.message : String(err)}]`;
+      }
+      // A renderer returning a non-string would put `undefined` or `[object Object]` into the body
+      // through the same coercion described at the top of this file. Its contract is a string.
+      if (typeof out === "string") return out;
+      return `[renderer for part kind ${JSON.stringify(p.kind)} returned ${typeof out}, expected a string]`;
+    }
+
+    // No renderer for this kind. Not drawable here, and not silently droppable either.
     //
     // BUT DATA-BEARING EXTENSIONS MUST KEEP THEIR DATA. The first version of this file sent every
     // non-core kind straight to the marker, which THREW AWAY content the old expression had been

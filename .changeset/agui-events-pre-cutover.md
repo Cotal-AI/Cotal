@@ -4,6 +4,7 @@
 "@cotal-ai/connector-core": minor
 "@cotal-ai/manager": minor
 "@cotal-ai/cli": minor
+"@cotal-ai/web": minor
 ---
 
 Key the per-agent event channel on the agent's principal and add the durable event-emitter foundations.
@@ -27,5 +28,9 @@ The event emitter lands in the same module and ties those pieces to the durable 
 A durable source now returns a cursor **per record**, not one for the whole read. A frame may cover only part of a batch, and it has to record a position that means exactly "every record in this frame is consumed"; with a single end-of-batch cursor, folding such a frame would skip the records the later frames were carrying, with no gap for a reader to notice. Frames are therefore packed at record boundaries and a single record too large for one frame is refused rather than truncated.
 
 A frame that cannot be bracketed after a restart now says so. The write-ahead log persists the stream's position and the frame in flight, not the set of open runs and messages, so a process that stops mid-run resumes at events whose opening was already published and refuses the first of them. That refusal now identifies itself as lost writer state rather than presenting as a protocol violation by the agent, which is a different problem with a different fix.
+
+The browser dashboard can now **display** a frame. A frame carries no text part by design, so every surface that renders parts showed it as a marker naming a kind it could not draw — correct, and not a transcript. `parts.js` now consults a per-kind renderer registry before its fallbacks, and a new served file registers an `ag-ui.frame` renderer into it, so the dispatcher still knows nothing about AG-UI and an absent registration degrades to the same named marker as before. A renderer that throws or returns a non-string is reported by name rather than blanking the body — the failure the dispatcher exists to remove, which the extension seam would otherwise have reintroduced.
+
+The browser cannot import from `@cotal-ai/core`, so that renderer is a second implementation of one already in `connector-core`, and the duplication is held closed by test rather than by intention: a parity suite in the composition root drives both over a shared corpus and requires byte-identical output, reporting only digests and positions on a mismatch so that pointing it at real input later is not also a decision to start printing it. Its corpus coverage is measured against the emitter's own enumerable event types and printed on every run, so a new event type shows up as uncovered the day it lands. That suite already found two divergences: accumulators keyed by plain object reordered integer-like message ids and dropped a `__proto__`-keyed stream outright, and the browser told a non-frame part it was a frame carrying no events.
 
 Nothing emits yet; the connectors are untouched and still publish their existing mirrors.
