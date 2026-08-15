@@ -445,19 +445,51 @@ try {
       // held" from "the retry ran and failed too" — roughly a coin flip each time, which would make
       // this cell flaky rather than wrong. The cache is deterministic: `invokeService` drops it only
       // on the path the guard is there to prevent.
-      const swept: string[] = [];
+      // AND THE SWEEP MUST PROVE IT RAN. The first version of this loop asserted only the cache, and
+      // it passed with the guard replaced by a hardcoded `command === "spawn" || command === "purge"`
+      // — SURVIVED at 37/37, the full baseline, twice. The reason is the failure mode this file is
+      // otherwise careful about: a command that never reaches a responder leaves the cache untouched
+      // too, so "the ghost is still cached" was satisfied by commands that had proved nothing. A
+      // vacuous pass and a real pass looked identical.
+      //
+      // So each iteration must first establish that it actually reached the guard — the error came
+      // back carrying the responder-answered marker, meaning an instance received and handled it —
+      // and only then is the cache meaningful. `notReached` is not a tolerance: it is red, because a
+      // command that cannot get there is a hole in the sweep and must be seen rather than absorbed.
+      // Each command needs SCHEMA-VALID arguments or the envelope refuses it before it is ever
+      // published — which is precisely how the first version passed vacuously: `{}` fails
+      // `required` on all seven, so none of them left the client. The values are deliberately
+      // nonsense (no such run, no such attempt) so every handler refuses on business grounds and
+      // nothing is launched, resumed, or preserved; refusing is a REPLY, which is all this needs.
+      // If a schema gains a required field, `notReached` goes red rather than the cell going quiet.
+      const attempt = { attemptId: `no-such-attempt-${randomUUID().slice(0, 8)}` };
+      const adminArgs: Record<string, Record<string, unknown>> = {
+        launch: { runId: `no-such-run-${randomUUID().slice(0, 8)}`, name: `no-such-agent-${randomUUID().slice(0, 6)}` },
+        "resume-preserved": { ...attempt, inventory: {} },
+        "commit-resume": attempt,
+        "finalize-resume": { ...attempt, durableCommitToken: "no-such-token" },
+        "prepare-preservation": attempt,
+        "commit-preservation": attempt,
+        "abort-preservation": attempt,
+      };
+      const notReached: string[] = [];
+      const retriedAnyway: string[] = [];
       for (const command of MANAGER_ADMIN_COMMANDS) {
         if (command === "purge") continue; // already graded above, in full
         const c = cache.get(MANAGER_ENDPOINT);
         if (c) c.responder.instanceId = ghost; // re-force: a preceding iteration may have healed it
+        let err: unknown;
         try {
-          await ep.invokeService(MANAGER_ENDPOINT, command, {});
-        } catch { /* the throw is expected; the cache is what is graded */ }
-        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId !== ghost) swept.push(command);
+          await ep.invokeService(MANAGER_ENDPOINT, command, adminArgs[command] ?? {});
+        } catch (e) { err = e; }
+        if (!respondedButUnbound(err)) { notReached.push(command); continue; }
+        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId !== ghost) retriedAnyway.push(command);
       }
-      check("EVERY other manager.admin command reaches the same guard — none is quietly retried",
-        swept.length === 0,
-        { retriedAnyway: swept, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
+      check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
+        notReached.length === 0, { notReached });
+      check("...and none of them is quietly retried — the guard reads the classifier, not a fixed list",
+        retriedAnyway.length === 0,
+        { retriedAnyway, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
     } finally { await ep.stop().catch(() => {}); }
   }
 
