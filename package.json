@@ -324,6 +324,7 @@
     "smoke:cli-seat-locality": "tsx implementations/manager/smoke/cli-seat-locality.smoke.ts",
     "smoke:delivery-health": "tsx packages/core/smoke/delivery-health.smoke.ts",
     "smoke:delivery-health-live": "tsx implementations/delivery/smoke/delivery-health-live.smoke.ts",
+    "smoke:delivery-card-live": "tsx implementations/cli/smoke/delivery-card-live.smoke.ts",
     "smoke:shard-status": "tsx bin/smoke/shard-status.smoke.ts"
   },
   "dependencies": {

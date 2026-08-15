@@ -44,6 +44,12 @@ export interface DeliveryCaller {
   close: () => Promise<void>;
   /** Async denials seen on this endpoint. Captured so a caller CAN report them; never thrown. */
   asyncErrors: string[];
+  /** The RAW lease, separate from the assessment. Exposed because "the lease still looks healthy
+   *  while the daemon is dead" is the residue the origin incident produced, and a cell that cannot
+   *  read the lease independently cannot tell a refusal earned by the round-trip from one that a
+   *  plain age check would also have caught. The row itself never reads this — it is the evidence
+   *  that the round-trip is doing the work. */
+  leaseNow: () => Promise<{ holder: string; since: number; ready: boolean } | undefined>;
 }
 
 /**
@@ -95,6 +101,7 @@ export async function mintDeliveryCaller(o: {
     return {
       ...deliverySeams(bound, { shard: SHARD, ttlMs: o.ttlMs, deadlineMs: PROBE_DEADLINE_MS, now: o.now }),
       asyncErrors,
+      leaseNow: () => bound.readDeliveryLease(SHARD),
       close: async () => { try { await bound.stop(); } catch { /* already closing */ } },
     };
   } catch {

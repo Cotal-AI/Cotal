@@ -30,3 +30,15 @@ you whether the daemon is down" — different facts an operator acts on differen
 `@cotal-ai/core` now exports `./health.js` (`DeliveryHealth`, `HealthFact`, `renderHealth`,
 `assessDeliveryHealth`). It was deliberately unexported while nothing read it; the guard is the real
 consumer that condition was waiting for.
+
+The ready card now carries a DELIVERY row, so an operator can ask "is delivery actually working
+right now" and get an answer that was earned. `✓` is reachable only from an affirmative round-trip
+inside a current observation; every other path renders `?` (never dim), names which condition
+failed rather than a bare unknown, and carries the fact's source and its age.
+
+The row's caller is agent-class, and which class it should be was measured rather than assumed. The
+tempting reuse — `control-caller-privileged`, already minted by the manager row — is denied at the
+broker on the delivery-lease read, so reusing it would have made the row report an unreachable
+daemon on a healthy mesh: "the daemon did not answer" when the truth is "I was never permitted to
+ask". Driven live against a real daemon, `refused` and `no-responder` are distinct conditions, so
+the row can tell a denial from an absence.
