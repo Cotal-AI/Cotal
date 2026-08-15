@@ -229,14 +229,43 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
   }
   scored.sort((a, b) => b.score - a.score);
 
-  const perPage = new Map<string, number>();
+  // Diversity, BREADTH FIRST — at most two sections per page, and **no page gets its second slot
+  // while another matching page still has none**.
+  //
+  // The single-pass version admitted in pure score order, capping at two per page. That cap alone
+  // does not deliver what its own comment promises: with a limit of 5, one page taking two slots
+  // leaves four for everyone else, so a page can be crowded out by a *runner-up* section of a page
+  // already represented. Measured: `$SYS.>` filled slots 1 and 4 with two `embedding` sections and
+  // pushed `spec` — the normative section that actually defines the subject — to rank 6, one place
+  // below the cap. Nothing about `$SYS` changed; an unrelated page gained the term five weeks after
+  // the assertion was written, and ranking is a GLOBAL property, so a docs addition anywhere can
+  // evict an unrelated page's answer.
+  //
+  // Two passes fix that without touching scores: every matching page is offered one slot in score
+  // order, then leftover capacity goes to second sections, still in score order. Within a pass the
+  // order is unchanged, so this narrows *which* sections are admitted, never how they rank.
   const hits: DocHit[] = [];
-  for (const { s, score } of scored) {
-    const seen = perPage.get(s.slug) ?? 0;
-    if (seen >= 2) continue; // don't let one page crowd out the rest
-    perPage.set(s.slug, seen + 1);
+  const taken = new Set<Section>();
+  const take = (s: Section, score: number): void => {
+    taken.add(s);
     hits.push({ slug: s.slug, pageTitle: s.pageTitle, heading: s.heading, text: s.text, score });
+  };
+
+  const firsts = new Set<string>();
+  for (const { s, score } of scored) {
     if (hits.length >= limit) break;
+    if (firsts.has(s.slug)) continue;
+    firsts.add(s.slug);
+    take(s, score);
+  }
+  const perPage = new Map<string, number>();
+  for (const { s, score } of scored) {
+    if (hits.length >= limit) break;
+    if (taken.has(s)) continue;
+    const seen = perPage.get(s.slug) ?? 0;
+    if (seen >= 1) continue; // one extra beyond the first — the two-per-page ceiling, unchanged
+    perPage.set(s.slug, seen + 1);
+    take(s, score);
   }
   return hits;
 }
