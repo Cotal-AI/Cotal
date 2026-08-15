@@ -140,10 +140,49 @@ class Env {
   }
 }
 
-/** Read a `conclave`'s closure off a thrown error, where `runScope` attached it. */
-function closedOf(e: unknown): { closed?: boolean } {
-  const c = (e as { closed?: unknown }).closed;
-  return typeof c === "boolean" ? { closed: c } : {};
+/** What the interpreter knows about a failing scope, beside whatever the program threw. */
+interface ScopeFacts {
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  readonly closed?: boolean;
+}
+
+/**
+ * A scope's failure, carrying the interpreter's OWN facts about it.
+ *
+ * These facts used to be attached to the thrown value with `Object.assign`, which works exactly as
+ * long as every program throws an object. `throw null` is valid (§3.2), and `Object.assign(null, …)`
+ * is a TypeError — so a conclave whose body threw a primitive lost its closure fact AND handed the
+ * caller a manufactured type error in place of the body's failure, while the entry recorded
+ * `closed: undefined` for a room the handler had in fact closed. The facts belong to the
+ * interpreter, so they travel in the interpreter's own envelope and the program's value rides
+ * untouched inside it. Nothing outside `performScope` ever sees this class: it unwraps before it
+ * rethrows.
+ */
+class ScopeFailed extends Error {
+  constructor(
+    readonly reason: unknown,
+    readonly facts: ScopeFacts,
+  ) {
+    super(`scope failed: ${messageOf(reason)}`);
+    this.name = "ScopeFailed";
+  }
+}
+
+function unwrapScope(e: unknown): { reason: unknown; facts: ScopeFacts } {
+  return e instanceof ScopeFailed ? { reason: e.reason, facts: e.facts } : { reason: e, facts: {} };
+}
+
+/**
+ * The message of an arbitrary thrown value.
+ *
+ * Reading `.message` off `null` throws, and a thrown primitive is legal in a language with `throw`,
+ * so every place that has to describe a failure it did not construct goes through here. A recorded
+ * entry saying "Cannot read properties of null" describes the recorder, not the run.
+ */
+function messageOf(v: unknown): string {
+  if (v instanceof Error) return v.message;
+  const m = (v as { message?: unknown } | null | undefined)?.message;
+  return typeof m === "string" ? m : String(v);
 }
 
 /** A fault the interpreter itself raises, as opposed to one an effect handler reported. */
@@ -483,14 +522,14 @@ class Interpreter {
       // on `code` that the handler broke, when what actually happened is that their script is
       // incomplete. Only the L-code shape is honoured: anything else a thrown object happens to
       // call `code` (an errno, an HTTP status) is a handler fault and is recorded as one.
-      const raised = (e as { code?: unknown }).code;
+      // Read defensively: a handler is other people's code and may throw a primitive, and reading
+      // `.code` or `.message` off `null` would replace its failure with the recorder's own.
+      const raised = (e as { code?: unknown } | null | undefined)?.code;
       const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
       const error: EntryError =
         e instanceof EffectError
           ? { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }
-          : carried !== null
-            ? { code: carried, kind: "handler-fault", message: (e as Error).message }
-            : { code: "L4000", kind: "handler-fault", message: (e as Error).message };
+          : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
       await this.journal.settle(key, { status: "failed", error }, endedAt);
       frame.clock.advance(endedAt);
       throw e instanceof EffectError ? e : new EffectError(error.code, error.kind, error.message);
@@ -1099,30 +1138,33 @@ class Interpreter {
     let outcome: ScopeOutcome;
     try {
       outcome = await body(ctx);
-    } catch (e) {
+    } catch (raw) {
+      // The interpreter's facts come out of the envelope; the program's thrown value comes out
+      // whole, and is what the caller sees. A value the program threw is never written on.
+      const { reason, facts } = unwrapScope(raw);
       const endedAt = this.options.handler.now();
-      if (e instanceof JournalAppendRejected) throw e;
+      if (reason instanceof JournalAppendRejected) throw reason;
       // A close that did not acknowledge settles NOTHING. The entry stays pending, which is exactly
       // what "a close is still owed" looks like in a journal, and the underlying handler error is
       // what the caller sees.
-      if (e instanceof CloseOwed) throw e.reason;
-      if (e instanceof Cancelled) {
-        await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt, closedOf(e));
-        throw e;
+      if (reason instanceof CloseOwed) throw reason.reason;
+      if (reason instanceof Cancelled) {
+        await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt, facts);
+        throw reason;
       }
       const err: EntryError =
-        e instanceof EffectError
-          ? { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }
-          : { code: "L4000", kind: "scope-fault", message: (e as Error).message };
+        reason instanceof EffectError
+          ? {
+              code: reason.code,
+              kind: reason.kind,
+              message: reason.message,
+              ...(reason.detail !== undefined ? { detail: reason.detail } : {}),
+            }
+          : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
       // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
-      // carries the intent too.
-      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
-        ...(( e as { cancel?: { losers: readonly string[]; issued: boolean } }).cancel !== undefined
-          ? { cancel: (e as { cancel: { losers: readonly string[]; issued: boolean } }).cancel }
-          : {}),
-        ...closedOf(e),
-      });
-      throw e;
+      // carries the intent too — and a conclave that closed says so even when its body failed.
+      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, facts);
+      throw reason;
     }
 
     await this.journal.settle(
@@ -1182,7 +1224,7 @@ class Interpreter {
           await Promise.allSettled(running);
           frame.clock.join(frames.map((f) => f.clock));
           const losers = branches.filter((k) => k !== failed);
-          throw Object.assign(e as object, { cancel: { losers, issued: false } });
+          throw new ScopeFailed(e, { cancel: { losers, issued: false } });
         }
       }
 
@@ -1233,7 +1275,7 @@ class Interpreter {
         // The earliest branch to settle FAILED. The scope fails with it, carrying the siblings it
         // cancelled — a losing arm can crash before the cancellation reaches it, so the intent has
         // to travel with the outcome exactly as it does for a winning race.
-        throw Object.assign(won.reason as object, {
+        throw new ScopeFailed(won.reason, {
           cancel: { losers: branches.filter((k) => k !== index), issued: false },
         });
       }
@@ -1283,11 +1325,13 @@ class Interpreter {
     }
 
     if (name === "conclave") {
-      // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`. That entry's
-      // STATE is the durable answer to "is this sub-team still live": settled means the members
-      // left, pending or cancelled means a close is still owed. §17's migrate table reads exactly
-      // that — an orphaned conclave is rejected unless the scope closed — so a second entry for the
-      // close would be a second thing to keep in agreement with the first, and nothing needs it.
+      // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying the
+      // durable answer to "is this sub-team still live". That answer is the explicit `closed` FACT,
+      // not the entry's state: a body that failed after a clean close settles `failed` exactly like
+      // one whose close never acknowledged, and only the fact separates them. Pending means a close
+      // is still owed. §17's migrate table reads that fact — an orphaned conclave is rejected unless
+      // the scope closed — so a second entry for the close would be a second thing to keep in
+      // agreement with the first, and nothing needs it.
       const members = deepFreeze(first) as AgentHandleValue[];
       const fn = (await this.evaluate(argNodes[1] as AnyNode, env, frame)) as (
         f: Frame,
@@ -1312,12 +1356,16 @@ class Interpreter {
       // then settle as an ordinary body failure — a `failed` entry indistinguishable from "the body
       // failed and the room closed cleanly", which an orphan walk reads as closed while the members
       // are still joined.
+      // `threw` is a separate flag rather than `bodyError !== undefined`, because `throw undefined`
+      // is a thing a program may do and "the body failed" must not depend on what it failed WITH.
       let bodyError: unknown;
+      let threw = false;
       let value: unknown;
       try {
         value = await fn(branch, [handle]);
       } catch (e) {
         bodyError = e;
+        threw = true;
       }
       frame.clock.join([branch.clock]);
 
@@ -1326,7 +1374,7 @@ class Interpreter {
       // resource a race loser took (§3.4). A conclave whose body merely FAILED is not cancelled —
       // this process is live and the world is reachable — and walking away from live membership on
       // an ordinary error would be the `spawn` leak in another shape.
-      if (bodyError instanceof Cancelled) throw Object.assign(bodyError as object, { closed: false });
+      if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });
 
       try {
         await handler.closeConclave(req, ctx);
@@ -1338,7 +1386,7 @@ class Interpreter {
         throw new CloseOwed(e);
       }
 
-      if (bodyError !== undefined) throw Object.assign(bodyError as object, { closed: true });
+      if (threw) throw new ScopeFailed(bodyError, { closed: true });
       return { branches: [branchKey], value, closed: true };
     }
 

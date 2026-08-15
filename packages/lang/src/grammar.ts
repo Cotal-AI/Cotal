@@ -469,16 +469,37 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
 
 class Scope {
   readonly names = new Map<string, "const" | "let" | "param">();
+  /** The function node a name is bound to HERE, when it is bound to one at all. */
+  private readonly fns = new Map<string, AnyNode>();
   constructor(readonly parent: Scope | null) {}
 
-  declare(name: string, kind: "const" | "let" | "param"): void {
+  declare(name: string, kind: "const" | "let" | "param", fn?: AnyNode): void {
     this.names.set(name, kind);
+    if (fn !== undefined) this.fns.set(name, fn);
+    else this.fns.delete(name);
   }
 
   lookup(name: string): "const" | "let" | "param" | undefined {
     for (let s: Scope | null = this; s !== null; s = s.parent) {
       const k = s.names.get(name);
       if (k !== undefined) return k;
+    }
+    return undefined;
+  }
+
+  /**
+   * The function this name is bound to AT THIS POINT IN THE PROGRAM, or nothing.
+   *
+   * The nearest binding decides, and a binding that is not a function answers `undefined` rather
+   * than deferring outward — that is the difference between resolving a name and resolving a
+   * BINDING. A program-wide name map cannot tell `parallel({ branch })` inside
+   * `function use(branch)` from the top-level `function branch()` of the same name, and blaming a
+   * clean program for what an unrelated declaration elsewhere happens to write is worse than
+   * leaving one branch unproven: an unproven branch is still refused at runtime by the depth check.
+   */
+  lookupFn(name: string): AnyNode | undefined {
+    for (let s: Scope | null = this; s !== null; s = s.parent) {
+      if (s.names.has(name)) return s.fns.get(name);
     }
     return undefined;
   }
@@ -717,7 +738,7 @@ function checkAsyncCallPosition(node: AnyNode, parent: AnyNode | null, v: Valida
   );
 }
 
-function checkCall(node: AnyNode, v: Validator): void {
+function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
   const name = callee.name as string;
@@ -858,7 +879,7 @@ function checkCall(node: AnyNode, v: Validator): void {
     // One `seen` set per combinator call: two branches calling the same helper is one defect in
     // that helper, not two, and reporting it twice tells an author to fix one line twice.
     const seen = new Set<AnyNode>();
-    const thunks = name === "fanOut" ? branchThunks(args[1], v) : branchThunks(args[0], v);
+    const thunks = name === "fanOut" ? branchThunks(args[1], v, scope) : branchThunks(args[0], v, scope);
     for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
   }
 }
@@ -891,11 +912,24 @@ function indexFunctions(node: AnyNode, v: Validator): void {
   for (const c of children(node)) indexFunctions(c, v);
 }
 
-/** Resolve a branch to the function it names, or to nothing. */
-function resolveFunction(node: AnyNode, v: Validator): AnyNode | undefined {
+/**
+ * Resolve a branch to the function it names, or to nothing.
+ *
+ * A NAMED branch resolves through its lexical binding at the combinator call, never through the
+ * program-wide name map: `async function use(branch) { await parallel({ branch }) }` passes its own
+ * parameter, and resolving that name to a same-named top-level declaration made a clean program
+ * unwriteable — L2032 blamed a write in a function the program never even called. A name bound to
+ * something that is not a function is UNPROVEN, and unproven is the interpreter's depth check to
+ * refuse at runtime, not the validator's to guess at.
+ */
+function resolveFunction(node: AnyNode, v: Validator, scope: Scope): AnyNode | undefined {
   if (isFunctionNode(node)) return node;
-  if (node.type === "Identifier") return v.functions.get(node.name as string) ?? undefined;
-  return undefined;
+  if (node.type !== "Identifier") return undefined;
+  const name = node.name as string;
+  // Bound here: the binding answers, whatever it is bound to. Unbound: walk 2 has already raised
+  // L2001 for it, and the index is what the earlier fold used, so it stays the fallback.
+  if (scope.lookup(name) !== undefined) return scope.lookupFn(name);
+  return v.functions.get(name) ?? undefined;
 }
 
 /**
@@ -906,22 +940,22 @@ function resolveFunction(node: AnyNode, v: Validator): AnyNode | undefined {
  * `async function`s instead of two arrows, was accepted. A branch is a branch however it is
  * spelled.
  */
-function branchThunks(node: AnyNode | undefined, v: Validator): AnyNode[] {
+function branchThunks(node: AnyNode | undefined, v: Validator, scope: Scope): AnyNode[] {
   if (node === undefined) return [];
-  const one = resolveFunction(node, v);
+  const one = resolveFunction(node, v, scope);
   if (one !== undefined) return [one];
   const out: AnyNode[] = [];
   if (node.type === "ObjectExpression") {
     for (const p of (node.properties as AnyNode[]) ?? []) {
       if (p.type !== "Property" || !isNode(p.value)) continue;
-      const fn = resolveFunction(p.value as AnyNode, v);
+      const fn = resolveFunction(p.value as AnyNode, v, scope);
       if (fn !== undefined) out.push(fn);
     }
   }
   if (node.type === "ArrayExpression") {
     for (const el of (node.elements as (AnyNode | null)[]) ?? []) {
       if (el === null || !isNode(el)) continue;
-      const fn = resolveFunction(el, v);
+      const fn = resolveFunction(el, v, scope);
       if (fn !== undefined) out.push(fn);
     }
   }
@@ -1080,6 +1114,13 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         if (isNode(init)) walkResolve(init, v, scope);
         const names: string[] = [];
         patternNames(d.id as AnyNode, names);
+        // `const b = async () => {...}` binds a FUNCTION, and a branch named `b` must resolve to
+        // it. Only the plain `id = function` form does: a destructured name holds whatever the
+        // pattern pulled out, which is not statically a function.
+        const bound =
+          isNode(d.id) && (d.id as AnyNode).type === "Identifier" && isNode(init) && isFunctionNode(init as AnyNode)
+            ? (init as AnyNode)
+            : undefined;
         for (const n of names) {
           if (RESERVED_NAMES.has(n)) {
             v.fail(
@@ -1089,7 +1130,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
               `Rename the binding, for example \`${n}Result\`.`,
             );
           }
-          scope.declare(n, kind);
+          scope.declare(n, kind, bound);
         }
       }
       return;
@@ -1137,7 +1178,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
             "Rename the function.",
           );
         }
-        scope.declare(fname, "const");
+        scope.declare(fname, "const", node);
       }
       const inner = new Scope(scope);
       for (const p of (node.params as AnyNode[]) ?? []) {
@@ -1187,7 +1228,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     }
 
     case "CallExpression": {
-      checkCall(node, v);
+      checkCall(node, v, scope);
       for (const c of children(node)) walkResolve(c, v, scope);
       return;
     }
@@ -1203,7 +1244,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
 function hoistFunctions(block: AnyNode, scope: Scope): void {
   for (const s of (block.body as AnyNode[]) ?? []) {
     if (s.type === "FunctionDeclaration" && isNode(s.id)) {
-      scope.declare((s.id as AnyNode).name as string, "const");
+      scope.declare((s.id as AnyNode).name as string, "const", s);
     }
   }
 }

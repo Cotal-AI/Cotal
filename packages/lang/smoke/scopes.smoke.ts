@@ -224,13 +224,35 @@ await parallel({
   ok("with the cancellation still undischarged", scope?.cancel?.issued === false);
 }
 
+{
+  // THE SAME ENVELOPE RULE ON THE PARALLEL PATH. A branch may throw a primitive, and the losers are
+  // the interpreter's fact about the scope, not a property to staple onto whatever the program
+  // threw — `Object.assign(null, …)` is a TypeError, which would have replaced the branch's failure
+  // with the recorder's and lost the cancellation intent with it.
+  const j = new Journal({ run: "r-5c" });
+  let caught: unknown = "nothing was thrown";
+  try {
+    await run('await parallel({ ok: async () => { await sleep("5m"); return 1; }, bad: async () => { throw null; } }, { name: "both" });',
+      { runId: "r-5c", journal: j, handler: new SimHandler({}) });
+  } catch (e) {
+    caught = e;
+  }
+  const scope = scopeOf(j, "parallel");
+  ok("a branch that throws a PRIMITIVE fails the scope with its own value", caught === null, String(caught));
+  ok("and the losers are still recorded", JSON.stringify(scope?.cancel?.losers) === '["ok"]', scope?.cancel);
+  ok("with the thrown value described rather than the recorder's own failure",
+    scope?.error?.message === "null", scope?.error);
+}
+
 // ---- 6) conclave: a scope that is also an effect ---------------------------------------------
 
 /**
- * A conclave gets ONE journal entry, of kind `conclave`, and that entry's state is the durable
- * answer to "is this sub-team still live". Settled means the members left; pending or cancelled
- * means a close is still owed, which is exactly what the migrate table reads when it rejects an
- * orphaned conclave "unless the scope closed".
+ * A conclave gets ONE journal entry, of kind `conclave`, and that entry answers "is this sub-team
+ * still live" — with an explicit `closed` FACT, not with its state. The state cannot answer it: a
+ * body that failed after a clean close settles `failed` exactly like one whose close never
+ * acknowledged, and a cancelled conclave is settled with its membership deliberately still joined.
+ * Pending means a close is still owed. The migrate table reads the fact when it rejects an orphaned
+ * conclave "unless the scope closed".
  *
  * The handler is watched method by method rather than spread over the simulator. A spread loses
  * SimHandler's prototype methods and the run dies as a handler fault, which is how this suite's
@@ -378,6 +400,61 @@ await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, {
 
 {
   /**
+   * A BODY MAY THROW A PRIMITIVE, and the disposition must survive it.
+   *
+   * `throw` is part of the language and `null` is a value, so a body can fail with something that
+   * is not an object. The facts used to be written ONTO the thrown value with `Object.assign`,
+   * which is a TypeError on `null`: the close had already been acknowledged, and the caller then
+   * received a manufactured type error instead of the body's own failure while the entry recorded
+   * `closed: undefined` for a room that was genuinely closed — an orphan walk would reject a
+   * correctly closed conclave. The facts are the interpreter's, so they travel in the
+   * interpreter's own envelope and the program's value rides untouched.
+   */
+  const { handler, calls } = watching(new SimHandler({}));
+  const j = new Journal({ run: "c-3p" });
+  let caught: unknown = "nothing was thrown";
+  try {
+    await run(
+      'const a = await spawn("a", { name: "a" });\nawait conclave([a], async (ch) => { throw null; }, { name: "huddle" });',
+      { runId: "c-3p", journal: j, handler },
+    );
+  } catch (e) {
+    caught = e;
+  }
+  const scope = scopeOf(j, "conclave");
+  ok("a body that throws a PRIMITIVE still closes the room exactly once",
+    JSON.stringify(calls) === '["open","close"]', calls);
+  ok("and the entry states the closure it actually achieved", scope?.closed === true, scope?.closed);
+  ok("settled failed, not pending", scope?.state === "settled" && scope?.status === "failed",
+    `${scope?.state}:${scope?.status ?? ""}`);
+  ok("and the caller gets the body's own thrown value, not one the interpreter manufactured",
+    caught === null, String(caught));
+
+  // A body can also fail WITH `undefined` — not by naming it, which does not resolve, but by
+  // throwing an absent field, which is ordinary code. "The body failed" must not be read off what
+  // it failed with: comparing the caught value against `undefined` makes this program, which threw,
+  // look like one that returned cleanly — a conclave settling `ok` with no value the author wrote.
+  const j2 = new Journal({ run: "c-3u" });
+  const w2 = watching(new SimHandler({}));
+  let caught2: unknown = "nothing was thrown";
+  let returned = false;
+  try {
+    await run(
+      'const a = await spawn("a", { name: "a" });\nconst empty = {};\nawait conclave([a], async (ch) => { throw empty.missing; }, { name: "huddle" });',
+      { runId: "c-3u", journal: j2, handler: w2.handler },
+    );
+    returned = true;
+  } catch (e) {
+    caught2 = e;
+  }
+  ok("a body that fails WITH undefined fails the conclave rather than settling ok",
+    !returned && caught2 === undefined && scopeOf(j2, "conclave")?.status === "failed",
+    `${returned ? "returned" : "threw"}:${scopeOf(j2, "conclave")?.status ?? ""}`);
+  ok("and it closed on the way out", scopeOf(j2, "conclave")?.closed === true, scopeOf(j2, "conclave")?.closed);
+}
+
+{
+  /**
    * THE CASE THE DISPOSITION EXISTS FOR: the close itself is refused.
    *
    * A first version folded the close into the body's try, so a close rejection was caught, RETRIED
@@ -504,6 +581,22 @@ await race({
   ok("carrying the sibling it cancelled, because a failing arm owes its losers exactly as a winning one does",
     JSON.stringify(scope?.cancel?.losers) === '["slow"]', scope?.cancel);
   ok("with the cancellation still undischarged", scope?.cancel?.issued === false);
+
+  // And the winning-arm-failed path carries the same envelope: a primitive is a legal thing to
+  // throw, and the losers a race owes are the interpreter's fact, not a field on the program's
+  // value. `bad` throws in microtasks while `slow` parks in the watched macrotask sleep.
+  const jp = new Journal({ run: "c-5p" });
+  const wp = watching(new SimHandler({}), true);
+  let caughtP: unknown = "nothing was thrown";
+  try {
+    await run('await race({ bad: async () => { throw null; }, slow: async () => { await sleep("1m", { name: "s1" }); return 2; } }, { name: "r" });',
+      { runId: "c-5p", journal: jp, handler: wp.handler });
+  } catch (e) {
+    caughtP = e;
+  }
+  const sp = scopeOf(jp, "race");
+  ok("an arm that throws a PRIMITIVE fails the race with its own value", caughtP === null, String(caughtP));
+  ok("and the race still records the loser it cancelled", JSON.stringify(sp?.cancel?.losers) === '["slow"]', sp?.cancel);
 }
 
 {

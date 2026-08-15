@@ -354,6 +354,17 @@ accepts(
   "a name a branch bound itself is not the program function of the same name",
   'let flag = 0;\nfunction bump() { flag = 1; }\nfunction apply(bump) { return bump(1); }\nawait parallel({ a: async () => apply((x) => x), b: async () => 2 }, { name: "p" });',
 );
+// THE SAME RULE AT THE COMBINATOR CALL, which is where it was missing. The branch here is the
+// PARAMETER `branch`, which only returns 1; the top-level `branch` is never passed and never
+// called. Resolving the name through a program-wide map instead of through its binding rejected
+// this program for a write in a function it does not use — an unrelated declaration elsewhere
+// making a clean program unwriteable, which is how a real rule becomes one authors route around.
+// The branch that arrives through a parameter is UNPROVEN, not innocent: the interpreter's
+// concurrency-depth check refuses the write at runtime if one is ever made.
+accepts(
+  "a branch identifier resolves through its BINDING: a parameter is not the program function of the same name",
+  'let flag = 0;\nfunction branch() { flag = 1; }\nasync function use(branch) { await parallel({ branch }, { name: "p" }); }\nawait use(async () => 1);',
+);
 accepts(
   "and a helper called only from sequential code is not a branch at all",
   'let notes = "";\nfunction note(x) { notes = x; }\nnote("start");\nawait parallel({ a: async () => 1 }, { name: "p" });',
