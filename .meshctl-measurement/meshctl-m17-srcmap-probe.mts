@@ -19,10 +19,13 @@ const MAP = process.env.COTAL_PRIVATE_SRC_MAP;
 if (!MAP) { console.log("VERDICT: no src map in the environment"); process.exit(1); }
 const [FROM, TO] = MAP.split("::");
 
-// The specifier the graded suite uses for its subject, written the same way it writes it.
-const SUBJECT = "../extensions/connector-core/src/agent.js";
-// Outside the mapped prefix by construction: a different package's source.
-const CONTROL = "../packages/core/src/index.js";
+// The specifier the graded suite uses for its subject, written the same way it writes it, and a
+// specifier OUTSIDE the mapped prefix. Both are parameters rather than constants: the gate has to
+// name the subject of the run it is gating, and a probe hard-wired to one package would quietly
+// certify a different one. Defaults cover the connector suite; core runs pass the pair explicitly.
+const SUBJECT = process.env.COTAL_PROBE_SUBJECT ?? "../extensions/connector-core/src/agent.js";
+const CONTROL = process.env.COTAL_PROBE_CONTROL ?? "../packages/core/src/index.js";
+if (SUBJECT === CONTROL) { console.log("VERDICT: probe misconfigured — subject and control are the same specifier"); process.exit(1); }
 
 const subjectUrl = import.meta.resolve(SUBJECT);
 const controlUrl = import.meta.resolve(CONTROL);
@@ -42,8 +45,10 @@ console.log(`  OUT-OF-MAP ${controlUntouched ? "untouched — the hook is select
 // nothing can import would satisfy the string check and fail the run in a way that reads as a
 // killed mutation rather than as a broken instrument.
 const mod = await import(SUBJECT);
-const loadable = typeof mod.MeshAgent === "function";
-console.log(`  LOADS      ${loadable ? "yes — MeshAgent imported from the resolved URL" : "NO — the resolved module did not import"}`);
+// Any export will do: the question is whether the resolved URL IMPORTS, not what it contains. A
+// named check would tie this gate to one module's surface and fail for the wrong reason elsewhere.
+const loadable = Object.keys(mod).length > 0;
+console.log(`  LOADS      ${loadable ? `yes — ${Object.keys(mod).length} export(s) from the resolved URL` : "NO — the resolved module did not import"}`);
 
 if (inMap && controlUntouched && loadable) {
   console.log("VERDICT: the subject resolves to the PRIVATE src copy");
