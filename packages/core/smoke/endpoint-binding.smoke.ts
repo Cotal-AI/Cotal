@@ -461,7 +461,7 @@ try {
     wfj.max_age === 0, wfj.max_age);
   c("WFJ has NO Direct Get, so a resume cannot read a follower's stale view of its own prefix",
     wfj.allow_direct === false);
-  c("WFJ captures one subject per run, not one per entry (the activation barrier is per-subject)",
+  c("WFJ captures one subject per run, not one per entry (a choice: per-entry subjects CAN be fenced)",
     JSON.stringify(wfj.subjects) === JSON.stringify([`cotal.${SPACE}.wfj.*`]), wfj.subjects);
   c("records KV serves Direct Get", (await cfg(`KV_${recordsBucket(SPACE)}`)).allow_direct === true);
   const auth = await cfg(`KV_${epAuthBucket(SPACE)}`);
