@@ -66,6 +66,16 @@ export interface JournalEntry {
    * which is a fact about the world, established by whoever is driving, not by this record.
    */
   readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  /**
+   * A `conclave`'s CLOSURE, stated rather than inferred from the entry's state.
+   *
+   * The state cannot answer it. A cancelled conclave is `settled`/`cancelled` while its membership
+   * is deliberately still live, and a scope whose body failed AND whose close failed settled
+   * `failed` too — indistinguishable from "body failed, close succeeded", which an orphan walk
+   * reads as closed. So the disposition is its own fact: `true` only once the handler acknowledged
+   * the close. An entry that never settled is open by definition and carries nothing.
+   */
+  readonly closed?: boolean;
   readonly startedAt: number;
   readonly endedAt?: number;
 }
@@ -285,9 +295,11 @@ export class Journal {
   /**
    * Append the `settled` half.
    *
-   * `cancel` is for a scope that cancels siblings: the intent is recorded WITH the outcome rather
-   * than after it, because a process dies between instructions and two appends are two network
-   * operations however few keywords separate them.
+   * `facts.cancel` is for a scope that cancels siblings: the intent is recorded WITH the outcome
+   * rather than after it, because a process dies between instructions and two appends are two
+   * network operations however few keywords separate them. `facts.closed` is a `conclave`'s
+   * membership disposition, for the same reason and with the same rule: it goes down with the
+   * outcome or not at all.
    */
   async settle(
     key: StepKey,
@@ -296,7 +308,10 @@ export class Journal {
       | { readonly status: "failed"; readonly error: EntryError }
       | { readonly status: "cancelled" },
     endedAt: number,
-    cancel?: { readonly losers: readonly string[]; readonly issued: boolean },
+    facts: {
+      readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+      readonly closed?: boolean;
+    } = {},
   ): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
@@ -309,7 +324,8 @@ export class Journal {
       endedAt,
       ...(outcome.status === "ok" ? { result: outcome.result } : {}),
       ...(outcome.status === "failed" ? { error: outcome.error } : {}),
-      ...(cancel !== undefined ? { cancel } : {}),
+      ...(facts.cancel !== undefined ? { cancel: facts.cancel } : {}),
+      ...(facts.closed !== undefined ? { closed: facts.closed } : {}),
     };
     await this.persist(k, settled);
     this.byKey.set(k, settled);

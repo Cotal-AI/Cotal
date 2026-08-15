@@ -318,6 +318,39 @@ rejects(
   "L2032",
   'let winner = "none";\nawait parallel({ a: async () => { if (true) { winner = "a"; } } }, { name: "p" });',
 );
+// A BRANCH IS A BRANCH HOWEVER IT IS SPELLED. This is the design's own program with the arrows
+// replaced by named declarations, and the first version of the rule accepted it: `branchThunks`
+// looked only at function nodes written at the call site, so `parallel({ a, b })` had no branches
+// to check at all. Found by review, not by the suite, which is why both spellings are here now.
+rejects(
+  "a NAMED branch is checked, not skipped because it was declared elsewhere",
+  "L2032",
+  'let winner = "none";\nasync function a() { await sleep("5s", { name: "a" }); winner = "a"; }\nasync function b() { await sleep("1s", { name: "b" }); winner = "b"; }\nawait parallel({ a, b }, { name: "p" });',
+);
+rejects(
+  "and so is a branch named through a const arrow",
+  "L2032",
+  'let n = 0;\nconst bump = async () => { n += 1; };\nawait race({ bump, other: async () => 2 }, { name: "r" });',
+);
+rejects(
+  "a fanOut whose body is named is checked too",
+  "L2032",
+  'let seen = 0;\nasync function mark(x) { seen = 1; return x; }\nawait fanOut(["a"], mark, { name: "f", key: (i) => i });',
+);
+// One level down, and invisible at the combinator call: the branch writes nothing, the helper does.
+rejects(
+  "a helper the branch CALLS is followed, because the write is the same defect one level down",
+  "L2032",
+  'let winner = "none";\nfunction claim(who) { winner = who; }\nawait parallel({ a: async () => { await sleep("5s", { name: "a" }); claim("a"); }, b: async () => { await sleep("1s", { name: "b" }); claim("b"); } }, { name: "p" });',
+);
+accepts(
+  "but a helper that only touches its own locals stays ordinary shared code",
+  'function label(x) { let out = x; out = out + "!"; return out; }\nawait parallel({ a: async () => label("a"), b: async () => label("b") }, { name: "p" });',
+);
+accepts(
+  "and a helper called only from sequential code is not a branch at all",
+  'let notes = "";\nfunction note(x) { notes = x; }\nnote("start");\nawait parallel({ a: async () => 1 }, { name: "p" });',
+);
 // The other half of the rule, and the half that decides whether it is usable. A branch that writes
 // only what it declared is ordinary code, and the language would be much worse if this were caught.
 accepts(

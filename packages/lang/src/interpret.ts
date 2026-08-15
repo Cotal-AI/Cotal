@@ -51,6 +51,22 @@ interface ScopeOutcome {
   readonly branches: readonly string[];
   readonly value: unknown;
   readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  /** A `conclave`'s membership disposition. See {@link JournalEntry.closed}. */
+  readonly closed?: boolean;
+}
+
+/**
+ * A `conclave` whose close did not acknowledge.
+ *
+ * It exists so the scope is NOT settled: the pending entry is the durable record that a close is
+ * still owed, and re-entry retries it. Settling on a close rejection would have the journal state a
+ * disposition the world never confirmed, which is the one thing this entry is for.
+ */
+class CloseOwed extends Error {
+  constructor(readonly reason: unknown) {
+    super(`conclave close did not acknowledge: ${(reason as Error)?.message ?? String(reason)}`);
+    this.name = "CloseOwed";
+  }
 }
 
 // ---- environments ------------------------------------------------------------------------------
@@ -64,7 +80,21 @@ class Binding {
 
 class Env {
   private readonly names = new Map<string, Binding>();
-  constructor(readonly parent: Env | null) {}
+
+  /**
+   * How many CONCURRENT scopes deep this environment was created.
+   *
+   * L2032's runtime half rests on this. The static rule follows named and inline branches, but a
+   * branch the validator cannot resolve to a function node — one that arrives through a parameter
+   * or a computed record — is not proven, and banning that shape outright would cost more than the
+   * hazard. So the depth travels with the binding: a write from inside a concurrent branch to a
+   * binding declared OUTSIDE it is refused where it happens. `conclave` does not raise the depth,
+   * because its single body has nothing to race.
+   */
+  constructor(
+    readonly parent: Env | null,
+    readonly depth: number = parent?.depth ?? 0,
+  ) {}
 
   declare(name: string, value: unknown, mutable: boolean): void {
     this.names.set(name, new Binding(value, mutable));
@@ -74,6 +104,13 @@ class Env {
     for (let e: Env | null = this; e !== null; e = e.parent) {
       const b = e.names.get(name);
       if (b !== undefined) return b;
+    }
+    return undefined;
+  }
+
+  private owner(name: string): Env | undefined {
+    for (let e: Env | null = this; e !== null; e = e.parent) {
+      if (e.names.has(name)) return e;
     }
     return undefined;
   }
@@ -88,12 +125,25 @@ class Env {
     return this.find(name) !== undefined;
   }
 
-  set(name: string, value: unknown): void {
-    const b = this.find(name);
-    if (b === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
+  set(name: string, value: unknown, atDepth: number): void {
+    const owner = this.owner(name);
+    if (owner === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
+    const b = owner.names.get(name) as Binding;
     if (!b.mutable) throw new RuntimeFault("L2003", `${name} is declared const`);
+    if (owner.depth < atDepth) {
+      throw new RuntimeFault(
+        "L2032",
+        `${name} is declared outside this concurrent branch and written inside it. Live, the branches write in completion order; on resume the recorded effects return instantly and they write in launch order, so ${name} holds a different value and the run takes a path it never recorded, with no divergence raised. Return the value from the branch and read it out of the combinator's result, or use race, which yields its winner.`,
+      );
+    }
     b.value = value;
   }
+}
+
+/** Read a `conclave`'s closure off a thrown error, where `runScope` attached it. */
+function closedOf(e: unknown): { closed?: boolean } {
+  const c = (e as { closed?: unknown }).closed;
+  return typeof c === "boolean" ? { closed: c } : {};
 }
 
 /** A fault the interpreter itself raises, as opposed to one an effect handler reported. */
@@ -154,6 +204,8 @@ class Frame {
     readonly keys: KeyScope,
     readonly clock: RunClock,
     readonly signal: Signal,
+    /** How many CONCURRENT scopes deep. See {@link Env.depth}: this is L2032's runtime half. */
+    readonly depth: number = 0,
   ) {}
 
   branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): Frame {
@@ -161,6 +213,9 @@ class Frame {
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
+      // `conclave` opens a scope but not a RACE: one body, nothing running beside it, so a write
+      // from inside it is as ordered as a write anywhere else and the depth does not move.
+      kind === "conclave" ? this.depth : this.depth + 1,
     );
   }
 }
@@ -550,7 +605,7 @@ class Interpreter {
         if (left.type !== "Identifier") {
           throw new RuntimeFault("L2031", "only a plain binding can be assigned to");
         }
-        env.set(left.name as string, value);
+        env.set(left.name as string, value, frame.depth);
         return value;
       }
       case "AwaitExpression":
@@ -570,7 +625,9 @@ class Interpreter {
     const body = node.body as AnyNode;
     const isExpressionBody = body.type !== "BlockStatement";
     return async (frame: Frame, args: unknown[]): Promise<unknown> => {
-      const env = new Env(closure);
+      // The calling FRAME decides the depth, not the closure: a helper declared at the top level
+      // and called from inside a branch is executing concurrently, whatever scope it was written in.
+      const env = new Env(closure, frame.depth);
       for (let i = 0; i < params.length; i += 1) {
         await this.bindPattern(params[i] as AnyNode, args[i], env, frame, true);
       }
@@ -1045,8 +1102,12 @@ class Interpreter {
     } catch (e) {
       const endedAt = this.options.handler.now();
       if (e instanceof JournalAppendRejected) throw e;
+      // A close that did not acknowledge settles NOTHING. The entry stays pending, which is exactly
+      // what "a close is still owed" looks like in a journal, and the underlying handler error is
+      // what the caller sees.
+      if (e instanceof CloseOwed) throw e.reason;
       if (e instanceof Cancelled) {
-        await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt);
+        await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt, closedOf(e));
         throw e;
       }
       const err: EntryError =
@@ -1055,7 +1116,12 @@ class Interpreter {
           : { code: "L4000", kind: "scope-fault", message: (e as Error).message };
       // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
       // carries the intent too.
-      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, (e as { cancel?: { losers: readonly string[]; issued: boolean } }).cancel);
+      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
+        ...(( e as { cancel?: { losers: readonly string[]; issued: boolean } }).cancel !== undefined
+          ? { cancel: (e as { cancel: { losers: readonly string[]; issued: boolean } }).cancel }
+          : {}),
+        ...closedOf(e),
+      });
       throw e;
     }
 
@@ -1063,7 +1129,10 @@ class Interpreter {
       scopeKey,
       { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
       this.options.handler.now(),
-      outcome.cancel,
+      {
+        ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
+        ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
+      },
     );
     return outcome.value;
   }
@@ -1237,22 +1306,40 @@ class Interpreter {
       // claim a key the body's steps were not actually filed under.
       const branchKey = "in";
       const branch = frame.branch(scopeKind, scopeName, occurrence, branchKey);
+
+      // The body's outcome is decided FIRST, alone. The close is a separate act with a separate
+      // failure mode, and folding it into this try is what made a close rejection retry itself and
+      // then settle as an ordinary body failure — a `failed` entry indistinguishable from "the body
+      // failed and the room closed cleanly", which an orphan walk reads as closed while the members
+      // are still joined.
+      let bodyError: unknown;
+      let value: unknown;
       try {
-        const value = await fn(branch, [handle]);
-        frame.clock.join([branch.clock]);
-        await handler.closeConclave(req, ctx);
-        return { branches: [branchKey], value };
+        value = await fn(branch, [handle]);
       } catch (e) {
-        frame.clock.join([branch.clock]);
-        // A CANCELLED branch performs no new effects (§5.8), so a cancelled conclave does not close
-        // itself: the entry settles `cancelled`, and releasing the membership travels the same
-        // recovery path as every other branch-local resource a race loser took (§3.4). A conclave
-        // whose body merely FAILED is not cancelled — this process is live and the world is
-        // reachable — and walking away from live membership on an ordinary error would be the
-        // `spawn` leak in another shape.
-        if (!(e instanceof Cancelled)) await handler.closeConclave(req, ctx);
-        throw e;
+        bodyError = e;
       }
+      frame.clock.join([branch.clock]);
+
+      // A CANCELLED branch performs no new effects (§5.8), so a cancelled conclave does not close
+      // itself: releasing the membership travels the same recovery path as every other branch-local
+      // resource a race loser took (§3.4). A conclave whose body merely FAILED is not cancelled —
+      // this process is live and the world is reachable — and walking away from live membership on
+      // an ordinary error would be the `spawn` leak in another shape.
+      if (bodyError instanceof Cancelled) throw Object.assign(bodyError as object, { closed: false });
+
+      try {
+        await handler.closeConclave(req, ctx);
+      } catch (e) {
+        // THE CLOSE DID NOT ACKNOWLEDGE, so the scope does not settle at all. A pending entry IS
+        // the durable "a close is still owed" — re-entry retries it — and settling anything here
+        // would be the journal claiming a disposition the world never confirmed. The body's own
+        // error, if there was one, is subordinate: it did not leave members joined; this did.
+        throw new CloseOwed(e);
+      }
+
+      if (bodyError !== undefined) throw Object.assign(bodyError as object, { closed: true });
+      return { branches: [branchKey], value, closed: true };
     }
 
     throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);

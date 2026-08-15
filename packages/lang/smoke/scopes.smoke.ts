@@ -13,6 +13,7 @@
  * both arms succeeded and requires the same winner every time.
  */
 import { run, resume } from "../src/interpret.js";
+import { validate } from "../src/grammar.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import type { EffectHandler } from "../src/effects.js";
@@ -289,7 +290,11 @@ let conclaveJournal: Journal;
   const scope = scopeOf(r.journal, "conclave");
   ok("it is journalled as ONE entry of its own kind, not as an open and a close", scope !== undefined
     && r.journal.entries().filter((e) => e.kind === "conclave").length === 1);
-  ok("settled, which is the durable answer to 'did this sub-team close'", scope?.status === "ok");
+  ok("settled ok", scope?.status === "ok");
+  // The status cannot answer "did this sub-team close" on its own: a CANCELLED conclave is also
+  // `settled`, deliberately still open, and a scope whose body AND close both failed settles
+  // `failed` too. So the closure is its own fact.
+  ok("and it STATES that it closed, which is what an orphan walk reads", scope?.closed === true);
   ok("recording its single branch", JSON.stringify((scope?.result as { branches: string[] }).branches) === '["in"]',
     scope?.result);
   // And the branch key is checked WHERE IT BITES: on the scope path the body's own steps were filed
@@ -367,6 +372,56 @@ await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, {
   ok("a failing body fails the conclave", caught !== undefined);
   ok("but the room is still closed", JSON.stringify(calls) === '["open","close"]', calls);
   ok("and the entry says it failed, not that it never happened", scopeOf(j, "conclave")?.status === "failed");
+  ok("and it STATES that the room closed, because the status alone cannot say so",
+    scopeOf(j, "conclave")?.closed === true, scopeOf(j, "conclave")?.closed);
+}
+
+{
+  /**
+   * THE CASE THE DISPOSITION EXISTS FOR: the close itself is refused.
+   *
+   * A first version folded the close into the body's try, so a close rejection was caught, RETRIED
+   * once, and then settled as an ordinary `failed` scope — indistinguishable from "the body failed
+   * and the room closed cleanly", which an orphan walk reads as closed while the members are still
+   * joined. Now the scope does not settle at all: a pending entry IS "a close is still owed".
+   */
+  const sim = new SimHandler({});
+  let closes = 0;
+  const handler: EffectHandler = {
+    now: () => sim.now(),
+    spawn: (r, c) => sim.spawn(r, c),
+    turn: (r, c) => sim.turn(r, c),
+    ask: (r, c) => sim.ask(r, c),
+    checkpoint: (r, c) => sim.checkpoint(r, c),
+    sleep: (r, c) => sim.sleep(r, c),
+    wait: (r, c) => sim.wait(r, c),
+    notify: (r, c) => sim.notify(r, c),
+    monitor: (r, c) => sim.monitor(r, c),
+    openConclave: (r, c) => sim.openConclave(r, c),
+    closeConclave: async () => {
+      closes += 1;
+      throw new Error("the room would not close");
+    },
+  };
+  const j = new Journal({ run: "c-3b" });
+  let caught: unknown;
+  try {
+    await run(
+      'const a = await spawn("a", { name: "a" });\nawait conclave([a], async (ch) => 1, { name: "huddle" });',
+      { runId: "c-3b", journal: j, handler },
+    );
+  } catch (e) {
+    caught = e;
+  }
+  const scope = scopeOf(j, "conclave");
+  ok("a refused close fails the run", caught !== undefined);
+  ok("and is not retried behind the author's back", closes === 1, closes);
+  ok("the scope does NOT settle: a pending entry is the durable 'a close is still owed'",
+    scope?.state === "pending", `${scope?.state}:${scope?.status ?? ""}`);
+  ok("and it never claims to have closed while the members are still joined", scope?.closed !== true,
+    scope?.closed);
+  ok("the caller sees the handler's own error, not a manufactured one",
+    String((caught as Error)?.message).includes("would not close"), String(caught).slice(0, 80));
 }
 
 {
@@ -394,8 +449,9 @@ await race({
   ok("the conclave really was opened, or this cell proves nothing about closing", calls.includes("open"));
   ok("a cancelled conclave does NOT close itself from inside the losing branch",
     !calls.includes("close"), calls);
-  ok("and its entry records that it did not close", scopeOf(j, "conclave")?.status === "cancelled",
-    scopeOf(j, "conclave")?.status);
+  ok("and its entry records that it did not close", scopeOf(j, "conclave")?.status === "cancelled"
+    && scopeOf(j, "conclave")?.closed === false,
+    `${scopeOf(j, "conclave")?.status}:${String(scopeOf(j, "conclave")?.closed)}`);
 }
 
 // ---- 7) a race arm that FAILS is still a settle ------------------------------------------------
@@ -479,6 +535,82 @@ await race({
     winner = `threw:${(e as Error).name}`;
   }
   ok("a branch recorded as cancelled does not win the race it lost", winner === "slow", winner);
+}
+
+// ---- 8) L2032's runtime half: the branch the validator could not prove -------------------------
+
+/**
+ * The static rule follows inline branches and named ones, and follows a branch into the helpers it
+ * calls. What it cannot follow is a branch that does not exist until the program runs — a record of
+ * thunks returned from a function, reached through a parameter, built by a call. Banning that shape
+ * would cost more than the hazard, so the rule has a second half that runs where the write happens:
+ * a binding declared OUTSIDE a concurrent branch cannot be written from inside one.
+ *
+ * The fixture below passes the validator — there is no function node at the combinator call to
+ * check — and must still be refused.
+ */
+{
+  const UNPROVEN = `
+let winner = "none";
+function branches() {
+  return {
+    a: async () => { await sleep("5m", { name: "a" }); winner = "a"; return 1; },
+    b: async () => { await sleep("1m", { name: "b" }); winner = "b"; return 2; },
+  };
+}
+await parallel(branches(), { name: "p" });
+`;
+  // The control FIRST: if this program did not parse, the cell below would prove nothing about the
+  // runtime, only that the validator caught it.
+  let staticError: unknown;
+  try {
+    validate(UNPROVEN);
+  } catch (e) {
+    staticError = e;
+  }
+  ok("the fixture really is one the validator cannot prove", staticError === undefined,
+    String(staticError).slice(0, 120));
+
+  let caught: unknown;
+  try {
+    await run(UNPROVEN, { runId: "c-6", handler: new SimHandler({}) });
+  } catch (e) {
+    caught = e;
+  }
+  ok("a write to a binding declared outside the branch is refused where it happens",
+    (caught as { code?: string })?.code === "L2032", String(caught).slice(0, 100));
+  ok("and the refusal names the binding", String((caught as Error)?.message).includes("winner"),
+    String(caught).slice(0, 120));
+}
+
+{
+  // The inverse control, and the one that decides whether the rule is usable. A branch writing what
+  // it declared itself is ordinary code and must run.
+  const OWN = `
+function branches() {
+  return { a: async () => { let n = 0; await sleep("1m", { name: "a" }); n = n + 1; return n; } };
+}
+const r = await parallel(branches(), { name: "p" });
+log(r.a);
+`;
+  logged.length = 0;
+  await run(OWN, { runId: "c-7", handler: new SimHandler({}), onLog: sink });
+  ok("a branch writing its OWN binding still runs", logged[0]?.[0] === 1, logged);
+}
+
+{
+  // `conclave` is a scope but not a race: one body, nothing beside it, so the depth does not move
+  // and a write from inside it is as ordered as a write anywhere else.
+  const IN_CONCLAVE = `
+let notes = "";
+const a = await spawn("a", { name: "a" });
+await conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t" });
+log(notes);
+`;
+  logged.length = 0;
+  await run(IN_CONCLAVE, { runId: "c-8", handler: new SimHandler({}), onLog: sink });
+  ok("a conclave body may write an outer binding at runtime too, not just past the validator",
+    typeof logged[0]?.[0] === "string" && (logged[0][0] as string).length > 0, logged);
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);
