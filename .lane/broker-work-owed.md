@@ -1,10 +1,41 @@
 # Owed work — all of it needs a broker, so it waits for the box
 
-**PRIORITY ORDER, set by fm-orchestrator: item 0 first, because it CLOSES A HAZARD rather than
-measuring one.** The other two measure something; item 0 is the only one where a green is currently
-unverified against a change already committed.
+**PRIORITY ORDER (fm-orchestrator, revised after the severity retraction below):**
 
-## 0. RUN `up-tls-routes-live` — HIGHEST PRIORITY
+    0.  the preflight-OK path cell   (new; needs a broker)   <- the path that MATTERS
+    1.  pnpm typecheck                                        <- status.ts now carries real code
+    2.  up-tls-routes-live
+    3.  the deadline distribution + the denial cell
+
+**Hold all of it until fm-orchestrator sends the release.** A typecheck's CPU is not free while a
+controlled timing comparison is the point of the run in front of it.
+
+## 0. THE PREFLIGHT-OK PATH — the direction where a false satisfaction is INVISIBLE
+
+The cell that exists drives the preflight-**FAILURE** path, because that is the path reachable
+without a broker. **It is not the path that matters.** On the preflight-OK path the `connection` row
+renders green `ok`, and the delivery line is built from **broker error strings** rather than from a
+template this lane controls. If such a string ever places "connection" before "unreachable" on one
+line, `up-tls-routes-live`'s positive assertion is satisfied **while the connection row says ok** —
+and unlike the retracted case below, there is no legitimate emitter supplying the same match, so the
+row would be the sole supplier. No cell covers this.
+
+**THE PROPERTY TO ASSERT, and it is stronger than "the delivery line does not match":**
+
+> Every line of `cotal status`'s output that matches `/connection\s+.*unreachable/` must be a line
+> whose LABEL is `connection`.
+
+That formulation is worth more than checking one row, because it holds for any row anyone adds later
+and it says the real thing: **the evidence for a whole-output security assertion must come from the
+emitter that assertion is about.** Assert the negative-polarity twin the same way, against
+`/connection\s+ok/`.
+
+**Setup:** ephemeral loopback broker (assert the URL is not the live host FIRST), preflight passing,
+and NO delivery daemon, so the delivery row renders a real refusal rather than a template. Repeat
+with an under-granted caller so the `refused` text is exercised too. Both texts come from code this
+lane does not author, which is exactly why they need driving rather than reasoning about.
+
+## 2. RUN `up-tls-routes-live`
 
 `bin/smoke/up-tls-routes-live.smoke.ts:551` asserts a **security** verdict with
 `/connection\s+.*unreachable/` over the whole of `cotal status`'s output. This lane added a delivery
@@ -16,6 +47,21 @@ does not match (with a positive control proving the regex matches the OLD phrasi
 **But that suite has not been run since the row was added.** The repair was derived by reading, not by
 executing, and reading is how the hazard was found rather than proof that it is gone. This suite needs
 a broker; run it before treating the near-miss as closed.
+
+### ⚠ THE COMMIT THAT INTRODUCED THIS REPAIR CARRIES A RETRACTED REASON
+
+**`cec7ee11`'s message says the row "could have greened a security gate the connection row itself had
+failed". THAT CLAIM IS FALSE and was retracted in `ae3a3b85`.** Measured across every
+`PreflightFailure` kind, the set where the old phrasing matched and the `connection` row did not is
+EMPTY, so the row was duplicate evidence and never the sole supplier.
+
+**The repair is kept, but for a different reason than the one it was made for:** duplicate evidence
+for a security assertion is worth removing, and the coincidence that protected it — that the only
+matching `kind` is also the one the legitimate emitter matches — is **one interpolation edit away
+from ending**. Anyone reading `cec7ee11` alone inherits the retracted reason; the correction is in
+`ae3a3b85`, in the comment at the line, and here. **This cannot be fixed by amending the message: the
+commit is five deep on a branch whose rebases route through fm-orchestrator**, so the linkage is
+recorded instead of the history being rewritten.
 
 **A NEW CLASS WORTH CARRYING PAST THIS LANE:** nothing about the added line was defective in
 isolation — no bad regex, no missing control, no false statement. **The defect existed only in the
