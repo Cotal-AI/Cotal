@@ -114,10 +114,17 @@ specifier resolves through a workspace symlink to `packages/core/dist/index.js` 
 verified with `import.meta.resolve`, not assumed — behind a guard that refuses to run at all if that
 `dist` is older than any core source file. **So these numbers say how the merged code behaves, and
 say nothing about how any currently-installed runtime behaves.** The two are genuinely different on
-this host today: `cotal` on `PATH` is backed by an installed `cotal-ai@0.17.0` whose shipped
-`@cotal-ai/connector-core` `dist/tool-specs.js` contains **zero** occurrences of `cotal_disconnect`
-or `cotal_connect`. A reader who takes these as runtime claims would be reading them about code that
-does not serve calls here.
+this host today, and **in two different ways at two different versions**:
+
+| artifact | version | serves | `cotal_disconnect` / `cotal_connect` |
+| --- | --- | --- | --- |
+| `cotal` on `PATH` (`~/.local/share/cotal`) | 0.17.0 | anything shelled out to the CLI | 0 / 0 |
+| `…/connector-claude-code/dist/mcp.cjs` | **0.16.0** | **the `cotal_*` MCP tools an agent actually calls** | 0 / 0 |
+
+**0.16.0 is the one that matters for this change**, because connection control is reached through MCP
+tools rather than through the CLI. A reader who takes the results above as runtime claims would be
+reading them about code that does not serve calls here. (Not everything on this box is stale — the
+supervisor runs from the checkout — so this is a **per-call-path** statement, not a blanket one.)
 
 - `connection-control`: **45 passed / 0 failed / 0 VOID**, including the authed arm.
 - `connection-lifecycle`: **48 / 0**. `request-strand` and the start-leak probe driven and green.
@@ -131,12 +138,15 @@ does not serve calls here.
 
 1. **The live E2E half is BLOCKED, not skipped.** A user team from outside the build passed the docs
    half (and found a real defect while doing it: `docs/manifest.md` gave an exhaustive-looking
-   capability list that omitted `connection`). The live half cannot run because **the installed
-   build predates the feature** — `grep -c cotal_disconnect` over the shipped
-   `@cotal-ai/connector-core@0.17.0` `dist/tool-specs.js` is `0`. A seat can hold
-   `COTAL_CAPABILITIES=connection` and the card will advertise it while the running build has no way
-   to honour it. That is a **version-skew hazard**, not a defect in this change. The four unrun live
-   checks are named in `.meshctl-measurement/FINDING-e2e-blocked-by-skew.md`.
+   capability list that omitted `connection`). The live half cannot run because **the build serving
+   the seat's tools predates the feature**: the artifact named in the seat's own `--mcp-config` is
+   `@cotal-ai/connector-claude-code@0.16.0` `dist/mcp.cjs`, built `2026-08-13 22:58Z`, and its
+   `cotal_disconnect` and `cotal_connect` counts are both `0`. A seat can hold
+   `COTAL_CAPABILITIES=connection` and the card will advertise it while the build serving it has no
+   way to honour it. That is a **version-skew hazard**, not a defect in this change. The four unrun
+   live checks are named in `.meshctl-measurement/FINDING-e2e-blocked-by-skew.md`, along with a
+   correction: that finding originally cited the CLI's `connector-core@0.17.0` rather than the
+   artifact that actually served the seat. Same zero, wrong subject — corrected in place.
 2. **The most recent suite re-drive did not capture an observed exit code**, and its log is
    tail-only. Both faults are recorded in the run file itself rather than left to be assumed away.
 
