@@ -206,6 +206,21 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  process.stderr.write(`[cotal-connector] fatal: ${(e as Error).stack ?? String(e)}\n`);
+  // Order matters, and the reason is `connector-codex/src/host-main.ts`'s, not a new one: the LAST
+  // line is what a detached operator sees, because the manager reports a failed launch as
+  // "<name> exited on launch - last output: <last line>" (`manager.ts:3928`) and then reaps the
+  // agent. Ending on the stack handed them `at …/mcp.js:1234` — a frame, which is ALWAYS a path —
+  // when the actual cause is something they can act on. So: stack first for whoever reads the whole
+  // log, the cause LAST for whoever gets one line.
+  //
+  // NOT A FIX FOR THE WIRE HOP, and it must not be read as one. `tail` travels back in a control
+  // reply, and this only stops it being a frame BY CONSTRUCTION; a cause message can still contain
+  // a path — `ENOENT: no such file or directory, open '/…'` is the common case. This turns a
+  // certainty into a probability. Bounding what `tail` may carry, where it enters the reply, is the
+  // actual close and is not this change.
+  const err = e as Error;
+  const stack = err.stack?.split("\n").slice(1).join("\n");
+  if (stack?.trim()) process.stderr.write(`${stack}\n`);
+  process.stderr.write(`[cotal-connector] fatal: ${err.message || String(e)}\n`);
   process.exit(1);
 });

@@ -165,6 +165,17 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  log(`fatal: ${(e as Error).stack ?? String(e)}`);
+  // Same ordering, same reason, and it is `connector-codex/src/host-main.ts`'s reason rather than a
+  // new one: the LAST line is what a detached operator sees — the manager reports a failed launch
+  // as "<name> exited on launch - last output: <last line>" (`manager.ts:3928`) and then reaps the
+  // agent. Ending on the stack handed them a frame, which is ALWAYS a path, instead of the cause.
+  //
+  // NOT A FIX FOR THE WIRE HOP. `tail` travels back in a control reply; this only stops it being a
+  // frame by construction. A cause message can still carry a path (`ENOENT: … open '/…'`), so this
+  // converts a certainty into a probability. Bounding `tail` where it enters the reply is the close.
+  const err = e as Error;
+  const stack = err.stack?.split("\n").slice(1).join("\n");
+  if (stack?.trim()) log(stack);
+  log(`fatal: ${err.message || String(e)}`);
   process.exit(1);
 });
