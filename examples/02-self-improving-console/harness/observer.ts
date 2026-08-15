@@ -9,6 +9,21 @@
  */
 import { appendFileSync } from "node:fs";
 import { CotalEndpoint, DEFAULT_SERVER, deliveryOf, partsToText, type CotalMessage } from "@cotal-ai/core";
+// Imported for its REGISTRATION SIDE EFFECT, which is why there is no binding: connector-core
+// registers the `ag-ui.frame` part renderer into core's Registry on import, and `partsToText` below
+// resolves renderers out of that same Registry.
+//
+// **WITHOUT THIS LINE THE TRANSCRIPT RECORDS A MARKER WHERE THE CONTENT SHOULD BE.** An AG-UI frame
+// carries no text part by design, so `rendered` emitted `[unrenderable part kind "ag-ui.frame" …]`
+// for every frame on the mesh — and `evaluate.ts` measures this file's output, so the run was being
+// graded on a transcript that had replaced the agent's actual work with a placeholder. That is the
+// non-silence rule failing at the one surface whose entire job is not to lose anything.
+//
+// An example is a COMPOSITION ROOT, which is the tier allowed to do this: `AGENTS.md` has
+// extensions self-register on import and a composition root import the surfaces it wants. The same
+// import in `implementations/*` would be the dependency inversion the guide exists to prevent —
+// which is exactly why the `events.*` filter is NOT closed here (see below).
+import "@cotal-ai/connector-core";
 
 const space = process.env.COTAL_SPACE || "console";
 const server = process.env.COTAL_SERVERS || DEFAULT_SERVER;
@@ -44,6 +59,22 @@ const out = process.env.TRANSCRIPT || "transcript.jsonl";
  *
  * **So this change is NON-SILENCE work and claims nothing more.** It does not advance frame
  * rendering and must not be read as doing so.
+ *
+ * **THAT PARAGRAPH IS NOW HALF-SUPERSEDED, AND THE HALF THAT SURVIVES IS THE IMPORTANT ONE.**
+ * Adopting `partsToText` was necessary and was not sufficient: this file resolved renderers out of
+ * core's Registry while importing nothing that REGISTERED one, so every AG-UI frame rendered as
+ * `[unrenderable part kind "ag-ui.frame" …]`. *A shared renderer reaches a surface only if the
+ * surface also loads the providers* — adoption and registration are two conditions and only the
+ * first was met here. The side-effect import at the top fixes it.
+ *
+ * **The `events.*` filter is STILL NOT DONE, and it is blocked rather than pending.** The channel
+ * name is built by `eventChannel()` in `connector-core`, and `packages/core/src/connector.ts` states
+ * the naming convention is the connector's and deliberately not the wire standard's. This file may
+ * reach it — an example is a composition root. `implementations/cli` and `implementations/web`
+ * depend on core + workspace ONLY and may not, so the filter cannot be closed the same way on the
+ * surfaces that matter most. Reported as a plan defect; no prefix is hardcoded here to make a cell
+ * go green, because doing so would spread a convention core disclaims into a tier that must not
+ * know it.
  *
  * `text` above stays TEXT-ONLY on purpose, and that is not an oversight: `replay.ts` republishes
  * this exact field as message content, so folding markers into it would replay
