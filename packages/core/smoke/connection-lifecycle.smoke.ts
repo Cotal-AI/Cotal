@@ -143,7 +143,8 @@ const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => 
 const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e",
                   "D2a", "D2b", "D2c", "D2d", "D2e", "D2f", "D2g", "D2h", "D2i", "D2j", "D2k",
                   "D3a", "D3b", "D3c", "D3d", "D3e", "D3f", "D3g", "D3h", "D3i", "D3j", "D3k", "D3l", "D3m",
-                  "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f"];
+                  "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f",
+                  "D5a", "D5b", "D5-ctl", "D5c", "D5d", "D5-ctl2"];
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
  *  connection that has since been closed); `num_connections` is CURRENT. The pair is what
@@ -606,6 +607,67 @@ try {
     { first: r4ok, second: r4again });
   armCheck("ARM 4", "D4f CONTROL: the broker now shows a live connection (so D4a could have failed)",
     (await varz()).current > 0, await varz());
+
+  // ══ ARM 5 — TWO REFUSALS THIS REPO PRODUCES AND NO SUITE NAMED ═══════════════════════════════
+  // `in-flight-request` and `transition-unconfirmed` are in the endpoint's vocabulary, are reachable
+  // on the disconnect path, and were asserted by nothing anywhere in the tree. A refusal nothing
+  // names can be renamed, widened to swallow a neighbouring condition, or replaced by a generic
+  // error, and every suite stays green — which is the same defect this arm's neighbours were
+  // written to close, one vocabulary entry over.
+  console.log("\n=== ARM 5: in-flight-request / transition-unconfirmed ===");
+  const e = d; // the ARM 4 subject, genuinely connected — established by D4d/D4e, not assumed here
+  precondition("ARM 5", "the subject is connected and not mid-transition, so BOTH arms can differ",
+    (e as any).nc !== undefined && (e as any).transitionInFlight !== true && e.isSelfDisconnected() === false,
+    { hasNc: (e as any).nc !== undefined, inFlight: (e as any).transitionInFlight, self: e.isSelfDisconnected() });
+
+  // ── D5a/D5b — in-flight-request ──────────────────────────────────────────────────────────────
+  // ⚠ FIXTURE-BUILT INPUT, STATED RATHER THAN HIDDEN: `pendingRequests` is a Set of rejector
+  // functions registered for the lifetime of a control-plane request, and the entry here is planted
+  // rather than produced by a real unanswered one — this fixture has no delivery daemon to leave a
+  // request outstanding against, so a genuine call returns NoResponders instead of hanging.
+  // SO THIS ARM PROVES: the endpoint refuses on that condition and names it correctly. IT DOES NOT
+  // PROVE: that a real request path populates the set. Separate claims; only the first is made, and
+  // the second is named as a residual rather than implied by the first passing.
+  const pending: Set<(reason: Error) => void> = (e as any).pendingRequests;
+  const planted = (_reason: Error) => { /* never settled; removed by this arm, not by a reply */ };
+  pending.add(planted);
+  const d5 = await e.disconnect("arm5-inflight");
+  armCheck("ARM 5", "D5a a disconnect with a reply still outstanding refuses as in-flight-request",
+    d5.outcome === "refused" && (d5 as any).reason === "in-flight-request", d5);
+  armCheck("ARM 5", "D5b and it says how many, so the caller can tell 'retry shortly' from 'something is wedged'",
+    d5.outcome === "refused" && /1 request\(s\)/.test((d5 as any).detail), d5);
+  // The latch is taken BEFORE the inspection, so the refusal leaves it set. Clearing it here is
+  // fixture teardown, not part of the assertion — without it every later cell would answer
+  // `transition-in-progress` and the arm would prove only that it had wedged itself.
+  pending.delete(planted);
+  (e as any).transitionInFlight = false;
+  (e as any).admissionClosed = false;
+  const d5ctl = await e.disconnect("arm5-inflight-control");
+  armCheck("ARM 5", "D5-ctl CONTROL: with nothing outstanding the SAME call succeeds (so D5a's refusal was the condition, not the path)",
+    d5ctl.outcome === "disconnected", d5ctl);
+
+  // ── D5c/D5d — transition-unconfirmed ─────────────────────────────────────────────────────────
+  // The branch under test is the QUIET one: the presence write neither throws nor returns a broker
+  // revision. A departure that cannot be confirmed must refuse and STAY CONNECTED rather than go
+  // dark silently — going dark on an unconfirmed write is precisely how a peer's roster ends up
+  // showing a live agent as departed.
+  const backForD5 = await e.connect();
+  precondition("ARM 5", "the subject is back on the mesh, so the unconfirmed branch is reachable at all",
+    backForD5.outcome === "connected", backForD5);
+  const realPublish = (e as any).publishPresence.bind(e);
+  (e as any).publishPresence = async () => undefined; // stored-or-not is exactly what is unknown
+  const d5u = await e.disconnect("arm5-unconfirmed");
+  armCheck("ARM 5", "D5c an unconfirmable departure refuses as transition-unconfirmed, not as a success",
+    d5u.outcome === "refused" && (d5u as any).reason === "transition-unconfirmed", d5u);
+  armCheck("ARM 5", "D5d and it stays CONNECTED rather than going dark on an unconfirmed write",
+    (e as any).nc !== undefined && e.isSelfDisconnected() === false,
+    { hasNc: (e as any).nc !== undefined, self: e.isSelfDisconnected() });
+  (e as any).publishPresence = realPublish;
+  (e as any).transitionInFlight = false;
+  (e as any).admissionClosed = false;
+  const d5uctl = await e.disconnect("arm5-unconfirmed-control");
+  armCheck("ARM 5", "D5-ctl2 CONTROL: with the write confirming again the SAME call succeeds (so D5c's arms can differ)",
+    d5uctl.outcome === "disconnected", d5uctl);
 
   // VOID is reported separately and never folded into either column. A voided arm is not a pass
   // (nothing was proven) and not a failure (nothing was disproven) — it is a run that did not
