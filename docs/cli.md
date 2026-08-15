@@ -856,7 +856,9 @@ connect fails until they exist. `--provision` performs that pre-create in the sa
 provisioner cred is minted from the space's trust material, used, and dropped), so a long-running
 client you start yourself can receive DMs and role anycasts like a spawned seat. The command prints
 the identity's principal (its wire id) and lifecycle uid; a consuming client passes that uid as its
-`lifecycleUid`. Agent profile only; an open mesh needs none of this (peers self-create there).
+`lifecycleUid`. Agent profile only; an open mesh needs none of this (peers self-create there). The
+mesh it provisions on must be the one this folder's auth is for - same space and same account key -
+so `--provision` can never quietly mint under another root's trust material.
 
 ## login, logout
 
