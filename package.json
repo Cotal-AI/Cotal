@@ -301,6 +301,7 @@
     "smoke:liveness-snapshot": "tsx bin/smoke/liveness-snapshot.smoke.ts",
     "smoke:manager-claim": "tsx bin/smoke/manager-claim.smoke.ts",
     "smoke:delivery-guard": "tsx bin/smoke/delivery-guard.smoke.ts",
+    "smoke:delivery-row": "tsx bin/smoke/delivery-row.smoke.ts",
     "smoke:ready-card": "tsx bin/smoke/ready-card.smoke.ts",
     "smoke:gate-inventory": "tsx bin/smoke/gate-inventory.smoke.ts",
     "smoke:inst-route-enforce": "tsx packages/core/smoke/inst-route-enforce.smoke.ts",

@@ -1,0 +1,25 @@
+$ tsx bin/smoke/delivery-row.smoke.ts
+
+delivery-row — the card's delivery row, constructed
+
+  ✓ no-auth: a failed mint does NOT probe and does NOT claim anything about the daemon
+  ✓ no-auth: it says so explicitly — 'this surface was never able to ask'
+  ✓ no-auth: and it does NOT render a tick
+  ✓ serving: an affirmative round-trip inside a current observation renders ✓
+  ✓ serving: and the row carries the health that entitled it
+  ✓ no-responder: renders ? and NOT ✓ — the incident's own signature never gets a tick
+  ✓ refused: a DENIED read renders ? and is NOT collapsed into an absence
+  ✓ refused: the row preserves the condition by name, so a consumer can tell it from no-responder
+  ✓ no-responder keeps ITS name too — the two refusals are distinguishable at the row
+  ✓ no-lease: renders ?
+  ✓ the state set is NON-EMPTY, so the .every assertions below are not vacuous
+  ✓ EVERY row that renders ✓ is one whose health is serving:true — no other path earns a tick
+  ✓ and at least one row DOES render ✓ — otherwise the property above holds vacuously
+  ✓ every NON-serving state renders ?, none of them dim or blank
+  ✓ no rendering contains a bare 'unknown'
+  ✓ every rendering is non-empty
+  ✓ a SERVING observation older than the card's freshness bound LOSES its ✓
+  ✓ and the row says the reading is not current rather than hiding it
+
+DELIVERY-ROW SMOKE OK ✅  (18 passed, 0 failed)
+
