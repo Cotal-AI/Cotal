@@ -353,12 +353,22 @@ async function main() {
   const stopping = A.stop();
   check("S1a the condition under test is actually established",
     (A as any).stopping === true);
+  // ⚠ ASSERT THE SITE, NOT ONLY THE TAG — FOUND BY MUTATION, NOT BY REVIEW.
+  // These cells first asserted `[shutting-down]` alone and SURVIVED the removal of the connector's
+  // guard: the ENDPOINT produces the same tag from `if (this.stopped)`, so the refusal still
+  // appeared and the cell still passed while the code under test was gone. Two sites, one tag —
+  // and the connector's exists precisely because it fires EARLIER, on a condition the endpoint
+  // cannot see ("the agent knows about session shutdown and the endpoint does not").
+  // The detail text is what tells them apart, so that is what is asserted.
+  const AGENT_SD = "its mesh connection is going away anyway";   // the connector's site
+  const EP_SD = "this endpoint is stopped";                       // the endpoint's fallback
   const sd1 = await run("cotal_disconnect", A, cfgA, {});
-  check("S1b disconnect during teardown refuses as [shutting-down]",
-    sd1.isError === true && sd1.text.includes("[shutting-down]"), sd1.text);
+  check("S1b disconnect during teardown refuses as [shutting-down] FROM THE SESSION GUARD, not the endpoint's fallback",
+    sd1.isError === true && sd1.text.includes("[shutting-down]") && sd1.text.includes(AGENT_SD) && !sd1.text.includes(EP_SD), sd1.text);
   const sc1 = await run("cotal_connect", A, cfgA, {});
-  check("S1c connect during teardown refuses as [shutting-down], NOT [already-connected]",
-    sc1.isError === true && sc1.text.includes("[shutting-down]") && !sc1.text.includes("[already-connected]"), sc1.text);
+  check("S1c connect during teardown refuses as [shutting-down] from the same guard, NOT [already-connected]",
+    sc1.isError === true && sc1.text.includes("[shutting-down]") && !sc1.text.includes("[already-connected]")
+      && sc1.text.includes("start a new session instead"), sc1.text);
   const sr1 = await run("cotal_reconnect", A, cfgA, {});
   // NOTE, and it is a finding rather than a preference: `agent.reconnect()` carries a `reason` field
   // added so a caller could branch instead of matching English, and `cotal_reconnect`'s runner
