@@ -619,6 +619,30 @@ for (const [label, file, header] of [
   check(`${label} — the extracted onMessage is NOT inside a comment`,
     isInsideComment(src, src.indexOf(header)) === false);
 }
+// ⚠️ THE SAME HOLE EXISTED ONE LAYER DOWN, AND THE FIRST VERSION OF THIS SECTION MISSED IT.
+// The guards above cover the two brace-extracted `onMessage` headers. The two BACKFILL ingresses
+// are matched by REGEX against the raw source, and `exec` is just as happy to match inside a
+// comment — so the remedy for comment-grading shipped with the identical defect it was written to
+// fix. MEASURED at the commit that added those guards: a commented SAFE copy of the app backfill
+// statement placed above a REGRESSED real one gave `node --check` valid and **101 checks passed,
+// rc=0**, with the shipped backfill failing open. Non-equivalence proved separately — SAFE leaves
+// `msg.channel` undefined, REGRESSED preserves `"victim-channel"` on a backfilled DM.
+//
+// A REMEDY IS NOT EXEMPT FROM THE CLASS IT REMEDIES. That is the whole lesson of this block.
+for (const [label, file, re] of [
+  ["app.js backfill", "../src/web/app.js", BACKFILL_APP],
+  ["graph.js backfill", "../src/web/graph.js", BACKFILL_GRAPH],
+] as const) {
+  const src = read(file);
+  const all = [...src.matchAll(new RegExp(re.source, "g"))];
+  check(`${label} — the pattern matches EXACTLY ONE site (a commented decoy copy makes it 2)`,
+    all.length === 1, { n: all.length });
+  // `all.length > 0 &&` on purpose: an EMPTY match set must FAIL this cell, not satisfy it
+  // vacuously the way a `.every()` over nothing would.
+  check(`${label} — the matched statement is NOT inside a comment`,
+    all.length > 0 && isInsideComment(src, all[0].index!) === false, { n: all.length });
+}
+
 // Decoy controls. Without these, both cells above would pass on a checker that can never fire.
 const realApp = read("../src/web/app.js");
 const decoyed = `/*\n${extractFunction(realApp, APP_ONMESSAGE)}\n*/\n${realApp}`;
@@ -631,5 +655,13 @@ check("the comment check DETECTS a header sitting behind a line comment (positiv
 // And it must not cry wolf on the real file, or the cells above would be unfalsifiable.
 check("the comment check does NOT fire on the genuine, uncommented declaration (negative control)",
   isInsideComment(realApp, realApp.indexOf(APP_ONMESSAGE)) === false);
+// And the same pair of controls for the BACKFILL guard, so its two cells cannot pass vacuously
+// either — the omission that let the survivor above exist in the first place.
+const bfDecoyed = realApp.replace(BACKFILL_APP, (m) => `// ${m}\n  ${m}`);
+check("the backfill uniqueness check DETECTS a commented decoy copy (positive control)",
+  [...bfDecoyed.matchAll(new RegExp(BACKFILL_APP.source, "g"))].length === 2,
+  { n: [...bfDecoyed.matchAll(new RegExp(BACKFILL_APP.source, "g"))].length });
+check("the backfill comment check DETECTS a match sitting behind a line comment (positive control)",
+  isInsideComment(bfDecoyed, bfDecoyed.search(BACKFILL_APP)) === true);
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
