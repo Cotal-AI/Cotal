@@ -5,6 +5,7 @@ export * from "./launch.js";
 export * from "./durable-source.js";
 export * from "./event-wal.js";
 export * from "./agui.js";
+export * from "./agui-holder.js";
 export * from "./tool-specs.js";
 export * from "./orientation.js";
 export * from "./docs.js";
