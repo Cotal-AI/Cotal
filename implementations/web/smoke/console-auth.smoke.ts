@@ -23,7 +23,9 @@
  * and needs a browser. That boundary is stated rather than left for a reader to assume.
  */
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { closeSync, fchmodSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
@@ -70,6 +72,18 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   const forged = gate.check(req({ cookie: "cotal_web_session=not-a-real-session" }) as never, q());
   check("an unknown session cookie is refused, not trusted for looking like one",
     forged !== undefined && "refuse" in forged && forged.refuse === UNAUTHENTICATED, forged);
+
+  // …and a SAME-LENGTH forgery, derived from the real session. The literal above is SHORTER than a
+  // minted session, so `sessions.has(session)` could be replaced by a length check and survive:
+  // measured, that mutant went 68/68 green while authenticating any cookie of the right size.
+  const nearMiss = `${session.slice(0, -1)}${session.slice(-1) === "A" ? "B" : "A"}`;
+  check("NON-VACUITY: the near-miss session is the same LENGTH as a real one and a different VALUE",
+    nearMiss.length === session.length && nearMiss !== session, { len: nearMiss.length });
+  check("a same-length session cookie differing in ONE character is refused (membership, not shape)",
+    (() => {
+      const r = gate.check(req({ cookie: `cotal_web_session=${nearMiss}` }) as never, q());
+      return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
+    })());
 }
 
 // ── 2. ORIGIN ───────────────────────────────────────────────────────────────────────────────────
@@ -139,15 +153,21 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   // LENGTH — so `secretEquals` reduced to a length comparison authenticated everything and all 32
   // cells stayed green. A comparison is only shown to compare CONTENT by a negative that matches in
   // length and differs in one byte.
-  const nonceOneOff = `${gate.readinessNonce.slice(0, -1)}${gate.readinessNonce.slice(-1) === "A" ? "B" : "A"}`;
-  check("NON-VACUITY: the one-character-changed nonce is the same LENGTH and a different VALUE",
-    nonceOneOff.length === gate.readinessNonce.length && nonceOneOff !== gate.readinessNonce,
-    { len: nonceOneOff.length });
-  check("a same-length readiness nonce differing in ONE character is refused (content, not length)",
-    (() => {
-      const r = gate.check(req({ "x-cotal-readiness": nonceOneOff }) as never, q());
-      return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
-    })());
+  // EVERY POSITION, not just the last. A negative that only ever changes the FINAL character leaves
+  // `length + final byte` equality passing: measured, that mutant survived 68/68 while accepting any
+  // secret sharing one byte. One-off negatives must sweep first, middle and last.
+  const flip = (s: string, i: number) => `${s.slice(0, i)}${s[i] === "A" ? "B" : "A"}${s.slice(i + 1)}`;
+  const positions = (s: string) => [0, Math.floor(s.length / 2), s.length - 1];
+  for (const i of positions(gate.readinessNonce)) {
+    const nonceOneOff = flip(gate.readinessNonce, i);
+    check(`NON-VACUITY: the nonce differing at position ${i} is the same LENGTH and a different VALUE`,
+      nonceOneOff.length === gate.readinessNonce.length && nonceOneOff !== gate.readinessNonce, { i });
+    check(`a same-length readiness nonce differing at position ${i} is refused (content, not length, not one byte)`,
+      (() => {
+        const r = gate.check(req({ "x-cotal-readiness": nonceOneOff }) as never, q());
+        return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
+      })());
+  }
   check("the readiness nonce does NOT consume the launch token (the parent polls; the browser still needs it)",
     (() => {
       gate.check(req({ "x-cotal-readiness": gate.readinessNonce }) as never, q());
@@ -161,10 +181,15 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   // which never reaches the comparison because the token is already undefined by then.
   {
     const g5 = makeAuthGate(PORT);
-    const tokenOneOff = `${g5.launchToken.slice(0, -1)}${g5.launchToken.slice(-1) === "A" ? "B" : "A"}`;
-    check("NON-VACUITY: the one-character-changed launch token is the same LENGTH and a different VALUE",
-      tokenOneOff.length === g5.launchToken.length && tokenOneOff !== g5.launchToken, { len: tokenOneOff.length });
-    const wrong = g5.check(req() as never, q(`k=${tokenOneOff}`));
+    for (const i of positions(g5.launchToken)) {
+      const tokenOneOff = flip(g5.launchToken, i);
+      check(`NON-VACUITY: the launch token differing at position ${i} is the same LENGTH and a different VALUE`,
+        tokenOneOff.length === g5.launchToken.length && tokenOneOff !== g5.launchToken, { i });
+      const wrongAt = g5.check(req() as never, q(`k=${tokenOneOff}`));
+      check(`a same-length WRONG launch token differing at position ${i} is refused as \`unauthenticated\``,
+        wrongAt !== undefined && "refuse" in wrongAt && wrongAt.refuse === UNAUTHENTICATED, wrongAt);
+    }
+    const wrong = g5.check(req() as never, q(`k=${flip(g5.launchToken, 0)}`));
     check("a same-length WRONG launch token is refused as `unauthenticated`, not exchanged",
       wrong !== undefined && "refuse" in wrong && wrong.refuse === UNAUTHENTICATED, wrong);
     check("…and a wrong token does NOT burn the real one (a failed guess must not cost the operator their link)",
@@ -298,20 +323,66 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
 // ── 5. THE GATE RUNS BEFORE EVERY ROUTE ─────────────────────────────────────────────────────────
 // Positional, over the shipped source: the first route must come AFTER the gate. A gate placed below
 // a route leaves that route unauthenticated, and nothing in its own behaviour would say so.
-// Against EVERY route dispatch, not one named route. Measured: keying this on `/feed` alone let
-// `/api/meta` be moved above the gate with all 32 cells still green — the cell's SENTENCE said "the
-// first route" and its ASSERTION said "/feed", and the next route added above the gate inherits no
-// protection and nothing says so.
+// STRUCTURAL, not an enumeration of route syntax. Two earlier versions of this cell were beaten by
+// the same move: the first compared the gate against ONE named route (`/feed`), and the second
+// against every `if (path === "` / `if (path.startsWith("` dispatch — which silently omitted the
+// SHIPPED STATIC DISPATCH (`PAGE[path]` then `if (file)`), so moving that block above the gate left
+// `/`, `/graph` and every asset unauthenticated with all 68 cells green.
+//
+// A list of route shapes can always omit one, and the omission is invisible. So this asserts the
+// property directly instead: between parsing the path/query and the gate there is NOTHING —
+// no statement of any syntax, present or future. Comments and blank lines are allowed; code is not.
 const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
-const routeAts = [
-  ...webTs.matchAll(/if \(path === "/g),
-  ...webTs.matchAll(/if \(path\.startsWith\("/g),
-].map((m) => m.index as number);
-// `.every()` over an empty set passes while proving nothing, so the count is asserted FIRST and the
-// cell below is only meaningful because of it.
-check("NON-VACUITY: the gate position and MORE THAN ONE route dispatch were located in the shipped source",
-  gateAt !== -1 && routeAts.length > 1, { gateAt, routes: routeAts.length });
-check("the gate runs BEFORE EVERY route dispatch (any route above it would be permanently unauthenticated)",
-  routeAts.every((at) => gateAt < at), { gateAt, earliestRoute: Math.min(...routeAts), routes: routeAts.length });
+const queryAt = webTs.indexOf('const query = new URLSearchParams(');
+check("NON-VACUITY: both anchors were located in the shipped source", gateAt !== -1 && queryAt !== -1,
+  { gateAt, queryAt });
+const between = webTs
+  .slice(webTs.indexOf("\n", queryAt) + 1, gateAt)
+  .split("\n")
+  .map((l) => l.trim())
+  .filter((l) => l !== "" && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"));
+check("the gate is the FIRST executable statement after the path/query parse — nothing dispatches above it",
+  between.length === 0, { between });
+
+// ── 6. THE SESSION FILE'S MODE, DRIVEN AGAINST A REAL FILE ──────────────────────────────────────
+// This file holds the launch URL and the readiness nonce, so its mode is a credential boundary. No
+// cell reached it at all: deleting the descriptor chmod, or writing 0644, went 68/68 green. And the
+// bug it guards is specifically the STALE file — `mode:` on writeFileSync applies at CREATION only,
+// so the interesting case is a pre-existing permissive file, not a fresh one.
+{
+  const writeBlock = webTs.slice(
+    webTs.indexOf('    const sfd = openSync(sessionPath, "w", 0o600);'),
+    webTs.indexOf("    process.once(\"exit\", () => rmSync(sessionPath, { force: true }));"),
+  );
+  check("the session-file write block was lifted out of the shipped source", writeBlock.includes("openSync("),
+    { len: writeBlock.length });
+  check("CONTROL: a block that is not in the file lifts nothing",
+    webTs.indexOf('    const sfd = openSyncNothing(') === -1);
+
+  const dir = mkdtempSync(join(tmpdir(), "cotal-web-session-"));
+  const sessionPath = join(dir, "web.session");
+  // PRE-CREATE IT PERMISSIVE. This is the whole point: a fresh file would pass even with the chmod
+  // deleted, so a cell that only ever writes a new file proves nothing about the defect.
+  writeFileSync(sessionPath, "stale", { mode: 0o644 });
+  check("NON-VACUITY: the stale file really is permissive before the shipped block runs",
+    (statSync(sessionPath).mode & 0o777) === 0o644, (statSync(sessionPath).mode & 0o777).toString(8));
+
+  const source = ts.transpileModule(`globalThis.__write = () => { ${writeBlock} };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const ctx: Record<string, unknown> = {
+    openSync, fchmodSync, writeFileSync, closeSync, JSON,
+    sessionPath, launchUrl: "http://127.0.0.1:7799/?k=x", gate: { readinessNonce: "n" },
+    globalThis: undefined, console,
+  };
+  ctx.globalThis = ctx;
+  runInContext(source, createContext(ctx), { filename: "web.ts (session write)" });
+  (ctx.__write as () => void)();
+
+  check("the shipped write NARROWS a stale permissive session file to 0600 (mode is enforced on every write, not only at creation)",
+    (statSync(sessionPath).mode & 0o777) === 0o600, (statSync(sessionPath).mode & 0o777).toString(8));
+  check("…and the file still holds the launch URL it was asked to write",
+    JSON.parse(readFileSync(sessionPath, "utf8")).launchUrl === "http://127.0.0.1:7799/?k=x");
+  rmSync(dir, { recursive: true, force: true });
+}
 
 console.log(`\nCONSOLE AUTH SMOKE OK ✅  (${pass} passed, 0 failed)`);
