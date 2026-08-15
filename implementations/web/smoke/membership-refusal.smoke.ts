@@ -10,9 +10,11 @@
  * not find out). The operator's own viewer reported traffic-only against a mesh that had a feed and
  * nothing on the page could have revealed the difference.
  *
- * Two silences fed the same display and both are covered here: the HTTP route, and the browser's
- * own `.catch(() => ({members: []}))` at boot, which manufactured the same empty snapshot when the
- * fetch itself failed.
+ * FOUR silences fed the same display, and each has cells here: the HTTP route; the two server-sent-
+ * event paths, which swallowed the rejection with `.catch(() => {})`; and the browser's own
+ * `.catch(() => ({members: []}))` at boot, which manufactured the same empty snapshot when the fetch
+ * itself failed. This sentence said "two" while three of the four were uncovered — see the passes
+ * recorded at the end of this comment.
  *
  * WHAT IS DRIVEN. The shipped statements are EXTRACTED from the files that ship them and EXECUTED —
  * the route block and `json` out of `web.ts`, the pill out of `graph.js`. Neither file can be
@@ -42,8 +44,16 @@
  * `fetch` as something that always resolves, so the shipped `.catch` arm — the one for no answer at
  * all — was still never executed, and restoring `{members: []}` there survived all 31 cells. The
  * harness now supplies the fetch. **A stub that cannot fail cannot test a failure path, and it looks
- * exactly like one that can.** Three passes, three variants of the same mistake: the fixture reached
- * one step less far than the sentence describing it.
+ * exactly like one that can.**
+ *
+ * AND A FOURTH, at the wire. The event cells stubbed `send` and `broadcast` and asserted the event
+ * NAME handed to the stub. A `send` that returned early for this one event then left both refusal
+ * paths calling the right helper with the right token and writing NOTHING, and all 32 cells stayed
+ * green. **Asserting what a function was CALLED WITH is not asserting what it DID.** The cells now
+ * drive the shipped encoder and broadcaster over a recording response and assert the bytes.
+ *
+ * Four passes, four variants of one mistake: the fixture reached one step less far than the sentence
+ * describing it. Each was found by a reader who could not run the suite at all.
  */
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -271,54 +281,73 @@ check("M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only' (no an
   (await bootPill(async () => { throw new Error("network down"); })) === "membership: unreadable",
   await bootPill(async () => { throw new Error("network down"); }));
 
-/** Drive a SHIPPED server-sent-event statement against a rejecting read and record the event NAME
- *  it emits — the name is the contract the browser listens on, so the name is what is asserted. */
-const sseEventName = async (stmt: string): Promise<string> => {
-  let emitted = "";
+const sseSend = liftStmt(webTs, "const send = (res: ServerResponse", ";");
+const sseBroadcast = lift(webTs, "const broadcast = (event: string");
+check("the SSE encoder was lifted out of web.ts", Boolean(sseSend), { len: sseSend?.length });
+check("the SSE broadcaster was lifted out of web.ts", Boolean(sseBroadcast), { len: sseBroadcast?.length });
+
+/** Drive a SHIPPED event statement against a rejecting read, THROUGH the shipped encoder and
+ *  broadcaster, and return the bytes a browser would actually receive.
+ *
+ *  An earlier version stubbed `send` and `broadcast` and asserted the event NAME handed to the stub.
+ *  That measured the argument, not the wire: a `send` that returned early for this one event left
+ *  both refusal paths calling the right helper with the right token and writing nothing, and every
+ *  cell stayed green. **Asserting what a function was CALLED WITH is not asserting what it DID.** */
+const sseWire = async (stmt: string): Promise<string> => {
+  let bytes = "";
+  const client = { writableEnded: false, write: (chunk: string) => { bytes += chunk; } };
   const source = ts.transpileModule(
-    `globalThis.__run = async () => { ${stmt}; };`,
+    `${sseSend};\n${sseBroadcast}\nglobalThis.__run = async () => { ${stmt}; };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const ctx: Record<string, unknown> = {
     ep: { readMembership: async () => { throw new Error("membership stream not found"); } },
-    broadcast: (event: string) => { emitted = event; },
-    send: (_res: unknown, event: string) => { emitted = event; },
-    res: { writableEnded: false },
+    clients: new Set([client]),
+    res: client,
     MEMBERSHIP_READ_FAILED,
     globalThis: undefined,
     console,
   };
   ctx.globalThis = ctx;
-  runInContext(source, createContext(ctx), { filename: "web.ts (sse)" });
-  // Awaited INSIDE, so no caller can read `emitted` before the rejection has settled. Reading it
+  runInContext(source, createContext(ctx), { filename: "web.ts (sse wire)" });
+  // Awaited INSIDE, so no caller can read the buffer before the rejection has settled. Reading it
   // synchronously would return "" for the fixed code as well — a cell that passes for M5 too.
   await (ctx.__run as () => Promise<void>)();
-  return emitted;
+  return bytes;
 };
 
-const pushName = await sseEventName(ssePush!);
-const seedName = await sseEventName(sseSeed!);
-check("M5: the SSE push emits a named event when the read rejects (a swallowed rejection emits none)",
-  pushName === MEMBERSHIP_READ_FAILED, { pushName });
+const pushBytes = await sseWire(ssePush!);
+const seedBytes = await sseWire(sseSeed!);
+const REFUSAL_LINE = `event: ${MEMBERSHIP_READ_FAILED}\n`;
+check("M5: the SSE push WRITES the refusal event to the client (not merely names it to a helper)",
+  pushBytes.includes(REFUSAL_LINE), { pushBytes });
 check("M5: the SSE seed does the same for a client that connects while the feed is broken",
-  seedName === MEMBERSHIP_READ_FAILED, { seedName });
-// The success case proves the harness can observe an emission at all, so the two cells above are
-// measuring the refusal rather than a stand-in that never fires.
-check("CONTROL: the same harness sees the SUCCESS event name, so an emission is observable here",
-  (await (async () => {
-    let seen = "";
-    const src = ts.transpileModule(`globalThis.__run = async () => { ${ssePush}; };`,
-      { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    const c: Record<string, unknown> = {
-      ep: { readMembership: async () => ({ members: [] }) },
-      broadcast: (event: string) => { seen = event; },
-      MEMBERSHIP_READ_FAILED, globalThis: undefined, console,
-    };
-    c.globalThis = c;
-    runInContext(src, createContext(c), { filename: "web.ts (sse control)" });
-    await (c.__run as () => Promise<void>)();
-    return seen;
-  })()) === "membership");
+  seedBytes.includes(REFUSAL_LINE), { seedBytes });
+check("M5: the refusal frame carries a reason for the operator to act on",
+  /data: \{"reason":"[^"]+"\}/.test(pushBytes), { pushBytes });
+// POSITIVE CONTROL, now on the wire too: the same harness, with a read that SUCCEEDS, must produce
+// the ordinary membership frame. Without it, a harness that wrote nothing at all would fail the two
+// cells above for a reason that has nothing to do with the code under test.
+const okBytes = await (async () => {
+  let bytes = "";
+  const client = { writableEnded: false, write: (chunk: string) => { bytes += chunk; } };
+  const src = ts.transpileModule(
+    `${sseSend};\n${sseBroadcast}\nglobalThis.__run = async () => { ${ssePush}; };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const c: Record<string, unknown> = {
+    ep: { readMembership: async () => ({ members: [] }) },
+    clients: new Set([client]), res: client,
+    MEMBERSHIP_READ_FAILED, globalThis: undefined, console,
+  };
+  c.globalThis = c;
+  runInContext(src, createContext(c), { filename: "web.ts (sse control)" });
+  await (c.__run as () => Promise<void>)();
+  return bytes;
+})();
+check("CONTROL: a SUCCESSFUL read writes the ordinary membership frame through the same encoder",
+  okBytes.includes("event: membership\n"), { okBytes });
+check("CONTROL: and that frame is NOT the refusal frame (the two are distinguishable on the wire)",
+  !okBytes.includes(REFUSAL_LINE));
 
 // ── The client listens on the name the server emits, and nothing checked that before ────────────
 // `graph.js` restates the literal rather than importing it (a classic script cannot import), so the
