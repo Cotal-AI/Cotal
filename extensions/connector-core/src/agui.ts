@@ -203,8 +203,28 @@ export const AGUI_FRAME_KIND = "ag-ui.frame";
  * consumer detect a gap rather than merely fail to notice one.
  *
  * **A frame carries no text part, by design.** That is why the renderers are a binding precondition
- * on the cutover rather than a follow-up: a viewer that does not understand this part shows
- * nothing, and an empty pane is indistinguishable from a correctly-empty one.
+ * on the cutover rather than a follow-up.
+ *
+ * **RE-DERIVED, because core changed underneath this sentence.** It used to end "a viewer that does
+ * not understand this part shows nothing, and an empty pane is indistinguishable from a
+ * correctly-empty one." That is now true of some surfaces and false of others, and the split is
+ * exactly which ones adopted core's shared `partsToText`:
+ *
+ *   - **3 ADOPTED IT** — `connector-core/src/agent.ts`, `cli/src/commands/join.ts`,
+ *     `cli/src/view/mesh-view.ts`. These now render a marker naming the kind.
+ *   - **4 DID NOT** — `implementations/web/src/web/app.js`, `.../graph.js`,
+ *     `examples/02-self-improving-console/harness/observer.ts`,
+ *     `examples/04-frontier-faces/tools/studio.mjs`. The two stringify-form copies still leave a
+ *     stray separator; the two filter-form ones still leave no trace at all.
+ *
+ * Measured on a real frame from `aguiFrame` below, placed between two text parts: the adopted
+ * renderer produced `"before  after"` before the core change and names the kind after it. **The
+ * worse half of that defect was never the missing frame — it was that `"before  after"` is a
+ * well-formed sentence with a silent hole in it, so it prompts no question at all.**
+ *
+ * **THE PRECONDITION IS UNCHANGED AND THE MARKER IS NOT A LOOPHOLE IN IT.** A named marker proves a
+ * frame ARRIVED; it does not display one. Cutting a connector over on the strength of it would
+ * still ship events nothing can render.
  */
 export interface AguiFrame {
   kind: typeof AGUI_FRAME_KIND;

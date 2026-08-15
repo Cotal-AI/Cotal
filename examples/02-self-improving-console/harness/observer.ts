@@ -22,20 +22,33 @@ const out = process.env.TRANSCRIPT || "transcript.jsonl";
  * future kind vanished from the transcript with nothing indicating a part had been discarded —
  * and `evaluate.ts` then measured a transcript that was quietly incomplete.
  *
- * **It is a DIFFERENT MECHANISM from the same defect in the four `bodyText`-shaped renderers**,
- * which stringify a missing `data` field to `undefined` and leave a stray separator behind. A
- * filter leaves no trace at all, and cannot be found by searching for the stringify call. That is
- * why the sweep for this has to be by OUTCOME — a part kind that reaches neither a reader nor an
- * error — rather than by expression.
+ * **It is a DIFFERENT MECHANISM from the same defect in the stringify-form renderers**, which
+ * stringify a missing `data` field and leave a stray separator behind. A filter leaves no trace at
+ * all, and cannot be found by searching for the stringify call. That is why the sweep for this has
+ * to be by OUTCOME — a part kind that reaches neither a reader nor an error — rather than by
+ * expression. The count lives in the census at the bottom of this comment and nowhere else, so it
+ * has one place to go stale instead of two that can disagree.
  *
  * The filter STAYS, because a function called `text` returning non-text would be a worse lie. What
  * changes is that it is no longer the only thing written: the record now carries `parts` verbatim,
  * so nothing is dropped and a reader can see exactly what this line does not cover.
  *
- * **DELIBERATELY NOT UNIFIED HERE.** The right fix is core's shared `partsToText`, which renders
- * `artifact` by name and exists on `origin/main` — but NOT on this branch, which is 157 commits
- * behind it. Hand-rolling an equivalent here would create a SIXTH copy of the expression whose
- * five existing copies are the defect being fixed. It unifies when this branch has that function.
+ * **DELIBERATELY NOT UNIFIED HERE — AND THE PRECONDITION THAT DEFERRED IT HAS SINCE FIRED.** This
+ * paragraph used to say the right fix was core's shared `partsToText`, absent here because the
+ * branch was 157 commits behind `origin/main`, and that it "unifies when this branch has that
+ * function". The branch has since merged `origin/main`, is 0 behind, and `partsToText` now names an
+ * unrenderable kind instead of stringifying it away. **A deferral whose stated trigger has fired is
+ * not a deferral any more; it is a stale note nobody is going to re-check.**
+ *
+ * It is still not unified here, and the honest reason is a DIFFERENT one, not the old one restated.
+ * This file is one of the three surfaces named in the AG-UI cutover's renderer precondition
+ * (`cotal console`, `implementations/web`, `examples/02`), and **ownership of that work is open.**
+ * Unifying this single surface would close the smallest third of that gate while leaving the other
+ * two — which reads as progress on the precondition and is not.
+ *
+ * Census re-derived at this tip rather than carried: of the seven surfaces, **3 adopted**
+ * `partsToText`, **2 keep a stringify-form copy** (`web/src/web/app.js`, `.../graph.js`) and **2 the
+ * filter form** (this file, `examples/04-frontier-faces/tools/studio.mjs`).
  */
 function text(msg: CotalMessage): string {
   return (msg.parts ?? [])
