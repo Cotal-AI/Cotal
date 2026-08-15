@@ -459,10 +459,19 @@ try {
       // too, so "the ghost is still cached" was satisfied by commands that had proved nothing. A
       // vacuous pass and a real pass looked identical.
       //
-      // So each iteration must first establish that it actually reached the guard — the error came
-      // back carrying the responder-answered marker, meaning an instance received and handled it —
-      // and only then is the cache meaningful. `notReached` is not a tolerance: it is red, because a
-      // command that cannot get there is a hole in the sweep and must be seen rather than absorbed.
+      // So each iteration must first establish that it actually reached the guard, and only then is
+      // the cache meaningful. `notReached` is not a tolerance: it is red, because a command that
+      // cannot get there is a hole in the sweep and must be seen rather than absorbed.
+      //
+      // WHAT THE MARKER PROVES, EXACTLY — narrower than an earlier draft of this comment claimed,
+      // which said the responder "received and handled it". It proves the published request drew an
+      // ATTRIBUTED REPLY from a responder, which is precisely the guard's own input and therefore
+      // exactly the right witness here. It does NOT prove the command executed or that any effect
+      // landed: an attributed reply can come from validation, authorization, admission, or a
+      // business refusal, and the schema-valid nonsense arguments below deliberately provoke the
+      // last of those. So this sweep grades the classifier-to-guard wiring across the vocabulary and
+      // nothing more. The `purge` cell above is the separate proof that a real destructive effect
+      // runs, and it is the only cell in this file that claims one.
       // Each command needs SCHEMA-VALID arguments or the envelope refuses it before it is ever
       // published — which is precisely how the first version passed vacuously: `{}` fails
       // `required` on all seven, so none of them left the client. The values are deliberately
