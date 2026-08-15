@@ -251,11 +251,31 @@ const BACKFILL_GRAPH = /if \(m[^)]*\) m\.[^;]*;/;
 // never from the payload, so the attacker controls only `msg.*` — and on `inst` the server sends no
 // channel at all, which is precisely the case a guarded overwrite fails open on.
 const VICTIM = "victim-channel";
-const HOSTILE_DM = { mode: "unicast", channel: undefined, msg: { id: "dm-1", channel: VICTIM } };
-const HOSTILE_DM_GRAPH = { mode: "unicast", senderId: "s-1", channel: undefined, msg: { id: "dm-1", channel: VICTIM } };
 
-/** Drive the WHOLE shipped `app.js` `onMessage` over real collections, and return what it did. */
-function runAppOnMessage(code: string, entry: unknown) {
+// ⚠️ FRESH PER RUN — THESE ARE FACTORIES, AND THAT IS LOAD-BEARING, NOT STYLE.
+// The behaviour under test is that the whole `onMessage` MUTATES the payload it is handed: clearing
+// `msg.channel` IS the fix. So a module-scope hostile object is sanitized by its own first
+// execution, and every later cell then asserts against a payload that no longer carries the
+// forgery — passing for the wrong reason, on code that never had to defend anything.
+//
+// MEASURED, not reasoned. With shared objects, executing the shipped `onMessage` twice gave:
+//     before any run   msg.channel = "victim-channel"
+//     after run #1     msg.channel = undefined
+// and the destination block below was the THIRD use, because the hostile loop also evaluated
+// `ing.run` twice (once for the condition, once to build `{got}`). All three named destination
+// cells were therefore vacuous. Build a new payload for every execution, and evaluate each `run`
+// EXACTLY ONCE into a variable.
+const hostileDm = () => ({ mode: "unicast", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
+const hostileDmGraph = () => ({ mode: "unicast", senderId: "s-1", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
+
+/**
+ * Drive the WHOLE shipped `app.js` `onMessage` over real collections, and return what it did.
+ *
+ * `selected` is a PARAMETER because the transcript cell is only discriminating when the victim
+ * channel is the one on screen. Hardcoding `"*"` left the named "does NOT reach the victim
+ * transcript" cell green on the original guarded vulnerability.
+ */
+function runAppOnMessage(code: string, entry: unknown, selected = "*") {
   const ctx = {
     __entry: entry,
     activity: [] as { msg: { id?: string } }[],
@@ -263,7 +283,7 @@ function runAppOnMessage(code: string, entry: unknown) {
     channels: new Map<string, { messages?: number }>(),
     channelMsgs: [] as unknown[],
     unread: new Map<string, number>(),
-    selected: "*",
+    selected,
     dmSel: null,
     renderDMs() {}, renderChannels() {}, renderCenter() {},
   };
@@ -329,8 +349,12 @@ check("the ingress table covers all four entry paths (an empty loop would pass v
 for (const ing of INGRESS) {
   const stmt = ing.extract(read(`../src/web/${ing.file}`));
   check(`${ing.file} — ${ing.path} — the ingress statement is present and extractable`, Boolean(stmt), { stmt });
+  // ONE evaluation, reused for both the predicate and the diagnostic. Calling `run` a second time
+  // to build `{got}` would execute the shipped function again over a fresh context — and, worse,
+  // over an already-mutated payload — so the value reported would not be the value asserted.
+  const got = ing.run(stmt!);
   check(`${ing.file} — ${ing.path} — the VERIFIED channel overwrites the publisher's claim`,
-    ing.run(stmt!) === VERIFIED, { got: ing.run(stmt!), claimed: CLAIMED, verified: VERIFIED });
+    got === VERIFIED, { got, claimed: CLAIMED, verified: VERIFIED });
 }
 
 // ── THE HOSTILE CASE: NO authoritative channel, and a forged one in the payload ──────────────────
@@ -352,7 +376,7 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   {
     file: "app.js", path: "live SSE feed",
     extract: (src) => extractFunction(src, APP_ONMESSAGE),
-    run: (code) => runAppOnMessage(code, HOSTILE_DM).activity[0]?.msg.channel,
+    run: (code) => runAppOnMessage(code, hostileDm()).activity[0]?.msg.channel,
   },
   {
     file: "app.js", path: "/api/activity backfill",
@@ -366,7 +390,7 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   {
     file: "graph.js", path: "live SSE feed",
     extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
-    run: (code) => runGraphOnMessage(code, HOSTILE_DM_GRAPH).recent[0]?.chan,
+    run: (code) => runGraphOnMessage(code, hostileDmGraph()).recent[0]?.chan,
   },
   {
     file: "graph.js", path: "/api/activity backfill",
@@ -382,17 +406,34 @@ check("the hostile table covers all four entry paths too", HOSTILE.length === 4,
 for (const ing of HOSTILE) {
   const stmt = ing.extract(read(`../src/web/${ing.file}`));
   check(`${ing.file} — ${ing.path} — the hostile statement is extractable`, Boolean(stmt), { stmt });
+  // ONE evaluation — see the INGRESS loop. Here it mattered doubly: the second call used to run
+  // against a payload the first call had already sanitized.
+  const got = ing.run(stmt!);
   // `undefined`, not merely "not the forgery": a non-chat message HAS no channel, and any other
   // value here would be the surface inventing one.
   check(`${ing.file} — ${ing.path} — a FORGED channel is CLEARED when nothing authoritative exists`,
-    ing.run(stmt!) === undefined, { got: ing.run(stmt!), forged: CLAIMED });
+    got === undefined, { got, forged: VICTIM });
 }
 
 // ── 2c. DESTINATION, NOT JUST CONTENT ───────────────────────────────────────────────────────────
 // `msg.channel === undefined` says the value was cleared. It does not say the message stayed OUT of
 // the victim channel's transcript — that is a separate fact, and it is the one an operator would
 // actually see. So the whole function is driven and the collections it writes are read back.
-const appHostile = runAppOnMessage(extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!, HOSTILE_DM);
+//
+// TWO THINGS BELOW ARE GUARDS AGAINST THIS BLOCK GOING VACUOUS, AND BOTH WERE EARNED:
+//   1. The payload is built fresh and its forgery is asserted BEFORE the run. A shared fixture
+//      arrives here pre-sanitized by an earlier execution, and then all three cells below pass
+//      without the production code defending anything.
+//   2. The victim channel is the SELECTED one. With `selected:"*"` the transcript cell is green
+//      even on the original guarded vulnerability, because nothing is ever appended to the
+//      selected-channel transcript regardless of routing — the cell's name would be a lie.
+const appFnSrc = extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!;
+const appHostilePayload = hostileDm();
+check("app.js — the destination run receives a payload that STILL carries the forgery (a shared fixture would arrive pre-sanitized)",
+  appHostilePayload.msg.channel === VICTIM, { got: appHostilePayload.msg.channel, expected: VICTIM });
+const appHostile = runAppOnMessage(appFnSrc, appHostilePayload, VICTIM);
+check("app.js — the victim channel is the SELECTED one, so the transcript cell can actually fail",
+  appHostile.selected === VICTIM, { selected: appHostile.selected });
 check("app.js — a forged DM does NOT create the victim channel in the channel list",
   appHostile.channels.has(VICTIM) === false, { keys: [...appHostile.channels.keys()] });
 check("app.js — a forged DM does NOT reach the victim channel's transcript",
@@ -405,7 +446,10 @@ check("app.js — a forged DM does NOT raise any unread badge",
 check("app.js — the forged DM is STILL delivered as a DM (clearing a channel must not drop it)",
   appHostile.dms.length === 1 && (appHostile.dms[0] as { id?: string }).id === "dm-1", { dms: appHostile.dms });
 
-const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, HOSTILE_DM_GRAPH);
+const graphHostilePayload = hostileDmGraph();
+check("graph.js — the destination run receives a payload that STILL carries the forgery",
+  graphHostilePayload.msg.channel === VICTIM, { got: graphHostilePayload.msg.channel, expected: VICTIM });
+const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, graphHostilePayload);
 check("graph.js — a forged DM creates NO hub for the victim channel",
   graphHostile.hubs.length === 0, { hubs: graphHostile.hubs });
 check("graph.js — the forged DM still appears in the recent list, with no channel",
