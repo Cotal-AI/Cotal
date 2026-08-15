@@ -22,15 +22,22 @@ import { spawnSync } from "node:child_process";
 
 const LOG = process.env.GATE_BITES_LOG;
 const REAL = (process.env.GATE_BITES_REAL ?? "").split(",").filter(Boolean);
-if (!LOG || REAL.length === 0) {
-  console.error("pnpm-shim: REFUSING — GATE_BITES_LOG and GATE_BITES_REAL must both be set");
+const REAL_PNPM = process.env.GATE_BITES_PNPM;
+if (!LOG || REAL.length === 0 || !REAL_PNPM) {
+  console.error("pnpm-shim: REFUSING — GATE_BITES_LOG, GATE_BITES_REAL and GATE_BITES_PNPM must all be set");
   process.exit(97);
 }
 
 const args = process.argv.slice(2);
-if (args.length !== 1 || !/^smoke(:[A-Za-z0-9:_-]+)?$/.test(args[0])) {
-  console.error(`pnpm-shim: REFUSING — unrecognised argument shape: ${JSON.stringify(args)}`);
-  process.exit(97);
+// NOT a chain member: the live suite spawns its fixture daemon with `pnpm exec tsx …` and inherits
+// this PATH. The first version of this shim refused that shape, the daemon never started, and the
+// baseline ran 4 passed / 13 failed — the shim manufacturing the very red it was meant to observe.
+// It refused instead of exiting 0, which is the only reason that was visible at all. Anything that
+// is not a bare script name is delegated to the REAL pnpm, unchanged.
+if (!(args.length === 1 && /^smoke(:[A-Za-z0-9:_-]+)?$/.test(args[0]))) {
+  appendFileSync(LOG, `PASSTHROUGH ${args.join(" ")}\n`);
+  const r = spawnSync(REAL_PNPM, args, { stdio: "inherit" });
+  process.exit(r.status === null ? 98 : r.status);
 }
 const name = args[0];
 

@@ -1,0 +1,2 @@
+serving=false
+CANNOT ESTABLISH HEALTH — clock-fault: shard 0 heartbeat is stamped 5000ms AFTER the moment it was read, so its age cannot be established (the lease heartbeat is stamped 5000ms in the FUTURE relative to this read, so no age can be derived from the two clocks and it cannot be shown to be within the 30000ms TTL. Not treated as fresh: an age that could not be measured is a refusal, never a pass)

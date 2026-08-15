@@ -15,13 +15,18 @@ export PATH="$HOME/.nvm/versions/node/v22.23.2/bin:$PATH"
 D=.lane/gate-bites
 TARGET=packages/core/src/health.ts
 export GATE_BITES_REAL="smoke:delivery-health,smoke:delivery-health-live"
+# Resolved BEFORE the shim dir goes on PATH, so the shim can delegate the shapes it is not
+# substituting (the live suite spawns its fixture daemon with `pnpm exec tsx …`).
+GATE_BITES_PNPM=$(command -v pnpm); export GATE_BITES_PNPM
+[ -x "$GATE_BITES_PNPM" ] || { echo "no real pnpm on PATH — refusing"; exit 96; }
 
 chmod +x "$D/shim/pnpm"
 git rev-parse HEAD > "$D/base-sha.txt"
 date -u >> "$D/base-sha.txt"
 
 run() {                                   # $1 = label
-  export GATE_BITES_LOG="$PWD/$D/$1.log"
+  export GATE_BITES_LOG="$PWD/$D/$1.trace.txt"   # not .log: .gitignore has *.log, and an evidence
+                                                 # file the commit cannot carry is not evidence
   : > "$GATE_BITES_LOG"
   ( PATH="$PWD/$D/shim:$PATH" node bin/smoke/shard.mjs 0 1 > "$D/$1.out" 2>&1 )
   echo "rc=$?" > "$D/$1.rc"
