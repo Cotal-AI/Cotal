@@ -227,6 +227,19 @@ async function printTarget(
       // right for at most one of the seven codes and pointed the other six at a command that does
       // not fix them — worse than no hint, because it reads as a diagnosis.
       row("hint", renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, ""));
+      // NO DELIVERY ROW ON THIS PATH, DELIBERATELY — and the reasoning is written down because it has
+      // now been derived twice and the next reader would either derive it a third time or "fix" it.
+      //
+      // Every other path through this section renders a delivery line even when health cannot be
+      // established, because a health clause that silently disappears reads as "delivery health does
+      // not apply here" (the #445 defect). This path is the exception that the rule is FOR: target
+      // resolution THREW, so no mesh was ever identified. A delivery row here would be a confident
+      // statement about a subject that does not exist — worse than silence, not better.
+      //
+      // The discriminator is that this path also omits its `connection` row, and its `space`,
+      // `server` and `mode` rows. A section that drops ONE row and keeps its neighbours is hiding
+      // something; a section that reports a resolution failure and stops has left the domain. If a
+      // future change makes this path render the mesh rows again, it must render a delivery row too.
       return;
     }
     throw e;
