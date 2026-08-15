@@ -96,6 +96,7 @@ export async function describeEndpoint(
   };
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
   try {
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
@@ -133,7 +134,15 @@ export async function describeEndpoint(
     // error must not fail an otherwise healthy describe.
     const denied = new Promise<never>((_, reject) => {
       void (async () => {
-        for await (const s of nc.status()) {
+        // Drive the iterator by hand rather than `for await`, so the `finally` below can CLOSE it.
+        // `nc.status()` is connection-lived: a `for await` parks on the next event and outlives the
+        // describe, so one listener would leak per resolve — unbounded on a long-lived connection,
+        // and measurable as added latency on the resolve-heavy paths.
+        const it = nc.status()[Symbol.asyncIterator]();
+        statusIter = it;
+        for (;;) {
+          const { value: s, done } = await it.next();
+          if (done === true || s === undefined) return;
           if (s.type !== "error") continue;
           if (s.error instanceof PermissionViolationError && s.error.subject === subject) {
             reject(new EpEnvelopeError("permission-denied",
@@ -152,6 +161,9 @@ export async function describeEndpoint(
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
+    // Close the status iterator on EVERY exit, success included — otherwise the describe returns
+    // while its listener stays parked on the connection for the connection's whole life.
+    void statusIter?.return?.(undefined);
   }
 }
 
