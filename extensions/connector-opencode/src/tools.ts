@@ -14,7 +14,22 @@
  * silently. A type-only import keeps the bundle self-contained.
  */
 import type { ToolDefinition } from "@opencode-ai/plugin";
-import { cotalToolSpecs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, type MeshAgent, type AgentConfig, type ToolResult } from "@cotal-ai/connector-core";
+
+/** THE HOST'S ONLY FAILURE CHANNEL IS A REJECTION, SO A FAILURE MUST REJECT.
+ *
+ *  This adapter returns a string, so `isError` had nowhere to go and was rendered as a `⚠` prefix
+ *  on an ordinary, RESOLVED value. Measured, not argued: a refusal with `isError: true` reached
+ *  this function and OpenCode resolved `"⚠ Refused [bind-failed]: …"` — a host-success state, so a
+ *  caller branching on tool outcome saw success with no mistake of its own.
+ *
+ *  Throwing is the only construction where FAILING TO INSPECT still yields a failure: a host that
+ *  reads no field at all still gets a rejected promise. The full rendered text travels as the error
+ *  message, so nothing a model needed to read is lost. */
+function resolveOrThrow(r: ToolResult): string {
+  if (r.isError) throw new Error(r.text);
+  return r.text;
+}
 
 /** Build the cotal_* tool map wired to one mesh agent, rendered from the shared specs. */
 export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<string, ToolDefinition> {
@@ -26,8 +41,7 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
           "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic stays queued; in focus mode, normal channel recall is also shown read-only.",
         args: {},
         async execute() {
-          const r = await spec.run(agent, config, { scope: "pull-only" });
-          return r.isError ? `⚠ ${r.text}` : r.text;
+          return resolveOrThrow(await spec.run(agent, config, { scope: "pull-only" }));
         },
       };
       continue;
@@ -37,8 +51,7 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
       // The shared spec carries a Zod raw shape, which is what OpenCode's tool `args` takes.
       args: (spec.schema ?? {}) as Record<string, never>,
       async execute(args: unknown) {
-        const r = await spec.run(agent, config, (args ?? {}) as any);
-        return r.isError ? `⚠ ${r.text}` : r.text;
+        return resolveOrThrow(await spec.run(agent, config, (args ?? {}) as any));
       },
     };
   }

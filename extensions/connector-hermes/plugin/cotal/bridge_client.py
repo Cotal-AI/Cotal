@@ -19,6 +19,12 @@ from typing import Any, Callable, Optional
 _BACKOFF_S = 2.0
 
 
+
+class CotalToolError(RuntimeError):
+    """A cotal_* tool reported a logical failure (`isError`). Raised rather than returned so that a
+    caller which inspects nothing still sees a failure."""
+
+
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._path = socket_path
@@ -122,7 +128,13 @@ class BridgeClient:
             if not box.get("ok"):
                 raise RuntimeError(box.get("error") or "tool failed")
             text = box.get("text") or ""
-            return f"⚠ {text}" if box.get("isError") else text
+            if box.get("isError"):
+                # A FAILURE RAISES. The flag crosses the socket intact and was then flattened into a
+                # prefixed ordinary return, so a refusal arrived at the host as a successful tool
+                # call. Raising is the only shape where a caller that inspects nothing still gets a
+                # failure; the rendered text is the exception message, so nothing is lost.
+                raise CotalToolError(text)
+            return text
         finally:
             self._pending.pop(rid, None)
 

@@ -355,11 +355,24 @@ export type ConnectionOutcome =
    *  "connected" would overstate the session — the caller would believe it is listening where it is
    *  not. It is also not a refusal: the connection IS up and the agent IS reachable, so refusing
    *  would be its own lie. It gets reported, with the shortfall named. */
-  | { outcome: "connected"; space: string; channels: string[]; denied: string[] }
-  | { outcome: "disconnected"; space: string; cause: string }
-  | { outcome: "refused"; reason: ConnectionRefusal; detail: string };
+  | { outcome: "connected"; space: string; channels: string[]; denied: string[]; ok: boolean }
+  | { outcome: "disconnected"; space: string; cause: string; ok: true }
+  | { outcome: "refused"; reason: ConnectionRefusal; detail: string; ok: false };
 
-const refusal = (reason: ConnectionRefusal, detail: string): ConnectionOutcome => ({ outcome: "refused", reason, detail });
+/** ── `ok`, AND WHAT IT DOES NOT FIX ─────────────────────────────────────────────────────────────
+ *  `ok` is true only when the caller got what it asked for: a connect with an empty `denied`, or a
+ *  disconnect. It is ADDITIVE — `outcome`, `reason` and `denied` keep their exact meanings, and a
+ *  reader of the current shape gets the current answer. What it adds is that "did I get what I
+ *  asked for" now has a field, instead of being answerable only by remembering to check
+ *  `denied.length` on an arm whose discriminant already says `connected`.
+ *
+ *  **It does NOT close the truthiness trap, and nothing additive can.** `if (await ep.disconnect())`
+ *  is true for `{ outcome: "refused" }` and stays true, because object truthiness does not consult
+ *  `valueOf`. The honest claim here is "there is now a correct thing to write", not "the wrong thing
+ *  stopped working" — the boundary where failing to inspect can be made to yield a refusal is the
+ *  TOOL boundary, not this one, and that is where the rest of this change lives. */
+const refusal = (reason: ConnectionRefusal, detail: string): ConnectionOutcome =>
+  ({ outcome: "refused", reason, detail, ok: false });
 
 /** An Error carrying the same named `reason` its sibling verbs return in a {@link ConnectionOutcome}.
  *
@@ -447,6 +460,8 @@ export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
   readonly channels: string[];
+  /** The read set requested at construction — never mutated. See the constructor. */
+  private readonly requestedChannels: string[];
 
   private readonly servers: string;
   private readonly token?: string;
@@ -740,6 +755,13 @@ export class CotalEndpoint extends EventEmitter {
     this.pass = opts.pass;
     this.tls = opts.tls ?? false;
     this.channels = opts.channels ?? ["general"];
+    // The read set the SESSION ASKED FOR, kept immutable. `channels` is the LIVE filter and shrinks
+    // when the broker refuses a subscription, so after one denial the endpoint no longer even
+    // attempts that channel — and a later connect() would report a clean success for a read set
+    // that had silently shrunk. Measured, not anticipated: a partial connect reported
+    // `denied: []` and `Connected ✓ on #general` for a session configured to read `general` and
+    // `secret`. A shortfall the caller cannot see is the failure this whole surface is about.
+    this.requestedChannels = [...this.channels];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
     this.ttlMs = opts.ttlMs ?? 6000;
     this.doRegister = opts.registerPresence ?? true;
@@ -1573,7 +1595,7 @@ export class CotalEndpoint extends EventEmitter {
               : "AND THE ANNOUNCEMENT COULD NOT BE RETRACTED - peers may still show this agent offline while it is in fact connected. Re-assert presence or reconnect"),
         );
       }
-      return { outcome: "disconnected", space: this.space, cause };
+      return { outcome: "disconnected", space: this.space, cause, ok: true };
     } finally {
       this.admissionClosed = false;
       this.transitionInFlight = false;
@@ -1620,13 +1642,24 @@ export class CotalEndpoint extends EventEmitter {
       const presenceAsserted = await this.reassertPresence();
       if (!presenceAsserted)
         this.emit("error", new Error("connect(): the presence re-assert did not reach the broker; the heartbeat will republish"));
-      // Report the read set the broker ACTUALLY granted, not the one that was asked for.
-      const denied = [...this.chatSubDenied];
+      // Report the read set the broker ACTUALLY granted, not the one that was asked for — and
+      // measure the shortfall against what was REQUESTED, not against the denials seen on this
+      // attempt alone. A channel refused earlier has already been dropped from `channels`, so
+      // `chatSubDenied` is empty on the next connect and the shortfall would otherwise vanish
+      // exactly when it became permanent.
+      const denied = [...new Set([
+        ...this.chatSubDenied,
+        ...this.requestedChannels.filter((c) => !this.channels.includes(c)),
+      ])];
       return {
         outcome: "connected",
         space: this.space,
         channels: this.channels.filter((c) => !this.chatSubDenied.has(c)),
         denied,
+        // A live transport with only part of the requested read set is not what the caller asked
+        // for, so it is not `ok` — the transport being up is a different question, and `outcome`
+        // still answers that one.
+        ok: denied.length === 0,
       };
     } catch (e) {
       // Failed to get back on. Restore the self-disconnected state rather than leaving the endpoint

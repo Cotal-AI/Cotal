@@ -27,6 +27,11 @@ import { runDocs } from "./docs.js";
 export interface ToolResult {
   text: string;
   isError?: boolean;
+  /** ADDITIVE, and only set by the connection verbs today. `isError` answers "did this tool call
+   *  fail"; this answers "how did it fail", so a host that judges a PARTIAL too loud for its UX can
+   *  soften it deliberately. Before this field it had nothing to soften on, and the only way to be
+   *  quiet about a partial was to report it as a clean success. */
+  outcome?: "ok" | "partial" | "refused";
 }
 
 const ok = (text: string): ToolResult => ({ text });
@@ -56,18 +61,29 @@ function controlFailure(action: string, e: unknown): ToolResult {
  *  read as success by a caller that ignores the payload — every outcome object is truthy, so
  *  without this flag "treat a refusal as success" would be the default rather than the hard path. */
 function renderOutcome(r: ConnectionOutcome): ToolResult {
-  if (r.outcome === "refused") return err(`Refused [${r.reason}]: ${r.detail}`);
+  if (r.outcome === "refused") return { ...err(`Refused [${r.reason}]: ${r.detail}`), outcome: "refused" };
   if (r.outcome === "disconnected")
-    return ok(
-      `Disconnected from "${r.space}" ✓ (cause: ${r.cause}). Peers now see you offline. You will receive nothing until you call cotal_connect — ` +
-        `no peer can bring you back. Durable channel membership was kept, so you will be given what you missed when you return.`,
-    );
+    return {
+      ...ok(
+        `Disconnected from "${r.space}" ✓ (cause: ${r.cause}). Peers now see you offline. You will receive nothing until you call cotal_connect — ` +
+          `no peer can bring you back. Durable channel membership was kept, so you will be given what you missed when you return.`,
+      ),
+      outcome: "ok",
+    };
   const base = `Connected to "${r.space}" ✓ on #${r.channels.join(", #") || "(no channels)"}. Anything sent while you were away is replayed from the durable backstop.`;
-  // A live transport with only part of the requested read set is reported, never rounded up to a
-  // clean success — the caller would otherwise believe it is listening on channels it is not.
+  // A live transport with only part of the requested read set used to render `ok(...)`, and the
+  // PROSE said PARTIAL while every machine-readable channel said clean success — so
+  // `if (!r.isError) ready()` believed it was listening on channels it was not. Silently wrong is
+  // the one direction this surface must never fail in: a caller that is over-warned investigates
+  // and learns the truth, a caller that is under-warned proceeds on a false belief and never does.
+  // `outcome: "partial"` is what makes the loudness bearable — a host can distinguish it from a
+  // refusal and soften it on purpose.
   return r.denied.length
-    ? ok(`${base}\n\nPARTIAL: the broker refused your subscription to #${r.denied.join(", #")}, so you are NOT receiving those. You are connected and reachable; this is a grant problem, not a connection problem.`)
-    : ok(base);
+    ? {
+        ...err(`${base}\n\nPARTIAL: the broker refused your subscription to #${r.denied.join(", #")}, so you are NOT receiving those. You are connected and reachable; this is a grant problem, not a connection problem.`),
+        outcome: "partial",
+      }
+    : { ...ok(base), outcome: "ok" };
 }
 
 /** One Cotal tool, independent of any host's tool API. */

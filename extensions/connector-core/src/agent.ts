@@ -279,7 +279,7 @@ export class MeshAgent extends EventEmitter {
    *  should be told which. */
   async disconnect(cause = "requested"): Promise<ConnectionOutcome> {
     if (this.stopping)
-      return { outcome: "refused", reason: "shutting-down", detail: "this session is shutting down; its mesh connection is going away anyway" };
+      return { outcome: "refused", reason: "shutting-down", ok: false, detail: "this session is shutting down; its mesh connection is going away anyway" };
     return this.ep.disconnect(cause);
   }
 
@@ -292,7 +292,7 @@ export class MeshAgent extends EventEmitter {
    *  refusal instead of as a key that still works. */
   async connect(): Promise<ConnectionOutcome> {
     if (this.stopping)
-      return { outcome: "refused", reason: "shutting-down", detail: "this session is shutting down; start a new session instead" };
+      return { outcome: "refused", reason: "shutting-down", ok: false, detail: "this session is shutting down; start a new session instead" };
     return this.ep.connect();
   }
 

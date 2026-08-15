@@ -147,7 +147,7 @@ const DECLARED = [
   "S0a", "S0b", "S0c", "S0d", "S1a", "S1b", "S1c", "S1d", "S1e",
   "EX", "E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7",
   "E8-pre", "E9", "E8", "E10-pre", "E10-univ", "E10", "E11", "E12",
-  "E14-pre", "E14", "E15", "E16", "E17", "E18",
+  "E14-pre", "E14", "E15", "E16", "E17", "E18", "E19-pre", "E19", "E20",
 ];
 
 // ---- arm contamination: a green cell on a dead fixture is worse than a red one ------------------
@@ -859,6 +859,48 @@ async function main() {
     armCheck("AUTHED", "E18 THE FENCE: the same credential re-pointed at ANOTHER space is refused BY THE BROKER'S PERMISSIONS, naming the foreign subject — a self-connect cannot widen which space the agent reaches, whatever the client asks for",
       (otherSpace.outcome === "connect-refused" || otherSpace.outcome === "publish-refused") && fenceNamed,
       { ...otherSpace, fenceNamed });
+
+    // ══ E19/E20 — A PARTIAL CONNECT IS NOT A CLEAN SUCCESS, AND THE MACHINE MUST BE ABLE TO SAY SO
+    // The prose already said PARTIAL. Every machine-readable channel said clean success:
+    // `outcome: "connected"` (true — the transport IS live) and `ok(...)` at the tool boundary, so
+    // `if (!r.isError) ready()` believed it was listening on a channel the broker had refused.
+    // Silently wrong is the one direction this surface must not fail in: an over-warned caller
+    // investigates, an under-warned one proceeds on a false belief and never finds out.
+    // The denial is produced by the BROKER, not by a stub — the credential grants `general` only
+    // while the session is configured to read `general` and `secret`.
+    const parId = newIdentity();
+    const parUid = mintLifecycleUid();
+    const parCreds = await provisionAgent(mgrEp, sauth, parId, {
+      subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+      lifecycleUid: parUid, role: "worker",
+    });
+    const cfgPartial: any = {
+      space: aspace, name: "partial-subject", role: "worker", kind: "agent", servers: ASERVER,
+      // The CLIENT is told it may read both; the CREDENTIAL grants only `general`. That mismatch is
+      // the point — the client's allow-list is what it decides to attempt, and the broker is the
+      // fence. A config that filtered `secret` out locally would never reach the broker at all, and
+      // the cell would be measuring the client's own filter (measured: it returned a clean `ok`).
+      subscribe: ["general", "secret"], allowSubscribe: ["general", "secret"], allowPublish: ["general"], tls: false,
+      id: parId.id, creds: parCreds, lifecycleUid: parUid, capabilities: ["connection"],
+    };
+    const P = new MeshAgent(cfgPartial);
+    P.start(300);
+    for (let i = 0; i < 90 && !P.connected; i++) await sleep(150);
+    precondition("AUTHED", "E19-pre the partial subject is connected, so what follows measures its READ SET and not a failed session",
+      P.connected, { connected: P.connected });
+    const parSpecs = cotalToolSpecs(cfgPartial, "smoke");
+    const runPartial = async (tool: string, args?: any) => {
+      const spec = parSpecs.find((s: any) => s.name === tool);
+      if (!spec) throw new Error(`fixture failed: ${tool} absent from the partial surface`);
+      return spec.run(P, cfgPartial, args);
+    };
+    await runPartial("cotal_disconnect", { cause: "partial-arm" });
+    const pc = await runPartial("cotal_connect", {});
+    armCheck("AUTHED", "E19 a connect the BROKER only partly granted is flagged to the host and named `partial` — it says which channel was refused, and a caller branching on tool status cannot read it as clean success",
+      pc.isError === true && (pc as any).outcome === "partial" && /secret/.test(pc.text), pc);
+    armCheck("AUTHED", "E20 CONTROL: a FULLY granted connect through the same path is NOT flagged and is named `ok` (so E19's flag is the denial, not the verb)",
+      ec.isError !== true && (ec as any).outcome === "ok", ec);
+    await P.stop();
 
     await strEp.stop();
     await S.stop();

@@ -36,10 +36,11 @@ def _handler(name: str) -> Callable[..., str]:
     (``task_id`` and friends). We act only on ``args`` and accept-and-ignore the rest, so the
     signature can't reject a kwarg the host adds."""
     def run(args: dict, **_ctx: Any) -> str:
-        try:
-            return get_client().call_tool(name, args or {})
-        except Exception as e:  # surfaced back to the model as the tool result
-            return f"cotal error: {e}"
+        # DELIBERATELY NOT CAUGHT. This used to return `f"cotal error: {e}"`, which turned every
+        # failure — including a refusal the shared spec had flagged — into an ordinary successful
+        # return whose only trace was English in the text. The host decides how to present a raised
+        # exception; it cannot decide anything about a failure it was never told about.
+        return get_client().call_tool(name, args or {})
 
     return run
 

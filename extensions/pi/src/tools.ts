@@ -110,7 +110,13 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
           args.channel = channel;
         }
         const r = await spec.run(mesh, config, args);
-        return { content: [{ type: "text", text: r.isError ? `⚠ ${r.text}` : r.text }], details: undefined };
+        // A FAILURE REJECTS. pi's own pinned SDK says `execute` must throw on failure, and this
+        // adapter was resolving ordinary content with a `⚠` prefix instead — so a refusal carrying
+        // `isError: true` arrived at the host as a successful tool call. Measured on the real
+        // adapter function, not inferred. Throwing is also the only shape where a host that
+        // inspects nothing still gets a failure; the rendered text travels as the message.
+        if (r.isError) throw new Error(r.text);
+        return { content: [{ type: "text", text: r.text }], details: undefined };
       },
     });
   }
