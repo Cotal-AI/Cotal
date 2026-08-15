@@ -278,14 +278,20 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   const y = await activateRun(js, jsm, takeover("r-6b", "d1", 1));
   await y.append({ other: true }, 1);
   await y.append({ other: true }, 2);
-  const seq = await x.append({ mine: true }, 3);
-  await y.append({ other: true }, 4);
   // The SECOND append is the one that discriminates: a head advanced by counting locally rather
   // than from the PubAck agrees with reality only while a run's sequences happen to be contiguous,
-  // which they are not the moment any other run shares the stream.
-  const seq2 = await x.append({ mine: true }, 5);
+  // which they are not the moment any other run shares the stream. Caught, because the way that
+  // breaks is a throw, and a throw outside every assertion reads as a crashed suite rather than as
+  // this rule failing.
+  let seq = 0, seq2 = 0, crossErr: unknown;
+  try {
+    seq = await x.append({ mine: true }, 3);
+    await y.append({ other: true }, 4);
+    seq2 = await x.append({ mine: true }, 5);
+  } catch (e) { crossErr = e; }
   c("a run's fence is its own subject: another run's appends neither invalidate it nor renumber it",
-    seq > 0 && seq2 > seq && !x.isSuperseded, `${seq} then ${seq2}`);
+    crossErr === undefined && seq > 0 && seq2 > seq && !x.isSuperseded,
+    `${seq} then ${seq2}${crossErr === undefined ? "" : ` — ${String(crossErr).slice(0, 70)}`}`);
   c("and each run reads back only its own records",
     (await replayRunJournal(js, jsm, SPACE, "r-6a")).records.length === 3
     && (await replayRunJournal(js, jsm, SPACE, "r-6b")).records.length === 4);
