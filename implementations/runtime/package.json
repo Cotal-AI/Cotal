@@ -1,0 +1,41 @@
+{
+  "name": "@cotal-ai/runtime",
+  "description": "Cotal workflow runtime: hosts cotal-lang runs on the mesh — the durable step-journal store, the effect handler, and the run driver.",
+  "version": "0.18.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "implementations/runtime"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/journal-store.smoke.ts",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/lang": "workspace:*"
+  },
+  "devDependencies": {
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/kv": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
