@@ -123,6 +123,7 @@ const progressCount = (output, pattern) => {
  */
 function makePrivateBuild(projectDir, cwd) {
   const abs = join(cwd, projectDir);
+  if (!existsSync(abs)) throw new Error(`--private-build: no such package dir: ${projectDir}`);
   const scratch = mkdtempSync(join(abs, ".privbuild-"));
   const build = () => {
     const r = run(`./node_modules/.bin/tsc -p ${projectDir} --outDir ${scratch}`, cwd, 600_000);
@@ -256,6 +257,21 @@ if (opts.priv) {
   try { opts.priv.build(); } catch (e) { say(`${C.red}REFUSING: ${e.message}${C.off}`); opts.priv.cleanup(); process.exit(5); }
 }
 const base = run(opts.command, cwd, opts.timeoutMs, opts.priv?.env);
+// THE SEAM'S FAILURE MODE IS SILENCE, and silence survived forty lines of review once already:
+// connection-control's whole-namespace COTAL_ scrub deleted COTAL_CORE_ENTRY before the suite read
+// it, so every proof would have graded the SHARED build while reporting success. A fallback that is
+// correct behaviour in the normal case is a perfect disguise for a dead seam — no error, no warning,
+// no missing file. So REQUIRE the suite to say which build it loaded, and refuse if it says shared.
+if (opts.priv) {
+  if (!/PRIVATE build/.test(base.output)) {
+    say(`${C.red}REFUSING: --private-build was requested but the suite never reported loading a PRIVATE build.${C.off}`);
+    say("Either the suite does not honour COTAL_CORE_ENTRY, or something stripped it from the environment.");
+    say("Grading would compile the mutant into the SHARED dist's place while reporting a private run.");
+    opts.priv.cleanup();
+    process.exit(6);
+  }
+  say(`${C.green}seam confirmed${C.off} — the suite reported loading the private build`);
+}
 const baseTicks = progressCount(base.output, opts.progressPattern);
 if (base.status !== 0) {
   say(`${C.red}REFUSING: the suite is red BEFORE any mutation (exit ${base.status}).${C.off}`);

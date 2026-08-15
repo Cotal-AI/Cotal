@@ -1,0 +1,32 @@
+# m12 seam control — tip b26ff86a+wip — Sat Aug 15 06:40Z
+# OBSERVED EXIT CODE: 0, captured OUTSIDE a pipeline (RC=$? on the bare command), with a control
+# showing the capture can report failure (`sh -c 'exit 1'` -> 1). The earlier 0442Z record has no
+# observed rc because ${PIPESTATUS[0]} was written into a /bin/sh dispatch where it does not expand;
+# that mistake was repeated once here before being caught, hence the explicit control.
+# No broker started. No compile. Writes confined to one scratch dir, removed.
+
+=== m12: the private-build seam protects the real path, proven without writing it ===
+
+  ✓ PRE: the real dist is non-empty, so a later 'unchanged' is not vacuous
+
+--- A. the detector fires on a write to the path it was configured with ---
+  ✓ A0 CONTROL: with NO write, the detector stays quiet (so it is not a constant)
+  ✓ A1 the detector FIRES on a mutated file in its protected path
+  ✓ A1b and it NAMES the file that changed, not merely that something did
+  ✓ A2 an ADDED file is caught too (a mutant build emits new files as well as changed ones)
+  ✓ A3 a REMOVED file is caught (a stale-clean build is also a write)
+
+--- B. the path the seam protects is the one the fleet actually loads ---
+  ✓ B0 PRE: at least one connector link resolves at all (else B proves nothing)
+  ✓ B1 fleet-linked core (~/Cotal-wt-fm-meshctl/packages/core) resolves to the SAME dist the seam protects
+  ✓ B1 fleet-linked core (~/Cotal-wt-fm-meshctl/packages/core) resolves to the SAME dist the seam protects
+  ✓ B2 and the protected path is inside THIS repo, not another checkout
+
+--- A ∧ B ---
+  ✓ B3 SUMMARY (derived from A ∧ B — drives nothing new): a write to the fleet-linked build would be detected, because the detector fires on its configured path and that path IS the fleet-linked one
+
+--- the real dist was never written ---
+  ✓ Z1 the REAL packages/core/dist is byte-identical after this entire control
+  ✓ Z2 and this control left no scratch behind
+
+M12 SEAM CONTROL OK ✅  (13 passed, 0 failed)
