@@ -19,7 +19,9 @@ pre  04:42:17Z  pgrep -a nats-server -> empty   ls -d /tmp/meshctl-* -> no match
 post 04:43:08Z  pgrep -a nats-server -> empty   ls -d /tmp/meshctl-* -> no matches
                 no stray scratch under /tmp/*connection*
 
-## ⚠ TWO DEFECTS IN THIS RECORD'S OWN INSTRUMENTATION — read before citing it
+## ⚠ THREE DEFECTS IN THIS RECORD'S OWN INSTRUMENTATION — read before citing it
+##   (the third was added 2026-08-15T07:5xZ. Lines 18-19 are LEFT AS THEY WERE RUN — a run log
+##    edited after the fact turns every other line in it into a claim rather than a record.)
 
 1. **THE EXIT CODE WAS NEVER OBSERVED.** The invocation wrote `${PIPESTATUS[0]}` into a
    /bin/sh-dispatched command where it did not expand; the run printed `rc=?`. The evidence of
@@ -34,6 +36,21 @@ post 04:43:08Z  pgrep -a nats-server -> empty   ls -d /tmp/meshctl-* -> no match
    refuses to start on a stale `packages/core/dist` — but this file does not carry them, so it is
    NOT a substitute for the fuller 0314Z capture. Recorded rather than quietly re-run, because a
    run record that looks complete and is not is worse than one that says where it stops.
+
+3. **THE BOX-STATE PROBE ON LINES 18-19 USED A COMMAND THAT MUST NOT BE RUN AGAINST THIS TREE.**
+   `pgrep -a nats-server` is wrong twice over, and the empty result is TIMING, NOT SAFETY:
+     a. `-a` prints full argv. Written into a file in a pushable tree, that publishes whatever
+        happens to be in a matching process's command line. Seat prompts on this box carry absolute
+        paths to a private project.
+     b. `-a <name>` is SUBSTRING matching over argv, not `-x` exact-name matching over the
+        executable. It matches any process whose command line merely MENTIONS the string — an agent
+        discussing a bundled server matches; the server itself need not be running.
+   Both faults compound: had any persona mentioning `nats-server` been resident at 04:42Z, THIS
+   COMMITTED FILE WOULD CONTAIN ITS PROMPT BODY. Nothing matched at that moment, which is luck.
+   **A clean result from an unsafe command is a fact about timing and not a vindication of the
+   command.** The correct forms are `pgrep -x <name>`, `ps -eo pid=,user=,etime=,comm=`, and
+   `ps -o etime= -p <pid>` — field selection, exact match, never `args`.
+   Recorded beside the line rather than by editing it, on instruction.
 
 ## TAIL, VERBATIM
 
