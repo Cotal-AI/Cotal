@@ -1014,3 +1014,11 @@ otherwise `G5` degenerates into "the verbs are never present".
 See `FINDING-e2e-blocked-by-skew.md`. The installed connector the mesh runs has **zero** occurrences
 of the verbs; they exist only on this unpushed branch. **No seat on this mesh can exercise them.**
 The four unrun checks are named there so their absence is never read as coverage.
+
+> ⚠️ **AND ONE THING THE FIRST E2E SEAT REPORTED IS WITHDRAWN AS EVIDENCE.** It observed
+> `cotal_orientation` listing neither verb and no capabilities, and I recorded that as *default-deny
+> confirmed*. **The same build measurement refutes it: the verbs were absent because the build has
+> none, not because a gate refused them — and in open mode the gate would not have refused them
+> either.** Downgraded to **COULD NOT DISTINGUISH** in `verdicts/mc-e2e-user.md`. The gate's evidence
+> is `G5`/`G6` against source, with both arms differing; **there is no live evidence for it, and this
+> section is the only place that could have been mistaken for some.**

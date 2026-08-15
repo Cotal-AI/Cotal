@@ -43,6 +43,31 @@ DOC QUALITY
 
 ## Lane response (NOT part of the verdict)
 
+### ⚠️ DOWNGRADE — "observed default-deny" is **COULD NOT DISTINGUISH**, not a confirmation
+
+**The seat's third COMPLETED bullet — "Observed default-deny matches those docs: `cotal_orientation`
+reported no capabilities beyond defaults and did not list `cotal_disconnect` or `cotal_connect`" —
+was banked by me AND by fm-orchestrator as evidence that the gate works. It is not, and it cannot
+be.** The downgrade is recorded here rather than by editing the verdict, because the seat reported
+exactly what it saw; the error is in what we concluded from it.
+
+**The three-arm build measurement (`FINDING-e2e-blocked-by-skew.md`) later showed the INSTALLED
+build's `dist/tool-specs.js` contains ZERO occurrences of either verb.** So the tools were absent
+because **the build has no verbs**, not because a gate refused them. **An empty tool list and a
+working gate produce the same output**, and no observation available to this seat separates them.
+Worse in the same period: per mc-rev-authority, the gate in open mode **would not have refused them
+anyway** — so the one reading we drew is the one reading the code could not have supported.
+
+**This is the absence-versus-blind-instrument shape, and it arrived as a PASS rather than as a
+zero**, which is why it went past two readers. A cell that reports "the thing is not there" is
+evidence only once you have shown the instrument can see the thing when it IS there — which is
+precisely the inverse control G6 now supplies at the code level, and which no seat on this mesh can
+supply at the live level until the build carries the verbs.
+
+**What survives:** the gate is measured at `G5`/`G6` against source, both arms differing. **What does
+NOT survive: any claim that a live seat observed default-deny working.** The live half stays
+BLOCKED, and this bullet is no longer counted toward it.
+
 **The MEDIUM finding is UPHELD and FIXED** (`docs/manifest.md` now names `connection` in the
 capability reference, pointing at `agent-files.md` for why it is enforced differently). **Its
 severity call was right: it blocks the manifest path, not the feature.**
