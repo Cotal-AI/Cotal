@@ -687,10 +687,20 @@ the `fm-health` seam (§3).
   the four connect branches. **Trigger, written down as required: if any revision of this design has
   a connection verb call into `packages/workspace/src/connect.ts`, this leg becomes required and
   must be driven live before that revision ships.**
-- **No repo suite has been run and no gate has been requested.** All evidence is six scoped probes:
-  M1 verb drive, M2 open-mode gate bypass, M3 broker fence (9/9), M4 observer ghost, M5
-  lease/in-flight, M6 durable membership (4/4). Plus the committed regression suite
-  `packages/core/smoke/request-strand.smoke.ts` (7/7, 2/2 mutations killed on named cells).
+- **No gate has been requested and `pnpm smoke:ci` has NOT been run.** That part stands. **The
+  "all evidence is six scoped probes" inventory that used to sit here was stale and is replaced**
+  — it under-counted by six probes and three suites, and an inventory that understates is still an
+  inventory that is wrong. Measured, at the `01:09–01:18Z` re-drive (`RESULTS.md` §"Re-drive"):
+  - **twelve probes**, nine of them re-driven and reproducing identically — M1 verb drive, M2
+    open-mode gate bypass, M3 broker fence (9/9), M4 observer ghost, M5 lease/in-flight (two
+    probes), M6 durable membership (4/4), M8 outage-vs-denial (5/5), M10 two-views, `72-gap`
+    (7 asserted + 4 recorded), `72b-leak` (3 asserted + 2 recorded) — and **M7 user-mode, which
+    runs and FAILS**;
+  - **three committed suites**, all `EXIT=0` in that window: `connection-control` **45/45**,
+    `connection-lifecycle` **39/39**, `request-strand` **9/9** (2/2 mutations killed on named
+    cells). Logs in `runs/`.
+  - **What that inventory does NOT cover, named rather than omitted:** the repo gate, and user mode
+    — see the gap directly above, which M7's failure leaves standing.
 
 ### 7.1 Durable membership under a self-disconnect — measured **[M — M6, 4/4]**
 
