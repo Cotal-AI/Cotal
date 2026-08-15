@@ -40,6 +40,7 @@ import {
   ActivationRaced,
   parseRunJournalRecord,
   type RunJournalActivation,
+  type RunJournalRecord,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -84,6 +85,19 @@ const rawAppend = async (runId: string, expected: number, body: unknown) => {
   } catch (e) {
     return { landed: false as const, code: (e as { code?: unknown }).code };
   }
+};
+/** Read a run's records without the replay's own integrity checks: the cell has to be able to
+ *  describe the prefix it is asking the guard about. */
+const replayRunJournalRaw = async (runId: string) => {
+  const name = `raw_${runId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  await jsm.consumers.add(STREAM, { durable_name: name, filter_subject: wfjSubject(SPACE, runId), ack_policy: "explicit" as never });
+  const con = await js.consumers.get(STREAM, name);
+  const pending = (await con.info(true)).num_pending;
+  const out: RunJournalRecord[] = [];
+  if (pending === 0) return out;
+  const it = await con.fetch({ max_messages: pending, expires: 5_000 });
+  for await (const m of it) { out.push(parseRunJournalRecord(m.json(), wfjSubject(SPACE, runId))); m.ack(); if (out.length >= pending) break; }
+  return out;
 };
 const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entry: { n } });
 
@@ -400,6 +414,26 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   try { await activateRun(js, jsm, takeover("r-5f", "d2", 2)); } catch (e) { cannotActivate = e; }
   c("and no driver can take the run over on a truncated prefix",
     cannotActivate instanceof RunJournalPrefixTruncated, `${(cannotActivate as Error)?.name}`);
+}
+
+// ── 5g) …and "starts with an activation" is not the same test ────────────────────────────────
+//
+// A run that has been taken over has activations in its middle, so a purge can leave one of THEM
+// at the front — a prefix that begins with an activation and still misses everything before it.
+// Only `replayedTo === 0` says "this record was published into an empty subject".
+{
+  const d1 = await activateRun(js, jsm, takeover("r-5g", "d1", 1));
+  await d1.append({ n: 0 }, 0);
+  const d2 = await activateRun(js, jsm, takeover("r-5g", "d2", 2));
+  await d2.append({ n: 1 }, 1);
+  await jsm.streams.purge(STREAM, { filter: wfjSubject(SPACE, "r-5g"), keep: 2 });
+  const head = (await replayRunJournalRaw("r-5g"))[0];
+  c("the purge leaves a mid-run ACTIVATION at the front", head?.kind === "activation" && head.replayedTo > 0,
+    `${head?.kind}/${(head as RunJournalActivation)?.replayedTo}`);
+  let truncated: unknown;
+  try { await replayRunJournal(js, jsm, SPACE, "r-5g"); } catch (e) { truncated = e; }
+  c("and the replay still refuses it: an activation is not the genesis activation",
+    truncated instanceof RunJournalPrefixTruncated, `${(truncated as Error)?.name}`);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
