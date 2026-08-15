@@ -30,6 +30,15 @@
  * output suggests otherwise, which is the part worth fixing. Re-running the same check after the
  * last mid-chain build would close it, and is not done here.
  *
+ * IF YOU WRITE THAT RE-RUN, IT GOES AFTER ENTRY 205, AND THE TRAP IS THE ENTRY NAMED `build`.
+ * `smoke:build-current` does NOT build: its script body is a plain `tsx` run and it works in a
+ * `mkdtemp` root. A scan for entries that build will match it anyway, because `\bbuild\b` matches
+ * inside `build-current` — `-` is a word boundary. Two independent reads of this chain both landed
+ * on "eight rebuilds" while disagreeing about WHICH eight, one of them counting `build-current` as a
+ * builder and missing `smoke:persona-announce` at 205, which is a real one. The agreeing count is
+ * what stopped the disagreement being noticed. Resolve the membership, not the total, and place the
+ * re-run after the last entry you have confirmed by reading its script BODY.
+ *
  * BE HONEST ABOUT WHERE THIS BITES. In `smoke:ci` it is nearly inert, because the gate builds
  * before it runs — it can only catch a build that silently produced nothing for a package. Its real
  * use is the ad-hoc case: run it after editing core and before trusting a manager-side suite. That
