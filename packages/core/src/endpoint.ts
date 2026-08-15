@@ -19,7 +19,7 @@ import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from 
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound } from "./endpoint-envelope.js";
-import { GOAL_BEARING_COMMANDS } from "./endpoint-grants.js";
+import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
@@ -1383,7 +1383,7 @@ export class CotalEndpoint extends EventEmitter {
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       } catch (e) {
         if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-        // DO NOT auto-retry a CREATING command that a responder already HANDLED. This recovery was
+        // DO NOT auto-retry a command that a responder already HANDLED. This recovery was
         // written for one reading of `failed-precondition` — "the describe-bound incarnation is gone
         // (restart or supersede), so re-resolve and invoke the current one" — and on that reading a
         // second invoke is a repair, because the first never ran. That premise fails for the other
@@ -1392,23 +1392,27 @@ export class CotalEndpoint extends EventEmitter {
         // split, not a supersession. There the request DID reach a responder and was executed, and
         // the error is raised afterwards, so re-invoking executes it twice.
         //
-        // Scope deliberately narrow, because the two failure modes pull in opposite directions.
-        // Removing the retry outright is not an option: in a two-manager space roughly half of all
-        // class-queue calls split, so every other `ps` would surface an error the retry used to
-        // absorb harmlessly — measured here, this suite's own warm-up read hit it on the first try.
-        // Re-running a read costs nothing. Re-running a CREATE costs a duplicate — the "one spawn,
-        // several seats" shape actually observed. So the retry stays for the safe majority and is
-        // withheld exactly where duplication creates something: `GOAL_BEARING_COMMANDS`.
+        // Removing the retry outright is not an option either: in a two-manager space roughly half
+        // of all class-queue calls split, so every other `ps` would surface an error the retry used
+        // to absorb harmlessly — measured here, this suite's own warm-up read hit it on the first
+        // try. Re-running a read costs nothing.
         //
-        // That set (spawn/launch) is a CONSERVATIVE APPROXIMATION of "unsafe to repeat", and the
-        // only one core can make honestly today — a command carries no idempotency declaration, and
-        // every manager command shares `class: "ephemeral"`, so nothing in the resolved surface
-        // distinguishes a read from a mutation. Commands like `despawn` and `define-persona` do
-        // mutate and are still retried; they are convergent (a second despawn is a no-op, a second
-        // define-persona writes the same bytes), which is why this holds, not because they were
-        // overlooked. The general fix is an idempotency/safety annotation in the contract, which is
-        // a SPEC change and is not made here.
-        if (respondedButUnbound(e) && GOAL_BEARING_COMMANDS.includes(command as (typeof GOAL_BEARING_COMMANDS)[number])) throw e;
+        // So the retry is gated on an ALLOWLIST of commands whose second execution is observably
+        // indistinguishable from one (`REPEAT_SAFE_COMMANDS`), and everything else surfaces. The
+        // polarity matters more than the membership: an allowlist fails CLOSED, so a command nobody
+        // has classified is surfaced rather than silently duplicated.
+        //
+        // An earlier version of this guard withheld the retry only for `GOAL_BEARING_COMMANDS`
+        // (spawn/launch) on the theory that duplication only hurts when it CREATES something.
+        // Adversarial review broke that with a measured counterexample: `purge` is neither
+        // goal-bearing nor convergent, and its second execution deleted messages published after
+        // the first had completed. "Creates something" is not the boundary; "changes anything" is,
+        // and core cannot tell — a command carries no idempotency declaration and every manager
+        // command shares `class: "ephemeral"`, so nothing in the resolved surface distinguishes a
+        // read from a mutation. The allowlist is the honest stand-in until it can. The general fix
+        // is a safety annotation on the command contract plus an effect-outcome in the reply; that
+        // is a SPEC change and is not made here.
+        if (respondedButUnbound(e) && !isRepeatSafeCommand(command)) throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }

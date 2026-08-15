@@ -29,6 +29,19 @@ the queue received the request and may have executed it — possibly after the e
 message now says so, points at `ps`/`inspect`/roster before any retry, and names `--on` as the way
 to avoid the split.
 
+And a split is no longer silently retried into a duplicate effect. The client recovered from
+`failed-precondition` by dropping its cached resolve and invoking again, which is a repair when the
+bound incarnation is gone but a second execution when the error came from a different live instance
+answering the class queue — request received, executed, error raised afterwards. Re-invoking there
+ran the command twice, automatically, while the error text told the operator not to retry; it is
+the mechanism behind one spawn producing several seats. The retry now happens only for commands
+whose second execution is observably indistinguishable from one — the reads and `describe`. Every
+other command surfaces the split to its caller, carrying a marker that says a responder did handle
+the request, so the caller can check before deciding. The classification is an allowlist and fails
+closed: an unclassified command is surfaced rather than repeated. It stands in for something the
+wire does not yet carry — a safety annotation on the command contract and an effect outcome in the
+reply — and that remains open.
+
 `ps` prints the full instance id in its multi-manager view. That view appears only where the split
 makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
 26-32 character lifecycle token — so an abbreviated header named the remedy and withheld the value
