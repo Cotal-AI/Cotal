@@ -22,7 +22,7 @@
  * Run: pnpm smoke:delivery-health-live   (needs `nats-server` on PATH; local ephemeral broker only)
  */
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -158,6 +158,49 @@ const awaitGroupGone = async (pid: number | undefined, boundMs = 2000): Promise<
   return !groupAlive(pid);
 };
 
+/** Every live fixture-daemon process on this box, found by the process title the fixture sets.
+ *
+ *  WHY THIS EXISTS ALONGSIDE `groupAlive`, WHICH IS NOT A SUBSTITUTE: `groupAlive` is scoped to the
+ *  pid recorded at creation, and **a restart carries a NEW pid**. "This group is gone" and "nothing
+ *  brought a daemon back" are therefore different facts, and the pid-scoped instrument cannot answer
+ *  the second one — it would report the corpse absent no matter how many replacements appeared.
+ *
+ *  `execFileSync`, NOT a shell: a shell wrapper carries the pattern in its own argv and `pgrep -f`
+ *  then matches the search itself. That self-match is not hypothetical — it was hit by hand on this
+ *  box while establishing the guard's absence, and read carelessly it reports a daemon that is
+ *  really the query looking at its own reflection. `pgrep` excludes its own pid; the shell it would
+ *  otherwise run under does not.
+ *
+ *  Exit 1 from `pgrep` means NO MATCH, which is a legitimate zero and must not be thrown; any other
+ *  failure is an instrument fault and is re-thrown, because a matcher that silently returns [] when
+ *  it is broken manufactures exactly the false green this suite exists to refuse. */
+const FIXTURE_MARKER = "COTAL-SMOKE-FIXTURE-NOT-A-PRODUCTION-DAEMON";
+const daemonsByMarker = (): number[] => {
+  try {
+    return execFileSync("pgrep", ["-f", FIXTURE_MARKER], { encoding: "utf8" })
+      .split("\n").map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0);
+  } catch (e) {
+    if ((e as { status?: number }).status === 1) return []; // no match — a real zero
+    throw e;
+  }
+};
+
+/** Watch for a daemon coming BACK, bounded. Returns the largest count seen at any sample.
+ *
+ *  Sampling repeatedly rather than reading once at the end on purpose: a supervisor that restarted
+ *  the daemon and then lost it again would leave the single final read at zero, and this suite would
+ *  report "nothing restarted it" about a box where something demonstrably did. The maximum over the
+ *  window cannot be fooled that way. */
+const maxDaemonsWithin = async (boundMs: number): Promise<number> => {
+  const deadline = Date.now() + boundMs;
+  let max = 0;
+  do {
+    max = Math.max(max, daemonsByMarker().length);
+    await wait(100);
+  } while (Date.now() < deadline);
+  return max;
+};
+
 /** The daemon's environment, with every inherited `COTAL_`-PREFIXED variable DELETED.
  *
  *  A process that launches agents may export `COTAL_SERVERS` — pointing at a REAL broker — into
@@ -263,6 +306,12 @@ try {
   const live = await assess();
   check("control: with the daemon live, health is SERVING (this validates the probe itself)", live.serving === true);
   check("control: the pid recorded at creation exists", groupAlive(created.daemon));
+  // INVERSE CONTROL FOR THE NO-RESTART CELLS BELOW, and it has to be taken HERE, while a daemon is
+  // known to be running. Without it, the later "no daemon came back" reading is a zero from an
+  // instrument never shown capable of a non-zero — the empty-set trap: a matcher that can never
+  // match anything reports "nothing restarted it" on a box where something did.
+  check("control: the marker matcher SEES a live daemon — so a later zero from it means something",
+    daemonsByMarker().length > 0);
 
   // ---- daemon-gone: SIGKILL, so the graceful lease release NEVER runs. The lease left behind is
   // ---- residue written by a process that no longer exists.
@@ -286,6 +335,20 @@ try {
   check("daemon-gone: the affirmative surface REFUSES", gone.serving === false);
   check("daemon-gone: and it refuses as no-responder specifically",
     !gone.serving && gone.refusal.condition === "no-responder");
+
+  // ---- no-restart: NOTHING BRINGS IT BACK. This is the incident's own shape, made observable.
+  // ---- `startDeliveryDetached` (implementations/cli/src/lib/delivery-proc.ts:98) spawns with
+  // ---- `detached: true` and calls `child.unref()` (:122) — an explicit release, with no exit
+  // ---- handler and no restart path. That is a reading of the launcher's CODE; this is the
+  // ---- OBSERVATION, which is a different kind of claim and is why the cell exists.
+  const returned = await maxDaemonsWithin(3000);
+  check("daemon-gone: NOTHING RESTARTS IT — no daemon process returns while we watch", returned === 0);
+  // Stated as a bound, never as "never": this observes no restart WITHIN the window. A supervisor on
+  // a longer duty cycle would not be caught here, and no cell in this suite may be read as excluding
+  // one. What the pair does establish is that the box has no PROMPT restarter, measured rather than
+  // inferred from the absence of a handler in the source.
+  check("daemon-gone: and the lease STILL reads ready across that whole window — nothing noticed either",
+    (await observer.readDeliveryLease(0))?.ready === true);
 
   // ---- daemon-wedged: a NEW daemon, then SIGSTOP inside the TTL window. The process exists, the
   // ---- lease is fresh, and nothing answers.
