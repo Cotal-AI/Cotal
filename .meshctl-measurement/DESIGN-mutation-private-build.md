@@ -92,6 +92,14 @@ Measured, not reasoned:
 | `lsof packages/core/dist/endpoint.js` | **empty** | Node reads a module and closes the descriptor; a steady-state open-file check cannot find resolvers either |
 | directed scan of `~/.config/cotal` + `~/.local/share/cotal` for symlinks resolving into this worktree | **2 found** | it works **only because the roots were already known** |
 
+**The `st_nlink` row is a negative result, so it needs an instrument that could have said otherwise —
+and it has one.** Independently reproduced by fm-orchestrator with a **planted control**: a plain
+file reads `1`; after `ln` it reads **`2`**; after `ln -s` it reads **`1`** again. **The count moves
+for a hard link and does not move for a symlink**, which is what makes the `1` on the real artifact a
+measurement rather than a quiet instrument. Without that control the row would prove nothing — a
+probe that always returns `1` is indistinguishable from one that returns `1` because nothing points
+at the file.
+
 The scan found the real links — and that is exactly why it is a trap. **A scan can prove presence and
 can never prove absence.** The search space is every path on the filesystem, plus `NODE_PATH`, plus a
 pnpm store hardlink, plus a plain `cp -r` of the build that no link would reveal at all. A clean scan
