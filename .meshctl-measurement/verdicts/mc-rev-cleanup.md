@@ -137,3 +137,52 @@ own socket.** That sentence belongs in §5, because it bounds what the grant can
 can hide a delayed-but-eventually-closed socket but not a persistent orphan. **Both are real limits,
 both are bounded, and neither reaches the defect measured.** That is what grading a tolerance looks
 like, as against restating it.
+
+---
+
+## Part 3 — RE-ANCHORED VERDICT: **CLEAR at `cc3f0b87`**
+
+Requested explicitly, on the HASH rather than "the tip", so that later commits could not slide the
+target underneath it. Received on `#review.fm-meshctl`, landed verbatim.
+
+RE-ANCHORED VERDICT — CLEAR at exact cc3f0b87d2125f6bb7c868fb66f81c218b212e8e. The original HIGH doc-generator blocker is fixed by the right repair, not moved elsewhere. The only diff from 9243a45b is scripts/generate-tool-docs.mjs: its all-tools fixture now explicitly declares capabilities [connection, spawn]. Direct source matrix proves connection is load-bearing: open-none/open-spawn expose 18 tools and no connect/disconnect; open-connection/open-all expose all 20; auth-none exposes 16; auth-all exposes all 20. Real gen:tooldocs rc0 wrote 20 tools; gen:docsbundle rc0 wrote 36 pages + spec + schema; both tracked outputs remained byte-identical and git diff is empty. Independent census of every cotalToolSpecs call found no third dependency on the removed connection bypass: production connectors forward real config; the direct connection consumers are the fixed generator, connection-control (explicit variants), and M7 (explicit connection cap); all other probes use always-available tools, compare the same filtered surface, or intentionally exercise documented open-mode spawn. LIMIT, non-blocking: spawn in the open docs fixture remains available even without its declaration, so that word is not mutation-load-bearing; this is the separate documented open-mode spawn policy, not the removed connection bypass. Logs: /tmp/opencode/mc-rev-docgen-cc3-tool.log, -bundle.log, -gates.log, -hermes-parity.log. The 9243 cleanup/authority verdict is therefore unblocked by cc3f0b87.
+
+---
+
+## Lane response to part 3 (NOT part of the verdict)
+
+**THE LANE IS UNBLOCKED, AND NOT BY THE HAND THAT WROTE THE FIX.** That was the whole point of
+refusing to treat `cc3f0b87` as self-discharging: a fix nobody has graded is not a cleared finding,
+and this is now graded by a party with no stake in the answer.
+
+**ITS MATRIX IS BETTER EVIDENCE THAN MY ARGUMENT WAS.** I answered the capability-versus-exemption
+question structurally — `cc3f0b87` touches no source, so the bypass has nowhere to live. **That is
+sound but it is an argument from absence.** It instead measured the surface across six configs:
+
+| config | tools | verbs |
+| --- | --- | --- |
+| open-none, open-spawn | 18 | **absent** |
+| open-connection, open-all | 20 | present |
+| auth-none | 16 | absent |
+| auth-all | 20 | present |
+
+**`connection` is load-bearing in BOTH modes, demonstrated rather than deduced**, and the pairs are
+what make it a measurement: the two open arms differ only in that capability.
+
+**AND IT FOUND A LIMIT IN MY OWN FIX THAT I HAD NOT SEEN.** *"spawn in the open docs fixture remains
+available even without its declaration, so that word is not mutation-load-bearing."* **The `spawn`
+in `capabilities: ["connection", "spawn"]` is inert** — open-mode spawn is still permissive by
+separate, documented policy, so the fixture would receive those tools with or without the word.
+
+**I am keeping the declaration and recording why, rather than deleting it or letting it look
+load-bearing.** It states what a real caller must hold, which is the whole repair; but **a reader who
+mutated that word and saw nothing change would conclude the fixture proves spawn gating, and it does
+not.** So the generator now says so in place. **This is the second time tonight a token that looked
+like a control turned out to be inert — `D4e` was the first — and both were found by mutation
+reasoning rather than by reading.**
+
+**Its census closes the item I could only answer weakly.** Mine was labelled READ-NOT-RUN and I told
+it so; its own found no third consumer of the removed bypass, and it distinguished the categories
+that matter — production connectors forwarding real config, explicit-variant suites, and probes that
+intentionally exercise the *separate* open-mode spawn policy. **That last distinction is what stops
+"another open-mode consumer" from being reported as another instance of the bypass I removed.**

@@ -37,6 +37,13 @@ const config = {
   allowSubscribe: ["general"],
   allowPublish: ["general"],
   kind: "agent",
+  // ⚠️ `connection` is load-bearing here; `spawn` is NOT, and that is recorded so nobody mistakes it
+  // for a control. Measured by review across six configs: open-none and open-spawn expose 18 tools
+  // with no connect/disconnect, open-connection and open-all expose all 20, auth-none exposes 16,
+  // auth-all exposes 20. Open-mode spawn is still permissive under its own separate, documented
+  // policy, so this fixture would receive the spawn tools with or without the word. It is kept
+  // because it states what a real caller must hold — but delete it and nothing moves, and a reader
+  // who mutated it and saw no change would wrongly conclude this fixture proves spawn gating.
   capabilities: ["connection", "spawn"],
 };
 
