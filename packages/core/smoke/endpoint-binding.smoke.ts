@@ -270,15 +270,21 @@ c("a run's journal subject is the RUN, not the entry: one appender, one fence co
   wfjSubject(SPACE, "r-1") === "cotal.epbind.wfj.r-1");
 c("and a runId that is not an id token is refused rather than tokenized into someone else's subject",
   (() => { try { wfjSubject(SPACE, "r/1"); return false; } catch { return true; } })());
-c("the run-driver journal grants are the run's own subject, its replay durable, and the stream INFO the barrier reads its sequence from",
+c("the run-driver journal grants are the run's own subject and its replay durable, create through DELETE (every takeover recreates it to read from the top)",
   JSON.stringify(runDriverJournalGrants(SPACE, "r-1")) === JSON.stringify([
     "cotal.epbind.wfj.r-1",
     "$JS.API.CONSUMER.CREATE.WFJ_epbind.wfj_r-1.cotal.epbind.wfj.r-1",
     "$JS.API.CONSUMER.INFO.WFJ_epbind.wfj_r-1",
     "$JS.API.CONSUMER.MSG.NEXT.WFJ_epbind.wfj_r-1",
     "$JS.ACK.WFJ_epbind.wfj_r-1.>",
-    "$JS.API.STREAM.INFO.WFJ_epbind",
+    "$JS.API.CONSUMER.DELETE.WFJ_epbind.wfj_r-1",
   ]), runDriverJournalGrants(SPACE, "r-1"));
+// The barrier's expectation is the last sequence the driver REPLAYED, so it needs no read of the
+// subject's current one — and granting that read would invite exactly the read-then-publish shape
+// the barrier exists to remove.
+c("and no row reads the stream's state: the expectation comes from the replay, never from a fresh read",
+  runDriverJournalGrants(SPACE, "r-1").every((r) => !r.includes("STREAM.INFO") && !r.includes("STREAM.MSG.GET")),
+  runDriverJournalGrants(SPACE, "r-1"));
 // The confinement that matters. A driver holding `wfj.>` could append to ANOTHER run's journal,
 // which is not a read leak but a corruption: that run would replay a step it never took. And the
 // activation barrier assumes one authoritative appender per run subject, which a cross-run grant

@@ -1,0 +1,431 @@
+/**
+ * The workflow run journal's APPEND path — the activation barrier.
+ *
+ * A run has exactly one authoritative appender at a time, and the hard part is not choosing it but
+ * stopping the previous one. A driver that reads a lease token and then publishes performs two
+ * operations: it can read a token that is still valid, be preempted, lose the lease, and publish
+ * anyway. Every client-side variant of that check has the window BY CONSTRUCTION — narrowing the
+ * gap does not close it.
+ *
+ * So the STREAM is the acceptor, not the client. Every append carries
+ * `Nats-Expected-Last-Subject-Sequence` for the run's own subject, which JetStream evaluates
+ * server-side and atomically: the publish lands only if the run's subject is exactly where the
+ * publisher believed it was. There is no read-then-publish window because there is no read.
+ *
+ * Takeover is replay-then-activate, and the two are one mechanism rather than two adjacent steps:
+ *
+ *   1. The successor replays the run subject from the beginning. It must do this anyway — resume is
+ *      re-running the program with journalled effects returning recorded results — and the LAST
+ *      REPLAYED MESSAGE'S STREAM SEQUENCE is exactly the subject's last sequence. This is the only
+ *      authoritative head there is: `STREAM.INFO`'s `last_seq` is stream-WIDE and its
+ *      `subjects_filter` returns per-subject message COUNTS, not sequences, so an INFO-derived
+ *      expectation is wrong the moment any other run appends (measured: a subject whose head was 2
+ *      reported `last_seq` 3, and publishing at 3 was refused 10071).
+ *   2. Its first act is an ACTIVATION record appended at that expected sequence.
+ *   3. Once the activation lands it has advanced the subject, so any append still in flight from the
+ *      superseded driver carries an expectation from before it and the SERVER rejects it.
+ *
+ * **TWO CAS FAILURES THAT ARE NOT THE SAME STATE**, and conflating them was this barrier's first
+ * defect. Nothing orders a successor's activation ahead of a predecessor's last packet: the
+ * predecessor's delayed append can land FIRST and take the sequence the successor was activating
+ * at. So:
+ *
+ *   - A refused ACTIVATION means "my replay is stale", not "I am superseded". The successor has
+ *     driven nothing yet — that is the rule, not an accident of timing — and the entries that beat
+ *     it are simply more prefix. It re-replays and activates again while it still holds the lease,
+ *     or it releases the lease. Retrying here is correct.
+ *   - A refused APPEND, after an activation that won, means "someone else activated". That driver
+ *     IS superseded: it stops, and it never refreshes the sequence and tries again, because a retry
+ *     at the new head is exactly the defect the barrier exists to prevent wearing a different hat —
+ *     a driver that has already lost the run re-establishing itself by asking again.
+ *
+ * **ONE SERIAL PUMP PER RUN.** Concurrency scopes append from several branches at once, and two
+ * publishes carrying the same expectation cannot both land: the server accepts one and refuses the
+ * other, which under the rule above would make a driver declare ITSELF superseded while it is the
+ * only writer. So the appender owns one queue and one head, publishes one entry at a time, and
+ * advances the head only from each PubAck. A refusal poisons it: everything queued behind fails
+ * with the same terminal error and never reaches the wire.
+ *
+ * **ONE SUBJECT PER RUN**, `<spacePrefix>.wfj.<runId>`, where the design's §7.6 writes
+ * `…wfj.<runId>.<entryId>`. This is a deviation, and it is NOT because a per-entry subject cannot be
+ * fenced — it can: `Nats-Expected-Last-Subject-Sequence-Subject` lets the expectation be evaluated
+ * against a wildcard comparator, and it works on the repo's broker floor (measured on 2.12.1:
+ * per-entry subjects under a `wfj.<runId>.*` comparator accepted at the run's head, refused 10071
+ * on a stale one, and were unaffected by another run's appends). The reasons are the design's own:
+ * §7.6 asks the subject range for per-run ordering, per-run replay by consumer filter, and cheap
+ * retirement by subject purge, and all three are properties of the RUN token — the entry token buys
+ * per-entry point reads, which an append-only journal replayed in full never issues. Against that it
+ * costs one stream subject per journal entry forever, in a stream that deliberately has no age
+ * eviction, and a second header whose absence or mismatch degrades silently to a per-publish-subject
+ * comparison — which on a fresh entry subject is `0`, i.e. always a create, i.e. no fence at all.
+ * A fence that fails open when misconfigured is worse than one coordinate less addressable.
+ */
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
+import { wfjStreamName, wfjSubject, runJournalConsumerConfig } from "./endpoint-binding.js";
+import { isCasLoss } from "./endpoint-records.js";
+
+/**
+ * The successor's first act, and the only record the runtime layer writes that is not a step.
+ *
+ * `replayedTo` is the sequence the activation expected, so a reader of the journal alone can say
+ * which prefix each driver actually saw — a takeover that replayed less than its predecessor wrote
+ * is visible in the record rather than inferred from a gap.
+ */
+export interface RunJournalActivation {
+  readonly v: 1;
+  readonly kind: "activation";
+  readonly run: string;
+  /** The driver principal taking the run over. */
+  readonly holder: string;
+  /** The work-pool lease's fencing token this takeover is authorized by. */
+  readonly fencingToken: string;
+  /** The holder's process epoch: two takeovers by one principal are still two drivers. */
+  readonly epoch: number;
+  readonly replayedTo: number;
+  readonly at: number;
+}
+
+/** One step-journal entry, wrapped. The `entry` is the LANGUAGE's shape and core does not read it:
+ *  what a step recorded is the interpreter's business, and a wire layer that parsed it would have to
+ *  be revised every time the language learns an effect. */
+export interface RunJournalStep {
+  readonly v: 1;
+  readonly kind: "step";
+  readonly run: string;
+  readonly at: number;
+  readonly entry: unknown;
+}
+
+export type RunJournalRecord = RunJournalActivation | RunJournalStep;
+
+/** A record as it was read back, with the stream sequence it landed at. */
+export interface StoredRunJournalRecord {
+  readonly seq: number;
+  readonly record: RunJournalRecord;
+}
+
+/**
+ * The server refused an append from a driver that had already activated: someone else has taken the
+ * run over.
+ *
+ * Not retryable, and not an effect failure. It says nothing about the effect the entry described —
+ * whatever it did, it did — only that this process may no longer speak for the run.
+ */
+export class RunSuperseded extends Error {
+  constructor(
+    readonly run: string,
+    readonly subject: string,
+    readonly expectedSeq: number,
+    readonly cause?: unknown,
+  ) {
+    super(
+      `run ${run} is driven by someone else: an append to ${subject} expecting last sequence ${expectedSeq} was refused by the stream. This driver is superseded — stop driving, and do not retry with a refreshed sequence.`,
+    );
+    this.name = "RunSuperseded";
+  }
+}
+
+/**
+ * An ACTIVATION lost its CAS: the prefix this driver replayed is already stale.
+ *
+ * Deliberately not {@link RunSuperseded}. Nothing orders a takeover ahead of the outgoing driver's
+ * last packet, so losing here is the ordinary case of "it appended while I was reading", and the
+ * successor has performed no work to abandon. It re-replays and activates again while it still holds
+ * the lease. Only an append AFTER a won activation means superseded.
+ */
+export class ActivationRaced extends Error {
+  constructor(
+    readonly run: string,
+    readonly subject: string,
+    readonly expectedSeq: number,
+    readonly attempts: number,
+    readonly cause?: unknown,
+  ) {
+    super(
+      `run ${run}: activation on ${subject} at expected sequence ${expectedSeq} lost its CAS after ${attempts} attempt(s). The journal moved while it was being replayed, so this driver's prefix is stale. Re-replay and activate again while the lease is still held, or release it — this is NOT a supersession.`,
+    );
+    this.name = "ActivationRaced";
+  }
+}
+
+/**
+ * The replay did not deliver the whole prefix.
+ *
+ * A short replay is the same failure as an evicted journal prefix: the run re-performs effects it
+ * has already performed, under a driver that believes it is resuming correctly. A pull iterator
+ * ends cleanly on a dropped connection, so "it stopped early" and "there was no more" look alike on
+ * the wire and have to be distinguished by counting.
+ */
+export class RunJournalReplayIncomplete extends Error {
+  constructor(
+    readonly run: string,
+    readonly expected: number,
+    readonly delivered: number,
+  ) {
+    super(`run ${run}: the journal replay delivered ${delivered} of ${expected} records; the prefix is incomplete and must not be resumed from`);
+    this.name = "RunJournalReplayIncomplete";
+  }
+}
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function assertKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
+  for (const k of Object.keys(o))
+    if (!allowed.includes(k)) throw new Error(`${what} carries unknown key ${JSON.stringify(k)}`);
+}
+
+/** Parse one stored record. The envelope is validated; the step's `entry` is passed through. */
+export function parseRunJournalRecord(raw: unknown, subject: string): RunJournalRecord {
+  if (!isObj(raw)) throw new Error(`run-journal record on ${subject} is not an object`);
+  if (raw.v !== 1) throw new Error(`run-journal record on ${subject} has version ${JSON.stringify(raw.v)}, expected 1`);
+  if (typeof raw.run !== "string" || raw.run.length === 0)
+    throw new Error(`run-journal record on ${subject} has no run id`);
+  if (typeof raw.at !== "number") throw new Error(`run-journal record on ${subject} has no timestamp`);
+  if (raw.kind === "step") {
+    assertKeys(raw, ["v", "kind", "run", "at", "entry"], `run-journal step on ${subject}`);
+    if (!("entry" in raw)) throw new Error(`run-journal step on ${subject} carries no entry`);
+    return raw as unknown as RunJournalStep;
+  }
+  if (raw.kind === "activation") {
+    assertKeys(raw, ["v", "kind", "run", "holder", "fencingToken", "epoch", "replayedTo", "at"], `run-journal activation on ${subject}`);
+    for (const k of ["holder", "fencingToken"] as const)
+      if (typeof raw[k] !== "string" || (raw[k] as string).length === 0)
+        throw new Error(`run-journal activation on ${subject} has no ${k}`);
+    for (const k of ["epoch", "replayedTo"] as const)
+      if (typeof raw[k] !== "number") throw new Error(`run-journal activation on ${subject} has no ${k}`);
+    return raw as unknown as RunJournalActivation;
+  }
+  throw new Error(`run-journal record on ${subject} has unknown kind ${JSON.stringify(raw.kind)}`);
+}
+
+export interface RunJournalReplay {
+  readonly records: readonly StoredRunJournalRecord[];
+  /** The run subject's last sequence, and therefore the expectation an activation must carry. 0
+   *  when the run has never been appended to, which is the create-only expectation. */
+  readonly lastSeq: number;
+}
+
+/**
+ * Read the run's whole journal, in append order, from the beginning.
+ *
+ * The replay durable is DELETED and recreated rather than reused. A durable remembers how far it
+ * delivered, and resume is not a cursor: every takeover needs the prefix FROM THE TOP, so a durable
+ * that survived the previous driver would hand its successor the empty tail and let it resume a run
+ * as if nothing had happened. Deleting is also why a rival's interference is bounded — it can only
+ * disturb a pre-activation replay, and a disturbed replay either fails its count check or loses its
+ * activation CAS, both of which end in "replay again".
+ */
+export async function replayRunJournal(
+  js: JetStreamClient,
+  jsm: JetStreamManager,
+  space: string,
+  runId: string,
+): Promise<RunJournalReplay> {
+  const stream = wfjStreamName(space);
+  const subject = wfjSubject(space, runId);
+  const cfg = runJournalConsumerConfig(space, runId);
+  const durable = cfg.durable_name as string;
+  try {
+    await jsm.consumers.delete(stream, durable);
+  } catch {
+    /* no consumer to delete: a first activation, or a predecessor that cleaned up */
+  }
+  await jsm.consumers.add(stream, cfg);
+  const consumer = await js.consumers.get(stream, durable);
+  // The CACHED info from the create, so the count is the one this consumer was born with rather
+  // than a second round trip that a concurrent append could have moved under us.
+  const pending = (await consumer.info(true)).num_pending;
+  const records: StoredRunJournalRecord[] = [];
+  if (pending === 0) return { records, lastSeq: 0 };
+  const iter = await consumer.fetch({ max_messages: pending, expires: 15_000 });
+  for await (const m of iter) {
+    records.push({ seq: m.seq, record: parseRunJournalRecord(m.json(), subject) });
+    m.ack();
+    if (records.length >= pending) break;
+  }
+  if (records.length !== pending) throw new RunJournalReplayIncomplete(runId, pending, records.length);
+  return { records, lastSeq: records[records.length - 1]!.seq };
+}
+
+async function publishFenced(
+  js: JetStreamClient,
+  subject: string,
+  record: RunJournalRecord,
+  expected: number,
+): Promise<{ ok: true; seq: number } | { ok: false; cause: unknown }> {
+  const h = natsHeaders();
+  h.set("Nats-Expected-Last-Subject-Sequence", String(expected));
+  try {
+    const pa = await js.publish(subject, new TextEncoder().encode(JSON.stringify(record)), { headers: h });
+    return { ok: true, seq: pa.seq };
+  } catch (e) {
+    if (isCasLoss(e)) return { ok: false, cause: e };
+    throw e;
+  }
+}
+
+/**
+ * The one authorized appender for a run, for as long as nobody else takes it.
+ *
+ * Obtained only from {@link activateRun}: an appender that has not activated does not know the
+ * subject's sequence, and one that guessed would be the read-then-publish window again. The head is
+ * private and advances only from a PubAck — a caller that could pass an expectation in could pass a
+ * stale one, and every branch of a concurrency scope would be passing its own.
+ */
+export class RunJournalAppender {
+  /** Set once the stream refuses an append. Terminal, and checked before the wire is touched. */
+  private dead: RunSuperseded | undefined;
+  /** The serial pump. Every append waits for the one before it, so one expectation is in flight. */
+  private chain: Promise<void> = Promise.resolve();
+
+  private constructor(
+    private readonly js: JetStreamClient,
+    readonly run: string,
+    readonly subject: string,
+    /** The prefix this driver replayed, which is the journal the interpreter resumes from. */
+    readonly replayed: readonly StoredRunJournalRecord[],
+    private seq: number,
+  ) {}
+
+  /** @internal — {@link activateRun} is the only way in. */
+  static of(
+    js: JetStreamClient,
+    run: string,
+    subject: string,
+    replayed: readonly StoredRunJournalRecord[],
+    seq: number,
+  ): RunJournalAppender {
+    return new RunJournalAppender(js, run, subject, replayed, seq);
+  }
+
+  /** The last sequence this appender has seen acknowledged on the run's subject. */
+  get lastSeq(): number {
+    return this.seq;
+  }
+
+  /** True once the stream has refused an append. The driver stops; nothing here recovers. */
+  get isSuperseded(): boolean {
+    return this.dead !== undefined;
+  }
+
+  /** The step entries of the replayed prefix, in order, with the activations dropped. */
+  steps(): readonly unknown[] {
+    return this.replayed.filter((r) => r.record.kind === "step").map((r) => (r.record as RunJournalStep).entry);
+  }
+
+  /**
+   * Append one step entry. Serialized against every other append on this run.
+   *
+   * Callers do not pass a sequence and could not usefully hold one: two concurrent branches of a
+   * `parallel` would both hold the same head, and the second publish would be refused by a server
+   * doing exactly what it was asked. Here they queue instead, and the head moves only when the
+   * broker says it did.
+   */
+  append(entry: unknown, at: number): Promise<number> {
+    const result = this.chain.then(() => this.publishOne(entry, at));
+    // The chain must not reject, or the NEXT append inherits an unhandled rejection instead of
+    // running. It is a sequencer, not a result: the poison flag is what makes the failure stick.
+    this.chain = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async publishOne(entry: unknown, at: number): Promise<number> {
+    // Poisoned: everything queued behind a refusal fails with the same terminal error, and none of
+    // it reaches the wire. A queued entry retried at the new head is the superseded driver writing
+    // again, which is the one thing the barrier forbids.
+    if (this.dead !== undefined) throw this.dead;
+    const record: RunJournalStep = { v: 1, kind: "step", run: this.run, at, entry };
+    const r = await publishFenced(this.js, this.subject, record, this.seq);
+    if (!r.ok) {
+      this.dead = new RunSuperseded(this.run, this.subject, this.seq, r.cause);
+      throw this.dead;
+    }
+    this.seq = r.seq;
+    return r.seq;
+  }
+}
+
+export interface RunTakeover {
+  readonly space: string;
+  readonly runId: string;
+  readonly holder: string;
+  readonly fencingToken: string;
+  readonly epoch: number;
+  readonly at: number;
+}
+
+export interface ActivateOptions {
+  /** How many replay+activate rounds to try before giving up. Each round re-reads the prefix. */
+  readonly attempts?: number;
+  /**
+   * Called between rounds, and the place a driver re-checks that it still holds the lease.
+   *
+   * A losing activation means the journal moved, which is also the shape a takeover BY SOMEONE ELSE
+   * has: retrying forever would be a driver that lost the lease politely re-reading until the real
+   * holder pauses. Throwing from here stops the loop with that reason.
+   */
+  readonly beforeRetry?: (attempt: number) => Promise<void> | void;
+  /**
+   * Called with the replayed prefix, immediately before the activation is published.
+   *
+   * This is the LAST point at which anything can be checked against a prefix that is still current,
+   * so it is where a driver re-reads its lease: the gap between "I replayed" and "I claimed" is the
+   * only window in the takeover, and every millisecond of work moved out of it is a window narrowed.
+   * Throwing from here abandons the takeover without claiming the subject.
+   */
+  readonly onReplayed?: (replay: RunJournalReplay) => Promise<void> | void;
+}
+
+/**
+ * Take a run over: replay its journal, then claim the subject with an activation record.
+ *
+ * Returns the appender that is now the run's single authorized writer, carrying the replayed prefix.
+ * Throws {@link ActivationRaced} when the journal kept moving — the caller has driven nothing and
+ * may try again while it holds the lease. It never throws {@link RunSuperseded}: not having won the
+ * subject yet is not the same as having lost it.
+ */
+export async function activateRun(
+  js: JetStreamClient,
+  jsm: JetStreamManager,
+  t: RunTakeover,
+  opts: ActivateOptions = {},
+): Promise<RunJournalAppender> {
+  const subject = wfjSubject(t.space, t.runId);
+  const attempts = Math.max(1, opts.attempts ?? 3);
+  let lastExpected = 0;
+  let cause: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (attempt > 1 && opts.beforeRetry !== undefined) await opts.beforeRetry(attempt);
+    const replay = await replayRunJournal(js, jsm, t.space, t.runId);
+    const { records, lastSeq } = replay;
+    lastExpected = lastSeq;
+    if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
+    const activation: RunJournalActivation = {
+      v: 1,
+      kind: "activation",
+      run: t.runId,
+      holder: t.holder,
+      fencingToken: t.fencingToken,
+      epoch: t.epoch,
+      replayedTo: lastSeq,
+      at: t.at,
+    };
+    const r = await publishFenced(js, subject, activation, lastSeq);
+    // The activation's PubAck is the line: before it this driver has performed nothing and holds
+    // nothing, after it the run's subject is its own until someone else activates.
+    if (r.ok) return RunJournalAppender.of(js, t.runId, subject, records, r.seq);
+    cause = r.cause;
+  }
+  throw new ActivationRaced(t.runId, subject, lastExpected, attempts, cause);
+}
+
+/** Convenience for a caller holding only a connection. */
+export async function runJournalContext(nc: NatsConnection): Promise<{ js: JetStreamClient; jsm: JetStreamManager }> {
+  return { js: jetstream(nc), jsm: await jetstreamManager(nc) };
+}

@@ -14,6 +14,7 @@ export * from "./endpoint-serve.js";
 export * from "./endpoint-verbs.js";
 export * from "./endpoint-invoke.js";
 export * from "./endpoint-work.js";
+export * from "./run-journal.js";
 export * from "./endpoint-action.js";
 export * from "./endpoint-checkpoint.js";
 export * from "./endpoint-contract-store.js";

@@ -859,7 +859,13 @@ export function canonicalizerWorkGrants(space: string, endpoint: string): string
 /** A run's journal replay durable on WFJ (`wfj_<runId>`, filter the run's own subject): the
  *  driver reads the run's entries in append order to reproduce the deterministic prefix. Filtered
  *  to ONE run, because a driver that can read every run's journal can read every run's effect
- *  results, and a journal entry carries what an agent said. */
+ *  results, and a journal entry carries what an agent said.
+ *
+ *  It is named rather than ephemeral so the create row can pin the durable AND the filter (an
+ *  ephemeral's server-generated name would need a `*` in the name token), and it is DELETED and
+ *  recreated at every takeover rather than resumed — see `replayRunJournal`: a durable remembers
+ *  how far it delivered, and a successor needs the prefix from the top, so a reused one would hand
+ *  it the empty tail. That is why the driver's grants carry a delete row. */
 export function runJournalConsumerConfig(
   space: string,
   runId: string,
@@ -879,8 +885,10 @@ export function runJournalConsumerConfig(
  * The RUN DRIVER's journal rows, minted per RUN and never per space.
  *
  * Publish on exactly one subject — the run's — plus the replay durable it owns on that same
- * subject, plus `STREAM.INFO` on WFJ, which is what reads the run subject's current last sequence
- * for the activation barrier's expected-sequence header.
+ * subject, create, bind and DELETE, because every takeover recreates it to read the prefix from the
+ * top. There is no row here for reading the subject's current sequence, and there does not need to
+ * be one: the activation barrier's expectation is the last sequence the driver REPLAYED, so the
+ * read it would otherwise make is the replay it makes anyway.
  *
  * There is no wildcard form of this on purpose. A space-wide `wfj.>` publish would let one run's
  * driver append to another run's journal, which is not a read leak but a corruption: the other run
@@ -895,7 +903,7 @@ export function runDriverJournalGrants(space: string, runId: string): string[] {
     wfjSubject(space, runId),
     consumeCreateRow(stream, cfg),
     ...consumeBindRows(stream, cfg.durable_name!),
-    `${JSAPI}.STREAM.INFO.${stream}`,
+    consumeDeleteRow(stream, cfg.durable_name!),
   ];
 }
 
