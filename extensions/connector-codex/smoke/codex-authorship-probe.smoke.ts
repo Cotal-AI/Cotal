@@ -92,9 +92,26 @@ console.log("driving the live Codex E2E (it DMs a managed session, which is what
 const before = new Set(await rollouts(SESSIONS));
 
 const LIVE = fileURLToPath(new URL("./codex-live.smoke.ts", import.meta.url));
+
+/**
+ * SCRUB AMBIENT `COTAL_*` AT THIS BOUNDARY, not only at the next one.
+ *
+ * Every managed agent seat on this box carries its own mesh identity in the environment —
+ * including `COTAL_SERVERS`, which points at the PRODUCTION broker. `codex-live` already scrubs
+ * before spawning its host child, so this probe was safe; but it was safe because of the callee's
+ * hygiene rather than anything this file did, and "safe because someone downstream remembered" is
+ * a property that silently stops holding when the downstream file is edited.
+ *
+ * `COTAL_E2E_CODEX` is re-set AFTER the scrub because it starts with the same prefix — removing
+ * every `COTAL_*` would strip the flag that enables the run and turn this into a silent skip.
+ */
+const childEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const k of Object.keys(childEnv)) if (k.startsWith("COTAL_")) delete childEnv[k];
+childEnv.COTAL_E2E_CODEX = "1";
+
 const child = spawn("npx", ["tsx", LIVE], {
   cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-  env: { ...process.env, COTAL_E2E_CODEX: "1" },
+  env: childEnv,
   stdio: ["ignore", "inherit", "inherit"],
 });
 const liveExit: number = await new Promise((r) => child.on("exit", (c) => r(c ?? 1)));
