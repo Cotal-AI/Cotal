@@ -18,7 +18,9 @@
 import { mkdtempSync, rmSync, statSync, symlinkSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { eventWalLocation, ensureEventWalDir } from "../src/agui-wal-path.js";
+import { createHash } from "node:crypto";
+import { eventWalLocation, ensureEventWalDir, resolveEventsStateRoot, EventsStateRootMissing } from "../src/agui-wal-path.js";
+import { EventWal } from "../src/event-wal.js";
 
 let pass = 0;
 let fail = 0;
@@ -153,12 +155,89 @@ try {
     refused = e as Error;
   }
   c("a SYMLINKED component in the chain is REFUSED", refused !== undefined, "no throw");
+  c("...and the refusal is not a generic filesystem error", refused instanceof Error);
   c("...and the refusal names the symlink rather than failing generically",
     /symlink/i.test(refused?.message ?? ""), refused?.message);
   // The refusal must not have written anything into the link's target first.
   c("...and nothing was created through the link", !existsSync(join(target, "wal.json")));
   rmSync(evilRoot, { recursive: true, force: true });
   rmSync(target, { recursive: true, force: true });
+
+  // ── 6. THE FAIL-LOUD, DRIVEN ──────────────────────────────────────────────────────────────────
+  // Not asserted from a comment: each case CALLS the resolver and reads what came back. The failure
+  // being prevented is silent, so a cell that merely inspected the source would share the defect.
+  for (const [label, env] of [
+    ["unset", {}],
+    ["empty string", { COTAL_WORKSPACE_ROOT: "" }],
+    ["whitespace only", { COTAL_WORKSPACE_ROOT: "   " }],
+    ["explicitly undefined", { COTAL_WORKSPACE_ROOT: undefined }],
+  ] as const) {
+    let thrown: unknown;
+    try {
+      resolveEventsStateRoot(env);
+    } catch (e) {
+      thrown = e;
+    }
+    c(`events-enabled launch with ${label} state root FAILS LOUD`, thrown instanceof EventsStateRootMissing, String(thrown));
+    // WHICH refusal, through the type — not "it threw". A path that threw ENOENT from somewhere else
+    // would satisfy a bare truthiness check and mean something entirely different.
+    c(`...and names COTAL_WORKSPACE_ROOT so the operator can act on it`,
+      /COTAL_WORKSPACE_ROOT/.test((thrown as Error)?.message ?? ""), (thrown as Error)?.message);
+  }
+
+  // THE CONTROL: the inverse of the predicate. Without it, a resolver that threw unconditionally
+  // would pass every cell above.
+  let good: string | undefined;
+  let goodErr: unknown;
+  try {
+    good = resolveEventsStateRoot({ COTAL_WORKSPACE_ROOT: root });
+  } catch (e) {
+    goodErr = e;
+  }
+  c("CONTROL — a resolvable root is RETURNED, not thrown on", good === root, { good, err: String(goodErr) });
+
+  // ── 7. THE POSITIVE: THE WAL IS WHERE THE READER LOOKS ────────────────────────────────────────
+  // The negative (it fails loud) does not establish the thing that matters. This writes a REAL
+  // `EventWal` through the resolved location, then finds it again from the layout the plan
+  // documents — computed independently here rather than by calling the same function, so the cell
+  // compares the writer against the SPEC and not against itself.
+  const rootB = resolve(resolveEventsStateRoot({ COTAL_WORKSPACE_ROOT: root }));
+  const W = { workspaceRoot: rootB, space: "spaceW", principal: "ownerW.actorW", threadId: "threadW" };
+  const wloc = await ensureEventWalDir(W);
+  const wal = await EventWal.open(wloc.walPath, {
+    space: W.space,
+    threadId: W.threadId,
+    principal: W.principal,
+    subjectMayExist: false,
+  });
+  await wal.beginSend({
+    id: "00000000-0000-4000-8000-00000000abcd",
+    E: 0,
+    seq: 1,
+    sourceCursor: "1:2:0:0000000000000000",
+    body: [{ kind: "text", text: "a frame body" }] as never,
+    brackets: { run: undefined, text: [], reasoning: [], tools: [] },
+  });
+
+  const hh = (v: string): string => createHash("sha256").update(v).digest("hex").slice(0, 16);
+  const readerExpects = join(rootB, ".cotal", "events", hh(W.space), hh(W.principal), hh(W.threadId), "wal.json");
+  c("a reader deriving the path from the DOCUMENTED layout finds the WAL the writer wrote",
+    existsSync(readerExpects), readerExpects);
+  c("...and it is the same file the location helper named",
+    resolve(readerExpects) === resolve(wloc.walPath), { reader: readerExpects, helper: wloc.walPath });
+
+  // And it round-trips: reopening from the reader's path yields the SAME frozen pending, which is
+  // what makes "the WAL is where the reader looks" a claim about recovery rather than about a file
+  // merely existing at a path.
+  const reread = await EventWal.open(readerExpects, {
+    space: W.space,
+    threadId: W.threadId,
+    principal: W.principal,
+    subjectMayExist: true,
+  });
+  c("...and reopening it from that path recovers the frozen pending frame",
+    reread.pending?.id === "00000000-0000-4000-8000-00000000abcd" && reread.pending?.state === "sent_unacked",
+    reread.pending);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

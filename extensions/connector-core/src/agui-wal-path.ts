@@ -28,6 +28,47 @@ import { dirname, join } from "node:path";
 import { ensureDirNoSymlink } from "@cotal-ai/core";
 
 /**
+ * Thrown when a session that is going to publish events cannot say where its WAL belongs.
+ *
+ * A distinct type rather than a bare `Error` so a caller can tell "misconfigured launch" from
+ * "filesystem said no" without matching on message text.
+ */
+export class EventsStateRootMissing extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EventsStateRootMissing";
+  }
+}
+
+/**
+ * The state root for an events-enabled session, or a loud failure.
+ *
+ * **THE FAILURE THIS PREVENTS IS SILENT, WHICH IS WHY IT IS A THROW AND NOT A DEFAULT.** The
+ * tempting fallback is `process.cwd()`. A WAL written there is not an error anyone sees: the emitter
+ * starts, frames publish, and the durable state that makes a restart safe sits in whatever directory
+ * the launch happened to begin in — a per-agent working directory that "can point at any repo". The
+ * next start resolves the real root, finds no WAL, and reads an already-published thread as VIRGIN:
+ * `E := 0`, a fresh epoch, a second frame claiming a sequence the stream has already seen. Nothing
+ * reports a problem at any point, and an absence is what a clean board looks like.
+ *
+ * `env` is a PARAMETER and the root resolves PER CALL. A module-level read would freeze whatever the
+ * environment was at first import, and none of what this path is keyed on — space, principal,
+ * thread — is process-wide.
+ */
+export function resolveEventsStateRoot(env: { COTAL_WORKSPACE_ROOT?: string | undefined }): string {
+  const root = env.COTAL_WORKSPACE_ROOT;
+  if (typeof root !== "string" || root.trim() === "")
+    throw new EventsStateRootMissing(
+      "events are enabled for this session but COTAL_WORKSPACE_ROOT is not set, so there is nowhere " +
+        "to put the event write-ahead log. The launcher forwards it from LaunchOpts.workspaceRoot; a " +
+        "session started outside a manager has no workspace root and must not publish events. " +
+        "Refusing rather than defaulting to the working directory, which would put the WAL somewhere " +
+        "no later start looks.",
+    );
+  return root;
+}
+
+/**
  * One path component from one untrusted value.
  *
  * 16 hex characters of SHA-256, matching the width the channel mapping and the source cursor
