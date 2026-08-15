@@ -32,7 +32,7 @@ const check = (name: string, cond: boolean): void => {
 
 /** Declared up front so a run that dies before its cells cannot look like a run that caught nothing.
  *  Asserted against the actual executed count at the end; exit code alone would not tell them apart. */
-const CELLS_DECLARED = 27;
+const CELLS_DECLARED = 32;
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const shardJs = join(repoRoot, "bin", "smoke", "shard.mjs");
@@ -151,6 +151,27 @@ try {
   check("A4.2 summary says FAILED at that member", a4.out.includes(`FAILED at: ${members[2]}`));
   check("A4.3 the word 'passed' does NOT appear", !a4.out.includes("passed"));
   check("A4.4 a failure is NOT reported as a decline", !a4.out.includes("INCOMPLETE"));
+
+  // ---- MUST-DIFFER across all three real states -------------------------------------------
+  // Asserting each arm against a literal is weaker than it looks: three cells can all be true
+  // while two states still render identically to a supervisor that reads only one channel. The
+  // claim that matters is that the three states are DISTINGUISHABLE, so assert them against each
+  // OTHER, and do it on a channel a machine reads. A display field is not a protocol field: if the
+  // only thing separating declined from passed were the prose in the summary, this would not hold.
+  console.log("\nMUST-DIFFER — passed / declined / failed, on a machine-readable channel");
+  const states = { passed: a1.rc, declined: a2.rc, failed: a4.rc };
+  check("MD.1 passed differs from declined", states.passed !== states.declined);
+  check("MD.2 declined differs from failed", states.declined !== states.failed);
+  check("MD.3 passed differs from failed", states.passed !== states.failed);
+  check("MD.4 all three exit statuses are pairwise distinct",
+    new Set(Object.values(states)).size === 3);
+  // The discriminator must survive discarding stdout entirely. This classifier reads NOTHING but
+  // the exit status; if it can still recover all three states, the distinction is in the protocol
+  // and not in the rendering.
+  const classify = (rc: number): string =>
+    rc === 0 ? "passed" : rc === 3 ? "declined" : "failed";
+  check("MD.5 a machine reading ONLY the exit status recovers all three states",
+    classify(a1.rc) === "passed" && classify(a2.rc) === "declined" && classify(a4.rc) === "failed");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
