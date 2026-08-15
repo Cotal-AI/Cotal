@@ -85,10 +85,14 @@ cache. That is a judgement call and I would like it graded as one.
 event. Enumerated across the tree: the only other occurrences are `.lane/residue-window.mts:328-329`
 and `.lane/window-arms.mts:323-324`, and both merely **print** it. **No cell asserts it anywhere.**
 So the "a denial surfaces on TWO paths" claim in that file's header (`delivery-caller.ts:20-26`) is
-carried by exactly one verified path plus one that is collected and never checked. Either a cell
-should assert the second path or the comment should stop claiming it. **I lean toward the cell; tell
-me if you think the field should be dropped instead**, since an unasserted diagnostic that looks
-asserted is its own small version of this lane's defect.
+carried by exactly one verified path plus one that is collected and never checked.
+
+**RESOLVED IN THE HONEST DIRECTION, not the flattering one.** The header has been **narrowed** to the
+part the measurement supports — that an unhandled `'error'` is fatal and killed the arms harness — and
+the two-path claim is now stated as NOT established, with `asyncErrors` labelled an unasserted
+diagnostic at its declaration. Constructing a real denial needs a broker, so **the cell that would
+settle it is OWED rather than skipped**, and it is listed below with the deadline sampling. Grade
+whether the narrowed comment still overclaims.
 
 **6. COVERAGE OF THE CLOSED UNION — partially measured, and the measurement is WEAK.**
 `HealthRefusal` has six conditions (`health.ts:84-103`). Counting string occurrences across the five

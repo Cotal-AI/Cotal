@@ -18,12 +18,20 @@
  * arriving through the credential layer. `refused` and `no-responder` were confirmed to be DISTINCT
  * conditions in the same run under load, so the row can tell "denied" from "absent".
  *
- * THE ERROR LISTENER IS NOT DEFENSIVE BOILERPLATE. A denied read surfaces on TWO paths: the
- * assessment returns a refusal AND the endpoint emits an `'error'` event. An unhandled `'error'` on
- * an EventEmitter is fatal to the process — measured, not argued: it killed the arms harness before
- * its teardown ran and orphaned a broker. A health surface that dies while reporting a refusal is
- * strictly worse than one that reports nothing, so the listener is attached BEFORE `start()` — a
- * denial can arrive during connect.
+ * THE ERROR LISTENER IS NOT DEFENSIVE BOILERPLATE, AND THE REASON IS NARROWER THAN IT LOOKS. What is
+ * MEASURED is that an unhandled `'error'` on an EventEmitter is fatal to the process: it killed the
+ * arms harness before its teardown ran and orphaned a broker. A health surface that dies while
+ * reporting a refusal is strictly worse than one that reports nothing, so the listener is attached
+ * BEFORE `start()` — a denial can arrive during connect. That much is evidence.
+ *
+ * WHAT IS NOT ESTABLISHED, stated here because an earlier draft of this comment claimed it: that a
+ * denied read reliably surfaces on BOTH paths — the assessment returning a refusal AND this endpoint
+ * emitting `'error'`. No cell asserts the second path. `asyncErrors` is populated only by the
+ * listener, and it is READ nowhere in this package: an enumeration across the tree found its other
+ * occurrences are two lane harnesses that merely print it. So the two-path claim rested on an
+ * uninspected collection, and it has been narrowed to what the measurement supports rather than left
+ * standing. Constructing a real denial needs a broker, so the cell that would settle it is OWED, not
+ * skipped — see `.lane/review-brief-guard.md`.
  */
 import { CotalEndpoint, idFromCreds, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
@@ -42,7 +50,12 @@ const SHARD = 0;
 export interface DeliveryCaller {
   check: Pick<GuardSeams, "check">["check"];
   close: () => Promise<void>;
-  /** Async denials seen on this endpoint. Captured so a caller CAN report them; never thrown. */
+  /** Async denials seen on this endpoint. Captured so a caller CAN report them; never thrown.
+   *
+   *  UNASSERTED DIAGNOSTIC. No cell drives this field, and nothing in this package reads it — the
+   *  listener that fills it exists to stop a fatal unhandled `'error'`, which is the part that is
+   *  measured. Do not build a claim on its contents without a cell that constructs a real denial
+   *  against a real broker; a collection nobody inspects looks like evidence and is not. */
   asyncErrors: string[];
   /** The RAW lease, separate from the assessment. Exposed because "the lease still looks healthy
    *  while the daemon is dead" is the residue the origin incident produced, and a cell that cannot
