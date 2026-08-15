@@ -35,6 +35,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
+import ts from "typescript";
 import { chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
 
 let pass = 0;
@@ -230,43 +231,87 @@ const VERIFIED = "policed-channel";
 // while the shipped page was exploitable. A positive control proves a pattern CAN match something;
 // it does NOT prove what it matched is CODE.
 //
-// Two cheap, local guards close it, and each has its own decoy control below:
-//   - the header must occur EXACTLY ONCE (a decoy copy makes it 2 and reddens a named cell), and
-//   - the occurrence must not sit inside a line or block comment.
-// Deliberately NOT a full-file tokenizer: mis-parsing one regex literal elsewhere in the file would
-// desync string state and corrupt every extraction, trading a known hole for a silent one.
-function countOccurrences(src: string, needle: string): number {
-  let n = 0;
-  for (let i = src.indexOf(needle); i >= 0; i = src.indexOf(needle, i + needle.length)) n++;
-  return n;
+// ⚠️ AND THE FIRST REMEDY FOR THAT WAS ITSELF DEFEATED — TWICE. It counted raw `/*` and `*/`
+// before the header and required one exact textual spelling. Both halves were exploitable:
+//   - a plain `const x = "*/";` in ordinary source makes the raw counts BALANCE at a header that
+//     really is inside a comment, so the "not in a comment" check returns false for a commented
+//     copy; and
+//   - the uniqueness pin was tied to one spelling, so changing the REAL declaration to
+//     `function onMessage (entry) {` (one space) left the expected header occurring exactly once —
+//     inside the comment.
+// Together: `node --check` valid, both anchor cells green, **101 checks passed, rc=0**, and the
+// shipped handler still retaining `victim-channel` on non-chat messages.
+//
+// THE DEFENCE OF "NOT A FULL TOKENIZER" DID NOT HOLD, AND THAT IS THE LESSON. Counting raw
+// delimiters IS a partial tokenizer — one that silently mis-reads ordinary JavaScript strings. The
+// choice was never "heuristic vs tokenizer"; it was "an unreliable tokenizer I wrote vs a correct
+// one already in the toolchain". A REMEDY IS NOT EXEMPT FROM THE CLASS IT REMEDIES, and the third
+// version of this guard is the first that stops guessing.
+//
+// So: use TypeScript's own parser, which is already a dependency. Comments are NOT AST nodes, so a
+// commented copy is invisible here BY CONSTRUCTION rather than by a check that can be balanced out;
+// string contents are tokenized properly; and the match is on the DECLARATION, so whitespace
+// spelling is irrelevant. This cannot return a fragment, a comment, or a string.
+function findDeclarations(src: string, file: string, name: string): { text: string; start: number }[] {
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const found: { text: string; start: number }[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === name) found.push({ text: src.slice(n.getStart(sf), n.end), start: n.getStart(sf) });
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return found;
 }
 
-/** Is `offset` inside a line comment, or inside an unclosed block comment? */
-function isInsideComment(src: string, offset: number): boolean {
-  const before = src.slice(0, offset);
-  const lineStart = before.lastIndexOf("\n") + 1;
-  if (before.slice(lineStart).includes("//")) return true;
-  const open = countOccurrences(before, "/*");
-  const close = countOccurrences(before, "*/");
-  return open > close;
+/** The one executable `onMessage` in `file`. `undefined` if absent OR ambiguous — never a guess. */
+function extractFunction(src: string, file: string): string | undefined {
+  const all = findDeclarations(src, file, "onMessage");
+  return all.length === 1 ? all[0].text : undefined;
 }
 
-function extractFunction(src: string, header: string): string | undefined {
-  const start = src.indexOf(header);
-  if (start < 0) return undefined;
-  let i = src.indexOf("{", start + header.length - 1);
-  if (i < 0) return undefined;
-  // Depth-count braces. These two functions contain no braces inside strings, template literals or
-  // regex literals — asserted below by executing the result, which would throw on a truncated body.
-  for (let depth = 0; i < src.length; i++) {
-    if (src[i] === "{") depth++;
-    else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
-  }
-  return undefined;
+/** The source with every COMMENT blanked to spaces, offsets and all other characters preserved.
+ *
+ *  Comment positions come from the PARSER, not a raw scanner. `ts.createScanner` alone cannot decide
+ *  regex-literal vs division without parser context, so a regex containing `//` desyncs it — which
+ *  would be this same class of bug for a third time. `createSourceFile` resolves that, and every
+ *  comment is leading trivia of some token, so walking tokens finds them all.
+ *
+ *  Blanking ONLY comments (rather than keeping only node ranges) is deliberate: structural
+ *  punctuation such as the `.` in `msg.channel` belongs to no leaf node, and dropping it would
+ *  silently break every pattern searched here. Measured — an earlier attempt produced
+ *  `msg channel = entry channel`. */
+function codeOnly(src: string): string {
+  const sf = ts.createSourceFile("x.js", src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const out = src.split("");
+  const blank = (from: number, to: number) => {
+    for (let i = from; i < to && i < out.length; i++) if (out[i] !== "\n") out[i] = " ";
+  };
+  const seen = new Set<number>();
+  const visit = (n: ts.Node): void => {
+    const full = n.getFullStart();
+    if (!seen.has(full)) {
+      seen.add(full);
+      // BOTH kinds. A comment on the SAME LINE as the preceding token is TRAILING trivia and
+      // `getLeadingCommentRanges` does not return it — measured: a decoy appended to the graph
+      // backfill's single-line `for` body survived the whole suite because of exactly this.
+      for (const r of ts.getLeadingCommentRanges(src, full) ?? []) blank(r.pos, r.end);
+    }
+    if (!seen.has(n.end)) {
+      seen.add(n.end);
+      for (const r of ts.getTrailingCommentRanges(src, n.end) ?? []) blank(r.pos, r.end);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  // Trailing comments after the last token are trivia of EOF, which the walk above does not reach.
+  for (const r of ts.getLeadingCommentRanges(src, sf.endOfFileToken.getFullStart()) ?? []) blank(r.pos, r.end);
+  return out.join("");
 }
 
-const APP_ONMESSAGE = "function onMessage(entry) {";
-const GRAPH_ONMESSAGE = "function onMessage({ mode, senderId, channel, msg }) {";
+// (The header-string constants that used to live here are gone. Anchoring on an exact spelling was
+// itself an exploited defect: changing the real declaration to `function onMessage (entry) {` moved
+// the only textual match into a commented decoy. The parser matches the DECLARATION, so there is no
+// spelling to vary.)
 
 // The two backfill ingresses are single statements inside a long async function, and these patterns
 // stay regex-based. That is a DIFFERENT risk to the one above and it is checked rather than assumed:
@@ -357,12 +402,12 @@ function runGraphOnMessage(code: string, arg: unknown) {
 const INGRESS: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
   {
     file: "app.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, APP_ONMESSAGE),
+    extract: (src) => extractFunction(src, "app.js"),
     run: (code) => runAppOnMessage(code, { mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } }).activity[0]?.msg.channel,
   },
   {
     file: "app.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_APP.exec(src)?.[0],
+    extract: (src) => BACKFILL_APP.exec(codeOnly(src))?.[0],
     run(stmt) {
       const ctx = { activity: [{ channel: VERIFIED, msg: { channel: CLAIMED } }] };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -371,12 +416,12 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "graph.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
+    extract: (src) => extractFunction(src, "graph.js"),
     run: (code) => runGraphOnMessage(code, { mode: "chat", senderId: "s-1", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } }).recent[0]?.chan,
   },
   {
     file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_GRAPH.exec(src)?.[0],
+    extract: (src) => BACKFILL_GRAPH.exec(codeOnly(src))?.[0],
     run(stmt) {
       const ctx = { m: { channel: CLAIMED }, e: { channel: VERIFIED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -417,12 +462,12 @@ for (const ing of INGRESS) {
 const HOSTILE: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
   {
     file: "app.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, APP_ONMESSAGE),
+    extract: (src) => extractFunction(src, "app.js"),
     run: (code) => runAppOnMessage(code, hostileDm()).activity[0]?.msg.channel,
   },
   {
     file: "app.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_APP.exec(src)?.[0],
+    extract: (src) => BACKFILL_APP.exec(codeOnly(src))?.[0],
     run(stmt) {
       const ctx = { activity: [{ msg: { channel: CLAIMED } }] as { channel?: string; msg: { channel?: string } }[] };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -431,12 +476,12 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   },
   {
     file: "graph.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
+    extract: (src) => extractFunction(src, "graph.js"),
     run: (code) => runGraphOnMessage(code, hostileDmGraph()).recent[0]?.chan,
   },
   {
     file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => BACKFILL_GRAPH.exec(src)?.[0],
+    extract: (src) => BACKFILL_GRAPH.exec(codeOnly(src))?.[0],
     run(stmt) {
       const ctx = { m: { channel: CLAIMED } as { channel?: string }, e: {} as { channel?: string } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -445,17 +490,23 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
   },
 ];
 // The live-SSE ingress of each page, driven with an ANYCAST forgery. Only the two live ingresses
-// appear here: the backfill pair reads `/api/activity`, which carries no mode, so an anycast vector
-// would be indistinguishable from the unicast one already driven above.
+// appear here, and the REASON matters because an earlier version of this comment stated it wrongly.
+//
+// It said `/api/activity` "carries no mode". That is FALSE: `web.ts` explicitly mode-tags backfill
+// entries and emits `mode: "chat"` and `mode: "unicast"`. The correct reason is that the endpoint
+// emits NO ANYCAST HISTORY AT ALL — it merges channel history with DM history and nothing else —
+// while the client's backfill overwrite is mode-INDEPENDENT. So an anycast backfill vector has no
+// production counterpart to represent, which is a different fact from the one first written here
+// and is why the omission is not a coverage gap.
 const HOSTILE_ANYCAST: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
   {
     file: "app.js", path: "live SSE feed (ANYCAST)",
-    extract: (src) => extractFunction(src, APP_ONMESSAGE),
+    extract: (src) => extractFunction(src, "app.js"),
     run: (code) => runAppOnMessage(code, hostileAnycast()).activity[0]?.msg.channel,
   },
   {
     file: "graph.js", path: "live SSE feed (ANYCAST)",
-    extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
+    extract: (src) => extractFunction(src, "graph.js"),
     run: (code) => runGraphOnMessage(code, hostileAnycastGraph()).recent[0]?.chan,
   },
 ];
@@ -473,14 +524,14 @@ for (const ing of HOSTILE_ANYCAST) {
 const appAnycastPayload = hostileAnycast();
 check("app.js — the ANYCAST destination run receives a payload that STILL carries the forgery",
   appAnycastPayload.msg.channel === VICTIM, { got: appAnycastPayload.msg.channel });
-const appAnycast = runAppOnMessage(extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!, appAnycastPayload, VICTIM);
+const appAnycast = runAppOnMessage(extractFunction(read("../src/web/app.js"), "app.js")!, appAnycastPayload, VICTIM);
 check("app.js — a forged ANYCAST message does NOT create the victim channel",
   appAnycast.channels.has(VICTIM) === false, { keys: [...appAnycast.channels.keys()] });
 check("app.js — a forged ANYCAST message does NOT reach the victim channel's transcript",
   appAnycast.channelMsgs.length === 0, { n: appAnycast.channelMsgs.length });
 
 const graphAnycastPayload = hostileAnycastGraph();
-const graphAnycast = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, graphAnycastPayload);
+const graphAnycast = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), "graph.js")!, graphAnycastPayload);
 check("graph.js — a forged ANYCAST message appears in the recent list with NO channel",
   graphAnycast.recent.length === 1 && graphAnycast.recent[0].chan === undefined, { recent: graphAnycast.recent });
 
@@ -509,7 +560,7 @@ for (const ing of HOSTILE) {
 //   2. The victim channel is the SELECTED one. With `selected:"*"` the transcript cell is green
 //      even on the original guarded vulnerability, because nothing is ever appended to the
 //      selected-channel transcript regardless of routing — the cell's name would be a lie.
-const appFnSrc = extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!;
+const appFnSrc = extractFunction(read("../src/web/app.js"), "app.js")!;
 const appHostilePayload = hostileDm();
 check("app.js — the destination run receives a payload that STILL carries the forgery (a shared fixture would arrive pre-sanitized)",
   appHostilePayload.msg.channel === VICTIM, { got: appHostilePayload.msg.channel, expected: VICTIM });
@@ -546,7 +597,7 @@ check("app.js — the forged DM is STILL delivered as a DM (clearing a channel m
 const graphHostilePayload = hostileDmGraph();
 check("graph.js — the destination run receives a payload that STILL carries the forgery",
   graphHostilePayload.msg.channel === VICTIM, { got: graphHostilePayload.msg.channel, expected: VICTIM });
-const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, graphHostilePayload);
+const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), "graph.js")!, graphHostilePayload);
 // HONEST LABEL: this cell CANNOT redden for the channel-authority fence, and pretending otherwise
 // is the same sin as a vacuous green. `ensureHub` is reachable only from the `mode === "chat"`
 // branch (`graph.js`), so a non-chat forgery cannot create a hub whether or not the channel was
@@ -559,7 +610,7 @@ check("graph.js — the forged DM still appears in the recent list, with no chan
   graphHostile.recent.length === 1 && graphHostile.recent[0].chan === undefined, { recent: graphHostile.recent });
 
 // And the benign side, so the cells above cannot be satisfied by a function that routes nothing.
-const appBenign = runAppOnMessage(extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!,
+const appBenign = runAppOnMessage(extractFunction(read("../src/web/app.js"), "app.js")!,
   { mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } });
 check("app.js — a POLICED chat message DOES reach its channel, keyed on the verified name",
   appBenign.channels.has(VERIFIED) && !appBenign.channels.has(CLAIMED), { keys: [...appBenign.channels.keys()] });
@@ -583,85 +634,80 @@ check("graph.js backfill pattern still matches the shipped statement (positive c
   BACKFILL_GRAPH.exec(read("../src/web/graph.js")) !== null);
 
 // ── 2e. THE EXTRACTOR ITSELF ────────────────────────────────────────────────────────────────────
-// `extractFunction` is now load-bearing for four cells, so its own failure modes are driven. A
-// truncated body would still be a string, and a string that happens to parse would execute — the
-// only way to know it captured the WHOLE function is to check the boundary it returned.
-const appFn = extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!;
-const graphFn = extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!;
-check("the extracted app.js onMessage starts at the header and ends at a closing brace",
-  appFn.startsWith(APP_ONMESSAGE) && appFn.trimEnd().endsWith("}"), { head: appFn.slice(0, 30) });
-check("the extracted graph.js onMessage starts at the header and ends at a closing brace",
-  graphFn.startsWith(GRAPH_ONMESSAGE) && graphFn.trimEnd().endsWith("}"), { head: graphFn.slice(0, 30) });
-// Balanced braces is the property that distinguishes a whole function from a fragment of one.
+// `extractFunction` is load-bearing for every executed cell, so its own failure modes are driven.
+const appFn = extractFunction(read("../src/web/app.js"), "app.js")!;
+const graphFn = extractFunction(read("../src/web/graph.js"), "graph.js")!;
 for (const [label, fn] of [["app.js", appFn], ["graph.js", graphFn]] as const) {
+  check(`the extracted ${label} onMessage is a whole function declaration`,
+    fn.startsWith("function onMessage") && fn.trimEnd().endsWith("}"), { head: fn.slice(0, 40) });
+  // Balanced braces distinguishes a whole function from a fragment of one.
   let depth = 0;
   for (const c of fn) { if (c === "{") depth++; else if (c === "}") depth--; }
   check(`the extracted ${label} onMessage has balanced braces (a fragment would not)`, depth === 0, { depth });
 }
-// A missing header must return undefined rather than silently returning the wrong function — the
-// negative control for the extractor, without which a renamed function would extract the next one.
-check("extractFunction returns undefined for a header that is not present (negative control)",
-  extractFunction(read("../src/web/app.js"), "function noSuchFunctionExists(") === undefined);
+// A file with no such declaration must yield undefined rather than the next function along.
+check("extractFunction returns undefined when the declaration is absent (negative control)",
+  extractFunction("function somethingElse(a) { return a; }", "synthetic.js") === undefined);
+// AMBIGUITY IS NOT RESOLVED BY GUESSING. Two executable declarations must yield undefined, not the
+// first — otherwise a duplicated handler silently grades whichever one happens to come first.
+check("extractFunction returns undefined when TWO executable declarations exist (never guesses)",
+  extractFunction("function onMessage(a) { return 1; }\nfunction onMessage(b) { return 2; }", "synthetic.js") === undefined);
 
-// ── 2f. THE ANCHOR IS CODE, NOT MERELY TEXT ─────────────────────────────────────────────────────
-// Balanced braces prove the extraction is not a FRAGMENT. They say nothing about whether it is
-// CODE. A commented copy of the function is balanced, parses, executes, and — because `indexOf`
-// takes the FIRST occurrence — is what this suite graded, at 82/82 rc=0, while the shipped page
-// carried the guarded vulnerability. These cells close that, and each one has a decoy control so
-// the cell cannot itself pass vacuously.
-for (const [label, file, header] of [
-  ["app.js", "../src/web/app.js", APP_ONMESSAGE],
-  ["graph.js", "../src/web/graph.js", GRAPH_ONMESSAGE],
-] as const) {
-  const src = read(file);
-  check(`${label} — the onMessage header occurs EXACTLY ONCE (a decoy copy makes it 2 and reddens this)`,
-    countOccurrences(src, header) === 1, { n: countOccurrences(src, header) });
-  check(`${label} — the extracted onMessage is NOT inside a comment`,
-    isInsideComment(src, src.indexOf(header)) === false);
-}
-// ⚠️ THE SAME HOLE EXISTED ONE LAYER DOWN, AND THE FIRST VERSION OF THIS SECTION MISSED IT.
-// The guards above cover the two brace-extracted `onMessage` headers. The two BACKFILL ingresses
-// are matched by REGEX against the raw source, and `exec` is just as happy to match inside a
-// comment — so the remedy for comment-grading shipped with the identical defect it was written to
-// fix. MEASURED at the commit that added those guards: a commented SAFE copy of the app backfill
-// statement placed above a REGRESSED real one gave `node --check` valid and **101 checks passed,
-// rc=0**, with the shipped backfill failing open. Non-equivalence proved separately — SAFE leaves
-// `msg.channel` undefined, REGRESSED preserves `"victim-channel"` on a backfilled DM.
-//
-// A REMEDY IS NOT EXEMPT FROM THE CLASS IT REMEDIES. That is the whole lesson of this block.
+// ── 2f. THE ANCHOR MUST BE EXECUTABLE CODE, AND ONLY A PARSER CAN SAY SO ─────────────────────────
+// Two successive text-based anchors shipped a false green here. Both are reproduced below as
+// CONTROLS, against the current parser-based extractor, so this section proves the fix rather than
+// asserting it. Each control is the exact exploit that beat the previous version.
+const realApp = read("../src/web/app.js");
+const safeAppFn = extractFunction(realApp, "app.js")!;
+const regressedAppFn = safeAppFn.replace("msg.channel = entry.channel;", "if (entry.channel) msg.channel = entry.channel;");
+check("the regressed handler used by the controls below is genuinely DIFFERENT (non-equivalence)",
+  regressedAppFn !== safeAppFn);
+
+// CONTROL 1 — the simple commented decoy that beat the `indexOf` anchor.
+const decoyed = `/*\n${safeAppFn}\n*/\n${realApp.replace(safeAppFn, regressedAppFn)}`;
+const fromDecoyed = extractFunction(decoyed, "app.js");
+check("a COMMENTED copy of the safe handler is invisible to the parser (it grades the real one)",
+  fromDecoyed !== undefined && fromDecoyed.includes("if (entry.channel)"), { head: fromDecoyed?.slice(0, 50) });
+
+// CONTROL 2 — the exploit that beat the delimiter-counting anchor: a `*/` INSIDE AN ORDINARY STRING
+// balances raw comment counts, and a whitespace change to the real declaration defeats a
+// one-spelling uniqueness pin. Both are neutralised by parsing rather than counting.
+const whitespaceReal = regressedAppFn.replace("function onMessage(entry)", "function onMessage (entry)");
+const balanced = `const commentCloseExample = "*/";\n/*\n${safeAppFn}\n*/\n${whitespaceReal}`;
+const fromBalanced = extractFunction(balanced, "app.js");
+check("a `*/` inside a STRING cannot smuggle a commented handler past the parser",
+  fromBalanced !== undefined && fromBalanced.includes("if (entry.channel)"), { head: fromBalanced?.slice(0, 50) });
+check("a whitespace-varied declaration is still found (the anchor is the DECLARATION, not a spelling)",
+  fromBalanced !== undefined && fromBalanced.startsWith("function onMessage (entry)"), { head: fromBalanced?.slice(0, 50) });
+
+// ── 2g. THE BACKFILL PATTERNS, SEARCHED IN CODE ONLY ─────────────────────────────────────────────
+// The two backfill ingresses are matched by regex, and `exec` is as happy to match inside a comment
+// as the old `indexOf` was — the same hole one layer down. They are therefore matched against
+// `codeOnly()`, which blanks comments using the toolchain's scanner, and each guard has a control.
 for (const [label, file, re] of [
   ["app.js backfill", "../src/web/app.js", BACKFILL_APP],
   ["graph.js backfill", "../src/web/graph.js", BACKFILL_GRAPH],
 ] as const) {
-  const src = read(file);
-  const all = [...src.matchAll(new RegExp(re.source, "g"))];
-  check(`${label} — the pattern matches EXACTLY ONE site (a commented decoy copy makes it 2)`,
+  const code = codeOnly(read(file));
+  const all = [...code.matchAll(new RegExp(re.source, "g"))];
+  check(`${label} — the pattern matches EXACTLY ONE site in CODE (comments blanked first)`,
     all.length === 1, { n: all.length });
-  // `all.length > 0 &&` on purpose: an EMPTY match set must FAIL this cell, not satisfy it
-  // vacuously the way a `.every()` over nothing would.
-  check(`${label} — the matched statement is NOT inside a comment`,
-    all.length > 0 && isInsideComment(src, all[0].index!) === false, { n: all.length });
 }
-
-// Decoy controls. Without these, both cells above would pass on a checker that can never fire.
-const realApp = read("../src/web/app.js");
-const decoyed = `/*\n${extractFunction(realApp, APP_ONMESSAGE)}\n*/\n${realApp}`;
-check("the uniqueness check DETECTS a commented decoy copy (positive control)",
-  countOccurrences(decoyed, APP_ONMESSAGE) === 2, { n: countOccurrences(decoyed, APP_ONMESSAGE) });
-check("the comment check DETECTS a header sitting inside a block comment (positive control)",
-  isInsideComment(decoyed, decoyed.indexOf(APP_ONMESSAGE)) === true);
-check("the comment check DETECTS a header sitting behind a line comment (positive control)",
-  isInsideComment(`// ${APP_ONMESSAGE}`, 3) === true);
-// And it must not cry wolf on the real file, or the cells above would be unfalsifiable.
-check("the comment check does NOT fire on the genuine, uncommented declaration (negative control)",
-  isInsideComment(realApp, realApp.indexOf(APP_ONMESSAGE)) === false);
-// And the same pair of controls for the BACKFILL guard, so its two cells cannot pass vacuously
-// either — the omission that let the survivor above exist in the first place.
-const bfDecoyed = realApp.replace(BACKFILL_APP, (m) => `// ${m}\n  ${m}`);
-check("the backfill uniqueness check DETECTS a commented decoy copy (positive control)",
-  [...bfDecoyed.matchAll(new RegExp(BACKFILL_APP.source, "g"))].length === 2,
-  { n: [...bfDecoyed.matchAll(new RegExp(BACKFILL_APP.source, "g"))].length });
-check("the backfill comment check DETECTS a match sitting behind a line comment (positive control)",
-  isInsideComment(bfDecoyed, bfDecoyed.search(BACKFILL_APP)) === true);
+// Controls, built from a SYNTHETIC source rather than the file under test. Deriving a control from
+// the file means a mutation to that file changes the control too — which happened: a backfill decoy
+// mutation made this control fire instead of the behaviour cell it exists to protect, masking which
+// cell actually caught the regression.
+const SYNTH_BF = 'for (const e of activity) if (e?.msg) e.msg.channel = e.channel;';
+const synthDecoyed = `// ${SYNTH_BF}\n  ${SYNTH_BF}`;
+check("a commented copy of the backfill statement is NOT counted (positive control)",
+  [...codeOnly(synthDecoyed).matchAll(new RegExp(BACKFILL_APP.source, "g"))].length === 1,
+  { n: [...codeOnly(synthDecoyed).matchAll(new RegExp(BACKFILL_APP.source, "g"))].length });
+check("and the RAW text WOULD have counted it twice (proving the control is not vacuous)",
+  [...synthDecoyed.matchAll(new RegExp(BACKFILL_APP.source, "g"))].length === 2);
+// `codeOnly` must not blank real code, or every cell above would pass on an empty string.
+check("codeOnly preserves executable source (a blanking bug would make every match vanish)",
+  codeOnly(realApp).includes("msg.channel = entry.channel;"));
+check("codeOnly blanks a comment body (positive control)",
+  codeOnly(`/* msg.channel = entry.channel; */`).includes("msg.channel") === false);
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
