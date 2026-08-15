@@ -31,11 +31,46 @@ a throwaway clone with its own `node_modules`. The design has to work without on
 the proving suite resolve it.**
 
 ```
-1. scratch=$(mktemp -d)                      # a path nothing else can already reference
+1. scratch=$(mktemp -d "$PWD/packages/core/.privbuild-XXXXXX")   # INSIDE the worktree — see below
 2. tsc -p packages/core --outDir "$scratch"  # mutant compiles HERE; shared dist untouched
 3. COTAL_CORE_ENTRY="$scratch/index.js" tsx <proof-suite>
 4. rm -rf "$scratch"                         # nothing to restore, because nothing shared was written
 ```
+
+> ### ✅ VERIFIED `2026-08-15T06:3xZ` — and step 1 is NOT `mktemp -d` in `/tmp`, which is how it failed
+>
+> The original draft said *"a path nothing else can already reference"* and reached for `/tmp`. **That
+> compiles and does not load:**
+>
+> ```
+> tsc -p packages/core --outDir /tmp/meshctl-privbuild-XXXX     ->  rc=0, 69 .js emitted
+> node -e "await import('/tmp/…/index.js')"
+>   Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@nats-io/kv'
+>   imported from /tmp/meshctl-privbuild-XXXX/endpoint-records.js
+> ```
+>
+> **Node resolves bare specifiers by walking `node_modules` upward from the importing file.** A build
+> in `/tmp` walks up out of the workspace and finds none of core's own runtime dependencies. The
+> artifact is correct and unloadable — **exactly the "fails on contact" this claim was flagged for.**
+>
+> **Corrected and driven, with the shared artifact guarded on both sides of the run:**
+>
+> ```
+> scratch = packages/core/.privbuild-j9fjRr
+> tsc -p packages/core --outDir "$scratch"                       ->  rc=0
+> import("$scratch/index.js")   ->  LOADED, 683 exports, isReachable is a function
+> stat of every packages/core/dist/*.js, hashed before and after ->  UNCHANGED
+> ```
+>
+> **So the exclusivity property survives the fix.** The scratch is still a path created by this run
+> that nothing else can already reference — it is merely created *inside* the resolution scope rather
+> than outside it. **Being unreachable by other readers is a property of the PATH BEING NEW, not of
+> being in `/tmp`**, and conflating those two is what broke it.
+>
+> **One consequence to handle:** an in-worktree scratch shows up as untracked (`?? packages/core/
+> .privbuild-j9fjRr/`). **A `.gitignore` entry for `packages/core/.privbuild-*` is part of this
+> change** — otherwise a mutation proof leaves the tree dirty, and a dirty tree is precisely what
+> `pnpm mutation-proof` refuses to run against.
 
 Step 4 is the point: **there is no restore step, because there was no mutation of anything shared.**
 The write-then-undo window — the interval this lane actually injected a defect in — **does not
@@ -62,10 +97,19 @@ Two properties worth stating because they are easy to lose:
   build, so the failure mode is "the proof graded the shared build" — loud and wrong in the safe
   direction — rather than "an ordinary run graded a mutant".
 
-**UNVERIFIED:** that `tsc -p packages/core --outDir <scratch>` produces a loadable tree under this
-project's `rootDir`/`composite` settings has **not been executed**, because running it writes a
-build. It is the first thing to check when the constraint lifts, and it is the only step here that
-could fail on contact.
+**~~UNVERIFIED~~ → VERIFIED**, and it did fail on contact the first time; see the box above. Two
+things made it testable under the freeze:
+
+- **`packages/core/tsconfig.json` sets neither `composite` nor `incremental`**, and neither does
+  `tsconfig.base.json` — checked before running. **So no `.tsbuildinfo` is emitted**, and there is
+  no second output path that could land back in the shared tree. That was the one way `--outDir`
+  could have violated the constraint.
+- **`--outDir` redirects the whole emit.** The shared `packages/core/dist` was hashed before and
+  after the run and was **unchanged**.
+
+**This is the design bootstrapping itself: the mechanism that makes mutation safe is also what let
+it be tested while writing the shared artifact was forbidden.** No exception to the freeze was
+needed or taken.
 
 ### The freshness guard under this design
 
