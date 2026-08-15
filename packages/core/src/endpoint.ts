@@ -1388,7 +1388,14 @@ export class CotalEndpoint extends EventEmitter {
       await this.rebuild();
     } catch (e) {
       void this.reestablishLoop(); // background retry until success or stop
-      throw reconnectFailure(classifyConnectFailure(e), (e as Error).message, e);
+      // `lastRebuildFailedPostDial` is passed here for the same reason `connect()` passes it: the
+      // rebuild is the same rebuild, and without it this verb re-derives the reason from the error's
+      // ENGLISH and names a post-dial bind failure `broker-unreachable`. Measured, not reasoned: a
+      // JetStream-less broker on the same port, same accounts, accepts the socket (the broker's own
+      // cumulative connection count rises) and fails at the bind with `jetstream is not enabled` —
+      // a sentence the ladder does not recognise, so it fell through to the default. Two verbs gave
+      // the same fault two names, and the wrong one sends an operator to the network.
+      throw reconnectFailure(classifyConnectFailure(e, this.lastRebuildFailedPostDial), (e as Error).message, e);
     } finally {
       this.transitionInFlight = false;
     }

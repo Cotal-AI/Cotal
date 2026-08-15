@@ -129,8 +129,14 @@ const precondition = (arm: string, name: string, cond: boolean, extra?: unknown)
   if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
   else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
 };
+/** Cells that were REACHED but NOT EVALUATED. Kept out of `ran` deliberately: this list used to be
+ *  folded into it, and the roll call — which asks "did every declared cell reach a verdict?" —
+ *  therefore printed `all 55 declared cells reached a verdict` on the same run that printed
+ *  `21 VOID`. The name appearing in the log is not the cell being answered; that is the exact
+ *  substitution this suite's own mutation harness made when it read a `⊘ VOID` line as a kill. */
+const voidedNames: string[] = [];
 const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => {
-  if (contaminated.has(arm)) { voided++; ran.push(name); console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
+  if (contaminated.has(arm)) { voided++; voidedNames.push(name); console.log(`  ⊘ VOID (${arm} fixture contaminated upstream): ${name}`); return; }
   check(name, cond, extra);
 };
 
@@ -140,8 +146,9 @@ const armCheck = (arm: string, name: string, cond: boolean, extra?: unknown) => 
 // declared by name up front and reconciled in `finally`, where a throw cannot skip the reconcile.
 // A cell that never ran is reported as MISSING, which is neither a pass nor a failure but a
 // statement that the question was never asked.
-const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e",
-                  "D2a", "D2b", "D2c", "D2d", "D2e", "D2f", "D2g", "D2h", "D2i", "D2j", "D2k",
+const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e", "D1f", "D1g", "D1-ctl4",
+                  "D2-setup", "D2a", "D2b", "D2c", "D2d", "D2e", "D2f", "D2g", "D2h", "D2i", "D2j", "D2k",
+                  "D3-setup1", "D3-setup2", "D3-setup3", "D3-setup4", "D3-setup5",
                   "D3a", "D3b", "D3c", "D3d", "D3e", "D3f", "D3g", "D3h", "D3i", "D3j", "D3k", "D3l", "D3m",
                   "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f",
                   "D5e", "D5a", "D5b", "D5f", "D5-ctl", "D5c", "D5d", "D5-ctl2",
@@ -229,7 +236,7 @@ try {
   });
   a.on("error", () => { /* the arms below break this connection on purpose */ });
   await a.start();
-  check("setup: the observer sees the subject online", await until(() => seen()?.status !== undefined && seen()!.status !== "offline"), seen());
+  check("D2-setup the observer sees the subject online", await until(() => seen()?.status !== undefined && seen()!.status !== "offline"), seen());
 
   // ══ ARM 2 — a teardown-failed refusal must not claim a retraction it never sent ═══════════════
   console.log("\n=== ARM 2: teardown-failed ===");
@@ -394,6 +401,51 @@ try {
   armCheck("ARM 1", "D1e CONTROL: and the broker now shows a live connection (so D1b could have failed)",
     (await varz()).current > 0, await varz());
 
+  // ── THE SAME FAULT THROUGH THE RECOVERY VERB ────────────────────────────────────────────────
+  // `connect()` passes `lastRebuildFailedPostDial` to the classifier (endpoint.ts:1578); `reconnect()`
+  // does not (:1391), so the post-dial short-circuit at :390 is unreachable from it and the English
+  // substring ladder decides instead. One fault, two verbs, two names — and the wrong one sends an
+  // operator to the network when the broker is answering fine.
+  //
+  // THE PAIRING IS TWO STATES, NOT TWO VERBS ON ONE STATE, AND THE CODE DEMANDS THAT: `reconnect()`
+  // refuses `not-connected` at :1372 whenever `selfDisconnected` is set, which is exactly the state
+  // D1a runs in. A probe that drove both verbs from D1a's state would never reach the classifier and
+  // would be measuring that guard instead. So the subject is CONNECTED here (D1d put it back), and
+  // the fault is re-created underneath it rather than the state being reused.
+  const beforeRc = await varz();
+  await stopBroker();
+  await startBroker(false); // same accounts, same port, JetStream OFF — the identical fault as D1a
+  const rcErr = await b.reconnect().then(() => undefined, (e: Error) => e);
+  armCheck("ARM 1", "D1f the RECOVERY verb names the same condition connect() named for the same fault — bind-failed",
+    rcErr !== undefined && (rcErr as any).reason === "bind-failed",
+    { threw: rcErr !== undefined, reason: (rcErr as any)?.reason, message: rcErr?.message });
+  // The half that makes this a defect and not a naming quibble: the broker itself contradicts
+  // `broker-unreachable`. Cumulative, so it witnesses a connection that has since been discarded.
+  const afterRc = await varz();
+  armCheck("ARM 1", "D1g CONTROL: the broker's CUMULATIVE count ROSE across that failure — it accepted the socket, so this fault is post-dial and 'broker-unreachable' is a claim the broker denies",
+    afterRc.total > beforeRc.total, { before: beforeRc, after: afterRc, reason: (rcErr as any)?.reason });
+
+  console.log("\n--- INVERSE CONTROL: with JetStream restored, the SAME reconnect() succeeds ---");
+  await stopBroker();
+  await startBroker(true);
+  // RETRIED, AND THE REASON IS NOT "flaky". A failed `reconnect()` leaves `reestablishLoop()`
+  // running (endpoint.ts:1390), so the moment JetStream is back there are TWO dialers racing for
+  // the same socket, and a single 2s client dial can lose that race — measured here first time out,
+  // as `TimeoutError: timeout` with `reason: broker-unreachable`, which is a scheduling artefact of
+  // the control and says nothing about the bind. Retrying the CONTROL is safe in a way that retrying
+  // the assertion would not be: it can only ever turn a red into a green for the arm it is meant to
+  // enable, and the attempt count is reported so a control that needed twenty tries is visible
+  // rather than smoothed away.
+  let rcOk: "resolved" | Error = new Error("never attempted");
+  let attempts = 0;
+  for (; attempts < 15; attempts++) {
+    rcOk = await b.reconnect().then(() => "resolved" as const, (e: Error) => e);
+    if (rcOk === "resolved") break;
+    await wait(500);
+  }
+  armCheck("ARM 1", "D1-ctl4 CONTROL: reconnect() through the same path SUCCEEDS once JetStream is back (so D1f's refusal was the bind, not an endpoint that could never come back)",
+    rcOk === "resolved", { attempts: attempts + 1, last: rcOk });
+
   // ══ ARM 3 — credential renewal must not outlive a deliberate disconnect ══════════════════════
   // CORE-LEVEL ONLY. A creds SOURCE is not something the connector can construct, so this proves
   // the endpoint contract and says nothing about what a tool caller can reach.
@@ -480,7 +532,7 @@ try {
   holdNext = true;
   release = undefined;
   const held = await until(() => release !== undefined, TTL * 1000 + 3000);
-  check("setup: a renewal is HELD inside its source call (the state a fresh run cannot produce)", held, { mints });
+  check("D3-setup1 a renewal is HELD inside its source call (the state a fresh run cannot produce)", held, { mints });
   const d3b = await c.disconnect("arm3b");
   armCheck("ARM 3", "D3g it disconnects while that renewal is mid-flight", d3b.outcome === "disconnected", d3b);
   const before3b = await varz();
@@ -496,7 +548,7 @@ try {
   holdNext = true;
   release = undefined;
   const held2 = await until(() => release !== undefined, TTL * 1000 + 3000);
-  check("setup: a second renewal is held, this time with no disconnect", held2, { mints });
+  check("D3-setup2 a second renewal is held, this time with no disconnect", held2, { mints });
   const before3j = await varz();
   release!();
   const dialled = await (async () => {
@@ -515,9 +567,9 @@ try {
   holdNext = true;
   release = undefined;
   const held3 = await until(() => release !== undefined, TTL * 1000 + 3000);
-  check("setup: a third renewal is held", held3, { mints });
+  check("D3-setup3 a third renewal is held", held3, { mints });
   const d3c = await c.disconnect("arm3c");
-  check("setup: disconnected while it was held", d3c.outcome === "disconnected", d3c);
+  check("D3-setup4 disconnected while it was held", d3c.outcome === "disconnected", d3c);
   release!(); // discarded
   await wait(TTL * 1000 + 1500); // now past the cached credential's own exp
   const mintsBeforeReturn = mints;
@@ -525,7 +577,7 @@ try {
   // re-fetch count below is a proxy — it says the source was called, not that the cached credential
   // was actually dead — so establish the premise from the credential itself.
   const cachedExpMs = (credsClaims((c as any).currentCreds as string).exp ?? 0) * 1000;
-  check("setup: the CACHED credential really is past its own exp at the moment of the return (D3m's premise, measured rather than derived from the TTL)",
+  check("D3-setup5 the CACHED credential really is past its own exp at the moment of the return (D3m's premise, measured rather than derived from the TTL)",
     cachedExpMs > 0 && cachedExpMs < Date.now(), { cachedExpMs, now: Date.now() });
   const r3c = await c.connect();
   armCheck("ARM 3", "D3l after a DISCARDED renewal and a gap past the cached credential's expiry, connect() still comes back",
@@ -829,13 +881,33 @@ try {
   // THE ROLL CALL, in `finally` so a throw cannot skip it. Without this a mutation that kills the
   // suite partway looks exactly like a mutation the suite caught: both exit non-zero, and the cells
   // that were supposed to answer simply are not in the log to be missed.
-  const missing = DECLARED.filter((id) => !ran.some((n) => n === id || n.startsWith(`${id} `)));
+  // Three outcomes per declared cell, and the roll call prints all three INLINE. It used to print a
+  // single ✓ whenever nothing was MISSING, which was true and misleading in the same breath: VOID
+  // cells were in `ran`, so `all 55 declared cells reached a verdict` appeared directly above
+  // `21 VOID — not evaluated`. A summary that has to be read against another line to be true is a
+  // defect of the same family as the harness bug that read a VOID line as a kill.
+  const hit = (ids: string[], n: string) => ids.some((id) => n === id || n.startsWith(`${id} `));
+  const evaluated = DECLARED.filter((id) => ran.some((n) => n === id || n.startsWith(`${id} `)));
+  const voidedDeclared = DECLARED.filter((id) => !evaluated.includes(id) && voidedNames.some((n) => n === id || n.startsWith(`${id} `)));
+  const missing = DECLARED.filter((id) => !evaluated.includes(id) && !voidedDeclared.includes(id));
+  // Drift the other way: a cell that ran under a name no declaration covers is invisible to every
+  // count above, so a typo silently shrinks the roll call instead of breaking it.
+  const undeclared = [...ran, ...voidedNames].filter((n) => !hit(DECLARED, n));
+  console.log(
+    `\n  ROLL CALL: ${DECLARED.length} declared — ${evaluated.length} EVALUATED, ` +
+    `${voidedDeclared.length} VOID (reached, not evaluated), ${missing.length} NEVER RAN.`,
+  );
+  if (voidedDeclared.length) console.log(`  ⊘ VOID: ${voidedDeclared.join(", ")}`);
   if (missing.length) {
-    console.log(`\n  ⚠ ${missing.length} DECLARED CELL(S) NEVER RAN — not a pass and not a failure, a question never asked: ${missing.join(", ")}`);
+    console.log(`  ⚠ NEVER RAN — not a pass and not a failure, a question never asked: ${missing.join(", ")}`);
     process.exitCode = 1;
-  } else {
-    console.log(`\n  ✓ ROLL CALL: all ${DECLARED.length} declared cells reached a verdict.`);
   }
+  if (undeclared.length) {
+    console.log(`  ⚠ ${undeclared.length} cell(s) ran under an UNDECLARED name (the declaration and the code have drifted): ${undeclared.join(" | ")}`);
+    process.exitCode = 1;
+  }
+  if (!voidedDeclared.length && !missing.length && !undeclared.length)
+    console.log(`  ✓ all ${DECLARED.length} declared cells were EVALUATED — none reached-but-void, none absent, none undeclared.`);
   for (const ep of [d, c, b, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
   await stopBroker(); // await the exit BEFORE removing the scratch it is running out of
   rmSync(dir, { recursive: true, force: true });

@@ -11,6 +11,8 @@ Three lifecycle defects found by review driving the verbs against a live broker 
 
 Outcomes are a discriminated union rather than a boolean, and a refusal names the condition that failed — including `transition-unconfirmed`, `teardown-failed`, `bind-failed`, `in-flight-request`, and `credential-source-unavailable` (the launcher's credential command or file failed, so nothing was dialled). A connect that comes back with a live transport but only part of its requested read set reports the channels the broker refused instead of claiming clean success.
 
+`reconnect()` now names a post-dial failure the same way `connect()` does. Both verbs run the same rebuild, but only `connect()` was told whether the failure happened after the broker had already accepted the connection; `reconnect()` re-derived the reason from the error text, did not recognise `jetstream is not enabled`, and reported `broker-unreachable` for a broker that was up and answering — sending an operator to the network for a fault at the bind.
+
 Also fixes a hang on the request/reply path: `stop()` settled in-flight requests but left request admission open, so a request issued during a stop was accepted and then never settled. Admission now closes at the sweep, and the refusal says the request was never published — safe to retry, unlike a stranded one whose outcome is unknown.
 
 Corrects two false claims in the tool surface: `cotal_leave` said it could not leave your only channel (no such guard exists, and leaving every channel does not make an agent unreachable, since DMs do not travel over channel membership), and the connection verbs are now hidden from ungranted user-mode sessions rather than only from ungranted static-credential ones.
