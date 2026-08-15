@@ -35,6 +35,16 @@
  * that differ ONLY in whether their name is on the allowlist — same contracts, same class, same
  * split, same instant — and the outcomes diverge on that alone.
  *
+ * WHAT THE GUARD COSTS, AND WHAT THIS SUITE DOES NOT GRADE. Surfacing beats duplicating, but the
+ * caller does not merely get an error instead of a second execution — on the `follow:true` path it
+ * loses the goal it just started. `epCall` parses the acceptance reply BEFORE the currency check
+ * throws, so `submitAndFollowGoal` never reaches its goalId extraction and its `finally`
+ * unsubscribes. The responder's goal id is the request id, generated privately inside the request
+ * builder, and the unbound-responder refusal does not carry it. So the work runs, in the background,
+ * with no id and no terminal follow on the caller's side. These cells invoke without `follow:true`
+ * and therefore do NOT cover that path: it is stated here because it is the part a reader would
+ * otherwise assume the guard had handled.
+ *
  * WHY THE COUNT IS TAKEN AT THE HANDLER. It cannot be taken on the wire: `MintOpts.endpointServe`
  * mints only queue-qualified class subscribes — "no plain class-rail subscribe exists on any
  * credential" — and a queue-qualified observer would COMPETE for requests rather than watch them.
