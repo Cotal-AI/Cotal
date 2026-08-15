@@ -32,6 +32,12 @@
  * the shipped file and evaluated, and every lifted line is echoed in the output. **A retyped fixture
  * grades the author's transcription and returns a plausible number about someone else's code.**
  *
+ * IT GRADES THREE DIMENSIONS, AND EACH ONE WAS ADDED BECAUSE THE FILE WAS BLIND ALONG IT. Surfaces
+ * (three rendering chains), part KINDS (derived from core's `Part` union), and event FAMILIES
+ * (derived from `AGUI_EVENT_TYPE`). All three blindnesses had the same shape — a fixture uniform
+ * across the whole file — and none of them could have been found by adding cells, because every
+ * added cell inherited the uniform fixture. The two derived censuses are what stop a fourth.
+ *
  * IT GRADES ANY TREE. `COTAL_RENDERER_TREE=/path/to/worktree` points it at another checkout, which
  * is how a renderer fix on an unpushed branch is verified without merging it first. Default is this
  * suite's own tree. The frame itself always comes from THIS package's `aguiFrame()` — the frame is
@@ -46,6 +52,19 @@ import {
   textMessageStart,
   textMessageContent,
   textMessageEnd,
+  runStarted,
+  runFinished,
+  runError,
+  toolCallStart,
+  toolCallArgs,
+  toolCallEnd,
+  toolCallResult,
+  reasoningMessageStart,
+  reasoningMessageContent,
+  reasoningMessageEnd,
+  AGUI_EVENT_TYPE,
+  COTAL_CUSTOM_EVENTS,
+  type AguiEvent,
 } from "../src/agui.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -311,6 +330,168 @@ for (const kind of derivedKinds) {
     if (!held) console.log(`  [kind:${kind}] ${s.name} -> ${JSON.stringify(out)}`);
     c(`[kind:${kind}] ${s.name} renders it without losing its identifying content`, held, JSON.stringify(out));
   }
+}
+
+/**
+ * THE ATTACK EVERY CELL ABOVE PASSES BLIND — fm-webconsole's #3, raised against this file and left
+ * open by it rather than by them.
+ *
+ * **Every `[GATE]` cell above carries its canary in a `TEXT_MESSAGE_CONTENT` delta.** So a renderer
+ * that special-cases text deltas — concatenates them, draws the prose, and drops `TOOL_CALL_*`,
+ * `RUN_*`, `REASONING_*` on the floor — displays that canary and **passes the entire merge gate**.
+ * What it ships is a surface where an operator watching a session sees the model's prose and no
+ * evidence that it ran anything.
+ *
+ * That is not a hypothetical regression. **It is the `tr-` mirror reborn under a new vocabulary** —
+ * the exact defect the directive abolished, since `tr-`'s failure was precisely that it condensed a
+ * session to the text a human could read and dropped the structure. A gate that a text-only renderer
+ * passes does not hold the line the directive drew.
+ *
+ * SAME BLINDNESS CLASS, THIRD INSTANCE. Uniform fixtures: one `ag-ui.frame`, then one part, then one
+ * event family. Each time, adding cells could not have found it — every new cell inherited the
+ * uniform shape. So, as with the kind census, **the family list is checked against the SHIPPED
+ * vocabulary** rather than written down here: a member added to `AGUI_EVENT_TYPE` tomorrow with no
+ * fixture becomes a red cell instead of a silence.
+ *
+ * WHY THE ENVELOPES ARE BYTE-IDENTICAL. Every family frame below shares one `threadId`, `runId`,
+ * `epoch` and `seq`, so the ONLY thing that can differ between two renderings is the events. Without
+ * that, a renderer printing the frame's `seq` would make every family render differently while
+ * displaying no event at all, and the distinctness cell would certify it.
+ */
+const FAMILY_ENVELOPE = { threadId: "t-family", runId: "r-family", epoch: "e1", seq: 1 } as const;
+const TS = 1;
+
+/**
+ * `must` is the family's PAYLOAD — the content a renderer cannot invent and must not lose. `types`
+ * is the weaker property: whether the surface says which event happened at all.
+ *
+ * `run` has an empty `must` and that is a property of the vocabulary, not an omission: `RUN_STARTED`
+ * and `RUN_FINISHED` carry ids and a type and nothing else, so there is no payload to preserve. Its
+ * gate is the distinctness cell below instead, and it is named here rather than skipped.
+ */
+const FAMILIES: readonly { name: string; events: AguiEvent[]; must: string[]; types: string[] }[] = [
+  {
+    name: "run",
+    events: [
+      runStarted({ ...FAMILY_ENVELOPE, timestamp: TS }),
+      runFinished({ ...FAMILY_ENVELOPE, timestamp: TS, outcome: { type: "success" } }),
+    ],
+    must: [],
+    types: [AGUI_EVENT_TYPE.RUN_STARTED, AGUI_EVENT_TYPE.RUN_FINISHED],
+  },
+  {
+    name: "text",
+    events: [
+      textMessageStart({ messageId: "fm-text", role: "assistant", timestamp: TS }),
+      textMessageContent({ messageId: "fm-text", delta: "CANARY-FAMILY-TEXT", timestamp: TS }),
+      textMessageEnd({ messageId: "fm-text", timestamp: TS }),
+    ],
+    must: ["CANARY-FAMILY-TEXT"],
+    types: [AGUI_EVENT_TYPE.TEXT_MESSAGE_START, AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, AGUI_EVENT_TYPE.TEXT_MESSAGE_END],
+  },
+  {
+    name: "tool",
+    events: [
+      toolCallStart({ toolCallId: "tc1", toolCallName: "CANARY-FAMILY-TOOLNAME", timestamp: TS }),
+      toolCallArgs({ toolCallId: "tc1", delta: '{"path":"CANARY-FAMILY-TOOLARGS"}', timestamp: TS }),
+      toolCallEnd({ toolCallId: "tc1", timestamp: TS }),
+      toolCallResult({ messageId: "fm-tool", toolCallId: "tc1", content: "CANARY-FAMILY-TOOLRESULT", timestamp: TS }),
+    ],
+    // All three, not one: the tool NAME, its ARGUMENTS and its RESULT are three separate things a
+    // reader needs, and `tr-`'s `salient()` died specifically by keeping one and dropping the rest.
+    must: ["CANARY-FAMILY-TOOLNAME", "CANARY-FAMILY-TOOLARGS", "CANARY-FAMILY-TOOLRESULT"],
+    types: [
+      AGUI_EVENT_TYPE.TOOL_CALL_START, AGUI_EVENT_TYPE.TOOL_CALL_ARGS,
+      AGUI_EVENT_TYPE.TOOL_CALL_END, AGUI_EVENT_TYPE.TOOL_CALL_RESULT,
+    ],
+  },
+  {
+    name: "reasoning",
+    events: [
+      reasoningMessageStart({ messageId: "fm-reason", timestamp: TS }),
+      reasoningMessageContent({ messageId: "fm-reason", delta: "CANARY-FAMILY-REASONING", timestamp: TS }),
+      reasoningMessageEnd({ messageId: "fm-reason", timestamp: TS }),
+    ],
+    must: ["CANARY-FAMILY-REASONING"],
+    types: [
+      AGUI_EVENT_TYPE.REASONING_MESSAGE_START, AGUI_EVENT_TYPE.REASONING_MESSAGE_CONTENT,
+      AGUI_EVENT_TYPE.REASONING_MESSAGE_END,
+    ],
+  },
+  {
+    name: "error",
+    events: [runError({ message: "CANARY-FAMILY-ERROR", code: "E_CANARY", timestamp: TS })],
+    must: ["CANARY-FAMILY-ERROR"],
+    types: [AGUI_EVENT_TYPE.RUN_ERROR],
+  },
+];
+
+// THE CENSUS, against the shipped vocabulary. `CUSTOM` is the one member with no fixture, and the
+// justification is DERIVED rather than asserted in prose: `COTAL_CUSTOM_EVENTS` is the list of custom
+// events this connector may emit, and while it is empty a `CUSTOM` frame cannot occur. If that list
+// ever gains a member, this cell goes red and the family list must gain a fixture — which is the
+// difference between a reason and an excuse.
+const coveredTypes = new Set(FAMILIES.flatMap((f) => f.types));
+const uncoveredTypes = Object.values(AGUI_EVENT_TYPE).filter(
+  (t) => !coveredTypes.has(t) && !(t === AGUI_EVENT_TYPE.CUSTOM && COTAL_CUSTOM_EVENTS.length === 0),
+);
+c("[census] every member of AGUI_EVENT_TYPE has a family fixture (or is provably unemittable)",
+  uncoveredTypes.length === 0, JSON.stringify(uncoveredTypes));
+
+const familyRenderings = new Map<string, Map<string, string>>();
+for (const s of SURFACES) {
+  const perFamily = new Map<string, string>();
+  familyRenderings.set(s.name, perFamily);
+  for (const fam of FAMILIES) {
+    if (!s.render) {
+      if (fam.must.length > 0)
+        c(`[GATE] ${s.name} DISPLAYS a ${fam.name}-event frame's payload`, false, "path not found");
+      c(`[event-family:${fam.name}] ${s.name} names the events it drew`, false, "path not found");
+      continue;
+    }
+    const framed = aguiFrame({ ...FAMILY_ENVELOPE, events: fam.events }) as unknown as { kind: string };
+    const out = s.render([framed]);
+    perFamily.set(fam.name, out);
+    const missing = fam.must.filter((m) => !out.includes(m));
+    if (missing.length > 0) console.log(`  [family:${fam.name}] ${s.name} -> ${JSON.stringify(out)}`);
+    // The GATE cell, for every family that HAS a payload. This is the cell a text-only renderer
+    // fails and every cell above it passes.
+    if (fam.must.length > 0)
+      c(`[GATE] ${s.name} DISPLAYS a ${fam.name}-event frame's payload`, missing.length === 0,
+        `missing ${JSON.stringify(missing)}`);
+    // Deliberately NOT a gate. A good renderer may draw a tool call as `Bash(ls)` and never print the
+    // literal `TOOL_CALL_START`, so gating on the type name would fail a CORRECT surface. It is still
+    // asserted, because a surface that names neither the payload nor the event is drawing nothing —
+    // it is reported as its own finding, the way `[non-silence]` is.
+    c(`[event-family:${fam.name}] ${s.name} names the events it drew`,
+      fam.types.every((t) => out.includes(t)), JSON.stringify(out));
+  }
+}
+
+/**
+ * THE `run` FAMILY'S GATE, and the general trap the payload cells cannot catch.
+ *
+ * A renderer that collapses every frame to one marker — `[unrenderable part kind "ag-ui.frame"]` is
+ * today's — renders all five families to the SAME string. Since the envelopes are byte-identical,
+ * two families rendering alike means the events did not reach the output at all. This is the only
+ * gate `run` can have (it carries no payload to preserve), and it is the cell that catches a
+ * surface which draws SOMETHING for every frame while distinguishing none of them.
+ */
+for (const s of SURFACES) {
+  const perFamily = familyRenderings.get(s.name);
+  if (!perFamily || perFamily.size === 0) {
+    c(`[GATE] ${s.name} renders different event families differently`, false, "path not found");
+    continue;
+  }
+  const collisions: string[] = [];
+  const seenBy = new Map<string, string>();
+  for (const [fam, out] of perFamily) {
+    const prior = seenBy.get(out);
+    if (prior) collisions.push(`${prior}==${fam}`);
+    else seenBy.set(out, fam);
+  }
+  c(`[GATE] ${s.name} renders different event families differently`,
+    collisions.length === 0, `collisions ${JSON.stringify(collisions)}`);
 }
 
 // ── The precondition's second half. A surface that can draw a frame but never subscribes to the
