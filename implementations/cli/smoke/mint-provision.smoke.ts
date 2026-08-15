@@ -98,15 +98,22 @@ function facts(creds: string): { principal?: string; uids: string[]; subAllow: s
   return { principal, uids: [...uids], subAllow: payload.nats?.sub?.allow ?? [] };
 }
 
-/** Live TCP sockets this process holds: the broker connections. A provisioner the command forgot to
- *  drop shows up here as one extra socket after the mint returns. */
-const sockets = () => process.getActiveResourcesInfo().filter((r) => r === "TCPSocketWrap").length;
+/** Broker-side truth: the client names of every OPEN connection, off the monitoring endpoint. The
+ *  endpoint connects as `cotal:<card.name>`, so a provisioner the command forgot to drop is an open
+ *  connection named `cotal:mint-provisioner` — counted by the BROKER, not by this process's own
+ *  socket bookkeeping (which a half-closed neighbour connection can mask either way). */
+async function connNames(monitorUrl: string): Promise<string[]> {
+  const r = await fetch(`${monitorUrl}/connz`);
+  const body = (await r.json()) as { connections?: Array<{ name?: string }> };
+  return (body.connections ?? []).map((c) => c.name ?? "");
+}
 
 const SPACE = "main";
 const root = mkdtempSync(join(tmpdir(), "cotal-mint-prov-root-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 const auth = await createSpaceAuth(SPACE);
-const broker = await bootBroker(auth);
+const broker = await bootBroker(auth, { monitor: true });
+if (!broker.monitorUrl) throw new Error("broker booted without its monitoring endpoint");
 const cleanup: Array<() => Promise<void> | void> = [() => broker.stop()];
 const cwd0 = process.cwd();
 
@@ -170,12 +177,20 @@ try {
   // ── 2. --provision: the same mint, and the identity can consume ─────────────────────────────
   {
     const out = join(root, "board.creds");
-    const socketsBefore = sockets();
     const r = await runMint(["board", "--profile", "agent", "--provision", "--role", "board", "--out", out]);
     check("mint --provision --role board succeeds", r.code === 0 && existsSync(out), r.out);
     check("  it says so", /provisioned its durables/.test(r.out), r.out);
-    check("  the provisioner connection it opened is dropped before the command returns (no socket outlives the mint)",
-      await until(() => sockets() === socketsBefore, 2000), { before: socketsBefore, after: sockets() });
+    // Positive control for the connz reader first: it must SEE a named open connection (the peer's)
+    // before its silence about the provisioner can mean anything — a broken reader returns [] for
+    // both and would otherwise green the leak cell.
+    check("  the broker's connz names the peer's open connection (the leak instrument sees connections)",
+      (await connNames(broker.monitorUrl)).includes("cotal:peer"), await connNames(broker.monitorUrl));
+    let leaked = await connNames(broker.monitorUrl);
+    const gone = async () => { leaked = await connNames(broker.monitorUrl!); return !leaked.includes("cotal:mint-provisioner"); };
+    const deadline = Date.now() + 2000;
+    let dropped = await gone();
+    while (!dropped && Date.now() < deadline) { await wait(50); dropped = await gone(); }
+    check("  the provisioner connection the command opened is dropped before it returns (broker-side)", dropped, leaked);
     const creds = readFileSync(out, "utf8");
     const { principal, uids } = facts(creds);
     check("  the credential's grants name exactly one lifecycle uid", uids.length === 1 && principal !== undefined, { uids, principal });
