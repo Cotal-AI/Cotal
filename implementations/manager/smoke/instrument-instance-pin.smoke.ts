@@ -17,16 +17,20 @@
  * rather than assuming it — a wildcard row would satisfy every live check in this file while
  * quietly destroying the boundary, so the boundary is checked directly.
  *
- * COVERAGE BOUNDARY, stated so this is not over-read. This suite builds its own inputs: it calls
- * `instancePinnedInstrumentCapabilities` and mints directly. So it proves the GRANT SHAPING and the
+ * COVERAGE BOUNDARY, stated so this is not over-read. Cells 1-4 build their own inputs: they call
+ * `instancePinnedInstrumentCapabilities` and mint directly. So they prove the GRANT SHAPING and the
  * live rails end to end — a pinned instrument reaches the instance it names, an unpinned one still
- * cannot, and no ordinary credential gains a route. It does NOT prove the CLI actually threads
- * `--on` down to the mint: `agents.ts`/`spawn.ts` → `resolveControlTarget` → `connectOrExit` is
- * covered by typecheck and by the golden flag inventory, not by an executing test. A defect that
- * dropped the argument anywhere along that chain would leave this suite green. Closing it needs a
- * CLI-level `--on` end-to-end against a two-manager mesh; named here rather than left implicit,
- * because "the pin works" and "the flag reaches the pin" are different claims and only the first
- * one is evidenced below.
+ * cannot, and no ordinary credential gains a route. They do NOT prove the CLI threads `--on` down
+ * to the mint: `agents.ts`/`spawn.ts` -> `resolveControlTarget` -> `connectOrExit` type-checks with
+ * the argument dropped anywhere along it. That gap is no longer merely named — it is covered by
+ * `cli-on-instance-live.smoke.ts`, which drives the real binary; and it was a real shipped defect,
+ * not a hypothetical. Keep the two suites distinct: "the pin works" and "the flag reaches the pin"
+ * are different claims, evidenced in different files.
+ *
+ * Cells 5 and 6 grade the describe's permission watch and the split-retry guard, and both reach
+ * into internals on purpose (the transport's status-listener registry; `Endpoint`'s resolved-service
+ * cache). Neither has a public accessor, and both guard regressions that every functional assertion
+ * in this file would miss — a leaked listener per resolve, and a mutating command executed twice.
  *
  * Run: pnpm smoke:instrument-instance-pin
  */
@@ -41,7 +45,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
-  instancePinnedInstrumentCapabilities,
+  instancePinnedInstrumentCapabilities, respondedButUnbound, EP_UNBOUND_RESPONDER, CotalEndpoint,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
@@ -201,6 +205,93 @@ try {
   check("...and says the responder may be healthy (the wrong conclusion is the expensive one)",
     /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /grant is what is missing/.test(noPin.detail ?? ""),
     noPin.detail?.slice(0, 260));
+
+  // ---- 5. THE WATCH RELEASES ITSELF ------------------------------------------------------------
+  // The permission watch in cell 4 subscribes the connection's status stream. That stream is
+  // connection-lived, so a describe that does not RELEASE its listener leaks one per resolve — an
+  // unbounded growth on exactly the long-lived connections the mesh runs on, and invisible to every
+  // functional assertion above, which is how the first cut of this shipped. `return()` is not
+  // enough: the transport's generator parks on an internal signal await, so a queued return does
+  // not run until the next status event, which on a healthy connection may never arrive.
+  //
+  // This reaches into `protocol.listeners` deliberately. The registration is internal and there is
+  // no public accessor, so the choice is to assert on the internal or not to assert at all — and
+  // "cleanup happens" was claimed once already without evidence. If a transport upgrade moves this,
+  // the cell fails loud and gets rewritten, which is the correct outcome for a probe of internals.
+  console.log("\n5. the describe's permission watch does not leak a status listener per resolve");
+  {
+    const id = newIdentity(); const uid = mintLifecycleUid();
+    const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
+    const creds = await mintCreds(auth, id, "control-caller-privileged", {
+      lifecycleUid: uid, endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", IID1),
+    });
+    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    const listeners = (): number =>
+      ((nc as unknown as { protocol?: { listeners?: unknown[] } }).protocol?.listeners ?? []).length;
+    try {
+      const before = listeners();
+      check("the internal listener registry is reachable (else this cell proves nothing)",
+        Array.isArray((nc as unknown as { protocol?: { listeners?: unknown[] } }).protocol?.listeners), before);
+      const ROUNDS = 12;
+      for (let i = 0; i < ROUNDS; i++)
+        await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 8_000, instanceId: IID1 });
+      const after = listeners();
+      console.log(`   listeners before=${before} after ${ROUNDS} pinned resolves=${after}`);
+      check(`${ROUNDS} resolves leave the listener count where they found it`, after === before, { before, after });
+    } finally { await nc.drain().catch(() => nc.close()); }
+  }
+
+  // ---- 6. A SPLIT IS NEVER AUTO-RETRIED --------------------------------------------------------
+  // `Endpoint.invokeService` recovers from `failed-precondition` by dropping the cached resolve and
+  // invoking AGAIN. That was written for one reading of the code — "the describe-bound incarnation
+  // is gone, so the first invoke never ran, and a second is a repair". The describe-bound currency
+  // check also raises it in a case where that premise is FALSE: a different live instance wins the
+  // class queue and REPLIES, so the request was received and executed, and the error is raised
+  // afterwards. Re-invoking there executes a mutating command twice — the "one spawn, several
+  // seats" shape — while the error text tells the operator not to retry.
+  //
+  // Made deterministic rather than raced: resolve for real, then doctor the CACHED responder id to
+  // an instance that does not exist. Every subsequent class-queue answer is then "not the bound
+  // incarnation" on every run, whichever manager wins. Reaching into `resolvedServices` is the
+  // point — that cache is what the retry drops, and there is no public way to age it.
+  console.log("\n6. a responder that ANSWERED is never silently re-invoked");
+  {
+    const id = newIdentity(); const uid = mintLifecycleUid();
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, creds: await mintCreds(auth, id, "control-caller-privileged", { lifecycleUid: uid }),
+      card: { id: id.id, name: "pin-split-probe", role: "operator", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, lifecycleUid: uid,
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    try {
+      const warm = await ep.invokeService(MANAGER_ENDPOINT, "ps");
+      check("the probe can invoke ps normally before the split is forced", warm.reply.ok === true, warm.reply.error);
+      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+      const cached = cache.get(MANAGER_ENDPOINT);
+      const ghost = `${"q".repeat(4)}${IID1.slice(4)}`;
+      check("the cached resolve is reachable and the forced id is neither live instance",
+        cached !== undefined && ghost !== IID1 && ghost !== IID2 && /^[a-z0-9]{26,32}$/.test(ghost), ghost);
+      if (cached) cached.responder.instanceId = ghost;
+
+      let threw: unknown;
+      let returned: unknown;
+      try { returned = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { threw = e; }
+      // WITHOUT the guard the catch drops the cache, re-resolves against a REAL instance and invokes
+      // a SECOND time, which succeeds — so the split is swallowed and the caller is told everything
+      // was fine. That returned success is the failure mode; a throw is the fix.
+      check("the split SURFACES instead of being swallowed by a second invoke",
+        threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
+      check("...as failed-precondition", threw instanceof EpEnvelopeError && threw.code === "failed-precondition",
+        threw instanceof Error ? threw.message.slice(0, 160) : threw);
+      check("...carrying the responder-answered marker, which is what gates the retry",
+        respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
+      const detail = (threw instanceof EpEnvelopeError ? threw.details ?? [] : []).find((d) => d.kind === EP_UNBOUND_RESPONDER);
+      check("...and the marker names the instance that actually handled it",
+        typeof detail?.answeredBy === "string" && (detail.answeredBy === IID1 || detail.answeredBy === IID2),
+        detail);
+    } finally { await ep.stop().catch(() => {}); }
+  }
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {

@@ -24,6 +24,21 @@ export interface EpErrorDetail {
   [key: string]: unknown;
 }
 
+/**
+ * `details[].kind` for a `failed-precondition` raised because a responder ANSWERED but was not the
+ * incarnation this handle resolved against (§13.2). It marks the one fact a caller cannot recover
+ * from the code alone: **the request reached a live responder that handled it**. A retry therefore
+ * re-executes, so this is exactly the case an automatic re-invoke must not treat as "the incarnation
+ * is gone, resolve again" — that premise is false here, and acting on it duplicates the effect.
+ */
+export const EP_UNBOUND_RESPONDER = "ai.cotal.ep.unbound-responder";
+
+/** True iff `e` carries the {@link EP_UNBOUND_RESPONDER} marker — i.e. a responder handled the
+ *  request, so retrying it is a SECOND execution, not a repair. */
+export function respondedButUnbound(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_UNBOUND_RESPONDER);
+}
+
 /** The `EndpointReply.error` shape. */
 export interface EpError {
   code: string;

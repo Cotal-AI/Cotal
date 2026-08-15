@@ -18,7 +18,7 @@ import {
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError, respondedButUnbound } from "./endpoint-envelope.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
@@ -1382,8 +1382,18 @@ export class CotalEndpoint extends EventEmitter {
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       } catch (e) {
         if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-        // The describe-bound incarnation is gone (restart/supersede) — re-resolve once, then invoke
-        // against the CURRENT one; a second failure is the real state and throws.
+        // NEVER auto-retry a request a responder already HANDLED. This recovery was written for one
+        // reading of `failed-precondition` — "the describe-bound incarnation is gone (restart or
+        // supersede), so re-resolve and invoke the current one" — and on that reading a second
+        // invoke is a repair, because the first one never ran. That premise does not hold for the
+        // other producer of this code: the describe-bound currency check fires when a DIFFERENT live
+        // instance wins the class queue and REPLIES, which in a multi-manager space is an ordinary
+        // split, not a supersession. There the request did reach a responder and was executed; the
+        // error is raised after the fact. Re-invoking then runs a mutating command a second time —
+        // the "one spawn, several seats" shape — while the error text tells the operator not to
+        // retry. `respondedButUnbound` is the marker that separates the two, so the repair path
+        // stays for the case it was written for and the split surfaces to the caller instead.
+        if (respondedButUnbound(e)) throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }

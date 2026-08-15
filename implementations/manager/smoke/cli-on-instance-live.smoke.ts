@@ -36,11 +36,14 @@
  * capability is constructed here and nothing is minted by hand — that is the whole point. If any
  * link in CLI → resolveControlTarget → connectOrExit → mint drops the instance, cell 3 goes red.
  *
- * COVERAGE BOUNDARY of THIS suite, stated so it is not over-read in turn: it grades `ps`, the
- * cheapest read that takes `--on`. `spawn --on` and `despawn --on` ride the same
- * `resolveControlTarget` → `connectOrExit` seam and are covered transitively by cell 3, but their
- * own goal-following paths are not exercised here. It also does not grade the class-queue split
- * itself (that is SPEC 13.2 behaviour, not this seam).
+ * COVERAGE BOUNDARY of THIS suite, stated so it is not over-read in turn. It invokes `ps` and
+ * nothing else. Cell 3 proves the SHARED `resolveControlTarget` → `connectOrExit` → mint seam, and
+ * that is all it proves: `spawn` and `stop`/`despawn` reach that seam through their OWN forwarding
+ * sites (`spawn.ts` and `agents.ts` each pass `values.on` separately), and dropping the argument at
+ * either of those leaves every cell in this file green. Do NOT read this suite as covering them
+ * "transitively" — an earlier draft of this comment said exactly that and it was wrong, which is
+ * the same over-read that let the original defect ship. Those two commands need their own cells.
+ * This suite also does not grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
  *
  * Mutation-proof target: `cli-on-mint` — drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -171,9 +174,16 @@ try {
   mustHaveRun(unpinned, "the unpinned `ps`");
   const unpinnedOut = strip(unpinned.out);
   check("an UNPINNED ps succeeds", unpinned.status === 0, { status: unpinned.status, tail: unpinnedOut.slice(-300) });
+  // FULL ids, not prefixes. Checking `slice(0, 8)` would be satisfied by the abbreviated header
+  // this change removed, so it would assert nothing about the behaviour the PR adds — and `--on`
+  // rejects anything shorter than the whole 26-32 char token, which is the entire reason the header
+  // was widened. The prefix form is asserted ABSENT below for the same reason.
   check("...and sees BOTH instances — the split is real, not a fixture artefact",
-    unpinnedOut.includes(IID1.slice(0, 8)) && unpinnedOut.includes(IID2.slice(0, 8)),
-    { want: [IID1.slice(0, 8), IID2.slice(0, 8)], tail: unpinnedOut.slice(-400) });
+    unpinnedOut.includes(IID1) && unpinnedOut.includes(IID2),
+    { want: [IID1, IID2], tail: unpinnedOut.slice(-400) });
+  check("...and prints ids `--on` will ACCEPT — the full token, never a truncated one",
+    new RegExp(`manager ${IID1}(\\s|$)`, "m").test(unpinnedOut) && new RegExp(`manager ${IID2}(\\s|$)`, "m").test(unpinnedOut),
+    unpinnedOut.slice(-400));
 
   // ---- 2. THE FLAG IS ACCEPTED AND VALIDATED --------------------------------------------------
   // Cheap, but it separates "the flag is gone" from "the flag is dead", which are different bugs
