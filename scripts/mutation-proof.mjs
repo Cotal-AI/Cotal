@@ -356,7 +356,24 @@ function proveOne(m, opts) {
       //
       // Fail-closed by construction: a cell whose NAME happens to match the marker is graded
       // NOT-EVALUATED rather than KILLED, which refuses to certify rather than certifying wrongly.
-      if (carrying.every((l) => opts.notEvaluated.test(l))) {
+      //
+      // THE DENYLIST IS A FLOOR, NOT THE STRONG FORM, and the difference decides which way it fails.
+      // Excluding known not-evaluated markers cannot see a runner that marks skips in a vocabulary
+      // nobody listed here — that line does not match, so the red is certified: FAIL-OPEN. Naming the
+      // shape a FAILURE line must have inverts it, because an unrecognised line then matches nothing
+      // and the run refuses: FAIL-CLOSED. Raised in review, and correctly. So `--red-line <regex>`
+      // takes precedence when given: the expected string must appear on a line that is positively a
+      // failure (`^\\s*✗ FAIL:` in the suites here), not merely on a line that is not a skip.
+      // A precise match needs no fallback; a loose one has none.
+      if (opts.redLine && !carrying.some((l) => opts.redLine.test(l))) {
+        return {
+          label,
+          verdict: "NOT-EVALUATED",
+          why: `exited ${r.status}, but no line naming ${JSON.stringify(m.expectRed)} matches the failure shape ${opts.redLine} — the cell was printed, not failed (${JSON.stringify(carrying[0].trim().slice(0, 120))})`,
+          ticks,
+        };
+      }
+      if (!opts.redLine && carrying.every((l) => opts.notEvaluated.test(l))) {
         return {
           label,
           verdict: "NOT-EVALUATED",
@@ -401,6 +418,10 @@ let opts = {
   // or a real kill would be graded NOT-EVALUATED. Override with --not-evaluated <regex> for a
   // runner that marks skips differently.
   notEvaluated: new RegExp(a["not-evaluated"] ?? "⊘|\\bVOID\\b|NOT EVALUATED|NEVER RAN|\\bSKIPPED\\b"),
+  // The STRONG form, and preferred wherever the runner has a stable failure prefix: name the shape a
+  // FAILURE line must have, so anything unrecognised refuses instead of certifying. Supersedes the
+  // denylist above when given. For the suites in this repo: --red-line '^\s*✗ FAIL:'
+  redLine: a["red-line"] ? new RegExp(a["red-line"]) : undefined,
   // --private-build <pkgDir>: compile the mutant into a scratch dir inside that package and point
   // the suite at it, instead of writing the package's SHARED dist that other worktrees and
   // installed extensions resolve.
