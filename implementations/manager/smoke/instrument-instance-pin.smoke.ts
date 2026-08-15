@@ -489,8 +489,15 @@ try {
         try {
           await ep.invokeService(MANAGER_ENDPOINT, command, adminArgs[command] ?? {});
         } catch (e) { err = e; }
-        if (!respondedButUnbound(err)) { notReached.push(command); continue; }
-        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId !== ghost) retriedAnyway.push(command);
+        // ORDER MATTERS, and getting it wrong made this cell nondeterministic in the mutated
+        // direction. When a guard lets the command through, the retry either succeeds (no error, so
+        // no marker) or splits again (marker present) — a coin flip per command. Testing the marker
+        // first therefore sorted the SAME defect into two different buckets depending on the toss.
+        // The cache is the stronger witness and it is checked first: if it moved, the command
+        // provably reached a responder AND was retried, whichever way the second invoke landed. A
+        // missing marker only means "never got there" when the cache also did not move.
+        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId !== ghost) { retriedAnyway.push(command); continue; }
+        if (!respondedButUnbound(err)) notReached.push(command);
       }
       check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
         notReached.length === 0, { notReached });
