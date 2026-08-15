@@ -32,6 +32,14 @@
 #     implementations/cli/smoke/sys-rotation.smoke.ts   a term inside `genBeforeManifest`
 #     pnpm-lock.yaml                                    a term inside another base64 sha512 hash
 #
+#   THIS FILE IS ITSELF A HIT, AND IT IS THIS LINE'S NEIGHBOUR THAT CAUSES IT. Documenting the
+#   `genBeforeManifest` false positive puts that substring into leakscan.sh, so a scan of the tree
+#   reports the scanner. Expected, harmless, and NOT to be "fixed": the identifier is ordinary
+#   repository code and elides nothing. Stated here so the next operator does not spend real time
+#   re-deriving that the hit is the worked example. A file that documents a detector's noise
+#   becomes an instance of it -- the same shape as a leak record quoting its own term, one
+#   severity lower.
+#
 #   Base64 is dense alphanumeric noise; it collides with short terms forever, and no term list
 #   avoids that. Expect hits in lockfiles, minified bundles and hashes, and read them.
 #
