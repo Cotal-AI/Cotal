@@ -103,3 +103,27 @@ would fail closed, which is the safe direction and still leaves the tool unusabl
 => The two probes are TOOLING, not measurement, and must move before the strip. The rest of the
 directory is measurement and can go. Not done here: it is a PR-shaping decision with a human
 waiting, and it is not this run's subject.
+
+## ADDENDUM 2 — MX25's SURVIVAL, PROVED INDEPENDENTLY OF THE SUITE
+Fleet rule issued mid-run: a SURVIVED is worthless unless something independent shows the mutant is
+actually broken, because "the mutation survived" and "the mutation did nothing" are the same
+observation. Applied to MX25, and the answer changes what MX25 is allowed to claim.
+
+INSTRUMENTED BOTH SITES IN ONE RUN — one instrument, so a zero cannot be instrument failure:
+  PROBE-A  the catch branch (the site MX25 mutated)          ENTERED 0 times
+  PROBE-B  the revision-undefined branch (MX23's site)       ENTERED 1 time
+  CONTROL  98 lines captured, and PROBE-B fired in the SAME log as PROBE-A's zero
+
+=> MX25 IS A SEMANTIC NO-OP WITH RESPECT TO THIS SUITE. No fixture makes publishPresence throw, so
+the branch it retagged is never entered, and its green is an ABSENCE rather than a finding about
+kill-power.
+
+AND THAT IS EXACTLY WHAT MX25 WAS ASKED TO ESTABLISH, so the result stands with its claim narrowed:
+  IT PROVES      D5c does not traverse :1452 — the tag is partitioned, and D5c is attributable to
+                 :1463, which MX23 killed.
+  IT DOES NOT    say anything about whether any suite would catch a defect at :1452. That site is
+                 UNREACHED by this fixture, which is a coverage statement, not a kill-power one.
+
+The distinction is the whole of the new rule: an unreached site and an untested site look identical
+from a green, and only an entry probe separates them. Recorded here rather than left to be read off
+"SURVIVED, 63/63", which is what the earlier addendum's wording invited.
