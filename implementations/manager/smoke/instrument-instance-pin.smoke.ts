@@ -274,13 +274,17 @@ try {
         cached !== undefined && ghost !== IID1 && ghost !== IID2 && /^[a-z0-9]{26,32}$/.test(ghost), ghost);
       if (cached) cached.responder.instanceId = ghost;
 
+      // (a) A CREATING command must surface. `spawn` names a persona that does not exist, so the
+      // manager refuses it cheaply — no agent is started. What matters is that the request REACHED a
+      // responder, which is enough to make a second invoke a second execution. Without the guard the
+      // catch drops the cache, re-resolves against a real instance and invokes AGAIN, and that
+      // second call is the duplicate; the caller is handed its success and never learns of the split.
       let threw: unknown;
       let returned: unknown;
-      try { returned = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { threw = e; }
-      // WITHOUT the guard the catch drops the cache, re-resolves against a REAL instance and invokes
-      // a SECOND time, which succeeds — so the split is swallowed and the caller is told everything
-      // was fine. That returned success is the failure mode; a throw is the fix.
-      check("the split SURFACES instead of being swallowed by a second invoke",
+      try {
+        returned = await ep.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${randomUUID().slice(0, 6)}`, agent: "claude" });
+      } catch (e) { threw = e; }
+      check("a CREATING command's split SURFACES instead of being swallowed by a second invoke",
         threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
       check("...as failed-precondition", threw instanceof EpEnvelopeError && threw.code === "failed-precondition",
         threw instanceof Error ? threw.message.slice(0, 160) : threw);
@@ -290,6 +294,19 @@ try {
       check("...and the marker names the instance that actually handled it",
         typeof detail?.answeredBy === "string" && (detail.answeredBy === IID1 || detail.answeredBy === IID2),
         detail);
+
+      // (b) THE OTHER SIDE OF THE BOUNDARY, and the reason (a) is a narrow guard rather than a blanket
+      // one. A read must still self-heal: in a two-manager space roughly half of all class-queue calls
+      // split, so surfacing them all would break `ps` about every other run for nothing — re-running a
+      // read duplicates no effect. Without this cell the guard could quietly widen to every command
+      // and every assertion above would stay green while ordinary reads started failing.
+      const cached2 = cache.get(MANAGER_ENDPOINT);
+      if (cached2) cached2.responder.instanceId = ghost;
+      let readOk: unknown; let readThrew: unknown;
+      try { readOk = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
+      check("a READ with the same forced split still self-heals — the guard did not widen",
+        readThrew === undefined && (readOk as { reply?: { ok?: boolean } } | undefined)?.reply?.ok === true,
+        readThrew instanceof Error ? readThrew.message.slice(0, 160) : readOk);
     } finally { await ep.stop().catch(() => {}); }
   }
 
