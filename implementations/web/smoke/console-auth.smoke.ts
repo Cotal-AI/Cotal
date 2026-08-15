@@ -23,7 +23,7 @@
  * and needs a browser. That boundary is stated rather than left for a reader to assume.
  */
 import { strict as assert } from "node:assert";
-import { closeSync, fchmodSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -303,6 +303,19 @@ check("a `launch-token-already-used` verdict becomes a 401 at the HANDLER, not o
 check("…names its own condition in the body", JSON.parse(rp.body).error === LAUNCH_TOKEN_ALREADY_USED, rp.body);
 check("…and EXECUTION STOPS for the replayed link as well", rp.routeReached === false, rp);
 
+// THE EXCHANGE BRANCH IS A DIMENSION TOO. The refusal branch is asserted verdict-only above, but the
+// exchange branch legitimately reads `path` (it redirects to it), so it cannot be asserted the same
+// way — it has to be SWEPT. The single fixture used `/graph`; conjoining the exchange with
+// `path === "/graph"` therefore stayed green while the ACTUAL printed launch URL is `/`, which would
+// have burned the token, served the page, and never set a session cookie. The one path that matters
+// most was the one path not driven.
+for (const exPath of ["/", "/graph", "/app.js"]) {
+  const e = runGateBlock({ exchange: "SESSIONVALUE" }, exPath);
+  check(`an exchange on ${exPath} sets the cookie and redirects THERE (the printed launch URL is "/")`,
+    e.status === 302 && (e.headers["set-cookie"] ?? "").includes("SESSIONVALUE") && e.headers.location === exPath,
+    { exPath, e });
+}
+
 const ex = runGateBlock({ exchange: "SESSIONVALUE" }, "/graph");
 // ATTRIBUTE BOUNDARIES, not substrings. `.includes("HttpOnly")` is satisfied by an attribute merely
 // CONTAINING the word — `NotHttpOnly` passes it and the browser enforces nothing. Parse the header
@@ -395,6 +408,21 @@ check("the handler's first TWO executable statements are the path and query pars
     && firstStatements[1].startsWith("const query ="),
   { firstStatements });
 
+// TIMING SAFETY IS NOT OBSERVABLE FROM OUTPUTS, so it cannot be tested functionally. Replacing the
+// comparison with plain `===` produces an identical boolean for every vector in this file — measured,
+// 103 cells stayed green while the constant-time property was gone. **A functional suite cannot see
+// this class of regression at all**; the only honest cell is a structural one over the shipped helper.
+const secretEqualsSrc = webTs.slice(
+  webTs.indexOf("function secretEquals("),
+  webTs.indexOf("/** Parse one cookie"),
+);
+check("NON-VACUITY: the shipped secretEquals body was located", secretEqualsSrc.includes("function secretEquals("),
+  { len: secretEqualsSrc.length });
+check("secretEquals compares with timingSafeEqual — the constant-time property, which NO functional vector can prove",
+  secretEqualsSrc.includes("timingSafeEqual(ab, bb)"), { secretEqualsSrc });
+check("…and does not short-circuit to a plain string comparison",
+  !/return\s+a\s*===\s*b/.test(secretEqualsSrc), { secretEqualsSrc });
+
 // ── 6. THE SESSION FILE'S MODE, DRIVEN AGAINST A REAL FILE ──────────────────────────────────────
 // This file holds the launch URL and the readiness nonce, so its mode is a credential boundary. No
 // cell reached it at all: deleting the descriptor chmod, or writing 0644, went 68/68 green. And the
@@ -420,8 +448,18 @@ check("the handler's first TWO executable statements are the path and query pars
 
   const source = ts.transpileModule(`globalThis.__write = () => { ${writeBlock} };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  // THE MODE AT THE INSTANT OF THE WRITE, not afterwards. Swapping the chmod and the write leaves the
+  // final mode 0600 and the final content correct — so a cell that inspects the file afterwards
+  // passes while the secret was written into a WORLD-READABLE file and narrowed a moment later. A
+  // credential exposed for an instant is exposed. This wrapper records the descriptor's mode at the
+  // moment the bytes go in.
+  let modeAtWrite: number | undefined;
+  const recordingWrite = (fd: number, data: string) => {
+    modeAtWrite = fstatSync(fd as number).mode & 0o777;
+    return writeFileSync(fd, data);
+  };
   const ctx: Record<string, unknown> = {
-    openSync, fchmodSync, writeFileSync, closeSync, JSON,
+    openSync, fchmodSync, writeFileSync: recordingWrite, closeSync, JSON,
     sessionPath, launchUrl: "http://127.0.0.1:7799/?k=x", gate: { readinessNonce: "n" },
     globalThis: undefined, console,
   };
@@ -429,6 +467,8 @@ check("the handler's first TWO executable statements are the path and query pars
   runInContext(source, createContext(ctx), { filename: "web.ts (session write)" });
   (ctx.__write as () => void)();
 
+  check("the secret is written into an ALREADY-0600 descriptor — narrowed BEFORE the bytes, not after",
+    modeAtWrite === 0o600, { modeAtWrite: modeAtWrite?.toString(8) });
   check("the shipped write NARROWS a stale permissive session file to 0600 (mode is enforced on every write, not only at creation)",
     (statSync(sessionPath).mode & 0o777) === 0o600, (statSync(sessionPath).mode & 0o777).toString(8));
   check("…and the file still holds the launch URL it was asked to write",
