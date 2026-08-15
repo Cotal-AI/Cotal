@@ -103,12 +103,18 @@ check("the delivery row's VALUE is non-empty — never the empty-string renderin
   value.length > 0, JSON.stringify(value));
 check("it says health could not be established, by name", /cannot establish health/i.test(value), value);
 check("it names the PREFLIGHT as what failed", /preflight failed/i.test(value), value);
-// REGRESSION GUARD FOR A NEAR-MISS, not a style rule. `up-tls-routes-live` asserts its SECURITY
-// verdict with `/connection\s+.*unreachable/` over this command's entire output. The first draft of
-// this row read "the mesh connection failed above (unreachable)", which matches that regex BY
-// ITSELF — so an additive health line would have satisfied a security gate that the connection row
-// had failed. It was caught by reading the asserting suite, since that suite needs a broker and
-// could not be run here. Keep the two tokens off the same line.
+// REGRESSION GUARD, with its severity stated accurately rather than dramatically.
+// `up-tls-routes-live` asserts its SECURITY verdict with `/connection\s+.*unreachable/` over this
+// command's entire output, at TWO sites in that file — grep the pattern, not a line number. The
+// first draft of this row read "the mesh connection failed above (unreachable)" and matches that
+// regex by itself.
+//
+// IT WAS NOT, HOWEVER, EXPLOITABLE ON THIS PATH, and the first write-up said otherwise. The row only
+// matched when `preflight.kind` was "unreachable", which is precisely when the `connection` row
+// legitimately renders the same match. Measured across every PreflightFailure kind: the set where
+// the old row matched and the connection row did not is EMPTY. The guard stays because duplicate
+// evidence for a security assertion is worth removing and because the coincidence that saved it is
+// one interpolation edit away from ending — not because a gate was ever greened by it.
 check("the delivery row does NOT satisfy the TLS suite's security regex on its own",
   !/connection\s+.*unreachable/.test(value), value);
 check("POSITIVE CONTROL: that regex DOES match the phrasing this row used to have",

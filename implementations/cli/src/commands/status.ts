@@ -307,13 +307,38 @@ async function printTarget(
     // silent-omission defect, not a saving. Preflight failed, so the daemon was never asked, and the
     // row says which of those two facts it is reporting.
     //
-    // THE WORD "preflight" HERE IS LOAD-BEARING AND MUST NOT BE "connection". `up-tls-routes-live`
-    // asserts its SECURITY verdict with `/connection\s+.*unreachable/` over this command's whole
-    // output — that a substituted plaintext broker is reported unreachable. Phrased as "the mesh
-    // connection failed above (unreachable)", THIS row matches that regex on its own, so an additive
-    // health line would satisfy a security gate that the connection row itself had failed. Caught by
-    // reading the asserting suite before adding the row, not by running it (it needs a broker).
-    // Any rewording here must keep "connection" and "unreachable" out of the same line.
+    // THE WORD "preflight" HERE IS DELIBERATE AND MUST NOT BE "connection". `up-tls-routes-live`
+    // asserts its SECURITY verdict with `/connection\s+.*unreachable/` over this command's WHOLE
+    // output — that a substituted plaintext broker is reported unreachable. The regex appears at TWO
+    // sites in that file, not one; grep the pattern rather than a line number. Phrased as "the mesh
+    // connection failed above (unreachable)", this row matches that regex by itself, so a health line
+    // would have supplied evidence for an assertion whose subject is "somewhere in this output".
+    //
+    // HOW DANGEROUS IT ACTUALLY WAS — MEASURED, AND WEAKER THAN FIRST REPORTED. The row only matched
+    // when `preflight.kind` was the literal "unreachable", and that is exactly the value for which
+    // the line above legitimately renders `connection <red>unreachable`. Tested across every
+    // `PreflightFailure` (`packages/workspace/src/preflight.ts:21-27` plus "tls-trust"): the set of
+    // kinds where this row matched but the connection row did NOT is EMPTY. So it could never have
+    // been the sole supplier of the match on this path, and the first write-up of it overstated the
+    // severity. The rewording is kept because it removes duplicate evidence for a security assertion
+    // and because the next edit to the interpolation could break the coincidence that saved it.
+    //
+    // WHERE RESIDUAL EXPOSURE ACTUALLY LIVES: the preflight-OK path below, where `connection` renders
+    // green "ok" and the delivery text is built from broker error strings. If such a string ever puts
+    // "connection" before "unreachable" on one line, the assertion is satisfied while the connection
+    // row says ok — the dangerous direction. That path needs a broker and is NOT covered by a cell.
+    //
+    // THE SAME COUPLING RUNS BOTH WAYS, and the second direction is easy to miss: that file also has
+    // `assert.doesNotMatch(result.out, /connection\s+ok/)`. A positive whole-output assertion can be
+    // FALSELY SATISFIED by new text (silent, dangerous); a negative one can be FALSELY BROKEN by it
+    // (loud, safe). Both are the same defect — an assertion whose subject is "somewhere in this
+    // output" is coupled to everything anyone ever adds to that output — so any new row here must be
+    // checked against both kinds, not just the one that fails quietly.
+    //
+    // NOTE FOR AUDITORS: this comment contains the regex and the words it matches, so grepping this
+    // FILE for the pattern hits these lines. A comment is never written to stdout and the assertion
+    // reads the command's output, so it is inert — but the hit is expected, and clearing it by hand
+    // costs the reader the same two minutes twice.
     row("delivery", c.yellow(`cannot establish health — the mesh preflight failed above (${preflight.kind}), so this surface never reached the daemon. Says nothing about delivery.`));
     return;
   }
