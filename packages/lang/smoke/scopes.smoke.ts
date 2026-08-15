@@ -54,7 +54,19 @@ log(r.index, r.value);
 let raceJournal: Journal;
 {
   logged.length = 0;
-  const r = await run(RACE, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+  // Caught, because the way a race breaks is not always a wrong answer. A rule that lets the
+  // CANCELLED loser count as a candidate makes the winner a rejection, and the whole scope fails —
+  // an uncaught throw here would kill the suite from outside every assertion, which reads as a
+  // crash rather than as this rule being broken.
+  let liveError: unknown;
+  let r!: Awaited<ReturnType<typeof run>>;
+  try {
+    r = await run(RACE, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+  } catch (e) {
+    liveError = e;
+  }
+  ok("a live race resolves rather than failing on the branch it cancelled", liveError === undefined,
+    String(liveError).slice(0, 80));
   raceJournal = r.journal;
 
   const scope = scopeOf(r.journal, "race");
