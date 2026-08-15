@@ -37,6 +37,13 @@
  * confirmed by execution (rc=0, 18/18) before the cells below were written. **A cell that stops one
  * step short of the surface under test is the same defect this file exists to fix: it reports success
  * for a path it never reached.** Found by an adversarial reviewer, not by the author.
+ *
+ * AND THEN A THIRD TIME, in the fix for the first two. The new boot cells took a RESPONSE and stubbed
+ * `fetch` as something that always resolves, so the shipped `.catch` arm — the one for no answer at
+ * all — was still never executed, and restoring `{members: []}` there survived all 31 cells. The
+ * harness now supplies the fetch. **A stub that cannot fail cannot test a failure path, and it looks
+ * exactly like one that can.** Three passes, three variants of the same mistake: the fixture reached
+ * one step less far than the sentence describing it.
  */
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -213,12 +220,16 @@ check("CONTROL: liftStmt on an absent anchor returns null (its miss is reachable
 
 /** Drive the SHIPPED boot fetch against a response of our choosing, then the SHIPPED dispatch, then
  *  the SHIPPED pill — the whole browser path, end to end, with nothing hand-seeded. */
-const bootPill = async (response: { ok: boolean; json: () => unknown }): Promise<string> => {
+// The harness supplies the FETCH, not a response. A fixture that could only resolve left the shipped
+// `.catch` arm — the network-failure arm — unexecuted, and a mutation restoring `{members: []}` there
+// survived all 31 cells. A stub that cannot fail cannot test a failure path, and it looks identical
+// to one that can.
+const bootPill = async (fetchImpl: () => Promise<{ ok: boolean; json: () => unknown }>): Promise<string> => {
   let text = "";
   const el = { hidden: true, className: "", querySelector: () => ({ set textContent(v: string) { text = v; } }) };
   const feed: Record<string, unknown> = { asOf: undefined, available: false };
   const ctx: Record<string, unknown> = {
-    fetch: async () => response,
+    fetch: fetchImpl,
     feed,
     FEED_STALE_MS: 45000,
     now: () => 1700000000000,
@@ -242,13 +253,23 @@ const bootPill = async (response: { ok: boolean; json: () => unknown }): Promise
 };
 
 const refusalBody = JSON.parse(failed.body) as unknown;
+const resolves = (ok: boolean, body: unknown) => async () => ({ ok, json: () => body });
+
 check("M4: a 503 refusal reaching the boot path renders 'unreadable', not 'traffic-only'",
-  (await bootPill({ ok: false, json: () => refusalBody })) === "membership: unreadable",
-  await bootPill({ ok: false, json: () => refusalBody }));
+  (await bootPill(resolves(false, refusalBody))) === "membership: unreadable",
+  await bootPill(resolves(false, refusalBody)));
 check("M4: a 200 empty snapshot still renders traffic-only through the same path",
-  (await bootPill({ ok: true, json: () => ({ members: [] }) })) === "membership: traffic-only");
+  (await bootPill(resolves(true, { members: [] }))) === "membership: traffic-only");
 check("M4: a 200 populated snapshot still renders live through the same path",
-  (await bootPill({ ok: true, json: () => ({ asOf: 1700000000000, members: [{ id: "a" }] }) })) === "membership: live");
+  (await bootPill(resolves(true, { asOf: 1700000000000, members: [{ id: "a" }] }))) === "membership: live");
+
+// M7. The arm above is reached when the server ANSWERS with a refusal. This one is reached when
+// there is no answer at all — the daemon died, the socket dropped, the page is offline. The old
+// `.catch(() => ({members: []}))` manufactured a snapshot out of that, which is the same defect as
+// the server's, on the client, and it survived every cell until the fixture could reject.
+check("M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only' (no answer is not an empty answer)",
+  (await bootPill(async () => { throw new Error("network down"); })) === "membership: unreadable",
+  await bootPill(async () => { throw new Error("network down"); }));
 
 /** Drive a SHIPPED server-sent-event statement against a rejecting read and record the event NAME
  *  it emits — the name is the contract the browser listens on, so the name is what is asserted. */
