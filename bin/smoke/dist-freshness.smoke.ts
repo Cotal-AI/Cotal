@@ -33,6 +33,20 @@
  * TWICE: `smoke:dist-freshness` at entry 1 and `smoke:dist-freshness-late` immediately after the last
  * mid-chain build, the two runs labelled so a failure says which position it came from.
  *
+ * THE "AFTER THE LAST MID-CHAIN BUILD" LABEL IS TRUE OF THE SERIAL CHAIN AND FALSE IN CI, AND THAT
+ * DISTINCTION IS THE WHOLE VALUE OF THE LATE RUN. CI does not run this chain serially: `.github/
+ * workflows/ci.yml` and `windows.yml` both invoke `node bin/smoke/shard.mjs <i> 4`, which round-robins
+ * the chain by `i % 4` across FOUR SEPARATE RUNNERS, each doing its own `pnpm build` and then running
+ * only its own members. So "after entry 205" is a statement about position in a list, not about
+ * happens-before on any machine that runs it. Measured at this tip: the late run lands on shard 2,
+ * and the eight mid-chain rebuilds land on shards 0, 0, 2, 3, 0, 1, 2, 0 — it shares a runner with
+ * TWO of the eight (entries 159 and 163) and cannot observe the other SIX at all, because they
+ * execute elsewhere against a different checkout. MOVING THE ENTRY DOES NOT FIX THIS; every position lands on some shard and
+ * misses the rebuilds on the other three. The honest reading is that the late run is a SERIAL-CHAIN
+ * and ad-hoc instrument, and its CI value is confined to whatever shares its shard. The label prints
+ * that condition rather than the bare claim, because a reader who sees `AFTER the last mid-chain
+ * build` in sharded CI output would take it for a guarantee the run cannot make.
+ *
  * THE LATE RUN CATCHES A DIFFERENT DEFECT, AND IT IS WORTH NAMING PRECISELY BECAUSE IT IS NARROW.
  * Nothing in a normal chain edits `src`, so the late run is usually a no-op — say that plainly rather
  * than let its green imply more. What it catches is `src` MOVING WHILE THE CHAIN RUNS, and the
@@ -42,7 +56,15 @@
  * the tree, and the entry-1 run has long since passed. It also catches a mid-chain build that
  * silently produced nothing for a package.
  *
- * IF YOU WRITE THAT RE-RUN, IT GOES AFTER ENTRY 205, AND THE TRAP IS THE ENTRY NAMED `build`.
+ * THE RE-RUN IS APPENDED AT THE END OF THE CHAIN, NOT INSERTED AFTER 205, AND THE REASON IS SHARD
+ * ASSIGNMENT. Both satisfy "after the last mid-chain build" in the serial order, but `shard.mjs`
+ * keys membership on `i % 4`, so an INSERTION re-keys every entry after it. Measured on this branch's
+ * own diff: inserting at position 206 of 223 moved 17 of the 222 pre-existing suites to a different
+ * runner; appending moved 0. The count is `chainLength - position`, so it is a property of WHERE you
+ * insert and not of insertions in general — re-derive it on your own diff rather than reusing anyone's
+ * figure, including this one.
+ *
+ * WHEREVER YOU PLACE IT, THE TRAP IS THE ENTRY NAMED `build`.
  * `smoke:build-current` does NOT build: its script body is a plain `tsx` run and it works in a
  * `mkdtemp` root. A scan for entries that build will match it anyway, because `\bbuild\b` matches
  * inside `build-current` — `-` is a word boundary. THE TRAP ARRIVES WITH THIS BRANCH: that script is
@@ -172,7 +194,15 @@ function discoverBuiltPackages(): string[] {
  * "you edited and did not rebuild". After the last mid-chain build it means "something moved `src`
  * while the chain was running", which is a different defect with a different cause.
  */
-const POSITION = process.argv[2] === "--late" ? "AFTER the last mid-chain build" : "at the START of the chain";
+// The late label states the CONDITION under which its position means anything. Under `shard.mjs` the
+// chain is round-robined across four runners, so "after the last mid-chain build" is true of the
+// serial list and NOT of the machine executing this — printing the bare claim there would offer a
+// happens-before guarantee the run cannot make. The condition is carried in the label rather than in
+// a comment nobody reads at 3am, for the same reason every other fact here carries its source.
+const POSITION =
+  process.argv[2] === "--late"
+    ? "END of the chain — after every mid-chain build IN SERIAL ORDER; under `shard.mjs` only after those on its own shard"
+    : "at the START of the chain";
 
 let fail = 0;
 console.log(`dist freshness [${POSITION}] (a manager/CLI/delivery smoke tests the LAST BUILD, not your edit)\n`);
