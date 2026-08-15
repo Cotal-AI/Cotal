@@ -201,36 +201,27 @@ for (const page of ["index.html", "graph.html"] as const) {
 /**
  * One surface: does the frame's text reach the string this surface hands its body renderer?
  *
- * ⚠️ **WHAT THE CONSOLE-FAMILY CELLS BELOW ARE CONDITIONAL ON, AND IT IS NOT SATISFIED IN
- * PRODUCTION TODAY.** They ask: *given a registered `part-renderer` for `ag-ui.frame`, does this
- * surface's rendering path carry the payload through?* **This suite registers that renderer itself,
- * by importing the provider.** Nothing that ships does.
+ * WHAT THE CONSOLE-FAMILY CELLS BELOW ARE CONDITIONAL ON. They ask: *given a registered
+ * `part-renderer` for `ag-ui.frame`, does this surface's rendering path carry the payload through?*
+ * **That registration is now performed by core itself, on import** — so for the console family the
+ * condition is satisfied by the same import `cotal console`, `cotal join` and `examples/02` already
+ * do, and these cells grade the shipped configuration rather than an invented one.
  *
- * Confirmed by execution, with a positive control, against the binary's own link tree (all packages
- * resolving to `dist/index.js` via `bin/node_modules`):
+ * ⚠️ **THIS COMMENT SAID THE OPPOSITE, AND KEPT SAYING IT AFTER IT WAS FALSE.** Until `ag-ui.frame`
+ * was ruled a core concept, the block here read *"This suite registers that renderer itself. Nothing
+ * that ships does"*, carried a positive-control table showing `registered = FALSE` against the
+ * binary's link tree, and concluded *"A GREEN HERE DOES NOT MEAN `cotal console` DISPLAYS A FRAME."*
+ * Every clause of that was made false by the move into `packages/core`, in this same branch, and it
+ * survived because a comment is not re-run. It is recorded rather than deleted because the mechanism
+ * it described is the one that had to change: the provider was never loaded in any build, and the
+ * fix was a core-tier decision, not a composition-root import. (One clause was wrong even when it was
+ * written: it said no CLI command declares `requiredExtensions`. `spawn` does — `console` and `join`
+ * do not, which is the narrower true fact it should have stated.)
  *
- *   binary's graph (cli + manager + delivery + auth)   registered = FALSE
- *   after explicitly loading connector-core            registered = TRUE   <- the control
- *
- * Mechanism: no production file under `bin/`, `implementations/` or `packages/` imports
- * `@cotal-ai/connector-core`; extensions materialise per-command from `requiredExtensions`
- * (`command.ts:195`); and **no CLI command declares any** — `console` and `join` least of all.
- *
- * **SO A GREEN HERE DOES NOT MEAN `cotal console` DISPLAYS A FRAME. It means core's Registry and
- * this surface's rendering path are correct GIVEN a registration production never performs.**
- *
- * **RESIDUAL, so the next reader knows what was and was not tested without having to ask:** the
- * probe loads the binary's module graph; it does not RUN a command. A runtime dynamic import in a
- * live `cotal console` session is therefore not excluded by execution — it is bounded by
- * `requiredExtensions` being declared nowhere, which is the mechanism that would have to carry it.
- * A live end-to-end was authorised and deliberately not spent: it costs a broker, a publishing
- * agent and exclusivity to probe a path already bounded by a static measurement of its own bound.
- *
- * An earlier version of this note said the gap was "until something drives the dist path end to
- * end", which implied the problem was WHICH BUILD. **That was too kind and it was wrong: the
- * provider is never loaded at all, in any build.** The fix is a composition-root decision (a static
- * import in `bin/run.ts`, or `requiredExtensions` on the viewing commands) and is owned by whoever
- * owns `bin/`, not by this suite.
+ * **WHAT A GREEN STILL DOES NOT MEAN.** No command is RUN here. The cells drive `partsToText` from
+ * the package the CLI resolves, which is the production module instance, but a live `cotal console`
+ * session is bounded by that measurement rather than exercised by it. A live end-to-end was
+ * authorised and deliberately not spent: it costs a broker, a publishing agent and exclusivity.
  */
 function gradeSurface(surface: string, registration: string, rendered: string | null) {
   if (rendered === null) {
@@ -791,51 +782,203 @@ for (const [surface, rel, blocked] of [
     src.length > 0 && referencesFrameVocabulary(src, p));
 }
 
+// ── EVERY CHECKABLE CLAIM THE DISCLOSURE AT THE BOTTOM MAKES IS A CELL HERE ──────────────────────
+//
+// **A DISCLOSURE THAT PRINTS HAS THE AUTHORITY OF A MEASUREMENT AND NONE OF ITS RECOMPUTATION.**
+// The block below is printed on every run, green included, beside a count of passing cells — so a
+// reader takes it as measured. It is not. It is prose, and prose does not re-run.
+//
+// **This file has already shipped that exact failure.** A paragraph headed *"read it last"* asserted
+// that nothing shipped registered the renderer, kept printing with its positive-control table intact
+// after the move into `packages/core` falsified every clause, and was caught only because someone
+// happened to be renaming a cell three lines away. The doc comment on `gradeSurface` above held the
+// same dead claim, in the same branch, from the same commit. Two instances, one habit.
+//
+// **THE REPAIR IS NOT TO BE MORE CAREFUL. A disclosure is not one thing — split it.** Most of what
+// it says is an assertion over this tree: a dependency edge, a constant, a sentence in another file,
+// an import this file does or does not perform. **An assertion over a tree is a CELL.** What is left
+// once those are lifted out is judgement — it cannot go red, and it must not be printed in a shape
+// that implies it could.
+//
+// So each cell below is the executable form of one sentence printed at the bottom, and that prose
+// now CITES the cell instead of restating the fact. The rule this repo already applies to
+// documentation applies to a suite's own output: **a doc asserting a property is a claim nobody
+// tests, and a disclosure asserting one is the same claim wearing a measurement's clothes.**
+//
+// These are NOT `[GATE]` cells. They do not hold the merge; they hold the accuracy of the text
+// printed beside it.
+
+/**
+ * Every module specifier this file imports, from the AST.
+ *
+ * It must be the AST and not a substring search, because the sentence under test is *"this suite
+ * imports no renderer provider"* — and this file NAMES `agui-render` in four comments explaining
+ * why it doesn't import it. A grep would report the disclosure false on the strength of the
+ * disclosure's own explanation.
+ *
+ * Dynamic imports are taken by their argument's SOURCE TEXT, not as a string literal, because the
+ * form this file used to carry was `await import(`${TREE}/packages/core/src/parts.js`)` — a template
+ * literal, which a string-literal check would walk straight past.
+ */
+function importedModules(src: string, fileName: string): string[] {
+  const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, undefined);
+  const out: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)) out.push(node.moduleSpecifier.text);
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0])
+      out.push(node.arguments[0].getText(sf));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+const SELF = readFileSync(fileURLToPath(import.meta.url), "utf8");
+const SELF_IMPORTS = importedModules(SELF, "agui-renderer-precondition.smoke.ts");
+
+// THE SCANNER IS CONTROLLED IN BOTH DIRECTIONS BEFORE ANYTHING RESTS ON IT. A scanner that returns
+// nothing passes every "imports no X" cell below and is indistinguishable from a correct one from
+// the passing side — the same trap the `[filter-predicate]` corpus above exists to close. The
+// positive control proves it sees THIS file's imports; the synthetic control is the exact inverse of
+// the predicate under test — the import statement that was deleted from this file.
+c("[disclosure-control] the import scanner sees this file's own imports", SELF_IMPORTS.includes("@cotal-ai/core"),
+  SELF_IMPORTS.join(", "));
+c("[disclosure-control] the import scanner would CATCH the provider import if it came back",
+  importedModules(`import "../src/agui-render.js";`, "probe.ts").some((m) => m.includes("agui-render")));
+c("[disclosure-control] the import scanner sees a TEMPLATE-literal dynamic import",
+  importedModules("await import(`${T}/packages/core/src/parts.js`);", "probe.ts").some((m) => m.includes("parts.js")));
+
+// "This suite performs NO registration — the side-effect import was deleted, not repointed."
+c("[disclosure] this suite imports no frame-renderer provider, so the console cells fail if CORE stops registering",
+  !SELF_IMPORTS.some((m) => m.includes("agui-render")), SELF_IMPORTS.join(", "));
+
+// "no browser is opened and no DOM is asserted."
+c("[disclosure] this suite opens no browser: it imports no DOM or browser engine",
+  !SELF_IMPORTS.some((m) => /jsdom|happy-dom|puppeteer|playwright|selenium/i.test(m)), SELF_IMPORTS.join(", "));
+
+/** Every declared dependency of a package, across all three fields — any one edge is enough to reach a module. */
+function declaredDeps(rel: string): string[] {
+  const p = join(TREE, rel, "package.json");
+  if (!existsSync(p)) return [];
+  const j = JSON.parse(readFileSync(p, "utf8")) as Record<string, Record<string, string> | undefined>;
+  return [
+    ...Object.keys(j.dependencies ?? {}),
+    ...Object.keys(j.peerDependencies ?? {}),
+    ...Object.keys(j.devDependencies ?? {}),
+  ];
+}
+
+// "`cli mesh-view` and `implementations/web app.js` depend on core + workspace ONLY and cannot reach
+// eventChannel()." That is a dependency edge, and a dependency edge is measurable. It is also the
+// single claim in the block most likely to rot without notice: one `pnpm add` in either package
+// silently converts the NOT-CLOSABLE verdict into an ordinary unfinished cell, and nothing else in
+// this file would notice.
+//
+// `examples/02` is the INVERSE CONTROL, not decoration. `deps.length > 0` is folded into the
+// predicate for the same reason: a missing or unreadable package.json yields an empty list, and an
+// empty list "does not declare connector-core" — a vacuous pass that reads exactly like a real one.
+const CONNECTOR_CORE = "@cotal-ai/connector-core";
+for (const [label, rel, expected] of [
+  ["implementations/cli", "implementations/cli", false],
+  ["implementations/web", "implementations/web", false],
+  ["CONTROL examples/02 (a composition root, and it MAY)", join("examples", "02-self-improving-console"), true],
+] as const) {
+  const deps = declaredDeps(rel);
+  c(`[disclosure] ${label} ${expected ? "DOES" : "does NOT"} declare ${CONNECTOR_CORE}`,
+    deps.length > 0 && deps.includes(CONNECTOR_CORE) === expected, `declared: ${deps.join(", ") || "<none read>"}`);
+}
+
+// The block quotes core's `connector.ts` as the authority for why no cross-connector `events.`
+// prefix exists. A quotation of another file is the most decay-prone sentence a disclosure can
+// carry: it is asserted here and owned there. Whitespace is normalised across the jsdoc's leading
+// ` * ` so a re-wrap of the comment does not read as a reversal of the ruling.
+const CONNECTOR_TS = join(TREE, "packages", "core", "src", "connector.ts");
+const QUOTE = "The naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not core.";
+const connectorSrc = existsSync(CONNECTOR_TS) ? readFileSync(CONNECTOR_TS, "utf8").replace(/\s*\n\s*\*?[ \t]*/g, " ") : "";
+c(`[disclosure] core's connector.ts still says, verbatim: "${QUOTE}"`, connectorSrc.includes(QUOTE));
+
+// "app.js clamps with CSS on a wrapper class, keyed off BODY_CLAMP_CHARS measured on RAW string
+// length" — two facts, both in one file, both printed below.
+const APP_JS = existsSync(join(WEB, "app.js")) ? readFileSync(join(WEB, "app.js"), "utf8") : "";
+const clampMatch = APP_JS.match(/const BODY_CLAMP_CHARS = (\d+);/);
+const CLAMP = clampMatch ? Number(clampMatch[1]) : Number.NaN;
+c("[disclosure] app.js still defines BODY_CLAMP_CHARS", Number.isFinite(CLAMP), `read: ${String(CLAMP)}`);
+c("[disclosure] app.js clamps on RAW string length, not on a rendered measurement",
+  /\btext\.length > BODY_CLAMP_CHARS\b/.test(APP_JS));
+
+// "every cell here still passes" while the collapsed state goes ungraded. THIS is the exact,
+// non-fixture-dependent form of that claim: the string every cell above grades is BELOW the clamp,
+// so no cell in this file has ever exercised the clamped path.
+//
+// If this cell goes red because the CLAMP WAS RAISED past the fixture, the gap described below is
+// closed and the paragraph must be DELETED rather than repaired. If it goes red because the FIXTURE
+// grew past the clamp, the cells above are now grading a collapsed body and the paragraph is
+// understated. Two different repairs; the cell distinguishes them by printing both numbers.
+const consoleRendered = SURFACES[0].render ? SURFACES[0].render(parts) : "";
+c("[disclosure] no cell in this file exercises the CLAMPED path — the graded string is below the clamp",
+  Number.isFinite(CLAMP) && consoleRendered.length > 0 && consoleRendered.length <= CLAMP,
+  `graded len ${consoleRendered.length} vs clamp ${String(CLAMP)}`);
+
 console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateFail} of them [GATE])`);
 
 // Printed on EVERY run, green included. A disclosure that only appears while the suite is red is a
 // disclosure that vanishes at the exact moment it matters — a green is when nobody re-reads what the
 // cell actually checked, so the limit has to travel with the result rather than live in a plan.
+//
+// IT IS SPLIT INTO THREE BANDS AND THE BANDS ARE THE POINT. Mixing a tested fact with an untested
+// judgement in one paragraph launders the judgement: the reader grants the whole block the authority
+// of the checked half. So each claim is filed by WHAT WOULD CATCH IT IF IT WERE WRONG — a cell, a
+// person, or nothing at all — and the third band is named rather than quietly folded into the first.
 console.log(
-  "\nUNASSERTED GAP — what this suite's clean is NOT clean of:\n" +
-    "  These cells assert the rendered OUTPUT CONTAINS the payload. They do NOT assert that an\n" +
-    "  operator SEES it. implementations/web `app.js` returns the full html either way and clamps\n" +
-    "  with CSS on a wrapper class, keyed off BODY_CLAMP_CHARS = 280 measured on RAW string length.\n" +
-    "  Most correct frames exceed 280 characters, so a correct frame renders into a COLLAPSED body\n" +
-    "  and every cell here still passes. Asserting the visible state needs a DOM and a CSS engine;\n" +
-    "  modelling the clamp by hand would put a hand-written browser inside the instrument that holds\n" +
-    "  the merge — a wider sentence resting on a narrower truth. The gap is real, it belongs to\n" +
-    "  `app.js`, and it does not gate this suite.\n" +
+  "\n════ CHECKED — every line here is a [disclosure] cell in THIS run. A wrong one goes RED above;\n" +
+    "     it does not merely mislead. The cells are the claim; this is the index to them.\n" +
+    "  · The two red [GATE] filter cells are NOT CLOSABLE AS SPECIFIED. implementations/cli and\n" +
+    "    implementations/web declare no @cotal-ai/connector-core edge, so neither can reach\n" +
+    "    eventChannel(); examples/02 does declare it, and is the inverse control for those two cells.\n" +
+    "  · core's connector.ts still states the naming convention is the CONNECTOR's and deliberately\n" +
+    "    NOT the wire standard's — asserted here verbatim, so a rewrite there reddens a cell here.\n" +
+    "    There is therefore no cross-connector `events.` prefix a reader may rely on.\n" +
+    "  · Those two cells were also MISNAMED and are now named for their predicate: an AST use-check\n" +
+    "    over the file's source. They stay red because those two files do not reference the frame\n" +
+    "    vocabulary — the true and much narrower fact.\n" +
+    "  · This suite imports NO frame-renderer provider. The side-effect import was deleted rather\n" +
+    "    than repointed at core, so the console cells fail if core stops registering. A green in that\n" +
+    "    family is therefore wired to production, not to this file.\n" +
+    "  · No browser is opened: no DOM or browser engine is imported. The web pages are graded by\n" +
+    "    evaluating their shipped scripts, which models production only because [GATE] <page>\n" +
+    "    actually requests the frame renderer this suite evaluated asserts each page loads it.\n" +
+    "  · app.js clamps the body on RAW string length at BODY_CLAMP_CHARS = " + String(CLAMP) + ".\n" +
+    "    The string every cell above grades is " + consoleRendered.length + " characters — BELOW that clamp — so no\n" +
+    "    cell in this file has ever exercised the collapsed path.\n" +
     "\n" +
-    "NOT CLOSABLE AS SPECIFIED — two cells that will not go green by being worked on:\n" +
-    "  `cli mesh-view` and `implementations/web app.js` depend on @cotal-ai/core + @cotal-ai/workspace\n" +
-    "  ONLY, and cannot reach eventChannel() in @cotal-ai/connector-core. connector.ts:165-167 states\n" +
-    "  the naming convention is the CONNECTOR's and deliberately NOT the wire standard's, so there is\n" +
-    "  no cross-connector `events.` prefix a reader may rely on. `examples/02` closes normally: an\n" +
-    "  example is a composition root and may reach the extension.\n" +
-    "  RULED (fm-orchestrator): the reader-side direction is PART KIND, not channel name — `ag-ui.frame`\n" +
-    "  is a core concept, so a surface identifies event traffic by the part it carries and needs no\n" +
-    "  naming guarantee. Making the prefix normative was REJECTED: it would rewrite connector.ts:165-167\n" +
-    "  to fit two cells that never tested subscription scope. That covers display, NOT what a surface\n" +
-    "  SUBSCRIBES to; if a real scoping need appears it returns as its own proposal.\n" +
-    "  These cells were also MISNAMED — see their new names: the predicate is an AST use-check over the\n" +
-    "  file's source, never a filter. They stay red because those two files do not reference the\n" +
-    "  vocabulary, which is the true and much narrower fact.\n" +
+    "════ JUDGEMENT — NOT CHECKED, CANNOT GO RED. Weigh it; never cite it as a measurement.\n" +
+    "  · A frame carrying a real turn is far larger than this three-event fixture, so in practice a\n" +
+    "    correct frame lands in a COLLAPSED body while every cell here still passes. Not quantified:\n" +
+    "    doing so means choosing a representative frame, and a claim resting on one chosen fixture is\n" +
+    "    the failure this file refuses elsewhere. The direction is confident; the threshold is not.\n" +
+    "  · Asserting the VISIBLE state needs a DOM and a CSS engine. Modelling the clamp by hand would\n" +
+    "    put a hand-written browser inside the instrument that holds the merge — a wider sentence\n" +
+    "    resting on a narrower truth. The gap is real, it belongs to app.js, and it does not gate\n" +
+    "    this suite.\n" +
+    "  · So a green means the text is produced and the producer is wired in. It does NOT mean the\n" +
+    "    text survives to the screen.\n" +
     "\n" +
-    "WHAT A GREEN HERE NOW MEANS — read it last, and note this block USED TO SAY THE OPPOSITE:\n" +
-    "  Until `ag-ui.frame` was ruled a core concept, this suite REGISTERED the renderer itself and\n" +
-    "  nothing shipped did, so a green proved only that the rendering paths were correct. That is no\n" +
-    "  longer true and the old text stayed here after it stopped being true — printed every run, as\n" +
-    "  measured fact, on a tree that had already contradicted it.\n" +
-    "  NOW: the renderer lives in packages/core and registers on import of core. This suite performs\n" +
-    "  NO registration — the side-effect import was deleted, not repointed, so these cells fail if\n" +
-    "  core stops registering (proven: removing that one line reddens six console GATE cells).\n" +
-    "  So the console family here IS the shipped configuration: `cotal console`, `cotal join` and\n" +
-    "  examples/02 reach it through the same partsToText import a green above exercises.\n" +
-    "  STILL NOT A PIXEL CLAIM: no browser is opened and no DOM is asserted. The web pages are graded\n" +
-    "  by evaluating their shipped scripts, and that models production only because a separate cell\n" +
-    "  asserts each page REQUESTS agui-frame.js. A green means the text is produced and the producer\n" +
-    "  is wired in — not that it survives to the screen.",
+    "════ RECORDED — true when made, by a person or a past run. NOT re-derived here, so it can rot\n" +
+    "     exactly the way the paragraph this section replaced did.\n" +
+    "  · RULED (fm-orchestrator): the reader-side direction is PART KIND, not channel name.\n" +
+    "    `ag-ui.frame` is a core concept, so a surface identifies event traffic by the part it\n" +
+    "    carries and needs no naming guarantee. Making the prefix normative was REJECTED: it would\n" +
+    "    rewrite connector.ts to fit two cells that never tested subscription scope. That covers\n" +
+    "    DISPLAY, not what a surface SUBSCRIBES to; a real scoping need returns as its own proposal.\n" +
+    "  · MEASURED ONCE, not by this run: deleting core's single registration line reddens six console\n" +
+    "    [GATE] cells. That is the mutation proof behind the falsifiability claimed above.\n" +
+    "  · THIS BLOCK USED TO SAY THE OPPOSITE. Until `ag-ui.frame` was ruled a core concept it read\n" +
+    "    \"this suite REGISTERS that renderer itself; nothing that ships does\" and concluded that a\n" +
+    "    green did not mean `cotal console` displays a frame. The move into packages/core falsified\n" +
+    "    every clause, and the text kept printing as measured fact for two commits, beside its own\n" +
+    "    positive-control table. That is what the CHECKED band exists to stop happening again — and\n" +
+    "    what nothing can stop happening to this band.",
 );
 if (gateFail > 0) {
   console.log(
