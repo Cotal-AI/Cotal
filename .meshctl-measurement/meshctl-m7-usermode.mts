@@ -118,7 +118,13 @@ const signBearer = async (key: CryptoKey): Promise<string> => {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ sub: OWNER, ver: USER_TOKEN_VER, act: { owner: OWNER, actor: ACTOR, scope: [], lifecycleUid: uid } })
     .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(OWNER)
-    .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 900)
+    // exp is now+780, NOT now+900. The 60s back-date on iat/nbf is deliberate (clock-skew
+    // tolerance), and `verifyUserToken` caps the token's LIFETIME — `exp - iat`, token.ts:159-160 —
+    // not its remaining validity. now+900 against a back-dated iat therefore mints a 960s token
+    // and the callout refuses every bearer this fixture signs, including the correctly-signed one.
+    // That is a FIXTURE bug: the 900s cap (token.ts:30) is the product behaving exactly as
+    // specified. 780 leaves the lifetime at 840s, off the boundary rather than exactly on it.
+    .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 780)
     .sign(key);
 };
 writeFileSync(tokenFile, await signBearer(privateKey as CryptoKey));

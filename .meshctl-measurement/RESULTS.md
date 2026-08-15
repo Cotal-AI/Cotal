@@ -508,3 +508,71 @@ Recorded as a gap in that suite's reporting, not repaired here.
 **What this does NOT discharge.** The `meshctl-m*`, `72`, `72b` and `m10` probes in this directory
 were not re-driven in this pass; every count sourced from them is still **stamped**. `pnpm smoke:ci`
 was not run — no gate until fm-orchestrator releases one.
+
+## Re-drive of the m-probes at `fe279b94` — nine confirmed, one newly UNBLOCKED and FAILING
+
+Same window, `01:13:58` → `01:18:10 UTC` (`date -u` at the moment of each run). Copies were made
+into each probe's package home, run, and **deleted**; `git status --porcelain` was empty after each
+batch, so nothing untracked was left behind.
+
+| probe | home | exit | result | vs record |
+| --- | --- | --- | --- | --- |
+| `meshctl-72-gap` | runs in place | `0` | 7 asserted + 4 recorded, 0 failed | identical |
+| `meshctl-72b-leak` | runs in place | `0` | 3 asserted + 2 recorded, 0 failed | identical |
+| `meshctl-m8-outage` | runs in place | `0` | 5 passed, 0 failed, 0 hung | identical |
+| `meshctl-m10-twoviews` | runs in place | `0` | 5 passed, 0 failed | identical |
+| `meshctl-m3-fence` | `packages/core/` | `0` | 9 passed, 0 failed | identical |
+| `meshctl-m6-durable` | `packages/core/` | `0` | 4 passed, 0 failed | identical |
+| `meshctl-m5-lease` | `packages/core/` | `0` | Q1 CONFIRMED, Q2 MARKED-not-deleted | identical |
+| `meshctl-m5-verify` | `packages/core/` | `0` | Q1 CONFIRMED, Q2 MARKED-not-deleted | identical |
+| `meshctl-m7-usermode` | `implementations/auth/` | `1` | **2 passed, 1 failed, 7 VOID** | was NOT-YET-RUN |
+
+Those eight are now **confirmed, not stamped**. `m7` is a new result and it is a bad one.
+
+### `m7` is unblocked and it does not pass — no user-mode evidence exists
+
+The probe header recorded it `⚠️ NOT YET RUN — BLOCKED ON THIS WORKTREE`: `implementations/auth`
+had no `node_modules`. **It has one now**, so the probe loads and runs. It fails.
+
+**Defect 1 — the fixture minted a token its own product correctly refuses. FIXED HERE.** It
+back-dated `iat`/`nbf` by 60s (clock-skew tolerance) while setting `exp = now + 900`.
+`verifyUserToken` caps the token's **lifetime**, `exp - iat` (`implementations/auth/src/token.ts:159-160`),
+against `MAX_TOKEN_TTL_SEC = 900` (`token.ts:30`) — so the fixture signed a **960s** token and the
+callout denied **every bearer it produced**, including the correctly-signed one. The product is
+behaving exactly as specified; the probe was wrong. Changed `exp` to `now + 780` (lifetime 840s, off
+the boundary rather than exactly on it).
+
+**Proven by a named, discriminating predicate rather than by the suite getting greener:** occurrences
+of `exceeds the 900s cap` in the run log went **74 → 0**. Nothing else about the run was changed.
+
+**Defect 2 — NOT fixed, and it is why `m7` still has no evidence.** With the cap denial gone, `U0`
+still fails: `auth callout: denied …: signature verification failed`. So the callout rejects the
+correctly-signed bearer for a second, independent reason.
+
+**`UX` passing is worth nothing while `U0` fails, and this is the exact pattern this lane keeps
+finding.** `UX` asserts a bearer signed by the WRONG key does not connect — and it is green. But
+`U0` is its inverse control, and `U0` says the RIGHT key does not connect either. **A fixture in
+which no bearer can connect makes every denial trivially true.** `UX` is not evidence of a
+verifying callout; it is evidence that the arms could not differ. The probe's own contamination
+machinery caught this and marked `U2`–`U8` **VOID** rather than green — the machinery worked, and
+without it seven cells would have reported a supervisor property that was never exercised.
+
+**Defect 3 — `m7` prints its terminal marker and then never exits.** It reached
+`M7 USER-MODE FAILED ❌ (2 passed, 1 failed, 7 VOID)` and `[cleanup] broker group signalled`, then
+sat in the connector's reconnect loop, which keeps the event loop alive. It was killed by a
+10-minute timeout at `143`. **`143` is the timeout's exit code, not the probe's verdict** — a suite
+that never exits hands you a number that means nothing about the code. The verdict had to be read
+out of the log.
+
+**Standing: the user/bearer path is UNMEASURED.** `m7` is the only probe covering it. Nothing in
+this file about user-mode connection control is measured, and any DESIGN sentence resting on `m7`
+is a **[R]**, not an **[M]**, until defect 2 is fixed and the probe re-driven.
+
+### Housekeeping done in the same window
+
+A `nats-server` from an **earlier** `m10` run was still live on `/tmp/meshctl-m10-z2xQRI`, port
+`37525`, elapsed `02:22:19`. It was **not** from tonight's run: `ps lstart` prints **local** time
+(`+0200`) while every stamp in this file is `date -u`, and reading the two as the same clock would
+have mis-blamed the run that had just finished two minutes earlier. Elapsed time is what settles it.
+Signalled by **process group** (`kill -TERM -2661509`) rather than by pid, confirmed gone, and both
+stale scratch dirs removed. No `nats-server` and no `/tmp/meshctl-*` remained afterwards.
