@@ -197,6 +197,37 @@ if (graphBody !== null) {
   c("[GATE] implementations/web graph.js detail row DISPLAYS the frame's text", terminal.includes(CANARY));
 }
 
+/**
+ * THE PART THAT VANISHES BESIDE A PART THAT DOES NOT — found by fm-webconsole driving core directly
+ * rather than taking this suite's row for it, and it is a gap in THIS FILE's design.
+ *
+ * Every cell above renders a **single-part** message, so the only failure they can see is a whole
+ * rendering going empty. Real messages are mixed. Render `[frame, text]` through the vanishing form
+ * and you get `" AFTER"` — **a leading space where an entire part used to be**: no marker, no kind,
+ * no length anomaly, and a body that reads as a complete message with an odd bit of whitespace.
+ *
+ * **That is strictly worse than the empty string and it is the case a single-part cell cannot
+ * produce.** An empty body is at least conspicuous; a message that lost one part among several looks
+ * finished. So the assertion is not "did anything render" — it is whether the frame contributed
+ * ANYTHING beside a sibling that rendered fine.
+ */
+const TEXT_AFTER = "AFTER-A-DROPPED-PART";
+const mixed = [frame as unknown as { kind: string }, { kind: "text", text: TEXT_AFTER } as unknown as { kind: string }];
+for (const s of SURFACES) {
+  if (!s.render) {
+    c(`[adjacency] ${s.name} does not drop the frame beside a rendering sibling`, false, "path not found");
+    continue;
+  }
+  const out = s.render(mixed);
+  console.log(`  [adjacency] ${s.name} -> ${JSON.stringify(out)}`);
+  // The sibling must still be there (or the cell is measuring the wrong failure), AND the frame must
+  // have left more than a separator behind.
+  const siblingSurvived = out.includes(TEXT_AFTER);
+  const frameLeftSomething = out.replace(TEXT_AFTER, "").trim().length > 0;
+  c(`[adjacency] ${s.name} does not drop the frame beside a rendering sibling`,
+    siblingSurvived && frameLeftSomething, JSON.stringify(out));
+}
+
 // ── The precondition's second half. A surface that can draw a frame but never subscribes to the
 //    channel carrying one has not met it either.
 for (const [surface, rel] of [
