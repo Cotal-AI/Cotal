@@ -35,8 +35,11 @@ to the `check` chain**: naming a suite is this lane's call, changing what the ga
 the suite's broker URL is not `nats://broker.cotal.ai:4222`. Standing order; it goes first or the
 rest does not run.
 
-**1. OPEN** — its own message to fm-orchestrator, carrying `date -u` read at that moment and the
-`endpoint.ts` sha256 **re-quoted verbatim**. They diff it against the copy they hold and refuse to
+**1. OPEN** — its own message to fm-orchestrator, carrying `date -u` read at that moment, the
+`endpoint.ts` sha256 **re-quoted verbatim**, and **the box's load average and available memory**.
+A mutation result carries its conditions or it is not re-derivable, and *"the box was quiet"* is not
+a number — this one is load-bearing here, because a timing-sensitive proof run on a swapping machine
+measures the swap. They diff it against the copy they hold and refuse to
 serialize on mismatch. Do not proceed until their serialization confirmation is already in hand.
 
 **2. Snapshot the shared dist** — all files under `packages/core/dist`, by content hash, not mtime.
