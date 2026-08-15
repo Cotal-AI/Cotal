@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -103,7 +103,13 @@ export function makeAuthGate(port: number) {
   // that. A second credential is scoped to the caller that needs it and dies with the process.
   const readinessNonce = randomBytes(32).toString("base64url");
   const sessions = new Set<string>();
-  const allowedHosts = new Set([`cotal.localhost:${port}`, `127.0.0.1:${port}`, `localhost:${port}`]);
+  // The full ORIGIN, not the host: `https://localhost:7799` and `http://localhost:7799` are
+  // different origins to a browser, and comparing only the host would treat them as one.
+  const allowedOrigins = new Set([
+    `http://cotal.localhost:${port}`,
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+  ]);
 
   return {
     launchToken: launchToken!,
@@ -114,9 +120,9 @@ export function makeAuthGate(port: number) {
       if (origin !== undefined) {
         // A same-origin fetch from our own page sends no Origin at all for GETs, and sends our own
         // origin for POSTs. Anything else is another site's page talking to this console.
-        let host: string | undefined;
-        try { host = new URL(origin).host; } catch { host = undefined; }
-        if (host === undefined || !allowedHosts.has(host)) return { refuse: CROSS_ORIGIN };
+        let normalized: string | undefined;
+        try { normalized = new URL(origin).origin; } catch { normalized = undefined; }
+        if (normalized === undefined || !allowedOrigins.has(normalized)) return { refuse: CROSS_ORIGIN };
       }
 
       const readiness = req.headers[READINESS_HEADER];
@@ -550,7 +556,15 @@ export async function web(args: ParsedArgs): Promise<void> {
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
   // for the link. 0600 — same trust boundary as the rest of `~/.cotal`, no wider.
   if (sessionPath) {
-    writeFileSync(sessionPath, JSON.stringify({ launchUrl, readiness: gate.readinessNonce }), { mode: 0o600 });
+    // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
+    // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
+    // Open, then fchmod the DESCRIPTOR (not the path, which could be re-pointed between the calls),
+    // so the mode is enforced on every write rather than only the first.
+    const sfd = openSync(sessionPath, "w", 0o600);
+    try {
+      fchmodSync(sfd, 0o600);
+      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce }));
+    } finally { closeSync(sfd); }
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }
   console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);

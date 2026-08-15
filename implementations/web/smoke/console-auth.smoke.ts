@@ -89,6 +89,15 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
     const ok = g2.check(req({ origin: `http://${host}` }) as never, q(`k=${g2.launchToken}`));
     check(`our own origin http://${host} is not treated as cross-origin`,
       ok !== undefined && "exchange" in ok, { host, ok });
+
+    // THE SCHEME IS PART OF THE ORIGIN. Comparing only the host accepted `https://<same host>`,
+    // which is a different origin to every browser. Testing the allowed hosts only under the
+    // allowed scheme is what let that through: every negative differed in HOST, so nothing ever
+    // varied the SCHEME.
+    const g2s = makeAuthGate(PORT);
+    const wrongScheme = g2s.check(req({ origin: `https://${host}` }) as never, q(`k=${g2s.launchToken}`));
+    check(`…but https://${host} is a DIFFERENT origin and is refused as \`cross-origin\``,
+      wrongScheme !== undefined && "refuse" in wrongScheme && wrongScheme.refuse === CROSS_ORIGIN, { host, wrongScheme });
   }
 
   // ORDERING, and it is load-bearing: a cross-site request arrives WITHOUT the cookie (SameSite),
@@ -126,6 +135,19 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
       const r = gate.check(req({ "x-cotal-readiness": "wrong" }) as never, q());
       return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
     })());
+  // SAME-LENGTH negatives. Every wrong secret in this suite was the string `wrong`, which differs in
+  // LENGTH — so `secretEquals` reduced to a length comparison authenticated everything and all 32
+  // cells stayed green. A comparison is only shown to compare CONTENT by a negative that matches in
+  // length and differs in one byte.
+  const nonceOneOff = `${gate.readinessNonce.slice(0, -1)}${gate.readinessNonce.slice(-1) === "A" ? "B" : "A"}`;
+  check("NON-VACUITY: the one-character-changed nonce is the same LENGTH and a different VALUE",
+    nonceOneOff.length === gate.readinessNonce.length && nonceOneOff !== gate.readinessNonce,
+    { len: nonceOneOff.length });
+  check("a same-length readiness nonce differing in ONE character is refused (content, not length)",
+    (() => {
+      const r = gate.check(req({ "x-cotal-readiness": nonceOneOff }) as never, q());
+      return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
+    })());
   check("the readiness nonce does NOT consume the launch token (the parent polls; the browser still needs it)",
     (() => {
       gate.check(req({ "x-cotal-readiness": gate.readinessNonce }) as never, q());
@@ -134,6 +156,34 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
     })());
   check("the two secrets are different values (one leaking must not be the other)",
     gate.launchToken !== gate.readinessNonce);
+
+  // The launch token had NO wrong-value negative at all: the only failing token case was a REPLAY,
+  // which never reaches the comparison because the token is already undefined by then.
+  {
+    const g5 = makeAuthGate(PORT);
+    const tokenOneOff = `${g5.launchToken.slice(0, -1)}${g5.launchToken.slice(-1) === "A" ? "B" : "A"}`;
+    check("NON-VACUITY: the one-character-changed launch token is the same LENGTH and a different VALUE",
+      tokenOneOff.length === g5.launchToken.length && tokenOneOff !== g5.launchToken, { len: tokenOneOff.length });
+    const wrong = g5.check(req() as never, q(`k=${tokenOneOff}`));
+    check("a same-length WRONG launch token is refused as `unauthenticated`, not exchanged",
+      wrong !== undefined && "refuse" in wrong && wrong.refuse === UNAUTHENTICATED, wrong);
+    check("…and a wrong token does NOT burn the real one (a failed guess must not cost the operator their link)",
+      (() => {
+        const after = g5.check(req() as never, q(`k=${g5.launchToken}`));
+        return after !== undefined && "exchange" in after;
+      })());
+  }
+
+  // ORDERING SIBLING of the CSRF case: the readiness check sits ABOVE the session check, so it must
+  // sit below the origin check too. Moving it above the origin check left every cell green, because
+  // every cross-origin case carried launch/session credentials and none carried the readiness nonce.
+  {
+    const g6 = makeAuthGate(PORT);
+    const evilReady = g6.check(
+      req({ origin: "https://evil.example", "x-cotal-readiness": g6.readinessNonce }) as never, q());
+    check("a cross-origin request carrying a VALID readiness nonce is still refused as `cross-origin`",
+      evilReady !== undefined && "refuse" in evilReady && evilReady.refuse === CROSS_ORIGIN, evilReady);
+  }
 }
 
 // ── 4. WHAT THE SHIPPED HANDLER DOES WITH EACH VERDICT ──────────────────────────────────────────
@@ -151,21 +201,28 @@ check("the gate block was lifted out of handleRequest", Boolean(gateBlock), { le
 check("CONTROL: a block that is not in the file lifts nothing",
   webTs.indexOf("    const verdict = gate.checkNothing(") === -1);
 
-type Recorded = { status: number; headers: Record<string, string>; body: string };
+type Recorded = { status: number; headers: Record<string, string>; body: string; routeReached: boolean };
 const runGateBlock = (verdict: unknown, path = "/api/roster"): Recorded => {
-  const rec: Recorded = { status: 0, headers: {}, body: "" };
+  const rec: Recorded = { status: 0, headers: {}, body: "", routeReached: false };
   const res = {
     writeHead: (status: number, headers: Record<string, string>) => { rec.status = status; rec.headers = headers; },
     end: (body?: string) => { rec.body = body ?? ""; },
   };
+  // A ROUTE SENTINEL after the lifted block. Without it this harness can only see what was WRITTEN,
+  // never whether execution STOPPED — and a refusal that writes a 401 and then falls through into
+  // the routes writes exactly the same bytes as one that returns. Measured: dropping the refusal
+  // branch's `return` left all 32 cells green while an unauthenticated POST still reached the
+  // channel-delete. The fixture must reach as far as the sentence describing it, and the sentence
+  // here is "the request is refused", not "a 401 was written".
   const source = ts.transpileModule(
-    `globalThis.__run = () => { ${gateBlock} };`,
+    `globalThis.__run = () => { ${gateBlock}\n__routeReached(); };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const ctx: Record<string, unknown> = {
     gate: { check: () => verdict },
     req: {}, query: q(), path, res,
     CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session",
+    __routeReached: () => { rec.routeReached = true; },
     globalThis: undefined, console,
   };
   ctx.globalThis = ctx;
@@ -179,31 +236,65 @@ check("an `unauthenticated` verdict becomes a 401", un.status === 401, un.status
 check("…whose BODY names the condition (a caller reading only the body still learns which failed)",
   JSON.parse(un.body).error === UNAUTHENTICATED, un.body);
 check("…and is not an empty 200 (the defect this lane exists to remove)", un.status !== 200 && un.body !== "");
+check("…and EXECUTION STOPS: the routes below the gate are never reached (a 401 that then serves the route is not a refusal)",
+  un.routeReached === false, un);
 
 const xo = runGateBlock({ refuse: CROSS_ORIGIN });
 check("a `cross-origin` verdict becomes a 403, not the same status as unauthenticated",
   xo.status === 403 && xo.status !== un.status, { xo: xo.status, un: un.status });
 check("…and names its own condition", JSON.parse(xo.body).error === CROSS_ORIGIN, xo.body);
+check("…and EXECUTION STOPS for it too", xo.routeReached === false, xo);
+
+// THE THIRD REFUSAL, driven through the HANDLER and not only through the gate. Measured: the two
+// layers were joined by an assumption — the gate produced this condition and the handler was only
+// ever handed the other two, so special-casing it out of the handler's refusal predicate left every
+// cell green while a replayed launch link fell through to a route.
+const rp = runGateBlock({ refuse: LAUNCH_TOKEN_ALREADY_USED });
+check("a `launch-token-already-used` verdict becomes a 401 at the HANDLER, not only at the gate",
+  rp.status === 401, rp.status);
+check("…names its own condition in the body", JSON.parse(rp.body).error === LAUNCH_TOKEN_ALREADY_USED, rp.body);
+check("…and EXECUTION STOPS for the replayed link as well", rp.routeReached === false, rp);
 
 const ex = runGateBlock({ exchange: "SESSIONVALUE" }, "/graph");
-check("an exchange verdict sets the session cookie", (ex.headers["set-cookie"] ?? "").includes("SESSIONVALUE"), ex.headers);
-check("…HttpOnly, so page script cannot read it", (ex.headers["set-cookie"] ?? "").includes("HttpOnly"));
-check("…SameSite=Strict, so a cross-site request never carries it (EMITTED here; enforced by the browser)",
-  (ex.headers["set-cookie"] ?? "").includes("SameSite=Strict"));
+// ATTRIBUTE BOUNDARIES, not substrings. `.includes("HttpOnly")` is satisfied by an attribute merely
+// CONTAINING the word — `NotHttpOnly` passes it and the browser enforces nothing. Parse the header
+// the way a browser does: split on `;`, trim, compare whole attributes.
+const cookieAttrs = (ex.headers["set-cookie"] ?? "").split(";").map((s) => s.trim());
+check("an exchange verdict sets the session cookie under the EXACT name, carrying the session value",
+  cookieAttrs[0] === "cotal_web_session=SESSIONVALUE", cookieAttrs);
+check("…Path=/, as a whole attribute", cookieAttrs.includes("Path=/"), cookieAttrs);
+check("…HttpOnly as a WHOLE attribute, so page script cannot read it (`NotHttpOnly` must not satisfy this)",
+  cookieAttrs.includes("HttpOnly"), cookieAttrs);
+check("…SameSite=Strict as a WHOLE attribute (EMITTED here; enforced by the browser)",
+  cookieAttrs.includes("SameSite=Strict"), cookieAttrs);
 check("…and redirects to the same path WITHOUT the token, so the spent secret leaves the address bar",
   ex.status === 302 && ex.headers.location === "/graph", { status: ex.status, location: ex.headers.location });
+check("…and EXECUTION STOPS after the redirect (the exchange answers; it does not also serve the route)",
+  ex.routeReached === false, ex);
 
 const allowed = runGateBlock(undefined);
 check("an allowed request writes NOTHING and falls through to the routes",
   allowed.status === 0 && allowed.body === "", allowed);
+check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the routes, so the three non-reaches above are real",
+  allowed.routeReached === true, allowed);
 
 // ── 5. THE GATE RUNS BEFORE EVERY ROUTE ─────────────────────────────────────────────────────────
 // Positional, over the shipped source: the first route must come AFTER the gate. A gate placed below
 // a route leaves that route unauthenticated, and nothing in its own behaviour would say so.
+// Against EVERY route dispatch, not one named route. Measured: keying this on `/feed` alone let
+// `/api/meta` be moved above the gate with all 32 cells still green — the cell's SENTENCE said "the
+// first route" and its ASSERTION said "/feed", and the next route added above the gate inherits no
+// protection and nothing says so.
 const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
-const firstRoute = webTs.indexOf('if (path === "/feed")');
-check("NON-VACUITY: both positions were found", gateAt !== -1 && firstRoute !== -1, { gateAt, firstRoute });
-check("the gate runs BEFORE the first route (a route above the gate would be unauthenticated)",
-  gateAt < firstRoute, { gateAt, firstRoute });
+const routeAts = [
+  ...webTs.matchAll(/if \(path === "/g),
+  ...webTs.matchAll(/if \(path\.startsWith\("/g),
+].map((m) => m.index as number);
+// `.every()` over an empty set passes while proving nothing, so the count is asserted FIRST and the
+// cell below is only meaningful because of it.
+check("NON-VACUITY: the gate position and MORE THAN ONE route dispatch were located in the shipped source",
+  gateAt !== -1 && routeAts.length > 1, { gateAt, routes: routeAts.length });
+check("the gate runs BEFORE EVERY route dispatch (any route above it would be permanently unauthenticated)",
+  routeAts.every((at) => gateAt < at), { gateAt, earliestRoute: Math.min(...routeAts), routes: routeAts.length });
 
 console.log(`\nCONSOLE AUTH SMOKE OK ✅  (${pass} passed, 0 failed)`);
