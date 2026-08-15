@@ -113,7 +113,16 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  recorded **VOID — not evaluated**, never as passes and never as failures. VOID is the honest
  *  third outcome: it says the arm was never fairly run, which is exactly what a cascade means. */
 const contaminated = new Set<string>();
+// Latched like `armCheck`. NOT a bug fix here — each arm carries exactly one precondition today, so
+// the second-precondition-on-a-dead-fixture path is currently unreachable in this file. It is closed
+// anyway because the sibling suite HAD five preconditions on one arm and the hole was live there,
+// and "unreachable" is a property of the current cell list, not of the helper.
 const precondition = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (contaminated.has(arm)) {
+    voided++;
+    console.log(`  ⊘ VOID (${arm} contaminated by an earlier precondition — observed, not evidence): ${name}`, extra ?? "");
+    return;
+  }
   if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
   else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
 };

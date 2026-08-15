@@ -99,7 +99,18 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 // downstream of a failed precondition is VOID — not passed, and not failed either, since a cell
 // that never ran is not evidence against the code.
 const contaminated = new Set<string>();
+// The latch has to cover the PRECONDITIONS too, and it did not. The AUTHED arm carries five of them
+// (EX, E0, E8-pre, E10-pre, E14-pre); if EX fails, the four after it still evaluated and still
+// counted as PASSES. That is the same defect the latch exists to prevent, one level up: a
+// precondition on a fixture already known to be broken is an observation, not evidence, and a green
+// one reads to a later reader as "the fixture was fine here". Void them instead — a precondition
+// that ran on a dead fixture must not be able to argue the fixture was alive.
 const precondition = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (contaminated.has(arm)) {
+    voided++;
+    console.log(`  ⊘ VOID (${arm} contaminated by an earlier precondition — observed, not evidence): ${name}`, extra ?? "");
+    return;
+  }
   if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
   else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
 };
@@ -178,13 +189,24 @@ async function main() {
   // It is measured here rather than left as a reading, because DESIGN §5 asserted the opposite
   // ("an agent without capabilities: [connection] sees none of these verbs") as an unqualified rule,
   // and an unqualified rule with an unstated exception is how a grant story stops being true.
+  // ⚠️ G5 IS INVERTED. It used to assert that an ungranted OPEN-MODE session DOES see the verbs, and
+  // called that carve-out "real and deliberate". mc-rev-authority filed it as a capability bypass and
+  // fm-orchestrator adopted the recommendation: the carve-out contradicted BOTH docs pages, which say
+  // capability-only and absent by default, and "open mode is outside the broker-security claims" does
+  // not reach a LOCAL OPERATOR capability whose question is "may this agent take itself out of its
+  // supervisor's reach?" The permissive disjunct is gone; `connection` is required in every mode.
+  // The cell is kept and inverted rather than deleted, so the change is visible as a change.
   const openUngranted = { ...mk("open-ungranted", "worker"), capabilities: [] as string[] };
-  check("G5 an OPEN-MODE session with NO grant DOES see the verbs — the carve-out is real and deliberate",
-    names(openUngranted).includes("cotal_disconnect") && names(openUngranted).includes("cotal_connect"),
+  check("G5 an OPEN-MODE session with NO grant does NOT see the verbs — no carve-out; the capability is required in every mode",
+    !names(openUngranted).includes("cotal_disconnect") && !names(openUngranted).includes("cotal_connect"),
     names(openUngranted));
-  check("G6 CONTROL: the SAME config with `creds` set hides them again (so G5 is open mode, not a broken fixture)",
-    !names({ ...openUngranted, creds: "/nonexistent/agent.creds" }).includes("cotal_disconnect"),
-    names({ ...openUngranted, creds: "/nonexistent/agent.creds" }));
+  // The control has to change with it: `creds` no longer decides anything, so hiding-with-creds
+  // would now pass for the wrong reason. What must still be true is that the GRANT is what decides
+  // — in open mode as everywhere else — or G5 is just an assertion that the verbs are never present.
+  check("G6 CONTROL: the SAME open-mode config WITH the grant does see them (so G5 is the capability deciding, not the verbs being absent)",
+    names({ ...openUngranted, capabilities: ["connection"] }).includes("cotal_disconnect") &&
+    names({ ...openUngranted, capabilities: ["connection"] }).includes("cotal_connect"),
+    names({ ...openUngranted, capabilities: ["connection"] }));
 
   console.log("\n=== C1 CONTROL: a granted, connected agent disconnects itself ===");
   // A3d-univ, taken HERE because it can only be taken here. A3d later asserts that nothing is

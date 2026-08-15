@@ -988,14 +988,26 @@ re-read by a mechanism that never needs a fresh exchange.** ⚠️ **That is a p
 a RESULT, and it is not allowed to stand in for the measurement.** Whether a **revoked bearer** or a
 **narrowed grant** is actually caught on return is **NOT MEASURED**, and the probe is not written.
 
-### 9.4 Open-mode capability bypass — MEDIUM, confirmed
+### 9.4 Open-mode capability bypass — MEDIUM, confirmed — **FIXED, not deferred**
 
-`tool-specs.ts:177` forces the verbs on whenever both auth fields are absent, so a **no-capability
-open-mode agent receives them**. That contradicts `docs/mcp-tools.md` and `docs/agent-files.md`,
-which both say capability-only. **Open mode being outside the broker-security claims does not excuse
-bypassing a local operator capability whose question is expressly "may this agent take itself out of
-its supervisor's reach?"** Recommendation on the record: require explicit `connection` in **every**
-mode and drop the left disjunct.
+`tool-specs.ts` forced the verbs on whenever both auth fields were absent, so a **no-capability
+open-mode agent received them**. That contradicted `docs/mcp-tools.md` and `docs/agent-files.md`,
+which both say capability-only and absent by default. **Open mode being outside the broker-security
+claims does not excuse bypassing a local operator capability whose question is expressly "may this
+agent take itself out of its supervisor's reach?" — that is not a question about broker authority,
+so a broker-authority exemption does not reach it.**
+
+**The permissive disjunct is REMOVED; `connection` is now required in every mode.** `G5` is
+**inverted rather than deleted**, so the change is visible as a change, and **its control had to move
+with it**: `creds` no longer decides anything, so "hiding when creds is set" would now pass for the
+wrong reason. `G6` now asserts that the *same open-mode config WITH the grant* does see the verbs —
+otherwise `G5` degenerates into "the verbs are never present".
+
+> ⚠️ **This invalidates the reachability argument above (§5), and it is worth keeping BOTH.** That
+> argument said the permissive arm was unreachable on an authed mesh — measured, and still true. **But
+> "no real caller reaches it" was an argument for tolerating it, and the gate is now correct in every
+> mode regardless of who reaches it.** A defence that rests on the deployment topology stops holding
+> the moment the topology changes, and nobody re-checks a rule they were told was unreachable.
 
 ### 9.5 The E2E live half — blocked on a deployment precondition, not on this lane
 

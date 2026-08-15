@@ -173,8 +173,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // For `connection` there is NO such backstop: a disconnect closes this client's own socket, and a
   // broker cannot police a socket the client closes. This gate is the only gate, so it must not
   // have a permissive arm wherever an authed launch exists.
-  const canConnect =
-    (!config.creds && !config.userAuth) || (config.capabilities?.includes("connection") ?? false);
+  // OPEN-MODE DISJUNCT REMOVED. It forced the verbs on whenever both auth fields were absent, so a
+  // no-capability open-mode agent received them — contradicting both docs pages, which say
+  // capability-only and absent by default. Open mode sitting outside the broker-security claims does
+  // NOT excuse bypassing this one: `connection` is a LOCAL OPERATOR capability whose whole question
+  // is "may this agent take itself out of its supervisor's reach?", which is not a question about
+  // broker authority, so a broker-authority exemption does not reach it. Required explicitly in
+  // EVERY mode now.
+  const canConnect = config.capabilities?.includes("connection") ?? false;
   const specs: CotalToolSpec[] = [
     {
       name: "cotal_orientation",
