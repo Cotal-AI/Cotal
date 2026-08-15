@@ -18,7 +18,14 @@
  * Usage:
  *   node scripts/mutation-proof.mjs --config mutations.json
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
- *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
+ *        --command "./node_modules/.bin/tsx path/to/x.smoke.ts" \
+ *        --expect-red "<substring of the failing assertion>"
+ *
+ *   Invoke the tool DIRECTLY, not through `pnpm <script>`. In a worktree whose package-level
+ *   `node_modules` are symlinks into another checkout, a pnpm script first runs a deps-status
+ *   check, and on a tree it judges stale it starts `pnpm install` — which removes the modules
+ *   directory, i.e. the LINKED tree's. Do not set `CI=true` to quieten that; it disables the
+ *   guard that refuses the removal.
  *
  *   --private-build <pkgDir>   Compile the mutant into a scratch dir INSIDE that package and point
  *                              the suite at it via COTAL_CORE_ENTRY, instead of writing the shared

@@ -50,6 +50,30 @@ any `package.json` script — 45 cells and a lifecycle suite that only I could r
 path. Added as `smoke:connection-control` / `smoke:connection-lifecycle`. **Deliberately NOT added
 to the `check` chain**: naming a suite is this lane's call, changing what the gate runs is not.
 
+### 🔴 DO NOT INVOKE A pnpm SCRIPT FROM THIS WORKTREE
+
+**The command above deliberately does NOT use `pnpm smoke:connection-control`, and the earlier
+version of this runbook did.** Six package-level `node_modules` here are **symlinks into the
+principal checkout**:
+
+```
+bin, implementations/{manager,cli,delivery}, packages/{core,workspace}
+        node_modules -> /home/david/Cotal/<same path>/node_modules
+```
+
+(The worktree ROOT `node_modules` is a real directory, so the precondition is partial — but
+`packages/core/node_modules` is one of the links, and that is the package this proof builds
+against.)
+
+**A `pnpm <script>` invocation runs a deps-status check first, and on a tree it judges stale it
+starts `pnpm install` — which tries to REMOVE the modules directory. Through those links that is
+the principal tree's, live.** Another lane hit exactly this and was stopped only by the absence of
+a TTY. **The error text it prints advises `CI=true`, which disables the guard that saved it.**
+
+**Call the tool directly. Never `pnpm` here, never `CI=true`.** The harness itself already invokes
+`./node_modules/.bin/tsc` directly (`mutation-proof.mjs:129`), so the `--command` was the only pnpm
+call in this lane's path.
+
 **0. ASSERT NOT-LIVE FIRST.** Before anything else, and as the first action:
 the suite's broker URL is not `nats://broker.cotal.ai:4222`. Standing order; it goes first or the
 rest does not run.
@@ -70,7 +94,7 @@ node scripts/mutation-proof.mjs \
   --file packages/core/src/endpoint.ts \
   --find 'return refusal("not-connected", "this endpoint is already off the mesh - nothing to disconnect");' \
   --replace 'return refusal("already-connected", "this endpoint is already off the mesh - nothing to disconnect");' \
-  --command 'pnpm smoke:connection-control' \
+  --command './node_modules/.bin/tsx extensions/connector-core/smoke/connection-control.smoke.ts' \
   --expect-red 'R1 disconnecting again refuses as [not-connected]' \
   --private-build packages/core
 ```
