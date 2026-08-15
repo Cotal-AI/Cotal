@@ -162,26 +162,82 @@ function gradeSurface(surface: string, rendered: string | null) {
   c(`[non-silence] ${surface} does not render the frame as the empty string`, rendered.length > 0);
 }
 
-// ── The console family: cli `join`/`mesh-view` and examples/02 all render through core's shared
-//    `partsToText`, so grading that function grades all three call sites at once.
-const coreParts = join(TREE, "packages", "core", "src", "parts.js");
-let corePartsToText: ((p: unknown[]) => string) | null = null;
-try {
-  ({ partsToText: corePartsToText } = (await import(coreParts)) as { partsToText: (p: unknown[]) => string });
-} catch (e) {
-  console.log(`  core partsToText unavailable: ${(e as Error).message}`);
-}
+/**
+ * ── The console family, GRADED THROUGH THE PRODUCTION MODULE GRAPH ──────────────────────────────
+ *
+ * **THIS IMPORT USED TO BE `await import(`${TREE}/packages/core/src/parts.js`)` AND THAT WAS A
+ * DEFECT IN THIS FILE, NOT A STYLE CHOICE.**
+ *
+ * `implementations/cli` does `import { partsToText } from "@cotal-ai/core"`, and core's `exports`
+ * map sends `"."` to `./dist/index.js`. **So the CLI runs `dist/parts.js` while this suite graded
+ * `src/parts.js` — two different files, and more importantly two different MODULE INSTANCES.**
+ *
+ * While the only thing under test was a pure function of its arguments, that was harmless: `dist` is
+ * compiled from `src`, so a fresh build makes them agree, and grading the source graded the source
+ * of truth. **It stopped being harmless the moment rendering depended on module IDENTITY rather
+ * than on behaviour** — a renderer registered into the package's `registry` singleton is invisible
+ * to a path-imported copy of core, which has a singleton of its own.
+ *
+ * ***That produced a FALSE FAILURE: the renderer worked, and this suite reported the gate shut.***
+ * Not the usual direction. An instrument that fails toward permissiveness gets caught by the next
+ * reader; one that fails toward refusal is believed, because a red gate looks like diligence. It was
+ * caught only because it was predicted before the code was written.
+ *
+ * **Content agreement is not identity agreement, and they must not be merged.** That `src` and
+ * `dist` compile byte-idempotently — measured on three trees — says the two files AGREE. It says
+ * nothing about whether they are the SAME module, and identity is the axis this depends on.
+ *
+ * So the console family is now driven exactly as production drives it: `partsToText` from the
+ * PACKAGE, and the provider imported for its registration side effect, the way a composition root
+ * imports a connector.
+ */
+import { partsToText as corePartsToText } from "@cotal-ai/core";
+// Registers the `ag-ui.frame` part renderer into the SAME core instance the line above resolved.
+// Importing for a side effect is the point, not an accident of ordering.
+import "../src/agui-render.js";
 
 // ── The two web pages, each through whatever chain it actually ships.
 const bodyText = lift(join(WEB, "app.js"), "bodyText");
 const partsText = lift(join(WEB, "graph.js"), "partsText");
 
 /** Every shipped rendering path, so each is graded on every part kind rather than on one. */
+/**
+ * THE SCOPE THIS FILE CANNOT SILENTLY SATISFY, so it is printed and asserted instead.
+ *
+ * `COTAL_RENDERER_TREE` points the WEB surfaces at another checkout — they are plain browser JS read
+ * off disk, so any tree can be graded. **The console surface cannot follow it.** It is resolved
+ * through package resolution (`@cotal-ai/core`), which is a property of THIS package's
+ * `node_modules`, and no environment variable redirects that. Grading another tree's console surface
+ * would need a suite run from inside that tree.
+ *
+ * **Left implicit, this is precisely the wrong-subject defect** — a reader would see one tree named
+ * at the top of the output and assume all three surfaces came from it. So the mismatch is stated on
+ * every run where it exists, and it is a CELL rather than a log line, because a log line is a claim
+ * nobody re-derives.
+ */
+const OWN_TREE = resolve(join(HERE, "..", "..", ".."));
+const GRADING_FOREIGN_TREE = TREE !== OWN_TREE;
+if (GRADING_FOREIGN_TREE)
+  console.log(
+    `  NOTE: web surfaces graded from ${TREE}; the console surface is resolved through THIS package ` +
+      `(${OWN_TREE}) and does NOT follow COTAL_RENDERER_TREE.`,
+  );
 const SURFACES: readonly { name: string; render: ((p: unknown[]) => string) | null }[] = [
-  { name: "cli console / join / examples-02 (core partsToText)", render: corePartsToText },
+  {
+    name: GRADING_FOREIGN_TREE
+      ? "cli console / join / examples-02 (core partsToText, THIS package — not the graded tree)"
+      : "cli console / join / examples-02 (core partsToText)",
+    render: (p) => corePartsToText(p as never),
+  },
   { name: "implementations/web app.js", render: bodyText ? (p) => bodyText({ parts: p }) : null },
   { name: "implementations/web graph.js", render: partsText ? (p) => partsText({ parts: p }) : null },
 ];
+
+// FALSIFIABLE, not decorative: when a foreign tree is being graded, the console surface's LABEL must
+// say it did not come from that tree. An always-true cell would assert nothing; this one goes red if
+// someone drops the disclaimer from the name while the mismatch still exists.
+c("[scope] the console surface names its own tree when it differs from the graded tree",
+  !GRADING_FOREIGN_TREE || SURFACES[0].name.includes("not the graded tree"), SURFACES[0].name);
 
 for (const s of SURFACES) gradeSurface(s.name, s.render ? s.render(parts) : null);
 const graphBody = SURFACES[2].render ? SURFACES[2].render(parts) : null;
