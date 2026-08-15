@@ -150,12 +150,12 @@ if (existsSync(sharedBrowserRenderer)) {
 /** One surface: does the frame's text reach the string this surface hands its body renderer? */
 function gradeSurface(surface: string, rendered: string | null) {
   if (rendered === null) {
-    c(`[GATE] ${surface} DISPLAYS the frame's text`, false, "rendering path not found in this tree");
+    c(`[GATE] ${surface} rendered output CONTAINS the frame's text`, false, "rendering path not found in this tree");
     return;
   }
   console.log(`  ${surface} -> ${JSON.stringify(rendered)}  (len ${rendered.length})`);
   // THE GATE CELL. Not "did it produce something" — did it produce THE FRAME.
-  c(`[GATE] ${surface} DISPLAYS the frame's text`, rendered.includes(CANARY));
+  c(`[GATE] ${surface} rendered output CONTAINS the frame's text`, rendered.includes(CANARY));
   // The weaker, separately-ruled property: an undrawable part must not render as nothing. Graded as
   // its own cell because the two answers are different facts and a reader who sees one must not
   // conclude the other — a surface can be perfectly non-silent and still display no frame.
@@ -282,7 +282,7 @@ for (const s of SURFACES) {
 if (graphBody !== null) {
   const terminal = graphBody.slice(0, 160) || "—";
   console.log(`  implementations/web graph.js detail row -> ${JSON.stringify(terminal)}`);
-  c("[GATE] implementations/web graph.js detail row DISPLAYS the frame's text", terminal.includes(CANARY));
+  c("[GATE] implementations/web graph.js detail row rendered output CONTAINS the frame's text", terminal.includes(CANARY));
 }
 
 /**
@@ -506,7 +506,7 @@ for (const s of SURFACES) {
   for (const fam of FAMILIES) {
     if (!s.render) {
       if (fam.must.length > 0)
-        c(`[GATE] ${s.name} DISPLAYS a ${fam.name}-event frame's payload`, false, "path not found");
+        c(`[GATE] ${s.name} rendered output CONTAINS a ${fam.name}-event frame's payload`, false, "path not found");
       c(`[event-family:${fam.name}] ${s.name} names the events it drew`, false, "path not found");
       continue;
     }
@@ -518,7 +518,7 @@ for (const s of SURFACES) {
     // The GATE cell, for every family that HAS a payload. This is the cell a text-only renderer
     // fails and every cell above it passes.
     if (fam.must.length > 0)
-      c(`[GATE] ${s.name} DISPLAYS a ${fam.name}-event frame's payload`, missing.length === 0,
+      c(`[GATE] ${s.name} rendered output CONTAINS a ${fam.name}-event frame's payload`, missing.length === 0,
         `missing ${JSON.stringify(missing)}`);
     // Deliberately NOT a gate. A good renderer may draw a tool call as `Bash(ls)` and never print the
     // literal `TOOL_CALL_START`, so gating on the type name would fail a CORRECT surface. It is still
@@ -631,6 +631,21 @@ for (const [surface, rel] of [
 }
 
 console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateFail} of them [GATE])`);
+
+// Printed on EVERY run, green included. A disclosure that only appears while the suite is red is a
+// disclosure that vanishes at the exact moment it matters — a green is when nobody re-reads what the
+// cell actually checked, so the limit has to travel with the result rather than live in a plan.
+console.log(
+  "\nUNASSERTED GAP — what this suite's clean is NOT clean of:\n" +
+    "  These cells assert the rendered OUTPUT CONTAINS the payload. They do NOT assert that an\n" +
+    "  operator SEES it. implementations/web `app.js` returns the full html either way and clamps\n" +
+    "  with CSS on a wrapper class, keyed off BODY_CLAMP_CHARS = 280 measured on RAW string length.\n" +
+    "  Most correct frames exceed 280 characters, so a correct frame renders into a COLLAPSED body\n" +
+    "  and every cell here still passes. Asserting the visible state needs a DOM and a CSS engine;\n" +
+    "  modelling the clamp by hand would put a hand-written browser inside the instrument that holds\n" +
+    "  the merge — a wider sentence resting on a narrower truth. The gap is real, it belongs to\n" +
+    "  `app.js`, and it does not gate this suite.",
+);
 if (gateFail > 0) {
   console.log(
     "\nTHE PRECONDITION IS NOT MET, so the AG-UI cutover does not merge. This suite is expected to\n" +
