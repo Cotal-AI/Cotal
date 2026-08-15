@@ -158,7 +158,7 @@ const awaitGroupGone = async (pid: number | undefined, boundMs = 2000): Promise<
   return !groupAlive(pid);
 };
 
-/** The daemon's environment, with every inherited COTAL_* CONNECTION variable DELETED.
+/** The daemon's environment, with every inherited `COTAL_`-PREFIXED variable DELETED.
  *
  *  A process that launches agents may export `COTAL_SERVERS` — pointing at a REAL broker — into
  *  every child it spawns, and this suite spawns a real delivery daemon as a child. That has been
@@ -169,10 +169,20 @@ const awaitGroupGone = async (pid: number | undefined, boundMs = 2000): Promise<
  *  single most dangerous thing on this box resting entirely on one `??` in a file this suite does not
  *  own: one refactor to env-precedence and this suite runs a delivery daemon against production.
  *  Deleting the variables removes the dependency instead of documenting it. `DEFAULT_SERVER` is a
- *  hardcoded loopback (`packages/core/src/endpoint.ts:135`), so the fallback is safe by construction. */
+ *  hardcoded loopback (`packages/core/src/endpoint.ts:135`), so the fallback is safe by construction.
+ *
+ *  THIS WAS AN ENUMERATED LIST OF FOUR AND THE COMMENT ABOVE IT ALREADY CLAIMED "every". Measured in
+ *  a real managed seat: **16** `COTAL_` variables were present and the four-name list removed at most
+ *  four, so **13 survived** — among them `COTAL_CAPABILITIES` (the variable a grant feature gates on;
+ *  another lane measured this exact survivor), and `COTAL_CONTROL_TOKEN` + `COTAL_CONTROL_SOCKET`,
+ *  which hand a spawned daemon a live control-plane token and socket. An enumerated deny-list is
+ *  wrong by construction here: it must be re-edited every time a new variable is introduced, and it
+ *  fails SILENTLY and in the unsafe direction when nobody does. Prefix-scrub, then re-add the one
+ *  variable this suite actually sets — order matters, since that variable is itself `COTAL_`-prefixed. */
 const daemonEnv = (): NodeJS.ProcessEnv => {
-  const env = { ...process.env, COTAL_DELIVERY_BROKER_GONE_MS: "600000" };
-  for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete env[k];
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+  env.COTAL_DELIVERY_BROKER_GONE_MS = "600000";
   return env;
 };
 
