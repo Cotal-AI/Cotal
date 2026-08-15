@@ -96,6 +96,14 @@ const deliveryLines = plain.filter((l) => /^\s*delivery-health\b/.test(l));
 check("STATUS PRINTS A DELIVERY ROW — the gap this cell exists to close", deliveryLines.length >= 1,
   plain.join(" | ").slice(0, 400));
 
+// `>= 1` and then `[0]` is the shape that let this cell assert about the WRONG row: `cotal status`
+// also renders a row labelled `delivery` from the local-process section (`status.ts:174` prints the
+// registry key), emitted before this one, and `\b` treats `-` as a boundary so the old pattern
+// matched both. The rename removed that trigger, but taking the first match is the MECHANISM and it
+// outlives the trigger. Without this check the property is believed, not proven.
+check("EXACTLY ONE row carries this label — otherwise `[0]` silently picks whichever row came first and every assertion below is about a row this cell never meant to test",
+  deliveryLines.length === 1, `${deliveryLines.length} row(s): ${deliveryLines.join(" | ").slice(0, 300)}`);
+
 const dl = deliveryLines[0] ?? "";
 const value = dl.replace(/^\s*delivery-health\s*/, "").trim();
 // THE THIRD STATE IS THE POINT. #445's defect is a health clause rendered as the empty string, which

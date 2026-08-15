@@ -124,7 +124,19 @@ try {
   }
 
   const plain = lines.map(stripAnsi);
-  const deliveryLine = plain.find((l) => rowLabel(l) === "delivery-health") ?? "";
+  // SUBJECT SELECTION IS ASSERTED, NOT ASSUMED. This cell used to take the first row whose label
+  // matched, and that is how it came to assert about the wrong row: `cotal status` also prints a
+  // row labelled `delivery` from the local-process section (`status.ts:174` renders the registry
+  // key), emitted BEFORE this one. The rename removed that trigger; first-match selection is the
+  // MECHANISM and survives it, so a future row sharing this label would silently redirect every
+  // assertion below. Uniqueness is checked rather than trusted — otherwise the property is believed,
+  // not proven.
+  const deliveryRows = plain.filter((l) => rowLabel(l) === "delivery-health");
+  check("EXACTLY ONE row is labelled `delivery-health` — first-match selection would otherwise point every assertion below at whichever row came first, silently and green",
+    deliveryRows.length === 1, `${deliveryRows.length} row(s): ${deliveryRows.join(" | ").slice(0, 300)}`);
+  const deliveryLine = deliveryRows[0] ?? "";
+  // `connLine` uses the same first-match selection and is NOT asserted unique. Named here so the
+  // remaining exposure is visible rather than closed by silence: it is a witness, not the subject.
   const connLine = plain.find((l) => rowLabel(l) === "connection") ?? "";
   const deliveryValue = deliveryLine.replace(/^\s*delivery-health\s*/, "").trim();
 
