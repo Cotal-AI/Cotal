@@ -298,13 +298,18 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
  *  Deliberately absent, and each absence is a decision rather than an oversight:
  *  - `unknown-mesh` / `no-grant-for-mesh` — the shipped verbs take no mesh argument (they return to
  *    the target the agent was launched against), so neither condition is reachable.
+ *  - `no-grant` — REMOVED rather than left declared. The grant gate works by OMITTING the verbs
+ *    from the tool surface (`cotalToolSpecs`), so an ungranted persona never reaches a call that
+ *    could refuse, and nothing in the tree ever produced this. Two wrong beliefs came out of one
+ *    dead member: a caller branching on it waits forever, and a reader of this type believes the
+ *    gate answers a refusal when it hides the tool. Making it reachable was refused on security
+ *    grounds — it would mean offering the verbs to an ungranted persona so they could decline, and
+ *    a refusal surface is a larger surface than no surface.
  *  - `partial-membership-close` / `durable-membership-unclosed` — re-target-only, and re-target is
  *    deferred until a lifecycle-level close-and-fence primitive exists.
  *  - `holds-lease` — leases at disconnect are UNMEASURED, and specifying a refusal for a condition
  *    nobody has observed is how a taxonomy starts describing an imagined system. */
 export type ConnectionRefusal =
-  /** The persona lacks `capabilities: [connection]`, so it may not call these verbs at all. */
-  | "no-grant"
   /** The grant is fine and the target is simply not answering. */
   | "broker-unreachable"
   /** Reached the broker; it refused the credential. A different fix from "the host is down". */
