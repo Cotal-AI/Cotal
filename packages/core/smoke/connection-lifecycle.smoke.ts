@@ -899,9 +899,6 @@ try {
   // VOID is reported separately and never folded into either column. A voided arm is not a pass
   // (nothing was proven) and not a failure (nothing was disproven) — it is a run that did not
   // happen, and a suite that hides that behind a green total is lying by arithmetic.
-  const voidNote = voided ? `, ${voided} VOID — arms: ${[...contaminated].join(", ")}` : "";
-  console.log(`\nCONNECTION-LIFECYCLE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed${voidNote})`);
-  if (voided) console.log(`  ⊘ ${voided} cell(s) were NOT EVALUATED: their arm's entry precondition failed, so their colour would not have been evidence.`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
@@ -937,6 +934,15 @@ try {
   }
   if (!voidedDeclared.length && !missing.length && !undeclared.length)
     console.log(`  ✓ all ${DECLARED.length} declared cells were EVALUATED — none reached-but-void, none absent, none undeclared.`);
+  // The verdict line comes AFTER the roll call, and it consults the exit code the roll call may have
+  // just set. Printed first, `OK ✅` would sit above `⚠ NEVER RAN` and the headline would contradict
+  // the detail — a summary that has to be read against a later line to be true.
+  // VOID is reported separately and never folded into either column. A voided arm is not a pass
+  // (nothing was proven) and not a failure (nothing was disproven) — it is a run that did not
+  // happen, and a suite that hides that behind a green total is lying by arithmetic.
+  const voidNote = voided ? `, ${voided} VOID — arms: ${[...contaminated].join(", ")}` : "";
+  console.log(`\nCONNECTION-LIFECYCLE ${fail === 0 && !process.exitCode ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed${voidNote})`);
+  if (voided) console.log(`  ⊘ ${voided} cell(s) were NOT EVALUATED: their arm's entry precondition failed, so their colour would not have been evidence.`);
   for (const ep of [d, c, b, a, obs, mgr]) { try { await ep?.stop(); } catch { /* ignore */ } }
   await stopBroker(); // await the exit BEFORE removing the scratch it is running out of
   rmSync(dir, { recursive: true, force: true });

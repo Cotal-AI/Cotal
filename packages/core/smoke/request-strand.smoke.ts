@@ -36,8 +36,31 @@ const awaitExit = (p: ReturnType<typeof spawn>, ms = 3000): Promise<void> =>
     p.once("exit", () => res()); setTimeout(res, ms);
   });
 let pass = 0, fail = 0;
+/** Every cell that reached a verdict — the input to the roll call. A pass count alone cannot tell a
+ *  suite that answered every question from one that died after cell N, because a cell that never ran
+ *  leaves no trace to be missed. */
+const ran: string[] = [];
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  ran.push(name);
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
+const DECLARED = ["RS-ctl", "RS1a", "RS1b", "RS1c", "RS1d", "RS2a", "RS2b", "RS3a", "RS3b", "RS4a", "RS4b", "RS4c"];
+/** Printed from `finally`, so a run that throws still says how many of its questions it asked. */
+const rollCall = () => {
+  const hit = (ids: string[], n: string) => ids.some((id) => n === id || n.startsWith(`${id} `));
+  const evaluated = DECLARED.filter((id) => ran.some((n) => n === id || n.startsWith(`${id} `)));
+  const missing = DECLARED.filter((id) => !evaluated.includes(id));
+  const undeclared = ran.filter((n) => !hit(DECLARED, n));
+  console.log(`\n  ROLL CALL: ${DECLARED.length} declared — ${evaluated.length} EVALUATED, ${missing.length} NEVER RAN.`);
+  if (missing.length) {
+    console.log(`  ⚠ NEVER RAN — not a pass and not a failure, a question never asked: ${missing.join(", ")}`);
+    process.exitCode = 1;
+  }
+  if (undeclared.length) {
+    console.log(`  ⚠ ${undeclared.length} cell(s) ran under an UNDECLARED name (declaration and code have drifted): ${undeclared.join(" | ")}`);
+    process.exitCode = 1;
+  }
+  if (!missing.length && !undeclared.length) console.log(`  ✓ all ${DECLARED.length} declared cells were EVALUATED.`);
 };
 
 /** Race a call against a watchdog. `"stranded"` means it never settled inside the bound. */
@@ -88,7 +111,7 @@ try {
   //      below would prove only that the probe's responder is broken.
   replyDelayMs = 300;
   const control = await settleWithin(ep.requestControl("strandprobe", { op: "noop" }, 5000), 8000);
-  check("CONTROL: an uninterrupted request resolves through the same path", control.state === "resolved", control);
+  check("RS-ctl CONTROL: an uninterrupted request resolves through the same path", control.state === "resolved", control);
 
   // ---- ARM 1: rebuild the connection mid-flight.
   replyDelayMs = 4000; // outlives the rebuild, so only the guard can settle this
@@ -97,11 +120,11 @@ try {
   await wait(300);
   await ep.reconnect();
   const r1 = await settled;
-  check("a request in flight across a REBUILD is settled, not stranded", r1.state !== "stranded", r1.state);
-  check("it REJECTS (a caller gets a failure it can act on)", r1.state === "rejected", r1);
-  check("the refusal names the connection rebuild as the cause",
+  check("RS1a a request in flight across a REBUILD is settled, not stranded", r1.state !== "stranded", r1.state);
+  check("RS1b it REJECTS (a caller gets a failure it can act on)", r1.state === "rejected", r1);
+  check("RS1c the refusal names the connection rebuild as the cause",
     /connection was rebuilt/i.test(r1.error?.message ?? ""), r1.error?.message);
-  check("it does NOT claim the request never happened - the outcome is reported as UNKNOWN",
+  check("RS1d it does NOT claim the request never happened - the outcome is reported as UNKNOWN",
     /outcome is UNKNOWN/i.test(r1.error?.message ?? "") && /WAS published/i.test(r1.error?.message ?? ""),
     r1.error?.message);
 
@@ -111,8 +134,8 @@ try {
   await wait(300);
   await ep.stop();
   const r2 = await settled2;
-  check("a request in flight across a STOP is settled, not stranded", r2.state !== "stranded", r2.state);
-  check("the stop refusal names the stop as the cause",
+  check("RS2a a request in flight across a STOP is settled, not stranded", r2.state !== "stranded", r2.state);
+  check("RS2b the stop refusal names the stop as the cause",
     /connection was stopped/i.test(r2.error?.message ?? ""), r2.error?.message);
 
   // ---- ARM 3: the hole the sweep alone left open, found by adversarial review and measured there
@@ -130,18 +153,43 @@ try {
   const afterSweep = settleWithin(ep3.requestControl("strandprobe", { op: "noop" }, 8000), 15000);
   const r3 = await afterSweep;
   await stopping;
-  check("ARM3 a request issued DURING a stop is not stranded either", r3.state !== "stranded", r3.state);
-  check("ARM3 it is refused at ADMISSION, and says nothing happened (safe to retry, unlike a strand)",
+  check("RS3a a request issued DURING a stop is not stranded either", r3.state !== "stranded", r3.state);
+  check("RS3b it is refused at ADMISSION, and says nothing happened (safe to retry, unlike a strand)",
     r3.state === "rejected" && /NOTHING HAPPENED/i.test(r3.error?.message ?? ""), r3.error?.message);
   ep = undefined;
 
-  console.log(`\nREQUEST-STRAND SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+  // ---- ARM 4: THE TWO FAILURES HAVE OPPOSITE REMEDIES AND USED TO BE THE SAME BARE ERROR -------
+  // RS1d and RS3b above assert the two MESSAGES, and that is exactly as far as English gets you: a
+  // caller cannot branch on a sentence without matching it. Both sites threw `new Error(...)` with
+  // no code, no own field and no discriminant, so the ordinary
+  // `try { await ep.requestControl(...) } catch { retry(); }` retried BOTH — including the one whose
+  // request was already published and whose outcome is unknown, where a retry can duplicate a
+  // control-plane action. Found in review, with a probe that counted two retries from that catch.
+  const strandErr = r1.error as Partial<{ disposition: string }> | undefined;
+  const admissionErr = r3.error as Partial<{ disposition: string }> | undefined;
+  check("RS4a the STRANDED request is tagged `unknown` — it was published, so a blind retry can duplicate a control-plane action",
+    strandErr?.disposition === "unknown", { disposition: strandErr?.disposition, message: r1.error?.message });
+  check("RS4b the REFUSED-AT-ADMISSION request is tagged `not-published` — nothing was sent, so it is safe to retry",
+    admissionErr?.disposition === "not-published", { disposition: admissionErr?.disposition, message: r3.error?.message });
+  // THE CELL THAT MAKES THE FIELD LOAD-BEARING, and it asserts BOTH callers so the difference is
+  // the discriminator and not the fixture. The naive arm is expected to be WRONG — it is here as
+  // the control that shows the two errors are otherwise indistinguishable to a caller.
+  const bothErrors = [r1.error, r3.error];
+  const naiveRetries = bothErrors.filter((e) => e !== undefined).length;
+  const discriminatedRetries = bothErrors.filter((e) => (e as Partial<{ disposition: string }>)?.disposition === "not-published").length;
+  check("RS4c a caller branching on the tag retries exactly the safe one, where the naive `catch { retry() }` retries both",
+    naiveRetries === 2 && discriminatedRetries === 1, { naiveRetries, discriminatedRetries });
+
   if (fail) process.exitCode = 1;
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
   process.exitCode = 1;
 } finally {
+  // Roll call BEFORE the verdict line: it can itself set a non-zero exit (a declared cell that never
+  // ran), and a verdict printed first would read OK about a run it had not finished judging.
+  rollCall();
+  console.log(`\nREQUEST-STRAND SMOKE ${fail === 0 && !process.exitCode ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   try { await ep?.stop(); } catch { /* ignore */ }
   try { await responder?.drain(); } catch { /* ignore */ }
   srv.kill("SIGKILL");

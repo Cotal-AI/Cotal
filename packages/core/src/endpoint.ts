@@ -376,6 +376,27 @@ export interface ReconnectFailure extends Error {
 const reconnectFailure = (reason: ConnectionRefusal, detail: string, cause?: unknown): ReconnectFailure =>
   Object.assign(new Error(detail, cause === undefined ? undefined : { cause }), { reason });
 
+/** Whether a request that failed during a transition ever reached the wire.
+ *
+ *  `not-published` is safe to retry: admission refused it and nothing was sent. `unknown` is not:
+ *  the request WAS published, so the responder may already have acted on it, and a retry can
+ *  duplicate a control-plane action. **Two failures with opposite remedies.** */
+export type RequestDisposition = "not-published" | "unknown";
+
+/** A request that failed because the connection under it was transitioning.
+ *
+ *  ADDITIVE, in the same shape as {@link ReconnectFailure}: the message text is unchanged and a
+ *  caller that ignores the field behaves exactly as before. What it fixes is that the two
+ *  dispositions were previously distinguishable ONLY by matching English — both threw a bare
+ *  `Error` with no code, no own field and no discriminant — so the ordinary
+ *  `try { await ep.requestControl(...) } catch { retry(); }` retried both, including the one whose
+ *  outcome is unknown. */
+export interface RequestTransitionError extends Error {
+  disposition: RequestDisposition;
+}
+const requestFailure = (disposition: RequestDisposition, detail: string): RequestTransitionError =>
+  Object.assign(new Error(detail), { disposition });
+
 /** A failure of the operator-supplied credential SOURCE, tagged where it happens.
  *
  *  The source is a callback this code invokes; nothing has been dialled when it throws, so its
@@ -1897,7 +1918,8 @@ export class CotalEndpoint extends EventEmitter {
     // through. Refusing at admission is what makes disconnect()'s in-flight check a guarantee
     // rather than a snapshot: once the latch is closed the set can only shrink.
     if (this.admissionClosed)
-      throw new Error(
+      throw requestFailure(
+        "not-published",
         `this mesh connection is ${this.stopped ? "stopping" : "mid-transition"}, so no new request was sent. ` +
           `NOTHING HAPPENED - unlike a stranded request, this one was never published, so it is safe to retry` +
           `${this.stopped ? " on a new session" : " once the transition completes"}.`,
@@ -1920,7 +1942,8 @@ export class CotalEndpoint extends EventEmitter {
    *  than blindly retry. */
   private failPendingRequests(cause: string): void {
     if (!this.pendingRequests.size) return;
-    const err = new Error(
+    const err = requestFailure(
+      "unknown",
       `the mesh connection was ${cause} while this request was in flight, so its reply can never arrive. ` +
         `The request WAS published, so the responder may or may not have acted on it - the outcome is UNKNOWN. ` +
         `Check the effect before re-issuing; a blind retry can duplicate a control-plane action.`,
