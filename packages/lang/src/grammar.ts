@@ -833,6 +833,140 @@ function checkCall(node: AnyNode, v: Validator): void {
       );
     }
   }
+
+  // L2032: a branch that WRITES a binding declared outside it.
+  //
+  // Freeze-on-share does not see this one, because nothing crosses an effect boundary: the branches
+  // set a scalar in the enclosing scope. And the damage is silent. Live, the branches write in
+  // COMPLETION order; on resume the journalled effects return instantly, so they write in LAUNCH
+  // order, the binding ends up holding a different value, and the resumed run takes a path it never
+  // recorded — with no divergence raised, because no effect's inputs changed.
+  //
+  // `conclave` is deliberately not here. Its body is a single thunk with nothing to race, so a
+  // write from inside it is as ordered as a write anywhere else in the program.
+  if (name === "parallel" || name === "race") {
+    for (const thunk of branchThunks(args[0])) checkCapturedWrites(thunk, name, v);
+  }
+  if (name === "fanOut") {
+    const fn = args[1];
+    if (fn !== undefined && isFunctionNode(fn)) checkCapturedWrites(fn, name, v);
+  }
+}
+
+function isFunctionNode(node: AnyNode): boolean {
+  return node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression";
+}
+
+/**
+ * The thunks a `parallel` or `race` owns, in either legal form.
+ *
+ * A branch passed by name (`parallel({ a: buildIt })`) is not reachable from here and is not
+ * checked: the rule is stated as a check AT THE COMBINATOR CALL, over the functions written there.
+ */
+function branchThunks(node: AnyNode | undefined): AnyNode[] {
+  if (node === undefined) return [];
+  if (node.type === "ObjectExpression") {
+    return ((node.properties as AnyNode[]) ?? [])
+      .filter((p) => p.type === "Property" && isNode(p.value) && isFunctionNode(p.value as AnyNode))
+      .map((p) => p.value as AnyNode);
+  }
+  if (node.type === "ArrayExpression") {
+    return ((node.elements as (AnyNode | null)[]) ?? []).filter(
+      (el): el is AnyNode => el !== null && isNode(el) && isFunctionNode(el),
+    );
+  }
+  return [];
+}
+
+/** Walk one branch thunk with its OWN scope chain: anything it did not declare, it captured. */
+function checkCapturedWrites(fn: AnyNode, combinator: string, v: Validator): void {
+  const local = new Scope(null);
+  for (const p of (fn.params as AnyNode[]) ?? []) {
+    const names: string[] = [];
+    patternNames(p, names);
+    for (const n of names) local.declare(n, "param");
+  }
+  if (isNode(fn.body)) walkCaptured(fn.body as AnyNode, local, combinator, v);
+}
+
+function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Validator): void {
+  switch (node.type) {
+    case "VariableDeclaration": {
+      const kind = node.kind === "const" ? "const" : "let";
+      for (const d of (node.declarations as AnyNode[]) ?? []) {
+        if (isNode(d.init)) walkCaptured(d.init as AnyNode, scope, combinator, v);
+        const names: string[] = [];
+        patternNames(d.id as AnyNode, names);
+        for (const n of names) scope.declare(n, kind);
+      }
+      return;
+    }
+
+    case "AssignmentExpression":
+    case "UpdateExpression": {
+      // `x = 1` and `x += 1` and `x++` are the same defect. A write through a member expression is
+      // NOT this rule: that is a value, and freeze-on-share covers values (L2031).
+      const target = (node.type === "AssignmentExpression" ? node.left : node.argument) as AnyNode;
+      if (isNode(target) && target.type === "Identifier" && scope.lookup(target.name as string) === undefined) {
+        const n = target.name as string;
+        v.fail(
+          "L2032",
+          target,
+          `\`${n}\` is declared outside this branch and written inside it. Two branches racing to set one variable is nondeterministic, and freezing does not cover it because nothing crosses an effect boundary. It is also silent: live, the branches write in completion order, but on resume the recorded effects return instantly and they write in launch order, so \`${n}\` holds a different value and the run takes a path it never recorded — with no divergence raised, because no effect's inputs changed.`,
+          `Return the value from the branch and read it out of \`${combinator}\`'s result, or use \`race\`, which yields its winner.`,
+          combinator,
+        );
+      }
+      for (const c of children(node)) walkCaptured(c, scope, combinator, v);
+      return;
+    }
+
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression": {
+      if (node.type === "FunctionDeclaration" && isNode(node.id)) {
+        scope.declare((node.id as AnyNode).name as string, "const");
+      }
+      const inner = new Scope(scope);
+      for (const p of (node.params as AnyNode[]) ?? []) {
+        const names: string[] = [];
+        patternNames(p, names);
+        for (const n of names) inner.declare(n, "param");
+      }
+      if (isNode(node.body)) walkCaptured(node.body as AnyNode, inner, combinator, v);
+      return;
+    }
+
+    case "BlockStatement": {
+      const inner = new Scope(scope);
+      hoistFunctions(node, inner);
+      for (const s of (node.body as AnyNode[]) ?? []) walkCaptured(s, inner, combinator, v);
+      return;
+    }
+
+    case "CatchClause": {
+      const inner = new Scope(scope);
+      if (isNode(node.param)) {
+        const names: string[] = [];
+        patternNames(node.param as AnyNode, names);
+        for (const n of names) inner.declare(n, "const");
+      }
+      if (isNode(node.body)) walkCaptured(node.body as AnyNode, inner, combinator, v);
+      return;
+    }
+
+    case "ForStatement":
+    case "ForOfStatement": {
+      const inner = new Scope(scope);
+      for (const c of children(node)) walkCaptured(c, inner, combinator, v);
+      return;
+    }
+
+    default: {
+      for (const c of children(node)) walkCaptured(c, scope, combinator, v);
+      return;
+    }
+  }
 }
 
 function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {

@@ -285,6 +285,61 @@ accepts(
   'const a = await spawn("x");\nawait monitor(a);\nawait parallel({ one: () => turn(a, { name: "b" }) }, { name: "p" });',
 );
 
+// ---- 5e) a branch may not write a binding it captured (L2032) ---------------------------------
+
+// This is the program the design doc found by EXECUTING rather than by reading, and it is the
+// worst-behaved one in the language: live, `a` finishes last so `winner` is "a" and the run takes
+// `a-won`; on resume the journalled sleeps return instantly, the assignments run in launch order
+// instead of completion order, `winner` is "b", and the resumed run PERFORMS `b-won`. A replay that
+// abandons the recorded path and does new work, with no divergence raised, because no effect's
+// inputs changed. Freeze-on-share cannot see it: nothing crosses an effect boundary.
+rejects(
+  "the design's own captured-write program is refused",
+  "L2032",
+  'let winner = "none";\nawait parallel({\n  a: async () => { await sleep("5s", { name: "a" }); winner = "a"; },\n  b: async () => { await sleep("1s", { name: "b" }); winner = "b"; },\n}, { name: "p" });\nif (winner === "a") { await sleep("1s", { name: "a-won" }); } else { await sleep("1s", { name: "b-won" }); }',
+);
+rejects(
+  "a compound write is the same defect",
+  "L2032",
+  'let n = 0;\nawait parallel({ a: async () => { n += 1; }, b: async () => { n += 2; } }, { name: "p" });',
+);
+rejects(
+  "and so is an increment",
+  "L2032",
+  'let n = 0;\nawait race({ a: async () => { n++; return 1; }, b: async () => 2 }, { name: "r" });',
+);
+rejects(
+  "a fanOut body is a concurrent thunk too",
+  "L2032",
+  'let seen = 0;\nawait fanOut(["a", "b"], async (x) => { seen = 1; return x; }, { name: "f", key: (x) => x });',
+);
+rejects(
+  "nesting does not launder it: the write is still outside the thunk that makes it",
+  "L2032",
+  'let winner = "none";\nawait parallel({ a: async () => { if (true) { winner = "a"; } } }, { name: "p" });',
+);
+// The other half of the rule, and the half that decides whether it is usable. A branch that writes
+// only what it declared is ordinary code, and the language would be much worse if this were caught.
+accepts(
+  "a branch writing its OWN binding is fine",
+  'await parallel({ a: async () => { let n = 0; n += 1; return n; }, b: async () => 2 }, { name: "p" });',
+);
+accepts(
+  "so is writing a parameter",
+  'await fanOut(["a"], async (x) => { let y = x; y = y + "!"; return y; }, { name: "f", key: (i) => i });',
+);
+accepts(
+  "and returning the value instead of assigning it is the repair the error asks for",
+  'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);',
+);
+// `conclave` is one body with nothing to race, so a write from inside it is as ordered as a write
+// anywhere else in the program. Sweeping it in with the concurrent combinators would ban correct
+// code, which is the failure mode a static rule cannot afford.
+accepts(
+  "a conclave body may write an outer binding, because nothing runs beside it",
+  'let notes = "";\nconst a = await spawn("x");\nawait conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t" });\nlog(notes);',
+);
+
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
 rejects("no classes", "L1001", "class Foo { }");

@@ -15,6 +15,7 @@
 import { run, resume } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
+import type { EffectHandler } from "../src/effects.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -208,6 +209,172 @@ await parallel({
   ok("the failed scope is journalled as failed", scope?.status === "failed", scope?.status);
   ok("carrying the sibling it cancelled", JSON.stringify(scope?.cancel?.losers) === '["ok"]', scope?.cancel);
   ok("with the cancellation still undischarged", scope?.cancel?.issued === false);
+}
+
+// ---- 6) conclave: a scope that is also an effect ---------------------------------------------
+
+/**
+ * A conclave gets ONE journal entry, of kind `conclave`, and that entry's state is the durable
+ * answer to "is this sub-team still live". Settled means the members left; pending or cancelled
+ * means a close is still owed, which is exactly what the migrate table reads when it rejects an
+ * orphaned conclave "unless the scope closed".
+ *
+ * The handler is watched method by method rather than spread over the simulator. A spread loses
+ * SimHandler's prototype methods and the run dies as a handler fault, which is how this suite's
+ * sibling learned the difference.
+ */
+const watching = (inner: SimHandler, slowSleep = false) => {
+  const calls: string[] = [];
+  const handler: EffectHandler = {
+    now: () => inner.now(),
+    spawn: (r, c) => inner.spawn(r, c),
+    turn: (r, c) => inner.turn(r, c),
+    ask: (r, c) => inner.ask(r, c),
+    checkpoint: (r, c) => inner.checkpoint(r, c),
+    // A macrotask, so that a race's arms settle in an order this test decides rather than one the
+    // microtask queue happens to produce.
+    sleep: async (r, c) => {
+      if (slowSleep) await new Promise<void>((res) => setTimeout(res, 0));
+      return await inner.sleep(r, c);
+    },
+    wait: (r, c) => inner.wait(r, c),
+    notify: (r, c) => inner.notify(r, c),
+    monitor: (r, c) => inner.monitor(r, c),
+    openConclave: async (r, c) => {
+      calls.push("open");
+      return await inner.openConclave(r, c);
+    },
+    closeConclave: async (r, c) => {
+      calls.push("close");
+      return await inner.closeConclave(r, c);
+    },
+  };
+  return { handler, calls };
+};
+
+const CONCLAVE = `
+const a = await spawn("a", { name: "a" });
+const out = await conclave([a], async (ch) => {
+  log("inside");
+  await sleep("1m", { name: "huddling" });
+  return ch.channel;
+}, { name: "huddle", channel: "war-room" });
+log("out", out);
+`;
+
+let conclaveJournal: Journal;
+{
+  logged.length = 0;
+  const { handler, calls } = watching(new SimHandler({}));
+  const r = await run(CONCLAVE, { runId: "c-1", handler, onLog: sink });
+  conclaveJournal = r.journal;
+
+  ok("a conclave opens and closes around its body", JSON.stringify(calls) === '["open","close"]', calls);
+  ok("the body ran between them", logged.some((l) => l[0] === "inside"));
+  ok("and the channel option reached the handler, so the body got the room it asked for",
+    logged.find((l) => l[0] === "out")?.[1] === "war-room", logged);
+
+  const scope = scopeOf(r.journal, "conclave");
+  ok("it is journalled as ONE entry of its own kind, not as an open and a close", scope !== undefined
+    && r.journal.entries().filter((e) => e.kind === "conclave").length === 1);
+  ok("settled, which is the durable answer to 'did this sub-team close'", scope?.status === "ok");
+  ok("recording its single branch under a key that does not depend on the handler-minted channel",
+    JSON.stringify((scope?.result as { branches: string[] }).branches) === '["in"]',
+    scope?.result);
+  ok("and it carries a request id, because it DISPATCHED: a crash after the mint must not lose who opened the room",
+    typeof scope?.requestId === "string" && (scope?.requestId as string).length > 0, scope?.requestId);
+  // The control. A scope that launches thunks and calls no handler has no request to identify, and
+  // minting one anyway would be a durable field that means nothing.
+  ok("while a parallel, which dispatches nothing, carries none", scopeOf(raceJournal, "race")?.requestId === undefined);
+}
+
+{
+  // Replay. A settled conclave ENTERS NO BRANCH and RE-OPENS NOTHING: the members already left, so
+  // re-joining them would recreate a room the recorded run had torn down.
+  logged.length = 0;
+  const { handler, calls } = watching(new SimHandler({}));
+  const j = new Journal({ run: "c-1", entries: conclaveJournal.entries() });
+  await resume(CONCLAVE, j, { runId: "c-1", handler, onLog: sink });
+  ok("a settled conclave re-opens nothing", JSON.stringify(calls) === "[]", calls);
+  ok("and enters no branch", !logged.some((l) => l[0] === "inside"), logged);
+  ok("the program still receives the recorded room", logged.find((l) => l[0] === "out")?.[1] === "war-room", logged);
+  ok("and the body's own steps are accounted for, not left as removed steps", j.orphans().length === 0,
+    j.orphans().map((o) => o.kind));
+}
+
+{
+  // The members are part of the conclave's IDENTITY (`hashesSubject`), so editing the guest list
+  // must diverge rather than resume into a different room with the old room's recorded answer.
+  const BEFORE = `
+const a = await spawn("a", { name: "a" });
+const b = await spawn("b", { name: "b" });
+await conclave([a], async (ch) => ch.channel, { name: "huddle" });
+`;
+  const AFTER = BEFORE.replace("conclave([a]", "conclave([a, b]");
+  const { handler } = watching(new SimHandler({}));
+  const r = await run(BEFORE, { runId: "c-2", handler });
+  let caught: unknown;
+  try {
+    await resume(AFTER, new Journal({ run: "c-2", entries: r.journal.entries() }), { runId: "c-2", handler });
+  } catch (e) {
+    caught = e;
+  }
+  ok("adding a member diverges rather than replaying the old room's answer",
+    (caught as { stepKey?: string })?.stepKey === "/conclave:huddle#0", String(caught).slice(0, 100));
+  ok("and it is reported as a run divergence, with the fork the author can take from here",
+    String((caught as Error)?.message).includes("L5001") && String((caught as Error)?.message).includes("fork(run,"),
+    String(caught).slice(0, 120));
+}
+
+{
+  // A body that FAILS still closes. This process is live and the world is reachable, so walking
+  // away from joined members would be the `spawn` leak in another shape.
+  const FAILING = `
+const a = await spawn("a", { name: "a" });
+await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, { name: "huddle" });
+`;
+  const { handler, calls } = watching(
+    new SimHandler({ faults: [{ at: "/conclave:huddle#0/b:in/turn:t#0", kind: "agent-down" }] }),
+  );
+  const j = new Journal({ run: "c-3" });
+  let caught: unknown;
+  try {
+    await run(FAILING, { runId: "c-3", journal: j, handler });
+  } catch (e) {
+    caught = e;
+  }
+  ok("a failing body fails the conclave", caught !== undefined);
+  ok("but the room is still closed", JSON.stringify(calls) === '["open","close"]', calls);
+  ok("and the entry says it failed, not that it never happened", scopeOf(j, "conclave")?.status === "failed");
+}
+
+{
+  // A CANCELLED body does NOT close itself. A cancelled branch performs no new effects, and
+  // releasing a loser's branch-local resources travels the recovery path along with everything else
+  // it took. The entry settles `cancelled`, which is the record recovery reads — and which the
+  // migrate table treats as "did not close" and rejects.
+  //
+  // `fast` awaits nothing and so settles in the first microtask, while `slow` is parked in the
+  // watched handler's macrotask sleep. The loser is decided by the test, not by the event loop.
+  const CANCELLED_SRC = `
+const a = await spawn("a", { name: "a" });
+await race({
+  slow: async () => await conclave([a], async (ch) => {
+    await sleep("1m", { name: "s1" });
+    await sleep("1m", { name: "s2" });
+    return 1;
+  }, { name: "huddle" }),
+  fast: async () => "fast",
+}, { name: "r" });
+`;
+  const { handler, calls } = watching(new SimHandler({}), true);
+  const j = new Journal({ run: "c-4" });
+  await run(CANCELLED_SRC, { runId: "c-4", journal: j, handler });
+  ok("the conclave really was opened, or this cell proves nothing about closing", calls.includes("open"));
+  ok("a cancelled conclave does NOT close itself from inside the losing branch",
+    !calls.includes("close"), calls);
+  ok("and its entry records that it did not close", scopeOf(j, "conclave")?.status === "cancelled",
+    scopeOf(j, "conclave")?.status);
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);

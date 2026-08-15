@@ -30,6 +30,7 @@ import {
   type AgentHandleValue,
   type CancelSignal,
   type ChannelHandleValue,
+  type ConclaveRequest,
   type EffectContext,
   type EffectHandler,
   type CheckpointRaw,
@@ -932,9 +933,19 @@ class Interpreter {
     const occurrence = frame.keys.nextScope(scopeKind, scopeName);
     const scopeKey = frame.keys.scopeKey(scopeKind, scopeName, occurrence);
 
-    return await this.performScope(scopeKey, frame, async () => await this.runScope(
-      name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame,
-    ));
+    // `conclave` is the one scope whose identity includes a SUBJECT (`hashesSubject`, §5.8): the
+    // members are what the sub-team IS, so editing the member list has to diverge rather than
+    // resume into a different room. The other three are identified by kind, name and occurrence.
+    const subject = spec.hashesSubject
+      ? {
+          members: (first as AgentHandleValue[]).map((m) => m.agent),
+          channel: (this.option(bag, "channel") as string | undefined) ?? null,
+        }
+      : undefined;
+
+    return await this.performScope(scopeKey, frame, async (ctx) => await this.runScope(
+      name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame, ctx,
+    ), subject);
   }
 
   /**
@@ -954,9 +965,14 @@ class Interpreter {
   private async performScope(
     scopeKey: StepKey,
     frame: Frame,
-    body: () => Promise<ScopeOutcome>,
+    body: (ctx: EffectContext) => Promise<ScopeOutcome>,
+    subject?: unknown,
   ): Promise<unknown> {
-    const inputHash = digest({ kind: scopeKey.kind, name: scopeKey.name });
+    const inputHash = digest(
+      subject === undefined
+        ? { kind: scopeKey.kind, name: scopeKey.name }
+        : { kind: scopeKey.kind, name: scopeKey.name, subject },
+    );
     const verdict = this.journal.lookup(scopeKey, inputHash);
 
     if (verdict.verdict === "diverged") {
@@ -985,11 +1001,30 @@ class Interpreter {
     // pending scope's losers were never durably cancelled. Settling is idempotent, so the arm that
     // finishes first wins again — except where the journal already knows better, which is what
     // `runScope`'s replayed-branch tie-break is for.
+    // A scope that CALLS THE HANDLER owes a durable request id exactly as an effect does, and for
+    // the same reason: a crash between issuing the work and recording who issued it leaves real
+    // work — for `conclave`, a live channel with members joined — that nothing in the journal
+    // names. `subject` marks that scope, because `conclave` is the only one that dispatches from
+    // this path; the other three launch thunks and touch no handler of their own.
+    const dispatches = subject !== undefined;
+    const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
+    const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
+    const reqId = recorded?.requestId ?? requestId(this.options.runId, scopeKey, inputHash);
     if (verdict.verdict === "miss") {
-      await this.journal.begin(scopeKey, inputHash, this.options.handler.now());
+      await this.journal.begin(scopeKey, inputHash, this.options.handler.now(), dispatches ? reqId : undefined);
     }
+    const ctx: EffectContext = {
+      key: scopeKey,
+      signal: frame.signal,
+      requestId: reqId,
+      attempt: recorded?.attempt ?? 0,
+      ...(resume !== undefined ? { resume } : {}),
+      bind: async (external) => {
+        await this.journal.bind(scopeKey, external);
+      },
+    };
     try {
-      const outcome = await body();
+      const outcome = await body(ctx);
       await this.journal.settle(
         scopeKey,
         { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
@@ -1024,6 +1059,7 @@ class Interpreter {
     bag: unknown,
     env: Env,
     frame: Frame,
+    ctx: EffectContext,
   ): Promise<ScopeOutcome> {
     if (name === "parallel" || name === "race") {
       const entries: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
@@ -1137,6 +1173,45 @@ class Interpreter {
       const results = await Promise.all(items.map((item, i) => fn(frames[i] as Frame, [item, i])));
       frame.clock.join(frames.map((f) => f.clock));
       return { branches: branchKeys, value: results };
+    }
+
+    if (name === "conclave") {
+      // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`. That entry's
+      // STATE is the durable answer to "is this sub-team still live": settled means the members
+      // left, pending or cancelled means a close is still owed. §17's migrate table reads exactly
+      // that — an orphaned conclave is rejected unless the scope closed — so a second entry for the
+      // close would be a second thing to keep in agreement with the first, and nothing needs it.
+      const members = deepFreeze(first) as AgentHandleValue[];
+      const fn = (await this.evaluate(argNodes[1] as AnyNode, env, frame)) as (
+        f: Frame,
+        a: unknown[],
+      ) => Promise<unknown>;
+      const channel = this.option(bag, "channel") as string | undefined;
+      const req: ConclaveRequest = { members, ...(channel !== undefined ? { channel } : {}) };
+      const handler = this.options.handler;
+      const handle = deepFreeze(await handler.openConclave(req, ctx)) as ChannelHandleValue;
+
+      // One body, one branch, and the branch key is the fixed literal `in` rather than the channel
+      // name. The channel is HANDLER-DERIVED — the simulator and the mesh mint different ones — so
+      // keying the journal namespace by it would make a journal replayable only under the handler
+      // that wrote it, which is the one thing the effect seam exists to prevent.
+      const branch = frame.branch(scopeKind, scopeName, occurrence, "in");
+      try {
+        const value = await fn(branch, [handle]);
+        frame.clock.join([branch.clock]);
+        await handler.closeConclave(req, ctx);
+        return { branches: ["in"], value };
+      } catch (e) {
+        frame.clock.join([branch.clock]);
+        // A CANCELLED branch performs no new effects (§5.8), so a cancelled conclave does not close
+        // itself: the entry settles `cancelled`, and releasing the membership travels the same
+        // recovery path as every other branch-local resource a race loser took (§3.4). A conclave
+        // whose body merely FAILED is not cancelled — this process is live and the world is
+        // reachable — and walking away from live membership on an ordinary error would be the
+        // `spawn` leak in another shape.
+        if (!(e instanceof Cancelled)) await handler.closeConclave(req, ctx);
+        throw e;
+      }
     }
 
     throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);

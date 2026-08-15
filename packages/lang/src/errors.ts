@@ -47,6 +47,7 @@ export const CATALOG = {
   L2013: "An async call is not awaited",
   L2012: "Host global is not available",
   L2031: "Mutation of a frozen value",
+  L2032: "Write to a binding captured by a concurrent thunk",
 
   // ---- L3xxx: effect call shape --------------------------------------------------------------
   L3011: "Unknown option key",
