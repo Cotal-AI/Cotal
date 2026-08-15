@@ -162,12 +162,31 @@ function proveOne(m, opts) {
     return ok;
   };
 
-  // SIGNAL SAFETY. try/catch does not run on SIGINT or SIGTERM, so before this existed a Ctrl-C
-  // during a run left the MUTANT in the working tree indefinitely, with only a .bak in tmpdir and
-  // nothing said about it. That is the worst form of this hazard: the tree is wrong, `git status`
-  // shows a modification nobody reads as a mutant, and on a shared checkout the next `tsc` compiles
-  // it. Restore on the way out of the process, then re-raise so the exit status still reports the
-  // signal rather than being swallowed.
+  // SIGNAL SAFETY — AND READ THIS BEFORE YOU "IMPROVE" THE HANDLER BELOW.
+  //
+  // WHAT GOES WRONG WITHOUT IT. `finally` does not run when the kernel terminates the process, so
+  // before this existed a Ctrl-C during a run left the MUTANT in the working tree indefinitely,
+  // with only a .bak in tmpdir and nothing said about it. The tree is wrong, `git status` shows a
+  // modification nobody reads as a mutant, and on a shared checkout the next `tsc` compiles it.
+  // Measured, two arms, group SIGINT: without these listeners the file was left holding the mutant;
+  // with them it came back original.
+  //
+  // ⚠ BUT THE BODY BELOW IS NOT WHAT SAVES THE TREE, AND IT HAS NEVER RUN IN EITHER ARM.
+  // `runSuite` blocks in `spawnSync` (see below) for the WHOLE mutant window, and node cannot
+  // dispatch a JS signal handler while the event loop is blocked. What actually protects the tree
+  // is that REGISTERING A LISTENER REPLACES THE SIGNAL'S DEFAULT DISPOSITION: with no listener
+  // SIGINT is SIG_DFL and the kernel kills node mid-spawnSync; with one, the process survives, the
+  // spawnSync returns, and the ordinary `finally` restore completes. The protection is the
+  // listener's EXISTENCE, not its body.
+  //
+  // So: this body is defensive cover for a signal arriving in the narrow gaps when the loop is
+  // free. Do not delete the registration on the grounds that the body looks dead — that would
+  // reopen the hazard. Do not expect edits to the body to change observable behaviour either; if
+  // you need them to, the change to make is asynchronous `spawn` + await in runSuite, and then
+  // this comment stops being true.
+  //
+  // SIGKILL is uncatchable and strands the mutant regardless (driven). Recovery is
+  // `git checkout -- <file>`, which is why this tool refuses to run on a dirty tree.
   const onSignal = (sig) => {
     try {
       const ok = restore();
