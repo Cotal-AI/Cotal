@@ -1022,3 +1022,54 @@ The four unrun checks are named there so their absence is never read as coverage
 > either.** Downgraded to **COULD NOT DISTINGUISH** in `verdicts/mc-e2e-user.md`. The gate's evidence
 > is `G5`/`G6` against source, with both arms differing; **there is no live evidence for it, and this
 > section is the only place that could have been mistaken for some.**
+
+### 9.6 The failed-first-start cleanup — **FIXED AND PROVEN**, not a follow-on
+
+The two BLOCKING findings from `mc-rev-refusal`'s supplement — a false `already-connected` refusal,
+and an unbounded authenticated-connection leak on the retry path — **shared one root: there was no
+cleanup on a failed INITIAL bind, only on rebuild.** `doRebuild()` closed the half-bound handle in
+the transition that opened it; `start()` reached `connectAndBind()` directly and had no such arm.
+The cleanup is now extracted to `discardHalfBound()` and called from both.
+
+**What that fixes, stated as behaviour rather than as a diff:**
+
+- `connect()` no longer reads a residual transport as proof of being on the mesh, because there is
+  no residual transport. It names the condition that actually failed.
+- the retry loop no longer orphans a socket per attempt, because the handle is closed before it can
+  be overwritten.
+
+**Proven, not asserted** — `MUTATION-STARTLEAK.md`, predictions committed at `2f92d932` with the
+RESULT section empty. The mutant removed the cleanup from `start()` **only**, leaving the rebuild
+path intact, so it discriminates *which entry the fix reached*:
+
+| | with the fix | mutant |
+| --- | --- | --- |
+| ARM 4 `D4a` (broker current connections, 3 failed starts) | **0**, baseline | **3** — one orphan per start |
+| m11 `M11a` (peak during the real retry loop) | **≤1** | **18**, still climbing |
+| m11 `M11b` (survivors after `stop()`) | **0** | **17** |
+| ARM 1 (the REBUILD entry) | green | **green** — untouched, which is what makes the mutant discriminating |
+| roll call | 37/37, 3/3 | **37/37, 3/3** — the reds are a catch, not a suite that died before asking |
+
+> **THE 18 IS THE FINDING, NOT THE 3.** The filing seat measured 1 → 4 over three deliberate starts.
+> The real loop at a 300ms retry reached **eighteen live authenticated connections in five seconds
+> and was still climbing**. Its "without bound" was literal: a seat pointed at a broker whose
+> JetStream is off opens sockets until something else breaks first.
+
+**Two defects the mutant found that the green run could not**, both recorded because the second one
+changes what earlier results mean:
+
+1. **`D4e` was vacuous.** Labelled CONTROL, it asserted only that a second `connect()` answers
+   `already-connected` — which the residual handle also produces for a session that never connected.
+   **An assertion true in both the safe and the unsafe state is not a control however it is
+   labelled.** It now carries its own premise in the same cell.
+2. **The connector suite's own subject was reaching the verbs through the open-mode bypass.** Its
+   fixture is an open-mode agent with no capabilities, so every `C1`/`A`/`E` cell had been exercising
+   a surface **no granted deployment presents**, and the suite said so nowhere. Repaired by granting
+   the fixture what a real caller must hold — not by restoring the carve-out, because a suite that
+   needs the permissive arm to reach its subject is measuring the arm.
+
+**What is NOT claimed.** `mc-rev-refusal`'s finding 3 — that a knowable, permanent bind denial is
+logged to stderr, relabelled `mesh unreachable` and retried forever, so no caller ever learns the
+real reason — is **not fixed here**. It shares a symptom with the above and is a different defect;
+it belongs with §9.1/§9.2, and the connect/startup half of it is the same gap `mc-rev-supervisor`
+identified independently.
