@@ -21,6 +21,16 @@ import type { EffectKind } from "./primitives.js";
 /** The concurrency combinators that open a scope. */
 export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave";
 
+/**
+ * What a journal entry can be keyed as: an effect, or a concurrency SCOPE.
+ *
+ * The scope kinds are here because a combinator writes an entry for itself, and without them that
+ * entry has no legal key and no legal kind — which is the state this package was in: scopes pushed
+ * a frame, allocated an occurrence, and journalled nothing, so a replayed `race` re-raced and could
+ * resolve a different arm with nothing recorded saying which one had won.
+ */
+export type JournalKind = EffectKind | ScopeKind;
+
 export interface ScopeFrame {
   readonly kind: ScopeKind;
   /** The combinator's step name, or null when it was not named. */
@@ -33,7 +43,7 @@ export interface ScopeFrame {
 
 export interface StepKey {
   readonly scope: readonly ScopeFrame[];
-  readonly kind: EffectKind;
+  readonly kind: JournalKind;
   /** The literal step name, or "" when the effect was not named. */
   readonly name: string;
   readonly occurrence: number;
@@ -117,6 +127,17 @@ export class KeyScope {
     const occurrence = this.scopeCounts.get(tag) ?? 0;
     this.scopeCounts.set(tag, occurrence + 1);
     return occurrence;
+  }
+
+  /**
+   * The scope's OWN key, in the namespace that opened it.
+   *
+   * Allocation-free on purpose: {@link KeyScope.nextScope} already allocated the occurrence, and
+   * calling this must not consume a second one. The scope entry therefore sits beside the effects
+   * of the namespace that opened it (`/race:first-answer#0`), while its branches live under it.
+   */
+  scopeKey(kind: ScopeKind, name: string | null, occurrence: number): StepKey {
+    return { scope: this.path, kind, name: name ?? "", occurrence };
   }
 
   /** The child namespace for one branch of a scope opened from here. */

@@ -20,7 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/grammar.smoke.ts && tsx smoke/keys.smoke.ts && tsx smoke/journal.smoke.ts && tsx smoke/pins.smoke.ts && tsx smoke/sim.smoke.ts && tsx smoke/interpret.smoke.ts && tsx smoke/fuel.smoke.ts && tsx smoke/dryrun.smoke.ts && tsx smoke/examples.smoke.ts && tsx smoke/options.smoke.ts",
+    "test": "tsx smoke/grammar.smoke.ts && tsx smoke/keys.smoke.ts && tsx smoke/journal.smoke.ts && tsx smoke/pins.smoke.ts && tsx smoke/scopes.smoke.ts && tsx smoke/sim.smoke.ts && tsx smoke/interpret.smoke.ts && tsx smoke/fuel.smoke.ts && tsx smoke/dryrun.smoke.ts && tsx smoke/examples.smoke.ts && tsx smoke/options.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

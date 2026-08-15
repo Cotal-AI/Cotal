@@ -17,7 +17,7 @@
 
 import { validate } from "./grammar.js";
 import { LangError, LangErrors } from "./errors.js";
-import { KeyScope, digest, requestId, scopePathString, stepKeyString, type ScopeKind } from "./keys.js";
+import { KeyScope, digest, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, RunClock, type EntryError } from "./journal.js";
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
 import { parseDuration } from "./duration.js";
@@ -37,6 +37,20 @@ import {
 } from "./effects.js";
 
 type AnyNode = Record<string, unknown> & { type: string };
+
+/**
+ * What a concurrency scope produces, before it is journalled.
+ *
+ * `branches` is what the scope launched, `value` is what the program sees, and `cancel` is the
+ * intent a cancelling scope owes its losers — durable WITH the outcome, because a process dies
+ * between instructions and two appends are two network operations however few keywords separate
+ * them.
+ */
+interface ScopeOutcome {
+  readonly branches: readonly string[];
+  readonly value: unknown;
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+}
 
 // ---- environments ------------------------------------------------------------------------------
 
@@ -916,7 +930,101 @@ class Interpreter {
     const bag = bagNode === undefined ? undefined : await this.evaluate(bagNode, env, frame);
     const scopeName = (this.option(bag, "name") as string | undefined) ?? null;
     const occurrence = frame.keys.nextScope(scopeKind, scopeName);
+    const scopeKey = frame.keys.scopeKey(scopeKind, scopeName, occurrence);
 
+    return await this.performScope(scopeKey, frame, async () => await this.runScope(
+      name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame,
+    ));
+  }
+
+  /**
+   * A concurrency scope's own journal entry, and what replay does with it.
+   *
+   * The scope is journalled as ONE durable record carrying its outcome, and for a cancelling scope
+   * the intent to cancel its siblings. Without it a replayed `race` re-races: both branches may have
+   * settled before the cancellation reached the loser, so the journal holds two successful branches
+   * and nothing saying which one won, and a replayed run can take the other path and reach a step
+   * that was never recorded.
+   *
+   * A settled scope therefore ENTERS NO BRANCH, and the order below is normative rather than
+   * convenient: account for the subtree first, then discharge the cancellation, and only then
+   * deliver the outcome. Leading with the delivery is the defect — the next program step can share
+   * a worktree with a loser that is still writing.
+   */
+  private async performScope(
+    scopeKey: StepKey,
+    frame: Frame,
+    body: () => Promise<ScopeOutcome>,
+  ): Promise<unknown> {
+    const inputHash = digest({ kind: scopeKey.kind, name: scopeKey.name });
+    const verdict = this.journal.lookup(scopeKey, inputHash);
+
+    if (verdict.verdict === "diverged") {
+      throw new RunDivergence(stepKeyString(scopeKey), verdict.recordedHash, verdict.programHash);
+    }
+    if (verdict.verdict === "replay" || verdict.verdict === "replay-failed") {
+      const entry = verdict.entry;
+      // (1) account for the subtree, settling any loser still pending as cancelled;
+      await this.journal.consumeScope(stepKeyString(scopeKey), entry.endedAt ?? this.options.handler.now());
+      // (2) the cancellation intent is the driver's to discharge against the world; a journal write
+      //     cancels nothing by itself, so an undischarged intent stays visible rather than silently
+      //     reading as done.
+      // (3) only now, the outcome.
+      if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
+      if (verdict.verdict === "replay-failed") {
+        const e = entry.error as EntryError;
+        throw new EffectError(e.code, e.kind, e.message, e.detail);
+      }
+      return (entry.result as { value: unknown }).value;
+    }
+    if (verdict.verdict === "replay-cancelled") {
+      throw new Cancelled("this scope was cancelled on the recorded run");
+    }
+
+    // `miss` and `pending` alike RE-ENTER the scope: there is no recorded outcome to return, and a
+    // pending scope's losers were never durably cancelled. Settling is idempotent, so the arm that
+    // finishes first wins again — except where the journal already knows better, which is what
+    // `runScope`'s replayed-branch tie-break is for.
+    if (verdict.verdict === "miss") {
+      await this.journal.begin(scopeKey, inputHash, this.options.handler.now());
+    }
+    try {
+      const outcome = await body();
+      await this.journal.settle(
+        scopeKey,
+        { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+        this.options.handler.now(),
+        outcome.cancel,
+      );
+      return outcome.value;
+    } catch (e) {
+      const endedAt = this.options.handler.now();
+      if (e instanceof Cancelled) {
+        await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt);
+        throw e;
+      }
+      const err: EntryError =
+        e instanceof EffectError
+          ? { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }
+          : { code: "L4000", kind: "scope-fault", message: (e as Error).message };
+      // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
+      // carries the intent too.
+      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, (e as { cancel?: { losers: readonly string[]; issued: boolean } }).cancel);
+      throw e;
+    }
+  }
+
+  private async runScope(
+    name: string,
+    scopeKind: ScopeKind,
+    scopeName: string | null,
+    occurrence: number,
+    first: unknown,
+    argNodes: AnyNode[],
+    bag: unknown,
+    env: Env,
+    frame: Frame,
+  ): Promise<ScopeOutcome> {
     if (name === "parallel" || name === "race") {
       const entries: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
         ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
@@ -925,32 +1033,74 @@ class Interpreter {
       const frames = entries.map(([k]) => frame.branch(scopeKind, scopeName, occurrence, k));
       const running = entries.map(([, fn], i) => fn(frames[i] as Frame, []));
 
+      const branches = entries.map(([k]) => k);
+
       if (name === "parallel") {
+        let failed: string | null = null;
+        const tracked = running.map((p, i) =>
+          p.catch((e: unknown) => {
+            if (failed === null) failed = entries[i]?.[0] as string;
+            throw e;
+          }),
+        );
         try {
-          const results = await Promise.all(running);
+          const results = await Promise.all(tracked);
           frame.clock.join(frames.map((f) => f.clock));
-          return Array.isArray(first)
-            ? results
-            : Object.fromEntries(entries.map(([k], i) => [k, results[i]]));
+          return {
+            branches,
+            value: Array.isArray(first) ? results : Object.fromEntries(entries.map(([k], i) => [k, results[i]])),
+          };
         } catch (e) {
-          // The first rejection cancels the rest, then rethrows.
+          // The first rejection cancels the rest, then rethrows. The intent travels WITH the
+          // failure, because a rejecting branch cancels its siblings and can crash before they
+          // hear it, so a failed scope owes its losers exactly as a winning one does.
           for (const f of frames) f.signal.cancel("a sibling branch failed");
           await Promise.allSettled(running);
           frame.clock.join(frames.map((f) => f.clock));
-          throw e;
+          const losers = branches.filter((k) => k !== failed);
+          throw Object.assign(e as object, { cancel: { losers, issued: false } });
         }
       }
 
       // race: first to settle wins, and the losers are cancelled BY SEMANTICS, not by an API the
       // program calls. A cancelled branch performs no new effects; an agent reply already in
       // flight completes and is ignored, which is the documented answer rather than an accident.
-      const winner = await Promise.race(
-        running.map((p, i) => p.then((value) => ({ index: entries[i]?.[0] as string, value }))),
-      );
+      await Promise.race(running.map((p) => p.then(() => undefined)));
       for (const f of frames) f.signal.cancel("a sibling branch won the race");
-      await Promise.allSettled(running);
+      const settled = await Promise.allSettled(running);
       frame.clock.join(frames.map((f) => f.clock));
-      return winner;
+
+      // THE WINNER IS THE EARLIEST BRANCH, NOT THE FIRST ONE SCHEDULING HAPPENED TO WAKE.
+      //
+      // On a live run those are the same thing and this reads as ceremony. On a RE-ENTERED scope
+      // they are not: a crash can leave two branches already settled in the journal, both replay
+      // instantly, and whichever the event loop resumes first would otherwise win — so the same
+      // journal could resolve a different arm on every attempt. The branch clock is the max endedAt
+      // of the effects that branch awaited, which is recorded, so this tie-break is a function of
+      // the journal. Equal clocks fall back to declaration order, which is also recorded.
+      let winnerAt = -1;
+      let winnerIndex = -1;
+      for (let i = 0; i < settled.length; i += 1) {
+        if ((settled[i] as PromiseSettledResult<unknown>).status !== "fulfilled") continue;
+        const at = (frames[i] as Frame).clock.now();
+        if (winnerIndex === -1 || at < winnerAt) {
+          winnerAt = at;
+          winnerIndex = i;
+        }
+      }
+      if (winnerIndex === -1) {
+        // Every arm rejected: there is no winner to journal, so the scope fails as its branches did.
+        const firstRejection = settled.find((r) => r.status === "rejected") as PromiseRejectedResult;
+        throw Object.assign(firstRejection.reason as object, { cancel: { losers: branches, issued: false } });
+      }
+      const index = entries[winnerIndex]?.[0] as string;
+      return {
+        branches,
+        // BOTH the index and the value. The index alone is not enough: an edit to an arm's returned
+        // expression would resume as the new value with no divergence raised.
+        value: { index, value: (settled[winnerIndex] as PromiseFulfilledResult<unknown>).value },
+        cancel: { losers: branches.filter((k) => k !== index), issued: false },
+      };
     }
 
     if (name === "fanOut") {
@@ -986,7 +1136,7 @@ class Interpreter {
       const frames = branchKeys.map((k) => frame.branch(scopeKind, scopeName, occurrence, k));
       const results = await Promise.all(items.map((item, i) => fn(frames[i] as Frame, [item, i])));
       frame.clock.join(frames.map((f) => f.clock));
-      return results;
+      return { branches: branchKeys, value: results };
     }
 
     throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);

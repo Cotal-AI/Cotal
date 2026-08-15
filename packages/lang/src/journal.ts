@@ -12,8 +12,7 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
-import type { EffectKind } from "./primitives.js";
-import { type StepKey, stepKeyString } from "./keys.js";
+import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
 
 export type EntryState = "pending" | "settled";
 export type EntryStatus = "ok" | "failed" | "cancelled";
@@ -31,7 +30,7 @@ export interface JournalEntry {
   readonly seq: number;
   readonly run: string;
   readonly scope: string;
-  readonly kind: EffectKind;
+  readonly kind: JournalKind;
   readonly name: string;
   readonly occurrence: number;
   readonly inputHash: string;
@@ -58,6 +57,15 @@ export interface JournalEntry {
   readonly error?: EntryError;
   /** The external resource this effect bound, so a crash mid-effect is recoverable. */
   readonly external?: Readonly<Record<string, unknown>>;
+  /**
+   * A cancelling scope's INTENT, durable with its outcome.
+   *
+   * A journal write cancels nothing by itself: marking a branch cancelled while its agent keeps
+   * working is how two agents come to share a worktree, one of them invisibly. So the losers are
+   * recorded WITH the result, and `issued` flips only once the world agrees they are quiescent —
+   * which is a fact about the world, established by whoever is driving, not by this record.
+   */
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
   readonly startedAt: number;
   readonly endedAt?: number;
 }
@@ -237,7 +245,13 @@ export class Journal {
     await this.persist(next);
   }
 
-  /** Append the `settled` half. */
+  /**
+   * Append the `settled` half.
+   *
+   * `cancel` is for a scope that cancels siblings: the intent is recorded WITH the outcome rather
+   * than after it, because a process dies between instructions and two appends are two network
+   * operations however few keywords separate them.
+   */
   async settle(
     key: StepKey,
     outcome:
@@ -245,6 +259,7 @@ export class Journal {
       | { readonly status: "failed"; readonly error: EntryError }
       | { readonly status: "cancelled" },
     endedAt: number,
+    cancel?: { readonly losers: readonly string[]; readonly issued: boolean },
   ): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
@@ -257,10 +272,39 @@ export class Journal {
       endedAt,
       ...(outcome.status === "ok" ? { result: outcome.result } : {}),
       ...(outcome.status === "failed" ? { error: outcome.error } : {}),
+      ...(cancel !== undefined ? { cancel } : {}),
     };
     this.byKey.set(k, settled);
     await this.persist(settled);
     return settled;
+  }
+
+  /**
+   * Account for everything under a settled scope WITHOUT entering a branch.
+   *
+   * A settled scope is delivered from its own entry, so the branches are never walked — and an
+   * entry nothing walks is an orphan, which on a migration means "the edit removed this step". The
+   * branches were not removed; they were decided. So the subtree is marked consumed explicitly.
+   *
+   * A loser still sitting `pending` is settled `cancelled` in the same pass, because that is what
+   * it is: the scope resolved without it. Settling the record is NOT the cancellation — the world
+   * has to be told separately, which is what `cancel.issued` tracks — but leaving it pending would
+   * make a resumed run try to recover work the scope already decided to abandon.
+   */
+  async consumeScope(scopeKeyString: string, endedAt: number): Promise<readonly string[]> {
+    const prefix = `${scopeKeyString}/b:`;
+    const touched: string[] = [];
+    for (const k of this.order) {
+      if (!k.startsWith(prefix)) continue;
+      this.consumed.add(k);
+      touched.push(k);
+      const entry = this.byKey.get(k);
+      if (entry === undefined || entry.state !== "pending") continue;
+      const cancelled: JournalEntry = { ...entry, state: "settled", status: "cancelled", endedAt };
+      this.byKey.set(k, cancelled);
+      await this.persist(cancelled);
+    }
+    return touched;
   }
 
   /** Every entry, in append order. The journal is the prompt context for repair. */
