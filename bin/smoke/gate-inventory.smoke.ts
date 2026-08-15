@@ -52,7 +52,7 @@ const UNGATED: Record<string, string> = {
   "smoke:agui-map":
     "maps a REAL ~/.claude/projects session JSONL and refuses a fixture by design; input is operator-local and irreproducible on a CI box",
   // The second uncomfortable one, and it is ungated for the OPPOSITE reason to everything else here:
-  // not that it cannot run on a CI box, but that it is RED ON PURPOSE. It grades fm-orchestrator's
+  // not that it cannot run on a CI box, but that it is RED ON PURPOSE. It grades a
   // binding precondition — the AG-UI cutover does not merge until `cotal console`,
   // `implementations/web` and `examples/02` can DISPLAY a frame — and that work is not done, so the
   // suite fails today by design. Gating it would either normalise a red gate or force it to assert
@@ -69,7 +69,7 @@ const UNGATED: Record<string, string> = {
   // guards, none with jurisdiction. This suite derives which files a tsconfig SOMEBODY INVOKES
   // actually covers, and every `smoke/` directory in the repo is outside its package's `include`, so
   // it is red the day it lands. Going green means widening ~13 `include` arrays and fixing whatever
-  // the compiler then finds — a change that spans every lane, which is why it is not bundled here.
+  // the compiler then finds — a change that spans every package, which is why it is not bundled here.
   // REMOVING this line is part of that work.
   "smoke:tsconfig-coverage":
     "red by design: every smoke/ directory in the repo is outside its package's tsconfig include. Gate it when the include arrays are widened",

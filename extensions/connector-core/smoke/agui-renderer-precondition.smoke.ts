@@ -1,17 +1,17 @@
 /**
  * THE INSTRUMENT THAT RELEASES (OR HOLDS SHUT) THE AG-UI RENDERER PRECONDITION.
  *
- * fm-orchestrator's ruling, unamended: **the Claude cutover does not merge until the step-4
- * renderers can DISPLAY a frame.** `agui-events.md:2146-2153` states it; step 4 (`:2288`) names the
- * surfaces — `cotal console`, `implementations/web`, `examples/02` — and the two properties: the
- * frame part and the `events.*` filter. This file is what answers that question by execution.
- * The gate opens on **a frame observed rendered**, never on a reading of a diff.
+ * THE RULE IT ENFORCES: **the Claude connector's cutover to AG-UI events does not merge until the
+ * renderers can DISPLAY a frame.** Three surfaces are in scope — `cotal console`,
+ * `implementations/web`, `examples/02` — and two properties: the frame part, and the `events.*`
+ * filter. This file answers that question by execution. **The gate opens on a frame observed
+ * rendered, never on a reading of a diff.**
  *
- * WHY A SUITE AND NOT A SCRATCH PROBE. The first version of this was a gitignored scratch file on
- * one worktree, which means: nobody can re-derive the verdict, the gate has no instrument if that
- * seat dies, and the lane that owns the renderers cannot self-check without a round trip. The gate
- * has already been breached once — `f88d518c` deleted the transcript mirror while this was unmet —
- * and a suite is what would have caught that AT THE TIME rather than two sessions later.
+ * WHY A SUITE AND NOT A SCRATCH PROBE. The first version was a gitignored scratch file in a single
+ * worktree, which means nobody could re-derive the verdict, the gate had no instrument once that
+ * checkout was gone, and whoever owns the renderers could not self-check without a round trip. **The
+ * rule has already been breached once — the transcript mirror was deleted while it was unmet — and a
+ * suite is what would have caught that AT THE TIME** rather than two sessions later.
  *
  * IT IS RED BY DESIGN UNTIL THE RENDERERS LAND, which is why it is UNGATED in
  * `bin/smoke/gate-inventory.smoke.ts` rather than in the `smoke:ci` chain. Asserting the CURRENT
@@ -23,7 +23,7 @@
  * `aguiFrame()` carrying a canary string, and the cells ask whether the canary survives to the
  * string that surface hands its body renderer. It does NOT open a browser and does not assert
  * rendered HTML — but neither `MD.render` nor `esc()` can invent a canary that is not in their
- * input, so a canary absent HERE is absent on the page. That is the hop the webconsole lane's own
+ * input, so a canary absent HERE is absent on the page. That is the hop the browser-side
  * suite explicitly disclaims ("not that it survives to the pixels"), and it is the one this closes.
  *
  * THE SOURCE IS LIFTED, NEVER RETYPED. `implementations/web/src/web/*.js` is plain browser JS that
@@ -214,7 +214,7 @@ for (const s of SURFACES) {
   const out = s.render(dataParts);
   console.log(`  [data-kind] ${s.name} -> ${JSON.stringify(out)}`);
   // Losing the payload while printing a marker is the worse failure of the two: the output LOOKS
-  // like successful rendering, which is the exact defect class this lane's gate is shut over.
+  // like successful rendering, which is the exact defect class this gate is shut over.
   c(`[data-kind] ${s.name} preserves a data-bearing extension part's payload`, out.includes(DATA_CANARY));
   c(`[data-kind] ${s.name} names the kind of a data-bearing extension part`, out.includes(DATA_KIND));
 }
@@ -230,7 +230,7 @@ if (graphBody !== null) {
 }
 
 /**
- * THE PART THAT VANISHES BESIDE A PART THAT DOES NOT — found by fm-webconsole driving core directly
+ * THE PART THAT VANISHES BESIDE A PART THAT DOES NOT — found in review, by driving core directly
  * rather than taking this suite's row for it, and it is a gap in THIS FILE's design.
  *
  * Every cell above renders a **single-part** message, so the only failure they can see is a whole
@@ -282,7 +282,7 @@ for (const s of SURFACES) {
 // [GATE] cells silently never ran, no summary line, and exit 1 — byte-for-byte indistinguishable
 // from "the gate is shut". That is the failure the gateFail counter exists to prevent, arriving one
 // layer earlier than the counter can see. A missing input is a FAILED CELL, never a dead run.
-// (Found by fm-webconsole, whose first audit run crashed here.)
+// (Found in review, when an independent run crashed here.)
 const typesPath = join(TREE, "packages", "core", "src", "types.ts");
 const typesSrc = existsSync(typesPath) ? readFileSync(typesPath, "utf8") : "";
 c("[census] core's Part union is readable in this tree", typesSrc.length > 0, typesPath);
@@ -333,7 +333,7 @@ for (const kind of derivedKinds) {
 }
 
 /**
- * THE ATTACK EVERY CELL ABOVE PASSES BLIND — fm-webconsole's #3, raised against this file and left
+ * THE ATTACK EVERY CELL ABOVE PASSES BLIND — raised in review against this file and left
  * open by it rather than by them.
  *
  * **Every `[GATE]` cell above carries its canary in a `TEXT_MESSAGE_CONTENT` delta.** So a renderer
@@ -387,9 +387,9 @@ const FAMILIES: readonly { name: string; events: AguiEvent[]; must: string[]; ty
   {
     name: "text",
     events: [
-      textMessageStart({ messageId: "fm-text", role: "assistant", timestamp: TS }),
-      textMessageContent({ messageId: "fm-text", delta: "CANARY-FAMILY-TEXT", timestamp: TS }),
-      textMessageEnd({ messageId: "fm-text", timestamp: TS }),
+      textMessageStart({ messageId: "m-text", role: "assistant", timestamp: TS }),
+      textMessageContent({ messageId: "m-text", delta: "CANARY-FAMILY-TEXT", timestamp: TS }),
+      textMessageEnd({ messageId: "m-text", timestamp: TS }),
     ],
     must: ["CANARY-FAMILY-TEXT"],
     types: [AGUI_EVENT_TYPE.TEXT_MESSAGE_START, AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, AGUI_EVENT_TYPE.TEXT_MESSAGE_END],
@@ -400,7 +400,7 @@ const FAMILIES: readonly { name: string; events: AguiEvent[]; must: string[]; ty
       toolCallStart({ toolCallId: "tc1", toolCallName: "CANARY-FAMILY-TOOLNAME", timestamp: TS }),
       toolCallArgs({ toolCallId: "tc1", delta: '{"path":"CANARY-FAMILY-TOOLARGS"}', timestamp: TS }),
       toolCallEnd({ toolCallId: "tc1", timestamp: TS }),
-      toolCallResult({ messageId: "fm-tool", toolCallId: "tc1", content: "CANARY-FAMILY-TOOLRESULT", timestamp: TS }),
+      toolCallResult({ messageId: "m-tool", toolCallId: "tc1", content: "CANARY-FAMILY-TOOLRESULT", timestamp: TS }),
     ],
     // All three, not one: the tool NAME, its ARGUMENTS and its RESULT are three separate things a
     // reader needs, and `tr-`'s `salient()` died specifically by keeping one and dropping the rest.
@@ -413,9 +413,9 @@ const FAMILIES: readonly { name: string; events: AguiEvent[]; must: string[]; ty
   {
     name: "reasoning",
     events: [
-      reasoningMessageStart({ messageId: "fm-reason", timestamp: TS }),
-      reasoningMessageContent({ messageId: "fm-reason", delta: "CANARY-FAMILY-REASONING", timestamp: TS }),
-      reasoningMessageEnd({ messageId: "fm-reason", timestamp: TS }),
+      reasoningMessageStart({ messageId: "m-reason", timestamp: TS }),
+      reasoningMessageContent({ messageId: "m-reason", delta: "CANARY-FAMILY-REASONING", timestamp: TS }),
+      reasoningMessageEnd({ messageId: "m-reason", timestamp: TS }),
     ],
     must: ["CANARY-FAMILY-REASONING"],
     types: [
@@ -508,7 +508,7 @@ for (const s of SURFACES) {
  * only strips a line comment that STARTS a line, so `const wired = false; // nothing handles
  * ag-ui.frame yet` **opened the gate** — and so did a declared-but-unused constant, and so did
  * `export const help = "we do not support ag-ui.frame yet"`. **A string telling the user the
- * feature is absent certified it present.** Executed five ways by fm-webconsole, with a count-diff
+ * feature is absent certified it present.** Executed five ways in review, with a count-diff
  * proving exactly one cell changed state and that it was this one.
  *
  * > **The cell's name claimed a behaviour; the assertion tested whether four bytes appeared in a

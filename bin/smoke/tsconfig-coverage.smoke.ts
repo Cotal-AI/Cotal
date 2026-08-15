@@ -41,8 +41,8 @@
  * IT IS RED TODAY AND THEREFORE UNGATED (`bin/smoke/gate-inventory.smoke.ts` carries the reason).
  * Every `smoke/` directory in the repo is outside its package's `include`, so this reports a real,
  * repo-wide gap on the day it lands. Making it green means widening those `include` arrays and
- * fixing whatever the compiler then finds across ~13 packages — a change that spans every lane and
- * is not this file's to make. **Asserting today's state instead would invert the suite's polarity:
+ * fixing whatever the compiler then finds across ~13 packages — a change that spans the whole repo
+ * and is not this file's to make. **Asserting today's state instead would invert the suite's polarity:
  * green now, red on the day someone fixes it.**
  */
 import { execFileSync } from "node:child_process";
