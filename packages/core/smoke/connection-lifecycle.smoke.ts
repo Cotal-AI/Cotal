@@ -153,7 +153,7 @@ const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e", "D1f", "D1g", "D1
                   "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f",
                   "D5e", "D5a", "D5b", "D5f", "D5-ctl", "D5c", "D5d", "D5-ctl2",
                   "D5g", "D5h", "D5i", "D5j", "D5-ctl3",
-                  "D6-ctl", "D6a", "D6b", "D6c", "D6d"];
+                  "D6-ctl", "D6a", "D6b", "D6e", "D6f", "D6g", "D6c", "D6d"];
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
  *  connection that has since been closed); `num_connections` is CURRENT. The pair is what
@@ -854,6 +854,35 @@ try {
   armCheck("ARM 6", "D6b and NOT as broker-unreachable — the host is fine; sending an operator there is the bug this classifier exists to prevent",
     r6src.outcome === "refused" && (r6src as any).reason !== "broker-unreachable", r6src);
   await e6src.stop();
+
+  // ── D6e/D6f/D6g — the SAME phase, in words the classifier was never shown ────────────────────
+  // D6a's source throws `spawn cotal-bearer ENOENT`, which the substring ladder recognises. That
+  // makes it a test of the WORDING and not of the phase: a credential source is an operator-supplied
+  // callback, so its failure text is arbitrary, and "which system is at fault" is a fact about WHERE
+  // the failure happened, not about how the operator phrased it. These cells feed the same phase
+  // vocabulary the ladder has never seen.
+  const beforeSrc = await varz();
+  const e6vault = mk6({ creds: async () => { throw new Error("vault read denied"); } });
+  e6vault.on("error", () => { /* expected */ });
+  const r6vault = await e6vault.connect();
+  armCheck("ARM 6", "D6e a source failure the substring ladder does not recognise is STILL credential-source-unavailable — the phase decides, not the wording",
+    r6vault.outcome === "refused" && (r6vault as any).reason === "credential-source-unavailable", r6vault);
+  // THE SIGHTED ZERO. The broker's cumulative counter is the independent witness: if it did not
+  // move, nothing was dialled, and any answer naming the broker is contradicted by the broker
+  // itself. Cumulative, so a connection that was opened and closed would still show.
+  const afterSrc = await varz();
+  armCheck("ARM 6", "D6f CONTROL: the broker's CUMULATIVE count did NOT move across that attempt — nothing was dialled, so naming the broker would be a claim about a system this attempt never reached",
+    afterSrc.total === beforeSrc.total, { before: beforeSrc, after: afterSrc, reason: (r6vault as any).reason });
+  await e6vault.stop();
+
+  // The sharper half: a source failure whose text merely CONTAINS "auth" is classified `auth-rejected`
+  // by the ladder — a rejection by a broker that was never given a credential to reject.
+  const e6auth = mk6({ creds: async () => { throw new Error("authorization service timed out"); } });
+  e6auth.on("error", () => { /* expected */ });
+  const r6auth = await e6auth.connect();
+  armCheck("ARM 6", "D6g a source failure that merely mentions authorization is NOT auth-rejected — the broker was never given a credential to reject",
+    r6auth.outcome === "refused" && (r6auth as any).reason === "credential-source-unavailable", r6auth);
+  await e6auth.stop();
 
   // ── D6c — the grant is fine and the target is simply not answering ───────────────────────────
   // A port this run picked and never bound: nothing is listening, and nothing else can be.

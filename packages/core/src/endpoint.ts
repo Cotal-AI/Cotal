@@ -376,6 +376,20 @@ export interface ReconnectFailure extends Error {
 const reconnectFailure = (reason: ConnectionRefusal, detail: string, cause?: unknown): ReconnectFailure =>
   Object.assign(new Error(detail, cause === undefined ? undefined : { cause }), { reason });
 
+/** A failure of the operator-supplied credential SOURCE, tagged where it happens.
+ *
+ *  The source is a callback this code invokes; nothing has been dialled when it throws, so its
+ *  failure belongs to the launcher and not to the broker. Classifying that by matching the error's
+ *  English made the answer a property of the operator's wording — the same phase reported as
+ *  `broker-unreachable` or `auth-rejected` depending on which words the callback happened to use.
+ *  The cause is preserved, so the detail the caller sees is unchanged. */
+class CredsSourceError extends Error {
+  constructor(cause: unknown) {
+    super((cause as Error)?.message ?? String(cause), { cause });
+    this.name = "CredsSourceError";
+  }
+}
+
 /** Map a connect failure onto the refusal that tells the caller what to FIX. Core already
  *  distinguishes these cases when it dials, and collapsing them into "broker-unreachable"
  *  sends an operator to check a host that is up and answering.
@@ -390,10 +404,17 @@ function classifyConnectFailure(e: unknown, postDial = false): ConnectionRefusal
   // already accepted by the broker. Whatever failed, failed on a live connection.
   if (postDial) return "bind-failed";
   if (e instanceof UserAuthenticationExpiredError) return "credential-expired";
+  // The credential SOURCE, from the PHASE rather than from the prose. A source is an
+  // operator-supplied callback, so its failure text is arbitrary — `vault read denied` matched
+  // nothing below and came back `broker-unreachable` for a host that was never dialled, and
+  // `authorization service timed out` came back `auth-rejected` from a broker that was never given
+  // a credential to reject. Which system is at fault is a fact about WHERE the failure happened,
+  // and only the call site knows that, so the call site tags it (see {@link CredsSourceError}).
+  if (e instanceof CredsSourceError) return "credential-source-unavailable";
   const m = ((e as Error)?.message ?? String(e)).toLowerCase();
-  // Credential SOURCE first: a bearer command that would not run, or a creds file that would not
-  // read, never reached the broker at all. Classified before the broker cases because otherwise a
-  // launcher fault reports as "the host is down" and sends an operator to the wrong system.
+  // The substring ladder remains for errors this code did NOT raise — a creds getter invoked deeper
+  // in the client library, where there is no call site of ours to tag. It is a fallback now rather
+  // than the discriminator.
   if (m.includes("bearer") || m.includes("enoent") || m.includes("credential source") || m.includes("spawn "))
     return "credential-source-unavailable";
   if (m.includes("authorization violation") || m.includes("auth") || m.includes("permissions violation")) return "auth-rejected";
@@ -805,10 +826,21 @@ export class CotalEndpoint extends EventEmitter {
    *  ({@link reloadCreds}) does its own fetch so it can preflight the candidate on a disposable
    *  connection BEFORE mutating this live cache. */
   private async fetchFreshCreds(): Promise<{ iat?: number; exp?: number }> {
-    const creds = await this.credsSource!();
+    // Tagged HERE, at the only place that knows the failure came from the source and not from a
+    // dial. Everything below this line has a credential in hand.
+    let creds: string;
+    try {
+      creds = await this.credsSource!();
+    } catch (e) {
+      throw new CredsSourceError(e);
+    }
     const id = idFromCreds(creds);
     if (id !== this.connId)
-      throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+      // A source that answers with the wrong identity has failed just as surely as one that threw,
+      // and equally without anything being dialled.
+      throw new CredsSourceError(
+        new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`),
+      );
     this.currentCreds = creds;
     this.armCredsRefresh(credsRenewalDelayMs(creds));
     const { iat, exp } = credsClaims(creds);
