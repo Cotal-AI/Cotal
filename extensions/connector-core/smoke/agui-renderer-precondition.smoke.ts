@@ -38,6 +38,7 @@
  * the stimulus, not the subject.
  */
 import { readFileSync, existsSync } from "node:fs";
+import ts from "typescript";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -245,7 +246,15 @@ for (const s of SURFACES) {
  * It also **refuses an arm it cannot resolve** rather than skipping it. A parser that quietly drops
  * what it does not understand is how an unenumerated kind stays unenumerated.
  */
-const typesSrc = readFileSync(join(TREE, "packages", "core", "src", "types.js").replace(/\.js$/, ".ts"), "utf8");
+// GUARDED, AND THE REASON IS THE WHOLE POINT OF THIS FILE. Unguarded, a tree without this path
+// killed the run with a stack trace BEFORE the three events-filter gates were evaluated: three
+// [GATE] cells silently never ran, no summary line, and exit 1 — byte-for-byte indistinguishable
+// from "the gate is shut". That is the failure the gateFail counter exists to prevent, arriving one
+// layer earlier than the counter can see. A missing input is a FAILED CELL, never a dead run.
+// (Found by fm-webconsole, whose first audit run crashed here.)
+const typesPath = join(TREE, "packages", "core", "src", "types.ts");
+const typesSrc = existsSync(typesPath) ? readFileSync(typesPath, "utf8") : "";
+c("[census] core's Part union is readable in this tree", typesSrc.length > 0, typesPath);
 const unionBlock = typesSrc.match(/export type Part =([\s\S]*?);\n/)?.[1] ?? "";
 const derivedKinds: string[] = [];
 let unresolvedArm: string | null = null;
@@ -294,6 +303,69 @@ for (const kind of derivedKinds) {
 
 // ── The precondition's second half. A surface that can draw a frame but never subscribes to the
 //    channel carrying one has not met it either.
+/**
+ * THIS CELL WAS DEFECTIVE AND IT WAS DEFECTIVE WHERE ITS AUTHOR BELIEVED IT WAS CLOSED.
+ *
+ * It used to blank comments with `/^\s*\/\/.*$/gm` and then substring-search the result. That regex
+ * only strips a line comment that STARTS a line, so `const wired = false; // nothing handles
+ * ag-ui.frame yet` **opened the gate** — and so did a declared-but-unused constant, and so did
+ * `export const help = "we do not support ag-ui.frame yet"`. **A string telling the user the
+ * feature is absent certified it present.** Executed five ways by fm-webconsole, with a count-diff
+ * proving exactly one cell changed state and that it was this one.
+ *
+ * > **The cell's name claimed a behaviour; the assertion tested whether four bytes appeared in a
+ * > file. Everything between those two was ungraded.**
+ *
+ * The repair is not a longer list of spellings — that is the loop this class wins. **The source is
+ * PARSED, and the question is whether an identifier is REFERENCED.** Comments and string literals
+ * are not identifiers, so they stop being findable by construction rather than by exclusion. And
+ * `ag-ui.frame` / `events.*` are dropped from the vocabulary entirely: they can only ever occur as
+ * string CONTENT, so searching for them was always searching for text.
+ *
+ * A declaration is not a reference: `const AGUI_FRAME_KIND = "ag-ui.frame"` sitting unused is dead
+ * code, so a use must exceed the declarations of that name.
+ *
+ * NAMED RESIDUAL, because this closes a family and not the world: a reference inside a function
+ * nothing calls is still a reference, so **dead code that is syntactically live still passes.**
+ * Closing that needs reachability, which needs a broker and a running renderer — and this suite
+ * deliberately needs neither. The cell is now honest about what it grades, which is what it was not.
+ */
+const FRAME_IDENTS = ["AGUI_FRAME_KIND", "isAguiFramePart", "parseAguiFrame", "aguiFrame", "eventChannel"] as const;
+
+function referencesFrameVocabulary(src: string, fileName: string): boolean {
+  const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, undefined);
+  let referenced = false;
+  const visit = (node: ts.Node): void => {
+    if (referenced) return;
+    if (ts.isIdentifier(node) && (FRAME_IDENTS as readonly string[]).includes(node.text)) {
+      // The NAME position of a declaration is not a use of the thing.
+      const p = node.parent;
+      const isDeclName =
+        (ts.isVariableDeclaration(p) || ts.isFunctionDeclaration(p) || ts.isClassDeclaration(p) ||
+          ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p) || ts.isImportSpecifier(p)) &&
+        (p as { name?: ts.Node }).name === node;
+      if (!isDeclName) referenced = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return referenced;
+}
+
+// The attack corpus that found the defect, kept as cells so the repair cannot silently regress.
+// The POSITIVE control is not optional: a predicate that refuses everything passes every negative
+// cell here and is indistinguishable from a correct one from the refusing side.
+for (const [label, src, expected] of [
+  ["trailing comment (the case the old regex missed)", `const wired = false; // TODO: nothing handles ag-ui.frame yet`, false],
+  ["leading comment", `// TODO: nothing handles ag-ui.frame yet`, false],
+  ["declared but never used", `const AGUI_FRAME_KIND = "ag-ui.frame";`, false],
+  ["a string saying the feature is ABSENT", `export const help = "we do not support ag-ui.frame yet";`, false],
+  ["unrelated code (negative control)", `const wired = false;`, false],
+  ["CONTROL: a real reference must PASS", `if (isAguiFramePart(p)) draw(p);`, true],
+] as const) {
+  c(`[filter-predicate] ${label}`, referencesFrameVocabulary(src, "probe.ts") === expected);
+}
+
 for (const [surface, rel] of [
   ["cli mesh-view", join("implementations", "cli", "src", "view", "mesh-view.ts")],
   ["implementations/web app.js", join("implementations", "web", "src", "web", "app.js")],
@@ -301,10 +373,7 @@ for (const [surface, rel] of [
 ] as const) {
   const p = join(TREE, rel);
   const src = existsSync(p) ? readFileSync(p, "utf8") : "";
-  // Comments do not wire anything up, and this surface's history is comments DESCRIBING the missing
-  // work — so they are stripped before the question is asked.
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  c(`[GATE] ${surface} honours the events.* filter`, /events\.\*|eventChannel|AGUI_FRAME_KIND|ag-ui\.frame/.test(code));
+  c(`[GATE] ${surface} honours the events.* filter`, src.length > 0 && referencesFrameVocabulary(src, p));
 }
 
 console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateFail} of them [GATE])`);
