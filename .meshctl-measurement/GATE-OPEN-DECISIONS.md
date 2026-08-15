@@ -273,9 +273,21 @@ entry 160  smoke:seed                      entry 205  smoke:persona-announce
 length differs per tip — 215 here, others report 222/223/240. **Each is right about its own tip and
 they are not reconcilable into one number; do not try.**
 
-> **⚠ MY ORIGINAL CLASSIFIER WAS THE FLAWED ONE, AND IT AGREED BY LUCK.** I matched the substring
-> `build` anywhere in the body — the same rule that misclassifies `smoke:build-current`, whose *name*
-> contains it. It returned the right eight **only because that entry does not exist in this tree.**
-> Re-run here, loose and strict give an identical set, difference `[]`. **An independent
-> reproduction that agrees on the number is not independent evidence about the membership**, and
-> mine reproduced a correct answer with an incorrect method.
+> **⚠ MY ORIGINAL CLASSIFIER WAS UNTESTED, AND ITS AGREEMENT WAS LUCK.** I matched the substring
+> `build` anywhere in the body. **That rule misclassifies any script whose NAME contains `build` but
+> whose body invokes none** — it cannot tell the two apart. Re-run here, loose and strict give an
+> identical set, difference `[]`, **only because no such entry exists in this tree.** **A method
+> whose correctness depends on the absence of the input that breaks it is untested**, and it
+> reproduced a correct answer by an incorrect route.
+>
+> **RETRACTION, same date:** the concrete example first relayed to me — `smoke:build-current` as a
+> live misclassification — **is withdrawn at its source.** That script is **not defined in this tree
+> and not in the principal's**, and is in no chain at any tip; it was a third lane's discarded first
+> pass in its own tree. **The membership difference between lanes was never a classifier error: both
+> published sets were correct about different tips.** `105/129/159/160/161/162/163/205` is this
+> tip's, verified; a 227-entry tip legitimately yields `106/130/…/217`.
+>
+> **The rule that came out of it: STATE YOUR TIP WITH YOUR SET.** Membership is a property of a tip
+> in exactly the way the count is — comparing sets across tips assumes position is tip-invariant,
+> and it is not. **The critique of my method above stands on its own and does not depend on the
+> retracted example.**

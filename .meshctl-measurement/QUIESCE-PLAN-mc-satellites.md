@@ -104,12 +104,46 @@ Nine links; three point at `/home/david/Cotal/packages/core` (`connector-codex`,
 `connector-hermes`, `pi`), two at this lane, three at `Cotal-wt-meshctl-e2e`, one at
 `Cotal-wt-fm-health`. **Three, not five, and they are not `mc-cleanup`'s worktree.**
 
-**Three readings, and I am not choosing between them:** the count refers to that installed layer and
-has moved since it was taken; it refers to something a satellite created outside its own worktree,
-which my scan would not see; or it was measured against a state that no longer holds. **Whoever
-holds those five should say which, before anyone executes step 2 below** — this plan touches
-nothing in either subject, but a plan that quietly disagrees with the person holding the item is a
-plan that gets executed on the wrong premise.
+**Three readings were offered and none chosen. RESOLVED 2026-08-15T09:1xZ, and none of the three was
+right** — fm-orchestrator measured it independently and so did I.
+
+**The five exist. They are `mc-cleanup`'s RESOLVED TARGETS, not its links.** The hop that names the
+principal is in THIS lane's worktree:
+
+```
+mc-cleanup implementations/{manager,cli,delivery}/node_modules   -> here -> PRINCIPAL
+mc-cleanup packages/{core,workspace}/node_modules                -> here -> PRINCIPAL
+                                                                    ^^^^ the naming hop is MINE
+```
+
+**Five, `packages/core` among them — the count was right and the attribution was wrong.** Both
+statements in §1.4's opening are therefore true and not in conflict: not one satellite link *names*
+the principal, and five of them *reach* it.
+
+### And the instrument could not have seen it, which is the transferable part
+
+**This lane scanned the six satellites. The principal-naming links are in the SCANNER'S OWN TREE**,
+which was never a subject of the scan.
+
+> **An instrument that takes "the others" as its subject cannot report on the one running it.**
+> Same family as a process check that matches the checker, inverted: not a subject contaminating the
+> instrument, but **an instrument whose scope silently omits itself.**
+
+### 🔴 What this worktree actually holds — measured, and NOT to be acted on
+
+**Six `node_modules` symlinks in this lane's own tree point DIRECTLY at the principal** (6 at
+maxdepth 4, 6 at any depth — the bound hides nothing): `bin`, `implementations/{cli,delivery,
+manager}`, `packages/{core,workspace}`. **`packages/core` — the package this branch's containment
+work is built on — is one of them.** A `pnpm` script invoked at any of those six is a delete path
+against the **live checkout's** modules; the no-TTY abort is what stops it, and `CI=true` disables
+the abort.
+
+**One hop further, and it goes the other way too:** 61 symlinks inside the principal climb back into
+this worktree, 21 first-party, 13 in the binary's composition root. Recorded in
+`LIMITS-private-build.md` #5.
+
+**Standing order: nothing here is repointed, removed or tidied, including the installed-extension
+layer.** They are load-bearing for whatever installed them, and that is not established.
 
 ### 1.5 Does anything resolve INTO the satellites? Directed scan says no. That is not "nothing does."
 

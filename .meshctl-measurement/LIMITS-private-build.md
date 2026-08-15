@@ -156,6 +156,46 @@ a property this change established** — it is why `packages/core` was the right
 it will stop being true the moment anything installs or repoints. `connector-codex` and
 `connector-hermes` resolve to the principal checkout instead.
 
+> ### 🔴 FALSE, MEASURED 2026-08-15T09:1xZ. THE WORD "INSTEAD" IS THE ERROR — ANNOTATED, NOT REVISED
+>
+> **The principal checkout is not the other arm. At first-party package level it is an alias for
+> this worktree.** Its package-level `node_modules` entries are RELATIVE links that climb out of the
+> principal and back in here:
+>
+> ```
+> /home/david/Cotal/bin/node_modules/@cotal-ai/core
+>         -> ../../../../Cotal-wt-fm-meshctl/packages/core
+> ```
+>
+> **Census of the principal, raw link text, negative control returning 0 on a marker that must not
+> match:** **61 symlinks climb into this worktree**; **21 are first-party `@cotal-ai/*`**; **13 of
+> those are in `bin/node_modules/` — the published binary's composition root** (`core`, `cli`,
+> `manager`, `delivery`, `web`, `auth`, `workspace`, `connector-core`, the four connectors, `pi`).
+> `implementations/{cli,manager,delivery}` and `packages/workspace` each resolve `@cotal-ai/core`
+> here as well. The principal's ROOT link is correct (`../../packages/core`) — **but package-level
+> resolution wins**, because Node walks up from the importing file and meets the package-level entry
+> first.
+>
+> **So `connector-codex` and `connector-hermes` do not resolve elsewhere. They reach this branch in
+> two hops.** And `mc-cleanup` reaches it in three: satellite → here → principal → back here.
+>
+> **CONSEQUENCE FOR THE INCIDENT THIS FILE EXISTS TO BOUND: the MX14 blast radius is understated
+> above.** For the ~2.5 minutes a mutant sat in `packages/core/dist` it was reachable not only by
+> two installed connectors but by every first-party entry point resolving through the principal's
+> `bin`, `cli`, `manager` and `delivery`. **The number two was right about the installed-extension
+> layer and wrong about the exposure.**
+>
+> **And the dependency runs both ways.** Both stores hold 419 `.pnpm` entries and **40 of the 61
+> climbing links reach into THIS worktree's store** — so anything that repopulated it would break
+> the live checkout's resolution at 61 points. **That direction was never guarded.**
+>
+> **How the original claim was reached, because the method is the lesson:** one `readlink`, not
+> followed one hop further. **A resolved path was recorded as an endpoint.** The measurement above
+> resolves the full chain and states its control.
+>
+> **Nothing has been repointed, removed or tidied**, here or in the installed-extension layer.
+> Recorded, not fixed — the links are load-bearing for whatever installed them.
+
 **Every Claude and OpenCode seat on this box still loads core from this lane's unmerged branch.**
 The seam stops a *mutant* reaching them. It does nothing about the nine unmerged connection-control
 commits they are already executing, which is a separate open question for whoever rules on the
