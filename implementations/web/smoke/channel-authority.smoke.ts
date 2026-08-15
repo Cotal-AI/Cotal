@@ -198,7 +198,7 @@ const CLAIMED = "attacker-claimed";
 const VERIFIED = "policed-channel";
 const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): unknown }[] = [
   {
-    file: "app.js", path: "live SSE feed", find: /if \(entry\.channel\) msg\.[^;]*;/,
+    file: "app.js", path: "live SSE feed", find: /msg\.channel = entry\.channel;/,
     run(stmt) {
       const ctx = { entry: { channel: VERIFIED }, msg: { channel: CLAIMED } };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -214,7 +214,7 @@ const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "live SSE feed", find: /if \(channel\) msg\.[^;]*;/,
+    file: "graph.js", path: "live SSE feed", find: /^ *msg\.channel = channel;/m,
     run(stmt) {
       const ctx = { channel: VERIFIED, msg: { channel: CLAIMED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -222,7 +222,7 @@ const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "/api/activity backfill", find: /if \(m && e\.channel\) m\.[^;]*;/,
+    file: "graph.js", path: "/api/activity backfill", find: /if \(m\) m\.[^;]*;/,
     run(stmt) {
       const ctx = { m: { channel: CLAIMED }, e: { channel: VERIFIED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -239,6 +239,65 @@ for (const ing of INGRESS) {
   check(`${ing.file} — ${ing.path} — the ingress statement is present and extractable`, Boolean(stmt), { stmt });
   check(`${ing.file} — ${ing.path} — the VERIFIED channel overwrites the publisher's claim`,
     ing.run(stmt!) === VERIFIED, { got: ing.run(stmt!), claimed: CLAIMED, verified: VERIFIED });
+}
+
+// ── THE HOSTILE CASE: NO authoritative channel, and a forged one in the payload ──────────────────
+// This is the case the cells above could not see, because they only ever drove an ingress WITH a
+// verified channel. `parseSubject().rest` is a channel only on the chat plane, so on `inst`/`svc`
+// the server sends no channel at all — and `tap()` only JSON-decodes (`packages/core/src/endpoint.ts`),
+// so a DM or anycast payload may carry any `channel` string its sender likes.
+//
+// The first version of these ingresses read `if (entry.channel) msg.channel = entry.channel;` and
+// FAILED OPEN: with nothing authoritative to substitute, the guard was false and the forgery
+// survived into `msg.channel`, which `app.js` consumes with no mode gate to pick the transcript and
+// bump the per-channel count. A sender could appear to post into a channel it holds no publish
+// grant for.
+//
+// A CONDITIONAL TRUST RULE IS NOT A TRUST RULE. "Overwrite when I have something better" leaves the
+// untrusted value in place exactly when the trusted one is missing — so the cell must drive the
+// MISSING case, which is the whole point of this block.
+const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): unknown }[] = [
+  {
+    file: "app.js", path: "live SSE feed", find: /msg\.channel = entry\.channel;/,
+    run(stmt) {
+      const ctx = { entry: { channel: undefined }, msg: { channel: CLAIMED, id: "dm-1" } };
+      runInContext(stmt, createContext(ctx), { filename: "app.js" });
+      return ctx.msg.channel;
+    },
+  },
+  {
+    file: "app.js", path: "/api/activity backfill", find: /for \(const e of activity\) if \(e\?\.msg[^;]*;/,
+    run(stmt) {
+      const ctx = { activity: [{ msg: { channel: CLAIMED } }] as { channel?: string; msg: { channel?: string } }[] };
+      runInContext(stmt, createContext(ctx), { filename: "app.js" });
+      return ctx.activity[0].msg.channel;
+    },
+  },
+  {
+    file: "graph.js", path: "live SSE feed", find: /^ *msg\.channel = channel;/m,
+    run(stmt) {
+      const ctx = { channel: undefined, msg: { channel: CLAIMED } };
+      runInContext(stmt, createContext(ctx), { filename: "graph.js" });
+      return ctx.msg.channel;
+    },
+  },
+  {
+    file: "graph.js", path: "/api/activity backfill", find: /if \(m\) m\.[^;]*;/,
+    run(stmt) {
+      const ctx = { m: { channel: CLAIMED } as { channel?: string }, e: {} as { channel?: string } };
+      runInContext(stmt, createContext(ctx), { filename: "graph.js" });
+      return ctx.m.channel;
+    },
+  },
+];
+check("the hostile table covers all four entry paths too", HOSTILE.length === 4, { length: HOSTILE.length });
+for (const ing of HOSTILE) {
+  const stmt = ing.find.exec(read(`../src/web/${ing.file}`))?.[0];
+  check(`${ing.file} — ${ing.path} — the hostile statement is extractable`, Boolean(stmt), { stmt });
+  // `undefined`, not merely "not the forgery": a non-chat message HAS no channel, and any other
+  // value here would be the surface inventing one.
+  check(`${ing.file} — ${ing.path} — a FORGED channel is CLEARED when nothing authoritative exists`,
+    ing.run(stmt!) === undefined, { got: ing.run(stmt!), forged: CLAIMED });
 }
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);

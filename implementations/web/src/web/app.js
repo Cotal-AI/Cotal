@@ -810,7 +810,7 @@ async function refresh() {
     activity = await (await fetch("/api/activity?limit=200")).json();
     // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
     // requested, so the payload claim is overwritten at ingress rather than downstream.
-    for (const e of activity) if (e?.msg && e.channel) e.msg.channel = e.channel;
+    for (const e of activity) if (e?.msg) e.msg.channel = e.channel;
     renderCenter();
   }
 }
@@ -822,7 +822,19 @@ function onMessage(entry) {
   // publisher's own claim and is backed by nothing. Overwrite the claim at this boundary so no
   // downstream reader — the channel list, the counts, the unread badges, the transcript — has to
   // know which of the two it is holding.
-  if (entry.channel) msg.channel = entry.channel;
+  //
+  // THE ASSIGNMENT IS UNCONDITIONAL, AND THAT IS THE WHOLE FIX. This first read
+  // `if (entry.channel) msg.channel = entry.channel;`, which FAILS OPEN: on `inst` and `svc` there
+  // is no authoritative channel, so the guard was false and the publisher's claim SURVIVED. `tap()`
+  // only JSON-decodes, so a DM or anycast payload can carry any `channel` string it likes — and
+  // `msg.channel` is consumed below with NO MODE GATE, which filed that message into the named
+  // channel's transcript and incremented its count. A sender could appear to post into a channel it
+  // holds no publish grant for. Assigning unconditionally leaves a non-chat message with
+  // `undefined`, which is the truth: it has no channel.
+  //
+  // A conditional trust rule is not a trust rule. "Overwrite when I have something better" leaves
+  // the untrusted value in place exactly when the trusted one is missing.
+  msg.channel = entry.channel;
   if (!activity.some((e) => e.msg.id === msg.id)) {
     activity.push(entry);
     if (activity.length > 500) activity.shift();
