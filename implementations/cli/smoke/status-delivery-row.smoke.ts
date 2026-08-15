@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findCotalRoot, recordMesh } from "@cotal-ai/workspace";
 import { status } from "../src/commands/status.js";
+import { evidenceComesOnlyFrom, nothingMatches, rowLabel } from "./_output-invariant.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, detail?: unknown): void => {
@@ -137,6 +138,39 @@ check("NEGATIVE CONTROL: the matcher rejects a healthy-sounding message",
   !/cannot establish health/i.test("durable backstop active"));
 check("no row claims a healthy daemon on an unreachable broker",
   !plain.some((l) => /delivery/.test(l) && /durable backstop active/i.test(l)));
+
+// ---- THE ITEM-0 INVARIANT, exercised on constructed output.
+// The live cell that feeds this real `cotal status` output on the preflight-OK path needs a broker
+// and is owed. What can be settled WITHOUT one is whether the checker itself discriminates, and that
+// is worth settling first: a live cell built on an unexercised checker would report the checker's
+// bugs as findings about the code under test.
+const CONN_RX = /connection\s+.*unreachable/;
+const conforming = ["  connection      [31munreachable[0m", "  delivery        cannot establish health — the mesh preflight failed above (unreachable)"];
+const violating = ["  connection      [32mok[0m", "  delivery        the mesh connection to the broker is unreachable"];
+
+const vc = evidenceComesOnlyFrom(conforming, CONN_RX, "connection");
+check("INVARIANT: output whose only match is the connection row is CONFORMING", vc.ok && vc.kind === "conforming", vc.kind);
+const vv = evidenceComesOnlyFrom(violating, CONN_RX, "connection");
+check("INVARIANT: a non-connection row supplying the match is a VIOLATION",
+  !vv.ok && vv.kind === "violated", vv.kind);
+check("…and it names the offending line rather than only failing",
+  vv.kind === "violated" && vv.offenders.length === 1 && /delivery/.test(vv.offenders[0] ?? ""), vv.kind);
+// THE VACUITY CELL. This is the one that matters most: "every matching line is the connection row"
+// is trivially true when nothing matches, and that is the same empty-set trap this lane has now hit
+// twice. An output with no match must REFUSE, never pass.
+const vn = evidenceComesOnlyFrom(["  connection      [32mok[0m"], CONN_RX, "connection");
+check("INVARIANT: no matching line at all is a REFUSAL, not a vacuous pass",
+  !vn.ok && vn.kind === "no-match", vn.kind);
+check("…and the refusal says why an empty match set is not a pass",
+  vn.kind === "no-match" && /vacuous/.test(vn.detail), vn.kind);
+// The negative-polarity twin has the OPPOSITE vacuity behaviour, which is why it is a separate
+// function: here an empty match set IS the property, not an absence of evidence for it.
+check("NEGATIVE TWIN: an output with no `connection ok` line passes",
+  nothingMatches(conforming, /connection\s+ok/).ok);
+check("NEGATIVE TWIN: an output containing one does not",
+  !nothingMatches(violating, /connection\s+ok/).ok);
+check("rowLabel returns undefined for non-rows, so headers cannot be mistaken for a labelled row",
+  rowLabel("Selected Mesh") === undefined && rowLabel("  connection   x") === "connection");
 
 rmSync(scratch, { recursive: true, force: true });
 
