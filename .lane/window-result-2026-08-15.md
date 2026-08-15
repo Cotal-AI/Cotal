@@ -17,11 +17,16 @@ Final run: **16 cells, 0 failures, rc 0**, 05:48:49Z → 05:49:00Z, load 1.20.
 
 **C2 ≠ C4, so the registered falsifier is NOT triggered and the wiring may proceed.**
 
-**Reproduced across four independent runs at loads 2.02, 0.35, 1.44 and 1.20.** fm-orchestrator's
-caveat — that a describe deadline fires under load for reasons unrelated to permission, and could
-satisfy the falsifier spuriously — is answered by the spread rather than by argument: the arms were
-run both under contention from another lane's install and on a quiet box, and returned the same two
-distinct conditions every time.
+**Reproduced across four independent runs at loads 2.02, 0.35, 1.44 and 1.20.**
+
+**READ THE LOAD AS A STRENGTHENING, NOT A CAVEAT — this is the single most important sentence for a
+later reader.** The warning going in was that a describe deadline fires under load for reasons
+unrelated to permission, and could satisfy the falsifier spuriously by making C2 look like
+`no-responder`. One run started at load **2.02**, with another lane's `pnpm install` contending —
+and C2 still returned `refused` while C4 returned `no-responder`, seconds apart, same box, same
+contention. **The discriminator held under the exact condition that would have faked its absence.**
+A quiet-box run would have been WEAKER evidence. Anyone re-reading this should not discount the
+result for having been measured under load; that is why it counts.
 
 **The operational consequence:** `control-caller-privileged` is DENIED AT THE BROKER on the lease KV
 read. The class managerHealthRow mints today cannot establish delivery health. The ready card needs
@@ -59,6 +64,31 @@ gated on `daemonKnown && joined && durable`. The gate's third conjunct is
 the lease read NOT THROWING (`agent.ts:1011-1012`) — i.e. **"the reader had permission", not "a
 daemon exists"**. A denied reader and a dead daemon are therefore not distinguished by that flag at
 all; it is a grant signal wearing a liveness name.
+
+## FINDING (unpredicted, and it constrains how the delivery row must be written)
+
+**A denied read surfaces on TWO paths: synchronously as the assessed refusal, AND asynchronously as
+an endpoint `'error'` event. An unhandled one is FATAL.**
+
+Observed every run, on both denied profiles:
+
+    probe:                       NATS permission denied: cannot publish
+      "$JS.API.STREAM.MSG.GET.KV_cotal_delivery_<space>" - check this endpoint's ACLs
+      (a denied peer looks "absent" rather than blocked)
+    control-caller-privileged:   [same]
+
+Core's own wording — *"a denied peer looks 'absent' rather than blocked"* — is this lane's thesis
+appearing in a second, independent place that nobody designed for it.
+
+**THE CONSEQUENCE FOR THE READY CARD, which is not obvious from the design:** a handler that reads
+only the synchronous path **will be killed by the asynchronous one before it can report**. On this
+harness's first run that event bypassed `finally` and orphaned a broker and a daemon. So the row's
+implementation MUST attach an `'error'` listener to the endpoint it reads through, and it must do so
+BEFORE `start()`, since a denial can arrive during connect. A refusal surface that dies while
+refusing is the failure this lane exists to prevent, reproduced in the reporting path itself.
+
+Recorded here as a finding in its own right rather than as an incident note, because it changes the
+shape of the code that has not been written yet.
 
 ## What SIX runs of harness faults established, which is worth as much as the arms
 
