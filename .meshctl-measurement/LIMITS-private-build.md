@@ -1,8 +1,17 @@
 # What the private build closes, and what it does not
 
-> ## ⚠ THIS LIST IS INCOMPLETE — A SIXTH LIMIT WAS MEASURED AFTER IT WAS WRITTEN
+> ## ⚠ A SIXTH LIMIT WAS MEASURED AFTER THIS LIST WAS WRITTEN — AND HAS SINCE BEEN CLOSED
 >
-> **`--private-build` cannot grade `packages/core` through `connection-control.smoke.ts`.** The
+> **CLOSED 2026-08-15T08:36Z by MX16** (`runs/2026-08-15T0835Z-mx16-window.txt`). The mutation now
+> goes to a COPY of src and a per-process resolver hook redirects every importer, so the frozen
+> tree is **never written** (proven by an unchanged mtime, not by a diff) and the subject resolves
+> to the private build (proven by class identity, not by a printed line).
+>
+> **Limit #2 below is closed by the same change**: "mutate a private COPY of the source" was
+> recorded there as the route that would close it, and that is what was built.
+>
+> **What was true until then:** `--private-build` could not grade `packages/core` through
+> `connection-control.smoke.ts`. The
 > mutant lands in the private build; the cells drive a `MeshAgent`, whose `@cotal-ai/core` import
 > resolves to the shared `dist`, so the graded run executes unmutated core. **Any core mutation run
 > that way SURVIVES regardless of cell quality.** MX14, `FINDING-mx14-survived-vacuously.md`,

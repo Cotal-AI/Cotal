@@ -1,8 +1,16 @@
 # Mutation proofs must build into a private artifact — design, UNIMPLEMENTED
 
-> ## ⚠ THIS NOTE'S CENTRAL CLAIM IS QUALIFIED — READ THIS FIRST
+> ## ⚠ THIS NOTE'S CENTRAL CLAIM WAS QUALIFIED, AND THE QUALIFICATION IS NOW RESOLVED
 >
-> **`--private-build` cannot grade `packages/core` through `connection-control.smoke.ts`.** The
+> **RESOLVED 2026-08-15T08:36Z by MX16** (`runs/2026-08-15T0835Z-mx16-window.txt`): a per-process
+> resolver hook redirects the bare specifier for EVERY importer, the mutation is applied to a COPY
+> of src, and grading is gated on a subject-side identity assertion. The same mutation that
+> survived vacuously was **KILLED on the predicted cell**. The paragraph below describes the defect
+> that is now fixed; it is kept because the reasoning still explains why the seam alone was not
+> enough.
+>
+> **What was true until then:** `--private-build` could not grade `packages/core` through
+> `connection-control.smoke.ts`. The
 > mutant reaches the private build; the cells drive a `MeshAgent`, whose `@cotal-ai/core` import
 > resolves to the shared `dist`. **A core mutation run that way SURVIVES regardless of cell
 > quality.** Measured in MX14 — see **`FINDING-mx14-survived-vacuously.md`**, commit `5231e102`.

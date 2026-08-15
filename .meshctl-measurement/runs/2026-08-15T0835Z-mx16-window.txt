@@ -1,0 +1,58 @@
+# MX16 — the mutation proof re-run through a fixed resolution seam
+# tip 374e6fdd · window 2026-08-15T08:35:24Z -> 08:36:55Z (91s) · serialized box, fleet frozen
+# runner: node v22.23.2, ./node_modules/.bin/tsx (NO pnpm — see the runbook's linked-node_modules note)
+
+## WHAT THIS RUN IS, AND WHY THERE ARE TWO
+MX14 (07:24:18Z) ran the same mutation and returned SURVIVED. That survival was VACUOUS: the mutant
+went to a private build, the cell drives a MeshAgent, and the connector's bare `@cotal-ai/core`
+resolved to the SHARED dist — so the graded run executed unmutated code. See
+FINDING-mx14-survived-vacuously.md. MX16 is the same mutation with the resolution fixed by a
+per-process resolver hook, and with the mutation applied to a COPY of src rather than to the tree.
+
+## THE PREDICTION
+Committed UNRUN at 63ddca6e in MX14-PREDICTION-seam-first-proof.md, before any arm opened. It named
+R1 as the cell that would die, and named SURVIVED as a refutation. Unamended since.
+
+## RESULT
+KILLED   packages/core/src/endpoint.ts: return refusal("not-connected", …)
+         red, and NAMED: R1 disconnecting again refuses as [not-connected]
+         44 progress marks vs baseline 45 — exactly one cell died, the predicted one
+         observed rc=0, captured with no pipe (spawnSync status, mutation-proof.mjs:100-104)
+
+PREDICTION CONFIRMED. R1 asserts THAT refusal, not merely a refusal.
+
+## THE GATE, BOTH LINES
+  suite-side seam confirmed (weak: the suite's own import) — now checking the SUBJECT
+  SUBJECT-SIDE CONFIRMED — the object the subject constructs comes from the private build
+The first no longer decides anything; it matches a message the suite prints about itself. The second
+asserts class identity on the object the subject actually constructed and is what can refuse.
+
+## CONTAINMENT — four independent facts, not one restated
+1. packages/core/dist BYTE-IDENTICAL, all 276 files, before vs after.
+2. packages/core/src CLEAN (`git diff --exit-code`); tree clean, 0 porcelain lines; no scratch left.
+3. endpoint.ts mtime UNCHANGED at 2026-08-15 07:25:33Z across the window.
+   That value is MX14's RESTORE — the scar left by the old in-place mechanism writing the tree and
+   putting it back. A specific past value this run could not reproduce, so it served as a pinned
+   mtime for free, WITHOUT touching a frozen file's metadata to test whether the freeze held.
+   => THE FROZEN FILE WAS NEVER WRITTEN. Not written-and-restored. Different claims; only this one
+      is provable by mtime, and a diff cannot distinguish them.
+4. The SHIPPED packages/core/dist/endpoint.js contains the mutant string 0 times.
+   Byte-identity says the file did not change; this says the specific thing feared is not there.
+
+So: the mutant existed, was compiled, was EXECUTED BY THE SUBJECT, and is ABSENT from the artifact
+every seat on this box loads. Containment and reach proven as SEPARATE facts — their fusion is what
+produced the original vacuity.
+
+## CONDITIONS (measured, not described)
+open   08:35:24Z  load 5.26 5.83 4.74   avail 5225 MB   swap 5678 MB in use
+close  08:36:55Z  load 4.89 5.56 4.75   avail 5232 MB
+Load was four review seats reasoning, no builds and no pnpm box-wide (fm-orchestrator's preflight,
+both checks with positive controls). Proceeded because this instrument depends on byte-identity and
+not on timing: under load the failure mode is a timeout graded INCONCLUSIVE, not a false verdict.
+
+## WHAT THIS DOES NOT PROVE — stated with a good result, not after a bad one
+- It does NOT prove a real entry point reaches the mutated code. The harness prints that scope line
+  itself; a killed mutation shows the suite DEPENDS on that code, not that a user path reaches it.
+- It says NOTHING about the other 44 cells. Only R1 was graded.
+- It says nothing about connection-lifecycle.smoke.ts, which needs no substitution and is untested
+  by this mechanism.

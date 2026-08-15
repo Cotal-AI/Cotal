@@ -136,3 +136,30 @@ importer in the process is redirected rather than only the ones that opted in th
 
 **Why it is the human's:** it changes how every suite in the tree resolves core, not just this
 lane's. **Not started, and not to be started by this lane on its own reading.**
+
+### UPDATE 2026-08-15T08:4xZ — a HARNESS-SCOPED hook was built and run. THIS ITEM STAYS OPEN.
+
+**Boundary, confirmed by fm-orchestrator before it was built and restated here so nobody has to
+reconstruct it:** the hook lives in the mutation harness, is active for the lifetime of **one run**,
+**no suite's source changes**, and **nothing about how this tree resolves core by default is
+altered**. `scripts/private-core-hook.mjs` + `private-core-register.mjs`, injected as `--import`
+through `NODE_OPTIONS` by `mutation-proof.mjs` only when `--private-build` is passed.
+
+**Both halves of the item were addressed:**
+
+- the redirect now covers **every** importer in the proof's process, so a connector-driven cell can
+  be graded — `MX16` **KILLED** the mutation that `MX14` survived vacuously
+  (`runs/2026-08-15T0835Z-mx16-window.txt`);
+- the messenger check is gone. Grading is gated on `.meshctl-measurement/meshctl-m15-resolution-
+  probe.mts`, which asserts **class identity on the object the subject constructs**, with a
+  discrimination arm that fails if the private and shared builds are the same object. The old
+  `/PRIVATE build/` string match is retained and printed as **weak**; it decides nothing.
+
+**What is still the human's, and it is the whole of the original question:** whether anything
+FLEET-WIDE should redirect the bare specifier. Nothing outside a `--private-build` run is affected
+today, and this lane did not and will not change that.
+
+**One consequence to weigh at the gate:** the harness now writes a **copy** of the mutated package's
+`src` and never the tree, which closes `LIMITS-private-build.md` #2 and retires the `SIGKILL`
+residual in item 4 as a practical matter (item 4's acceptance stands as written; the residual it
+accepted no longer has a shared write to strand).

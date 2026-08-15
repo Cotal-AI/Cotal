@@ -1,5 +1,20 @@
 # MX14's SURVIVED was VACUOUS, and it corrects what I reported at CLOSE
 
+> ## ✅ RESOLVED 2026-08-15T08:36Z — the same mutation was re-run and KILLED
+>
+> **MX16** (`runs/2026-08-15T0835Z-mx16-window.txt`) ran this exact mutation with the resolution
+> fixed and it **died on the predicted cell** — `R1 disconnecting again refuses as [not-connected]`,
+> 44 marks against a 45-mark baseline. The pre-registered prediction (`63ddca6e`, unrun, unamended)
+> named SURVIVED as its refutation and did not get it.
+>
+> **What fixed it:** a per-process resolver hook redirects the bare specifier for **every** importer
+> (`scripts/private-core-hook.mjs`), the mutation is applied to a **copy** of `src` so the tree is
+> never written, and grading is gated on a subject-side **class-identity** assertion instead of a
+> string the suite prints about itself.
+>
+> **The diagnosis below is unedited.** It is kept because the mechanism it describes is the one that
+> had to be understood, and because "compiled is not executed" is the defect class, not the incident.
+
 **Stamped `2026-08-15T07:2xZ` (`date -u` at writing), lane tip after `cb6c91ae`. Diagnosis by
 reading only — no broker, no mutation, no box.**
 
