@@ -941,10 +941,16 @@ console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateF
 // **A reader who cannot tell "nobody has automated this yet" from "this cannot be automated" will
 // treat both as settled.** That is the whole reason for the third heading.
 //
-// A RULING GOES IN RECORDED, NOT IN CHECKED, even when it is the orchestrator's own. A ruling is a
-// decision made on evidence at a moment, not a measurement; filing it as checked would lend this
+// A RULING GOES IN RECORDED, NOT IN CHECKED, even when it is the lane principal's own. A ruling is
+// a decision made on evidence at a moment, not a measurement; filing it as checked would lend this
 // suite's credibility to an authority it never tested, and would let a decision be inherited rather
 // than re-opened when its evidence moves.
+//
+// IT IS ATTRIBUTED BY ROLE, NEVER BY SEAT NAME. A public reader gains nothing from which seat ruled
+// — the useful facts are that it WAS ruled, by the authority for this lane, and is therefore
+// re-openable rather than measured. The seat name is internal bookkeeping carrying the only risk in
+// the sentence, and the category is under open review; a file in the public tree does not get to
+// pre-empt that by adding instances while it is being decided.
 console.log(
   "\n════ CHECKED — every line here is a [disclosure] cell in THIS run. A wrong one goes RED above;\n" +
     "     it does not merely mislead. The cells are the claim; this is the index to them.\n" +
@@ -986,7 +992,7 @@ console.log(
     "     item COULD be re-derived and merely was not, so each is a candidate to become a CHECKED\n" +
     "     cell the day someone pays for it. Nothing in JUDGEMENT ever can be. Do not read the two as\n" +
     "     one — \"nobody has automated this yet\" and \"this cannot be automated\" are different debts.\n" +
-    "  · RULED (fm-orchestrator): the reader-side direction is PART KIND, not channel name.\n" +
+    "  · RULED by the lane's principal: the reader-side direction is PART KIND, not channel name.\n" +
     "    `ag-ui.frame` is a core concept, so a surface identifies event traffic by the part it\n" +
     "    carries and needs no naming guarantee. Making the prefix normative was REJECTED: it would\n" +
     "    rewrite connector.ts to fit two cells that never tested subscription scope. That covers\n" +
