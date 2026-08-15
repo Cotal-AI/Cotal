@@ -291,3 +291,50 @@ they are not reconcilable into one number; do not try.**
 > in exactly the way the count is — comparing sets across tips assumes position is tip-invariant,
 > and it is not. **The critique of my method above stands on its own and does not depend on the
 > retracted example.**
+
+## 11. Links into the principal's dependency directories — OWNER: the human. **NOT a writer; a DELETE path**
+
+**Registered 2026-08-15T09:2xZ** on fm-orchestrator's request to record the link found in
+`/tmp/rev-join-security`, a tree outside every sweep run tonight. **Verified here** — one link, and
+the target is the worst one available:
+
+```
+/tmp/rev-join-security/packages/core/node_modules  ->  /home/david/Cotal/packages/core/node_modules
+```
+
+### It was handed to me as "alongside the eight gate writers", and that is the one thing it is NOT
+
+**It does not write `packages/core/dist`, and it cannot supply core to a bare specifier.** Measured:
+that directory holds **5 entries, no `dist`, and no `@cotal-ai/core`.** It is a **dependency**
+directory.
+
+**What it is instead is a deletion path.** A `pnpm` invocation in that tree, at that package, targets
+the **live checkout's** `packages/core/node_modules` for removal; the no-TTY abort is the only thing
+in the way and `CI=true` disables it. **And this lane holds the identical link** — the same target,
+from a second tree — so `packages/core/node_modules` has at least two trees able to delete it.
+
+**Filing it under item 10 would have repeated the exact currency error this branch has been
+correcting all night: a writer of the artifact and a link into the package are different claims.**
+Item 10 stays a list of writers; this is its own item because the mitigation is different — item 10
+is about when the artifact changes, this is about a directory ceasing to exist.
+
+**Second-order, and it is why the target matters:** the principal's `packages/core/node_modules` is
+itself made of climbing links into **this** worktree's store (`ajv`, `yaml`, `json-canonicalize`,
+the `@nats-io/*` set). **Deleting it destroys the principal's resolution AND severs links whose
+other end is here.**
+
+### The instruction that replaced the clearance — adopted here
+
+**No lane relies on anyone's box-wide clearance.** Before any `pnpm`, a lane checks **its own tree**:
+`find <tree> -name node_modules -type l`, then `readlink -f` each. Run here at `09:2xZ`: **six, all
+resolving into the principal** — `bin`, `implementations/{cli,delivery,manager}`,
+`packages/{core,workspace}`.
+
+> **A glob is a hypothesis about where things live; `git worktree list` is the population.** The
+> sibling of this branch's own rule: an instrument that takes *the others* as its subject cannot
+> report on the one running it; one that takes a *naming convention* as its subject cannot report on
+> what is named otherwise. **Both are a scope silently narrower than the sentence describing the
+> result.**
+
+**Nothing repointed, removed or tidied.** The link is load-bearing for whatever installed it, and
+that is not established.
