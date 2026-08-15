@@ -418,6 +418,29 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       open = runId;
       runsOpened += 1;
       const messageId = `${uuid}#0`;
+
+      /**
+       * **AUTHORSHIP, NOT INITIATOR — the emitter must never republish a body this principal did
+       * not author.** Run-opening and body-emission are separate decisions and this is the second
+       * one. A peer/mesh delivery legitimately OPENS a run, because an observer asking what this
+       * agent did is entitled to know a turn began and what triggered it; it does not follow that
+       * the observer is entitled to the peer's words.
+       *
+       * §3.1's privacy argument is stated as already true — *"a `RUN_STARTED` attributed to a peer
+       * republishes no message body"* — and it was NOT: this branch emitted
+       * `TEXT_MESSAGE_CONTENT` with the peer's `content` verbatim, measured at 240 bytes in and 240
+       * bytes out on a real session. `events.<owner>.<actor>` carries a DIFFERENT read ACL from the
+       * channel the message arrived on, so that is a republication across an ACL boundary — the
+       * exact failure §3.1's non-human exclusion existed to prevent, which the ruling correctly
+       * moved off run-opening and which then had nothing enforcing it.
+       *
+       * So the run opens and the BODY IS WITHHELD. `cotal.turnSource` already tells a consumer a
+       * peer began this turn, which is the fact an observer needs; the text is not.
+       *
+       * Deliberately NOT a redaction marker: a fixed placeholder would invent vocabulary §3.1 does
+       * not define, and a placeholder string is one edit away from being a real delta again.
+       */
+      const selfAuthored = turnSource !== "channel";
       // The previous run's close rides the SAME unit as this run's open. They are one observation
       // of the source and must not be split across frames: a frame names ONE run (`packUnits`), so
       // returning them together lets the packer flush at the boundary, while returning them
@@ -432,9 +455,13 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
             timestamp: ts,
             cotal: { runIdSource: "connector", turnSource, ...arrivalMeta },
           }),
-          textMessageStart({ messageId, timestamp: ts, role: "user", ...(arrivalMeta ? { cotal: arrivalMeta } : {}) }),
-          textMessageContent({ messageId, delta: content, timestamp: ts }),
-          textMessageEnd({ messageId, timestamp: ts }),
+          ...(selfAuthored
+            ? [
+                textMessageStart({ messageId, timestamp: ts, role: "user", ...(arrivalMeta ? { cotal: arrivalMeta } : {}) }),
+                textMessageContent({ messageId, delta: content, timestamp: ts }),
+                textMessageEnd({ messageId, timestamp: ts }),
+              ]
+            : []),
         ] as AguiEvent[],
       };
     }
