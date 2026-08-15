@@ -23,6 +23,25 @@ failure mode I was just handed** (`465f8b19` was itself a wrong cross-reference)
 | cell `R1 disconnecting again refuses as [not-connected]` present | the predicted cell must exist with that exact name | **`connection-control.smoke.ts:307`** |
 | `sha256 endpoint.ts` | the recovery datum fm-orchestrator holds | `c9f873dc…c7eb629` |
 
+### ⚠ THE CHECK THAT WAS MISSING, AND THAT MX14 PAID A WINDOW TO LEARN
+
+**Does the code under test RESOLVE to the thing you are about to mutate?** Not "is the mutant
+compiled" — compiled is not executed.
+
+```
+node --input-type=module -e 'console.log(await import.meta.resolve("@cotal-ai/core"))'
+```
+
+**MX14 SURVIVED because the answer was `packages/core/dist/index.js`** — the shared, unmutated
+build — while the mutant sat in a private one. The cells drive a `MeshAgent`, and the connector
+imports core by bare specifier, so the seam redirected the suite's own import and nothing else
+(`FINDING-mx14-survived-vacuously.md`).
+
+**This costs one command and it was answerable at any point in the preceding four hours.** Run it
+BEFORE the window: for every module the cells actually exercise, resolve the specifier and confirm
+it lands in the mutated artifact. **A survival cannot be interpreted at all until this is known**,
+because a blind cell and an unreachable mutant produce the identical result.
+
 ## The window, in order
 
 **The suite had no npm script until now.** Resolving the `--command` before the window turned up
