@@ -584,7 +584,13 @@ for (const s of SURFACES) {
  * Closing that needs reachability, which needs a broker and a running renderer — and this suite
  * deliberately needs neither. The cell is now honest about what it grades, which is what it was not.
  */
-const FRAME_IDENTS = ["AGUI_FRAME_KIND", "isAguiFramePart", "parseAguiFrame", "aguiFrame", "eventChannel"] as const;
+// `isEventChannel` was added to this list in the same change that made a surface use it, which is
+// the self-serving shape and is flagged rather than hidden. It is correct because the list is
+// supposed to BE the vocabulary: a new public classifier for event channels that the list does not
+// know makes the predicate under-detect, and a surface could then honour the filter and still fail.
+// The addition makes the predicate MORE permissive, so it is the direction a reviewer must check —
+// which is why the attack corpus below gained a cell for it rather than the list gaining a name.
+const FRAME_IDENTS = ["AGUI_FRAME_KIND", "isAguiFramePart", "parseAguiFrame", "aguiFrame", "eventChannel", "isEventChannel"] as const;
 
 function referencesFrameVocabulary(src: string, fileName: string): boolean {
   const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, undefined);
@@ -616,18 +622,40 @@ for (const [label, src, expected] of [
   ["a string saying the feature is ABSENT", `export const help = "we do not support ag-ui.frame yet";`, false],
   ["unrelated code (negative control)", `const wired = false;`, false],
   ["CONTROL: a real reference must PASS", `if (isAguiFramePart(p)) draw(p);`, true],
+  // The identifier added to FRAME_IDENTS in this change, graded in BOTH directions so the addition
+  // is not taken on trust: a mention that is only a comment must still fail.
+  ["isEventChannel in a comment only", `// isEventChannel would go here`, false],
+  ["CONTROL: a real isEventChannel reference must PASS", `const k = isEventChannel(msg.channel);`, true],
 ] as const) {
   c(`[filter-predicate] ${label}`, referencesFrameVocabulary(src, "probe.ts") === expected);
 }
 
-for (const [surface, rel] of [
-  ["cli mesh-view", join("implementations", "cli", "src", "view", "mesh-view.ts")],
-  ["implementations/web app.js", join("implementations", "web", "src", "web", "app.js")],
-  ["examples/02 observer", join("examples", "02-self-improving-console", "harness", "observer.ts")],
+// `blocked` marks a surface that CANNOT close as the plan specified it, and the reason travels in
+// the cell's own name so a reader of the failure does not have to find a plan to interpret it.
+//
+// The channel name is built by `eventChannel()` in `connector-core`, and `packages/core/src/
+// connector.ts:165-167` says of it, verbatim: "The naming convention is the CONNECTOR's, not the
+// wire standard, so it's defined in the extension, not core." Measured dependencies:
+//
+//   implementations/cli   ->  @cotal-ai/core, @cotal-ai/workspace          (no connector-core)
+//   implementations/web   ->  @cotal-ai/core, @cotal-ai/workspace          (no connector-core)
+//   examples/02           ->  @cotal-ai/connector-core, ...                (a composition root)
+//
+// So two of these three surfaces cannot reach the convention that defines the filter, and the only
+// ways to close them are to hardcode `events.` into an implementation — spreading a convention core
+// disclaims into a tier that must not know it — or to add a new seam to core's public surface.
+// NEITHER IS DONE HERE. A gate cell is not a reason to move an architectural boundary; the cells
+// exist to measure a design, not to commission one. This is a defect in the plan step, which
+// asserted three surfaces would honour a filter without checking that two of them can see it.
+for (const [surface, rel, blocked] of [
+  ["cli mesh-view", join("implementations", "cli", "src", "view", "mesh-view.ts"), true],
+  ["implementations/web app.js", join("implementations", "web", "src", "web", "app.js"), true],
+  ["examples/02 observer", join("examples", "02-self-improving-console", "harness", "observer.ts"), false],
 ] as const) {
   const p = join(TREE, rel);
   const src = existsSync(p) ? readFileSync(p, "utf8") : "";
-  c(`[GATE] ${surface} honours the events.* filter`, src.length > 0 && referencesFrameVocabulary(src, p));
+  const why = blocked ? " [NOT CLOSABLE AS SPECIFIED — cannot reach connector-core; see note above]" : "";
+  c(`[GATE] ${surface} honours the events.* filter${why}`, src.length > 0 && referencesFrameVocabulary(src, p));
 }
 
 console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateFail} of them [GATE])`);
@@ -644,7 +672,17 @@ console.log(
     "  and every cell here still passes. Asserting the visible state needs a DOM and a CSS engine;\n" +
     "  modelling the clamp by hand would put a hand-written browser inside the instrument that holds\n" +
     "  the merge — a wider sentence resting on a narrower truth. The gap is real, it belongs to\n" +
-    "  `app.js`, and it does not gate this suite.",
+    "  `app.js`, and it does not gate this suite.\n" +
+    "\n" +
+    "NOT CLOSABLE AS SPECIFIED — two events.* filter cells that will not go green by being worked on:\n" +
+    "  `cli mesh-view` and `implementations/web app.js` depend on @cotal-ai/core + @cotal-ai/workspace\n" +
+    "  ONLY. The filter's channel name is built by eventChannel() in @cotal-ai/connector-core, and\n" +
+    "  packages/core/src/connector.ts:165-167 states the naming convention is the CONNECTOR's and\n" +
+    "  deliberately not the wire standard's. So those two surfaces cannot see what an events channel\n" +
+    "  is without an implementation importing an extension, or a new seam on core's public surface.\n" +
+    "  Neither was done: a gate cell is not a reason to move an architectural boundary. `examples/02`\n" +
+    "  closes normally because an example is a composition root and may reach the extension.\n" +
+    "  These two cells are a PLAN defect, not unfinished work, and they stay red until that is ruled.",
 );
 if (gateFail > 0) {
   console.log(

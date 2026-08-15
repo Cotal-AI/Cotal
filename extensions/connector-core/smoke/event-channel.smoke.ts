@@ -65,8 +65,9 @@ import { assertValidOwnerToken as ruleFromSource, parsePrincipalKey } from "../.
 type Principal = { owner: string; actor: string };
 let eventChannel: (p: Principal) => string;
 let eventChannelForSession: (ep: { principal: Principal; actorIsEphemeral: boolean }) => string;
+let isEventChannel: (channel: string | undefined) => boolean;
 try {
-  ({ eventChannel, eventChannelForSession } = await import("../src/launch.js"));
+  ({ eventChannel, eventChannelForSession, isEventChannel } = await import("../src/launch.js"));
 } catch (e) {
   console.log(
     "  x FAIL: @cotal-ai/core must be built before this suite runs.\n" +
@@ -251,6 +252,36 @@ c("an underscore is legal in both halves (the token grammar allows it; only `-` 
   c("the rule `eventChannel` EXECUTES agrees with core's SOURCE rule (else core's dist is stale)",
     disagreed.length === 0,
     disagreed.length ? `disagree on ${JSON.stringify(disagreed)} — rebuild @cotal-ai/core; this suite grades its dist/` : undefined);
+}
+
+// ── isEventChannel — the classifier a reader needs because the constructor is not invertible ─────
+//
+// `EndpointRef` carries `id`, `name`, `role` and NO principal, so a surface holding a message cannot
+// rebuild the expected channel and compare. It can only ask about the name it was given.
+//
+// **The first cell feeds the constructor's OWN OUTPUT back in**, rather than asserting against a
+// hand-written `"events.owner.actor"`. A literal fixture agrees with a hardcoded prefix and would
+// keep passing if `eventChannel` changed its spelling and `isEventChannel` did not — which is the
+// exact drift the shared constant exists to prevent, and a fixture written by hand cannot see it.
+{
+  const real = eventChannel({ owner: "owner", actor: "actor" });
+  c("[isEventChannel] classifies eventChannel()'s own output", isEventChannel(real), real);
+
+  // NEGATIVE CONTROLS. Without these a predicate that returns true for everything passes above.
+  c("[isEventChannel] rejects an ordinary chat channel", !isEventChannel("general"));
+  c("[isEventChannel] rejects undefined (an unchannelled message)", !isEventChannel(undefined));
+  // Near-miss: the predicate must anchor at the START, not merely contain the token.
+  c("[isEventChannel] rejects a name that only CONTAINS the token", !isEventChannel("my-events.thing"));
+  // Near-miss on the token itself, so a predicate matching `event` rather than `events.` is caught.
+  c("[isEventChannel] rejects the singular near-miss `event.`", !isEventChannel("event.owner.actor"));
+
+  // THE DOCUMENTED LIMIT, ASSERTED. `isEventChannel` is a prefix test and not a validation: a
+  // malformed remainder still classifies as an event channel. That is deliberate — an unparseable
+  // event channel is still not chat, and hiding it would make a malformed publisher invisible on
+  // exactly the surface meant to reveal it. Graded here so the limit is a decision on the record
+  // rather than a sentence in a comment that nothing checks.
+  c("[isEventChannel] a malformed events.* name still classifies (prefix test, not validation)",
+    isEventChannel("events.NOT A VALID KEY"));
 }
 
 console.log(`event-channel smoke: ${ok} passed, ${fail} failed`);

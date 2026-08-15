@@ -241,7 +241,36 @@ export function userAuthEnv(opts: {
  *  Validation is `principalKey`'s own, reused rather than re-implemented: this function derives an
  *  AUTHORIZATION value and must not depend on a caller having validated first. */
 export function eventChannel(principal: { owner: string; actor: string }): string {
-  return `events.${principalKey(principal.owner, principal.actor).key}`;
+  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;
+}
+
+/** The one place the `events.` convention is spelled. {@link eventChannel} and
+ *  {@link isEventChannel} both read it, so the constructor and its classifier cannot drift apart —
+ *  which is the only reason they are allowed to be two functions. */
+const EVENT_CHANNEL_PREFIX = "events.";
+
+/** Whether a channel name is an agent's structured-event channel rather than ordinary chat.
+ *
+ *  **THIS EXISTS BECAUSE {@link eventChannel} IS NOT INVERTIBLE FROM WHAT A READER HAS.** A surface
+ *  classifying live traffic holds a `CotalMessage`, and `EndpointRef` carries `id`, `name` and
+ *  `role` — **no owner/actor**. So a reader cannot rebuild the expected channel for a sender and
+ *  compare; it can only ask a question about the name it was given. Without this, every consumer
+ *  that wants to separate event traffic from chat has to re-spell `events.` locally, which is the
+ *  duplication `partsToText` exists to document.
+ *
+ *  **IT LIVES HERE, NOT IN CORE, AND THAT IS THE SAME BOUNDARY {@link eventChannel} RESPECTS.**
+ *  `packages/core/src/connector.ts` states the naming convention is the connector's and deliberately
+ *  not the wire standard's. A classifier for that convention is the convention, so it belongs beside
+ *  the constructor.
+ *
+ *  **KNOWN LIMIT, STATED RATHER THAN PAPERED OVER: this is a PREFIX test, not a validation.** It
+ *  answers "is this addressed as an event channel", which is what a display filter needs. It does
+ *  NOT verify that the remainder is a well-formed principal key, so a malformed `events.` name
+ *  classifies as an event channel. A reader filtering a view wants that — an unparseable event
+ *  channel is still not chat, and hiding it would make a malformed publisher invisible. A caller
+ *  needing the principal must parse it and handle failure itself. */
+export function isEventChannel(channel: string | undefined): boolean {
+  return typeof channel === "string" && channel.startsWith(EVENT_CHANNEL_PREFIX);
 }
 
 /** The event channel for a LIVE session, derived from the endpoint's own principal — what the

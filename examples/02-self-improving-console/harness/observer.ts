@@ -23,7 +23,7 @@ import { CotalEndpoint, DEFAULT_SERVER, deliveryOf, partsToText, type CotalMessa
 // extensions self-register on import and a composition root import the surfaces it wants. The same
 // import in `implementations/*` would be the dependency inversion the guide exists to prevent —
 // which is exactly why the `events.*` filter is NOT closed here (see below).
-import "@cotal-ai/connector-core";
+import { isEventChannel } from "@cotal-ai/connector-core";
 
 const space = process.env.COTAL_SPACE || "console";
 const server = process.env.COTAL_SERVERS || DEFAULT_SERVER;
@@ -133,6 +133,11 @@ ep.tap((subject, msg) => {
       fromRole: msg.from?.role,
       to: msg.to, // NOTE: recipient INSTANCE ID for unicast, not a name — resolve via fromId map
       channel: msg.channel,
+      // Which KIND of traffic this is, by the connector's own convention rather than a prefix
+      // re-spelled here. An agent's structured event stream and a human-readable chat message are
+      // different records that happen to share a transport, and a transcript that cannot tell them
+      // apart makes `evaluate.ts` count an agent's internal event frames as conversation.
+      isEventChannel: isEventChannel(msg.channel),
       toService: msg.toService,
       text: text(msg),
       // The same message as a READER sees it, through core's shared renderer. Separate from `text`
