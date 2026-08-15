@@ -300,7 +300,12 @@ try {
     /m7-usermode/.test(String(seen()?.activity ?? "")), seen());
 
   const c = await run("cotal_connect", {});
-  armCheck("USER", "U6 the user-mode agent brings ITSELF back — a fresh bearer is obtained, not a cached grant reused",
+  // LABEL FIXED AFTER THE RUN THAT REFUTED IT. This cell used to read "…— a fresh bearer is
+  // obtained, not a cached grant reused", while asserting only `!c.isError`. The half after the
+  // dash was asserted by nothing, and `U8` two cells below proved it FALSE in the same run: the
+  // bearer command was not re-exec'd. A green cell claiming what the failing cell beside it
+  // refutes. The name now says exactly what the assertion covers, and no more.
+  armCheck("USER", "U6 the user-mode agent brings ITSELF back — the verb returns success (says NOTHING about where the credential came from; that is U8)",
     !c.isError, c.text);
   armCheck("USER", "U7 CONTROL: the witness sees it back (so U4's offline was the disconnect, not a dead fixture)",
     await (async () => { for (let i = 0; i < 40; i++) { const s = seen(); if (s && s.status !== "offline") return true; await sleep(150); } return false; })(), seen());

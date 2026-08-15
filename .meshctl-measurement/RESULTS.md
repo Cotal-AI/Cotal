@@ -21,6 +21,16 @@
 > **ONE ROW GOT WORSE, and it is the row nothing else covers.** `m7-usermode` recorded itself as
 > never-run; it now runs and **FAILS** (`EXIT=1`, 2 passed, 1 failed, 7 VOID). **The user/bearer
 > path is UNMEASURED** — see that section. Every claim in this file about user mode is a **[R]**.
+>
+> **THAT ROW IS NOW DISCHARGED, `02:32:06Z`, at `f1e0d375`+.** Two granted broker windows, both
+> logs kept. Defect 2's stated cause was **withdrawn and then refuted** — the callout never refused
+> the good bearer; the real cause was a fixture omitting `role`, costing the mint its bind on the
+> role's TASK durable. **User mode is MEASURED: `11 passed / 1 failed / 0 VOID`.**
+>
+> ⚠️ **The one failure is a real product-facing finding, not a fixture bug: `U8` — a self-directed
+> reconnect does NOT re-exec the bearer command**, so the session returns on authority it held
+> before it left. What that does and does not license is bounded in §"`U8` FAILS" — the grant may
+> still be re-read at the mint by a different mechanism, and that half is **not** measured.
 
 Base `7cc74f50` (measured at `1aab1389`; delta since is release/docs only). All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
 target is not the live broker as its first action. Refutation conditions are stated in each probe's
@@ -604,9 +614,79 @@ that never exits hands you a number that means nothing about the code. The verdi
 out of the log. **Fixed in the probe** (explicit exit at the end of `finally`, on the verdict the run
 produced); like the sequencing above, that fix is **committed unrun**.
 
-**Standing: the user/bearer path is UNMEASURED.** `m7` is the only probe covering it. Nothing in
-this file about user-mode connection control is measured, and any DESIGN sentence resting on `m7`
-is a **[R]**, not an **[M]**, until defect 2 is fixed and the probe re-driven.
+~~**Standing: the user/bearer path is UNMEASURED.**~~ **DISCHARGED — see §"m7 re-drive" below. The
+user/bearer path is now MEASURED, and it produced one real failure.**
+
+### `m7` re-drive — all three predictions confirmed, and `U8` fails
+
+Two broker windows, both granted, both released, **both logs kept** (`runs/2026-08-15T0226Z-*` and
+`runs/2026-08-15T0232Z-*`) — the pair is what makes "it passes now" evidence rather than memory.
+
+**Window 1 (`02:26:51Z`→`02:27:23Z`) refuted the withdrawn sentence rather than merely failing to
+support it.** With the arms sequenced:
+
+    [diag] S window: bearer execs 0 -> 1, callout said []
+
+**In the window where the good bearer was the only arm connecting, the callout said NOTHING.** Every
+`signature verification failed` line arrives after `BAD` starts, and both `UX ATTRIBUTION` cells are
+green. The exec counter excludes the competing explanation inside the same run: the session *did*
+fetch a token, so "it never got that far" is out.
+
+**Defect 4 — what actually failed `U0`, and it is defect 1's twin.** `grep -c` = **111**
+occurrences of `cannot publish "$JS.API.CONSUMER.INFO.TASK_<space>.svc_worker"`. The bearer
+authenticates; the *minted permissions* do not reach the role consumer. This fixture's ACL resolver
+omitted `role`, so the mint took the `opts.role ? … : undefined` branch
+(`packages/core/src/provision.ts:1073`) and granted no bind — while the same fixture had already
+provisioned `svc_worker` and built the agent with `role: "worker"`. **The real path supplies `role`
+from the ledger row (`implementations/auth/src/service.ts:461`), so this indicts the fixture, not
+the product.**
+
+> ⚠️ **The earlier diagnosis did not fail for lack of evidence. The evidence was in the same log,
+> louder, and repeated 111 times.** One line named a *cause* and 111 named a *condition*, and the
+> cause-shaped line won. That is a distinct failure from the discarded-log rule, and it survives
+> fixing it.
+
+**Window 2 (`02:31:54Z`→`02:32:06Z`), against the prediction committed at `f1e0d375`:**
+
+| # | predicted before the run | measured |
+| --- | --- | --- |
+| 1 | `U0 CONTROL` flips FAIL → pass | **passes** |
+| 2 | `JS.API.CONSUMER.INFO.TASK` **111 → 0** | **`grep -c` = 0** |
+| 3 | the seven `U2`–`U8` cells stop being VOID | **0 VOID** |
+
+**`11 passed / 1 failed / 0 VOID`, `EXIT=1`, exited on its own verdict.** `U2`–`U7` report for the
+first time: a user-mode self-disconnect succeeds through the real tool, an **independent witness**
+sees it offline, the cause travels with it, it returns, and the witness sees it return.
+
+### ⚠️ `U8` FAILS — a self-directed reconnect does NOT re-obtain authority **[M]**
+
+    ✗ U8 the reconnect RE-EXEC'd the bearer command { execsBefore: 1, execsAfter: 1 }
+
+**The bearer command was not re-exec'd across the disconnect/connect pair.** The session came back
+presenting authority it obtained **before** it deliberately left. This is the one cell only the
+user-mode arm can answer — a static credential is already in hand, but a user-mode session holds a
+*command* — and the answer is that it reuses.
+
+**Two of this lane's own texts are in doubt, and both are named rather than the convenient one
+picked:** `tool-specs.ts:792` tells the agent `cotal_connect` *"re-reads your grant as it stands
+NOW, so access revoked while you were away comes back as a refusal"*; `DESIGN.md:150-151` says the
+source is invoked before every connect.
+
+**THE HONEST LIMIT, stated before anyone reads this as the description being false.**
+`calloutPermissions` performs a **fresh-row re-read at the mint** — it re-resolves the ACL from the
+current ledger row and enforces lifecycle equality on **every** connect. **So the grant may be
+re-read exactly as advertised, by a mechanism that never needs the bearer command re-run.** What is
+measured: **no fresh exchange happens.** What is **not** measured: whether a *revoked bearer* or a
+*narrowed grant* is caught on return. Different claims; only one is driven. **That probe is not
+written.**
+
+### ⚠️ A cell whose LABEL out-ran its ASSERTION, refuted by its own neighbour
+
+`U6` was **green** reading *"…a fresh bearer is obtained, not a cached grant reused"* while
+asserting only `!c.isError`. **`U8`, two cells later, proved that clause false in the same run.**
+Third label-out-runs-assertion finding in this lane and the first where the refutation was already
+sitting in the same output. **Label rewritten to say only what the assertion covers**, with the
+credential question pointed at `U8` where it is actually tested.
 
 ### Housekeeping done in the same window
 
