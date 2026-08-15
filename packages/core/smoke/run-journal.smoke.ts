@@ -32,6 +32,11 @@ import {
   replayRunJournal,
   RunSuperseded,
   RunJournalStalled,
+  RunJournalReplayRaced,
+  RunJournalPrefixTruncated,
+  assertReplayConsumerFresh,
+  isConsumerNotFound,
+  runJournalConsumerConfig,
   ActivationRaced,
   parseRunJournalRecord,
   type RunJournalActivation,
@@ -321,6 +326,80 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   c("a fresh activation recovers the run and knows the prefix", again.steps().length === 1);
   const seq = await again.append({ n: 2 }, 2);
   c("and it can write again", seq > 0 && !again.isFinished);
+}
+
+// ── 5e) a replay refuses a consumer that has already fed someone else ─────────────────────────
+//
+// The durable's name is derived from the run, so every contender asks for the same one — and `add`
+// on an existing durable RETURNS it rather than refusing. Measured on this broker: a rival that had
+// drained 3 of 6 records left `add` answering `delivered=3, pending=3`, a count that is perfectly
+// self-consistent for the SECOND HALF of the journal. Counting cannot catch that; only asking
+// whether the consumer is genuinely new can.
+{
+  const a = await activateRun(js, jsm, takeover("r-5e", "d1", 1));
+  for (let n = 0; n < 5; n += 1) await a.append({ n }, n);
+  const cfg = runJournalConsumerConfig(SPACE, "r-5e");
+  await jsm.consumers.add(STREAM, cfg);
+  const rival = await js.consumers.get(STREAM, cfg.durable_name!);
+  const iter = await rival.fetch({ max_messages: 3, expires: 2_000 });
+  let held = 0;
+  for await (const m of iter) { m.ack(); if (++held >= 3) break; }
+  await wait(150);
+  const info = await (await js.consumers.get(STREAM, cfg.durable_name!)).info(true);
+  c("a rival's shared durable is left holding a self-consistent count of the TAIL",
+    info.delivered.consumer_seq === 3 && info.num_pending === 3,
+    `delivered=${info.delivered.consumer_seq} pending=${info.num_pending}`);
+  // The delete inside replay clears it, so to see what an inherited consumer does, ask `add` the
+  // same question replay asks — this is the state replay would have adopted had its delete lost.
+  const inherited = await jsm.consumers.add(STREAM, cfg);
+  c("and `add` hands that very consumer back rather than refusing",
+    inherited.delivered.consumer_seq === 3, inherited.delivered.consumer_seq);
+  // The guard replay applies to whatever `add` returns, put to the consumer that really was
+  // inherited — the same call, the same live ConsumerInfo, without pretending the delete lost.
+  let raced: unknown;
+  try { assertReplayConsumerFresh("r-5e", cfg.durable_name!, inherited); } catch (e) { raced = e; }
+  c("so a replay that finds one refuses it by name instead of resuming from half a run",
+    raced instanceof RunJournalReplayRaced, `${(raced as Error)?.name}`);
+  let fresh: unknown;
+  try { assertReplayConsumerFresh("r-5e", cfg.durable_name!, { delivered: { consumer_seq: 0 }, num_ack_pending: 0 }); } catch (e) { fresh = e; }
+  c("and passes a consumer that has fed nobody", fresh === undefined);
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5e");
+  c("while an uncontended replay still reads the whole run", back.records.length === 6, back.records.length);
+}
+
+// ── 5e2) the replay's delete swallows ONE error and no others ────────────────────────────────
+//
+// A catch-all there is how the consumer above survives to be inherited: any failure to delete
+// leaves a rival's consumer standing and the `add` adopts it.
+{
+  let missing: unknown;
+  try { await jsm.consumers.delete(STREAM, "wfj_never-existed"); } catch (e) { missing = e; }
+  c("deleting a consumer that was never there is the ordinary case", isConsumerNotFound(missing),
+    `${(missing as Error)?.name}/${(missing as { code?: unknown })?.code}`);
+  c("and nothing else passes for it", !isConsumerNotFound(new Error("permissions violation")));
+}
+
+// ── 5f) a prefix that does not begin at the run's genesis is not a prefix ─────────────────────
+//
+// The counting check proves the consumer delivered what it promised, never that what it promised
+// was the whole run. A subject purge that retires an old run leaves a tail whose LAST sequence is
+// still the true head, so an activation on it succeeds and the run resumes from a middle it has no
+// record of ever reaching. The anchor is the genesis activation: the only record in a run published
+// into an empty subject, and so the only one whose `replayedTo` is 0.
+{
+  const a = await activateRun(js, jsm, takeover("r-5f", "d1", 1));
+  for (let n = 0; n < 4; n += 1) await a.append({ n }, n);
+  const before = await replayRunJournal(js, jsm, SPACE, "r-5f");
+  c("the run replays whole while its head is there", before.records.length === 5);
+  await jsm.streams.purge(STREAM, { filter: wfjSubject(SPACE, "r-5f"), keep: 3 });
+  let truncated: unknown;
+  try { await replayRunJournal(js, jsm, SPACE, "r-5f"); } catch (e) { truncated = e; }
+  c("once the head is purged the replay refuses, though its counts still agree",
+    truncated instanceof RunJournalPrefixTruncated, `${(truncated as Error)?.name}`);
+  let cannotActivate: unknown;
+  try { await activateRun(js, jsm, takeover("r-5f", "d2", 2)); } catch (e) { cannotActivate = e; }
+  c("and no driver can take the run over on a truncated prefix",
+    cannotActivate instanceof RunJournalPrefixTruncated, `${(cannotActivate as Error)?.name}`);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────

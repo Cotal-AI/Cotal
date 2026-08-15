@@ -197,6 +197,67 @@ export class RunJournalReplayIncomplete extends Error {
   }
 }
 
+/**
+ * Two drivers replayed the same run at once, and this one inherited the other's consumer.
+ *
+ * Retryable at the takeover level — the loser waits and replays again — and deliberately not an
+ * incomplete-replay error, because nothing is missing from the JOURNAL: the run is simply being
+ * contended, which is what a takeover is.
+ */
+export class RunJournalReplayRaced extends Error {
+  constructor(
+    readonly run: string,
+    readonly durable: string,
+    readonly alreadyDelivered: number,
+  ) {
+    super(`run ${run}: the replay consumer ${durable} had already delivered ${alreadyDelivered} records to someone else. Another driver is replaying this run; retry the takeover rather than resuming from a partial prefix.`);
+    this.name = "RunJournalReplayRaced";
+  }
+}
+
+/**
+ * The replayed prefix does not start at the run's beginning.
+ *
+ * Its counts were consistent and its last sequence may well be the subject's true head — that is
+ * exactly why this check exists separately from {@link RunJournalReplayIncomplete}.
+ */
+export class RunJournalPrefixTruncated extends Error {
+  constructor(
+    readonly run: string,
+    readonly firstSeq: number,
+    readonly firstKind: string,
+  ) {
+    super(`run ${run}: the replay begins at sequence ${firstSeq} with a ${firstKind}, not with the run's genesis activation. The head of the journal is gone — this run cannot be resumed.`);
+    this.name = "RunJournalPrefixTruncated";
+  }
+}
+
+/**
+ * The freshness test itself, separate so it can be put to a consumer that really was inherited.
+ *
+ * A consumer that has delivered anything, or is holding an ack, has fed another driver part of this
+ * run; what is left on it is a tail, however consistent its counts look.
+ */
+export function assertReplayConsumerFresh(
+  run: string,
+  durable: string,
+  info: { delivered: { consumer_seq: number }; num_ack_pending: number },
+): void {
+  if (info.delivered.consumer_seq !== 0 || info.num_ack_pending !== 0) {
+    throw new RunJournalReplayRaced(run, durable, info.delivered.consumer_seq);
+  }
+}
+
+/**
+ * Measured on the repo's broker floor: `name: "ConsumerNotFoundError"`, `code: 10014`.
+ *
+ * Exported so the one error the replay is allowed to swallow can be checked against a real one.
+ */
+export function isConsumerNotFound(e: unknown): boolean {
+  const err = e as { name?: unknown; code?: unknown } | null | undefined;
+  return Number(err?.code) === 10014 || err?.name === "ConsumerNotFoundError";
+}
+
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -259,10 +320,19 @@ export async function replayRunJournal(
   const durable = cfg.durable_name as string;
   try {
     await jsm.consumers.delete(stream, durable);
-  } catch {
-    /* no consumer to delete: a first activation, or a predecessor that cleaned up */
+  } catch (e) {
+    // ONLY "there was nothing to delete" is ordinary — a first activation, or a predecessor that
+    // cleaned up. A swallowed permission or transport error here left a consumer that has already
+    // delivered part of this run standing, and the `add` below would inherit it.
+    if (!isConsumerNotFound(e)) throw e;
   }
-  await jsm.consumers.add(stream, cfg);
+  const created = await jsm.consumers.add(stream, cfg);
+  // The durable's name is derived from the run, so every contender asks for the SAME one, and
+  // `add` on an existing durable RETURNS it rather than refusing. Measured: a rival that had
+  // drained 3 of 6 records left `add` answering `delivered=3, pending=3`, which is a self-
+  // consistent count for the second HALF of the journal. Replay is not allowed to be that:
+  // resume re-runs the program against this prefix.
+  assertReplayConsumerFresh(runId, durable, created);
   const consumer = await js.consumers.get(stream, durable);
   // The CACHED info from the create, so the count is the one this consumer was born with rather
   // than a second round trip that a concurrent append could have moved under us.
@@ -276,6 +346,15 @@ export async function replayRunJournal(
     if (records.length >= pending) break;
   }
   if (records.length !== pending) throw new RunJournalReplayIncomplete(runId, pending, records.length);
+  // A count is only self-consistency: it says the consumer delivered what it promised, not that
+  // what it promised is the whole run. The anchor is the GENESIS activation — the only record in a
+  // run whose `replayedTo` is 0, because it is the only one published into an empty subject — so a
+  // prefix that does not begin with it is short at the front, whether a rival consumer ate the head
+  // or a subject purge retired it. Either way it is not a prefix this run may be resumed from.
+  const first = records[0]!.record;
+  if (first.kind !== "activation" || first.replayedTo !== 0) {
+    throw new RunJournalPrefixTruncated(runId, records[0]!.seq, first.kind);
+  }
   return { records, lastSeq: records[records.length - 1]!.seq };
 }
 
@@ -449,7 +528,15 @@ export async function activateRun(
   let cause: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (attempt > 1 && opts.beforeRetry !== undefined) await opts.beforeRetry(attempt);
-    const replay = await replayRunJournal(js, jsm, t.space, t.runId);
+    let replay: RunJournalReplay;
+    try {
+      replay = await replayRunJournal(js, jsm, t.space, t.runId);
+    } catch (e) {
+      // Another driver is replaying the same run: that is a lost round, not a lost run.
+      if (!(e instanceof RunJournalReplayRaced)) throw e;
+      cause = e;
+      continue;
+    }
     const { records, lastSeq } = replay;
     lastExpected = lastSeq;
     if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
