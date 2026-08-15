@@ -1,0 +1,60 @@
+# MX19–MX24 — the remaining four refusals, each graded in BOTH directions
+# tip 26b73528 · no window taken · box shared, four lanes live
+# runner: node v22.23.2, direct node/tsx. NO pnpm, no CI=true. Paths use $HOME per convention.
+
+## PRE-CHECKS, RUN BEFORE ANYTHING WROTE — the ones I skipped on the earlier rebuild
+  symlinks (node_modules) in this tree        6      CONTROL: 1238 symlinks at maxdepth 6
+  processes with cwd inside this worktree     0      CONTROL: 139 procs with a readable cwd
+  dist digest recorded BEFORE the run         ea357145...  (276 files)
+Each control fires, so each zero is a measurement rather than a quiet instrument.
+
+## THE EIGHT MUTATIONS
+Every one applied to a private COPY of src, redirected by resolved URL, gated by a two-arm
+subject-side probe (subject must resolve INTO the copy; a specifier outside the map must NOT).
+
+  refusal                          assertion arm                       control arm
+  ------------------------------   ---------------------------------   --------------------------------
+  shutting-down                    MX17b KILLED  S1b  53/54            MX18 KILLED  S0b  38/54
+  credential-source-unavailable    MX19  KILLED  D6a                   MX20 KILLED  D6c  61/63
+  broker-unreachable               (same pair: D6c is MX20's cell, D6a is MX19's — one classifier)
+  in-flight-request                MX21  KILLED  D5a  60/63            MX22 KILLED  D5-ctl
+  transition-unconfirmed           MX23  KILLED  D5c  60/63            MX24 KILLED  D5-ctl2  33/63
+
+ALL EIGHT KILLED, each red on the cell named before the run.
+
+WHY EVERY REFUSAL GOT TWO. One mutation proves the assertion arm only. Removing a guard shows the
+cell notices its absence; making the guard UNCONDITIONAL shows the cell notices its over-firing —
+and the second is what proves the control arm was never vacuous. MX17 is why this is not
+ceremony: it SURVIVED, with the gate confirmed, because the cell asserted a TAG that a second
+production site also emits.
+
+THE CLASSIFIER PAIR IS ONE EXPERIMENT, NOT TWO. `credential-source-unavailable` and
+`broker-unreachable` come out of the same function, and it exists to keep them apart — a launcher
+fault and a dead host send an operator to different systems. MX19 deletes the credential-source
+branch (D6a reddens; the dial failure falls through to broker-unreachable). MX20 makes that branch
+unconditional (D6c reddens; a dead port is reported as a launcher fault). Each mutation reddens the
+OTHER refusal's cell, which is what "discriminating pair" has to mean to be worth the words.
+
+## AN UNPLANNED TEST OF THE DISSOLVED SIGKILL RESIDUAL
+MX22's first attempt was killed mid-run by a 120s command timeout — the harness was terminated
+while a mutant existed. Measured immediately afterwards, with a working instrument (the first
+check used a shell glob that ERRORED, so its "0" was not a measurement and was re-run with find):
+  tree porcelain      clean
+  packages/core/src   clean
+  scratches left      0        CONTROL: the same probe finds 23 dirs named src
+  dist digest         unchanged
+Nothing was stranded, because nothing shared was ever written. That is register item 4's
+dissolution demonstrated by accident rather than argued.
+
+## CONTAINMENT ACROSS ALL EIGHT
+  dist digest after the last run   ea357145...   identical to the pre-run reading
+  tree clean, src clean, no scratch left, at every checkpoint
+
+## WHAT THIS DOES NOT PROVE
+- Not that a real entry point reaches the mutated code. The harness prints that scope itself.
+- D5a's input is FIXTURE-PLANTED (this fixture has no delivery daemon to leave a real request
+  outstanding), so its kill proves the endpoint refuses on that condition and names it — NOT that
+  a real request path populates the set. Stated at the cell and repeated here.
+- Only the named cells are graded. connection-lifecycle has 48 declared cells and
+  connection-control 54; twelve of those are now mutation-graded between them.
+- `no-grant` is not here because it cannot be: unreachable by construction, removed at 2979c8aa.
