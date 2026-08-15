@@ -76,6 +76,32 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
 
+/** A READ, RETRIED AT THE TEST LEVEL, and the reason is worth stating because it is a product
+ *  characteristic rather than a fixture wrinkle. `invokeService` absorbs a class-queue split with
+ *  exactly ONE re-resolve; in a two-manager space that re-resolve can split again, so an ordinary
+ *  read surfaces roughly one time in four. That is pre-existing (the single retry long predates this
+ *  change, and the second failure has always propagated) and is reported, not fixed here.
+ *
+ *  Any cell that calls `ps` ONCE inherits that 25% and reads as a flaky test rather than the product
+ *  behaviour it is — which is exactly what happened: cell 7's warm-up was written as a bare single
+ *  call and went red on an otherwise green sweep. Shared, so the next cell that needs a warm read
+ *  cannot quietly reintroduce it. The tolerance is explicit and bounded; it is not a retry loop
+ *  hiding a failure, because a genuine break exhausts all six attempts and still reports. */
+const readTolerant = async (
+  ep: CotalEndpoint, label: string, attempts = 6,
+): Promise<{ ok: boolean; tries: number; last?: unknown }> => {
+  let last: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const r = await ep.invokeService(MANAGER_ENDPOINT, "ps");
+      if (r.reply.ok === true) return { ok: true, tries: i };
+      last = r.reply.error;
+    } catch (e) { last = e instanceof Error ? e.message.slice(0, 120) : e; }
+  }
+  console.log(`   ${label}: no success in ${attempts} attempts`);
+  return { ok: false, tries: attempts, last };
+};
+
 const space = `pin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), "cotal-pin-"));
@@ -265,27 +291,8 @@ try {
     });
     ep.on("error", () => {});
     await ep.start();
-    // A READ, RETRIED AT THE TEST LEVEL, and the reason is worth stating because it is a product
-    // characteristic rather than a fixture wrinkle. `invokeService` absorbs a class-queue split with
-    // exactly ONE re-resolve; in a two-manager space that re-resolve can split again, so an ordinary
-    // read surfaces roughly one time in four. That is pre-existing (the single retry long predates
-    // this change, and the second failure has always propagated) and is reported, not fixed here.
-    // A cell that called `ps` once would inherit that 25% and read as a flaky test rather than the
-    // product behaviour it is, so the tolerance is explicit and bounded.
-    const readTolerant = async (label: string, attempts = 6): Promise<{ ok: boolean; tries: number; last?: unknown }> => {
-      let last: unknown;
-      for (let i = 1; i <= attempts; i++) {
-        try {
-          const r = await ep.invokeService(MANAGER_ENDPOINT, "ps");
-          if (r.reply.ok === true) return { ok: true, tries: i };
-          last = r.reply.error;
-        } catch (e) { last = e instanceof Error ? e.message.slice(0, 120) : e; }
-      }
-      console.log(`   ${label}: no success in ${attempts} attempts`);
-      return { ok: false, tries: attempts, last };
-    };
     try {
-      const warm = await readTolerant("warm-up");
+      const warm = await readTolerant(ep, "warm-up");
       check("the probe can invoke ps before the split is forced", warm.ok, warm.last);
       const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
@@ -322,7 +329,7 @@ try {
       // and every assertion above would stay green while ordinary reads started failing.
       const cached2 = cache.get(MANAGER_ENDPOINT);
       if (cached2) cached2.responder.instanceId = ghost;
-      const healed = await readTolerant("read-after-forced-split");
+      const healed = await readTolerant(ep, "read-after-forced-split");
       check("a READ with the same forced split still self-heals — the guard did not widen", healed.ok, healed.last);
     } finally { await ep.stop().catch(() => {}); }
   }
@@ -389,11 +396,11 @@ try {
     try {
       // Resolve for real, then doctor the cached responder id — identical to cell 6, because the
       // point is that the COMMAND changed the outcome, nothing else.
-      const warm = await ep.invokeService(MANAGER_ENDPOINT, "ps").catch(() => undefined);
+      const warm = await readTolerant(ep, "admin warm-up");
       const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
       check("the admin probe resolved the manager (without this the cell grades nothing)",
-        warm !== undefined && cached !== undefined);
+        warm.ok && cached !== undefined, warm.last);
       const ghost = `${"w".repeat(4)}${IID1.slice(4)}`;
       if (cached) cached.responder.instanceId = ghost;
 

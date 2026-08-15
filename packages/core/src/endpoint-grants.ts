@@ -225,8 +225,20 @@ export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> =
   [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
-/** `describe` is a read on EVERY endpoint by construction (§13.7 — it is served by the machinery,
- *  never a cluster command), so it is the one name that is repeat-safe without an endpoint. */
+/** `describe` is a read on EVERY endpoint by construction, so it is the one name that is
+ *  repeat-safe without an endpoint. That is not a carve-out taken on faith — two independent
+ *  fences make a mutating `describe` unreachable: a cluster document declaring the name is invalid
+ *  at registration (`endpoint-cluster.ts`, "reserved, served by the machinery, never a cluster
+ *  command", §13.7), and `serveEndpoint` throws unconditionally on any def whose command is
+ *  `describe`, at the top of the defs loop before every other check, so no ordering slips past it.
+ *  The answer is built by the machinery from the serve artifact; no handler can be attached.
+ *
+ *  The residual, stated rather than left implicit: `describe` is authorization-scoped, so repeating
+ *  one does exercise the authorization path. That is a read under the ordinary meaning — transport
+ *  and telemetry are not state the endpoint owns — but the exemption rests on that reading, not on
+ *  describe touching nothing at all. A future `describe` that consumed a grant or decremented a
+ *  quota would be a write, and this line would be wrong for a reason having nothing to do with
+ *  handlers. */
 const REPEAT_SAFE_ANY_ENDPOINT = "describe";
 // PRIVATE module-load snapshot, same discipline as the vocabularies above: the predicate reads
 // THIS, never the live export, so a post-import mutation of the exported table cannot widen what
