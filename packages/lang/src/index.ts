@@ -50,6 +50,16 @@ export {
 export { Prng, assertCrossable, deepFreeze } from "./values.js";
 
 export {
+  LANGUAGE_VERSION,
+  PIN_DEFAULTS,
+  PinMismatch,
+  bindPins,
+  resolvePins,
+  type PinnableOptions,
+  type RunPins,
+} from "./pins.js";
+
+export {
   Cancelled,
   EffectError,
   type AgentHandleValue,

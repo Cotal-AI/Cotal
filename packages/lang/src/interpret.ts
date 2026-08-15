@@ -22,6 +22,7 @@ import { Journal, RunClock, type EntryError } from "./journal.js";
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
 import { parseDuration } from "./duration.js";
 import { PRIMITIVES, type EffectKind } from "./primitives.js";
+import { bindPins, resolvePins, type RunPins } from "./pins.js";
 import {
   Cancelled,
   EffectError,
@@ -156,7 +157,21 @@ export interface RunOptions {
   readonly handler: EffectHandler;
   /** An existing journal resumes the run; omit it to start fresh. */
   readonly journal?: Journal;
+  /**
+   * The pins recorded when this run STARTED, read back from the run record.
+   *
+   * Present on a resume, absent on a fresh run. When present they are authoritative: every loose
+   * option below must either agree with them or be absent, and a caller value that differs is
+   * refused (L5009) rather than honoured, because a pin selects which effects run and honouring the
+   * override would make this a different run against a journal that was not written for it.
+   */
+  readonly pins?: RunPins;
   readonly seed?: string;
+  /**
+   * The run's logical epoch. Resolved from the host clock on a fresh run and read from the pins on
+   * a resume; `now()` derives from it, so the resuming host's clock never moves a replayed program.
+   */
+  readonly startedAt?: number;
   readonly file?: string;
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
@@ -188,6 +203,11 @@ export interface RunResult {
   readonly value: unknown;
   readonly journal: Journal;
   readonly programHash: string;
+  /**
+   * The pins this attempt ran under, resolved. A fresh run's driver writes these onto the run
+   * record; a resumed run's are the ones it was handed back, unchanged.
+   */
+  readonly pins: RunPins;
   /**
    * Walker dispatches charged against the step budget.
    *
@@ -225,12 +245,16 @@ class Interpreter {
     readonly ast: AnyNode,
     readonly options: RunOptions,
     readonly programHash: string,
+    readonly pins: RunPins,
   ) {
     this.journal = options.journal ?? new Journal({ run: options.runId });
-    this.prng = new Prng(options.seed ?? options.runId);
-    this.ceiling = options.effectCeiling ?? 10_000;
-    this.stepBudget = options.stepBudget ?? 1_000_000;
-    this.yieldEvery = options.yieldEvery ?? 1_024;
+    // EVERY limit comes from the pins, never from a default applied here. A default resolved a
+    // second time is a default resolved by whichever interpreter happens to be resuming, which is
+    // exactly what pinning exists to stop.
+    this.prng = new Prng(pins.seed);
+    this.ceiling = pins.effectCeiling;
+    this.stepBudget = pins.stepBudget;
+    this.yieldEvery = pins.yieldEvery;
     this.nextYield = this.yieldEvery;
   }
 
@@ -1156,9 +1180,16 @@ function toProgramError(e: unknown): Record<string, unknown> {
 export async function run(source: string, options: RunOptions): Promise<RunResult> {
   const { ast } = validate(source, options.file);
   const programHash = digest({ source });
-  const interp = new Interpreter(ast as AnyNode, options, programHash);
+  // A resume is handed the pins the run STARTED under and binds to them; a fresh run resolves them
+  // once, here, and hands them back for the run record.
+  const pins =
+    options.pins !== undefined ? bindPins(options.pins, options) : resolvePins(options, options.handler.now());
+  const interp = new Interpreter(ast as AnyNode, options, programHash, pins);
 
-  const frame = new Frame(new KeyScope(), new RunClock(options.handler.now()), new Signal());
+  // The run clock starts at the run's LOGICAL epoch, not at this host's clock: a run resumed on
+  // another machine hours later must see the same `now()` before its first effect as the run that
+  // wrote the journal, or the branch it takes is a property of when it was resumed.
+  const frame = new Frame(new KeyScope(), new RunClock(pins.startedAt), new Signal());
   const env = new Env(null);
   installGlobals(env, interp, frame);
 
@@ -1167,6 +1198,7 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
     value: completion.type === "return" ? completion.value : undefined,
     journal: interp.journal,
     programHash,
+    pins,
     steps: interp.stepCount,
   };
 }
@@ -1189,7 +1221,11 @@ function installGlobals(env: Env, interp: Interpreter, rootFrame: Frame): void {
 
   // Pure primitives: a channel name is a name, so naming one costs nothing and journals nothing.
   env.declare("channel", fn((_f, a) => ({ channel: a[0] as string })), false);
-  env.declare("run", fn(() => ({ id: interp.options.runId, programHash: interp.programHash })), false);
+  env.declare(
+    "run",
+    fn(() => ({ id: interp.options.runId, programHash: interp.programHash, startedAt: interp.pins.startedAt })),
+    false,
+  );
 
   // Event constructors are pure descriptors; awaiting them is `wait`.
   env.declare("replied", fn((_f, a) => ({ event: "replied", agent: (a[0] as AgentHandleValue).agent })), false);

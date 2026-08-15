@@ -76,9 +76,11 @@ export const CATALOG = {
   L5002: "Program hash not available",
   L5003: "Orphaned `spawn` on migrate",
   L5004: "Orphaned resolved checkpoint on migrate",
-  L5005: "External reference gone",
+  L5005: "A pending effect cannot be recovered",
   L5006: "Effect result too large",
   L5007: "Lease lost",
+  L5008: "Resume under a different language version",
+  L5009: "Resume pin mismatch",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
