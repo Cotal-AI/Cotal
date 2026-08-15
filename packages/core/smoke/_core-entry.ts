@@ -3,10 +3,11 @@
  *
  * WHY THIS EXISTS. A mutation proof compiles a deliberately broken core and runs a suite against
  * it. If that build lands in `packages/core/dist`, it is not merely visible to other readers — it
- * is the artifact they EXECUTE. On this box two installed connector extensions symlink
- * `@cotal-ai/core` into a worktree, so a mutant compiled to the shared path was loaded by every
- * Claude and OpenCode seat for the length of the proof. See
- * the lane's mutation-on-shared-dist finding (measurement notes, not carried in this branch).
+ * is the artifact they EXECUTE. Installed connector extensions symlink `@cotal-ai/core` into a
+ * worktree, so a mutant compiled to the shared path is loaded by every connected agent session for
+ * the length of the proof. Measured, not hypothetical — and the set of readers cannot be enumerated
+ * from the write site, which is why the remedy is to write a path nothing else can already
+ * reference rather than to check who is reading.
  *
  * THE DEFAULT IS THE SHARED BUILD, DELIBERATELY. An ordinary run resolves exactly what a user
  * executes, so this trades no coverage for its provenance. Only a mutation proof sets
