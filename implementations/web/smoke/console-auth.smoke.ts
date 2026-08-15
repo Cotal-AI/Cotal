@@ -98,6 +98,19 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   const both = g3.check(req({ origin: "https://evil.example" }) as never, q());
   check("with BOTH failures present, the more specific condition wins (`cross-origin`, not `unauthenticated`)",
     both !== undefined && "refuse" in both && both.refuse === CROSS_ORIGIN, both);
+
+  // THE CASE THAT MATTERS MOST, and the suite did not have it until a mutation went looking. Moving
+  // the origin check below the session check leaves every cell above green — because all of them
+  // describe a request with NO session. The dangerous request is the opposite: the operator's own
+  // browser HAS a session, and another site's page is trying to ride it. `SameSite=Strict` should
+  // stop the cookie ever being sent, but that is the browser's promise, not ours, and this is the
+  // check that holds if the promise is not kept.
+  const g4 = makeAuthGate(PORT);
+  const authed = g4.check(req() as never, q(`k=${g4.launchToken}`)) as { exchange: string };
+  const ridden = g4.check(
+    req({ origin: "https://evil.example", cookie: `cotal_web_session=${authed.exchange}` }) as never, q());
+  check("a cross-origin request carrying a VALID session is still refused (the CSRF case, not the login case)",
+    ridden !== undefined && "refuse" in ridden && ridden.refuse === CROSS_ORIGIN, ridden);
 }
 
 // ── 3. THE READINESS NONCE ──────────────────────────────────────────────────────────────────────
