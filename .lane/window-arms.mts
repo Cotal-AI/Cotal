@@ -60,6 +60,19 @@ let srv: ChildProcess | undefined, daemon: ChildProcess | undefined;
 let daemonExited = false;
 const endpoints: CotalEndpoint[] = [];
 let agent: MeshAgent | undefined;
+/** ASYNC denials, captured rather than swallowed. First run of this harness died here: a denied KV
+ *  read surfaces on TWO paths — synchronously as the assessed refusal, and asynchronously as an
+ *  `'error'` event that kills any consumer with no listener (and, on that run, bypassed teardown and
+ *  orphaned a daemon + broker). Recording them is the point, not silencing them. */
+const asyncErrors: string[] = [];
+// Typed STRUCTURALLY on purpose. `MeshAgent.ep` is a `CotalEndpoint` from core's **dist**, while this
+// file imports the one from **src**; they are nominally distinct (private field `servers`), and that
+// clash is the load-path split this lane recorded, surfacing as a compiler error. Widening to the
+// shape actually used keeps the arm honest without pretending the two declarations are one.
+type ErrorEmitter = { on: (event: "error", listener: (e: Error) => void) => unknown };
+const watchErrors = (label: string, ep: ErrorEmitter): void => {
+  ep.on("error", (e: Error) => asyncErrors.push(`${label}: ${e.message}`));
+};
 
 /** Every inherited COTAL_ variable deleted BY PREFIX, never a name list. */
 const childEnv = (): NodeJS.ProcessEnv => {
@@ -79,6 +92,19 @@ const awaitExit = (c?: ChildProcess): Promise<"exited" | "TIMED-OUT"> =>
 
 const auth = await createSpaceAuth(space);
 const FIXTURE = join(repoRoot, "implementations/delivery/smoke/_fixture-daemon.mts");
+
+// LAST-RESORT REAPER. `finally` does not run when the process dies on an unhandled 'error' event —
+// which is exactly how the first run of this harness left a nats-server and a fixture daemon alive
+// with their scratch intact. Kills ONLY pids recorded at creation. It deliberately does NOT delete
+// the scratch: an orphan with an intact scratch is recoverable, one without is not.
+const reap = (why: string): void => {
+  console.error(`\n  ✗ FATAL (${why}) — reaping pids recorded at creation`);
+  if (created.daemon) { try { process.kill(-created.daemon, "SIGKILL"); } catch { /* gone */ } }
+  if (created.srv) { try { process.kill(created.srv, "SIGKILL"); } catch { /* gone */ } }
+  console.error(`  scratch left for inspection: ${dir}`);
+};
+process.once("uncaughtException", (e) => { reap(`uncaughtException: ${e.message}`); process.exit(1); });
+process.once("unhandledRejection", (e) => { reap(`unhandledRejection: ${String(e)}`); process.exit(1); });
 
 try {
   writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], {
@@ -120,6 +146,7 @@ try {
       watchPresence: false, registerPresence: false,
       card: { id: idFromCreds(creds), name: `arm-${profile}`, role: "agent", kind: "endpoint" },
     });
+    watchErrors(profile, ep); // BEFORE start(): a denial can arrive during connect
     await ep.start();
     endpoints.push(ep);
     return ep;
@@ -160,8 +187,10 @@ try {
   check("C3: and it names a refusal condition rather than reporting an absence", condOf(c3) !== "SERVING");
 
   // ---- C2: the tempting reuse — what managerHealthRow mints today.
+  // The instance id is a LIFECYCLE TOKEN ([a-z0-9]{26,32}), not a readable label — the first run of
+  // this harness died on `inst-<8 hex>`, which is both too short and hyphenated.
   const c2 = await assessVia(await endpointFor("control-caller-privileged", {
-    endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", `inst-${randomUUID().slice(0, 8)}`),
+    endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", randomUUID().replace(/-/g, "")),
   }));
   console.log(`  C2 control-caller-privileged    -> ${condOf(c2)}`);
   check("C2: the manager row's class does NOT establish serving for delivery", c2.serving === false);
@@ -178,6 +207,7 @@ try {
     space, servers: SERVERS, creds: acreds, channels: [chan],
     name: "window-agent", role: "agent", owner: DEV_OWNER, lifecycleUid: auid ?? mintLifecycleUid(),
   } as never);
+  watchErrors("mesh-agent", agent.ep);
   await agent.start();
   await wait(1500); // let the boot durable self-join land
 
@@ -221,6 +251,12 @@ try {
   const dOut = await awaitExit(daemon);
   if (created.srv) { try { process.kill(created.srv, "SIGKILL"); } catch { /* gone */ } }
   const sOut = await awaitExit(srv);
+
+  // The async half of every denial, reported rather than swallowed. Not asserted on: which endpoint
+  // emits and when is timing-dependent, and an assertion here would be a flake generator. It is
+  // evidence about the SHAPE of a denial, which is this lane's subject.
+  console.log(`\nASYNC 'error' EVENTS observed: ${asyncErrors.length}`);
+  for (const e of asyncErrors) console.log(`  · ${e}`);
 
   console.log(`\nWINDOW ARMS: ${pass} passed, ${fail} failed\n`);
   if (fail > 0) process.exitCode = 1;
