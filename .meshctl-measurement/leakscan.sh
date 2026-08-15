@@ -12,6 +12,34 @@
 #   3. a clean verdict indistinguishable from "never looked" -> distinct refusal codes, and the
 #      coverage count is printed BESIDE the verdict. A bare "clean" is not an output this emits.
 #
+# THE COUNT IS A WORK LIST, NEVER A VERDICT. READ EVERY LINE BEFORE YOU ACT ON ONE.
+#   This scanner matches LITERAL, CASE-INSENSITIVE, UNANCHORED substrings, and that is deliberate:
+#   a false positive is the acceptable failure mode here and a false negative is not. DO NOT "fix"
+#   the noise by adding anchors or word boundaries -- that trades the only error you can afford for
+#   the one you cannot. Fix it by reading the hits.
+#
+#   THE WORKED EXAMPLE, and it is the reason this warning exists:
+#     pnpm-lock.yaml   THE PRIVATE PROJECT NAME -- the highest-stakes term the list carries --
+#                      matched inside a base64 `sha512` integrity hash. On `1aab1389`, i.e. on
+#                      main, predating this lane entirely. INNOCENT.
+#
+#   That hit is indistinguishable from a catastrophic leak until a human opens the file. A reviewer
+#   who trusted the count would have "neutralised" a LOCKFILE INTEGRITY HASH and broken the install
+#   -- a real, self-inflicted defect committed while remediating a leak that was never there. The
+#   damage from acting on a false positive is what makes this a rule rather than a preference.
+#
+#   Two more of the same shape, lower stakes:
+#     implementations/cli/smoke/sys-rotation.smoke.ts   a term inside `genBeforeManifest`
+#     pnpm-lock.yaml                                    a term inside another base64 sha512 hash
+#
+#   Base64 is dense alphanumeric noise; it collides with short terms forever, and no term list
+#   avoids that. Expect hits in lockfiles, minified bundles and hashes, and read them.
+#
+#   AND WHEN YOU WRITE THE FINDING UP: cite the METHOD at full fidelity and ELIDE THE PAYLOAD.
+#   `git log -S'<TERM>' <range>` is exactly as reproducible as the literal for anyone holding the
+#   list, and reproduces nothing for anyone who is not. A leak record that quotes its own term to
+#   prove itself BECOMES the leak -- observed in this lane's own audit, caught before it was pushed.
+#
 # Exit codes:  0 clean (with coverage)   1 LEAK   93 zero terms parsed   95 terms file unreadable
 #              94 a control failed (mode control, or a directional control) -- coverage is not claimable
 #              92 the scan ERRORED and did not complete -- there is no verdict

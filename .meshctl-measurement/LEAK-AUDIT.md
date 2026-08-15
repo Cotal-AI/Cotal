@@ -398,8 +398,75 @@ rule about branches that contain it"**, is correct in general. Checked rather th
     c076eb41 reachable from: feat/agent-connection-control
 
 **Both dirty commits are reachable from this branch only.** The review-seat branches do not contain
-them, so no other lane can publish them by pushing its own work. **Still unpushed; history rewrite
-deferred to fm-orchestrator, since it is not a lane's call.**
+them, so no other lane can publish them by pushing its own work. ~~Still unpushed; history rewrite
+deferred to fm-orchestrator, since it is not a lane's call.~~
+
+> ### ⚠ RETRACTED `2026-08-15T06:2xZ` — "STILL UNPUSHED" IS FALSE, AND THE STALENESS IS THE LESSON
+>
+> **It was true when written at `00:28Z`. The branch was pushed afterwards, and the sentence did not
+> know.** `da2f8f05`'s commit body carries the same now-false reasoning — *"the branch is unpushed,
+> so exposure is local"* — and a claim whose truth depends on an event that has since happened is a
+> claim that expires silently. **Nothing alerted anyone; the sentence simply went on asserting.**
+> Found by fm-orchestrator, `2026-08-15`.
+>
+> **Measured state now.** The term is written `<TERM>` throughout — **this record must not become an
+> instance of what it records**, and the pickaxe argument conveys the method exactly without
+> reproducing the string. `<TERM>` is the box's **secondary projects directory**, the same neutral
+> phrasing used at origin tip.
+>
+> ```
+> git log -S'<TERM>' 5317a2d4..3489a279   ->  3 commits   (ORIGIN — public)
+> git log -S'<TERM>' 5317a2d4..HEAD       ->  0 commits   (LOCAL — clean; but read the next note)
+> ```
+>
+> #### ⚠ THIS RETRACTION'S FIRST DRAFT REINTRODUCED THE TERM IT WAS RETRACTING ABOUT
+>
+> The first version of this note quoted the pickaxe commands with the literal term, and shipped as
+> `73dfa069`. **Its own line asserting the local history was clean was, in that commit, false — and
+> the thing that falsified it was the sentence asserting it.** Caught by fm-orchestrator within
+> minutes; the commit was rebuilt with the term elided **before any push**, so the local graph's `0`
+> above is true and the exposure never left this box.
+>
+> **The mechanism is worth more than the slip, because rigour is the vector rather than carelessness:
+> a document that records a leak reproduces the leaked string as its evidence.** The more exactly you
+> cite — real commands, real output, the literal term so a reader can re-derive — the more certainly
+> the record becomes an instance of what it records. This document had already solved that once, at
+> origin tip, by writing *"the box's secondary projects directory"* — **and the neutral phrasing did
+> not survive into a passage that felt obliged to show its evidence.**
+>
+> **The general rule: cite the METHOD at full fidelity and ELIDE THE PAYLOAD.** `git log -S'<TERM>'`
+> is exactly as reproducible as the real thing for anyone who holds the list, and reproduces nothing
+> for anyone who does not.
+>
+> `c076eb41`, `c6b086ce` and `da2f8f05` are **on GitHub**, on PR #441's branch. The branch tip's tree
+> is clean, but **a fix in a later commit does not remove a term from earlier ones.**
+>
+> **The local graph is clean because the history rewrite scrubbed it.** That asymmetry has a
+> consequence worth stating plainly, because the obvious remedy is backwards: **merging origin into
+> this branch would import the three contaminated commits into the only clean history that exists**,
+> and make them permanent ancestors. A merge preserves both parents. **The contamination is currently
+> confined to a remote ref; a merge would end that.**
+>
+> #### Severity, bounded by measurement rather than by category
+>
+> **What is public is a path under the box's secondary projects directory — a filesystem-layout
+> fragment.** It names no project, no host, no credential.
+>
+> **The principal's private project name is NOT exposed. Zero commits on either side touch it.**
+> There is one apparent hit in the tree and it is a **base64 collision inside a `sha512` integrity
+> hash in `pnpm-lock.yaml`** — a file that carries it on `1aab1389`, i.e. **on main, predating this
+> lane entirely.** Had that count been trusted instead of read, the "remediation" would have mangled
+> a lockfile integrity hash and broken the install. **See the false-positive warning in
+> `leakscan.sh`; this is the case that proves it.**
+>
+> #### Disposition
+>
+> **No history rewrite and no force-push** — still not a lane's call, and now also not the cheapest
+> remedy. fm-orchestrator has costed **squash-merge of #441 plus branch deletion**, which keeps the
+> intermediate commits out of `main` and needs no force-push. **Caveat that must travel with that
+> plan: GitHub keeps commits reachable through a PR's timeline after the branch is deleted.** It
+> bounds what reaches `main`; it does not unpublish — which is §2b of this document, unchanged: **the
+> remedy for a history leak is not available to a lane.**
 
 ### What this changes about every clean verdict in this document
 
