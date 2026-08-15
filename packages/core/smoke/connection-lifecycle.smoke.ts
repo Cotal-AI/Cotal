@@ -144,7 +144,8 @@ const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e",
                   "D2a", "D2b", "D2c", "D2d", "D2e", "D2f", "D2g", "D2h", "D2i", "D2j", "D2k",
                   "D3a", "D3b", "D3c", "D3d", "D3e", "D3f", "D3g", "D3h", "D3i", "D3j", "D3k", "D3l", "D3m",
                   "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f",
-                  "D5a", "D5b", "D5-ctl", "D5c", "D5d", "D5-ctl2"];
+                  "D5a", "D5b", "D5-ctl", "D5c", "D5d", "D5-ctl2",
+                  "D6-ctl", "D6a", "D6b", "D6c", "D6d"];
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
  *  connection that has since been closed); `num_connections` is CURRENT. The pair is what
@@ -186,6 +187,11 @@ let mgr: CotalEndpoint | undefined, obs: CotalEndpoint | undefined, a: CotalEndp
     b: CotalEndpoint | undefined, c: CotalEndpoint | undefined, d: CotalEndpoint | undefined;
 /** ARM 4's credential and lifecycle uid, minted early — see the note where they are filled in. */
 let dCreds: string | undefined, dId: ReturnType<typeof newIdentity> | undefined, uidD: string | undefined;
+/** ARM 6's credential, minted for the same reason as ARM 4's: provisioning needs the manager alive,
+ *  and the manager is retired long before ARM 6 runs. A credential this fixture PROVISIONED is what
+ *  makes ARM 6's control meaningful — a refusal from a credential the broker was never going to take
+ *  would prove nothing about the classifier. */
+let creds6: string | undefined, id6: ReturnType<typeof newIdentity> | undefined, uid6: string | undefined;
 try {
   await startBroker(true);
 
@@ -334,6 +340,9 @@ try {
   dId = newIdentity();
   uidD = mintLifecycleUid();
   dCreds = await provisionAgent(mgr!, auth, dId, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uidD });
+  id6 = newIdentity("subject-arm6", "agent");
+  uid6 = mintLifecycleUid();
+  creds6 = await provisionAgent(mgr!, auth, id6, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid6 });
 
   // The broker's connection counters are GLOBAL. Retire every other endpoint so that what they
   // report is attributable to `b` and to nothing else — otherwise the manager and the observer
@@ -668,6 +677,54 @@ try {
   const d5uctl = await e.disconnect("arm5-unconfirmed-control");
   armCheck("ARM 5", "D5-ctl2 CONTROL: with the write confirming again the SAME call succeeds (so D5c's arms can differ)",
     d5uctl.outcome === "disconnected", d5uctl);
+
+  // ══ ARM 6 — THE CLASSIFIER'S TWO UNASSERTED OUTPUTS ══════════════════════════════════════════
+  // `classifyConnectFailure` turns a dial failure into a named reason, and its own docblock records
+  // that text-matching once reported a presence-write failure as `broker-unreachable`. Two of its
+  // outputs were asserted nowhere: `credential-source-unavailable` and `broker-unreachable` — and
+  // they are the pair the classifier exists to keep apart, because they send an operator to
+  // DIFFERENT systems (the launcher vs the broker host). Asserting one without the other would
+  // prove nothing about the discrimination, so both run here against the same fixture.
+  console.log("\n=== ARM 6: credential-source-unavailable / broker-unreachable ===");
+  precondition("ARM 6", "the credential minted for this arm while the manager was alive is present",
+    typeof creds6 === "string" && !!id6 && !!uid6, { hasCreds: typeof creds6 === "string" });
+  const mk6 = (o: Partial<{ creds: any; servers: string }>) => new CotalEndpoint({
+    space, servers: o.servers ?? SERVERS, creds: o.creds ?? creds6!,
+    card: { id: id6!.id, name: "subject-arm6", kind: "agent" },
+    channels: ["general"], lifecycleUid: uid6!, heartbeatMs: 400, ttlMs: 3000,
+  });
+
+  // CONTROL FIRST. Both cells below assert a REFUSAL, so without an arm in which this exact
+  // fixture CONNECTS, "refused" is equally explained by a credential the broker was never going to
+  // take — and the arm would be measuring its own setup.
+  const e6ok = mk6({});
+  e6ok.on("error", () => { /* the cells below break this fixture on purpose */ });
+  const r6ok = await e6ok.connect();
+  armCheck("ARM 6", "D6-ctl CONTROL: this fixture's credential and target DO connect (so both refusals below can differ)",
+    r6ok.outcome === "connected", r6ok);
+  await e6ok.stop();
+
+  // ── D6a — the credential SOURCE failed, and nothing was dialled ──────────────────────────────
+  const e6src = mk6({ creds: async () => { throw new Error("spawn cotal-bearer ENOENT"); } });
+  e6src.on("error", () => { /* expected */ });
+  const r6src = await e6src.connect();
+  armCheck("ARM 6", "D6a a creds SOURCE that will not run refuses as credential-source-unavailable",
+    r6src.outcome === "refused" && (r6src as any).reason === "credential-source-unavailable", r6src);
+  armCheck("ARM 6", "D6b and NOT as broker-unreachable — the host is fine; sending an operator there is the bug this classifier exists to prevent",
+    r6src.outcome === "refused" && (r6src as any).reason !== "broker-unreachable", r6src);
+  await e6src.stop();
+
+  // ── D6c — the grant is fine and the target is simply not answering ───────────────────────────
+  // A port this run picked and never bound: nothing is listening, and nothing else can be.
+  const deadPort = await pickFreePort();
+  const e6dead = mk6({ servers: `nats://127.0.0.1:${deadPort}` });
+  e6dead.on("error", () => { /* expected */ });
+  const r6dead = await e6dead.connect();
+  armCheck("ARM 6", "D6c a target that is not answering refuses as broker-unreachable",
+    r6dead.outcome === "refused" && (r6dead as any).reason === "broker-unreachable", r6dead);
+  armCheck("ARM 6", "D6d and NOT as credential-source-unavailable — the SAME credential connected in D6-ctl, so the source is not the fault",
+    r6dead.outcome === "refused" && (r6dead as any).reason !== "credential-source-unavailable", r6dead);
+  await e6dead.stop();
 
   // VOID is reported separately and never folded into either column. A voided arm is not a pass
   // (nothing was proven) and not a failure (nothing was disproven) — it is a run that did not
