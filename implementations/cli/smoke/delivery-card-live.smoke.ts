@@ -20,11 +20,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  createSpaceAuth, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
+  CotalEndpoint, createSpaceAuth, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { workspaceSecretStore, putSpaceAuth } from "@cotal-ai/workspace";
 import { mintDeliveryCaller } from "../src/lib/delivery-caller.js";
-import { deliveryRow, renderDeliveryRow } from "../src/lib/delivery-row.js";
+import { deliveryRow, deliverySeams, renderDeliveryRow } from "../src/lib/delivery-row.js";
 import { pickFreePort } from "../../delivery/smoke/_free-port.js";
 
 // ---------------------------------------------------------------- guard, FIRST
@@ -125,6 +125,34 @@ try {
   check("L3: the rendered text names its SOURCE", /source|responder-roundtrip|lease-kv|broker-dial/i.test(liveText), liveText);
   check("L4: the rendered text names an AGE", /\bage|\bms\b|\bs ago|ago\b/i.test(liveText), liveText);
   await live.close();
+
+  // ---- L9: THE INVERSE CONTROL FOR THE REFUSAL CONDITION, and it must run while the daemon LIVES.
+  //
+  // Without it, L6 ("refuses as no-responder") could pass vacuously on a row that answers
+  // `no-responder` to everything — the same empty-set hazard that made the window's A5 worthless
+  // until A1 went green. A DENIED caller against a LIVE daemon must produce a DIFFERENT condition,
+  // or the row collapses "I was refused" into "nobody answered" and reproduces, in the surface that
+  // exists to catch it, the conflation the arms proved is separable at the broker.
+  //
+  // This one endpoint is constructed directly rather than through `mintDeliveryCaller`, which mints
+  // agent-class by design. It is still entirely real — a real under-granted cred, a real broker, a
+  // real denial — and the alternative would be adding a profile knob to production code so a test
+  // could reach it.
+  const denied = new CotalEndpoint({
+    space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "probe"),
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+    card: { name: "under-granted-reader", role: "instrument", kind: "endpoint" },
+  });
+  denied.on("error", () => { /* the async half of the denial; captured so it cannot kill this suite */ });
+  await denied.start();
+  const deniedHealth = await deliverySeams(denied, {
+    shard: 0, ttlMs: LEASE_TTL_MS, deadlineMs: 1500, now: () => Date.now(),
+  }).check();
+  const deniedCond = deniedHealth.serving ? "SERVING" : deniedHealth.refusal.condition;
+  console.log(`  under-granted caller vs LIVE daemon -> ${deniedCond}`);
+  check("L9 inverse control: an under-granted caller against a LIVE daemon refuses as `refused`",
+    deniedHealth.serving === false && deniedHealth.refusal.condition === "refused", deniedCond);
+  await denied.stop();
 
   // ---- the corpse. SIGKILL, so no graceful lease release runs.
   console.log("\n--- KILL: SIGKILL, so no graceful lease release runs\n");
