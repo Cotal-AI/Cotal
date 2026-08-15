@@ -386,11 +386,58 @@ try {
         threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
       check("...carrying the responder-answered marker (so the caller can tell it may already have run)",
         respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
+      // THE GUARD MUST NOT HAVE DROPPED THE CACHE. This is the deterministic half, and it is what
+      // makes the sweep below possible. `invokeService` deletes the cached resolve and re-invokes
+      // AFTER the guard; so if the guard let this command through, the ghost id is gone and a real
+      // instance has taken its place — observable regardless of whether the second invoke then
+      // happened to succeed or to split again. Asserting on the throw alone cannot distinguish
+      // those, because a second split throws the same error the guard would have thrown.
+      check("...and the cached resolve was NOT dropped — the retry never started",
+        cache.get(MANAGER_ENDPOINT)?.responder.instanceId === ghost,
+        { want: ghost, got: cache.get(MANAGER_ENDPOINT)?.responder.instanceId });
       // The narrow-guard version of this code returned a SUCCESS here, having purged twice. Naming
       // that explicitly so a future reader knows which way this cell fails.
       check("...and does NOT return the second execution's success",
         (returned as { reply?: { ok?: boolean } } | undefined)?.reply?.ok !== true,
         (returned as { reply?: unknown } | undefined)?.reply);
+
+      // ---- THE CLASSIFIER AND THE GUARD, GRADED TOGETHER ---------------------------------------
+      // Everything above this line grades them SEPARATELY: the classification checks call
+      // `isRepeatSafeCommand` directly, and the behavioural checks drive the guard with exactly two
+      // commands (`spawn` in cell 6, `purge` here). Nothing joined the two, so a guard that ignored
+      // the classifier entirely and hardcoded `command === "spawn" || command === "purge"` passed
+      // the whole suite. MEASURED, not suspected: that mutation reported SURVIVED at 32/32 marks,
+      // the full baseline. The list was proved right and the guard was proved to work twice, and
+      // between those two facts sat the thing neither of them checked.
+      //
+      // A peer lane hit the same class from the other side — its fixture graded the old guard with
+      // only the first member of a two-member set, so the second silently lost its protection with
+      // nothing going red. Same underlying mistake in both: grading a DECISION through one example
+      // of it.
+      //
+      // So sweep the whole admin vocabulary through the real guard. This is the fail-closed test
+      // that matches the fail-closed guard: a command added to `MANAGER_ADMIN_COMMANDS` tomorrow is
+      // graded here the day it lands, without anyone remembering to add a cell, and no hardcoded
+      // subset of commands can satisfy it.
+      //
+      // The assertion is the CACHE, not the throw, and that choice is load-bearing. A second invoke
+      // can split again and throw the identical error, so "it threw" does not separate "the guard
+      // held" from "the retry ran and failed too" — roughly a coin flip each time, which would make
+      // this cell flaky rather than wrong. The cache is deterministic: `invokeService` drops it only
+      // on the path the guard is there to prevent.
+      const swept: string[] = [];
+      for (const command of MANAGER_ADMIN_COMMANDS) {
+        if (command === "purge") continue; // already graded above, in full
+        const c = cache.get(MANAGER_ENDPOINT);
+        if (c) c.responder.instanceId = ghost; // re-force: a preceding iteration may have healed it
+        try {
+          await ep.invokeService(MANAGER_ENDPOINT, command, {});
+        } catch { /* the throw is expected; the cache is what is graded */ }
+        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId !== ghost) swept.push(command);
+      }
+      check("EVERY other manager.admin command reaches the same guard — none is quietly retried",
+        swept.length === 0,
+        { retriedAnyway: swept, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
     } finally { await ep.stop().catch(() => {}); }
   }
 
