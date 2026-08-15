@@ -708,3 +708,53 @@ A `nats-server` from an **earlier** `m10` run was still live on `/tmp/meshctl-m1
 have mis-blamed the run that had just finished two minutes earlier. Elapsed time is what settles it.
 Signalled by **process group** (`kill -TERM -2661509`) rather than by pid, confirmed gone, and both
 stale scratch dirs removed. No `nats-server` and no `/tmp/meshctl-*` remained afterwards.
+
+## The evidence seat's three remaining P1s — all three closed, and one of them was mine twice over
+
+**`mc-rev-evidence` filed NO BLOCK on the 93-cell roll-call and four P1s. The first
+(discarded-log "confirmed" upgrade) was fixed at `dc7cdceb`. These are the other three.**
+
+### P1 — `D3f` was called an inverse control for `D3c` and is not one
+
+`varz().total` has **two authors** at that point: `connect()` itself and the renewal preflight.
+`before3c` is sampled **before** `c.connect()`, so `D3d` (`outcome === "connected"`) already implies
+the dial `D3f` counts. **If `D3d` passed, `D3f` cannot fail** — whatever the renewal timer did.
+Concretely: *a mutant that never re-arms renewal reddens `D3e` and leaves `D3f` green.*
+
+**Closed by naming it correctly, not by deleting it.** `D3f` now says it counts the rise across
+`connect()` and is **NOT** an inverse control for `D3c`. **`D3c`'s broker half therefore still has no
+inverse control, and that is now stated rather than implied by a name.** The honest arm would sample
+*after* the connect settles and require a further rise attributable to the preflight alone — **not
+written.** (`D3k` is the real inverse of `D3h` and is unaffected.)
+
+### P1 — `E16` is `E12 ∧ E14` wearing a stronger name
+
+It **drives no new action**: it re-reads `witnessed[]` and `strangerSaw[]` that `E12` and `E14`
+already wrote, and those arrays only grow — so **if both passed, `E16` cannot fail**. And *"the SAME
+instant"* was an **attribution**: the `#secret` post and the DM are sequential, with a stranger start
+and a 2500ms sleep between them.
+
+**Kept, because the conjunction is the finding a reader needs — either half alone misleads — but
+renamed to SUMMARY (derived), and explicitly not countable as a third cell.** A genuine same-instant
+arm would drive both reaches concurrently; **not written.**
+
+### P1 — the contamination latch had a hole, and MY OWN new cells inherited it
+
+`precondition()` counted a pass **even after an earlier precondition on the same arm had failed** —
+only `armCheck` voided. **In the `0226Z` run, `UX` and both `UX ATTRIBUTION` cells reported GREEN on
+a fixture where the good bearer never connected**, so *"the callout verifies, so this is really user
+mode"* passed on an arm that could not have differed.
+
+> **The two ATTRIBUTION cells were my fix for exactly this class, and they were built on top of it.
+> A fix can be correct and still be standing on the defect it did not know was under it.**
+
+**Closed:** a contaminated arm now VOIDs its later preconditions. **A voided precondition still
+PRINTS its observed values** — the diagnosis is the reason the run is worth reading — but it no
+longer counts as a pass, because it is not evidence.
+
+**⚠️ The fix is UNRUN, and it is provably INERT for the result this file cites.** Measured on the
+kept log rather than argued: `runs/2026-08-15T0232Z-m7-usermode-rerun.txt` contains **0** `⊘ VOID`
+and **0** `✗ FAIL PRE` lines against **4** `✓ PRE-USER`. **Nothing was ever contaminated in that run,
+so the new branch cannot fire in it and the `11 passed / 1 failed / 0 VOID` stands untouched.** That
+is a bound derived from the surviving instrument — not a claim that the fix has been exercised. **It
+has not been, and the first run that contaminates an arm is the one that will test it.**

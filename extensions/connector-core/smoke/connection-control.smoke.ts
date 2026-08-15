@@ -580,10 +580,16 @@ async function main() {
     console.log(`  ▸ RECORDED (not asserted) — anycast to a role with NO server bound:\n` +
       `      isError=${unserved.isError === true}  text=${JSON.stringify(String(unserved.text).slice(0, 200))}`);
 
-    // E16 — THE ASYMMETRY AS ONE ASSERTION. E12 and E14 each measure half of it, and a reader who
-    // saw only one would draw the wrong conclusion about what `allowPublish` bounds. Asserting the
-    // conjunction means the finding cannot survive either half changing.
-    armCheck("AUTHED", "E16 THE ASYMMETRY: the SAME seat in the SAME instant is denied one word to #secret and delivered a DM to that channel's only member — `allowPublish` bounds broadcast, not peer reach",
+    // E16 — A DERIVED SUMMARY, NOT AN INDEPENDENT OBSERVATION. Named honestly after mc-rev-evidence
+    // showed the old name overclaimed twice over:
+    //   (1) it drives NO new action — it re-reads `witnessed[]` and `strangerSaw[]` that E12 and E14
+    //       already wrote, and those arrays only grow, so if E12 and E14 passed this CANNOT fail;
+    //   (2) "the SAME instant" was an attribution — the #secret post and the DM are sequential, with
+    //       a stranger start and a 2500ms sleep between them.
+    // It is kept because the conjunction is the finding a reader needs (either half alone misleads),
+    // but it is EVIDENCE OF NOTHING BEYOND E12 AND E14 and must not be counted as a third cell.
+    // A genuine same-instant arm would have to drive both reaches concurrently and is not written.
+    armCheck("AUTHED", "E16 SUMMARY (derived from E12 ∧ E14 — drives nothing new, cannot fail if both passed): denied one word to #secret, delivered a DM to that channel's only member — `allowPublish` bounds broadcast, not peer reach",
       !witnessed.some((w) => w.includes("PUB-OUT-OF-ACL")) && strangerSaw.some((w) => w.includes("DM-TO-UNGRANTED-PEER")),
       { deniedToSecret: !witnessed.some((w) => w.includes("PUB-OUT-OF-ACL")), dmDelivered: strangerSaw.some((w) => w.includes("DM-TO-UNGRANTED-PEER")) });
 

@@ -411,7 +411,15 @@ try {
   const mintsAtOn = mints;
   armCheck("ARM 3", "D3e CONTROL: the timer re-armed — the source is called AGAIN without another connect()",
     await until(() => mints > mintsAtOn, TTL * 1000 + 2000), { atOn: mintsAtOn, now: mints });
-  armCheck("ARM 3", "D3f CONTROL: and the broker's cumulative count rose (so D3c could have failed)",
+  // D3f — NAME CORRECTED. It was called an inverse control for D3c ("so D3c could have failed"),
+  // and it is not one. `varz().total` has TWO authors here: `connect()` itself and the renewal
+  // preflight. `before3c` is sampled BEFORE `c.connect()`, so D3d (outcome === "connected") already
+  // implies the dial this cell counts — if D3d passed, D3f CANNOT fail, whatever the renewal timer
+  // did. Concretely: a mutant that never re-arms renewal reddens D3e and leaves D3f green.
+  // D3c's broker half therefore still has NO inverse control; the honest arm would sample AFTER the
+  // connect settles and require a FURTHER rise attributable to the preflight alone. Not written.
+  // (D3k is the real inverse of D3h and is unaffected.)
+  armCheck("ARM 3", "D3f the broker's cumulative count rose across connect() (NOT an inverse control for D3c — connect() is itself an author of this counter; see comment)",
     (await varz()).total > before3c.total, { before: before3c.total, after: (await varz()).total });
 
   // ══ ARM 3b — the CROSSING: a source call already in flight when the disconnect lands ══════════

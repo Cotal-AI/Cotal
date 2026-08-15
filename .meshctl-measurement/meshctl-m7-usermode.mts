@@ -116,7 +116,20 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 // Carried from the connector suite, where a broken fixture produced two GREEN cells asserting a
 // property it could not possibly have exercised. Built in from the start here rather than retrofitted.
 const contaminated = new Set<string>();
+// LATCH HOLE CLOSED. `precondition` used to count a pass even after an EARLIER precondition on the
+// same arm had failed — only `armCheck` voided. mc-rev-evidence found it, and my own two
+// `UX ATTRIBUTION` cells inherited it: in the 0226Z run they reported GREEN on a fixture where the
+// good bearer never connected, so "the callout verifies, so this is really user mode" passed on an
+// arm that could not have differed. A fix can be correct and still be built on the defect it did
+// not know it was standing on.
+// A voided precondition still PRINTS its observed values — the diagnosis is why the run is worth
+// reading — but it is no longer counted as a pass, because it is not evidence.
 const precondition = (arm: string, name: string, cond: boolean, extra?: unknown) => {
+  if (contaminated.has(arm)) {
+    voided++;
+    console.log(`  ⊘ VOID (${arm} contaminated by an earlier precondition — observed, not evidence): ${name}`, extra ?? "");
+    return;
+  }
   if (cond) { pass++; console.log(`  ✓ PRE-${arm}: ${name}`); }
   else { fail++; contaminated.add(arm); console.log(`  ✗ FAIL PRE-${arm}: ${name}`, extra ?? ""); }
 };
