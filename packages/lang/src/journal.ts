@@ -166,6 +166,16 @@ export class Journal {
   private readonly store?: JournalStore;
   private readonly byKey = new Map<string, JournalEntry>();
   private readonly order: string[] = [];
+  /**
+   * Append order, allocated where the entry is BUILT rather than read off `order.length`.
+   *
+   * `begin` awaits a durable append before the key joins `order`, so two concurrent branches — which
+   * is the normal shape, not an edge case — both read the same length and both claimed the same
+   * `seq`. Rendering then showed two "first" steps, and any tooling ordering by it saw a tie it had
+   * no way to break. A counter is allocated synchronously, so the two branches cannot observe the
+   * same value however their awaits interleave.
+   */
+  private nextSeq = 0;
   /** Every key the current replay has looked up. What is left over is an orphan. */
   private readonly consumed = new Set<string>();
 
@@ -179,6 +189,7 @@ export class Journal {
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;
       this.byKey.set(full, e);
       this.order.push(full);
+      if (e.seq >= this.nextSeq) this.nextSeq = e.seq + 1;
     }
   }
 
@@ -242,7 +253,7 @@ export class Journal {
     const k = Journal.keyOf(key);
     const entry: JournalEntry = {
       v: 1,
-      seq: this.order.length,
+      seq: this.nextSeq++,
       run: this.run,
       scope: k.slice(0, k.lastIndexOf("/")),
       kind: key.kind,

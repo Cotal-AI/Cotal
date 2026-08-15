@@ -410,4 +410,43 @@ const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
     journal.entries().map((e) => e.external));
 }
 
+// ---- 11) append order is ALLOCATED, not read off a list the append has not joined yet ---------
+
+/**
+ * Two concurrent branches are the normal shape, and `begin` awaits a durable append before its key
+ * joins the order list — so both branches read the same length and both claimed the same `seq`.
+ * Rendering showed two "first" steps, and any tool ordering by it saw a tie with nothing to break
+ * it. The store here yields, which is what a real network does and what a synchronous fake hides.
+ */
+{
+  const seen: JournalEntry[] = [];
+  const journal = new Journal({
+    run: "seq-1",
+    store: {
+      append: async (entry) => {
+        await new Promise<void>((r) => setTimeout(r, 0));
+        seen.push(entry);
+      },
+    },
+  });
+  await run(
+    'await parallel({ a: async () => await sleep("1m", { name: "a" }), b: async () => await sleep("1m", { name: "b" }) }, { name: "p" });',
+    { runId: "seq-1", journal, handler: new SimHandler({}) },
+  );
+  const begins = journal.entries().filter((e) => e.kind === "sleep");
+  ok("two concurrently-begun steps really did both start before either was durable",
+    begins.length === 2, begins.length);
+  ok("and they hold DISTINCT append orders", begins[0]?.seq !== begins[1]?.seq,
+    begins.map((e) => `${e.name}:${e.seq}`));
+  ok("no two entries in the journal share one seq",
+    new Set(journal.entries().map((e) => e.seq)).size === journal.entries().length,
+    journal.entries().map((e) => `${e.kind}:${e.seq}`));
+  // A journal loaded from a prefix keeps allocating past it, or a resumed run's first new step
+  // collides with a recorded one.
+  const reloaded = new Journal({ run: "seq-1", entries: journal.entries() });
+  const next = await reloaded.begin({ scope: [], kind: "sleep", name: "later", occurrence: 0 }, "h", 0);
+  ok("and a journal reloaded from a prefix allocates PAST it",
+    next.seq > Math.max(...journal.entries().map((e) => e.seq)), next.seq);
+}
+
 console.log(`journal.smoke: ${pass} checks passed`);
