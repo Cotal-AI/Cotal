@@ -963,6 +963,23 @@ engineering, and so nobody inherits a claim the code does not keep.
 **no transition, no source, no cause.** So a deliberate departure, a stale heartbeat, and a crash
 are the same bytes to an observer.
 
+> ⚠️ **AND THE ARGUMENT HAS A READER-SIDE TWIN THAT IS STRONGER THAN THE WRITER-SIDE ONE.** The case
+> above is about the WRITER: a cause carried only in caller-writable text cannot be trusted, because
+> nothing makes the writer set it truthfully. **But the failure also happens when the text IS present
+> and IS true.** Observed on this mesh tonight, not reasoned: a peer's roster line carried an exact
+> diagnosis of a live infrastructure fault in plain prose — *"the responding manager resolves
+> personas under `/home/cotal`, which does not exist on this box"* — and **three separate agents read
+> that roster repeatedly without reading that line as data.** I read it three times. It was not
+> hidden; it sat in a field each of us had classified as status prose.
+>
+> **A FIELD WHOSE CONTENTS ARE FREE-FORM PROSE GETS READ AS CHATTER REGARDLESS OF WHAT IS IN IT.**
+>
+> So a discriminator carried in `activity` fails at **both** ends independently, and the reader-side
+> failure survives even if every writer is honest. That is a stronger case for a typed wire field
+> than the writer-side argument alone — and it is the same shape as the `mc-e2e-user` downgrade
+> recorded in `verdicts/`: **an observation that was present and correct and still could not carry
+> the conclusion drawn from it.**
+
 **Clearance bar** (the reviewer's, adopted verbatim rather than restated in my own words):
 a machine-readable transition/source/cause discriminator, surfaced by `cotal_roster` **and** by an
 external observer/UI, **plus a must-differ test covering all three states — deliberate disconnect,
