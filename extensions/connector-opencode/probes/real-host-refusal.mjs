@@ -54,6 +54,13 @@
  * The first must print OK (5/5). The second must FAIL on OH1 and OH2 and on nothing else — a
  * pre-fix arm that passes means the probe is no longer measuring the adapter.
  *
+ * IT STARTS REAL PROCESSES AND CLEANS UP FROM EVERY CATCHABLE PATH. Teardown runs from the
+ * `finally` and from SIGINT/SIGTERM/SIGHUP handlers, and is idempotent so both firing is fine.
+ * Measured, not asserted: signalled mid-run it left ZERO survivors and removed its scratch, where
+ * the same probe with teardown only in the `finally` left a live `opencode serve`, a live
+ * `nats-server` and the directory. A SIGKILL still leaks — see README.md for how to confirm what
+ * is yours from the process environment.
+ *
  * Local-only: loopback broker, loopback provider, loopback opencode server. No external calls.
  */
 import { spawn } from "node:child_process";
@@ -108,7 +115,47 @@ const rollCall = () => {
   if (!missing.length && !undeclared.length) console.log(`  ✓ all ${DECLARED.length} declared cells were EVALUATED.`);
 };
 
+/** EVERYTHING THIS RUN OWNS, so teardown can reach it from ANY exit path.
+ *
+ *  Cleanup that lives only in a `finally` does not exist on the paths that matter: a SIGTERM, a
+ *  closed terminal, or an outer `timeout` kills the runner outside the block and leaves a real
+ *  `opencode serve` and a real `nats-server` behind. That is not hypothetical — it is how this
+ *  probe's own reconnaissance run leaked a serve. So the registry is filled in as things are
+ *  created, the teardown reads it, and both the signal handlers and the `finally` call the SAME
+ *  teardown. */
+const owned = { scratch: undefined, nats: undefined, serve: undefined, prov: undefined };
+
+/** IDEMPOTENT BY CONSTRUCTION: both paths can now fire — a signal during the normal exit, or a
+ *  handler that runs and then falls through to the `finally`. The first call memoizes the promise
+ *  and every later call awaits that same one, so nothing is killed twice and nobody returns before
+ *  the teardown that is actually running has finished. Each step is independently guarded: a dead
+ *  pid, an already-closed server and a missing directory are all normal here. */
+let teardownRun;
+const teardown = () => (teardownRun ??= (async () => {
+  const reap = async (child) => {
+    if (!child?.pid) return;
+    try { process.kill(-child.pid, "SIGTERM"); } catch { /* already gone, or never a group leader */ }
+    for (let i = 0; i < 40 && child.exitCode === null && child.signalCode === null; i++) await sleep(150);
+    if (child.exitCode === null && child.signalCode === null) {
+      try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone between the two signals */ }
+    }
+  };
+  await reap(owned.serve);
+  await reap(owned.nats);
+  try { owned.prov?.close(); } catch { /* already closed */ }
+  await sleep(300);
+  if (owned.scratch) { try { rmSync(owned.scratch, { recursive: true, force: true }); } catch { /* best effort */ } }
+})());
+
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    console.log(`\n[probe] ${sig} — tearing down (serve, broker, scratch) before exit`);
+    void teardown().then(() => process.exit(sig === "SIGINT" ? 130 : 143));
+  });
+}
+
 const scratch = mkdtempSync(join(tmpdir(), "cotal-ochost-"));
+owned.scratch = scratch;
 const home = join(scratch, "home");
 const wsroot = join(scratch, "ws");
 mkdirSync(join(home, ".cache", "opencode"), { recursive: true });
@@ -118,12 +165,14 @@ if (existsSync(realModels)) cpSync(realModels, join(home, ".cache", "opencode", 
 
 writeFileSync(join(scratch, "nats.conf"), `port: ${NATS_PORT}\nhttp_port: ${MON_PORT}\njetstream { store_dir: "${scratch}/js" }\n`);
 const nats = spawn("nats-server", ["-c", join(scratch, "nats.conf")], { stdio: "ignore", detached: true });
+owned.nats = nats;
 
 const prov = await startProvider([
   { tool: "cotal_disconnect", args: {} },
   { tool: "cotal_disconnect", args: {} },
   { text: "both calls made" },
 ]);
+owned.prov = prov;
 
 const config = {
   $schema: "https://opencode.ai/config.json",
@@ -157,6 +206,7 @@ const serveEnv = {
 };
 
 const serve = spawn(process.execPath, [SERVE], { cwd: wsroot, env: serveEnv, stdio: ["ignore", "pipe", "pipe"], detached: true });
+owned.serve = serve;
 let handshake;
 let serveLog = "";
 const onData = (d) => {
@@ -252,12 +302,6 @@ try {
   console.log(`\nREAL-OPENCODE-HOST [${LABEL}] ${fail === 0 && !process.exitCode ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   console.log(`[summary] ${JSON.stringify(summary)}`);
   console.log(`--- serve output (tail) ---\n${serveLog.slice(-2500)}`);
-  try { process.kill(-serve.pid, "SIGTERM"); } catch { /* gone */ }
-  for (let i = 0; i < 40 && serve.exitCode === null && serve.signalCode === null; i++) await sleep(150);
-  try { process.kill(-nats.pid, "SIGTERM"); } catch { /* gone */ }
-  for (let i = 0; i < 40 && nats.exitCode === null && nats.signalCode === null; i++) await sleep(150);
-  prov.close();
-  await sleep(300);
-  try { rmSync(scratch, { recursive: true, force: true }); } catch { /* best effort */ }
+  await teardown(); // the SAME teardown the signal handlers call
   process.exit(process.exitCode ?? (fail ? 1 : 0));
 }

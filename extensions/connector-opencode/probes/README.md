@@ -35,6 +35,29 @@ Everything it creates — scratch `HOME`, broker store, workspace root — lives
 removes on exit. It deletes inherited `COTAL_*` from its own env, asserts its broker URL is
 loopback and not the live host before dialling, and signals process groups on teardown.
 
+### If it dies badly: what to look for, and how to confirm what is yours
+
+The probe starts a **real** `opencode serve` and a **real** `nats-server`, both detached, so they
+outlive the runner unless something tears them down. Teardown runs from the `finally` **and** from
+handlers on `SIGINT`/`SIGTERM`/`SIGHUP`, and the teardown is idempotent, so both paths firing is
+fine. A `SIGKILL` still leaks — nothing can catch it.
+
+**Confirm ownership from the process environment, never from a name or a `pgrep -f` pattern.** Name
+patterns match your own shell, your editor, and any unrelated `opencode` you or someone else is
+using; `pgrep -f` also matches the checker itself. This run owns a process only if it references
+this run's own scratch:
+
+```sh
+ls -d /tmp/cotal-ochost-*                    # a surviving scratch dir names the run
+for p in /proc/[0-9]*; do                    # which processes reference it
+  tr '\0' '\n' < $p/environ 2>/dev/null | grep -q /tmp/cotal-ochost- && \
+    echo "$(basename $p) $(cat $p/comm)"
+done
+```
+
+Kill only those pids, then remove the directory. Never redirect a full process listing anywhere
+that gets committed or posted — select fields (`ps -eo pid=,comm=`) and leave `args` out of it.
+
 ### What the two arms proved
 
 Same script, same turn, same session; only the bundle differs.
