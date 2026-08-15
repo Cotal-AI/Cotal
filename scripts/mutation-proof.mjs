@@ -207,7 +207,10 @@ function makePrivateSrc(projectDir, cwd) {
       // package's own entry so the specifier branch is a no-op rather than a throw. A redirect that
       // silently did nothing is the failure this file exists to remove, so it must not be unset.
       COTAL_PRIVATE_CORE: join(copyRoot, "index.js"),
-      COTAL_PRIVATE_SPECIFIER: "\u0000no-such-specifier",
+      // A specifier no package can be named, so the hook's specifier branch is a reachable no-op
+      // rather than a throw. NOT a null byte: spawnSync rejects those outright, which turned a
+      // no-op into a crash of the harness itself.
+      COTAL_PRIVATE_SPECIFIER: "@cotal-ai/__no-such-package-for-src-mode__",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--import ${join(cwd, "scripts", "private-core-register.mjs")}`,
     },
     cleanup: () => rmSync(scratch, { recursive: true, force: true }),
