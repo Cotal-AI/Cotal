@@ -107,6 +107,18 @@ static-credential sessions but not from ungranted user-mode ones.
 Driven through the **real tool entry points**, not internal helpers, against ephemeral loopback
 brokers that refuse the live host in code rather than by runbook.
 
+**Which build these results describe — stated, because on a developer box it is not the obvious
+one.** Every result below is the subject of **this branch's build**, not of any installed release.
+The suites import the connector from `../src/*.js` in the worktree, and the bare `@cotal-ai/core`
+specifier resolves through a workspace symlink to `packages/core/dist/index.js` in the worktree —
+verified with `import.meta.resolve`, not assumed — behind a guard that refuses to run at all if that
+`dist` is older than any core source file. **So these numbers say how the merged code behaves, and
+say nothing about how any currently-installed runtime behaves.** The two are genuinely different on
+this host today: `cotal` on `PATH` is backed by an installed `cotal-ai@0.17.0` whose shipped
+`@cotal-ai/connector-core` `dist/tool-specs.js` contains **zero** occurrences of `cotal_disconnect`
+or `cotal_connect`. A reader who takes these as runtime claims would be reading them about code that
+does not serve calls here.
+
 - `connection-control`: **45 passed / 0 failed / 0 VOID**, including the authed arm.
 - `connection-lifecycle`: **48 / 0**. `request-strand` and the start-leak probe driven and green.
 - **Mutation-proofed with named predicted cells**, with the mutant shown non-equivalent at the
