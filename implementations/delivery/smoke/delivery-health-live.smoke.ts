@@ -62,6 +62,25 @@ if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(SERVERS)) {
   console.error(`✗ REFUSING TO RUN: broker URL ${SERVERS} is not a loopback ephemeral broker`);
   process.exit(1);
 }
+// ---- PLATFORM: the residue is built with POSIX job-control signals, which Windows does not have --
+// Every cell here depends on SIGKILL/SIGSTOP/SIGCONT: `daemon-gone` needs a kill that runs NO
+// graceful lease release, and `daemon-wedged` needs a process that still EXISTS while answering
+// nothing. Node on Windows cannot deliver SIGSTOP at all, so the wedged state cannot be constructed
+// and the suite would report a fault of the harness as a fault of the daemon.
+//
+// This exits 0, following the repo's existing convention for a POSIX-only fault injection
+// (implementations/auth/smoke/int2-revoke-hold.smoke.ts:62-65), and that is a compromise this suite
+// should not be allowed to hide: a skip that exits 0 is counted as a pass by the runner, which is
+// the exact defect class this lane exists to catch. What is available is the OUTPUT — the condition
+// is named, the cell count is stated as zero, and the terminal marker does not read as OK. Fixing it
+// properly needs a third status that bin/smoke/shard.mjs understands, which is a repo-wide change.
+if (process.platform === "win32") {
+  console.log("\nDELIVERY-HEALTH LIVE SMOKE — NOT RUN, 0 cells executed.");
+  console.log("  CONDITION: platform is win32; the residue is built with SIGKILL/SIGSTOP/SIGCONT.");
+  console.log("  NOTHING WAS MEASURED. Do not read this as a pass — read it as absence of evidence.");
+  process.exit(0);
+}
+
 console.log(`\ndelivery-health live — ephemeral broker ${SERVERS} (asserted not ${LIVE})\n`);
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..");

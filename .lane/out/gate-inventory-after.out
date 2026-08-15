@@ -1,0 +1,25 @@
+gate inventory: 295 smoke scripts, 259 reached, 36 not run by anything
+
+  ✓ every ungated suite is listed with a reason
+  ✓ every composite entry resolves to a defined script
+  ✓ no stale UNGATED entries
+
+  22 of the ungated set are UNTRIAGED debt (not a failure; the number should go down).
+  14 are CITED IN THE PLAN RECORD BY PASS COUNT and run by nothing —
+    a reader of the plan sees a number and concludes something checks it. Nothing does:
+      smoke:auth
+      smoke:channel-attention
+      smoke:channel-attention:auth
+      smoke:channels
+      smoke:ctl-trust:live
+      smoke:install
+      smoke:manifest-launch
+      smoke:members
+      smoke:membership-feed:auth
+      smoke:presence-scrub
+      smoke:start-model
+      smoke:user-auth-launch:live
+      smoke:user-spawn:live
+      smoke:web-seed:live
+
+GATE INVENTORY OK ✅
