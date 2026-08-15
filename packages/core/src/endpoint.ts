@@ -1398,9 +1398,11 @@ export class CotalEndpoint extends EventEmitter {
         // try. Re-running a read costs nothing.
         //
         // So the retry is gated on an ALLOWLIST of commands whose second execution is observably
-        // indistinguishable from one (`REPEAT_SAFE_COMMANDS`), and everything else surfaces. The
-        // polarity matters more than the membership: an allowlist fails CLOSED, so a command nobody
-        // has classified is surfaced rather than silently duplicated.
+        // indistinguishable from one (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
+        // method is endpoint-agnostic and a bare name list would lend the manager's judgement to
+        // every other endpoint in the mesh. Everything else surfaces. The polarity matters more
+        // than the membership: an allowlist fails CLOSED, so a command nobody has classified — on
+        // an endpoint nobody has classified — is surfaced rather than silently duplicated.
         //
         // An earlier version of this guard withheld the retry only for `GOAL_BEARING_COMMANDS`
         // (spawn/launch) on the theory that duplication only hurts when it CREATES something.
@@ -1412,7 +1414,7 @@ export class CotalEndpoint extends EventEmitter {
         // read from a mutation. The allowlist is the honest stand-in until it can. The general fix
         // is a safety annotation on the command contract plus an effect-outcome in the reply; that
         // is a SPEC change and is not made here.
-        if (respondedButUnbound(e) && !isRepeatSafeCommand(command)) throw e;
+        if (respondedButUnbound(e) && !isRepeatSafeCommand(endpoint, command)) throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }

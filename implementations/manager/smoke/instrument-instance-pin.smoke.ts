@@ -46,7 +46,7 @@ import {
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
   instancePinnedInstrumentCapabilities, respondedButUnbound, EP_UNBOUND_RESPONDER, CotalEndpoint,
-  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, MANAGER_READ_COMMANDS,
+  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
@@ -343,17 +343,37 @@ try {
   console.log("\n7. a DESTRUCTIVE, non-creating command is retry-unsafe too (the purge counterexample)");
   {
     // Classification first — total over the vocabulary, and it needs no broker at all.
-    const unsafeAdmin = MANAGER_ADMIN_COMMANDS.filter((c) => !isRepeatSafeCommand(c));
+    const safe = (c: string) => isRepeatSafeCommand(MANAGER_ENDPOINT, c);
     check("EVERY manager.admin command is classified retry-unsafe, purge included",
-      unsafeAdmin.length === MANAGER_ADMIN_COMMANDS.length && !isRepeatSafeCommand("purge"),
-      { admin: MANAGER_ADMIN_COMMANDS, retrySafe: MANAGER_ADMIN_COMMANDS.filter(isRepeatSafeCommand) });
-    check("...while every manager.read command stays retry-safe (the guard did not widen)",
-      MANAGER_READ_COMMANDS.every(isRepeatSafeCommand),
-      MANAGER_READ_COMMANDS.filter((c) => !isRepeatSafeCommand(c)));
+      MANAGER_ADMIN_COMMANDS.every((c) => !safe(c)),
+      { admin: MANAGER_ADMIN_COMMANDS, retrySafe: MANAGER_ADMIN_COMMANDS.filter(safe) });
+    // NOT `MANAGER_READ_COMMANDS.every(safe)`, and the difference is the point. `models` is in the
+    // read GRANT class and is NOT repeat-safe: with `{refresh: true}` it reaches the connector's
+    // listModels({refresh}) and, for OpenCode, shells out to `opencode models --refresh` — a
+    // provider round-trip that rewrites a cache. Same name, same grant class, opposite answer,
+    // decided by an argument the classifier cannot see. Asserting the two vocabularies are equal
+    // would re-couple them and re-admit exactly that bug.
+    check("...while the manager READS stay retry-safe (the guard did not widen)",
+      (["status", "ps", "inspect"] as const).every(safe),
+      (["status", "ps", "inspect"] as const).filter((c) => !safe(c)));
+    check("...but `models` is NOT repeat-safe — its effect depends on an ARGUMENT, not its name",
+      !safe("models"));
     // An unknown command must default to UNSAFE. This is the fail-closed property, and it is the
     // only assertion that goes red if someone re-inverts the guard into a denylist.
     check("...and an unclassified command defaults to retry-UNSAFE, not safe",
-      !isRepeatSafeCommand("some-command-nobody-classified"));
+      !safe("some-command-nobody-classified"));
+    // THE ENDPOINT KEY IS LOAD-BEARING. `invokeService` is endpoint-agnostic, so a flat name list
+    // would lend the manager's judgement to any endpoint that happens to reuse a name. A
+    // third-party endpoint with its own `ps` must NOT inherit "safe to run twice" from this table.
+    check("...and an UNKNOWN endpoint has no repeat-safe commands at all, whatever they are called",
+      !isRepeatSafeCommand("some-third-party-endpoint", "ps")
+      && !isRepeatSafeCommand("some-third-party-endpoint", "list")
+      && !isRepeatSafeCommand("some-third-party-endpoint", "inspect"));
+    // ...with exactly one exception, and it is structural rather than a carve-out: `describe` is
+    // served by the machinery on every endpoint (SPEC 13.7) and is never a cluster command, so it
+    // cannot be redefined into something that mutates.
+    check("...except `describe`, which is a read on every endpoint by construction",
+      isRepeatSafeCommand("some-third-party-endpoint", "describe"));
 
     // Behavioural — the same forced split as cell 6, on a command that MUTATES without creating.
     // `purge` is manager.admin, so this needs the admin control tier; the privileged probe above

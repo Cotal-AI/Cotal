@@ -37,10 +37,23 @@ ran the command twice, automatically, while the error text told the operator not
 the mechanism behind one spawn producing several seats. The retry now happens only for commands
 whose second execution is observably indistinguishable from one — the reads and `describe`. Every
 other command surfaces the split to its caller, carrying a marker that says a responder did handle
-the request, so the caller can check before deciding. The classification is an allowlist and fails
-closed: an unclassified command is surfaced rather than repeated. It stands in for something the
-wire does not yet carry — a safety annotation on the command contract and an effect outcome in the
-reply — and that remains open.
+the request, so the caller can check before deciding.
+
+That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by
+bare command name, because the client is endpoint-agnostic and a flat list would lend the manager's
+judgement to any endpoint that happened to reuse a name — an endpoint nobody has classified has no
+repeat-safe commands, and an unlisted command is surfaced rather than repeated. `describe` is the one
+exception, and structurally so: it is served by the machinery on every endpoint and can never be
+redefined into something that mutates.
+
+`models` is deliberately not on that list even though it is a read command. With `{refresh: true}` it
+reaches the connector's model listing and, for OpenCode, re-fetches provider catalogs and rewrites a
+cache — the same name, in the same grant class, answering differently because of an argument the
+classification cannot see. A plain `cotal models` therefore surfaces a split rather than absorbing it
+in a multi-instance space; encoding per-command argument rules here would reintroduce exactly the
+fail-open shape this replaced. That is the clearest statement of what the list is: a client-side
+stand-in for something the wire does not yet carry — a safety annotation on the command contract and
+an effect outcome in the reply — which remains open.
 
 `ps` prints the full instance id in its multi-manager view. That view appears only where the split
 makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
