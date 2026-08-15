@@ -139,13 +139,44 @@ try {
     ep.encodedSize({ ...frame(100, "fixed-id-token"), expectedLastSubjectSeq: 0 }) > naive(100, "fixed-id-token"));
 
   // ── it refuses what the publish path refuses, so nothing can be sized that could not be sent ──
-  const throwsSync = (what: string, fn: () => unknown) => {
-    try { fn(); c(what, false, "did NOT throw"); } catch { c(what, true); }
+  //
+  //    Each of these names WHICH refusal it expects. `encodedSize` applies four guards in a fixed
+  //    order (wildcard → id → expectation → parts), and a cell asserting only "it threw" passes when
+  //    an EARLIER guard fires instead of the one under test — so a reordering, or a guard broken to
+  //    refuse everything, would leave all four green while three of them stopped testing anything.
+  //    That is not hypothetical here: the empty-parts check is the LAST of the four, so its cell is
+  //    the one furthest from the message it depends on.
+  const throwsSync = (what: string, fn: () => unknown, pattern: RegExp) => {
+    try { fn(); c(what, false, "did NOT throw"); }
+    catch (e) { const m = (e as Error).message; c(what, pattern.test(m), m); }
   };
-  throwsSync("sizing a WILDCARD channel is refused", () => ep.encodedSize({ channel: "events.>", parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 0 }));
-  throwsSync("sizing with EMPTY parts is refused", () => ep.encodedSize({ channel: CH, parts: [], id: randomUUID(), expectedLastSubjectSeq: 0 }));
-  throwsSync("sizing with a header-hostile id is refused", () => ep.encodedSize({ channel: CH, parts: [{ kind: "text", text: "x" }], id: "a\r\nb", expectedLastSubjectSeq: 0 }));
-  throwsSync("sizing with a NEGATIVE expectation is refused", () => ep.encodedSize({ channel: CH, parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: -1 }));
+  throwsSync("sizing a WILDCARD channel is refused",
+    () => ep.encodedSize({ channel: "events.>", parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 0 }),
+    /cannot publish to wildcard channel "events\.>"/);
+  throwsSync("sizing with EMPTY parts is refused",
+    () => ep.encodedSize({ channel: CH, parts: [], id: randomUUID(), expectedLastSubjectSeq: 0 }),
+    /encodedSize requires at least one part/);
+  // `[\s\S]*` and not `.*`: the refusal quotes the offending id back, and THIS id is `a\r\nb`, so
+  // the message genuinely spans two lines and `.` never matches the newline between them. Found by
+  // writing the pattern the obvious way and watching this cell fail — the same header-hostile bytes
+  // the guard exists to reject also break the naive matcher that checks it was rejected.
+  throwsSync("sizing with a header-hostile id is refused",
+    () => ep.encodedSize({ channel: CH, parts: [{ kind: "text", text: "x" }], id: "a\r\nb", expectedLastSubjectSeq: 0 }),
+    /publish id [\s\S]*is not a valid id token/);
+  throwsSync("sizing with a NEGATIVE expectation is refused",
+    () => ep.encodedSize({ channel: CH, parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: -1 }),
+    /expectedLastSubjectSeq must be a non-negative safe integer, got -1/);
+
+  //    THE CONTROL, and it is the inverse of the predicate the four cells test: a machine that
+  //    refused EVERY sizing call would satisfy all four refusals above. This is the legitimate
+  //    neighbour of each — same channel, same shape, nothing hostile — and it must return a number.
+  //    The calibration cells above also size successfully, but they are testing the arithmetic; this
+  //    one exists so the refusal block cannot become vacuous without a cell going red.
+  let controlSize = -1;
+  try {
+    controlSize = ep.encodedSize({ channel: CH, parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 0 });
+  } catch (e) { controlSize = -1; c("CONTROL threw", false, (e as Error).message); }
+  c("CONTROL: the legitimate neighbour of all four is ACCEPTED and sized", controlSize > 0, controlSize);
 
   await ep.stop();
 } finally {
