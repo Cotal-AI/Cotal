@@ -46,6 +46,34 @@ type LooseEvent = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /**
+ * Line prefixes. **Every one of these starts with a non-space glyph within the first three columns,
+ * and that is a requirement rather than a style choice.** Leading spaces do not establish a line
+ * start — they indent one — so a prefix of spaces alone leaves the payload's first character still
+ * the first character of the line. `CONT` therefore carries `·`, and no prefix here may be widened
+ * past three leading spaces without re-deriving {@link LINE_START_SAFE}.
+ */
+const CONT = "  · ";
+const TEXT_PREFIX = "» ";
+const THINK_PREFIX = "(thinking) ";
+const TOOL_PREFIX = "⚙ ";
+const RESULT_PREFIX = "  ↳ ";
+
+/**
+ * A line this renderer is allowed to emit: one that cannot open a block construct.
+ *
+ * **This is exported so the suite asserts the invariant against the SAME expression the renderer is
+ * documented by, rather than a second copy of it that can drift.** It is a property of the emitted
+ * lines and nothing more — deliberately not a claim about what any consumer does downstream, which
+ * would be an assertion outside this module that no test here could hold up.
+ *
+ * The constructs are the block-level openers: ATX heading, bullet list, ordered list, blockquote,
+ * table row, and the four-space indented code block — each of which is recognised with up to three
+ * leading spaces, which is exactly why three is the ceiling above.
+ */
+export const LINE_START_SAFE = (line: string): boolean =>
+  !/^ {0,3}(?:#|[-*+>|]|\d+[.)])(?:\s|$)/.test(line) && !/^ {4}/.test(line);
+
+/**
  * Fold a frame's events into display lines.
  *
  * Deltas are ACCUMULATED rather than printed one per line: `TEXT_MESSAGE_CONTENT` arrives as a
@@ -60,10 +88,34 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
   const toolName = new Map<string, string>();
   const toolArgs = new Map<string, string>();
 
-  /** Flush an accumulator as one line, if it has anything in it. */
-  const flush = (map: Map<string, string>, id: string, fmt: (s: string) => string): void => {
+  /**
+   * Emit a payload as lines, prefixing EVERY line — not just the first.
+   *
+   * **THE STRUCTURAL INVARIANT THIS EXISTS FOR: no emitted line begins with a payload character.**
+   * Payload values are multi-line (a tool result is the common case, but pretty-printed args, a
+   * multi-paragraph message and an error body all are), and pushing one of them as a single string
+   * put its second and later lines at column 0 with nothing of the renderer's in front of them.
+   *
+   * At that point the payload is no longer inside the scaffolding — it IS scaffolding, and a
+   * consumer that reads line starts cannot tell which lines the renderer wrote. **Measured: a tool
+   * result whose second line began `- ` captured the frame's own `◂ run … finished` terminator into
+   * a list the payload had opened.** The invariant is asserted over this function's output in the
+   * suite; it is deliberately stated as a property of what is emitted here, not as a claim about
+   * what any particular consumer does with it.
+   *
+   * `cont` carries a non-space glyph for the same reason `first` does: leading spaces alone do not
+   * establish a line start, they only indent one.
+   */
+  const emit = (first: string, cont: string, body: string): void => {
+    const [head, ...rest] = body.split("\n");
+    lines.push(first + head);
+    for (const l of rest) lines.push(cont + l);
+  };
+
+  /** Flush an accumulator, if it has anything in it. */
+  const flush = (map: Map<string, string>, id: string, first: string, cont: string, suffix = ""): void => {
     const acc = map.get(id);
-    if (acc !== undefined && acc.length > 0) lines.push(fmt(acc));
+    if (acc !== undefined && acc.length > 0) emit(first, cont, acc + suffix);
     map.delete(id);
   };
 
@@ -71,18 +123,18 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
     const type = str(e.type);
     switch (type) {
       case AGUI_EVENT_TYPE.RUN_STARTED:
-        lines.push(`▸ run ${str(e.runId) ?? "?"} started`);
+        emit("▸ ", CONT, `run ${str(e.runId) ?? "?"} started`);
         break;
       case AGUI_EVENT_TYPE.RUN_FINISHED: {
         // `outcome` is optional by the real schema — a turn that merely ended says nothing more, and
         // manufacturing "success" would assert something the source never said.
         const outcome = str((e.outcome as LooseEvent | undefined)?.type);
-        lines.push(`◂ run ${str(e.runId) ?? "?"} finished${outcome ? ` (${outcome})` : ""}`);
+        emit("◂ ", CONT, `run ${str(e.runId) ?? "?"} finished${outcome ? ` (${outcome})` : ""}`);
         break;
       }
       case AGUI_EVENT_TYPE.RUN_ERROR: {
         const code = str(e.code);
-        lines.push(`✗ run error${code ? ` [${code}]` : ""}: ${str(e.message) ?? "(no message)"}`);
+        emit("✗ ", CONT, `run error${code ? ` [${code}]` : ""}: ${str(e.message) ?? "(no message)"}`);
         break;
       }
 
@@ -95,7 +147,7 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
         break;
       }
       case AGUI_EVENT_TYPE.TEXT_MESSAGE_END:
-        flush(text, str(e.messageId) ?? "", (s) => s);
+        flush(text, str(e.messageId) ?? "", TEXT_PREFIX, TEXT_PREFIX);
         break;
 
       case AGUI_EVENT_TYPE.REASONING_MESSAGE_START:
@@ -107,7 +159,7 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
         break;
       }
       case AGUI_EVENT_TYPE.REASONING_MESSAGE_END:
-        flush(reasoning, str(e.messageId) ?? "", (s) => `(thinking) ${s}`);
+        flush(reasoning, str(e.messageId) ?? "", THINK_PREFIX, CONT);
         break;
 
       case AGUI_EVENT_TYPE.TOOL_CALL_START: {
@@ -123,32 +175,32 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
       }
       case AGUI_EVENT_TYPE.TOOL_CALL_END: {
         const id = str(e.toolCallId) ?? "";
-        lines.push(`⚙ ${toolName.get(id) ?? "?"}(${toolArgs.get(id) ?? ""})`);
+        emit(TOOL_PREFIX, CONT, `${toolName.get(id) ?? "?"}(${toolArgs.get(id) ?? ""})`);
         toolName.delete(id);
         toolArgs.delete(id);
         break;
       }
       case AGUI_EVENT_TYPE.TOOL_CALL_RESULT:
-        lines.push(`  ↳ ${str(e.content) ?? "(no content)"}`);
+        emit(RESULT_PREFIX, CONT, str(e.content) ?? "(no content)");
         break;
 
       case AGUI_EVENT_TYPE.CUSTOM:
-        lines.push(`• custom ${str(e.name) ?? "(unnamed)"}`);
+        emit("• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
         break;
 
       // An event whose `type` this build does not know. NAMED, never skipped — a skipped event is a
       // hole in a transcript that still looks complete, which is `parseAguiFrame`'s own stated
       // reason for refusing one. Here the surface is a reader rather than a parser, so it is shown.
       default:
-        lines.push(`• unrecognised event ${JSON.stringify(type ?? null)}`);
+        emit("• ", CONT, `unrecognised event ${JSON.stringify(type ?? null)}`);
     }
   }
 
   // A stream that ended without its END event still has content a reader needs. Dropping it would
   // make a truncated turn indistinguishable from a silent one — the exact failure the mirror had.
-  for (const id of [...text.keys()]) flush(text, id, (s) => `${s} …`);
-  for (const id of [...reasoning.keys()]) flush(reasoning, id, (s) => `(thinking) ${s} …`);
-  for (const id of [...toolName.keys()]) lines.push(`⚙ ${toolName.get(id) ?? "?"}(${toolArgs.get(id) ?? ""}) …`);
+  for (const id of [...text.keys()]) flush(text, id, TEXT_PREFIX, TEXT_PREFIX, " …");
+  for (const id of [...reasoning.keys()]) flush(reasoning, id, THINK_PREFIX, CONT, " …");
+  for (const id of [...toolName.keys()]) emit(TOOL_PREFIX, CONT, `${toolName.get(id) ?? "?"}(${toolArgs.get(id) ?? ""}) …`);
 
   return lines;
 }
