@@ -15,7 +15,8 @@ renderers and pi publish a closed schema and the host rejects the call, while
 OpenCode and Hermes pass the caller's object through untouched and are closed at
 the connector's own dispatch. Tools that take no arguments are closed too — they
 were previously published with no schema at all, so a host had nothing to check
-against and forwarded the extras to be dropped — as are the two tools whose
-arguments a connector substitutes for its own. Behaviourally breaking for any
-caller that was relying on extra keys being ignored; the refusal names the
-rejected keys and either lists the accepted ones or says the tool takes none.
+against and forwarded the extras to be dropped — as is `cotal_inbox`, whose
+arguments four of the connectors replace with their own. Behaviourally breaking
+for any caller that was relying on extra keys being ignored. Every refusal names
+the rejected keys; where the connector is the one refusing it also lists the
+arguments the tool accepts, or says it takes none.

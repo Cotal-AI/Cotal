@@ -72,9 +72,23 @@ check("the rendered args is a raw SHAPE, not the closed object OpenCode cannot s
   typeof args?.safeParse !== "function" && Object.keys(args ?? {}).length === accepted.length,
   { keys: Object.keys(args ?? {}), accepted });
 
+// EVERY dispatch call in this file goes through here, and none of them awaits `execute` bare.
+// The agent proxy throws on any access, so a refusal that stops biting does not produce a wrong
+// answer — it produces an uncaught exception that aborts the file at the call site, BEFORE the
+// assertion grading that call can print. The suite is red either way and the exit code is the
+// same, so a regression can be credited as a kill without the refusal ever being proved. Turning
+// the throw into a value is what makes each cell report on its own line.
+const dispatch = async (name: string, args: Record<string, unknown>): Promise<string> => {
+  try {
+    return String(await tools[name].execute(args, {} as never));
+  } catch (e) {
+    return `threw: ${(e as Error).message}`;
+  }
+};
+
 // 2-4. The dispatch closes what the host left open.
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
-const out = String(await tool.execute({ ...IDENTITY_EXTRA }, {} as never));
+const out = await dispatch(TOOL, { ...IDENTITY_EXTRA });
 
 check("a call carrying identity-shaped extras is REFUSED at the adapter's dispatch",
   out.startsWith("⚠"), { out });
@@ -93,21 +107,13 @@ check("...and the refusal precedes the effect: the tool never reached the mesh a
 const ZERO = "cotal_roster";
 const zeroSpec = cotalToolSpecs(config, "opencode").find((s) => s.name === ZERO);
 if (!zeroSpec || Object.keys(zeroSpec.schema.shape).length !== 0) throw new Error(`${ZERO} is no longer a zero-argument tool — repoint this suite`);
-const zeroOut = String(await tools[ZERO].execute({ ...IDENTITY_EXTRA }, {} as never));
+const zeroOut = await dispatch(ZERO, { ...IDENTITY_EXTRA });
 check(`a ZERO-ARGUMENT tool (${ZERO}) is refused too, naming the keys and saying it takes none`,
   zeroOut.startsWith("⚠") && Object.keys(IDENTITY_EXTRA).every((k) => zeroOut.includes(k)) &&
     zeroOut.includes("no arguments") && !zeroOut.includes("reached the mesh agent"),
   { zeroOut });
 
-// Caught, not awaited bare: if the refusal stops biting, `run` reaches the throwing agent proxy
-// and the exception would abort the file BEFORE this check could report — a suite that dies on the
-// line it is grading is red, but not red on its own assertion.
-let inboxOut: string;
-try {
-  inboxOut = String(await tools.cotal_inbox.execute({ ...IDENTITY_EXTRA }, {} as never));
-} catch (e) {
-  inboxOut = `threw: ${(e as Error).message}`;
-}
+const inboxOut = await dispatch("cotal_inbox", { ...IDENTITY_EXTRA });
 check("cotal_inbox, whose args this adapter SUBSTITUTES, refuses the caller's extras rather than discarding them",
   inboxOut.startsWith("⚠") && Object.keys(IDENTITY_EXTRA).every((k) => inboxOut.includes(k)) &&
     !inboxOut.includes("reached the mesh agent"),
