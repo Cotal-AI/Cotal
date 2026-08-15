@@ -46,12 +46,29 @@ const row = (h: DeliveryHealth): Promise<DeliveryRow> =>
 
 console.log("\ndelivery-row — the card's delivery row, constructed\n");
 
-// ---- no-auth: the mint failed. A fact about OUR credentials, not about the daemon.
-const na = await deliveryRow({ mintCaller: () => Promise.resolve(undefined), now: () => AT });
-check("no-auth: a failed mint does NOT probe and does NOT claim anything about the daemon", na.kind === "no-auth");
-check("no-auth: it says so explicitly — 'this surface was never able to ask'",
-  na.kind === "no-auth" && /never able to ask/.test(na.detail));
-check("no-auth: and it does NOT render a tick", na.marker !== "✓");
+// ---- no-caller: the mint failed. A fact about US, not about the daemon — and WHICH fact matters.
+const na = await deliveryRow({
+  mintCaller: () => Promise.resolve({ condition: "no-credential" as const, detail: "no caller credential could be built" }),
+  now: () => AT,
+});
+check("no-caller: a failed mint does NOT probe and does NOT claim anything about the daemon", na.kind === "no-caller");
+check("no-caller: it says so explicitly — 'this surface was never able to ask'",
+  na.kind === "no-caller" && /never able to ask/.test(na.detail));
+check("no-caller: and it does NOT render a tick", na.marker !== "✓");
+
+// The two no-caller conditions are DIFFERENT FACTS and must not share a message. An unreachable
+// broker once rendered as "no caller credential could be built" — a claim about credentials for a
+// failure about reachability, which is this surface's own defect class committed by this surface.
+const unreach = await deliveryRow({
+  mintCaller: () => Promise.resolve({ condition: "unreachable" as const, detail: "the broker at nats://127.0.0.1:1 could not be reached" }),
+  now: () => AT,
+});
+check("no-caller: an unreachable broker is condition `unreachable`, not `no-credential`",
+  unreach.kind === "no-caller" && unreach.condition === "unreachable");
+check("no-caller: and its text names the BROKER without mentioning a credential",
+  unreach.kind === "no-caller" && /could not be reached/.test(unreach.detail) && !/credential/i.test(unreach.detail));
+check("no-caller: the two conditions do NOT render the same text — the distinction survives to the operator",
+  na.kind === "no-caller" && unreach.kind === "no-caller" && na.detail !== unreach.detail);
 
 // ---- the four assessed states.
 const rServing = await row(serving);

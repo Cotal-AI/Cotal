@@ -431,7 +431,9 @@ async function deliveryHealthRow(mesh: { server: string; space: string }): Promi
   });
   try {
     const row = await deliveryRow({
-      mintCaller: async () => (caller === undefined ? undefined : { check: caller.check }),
+      // Pass the mint result THROUGH. Collapsing it to a bare absence here is what made an
+      // unreachable broker report itself as a missing credential.
+      mintCaller: async () => ("check" in caller ? { check: caller.check } : caller),
       now: () => Date.now(),
     });
     // The marker is taken from the row and the text from `deliveryRowText`, never by slicing a
@@ -439,7 +441,7 @@ async function deliveryHealthRow(mesh: { server: string; space: string }): Promi
     // establish" and it is deliberately NOT dimmed.
     return { marker: row.marker === "✓" ? ok("✓") : row.marker, text: deliveryRowText(row) };
   } finally {
-    await caller?.close();
+    if ("close" in caller) await caller.close();
   }
 }
 

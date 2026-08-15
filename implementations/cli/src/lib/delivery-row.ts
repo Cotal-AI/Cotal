@@ -34,12 +34,30 @@ import { guardReport, observeOnce, renderGuard, type GuardSeams } from "./delive
  *  the staleness rule applying to it. The card is the most likely future home of a cache. */
 const CARD_FRESHNESS_MS = 5_000;
 
-/** What the row needs from the world.
+/** What the row needs from the world. `mintCaller` returns the seams for one health assessment, or a
+ *  {@link CallerUnavailable} naming why it could not build one — never a bare `undefined`, because a
+ *  bare absence is what let two different failures share one message. */
+/** Why no caller could be built — the row's THIRD state, and it must name which failure occurred.
  *
- *  `mintCaller` returns the seams for one health assessment, or `undefined` when no caller could be
- *  built at all — which is a fact about OUR credentials and is rendered as such, never as a fact
- *  about the daemon. That distinction is the same one `mintHealthCaller` already draws for the
- *  manager row, and it is the reason this is a nullable return rather than a throw. */
+ *  These are different facts about different subsystems and they were briefly collapsed into one:
+ *  an unreachable broker rendered as "no caller credential could be built", which is a claim about
+ *  our credentials for a failure that was about reachability. Measured against a dead port, so this
+ *  is a repair to a reproduced defect and not a speculative distinction.
+ *
+ *  `no-credential` — we could not MINT. A fact about our own credentials.
+ *  `unreachable`   — we minted fine and could not REACH the broker. A fact about the network or the
+ *                    broker, and specifically NOT about the delivery daemon, which we never got
+ *                    close enough to ask. */
+export interface CallerUnavailable {
+  condition: "no-credential" | "unreachable";
+  detail: string;
+}
+
+/** Narrow the mint result. A caller is the thing that has a `check`; anything else is a refusal. */
+function isCaller(r: Pick<GuardSeams, "check"> | CallerUnavailable): r is Pick<GuardSeams, "check"> {
+  return typeof (r as Pick<GuardSeams, "check">).check === "function";
+}
+
 export interface DeliveryRowDeps {
   /** RESOLVED BY MEASUREMENT, and it stays injected. The arms (`.lane/window-result-2026-08-15.md`)
    *  drove each candidate against a real daemon on an ephemeral broker: `agent` → SERVING, `probe` →
@@ -51,31 +69,36 @@ export interface DeliveryRowDeps {
    *  agent-class caller the measurement selected. This stays a parameter rather than becoming a
    *  hardcoded default so the cells can drive the row's DECISION without a broker, and so the next
    *  change to the cred layer breaks a named seam instead of silently re-introducing the refusal. */
-  mintCaller: () => Promise<Pick<GuardSeams, "check"> | undefined>;
+  mintCaller: () => Promise<Pick<GuardSeams, "check"> | CallerUnavailable>;
   now: () => number;
 }
 
 /** The row's verdict, kept separate from its rendering so the decision is testable without strings. */
 export type DeliveryRow =
-  /** No caller could be built. A statement about our credentials, NOT about the daemon. */
-  | { marker: "?"; kind: "no-auth"; detail: string }
+  /** No caller could be built. A statement about US — our credentials or our reach — and NEVER about
+   *  the daemon, which was not asked. `condition` names WHICH of the two failed. */
+  | { marker: "?"; kind: "no-caller"; condition: CallerUnavailable["condition"]; detail: string }
   /** An assessment completed. `health` carries its own verdict, affirmative or a named refusal. */
   | { marker: "✓" | "?"; kind: "assessed"; health: DeliveryHealth; text: string };
 
 /** Build the delivery row.
  *
- *  ORDER IS THE POINT: the caller is minted FIRST, and a mint failure short-circuits to `no-auth`
+ *  ORDER IS THE POINT: the caller is minted FIRST, and a mint failure short-circuits to `no-caller`
  *  before any probe runs. Probing with a caller we know is broken would produce a timeout that reads
  *  as the daemon's fault. */
 export async function deliveryRow(deps: DeliveryRowDeps): Promise<DeliveryRow> {
-  const caller = await deps.mintCaller();
-  if (!caller)
+  const minted = await deps.mintCaller();
+  if (!isCaller(minted))
     return {
       marker: "?",
-      kind: "no-auth",
-      detail:
-        "cannot establish delivery health — no caller credential could be built. This says nothing about the daemon: it means this surface was never able to ask.",
+      kind: "no-caller",
+      condition: minted.condition,
+      // The detail comes from the mint, which is the only layer that knows WHICH failure happened.
+      // Composing it here from a fixed string is how the unreachable case came to describe itself as
+      // a credential problem.
+      detail: `cannot establish delivery health — ${minted.detail}. This says nothing about the daemon: it means this surface was never able to ask.`,
     };
+  const caller = minted;
 
   const obs = await observeOnce({ check: caller.check, now: deps.now });
   const report = guardReport(obs, deps.now(), CARD_FRESHNESS_MS);
@@ -98,7 +121,7 @@ export async function deliveryRow(deps: DeliveryRowDeps): Promise<DeliveryRow> {
  *  one character wide. On a surface whose entire purpose is to state a refusal precisely, quietly
  *  losing the first characters of that refusal is the worst available failure. */
 export function deliveryRowText(row: DeliveryRow): string {
-  return row.kind === "no-auth" ? row.detail : row.text;
+  return row.kind === "no-caller" ? row.detail : row.text;
 }
 
 /** The one-line operator rendering for the card. Composed from {@link deliveryRowText} so the marker

@@ -96,11 +96,11 @@ try {
   const mint = () => mintDeliveryCaller({ root, space, servers: SERVERS, ttlMs: LEASE_TTL_MS, now: () => Date.now() });
 
   // Wait for the daemon to bind before asserting anything about a live one.
-  let live: Awaited<ReturnType<typeof mint>>;
+  let live: Awaited<ReturnType<typeof mint>> | undefined;
   let serving = false;
   for (let i = 0; i < 60; i++) {
     live = await mint();
-    if (live) {
+    if ("check" in live) {
       const h = await live.check();
       if (h.serving) { serving = true; break; }
       await live.close();
@@ -108,8 +108,8 @@ try {
     await wait(250);
   }
 
-  check("L1 control: with a live daemon, mintDeliveryCaller returns a caller", live !== undefined);
-  if (!live) throw new Error("no caller could be built — every refusal below would be about our creds");
+  check("L1 control: with a live daemon, mintDeliveryCaller returns a caller", live !== undefined && "check" in live);
+  if (!live || !("check" in live)) throw new Error("no caller could be built — every refusal below would be about our creds");
 
   const liveRow = await deliveryRow({
     mintCaller: async () => ({ check: live!.check }),
@@ -163,7 +163,7 @@ try {
   check("kill: the whole process GROUP is confirmed absent", !groupAlive(created.daemon));
 
   const dead = await mint();
-  if (!dead) throw new Error("caller mint failed after the kill — cannot attribute the refusal");
+  if (!("check" in dead)) throw new Error(`caller mint failed after the kill (${dead.condition}) — cannot attribute the refusal`);
   const deadHealth = await dead.check();
   const deadRow = await deliveryRow({ mintCaller: async () => ({ check: dead.check }), now: () => Date.now() });
   const deadText = renderDeliveryRow(deadRow);
@@ -181,12 +181,35 @@ try {
   await dead.close();
 
   // ---- no caller at all: a fact about OUR credentials, never about the daemon.
-  const noAuth = await deliveryRow({ mintCaller: async () => undefined, now: () => Date.now() });
-  const noAuthText = renderDeliveryRow(noAuth);
-  console.log(`  no-auth row -> ${noAuthText}`);
-  check("L8: an unbuildable caller renders no-auth and claims nothing about the daemon",
-    noAuth.kind === "no-auth" && /never able to ask|no caller credential/i.test(noAuthText)
-      && !/daemon is (down|dead|absent)/i.test(noAuthText), noAuthText);
+  const noCred = await deliveryRow({
+    mintCaller: async () => ({ condition: "no-credential" as const, detail: "no caller credential could be built (test)" }),
+    now: () => Date.now(),
+  });
+  const noCredText = renderDeliveryRow(noCred);
+  console.log(`  no-credential row -> ${noCredText}`);
+  check("L8: an unbuildable caller renders no-caller/no-credential and claims nothing about the daemon",
+    noCred.kind === "no-caller" && noCred.condition === "no-credential"
+      && /never able to ask/i.test(noCredText) && !/daemon is (down|dead|absent)/i.test(noCredText), noCredText);
+
+  // ---- L10: THE THIRD STATE, PINNED AGAINST A REAL UNREACHABLE BROKER.
+  // Driven through the REAL mintDeliveryCaller against a dead port, because this is the case that
+  // was actually wrong: a connect failure reported itself as a credential failure. A cell that
+  // asserted only the healthy and refused states would have shipped it.
+  const unreachable = await mintDeliveryCaller({
+    root, space, servers: "nats://127.0.0.1:1", ttlMs: LEASE_TTL_MS, now: () => Date.now(),
+  });
+  check("L10: an unreachable broker yields `unreachable`, NOT `no-credential`",
+    !("check" in unreachable) && unreachable.condition === "unreachable",
+    "check" in unreachable ? "a caller" : unreachable.condition);
+  if (!("check" in unreachable)) {
+    const unreachRow = await deliveryRow({ mintCaller: async () => unreachable, now: () => Date.now() });
+    const unreachText = renderDeliveryRow(unreachRow);
+    console.log(`  unreachable row -> ${unreachText}`);
+    check("L11: and the rendered line names the BROKER, never a credential",
+      /could not be reached/i.test(unreachText) && !/credential/i.test(unreachText), unreachText);
+    check("L12: the third state is marked `?` and is non-empty — never blank, never dim-by-omission",
+      unreachRow.marker === "?" && unreachText.trim().length > 0, unreachText);
+  }
 } catch (e) {
   fail++;
   console.error(`\n  ✗ HARNESS ERROR: ${(e as Error).message}`);

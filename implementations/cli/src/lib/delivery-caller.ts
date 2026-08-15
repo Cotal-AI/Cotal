@@ -27,7 +27,7 @@
  */
 import { CotalEndpoint, idFromCreds, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
-import { deliverySeams } from "./delivery-row.js";
+import { deliverySeams, type CallerUnavailable } from "./delivery-row.js";
 import type { GuardSeams } from "./delivery-guard.js";
 
 /** How long the affirmative round-trip may take before it is a refusal. Deliberately short: this is
@@ -55,9 +55,10 @@ export interface DeliveryCaller {
 /**
  * Mint an agent-class caller for one delivery health read.
  *
- * Returns `undefined` when no caller could be built at all. That is a fact about OUR credentials,
- * and `deliveryRow` renders it as `no-auth` rather than as anything about the daemon — the same
- * distinction `mintHealthCaller` draws for the manager row.
+ * Returns a {@link CallerUnavailable} when no caller could be built, NAMING which of the two
+ * failures occurred: `no-credential` (we could not mint) or `unreachable` (we minted and could not
+ * reach the broker). Both are facts about US, never about the daemon — but they are different facts,
+ * and collapsing them was a reproduced defect, not a hypothetical one.
  */
 export async function mintDeliveryCaller(o: {
   root: string;
@@ -65,19 +66,33 @@ export async function mintDeliveryCaller(o: {
   servers: string;
   ttlMs: number;
   now: () => number;
-}): Promise<DeliveryCaller | undefined> {
-  let ep: CotalEndpoint | undefined;
+}): Promise<DeliveryCaller | CallerUnavailable> {
+  // PHASE 1 — MINT. Only credential failures can happen here, so only credential failures can be
+  // reported from here. Wrapping the mint and the connect in ONE try is what made an unreachable
+  // broker describe itself as a missing credential; measured against a dead port before this split.
+  let creds: string | undefined;
+  let uid: string;
   try {
     const auth = await getSpaceAuth(workspaceSecretStore(o.root), o.space);
     // No space auth on disk means an OPEN mesh. Unlike the manager row, there is nothing to ask
     // there: the delivery lease bucket is part of the auth-mode delivery plane, so a read will
     // refuse and the row will say so by name. We still build the caller rather than short-circuit,
     // because `no-auth` means "could not build a caller" and that is not what happened.
-    const uid = mintLifecycleUid();
-    const creds = auth === undefined
+    uid = mintLifecycleUid();
+    creds = auth === undefined
       ? undefined
       : await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: uid });
+  } catch (e) {
+    return {
+      condition: "no-credential",
+      detail: `no caller credential could be built (${(e as Error).message})`,
+    };
+  }
 
+  // PHASE 2 — CONNECT. A failure here is about the broker or the network, and it is specifically NOT
+  // about the delivery daemon: we never got close enough to ask it anything.
+  let ep: CotalEndpoint | undefined;
+  try {
     ep = new CotalEndpoint({
       space: o.space,
       servers: o.servers,
@@ -104,10 +119,11 @@ export async function mintDeliveryCaller(o: {
       leaseNow: () => bound.readDeliveryLease(SHARD),
       close: async () => { try { await bound.stop(); } catch { /* already closing */ } },
     };
-  } catch {
-    // The mint or the connect failed. That is a fact about our own credentials or our reach, not
-    // about the daemon, and the row renders it as such rather than as a daemon verdict.
+  } catch (e) {
     if (ep) { try { await ep.stop(); } catch { /* already closing */ } }
-    return undefined;
+    return {
+      condition: "unreachable",
+      detail: `the broker at ${o.servers} could not be reached (${(e as Error).message})`,
+    };
   }
 }
