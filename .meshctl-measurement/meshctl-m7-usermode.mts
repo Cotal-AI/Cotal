@@ -299,7 +299,9 @@ try {
   armCheck("USER", "U3 a USER-MODE self-disconnect succeeds through the real tool", !d.isError, d.text);
   armCheck("USER", "U4 the INDEPENDENT witness sees it offline — observable departure holds in user mode too",
     await (async () => { for (let i = 0; i < 40; i++) { if (seen()?.status === "offline") return true; await sleep(150); } return false; })(), seen());
-  armCheck("USER", "U5 the cause travels with it, so a deliberate departure is not a crash",
+  // LABEL CORRECTED, same defect as E5: this asserts a substring is present, not that anything is
+  // distinguishable. A stale heartbeat leaves the same text standing.
+  armCheck("USER", "U5 the cause STRING is displayed in user mode too (display only — NOT a discrimination claim; see DESIGN 9.1)",
     /m7-usermode/.test(String(seen()?.activity ?? "")), seen());
 
   const c = await run("cotal_connect", {});

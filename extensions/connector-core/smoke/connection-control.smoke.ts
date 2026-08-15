@@ -211,7 +211,9 @@ async function main() {
   const after = seenBy(B, "subject-a");
   check("A1 observer-B sees subject-a OFFLINE — a deliberate departure is visible, not inferred from silence",
     after?.status === "offline", after);
-  check("A2 the CAUSE travels with it — observer-B can see WHY, not merely THAT",
+  // LABEL CORRECTED: "can see WHY" overstated a substring check. The observer sees the TEXT; it
+  // cannot tell that text apart from the same text left standing by a stale heartbeat.
+  check("A2 the CAUSE STRING reaches observer-B — it can READ the text (which is not the same as being able to trust it; DESIGN 9.1)",
     !!after?.activity && after.activity.includes("going quiet on purpose"), after);
 
   console.log("\n=== A3 the disconnect STICKS: the self-heal must not undo a deliberate departure ===");
@@ -395,7 +397,13 @@ async function main() {
     armCheck("AUTHED", "E4 and an INDEPENDENT AUTHED observer sees it offline — the supervisor property holds under auth, not just in open mode",
       await (async () => { for (let i = 0; i < 40; i++) { if (authedSeen()?.status === "offline") return true; await sleep(150); } return false; })(),
       authedSeen());
-    armCheck("AUTHED", "E5 the cause is carried on the authed path too, so a deliberate departure is not a crash",
+    // LABEL CORRECTED — the old name ("…so a deliberate departure is not a crash") claimed
+    // DISCRIMINATION and asserted only that a chosen string APPEARS. Reproduced live by
+    // mc-rev-supervisor: a heartbeat-stale-but-routing-live endpoint renders the byte-identical
+    // roster line, so this assertion holds in both the safe and the unsafe state. There is no
+    // must-differ arm here and there cannot be one until presence carries a transition/source
+    // field (DESIGN §9.1). The name now claims only what the predicate checks.
+    armCheck("AUTHED", "E5 the cause STRING is displayed on the authed path too (display only — does NOT distinguish a departure from a stale heartbeat; see DESIGN 9.1)",
       /authed-arm/.test(String(authedSeen()?.activity ?? "")), authedSeen());
 
     const ec = await runAuthed("cotal_connect", {});

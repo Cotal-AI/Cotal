@@ -110,13 +110,13 @@ const ANNOTATIONS = {
     effect: "takes you off the mesh; peers see you offline",
     availability: "only with `capabilities: [connection]`",
     notes:
-      "Not the same as leaving every channel: DMs still reach you there, and not here. Durable channel membership is KEPT, so the backstop replays what you missed when you return — an indefinite disconnect keeps accruing messages owed to you. Reversible by YOU and only by you: no mesh peer can pull you back, so the announcement is the last thing a mesh supervisor hears from you (whoever controls your process still does). Refuses rather than going dark quietly if the departure cannot be confirmed at the broker, if requests are awaiting a reply, or if a transition is already running.",
+      "Not the same as leaving every channel: DMs still reach you there, and not here. Durable channel membership is KEPT, so the backstop replays what you missed when you return — an indefinite disconnect keeps accruing messages owed to you. Reversible by YOU and only by you: no mesh peer can pull you back, so your cause line is the last thing a mesh supervisor hears from you (whoever controls your process still does). **That line is display text, not proof:** a heartbeat-stale-but-still-routing endpoint and a genuinely disconnected one render the SAME roster line, so a supervisor cannot distinguish them — measured live, and the reason is that presence carries no transition/cause/source field. Refuses rather than going dark quietly if the departure cannot be confirmed at the broker, if requests are awaiting a reply, or if a transition is already running.",
   },
   cotal_connect: {
     effect: "puts you back on the mesh; peers see you online again",
     availability: "only with `capabilities: [connection]`",
     notes:
-      "Takes no target: it returns to the mesh this session was launched against, with the credential source it was launched with, so it asks for no access you did not already have and can reach no mesh you were not already on. It re-reads that credential when the cached one is stale, which is how a grant revoked while you were away comes back as a refusal rather than as a key that still works. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.",
+      "Takes no target: it returns to the mesh this session was launched against, with the credential source it was launched with, so it asks for no access you did not already have and can reach no mesh you were not already on. It re-reads that credential only when the cached one is STALE — measured: a disconnect/connect pair re-presented the cached credential without fetching a new one. So do not assume a credential revoked while you were away is re-checked on return; whether a revocation is caught is **not measured**. If the broker accepts the connection but refuses part of your channel read set, the result says PARTIAL and names what you are NOT receiving — a grant problem, not a connection problem.",
   },
 };
 

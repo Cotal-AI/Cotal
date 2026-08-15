@@ -316,7 +316,7 @@ Deliberately take this session OFF the mesh, publishing your cause before you go
 
 *return to the mesh*
 
-Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential this session was launched with — it takes no target, so it asks for no access you did not already have and cannot reach another mesh. You come back with no more than your CURRENT grant allows, never wider by anything you pass here. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed.
+Return to the mesh after cotal_disconnect, on the same mesh this session was launched against, re-presenting the credential this session was launched with — it takes no target, so it asks for no access you did not already have and cannot reach another mesh. You come back with no more than your CURRENT grant allows, never wider by anything you pass here. Durable membership was kept across the disconnect, so messages sent while you were away are replayed. Refuses if you are already connected, if a transition is in flight, or if the broker refuses the credential — each with the specific condition that failed. NOTE: a cached credential may be re-presented rather than freshly obtained, so do not assume a revoked credential is re-checked on return.
 
 - **Side-effect:** puts you back on the mesh; peers see you online again.
 - **Available:** only with `capabilities: [connection]`.
