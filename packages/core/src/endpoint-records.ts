@@ -287,6 +287,27 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "pool-owner-lease-command", status: "pool-owner-lease-command" },
     mediation: "mediated",
   },
+  run: {
+    // The WORKFLOW RUN record: `run.<endpoint>.<runId>`, the last-value-wins state beside the
+    // append-only step journal on WFJ. The journal says what happened; this says what the run IS.
+    //
+    // It is a record rather than a journal entry precisely because it is last-value-wins: the
+    // lease holder, the run's state, the artifact refs, and — the part that must never be
+    // recomputed — the PIN SET resolved once at run start: seed, startedAt, yieldEvery, stepBudget,
+    // effectCeiling, languageVersion. Every one of those selects which effects run, so a resume
+    // reads them back and binds them rather than re-deriving them from its own host: `startedAt`
+    // is the run's logical epoch, and a resumed run that took the resuming machine's clock would
+    // measure an elapsed time the recorded run never saw.
+    //
+    // `<endpoint>` leads because the driver is hosted by an endpoint (the manager daemon), so a
+    // retirement drain and a per-endpoint enumeration both work by prefix. It is a CORE kind and
+    // not a registration: `registerRecordKind` reserves single-label names for core.
+    kind: "run",
+    qualifiers: [qEndpoint, qId("runId")],
+    split: true,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   lifecycle: {
     // The optional per-UID append-only audit detail — never the authority (that is the HEAD).
     kind: "lifecycle",

@@ -48,6 +48,28 @@ export function eprStreamName(space: string): string { return `EPR_${token(space
 export function epwStreamName(space: string): string { return `EPW_${token(space)}`; }
 export function epcStreamName(space: string): string { return `EPC_${token(space)}`; }
 
+/** The workflow STEP JOURNAL stream. Deliberately outside the `ep*` plane letters: the step
+ *  journal is a runtime layer over the control surface, not part of the normative §13 endpoint
+ *  contract, and a reader that confuses the two would take a run's private trace for a decision
+ *  fact. It sits beside the §13 decision-fact journal, never on top of it. */
+export function wfjStreamName(space: string): string { return `WFJ_${token(space)}`; }
+
+/**
+ * The ONE subject a run's journal entries append to.
+ *
+ * ONE SUBJECT PER RUN, not one per entry, and the reason is the activation barrier rather than
+ * taste. A superseded driver is fenced by `Nats-Expected-Last-Subject-Sequence`, which JetStream
+ * evaluates PER SUBJECT: with a subject per entry every append would be a create at sequence 0 and
+ * would fence nothing across the run, and the stream-wide variant would fence every run in the
+ * space against every other. The three properties the design asks a subject range for — per-run
+ * ordering, replay by consumer filter, and retirement by subject purge — are all properties of the
+ * RUN subject; the entry level buys only per-entry point reads, which an append-only journal
+ * replayed in full has no use for.
+ */
+export function wfjSubject(space: string, runId: string): string {
+  return `${spacePrefix(space)}.wfj.${assertIdToken(runId, "runId")}`;
+}
+
 /** The CLOSED set of streams a §13.1 retirement may record a frontier cutoff over: exactly the
  *  per-space streams that carry a retired lifecycle's durable data a later durable reader can
  *  replay (facts EPF, work EPW, events EPE, and the records KV). A retirement intent's
@@ -210,6 +232,20 @@ export async function createEndpointStreams(
     name: epwStreamName(space),
     subjects: [`${p}.epw.>`],
     retention: RetentionPolicy.Workqueue,
+    storage: StorageType.File,
+    allow_direct: false,
+  });
+  // WFJ — the workflow step journal, one subject per run (see wfjSubject: the activation barrier
+  // is per-subject, so the subject is the run). NO max_age: a run's journal must outlive any
+  // retention window a control-surface plane wants, because a run that sleeps for a month resumes
+  // by re-reading it, and an evicted prefix is not a shorter journal, it is a run that will
+  // re-perform effects it already performed. Retirement is by subject purge, deliberately.
+  // NO allow_direct: a resume must read its own predecessor's last appends, and Direct Get is
+  // follower-servable — a stale miss there reads as "this step never ran".
+  await jsm.streams.add({
+    name: wfjStreamName(space),
+    subjects: [`${p}.wfj.*`],
+    retention: RetentionPolicy.Limits,
     storage: StorageType.File,
     allow_direct: false,
   });
@@ -817,6 +853,49 @@ export function canonicalizerWorkGrants(space: string, endpoint: string): string
   return [
     `${spacePrefix(space)}.epw.${endpointToken(endpoint)}.>`,
     `${JSAPI}.STREAM.MSG.GET.${epwStreamName(space)}`,
+  ];
+}
+
+/** A run's journal replay durable on WFJ (`wfj_<runId>`, filter the run's own subject): the
+ *  driver reads the run's entries in append order to reproduce the deterministic prefix. Filtered
+ *  to ONE run, because a driver that can read every run's journal can read every run's effect
+ *  results, and a journal entry carries what an agent said. */
+export function runJournalConsumerConfig(
+  space: string,
+  runId: string,
+  opts: { ackWaitMs?: number; maxAckPending?: number } = {},
+): Partial<ConsumerConfig> {
+  return family(wfjStreamName(space), {
+    durable_name: `wfj_${assertIdToken(runId, "runId")}`,
+    filter_subject: wfjSubject(space, runId),
+    ack_policy: AckPolicy.Explicit,
+    ack_wait: nanos(opts.ackWaitMs ?? 60_000),
+    deliver_policy: DeliverPolicy.All,
+    max_ack_pending: opts.maxAckPending ?? 1000,
+  });
+}
+
+/**
+ * The RUN DRIVER's journal rows, minted per RUN and never per space.
+ *
+ * Publish on exactly one subject — the run's — plus the replay durable it owns on that same
+ * subject, plus `STREAM.INFO` on WFJ, which is what reads the run subject's current last sequence
+ * for the activation barrier's expected-sequence header.
+ *
+ * There is no wildcard form of this on purpose. A space-wide `wfj.>` publish would let one run's
+ * driver append to another run's journal, which is not a read leak but a corruption: the other run
+ * would replay a step it never took. And the barrier's whole premise is that the run subject has
+ * exactly one authoritative appender at a time; a grant that spans runs describes a different
+ * system.
+ */
+export function runDriverJournalGrants(space: string, runId: string): string[] {
+  const stream = wfjStreamName(space);
+  const cfg = runJournalConsumerConfig(space, runId);
+  return [
+    wfjSubject(space, runId),
+    consumeCreateRow(stream, cfg),
+    ...consumeBindRows(stream, cfg.durable_name!),
+    `${JSAPI}.STREAM.INFO.${stream}`,
   ];
 }
 
