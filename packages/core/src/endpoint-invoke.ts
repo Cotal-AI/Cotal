@@ -98,6 +98,14 @@ export async function describeEndpoint(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
   try {
+    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. `nc.status()` registers a
+    // listener at CALL time (the transport pushes each status onto every listener registered when
+    // it dispatches), so a listener created after `nc.publish` cannot see a violation dispatched in
+    // between — and that dropped event is indistinguishable from the silence this whole watch
+    // exists to eliminate. The window is almost certainly unreachable today, since the violation is
+    // a server frame and cannot dispatch inside our own synchronous run; ordering it correctly
+    // costs one hoisted line and removes the need for that argument to stay true.
+    statusIter = nc.status()[Symbol.asyncIterator]();
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
@@ -137,9 +145,9 @@ export async function describeEndpoint(
         // Drive the iterator by hand rather than `for await`, so the `finally` below can CLOSE it.
         // `nc.status()` is connection-lived: a `for await` parks on the next event and outlives the
         // describe, so one listener would leak per resolve — unbounded on a long-lived connection,
-        // and measurable as added latency on the resolve-heavy paths.
-        const it = nc.status()[Symbol.asyncIterator]();
-        statusIter = it;
+        // and measurable as added latency on the resolve-heavy paths. (The transport deregisters on
+        // `iterClosed`, so `return()` in the finally is what actually unhooks it.)
+        const it = statusIter!;
         for (;;) {
           const { value: s, done } = await it.next();
           if (done === true || s === undefined) return;
