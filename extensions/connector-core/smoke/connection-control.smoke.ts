@@ -33,7 +33,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 // the inherited connection vars, then assert on the URL this suite ACTUALLY DIALS — asserting on an
 // env var would be over-broad (it refuses on a variable it never reads) and under-powered (it would
 // not catch a hardcoded live host).
-for (const k of Object.keys(process.env)) if (/^COTAL_(SERVERS|CREDS|SPACE|NAME|ID|CONTROL_|LIFECYCLE)/.test(k)) delete process.env[k];
+// PREFIX, not a named subset. A managed seat on this box carries 16 ambient COTAL_* keys, counted
+// with `env | grep -c '^COTAL_'` on a live managed seat. The old named list left EIGHT standing —
+// SUBSCRIBE, ALLOW_SUBSCRIBE, ALLOW_PUBLISH, CHANNEL, ROLE, AGENT_FILE, MODEL, and **CAPABILITIES**.
+// That last one is why this is not a tidying change: COTAL_CAPABILITIES is the exact variable this
+// feature gates on, so the old scrub left the grant under test readable from the ambient seat.
+// None of the eight can dial production, and this suite builds every config BY HAND — `configFromEnv`
+// appears nowhere in this file and there is no other `process.env` read — so no earlier result is
+// affected; measured, not assumed. But a scrub that ENUMERATES keys is one new variable away from
+// being wrong, and the failure would be silent: the suite would read an ambient ACL or an ambient
+// capability and report green about a surface it did not choose. Delete the whole namespace instead.
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 
 const pickFreePort = (): Promise<number> =>
   new Promise((res, rej) => {
