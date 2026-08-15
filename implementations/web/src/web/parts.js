@@ -5,13 +5,23 @@
 // and that expression DELETES any part it cannot draw. `JSON.stringify(undefined)` returns the
 // VALUE `undefined` — not the string "undefined" — and `Array.prototype.join` coerces that to the
 // empty string. So a part with no `data` field (any extension kind, `ag-ui.frame` among them)
-// rendered as nothing: a stray separator between its neighbours, or a completely blank body when it
-// was the only part. A surface that draws nothing is telling the operator that nothing arrived.
-// That is not a gap, it is a false statement, and it is the one thing a monitoring surface must
-// never do. Naming the kind is an honest gap; the empty string was the lie.
+// rendered as nothing: a stray separator between its neighbours, or an empty string when it was the
+// only part. In every case the KIND went unnamed, so a reader could not tell which renderer was
+// missing — that is what this file fixes, and it is the claim to hold it to.
 //
-// A literal "undefined" in a message body would have been reported the day it shipped. An empty
-// body never is — which is part of why this survived in two surfaces at once.
+// THE CONSEQUENCE DIFFERS BY SURFACE, AND AN EARLIER VERSION OF THIS COMMENT GOT IT WRONG. It said
+// both surfaces told the operator that nothing arrived. That is true of ONE of them:
+//   - `app.js` renders the body through `bodyBlock`, i.e. `MD.render(text || "")`, so an empty
+//     rendering really does produce a blank body — absence reported as calm.
+//   - `graph.js`'s detail row renders `esc(m.text).slice(0, 160) || "—"`, so an empty rendering
+//     became a VISIBLE DASH inside a row still carrying mode, sender and channel/target. The graph
+//     showed a message with an unreadable body. It never claimed nothing arrived.
+// Overstating a defect is the same class of error as understating one: it describes a property
+// nothing recomputes, and it makes the fix look like it closes more than it does.
+//
+// A literal "undefined" in a message body would have been reported the day it shipped; a blank one
+// is not, which is part of why this survived. But note the graph placeholder cuts the other way —
+// it was the more visible of the two and still went unfixed, so visibility alone was not enough.
 //
 // ONE renderer for both pages, not two copies, for the reason core's own `partsToText` gives: the
 // duplicated form broke identically everywhere when a new part kind appeared, because each copy had
