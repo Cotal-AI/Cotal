@@ -196,17 +196,111 @@ check("web.ts declares the backfill mapper in one extractable expression", Boole
 // shape but writes the wrong field is caught by behaviour rather than by spelling.
 const CLAIMED = "attacker-claimed";
 const VERIFIED = "policed-channel";
-const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): unknown }[] = [
+
+// ── EXTRACTING A STATEMENT IS A PARSE, AND A REGEX IS THE WRONG PARSER ───────────────────────────
+// This helper exists because the previous form of these two SSE cells SURVIVED a real mutation, and
+// the survival is the whole argument for the rewrite.
+//
+// The pattern was `/^ *(?:if \([^)]*\) )?msg\.channel = entry\.channel;/m` — an optional one-line
+// guard in front of the assignment. Rewrite the shipped guard with BRACES:
+//     if (entry.channel) {
+//       msg.channel = entry.channel;
+//     }
+// and the inner assignment sits alone on its own line, so the pattern matches it with the optional
+// group ABSENT. The cell then executes a bare unconditional assignment — which is exactly the
+// correct behaviour — while the shipped file does the opposite. Positive cell green, hostile cell
+// green, 63/63, rc=0, with a fail-open surface shipped. MEASURED, not reasoned: reproduced by
+// bracing both live ingresses and re-running this suite.
+//
+// So the rule earned here: **anchoring a pattern is not the same as capturing a statement.** The
+// earlier hardening added the optional-guard prefix and claimed "capture the whole statement"; that
+// claim was FALSE the moment the control-flow context was a block rather than a line, because a
+// guard's own body is a syntactically complete statement that behaves correctly in isolation.
+// Any fix that stays in regex-space has the same hole one reformat away.
+//
+// The answer is to stop extracting a statement at all and execute the whole CONTAINING FUNCTION, so
+// every guard around the assignment is inside the code under test by construction. Brace-matching
+// from the function header is a structural parse: it cannot return a fragment.
+function extractFunction(src: string, header: string): string | undefined {
+  const start = src.indexOf(header);
+  if (start < 0) return undefined;
+  let i = src.indexOf("{", start + header.length - 1);
+  if (i < 0) return undefined;
+  // Depth-count braces. These two functions contain no braces inside strings, template literals or
+  // regex literals — asserted below by executing the result, which would throw on a truncated body.
+  for (let depth = 0; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
+  }
+  return undefined;
+}
+
+const APP_ONMESSAGE = "function onMessage(entry) {";
+const GRAPH_ONMESSAGE = "function onMessage({ mode, senderId, channel, msg }) {";
+
+// The two backfill ingresses are single statements inside a long async function, and these patterns
+// stay regex-based. That is a DIFFERENT risk to the one above and it is checked rather than assumed:
+// both require the loop head and the guard to be CONTIGUOUS (`activity) if (`, `) m.`), so a braced
+// rewrite makes them match NOTHING and the extraction cell goes red. They fail SAFE where the SSE
+// patterns failed OPEN. That asymmetry is the reason the SSE pair had to move to whole-function
+// execution and these two did not — and it is driven by `BRACED_*` below, not asserted here.
+const BACKFILL_APP = /for \(const e of activity\) if \(e\?\.msg[^;]*;/;
+const BACKFILL_GRAPH = /if \(m[^)]*\) m\.[^;]*;/;
+
+// A unicast DM carrying a forged `channel`. `mode` comes from the server's `deliveryOf(subject)`,
+// never from the payload, so the attacker controls only `msg.*` — and on `inst` the server sends no
+// channel at all, which is precisely the case a guarded overwrite fails open on.
+const VICTIM = "victim-channel";
+const HOSTILE_DM = { mode: "unicast", channel: undefined, msg: { id: "dm-1", channel: VICTIM } };
+const HOSTILE_DM_GRAPH = { mode: "unicast", senderId: "s-1", channel: undefined, msg: { id: "dm-1", channel: VICTIM } };
+
+/** Drive the WHOLE shipped `app.js` `onMessage` over real collections, and return what it did. */
+function runAppOnMessage(code: string, entry: unknown) {
+  const ctx = {
+    __entry: entry,
+    activity: [] as { msg: { id?: string } }[],
+    dms: [] as { id?: string }[],
+    channels: new Map<string, { messages?: number }>(),
+    channelMsgs: [] as unknown[],
+    unread: new Map<string, number>(),
+    selected: "*",
+    dmSel: null,
+    renderDMs() {}, renderChannels() {}, renderCenter() {},
+  };
+  runInContext(`${code}\nonMessage(__entry);`, createContext(ctx), { filename: "app.js" });
+  return ctx;
+}
+
+/** Drive the WHOLE shipped `graph.js` `onMessage`, recording the hubs it decides to create. */
+function runGraphOnMessage(code: string, arg: unknown) {
+  const hubs: unknown[] = [];
+  const ctx = {
+    __arg: arg,
+    hubs,
+    // `filter.paused` keeps the animation branches out of this cell: they are visual, and gating
+    // them off is what lets the routing decision be read on its own.
+    filter: { paused: true, chat: true, unicast: true, anycast: true },
+    ensureAgent: () => null, ensureHub: (c: unknown) => { hubs.push(c); return null; },
+    now: () => 0, tabVisible: () => false, chatHit: () => ({}), dmHit: () => ({}),
+    pushParticle() {}, pushBloom() {}, mk: () => ({}), heatFanOut() {},
+    MODE: { chat: 0, unicast: 1, anycast: 2 },
+    edges: new Map(), agents: new Map(), shortId: (s: unknown) => s,
+    recent: [] as { chan?: string }[], sel: null, renderDetail() {},
+    partsText: () => "",
+  };
+  runInContext(`${code}\nonMessage(__arg);`, createContext(ctx), { filename: "graph.js" });
+  return ctx;
+}
+
+const INGRESS: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
   {
-    file: "app.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = entry\.channel;/m,
-    run(stmt) {
-      const ctx = { entry: { channel: VERIFIED }, msg: { channel: CLAIMED } };
-      runInContext(stmt, createContext(ctx), { filename: "app.js" });
-      return ctx.msg.channel;
-    },
+    file: "app.js", path: "live SSE feed",
+    extract: (src) => extractFunction(src, APP_ONMESSAGE),
+    run: (code) => runAppOnMessage(code, { mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } }).activity[0]?.msg.channel,
   },
   {
-    file: "app.js", path: "/api/activity backfill", find: /for \(const e of activity\) if \(e\?\.msg[^;]*;/,
+    file: "app.js", path: "/api/activity backfill",
+    extract: (src) => BACKFILL_APP.exec(src)?.[0],
     run(stmt) {
       const ctx = { activity: [{ channel: VERIFIED, msg: { channel: CLAIMED } }] };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -214,15 +308,13 @@ const INGRESS: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = channel;/m,
-    run(stmt) {
-      const ctx = { channel: VERIFIED, msg: { channel: CLAIMED } };
-      runInContext(stmt, createContext(ctx), { filename: "graph.js" });
-      return ctx.msg.channel;
-    },
+    file: "graph.js", path: "live SSE feed",
+    extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
+    run: (code) => runGraphOnMessage(code, { mode: "chat", senderId: "s-1", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } }).recent[0]?.chan,
   },
   {
-    file: "graph.js", path: "/api/activity backfill", find: /if \(m[^)]*\) m\.[^;]*;/,
+    file: "graph.js", path: "/api/activity backfill",
+    extract: (src) => BACKFILL_GRAPH.exec(src)?.[0],
     run(stmt) {
       const ctx = { m: { channel: CLAIMED }, e: { channel: VERIFIED } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -235,7 +327,7 @@ check("the ingress table covers all four entry paths (an empty loop would pass v
   INGRESS.length === 4, { length: INGRESS.length });
 
 for (const ing of INGRESS) {
-  const stmt = ing.find.exec(read(`../src/web/${ing.file}`))?.[0];
+  const stmt = ing.extract(read(`../src/web/${ing.file}`));
   check(`${ing.file} — ${ing.path} — the ingress statement is present and extractable`, Boolean(stmt), { stmt });
   check(`${ing.file} — ${ing.path} — the VERIFIED channel overwrites the publisher's claim`,
     ing.run(stmt!) === VERIFIED, { got: ing.run(stmt!), claimed: CLAIMED, verified: VERIFIED });
@@ -256,17 +348,15 @@ for (const ing of INGRESS) {
 // A CONDITIONAL TRUST RULE IS NOT A TRUST RULE. "Overwrite when I have something better" leaves the
 // untrusted value in place exactly when the trusted one is missing — so the cell must drive the
 // MISSING case, which is the whole point of this block.
-const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): unknown }[] = [
+const HOSTILE: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
   {
-    file: "app.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = entry\.channel;/m,
-    run(stmt) {
-      const ctx = { entry: { channel: undefined }, msg: { channel: CLAIMED, id: "dm-1" } };
-      runInContext(stmt, createContext(ctx), { filename: "app.js" });
-      return ctx.msg.channel;
-    },
+    file: "app.js", path: "live SSE feed",
+    extract: (src) => extractFunction(src, APP_ONMESSAGE),
+    run: (code) => runAppOnMessage(code, HOSTILE_DM).activity[0]?.msg.channel,
   },
   {
-    file: "app.js", path: "/api/activity backfill", find: /for \(const e of activity\) if \(e\?\.msg[^;]*;/,
+    file: "app.js", path: "/api/activity backfill",
+    extract: (src) => BACKFILL_APP.exec(src)?.[0],
     run(stmt) {
       const ctx = { activity: [{ msg: { channel: CLAIMED } }] as { channel?: string; msg: { channel?: string } }[] };
       runInContext(stmt, createContext(ctx), { filename: "app.js" });
@@ -274,15 +364,13 @@ const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): un
     },
   },
   {
-    file: "graph.js", path: "live SSE feed", find: /^ *(?:if \([^)]*\) )?msg\.channel = channel;/m,
-    run(stmt) {
-      const ctx = { channel: undefined, msg: { channel: CLAIMED } };
-      runInContext(stmt, createContext(ctx), { filename: "graph.js" });
-      return ctx.msg.channel;
-    },
+    file: "graph.js", path: "live SSE feed",
+    extract: (src) => extractFunction(src, GRAPH_ONMESSAGE),
+    run: (code) => runGraphOnMessage(code, HOSTILE_DM_GRAPH).recent[0]?.chan,
   },
   {
-    file: "graph.js", path: "/api/activity backfill", find: /if \(m[^)]*\) m\.[^;]*;/,
+    file: "graph.js", path: "/api/activity backfill",
+    extract: (src) => BACKFILL_GRAPH.exec(src)?.[0],
     run(stmt) {
       const ctx = { m: { channel: CLAIMED } as { channel?: string }, e: {} as { channel?: string } };
       runInContext(stmt, createContext(ctx), { filename: "graph.js" });
@@ -292,12 +380,80 @@ const HOSTILE: { file: string; path: string; find: RegExp; run(stmt: string): un
 ];
 check("the hostile table covers all four entry paths too", HOSTILE.length === 4, { length: HOSTILE.length });
 for (const ing of HOSTILE) {
-  const stmt = ing.find.exec(read(`../src/web/${ing.file}`))?.[0];
+  const stmt = ing.extract(read(`../src/web/${ing.file}`));
   check(`${ing.file} — ${ing.path} — the hostile statement is extractable`, Boolean(stmt), { stmt });
   // `undefined`, not merely "not the forgery": a non-chat message HAS no channel, and any other
   // value here would be the surface inventing one.
   check(`${ing.file} — ${ing.path} — a FORGED channel is CLEARED when nothing authoritative exists`,
     ing.run(stmt!) === undefined, { got: ing.run(stmt!), forged: CLAIMED });
 }
+
+// ── 2c. DESTINATION, NOT JUST CONTENT ───────────────────────────────────────────────────────────
+// `msg.channel === undefined` says the value was cleared. It does not say the message stayed OUT of
+// the victim channel's transcript — that is a separate fact, and it is the one an operator would
+// actually see. So the whole function is driven and the collections it writes are read back.
+const appHostile = runAppOnMessage(extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!, HOSTILE_DM);
+check("app.js — a forged DM does NOT create the victim channel in the channel list",
+  appHostile.channels.has(VICTIM) === false, { keys: [...appHostile.channels.keys()] });
+check("app.js — a forged DM does NOT reach the victim channel's transcript",
+  appHostile.channelMsgs.length === 0, { n: appHostile.channelMsgs.length });
+check("app.js — a forged DM does NOT raise any unread badge",
+  appHostile.unread.size === 0, { keys: [...appHostile.unread.keys()] });
+// The message must still ARRIVE — a fix that drops DMs would also pass the three cells above, so
+// the surviving-delivery half is asserted too. This is the "refusal must not become a silent
+// no-op" rule applied to routing rather than to sending.
+check("app.js — the forged DM is STILL delivered as a DM (clearing a channel must not drop it)",
+  appHostile.dms.length === 1 && (appHostile.dms[0] as { id?: string }).id === "dm-1", { dms: appHostile.dms });
+
+const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!, HOSTILE_DM_GRAPH);
+check("graph.js — a forged DM creates NO hub for the victim channel",
+  graphHostile.hubs.length === 0, { hubs: graphHostile.hubs });
+check("graph.js — the forged DM still appears in the recent list, with no channel",
+  graphHostile.recent.length === 1 && graphHostile.recent[0].chan === undefined, { recent: graphHostile.recent });
+
+// And the benign side, so the cells above cannot be satisfied by a function that routes nothing.
+const appBenign = runAppOnMessage(extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!,
+  { mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } });
+check("app.js — a POLICED chat message DOES reach its channel, keyed on the verified name",
+  appBenign.channels.has(VERIFIED) && !appBenign.channels.has(CLAIMED), { keys: [...appBenign.channels.keys()] });
+
+// ── 2d. THE PATTERNS THAT REMAIN REGEX-BASED MUST FAIL SAFE, AND THAT IS RECOMPUTED ──────────────
+// The two backfill ingresses are still matched by pattern. The claim made for them above is that a
+// braced rewrite makes them match NOTHING (red) rather than match a correct-behaving fragment
+// (green) — the exact failure that let the SSE pair survive. A claim about a regex is worthless
+// unless something runs the regex, so the braced forms are built here and matched.
+const BRACED_APP = "for (const e of activity) {\n  if (e?.msg) {\n    e.msg.channel = e.channel;\n  }\n}";
+const BRACED_GRAPH = "if (m) {\n  m.channel = e.channel;\n}";
+check("app.js backfill pattern FAILS SAFE on a braced rewrite (matches nothing, so the cell reddens)",
+  BACKFILL_APP.exec(BRACED_APP) === null, { matched: BACKFILL_APP.exec(BRACED_APP)?.[0] });
+check("graph.js backfill pattern FAILS SAFE on a braced rewrite",
+  BACKFILL_GRAPH.exec(BRACED_GRAPH) === null, { matched: BACKFILL_GRAPH.exec(BRACED_GRAPH)?.[0] });
+// A pattern that matches NOTHING AT ALL would pass both cells vacuously, so each is paired with a
+// positive control proving it still matches the form actually shipped.
+check("app.js backfill pattern still matches the shipped statement (positive control)",
+  BACKFILL_APP.exec(read("../src/web/app.js")) !== null);
+check("graph.js backfill pattern still matches the shipped statement (positive control)",
+  BACKFILL_GRAPH.exec(read("../src/web/graph.js")) !== null);
+
+// ── 2e. THE EXTRACTOR ITSELF ────────────────────────────────────────────────────────────────────
+// `extractFunction` is now load-bearing for four cells, so its own failure modes are driven. A
+// truncated body would still be a string, and a string that happens to parse would execute — the
+// only way to know it captured the WHOLE function is to check the boundary it returned.
+const appFn = extractFunction(read("../src/web/app.js"), APP_ONMESSAGE)!;
+const graphFn = extractFunction(read("../src/web/graph.js"), GRAPH_ONMESSAGE)!;
+check("the extracted app.js onMessage starts at the header and ends at a closing brace",
+  appFn.startsWith(APP_ONMESSAGE) && appFn.trimEnd().endsWith("}"), { head: appFn.slice(0, 30) });
+check("the extracted graph.js onMessage starts at the header and ends at a closing brace",
+  graphFn.startsWith(GRAPH_ONMESSAGE) && graphFn.trimEnd().endsWith("}"), { head: graphFn.slice(0, 30) });
+// Balanced braces is the property that distinguishes a whole function from a fragment of one.
+for (const [label, fn] of [["app.js", appFn], ["graph.js", graphFn]] as const) {
+  let depth = 0;
+  for (const c of fn) { if (c === "{") depth++; else if (c === "}") depth--; }
+  check(`the extracted ${label} onMessage has balanced braces (a fragment would not)`, depth === 0, { depth });
+}
+// A missing header must return undefined rather than silently returning the wrong function — the
+// negative control for the extractor, without which a renamed function would extract the next one.
+check("extractFunction returns undefined for a header that is not present (negative control)",
+  extractFunction(read("../src/web/app.js"), "function noSuchFunctionExists(") === undefined);
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
