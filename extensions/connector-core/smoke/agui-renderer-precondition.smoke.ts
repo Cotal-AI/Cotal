@@ -769,7 +769,26 @@ for (const [surface, rel, blocked] of [
   const p = join(TREE, rel);
   const src = existsSync(p) ? readFileSync(p, "utf8") : "";
   const why = blocked ? " [NOT CLOSABLE AS SPECIFIED — cannot reach connector-core; see note above]" : "";
-  c(`[GATE] ${surface} honours the events.* filter${why}`, src.length > 0 && referencesFrameVocabulary(src, p));
+  // THE NAME STATES WHAT THE PREDICATE DOES, and it did not used to.
+  //
+  // This cell was called "honours the events.* filter" while its predicate is
+  // `referencesFrameVocabulary` — an AST check that the file USES a frame-vocabulary identifier.
+  // Those are not the same claim or even the same KIND of claim: the name promised a channel-scoping
+  // behaviour, the predicate inspects source text. **Someone implemented the weaker check and
+  // labelled it with the stronger one.**
+  //
+  // The cost was not hypothetical. The name is the half that gets read, so the mismatch propagated:
+  // this cell was cited as evidence of an undecided architectural question — twice in one day, by
+  // two different readers, one of whom wrote a paragraph proposing a SPEC CHANGE to satisfy it. **A
+  // cell whose name overstates its predicate is worse than a missing cell, because it is cited as
+  // coverage** and nobody re-reads a predicate they believe they already understand.
+  //
+  // So the limits ride in the name, where a reader scanning a result list cannot miss them, rather
+  // than in this comment. It proves the file references the vocabulary. It does NOT prove the
+  // surface filters anything, does NOT prove a frame is displayed, and does NOT execute the surface
+  // at all — three separate facts, none of which the old name distinguished from the one it checked.
+  c(`[GATE] ${surface} references frame vocabulary in its own source [AST use-check ONLY — proves no filtering, no display, and never executes the surface]${why}`,
+    src.length > 0 && referencesFrameVocabulary(src, p));
 }
 
 console.log(`\nagui-renderer-precondition: ${ok} passed, ${fail} failed (${gateFail} of them [GATE])`);
@@ -788,27 +807,35 @@ console.log(
     "  the merge — a wider sentence resting on a narrower truth. The gap is real, it belongs to\n" +
     "  `app.js`, and it does not gate this suite.\n" +
     "\n" +
-    "NOT CLOSABLE AS SPECIFIED — two events.* filter cells that will not go green by being worked on:\n" +
+    "NOT CLOSABLE AS SPECIFIED — two cells that will not go green by being worked on:\n" +
     "  `cli mesh-view` and `implementations/web app.js` depend on @cotal-ai/core + @cotal-ai/workspace\n" +
-    "  ONLY. The filter's channel name is built by eventChannel() in @cotal-ai/connector-core, and\n" +
-    "  packages/core/src/connector.ts:165-167 states the naming convention is the CONNECTOR's and\n" +
-    "  deliberately not the wire standard's. So those two surfaces cannot see what an events channel\n" +
-    "  is without an implementation importing an extension, or a new seam on core's public surface.\n" +
-    "  Neither was done: a gate cell is not a reason to move an architectural boundary. `examples/02`\n" +
-    "  closes normally because an example is a composition root and may reach the extension.\n" +
-    "  These two cells are a PLAN defect, not unfinished work, and they stay red until that is ruled.\n" +
+    "  ONLY, and cannot reach eventChannel() in @cotal-ai/connector-core. connector.ts:165-167 states\n" +
+    "  the naming convention is the CONNECTOR's and deliberately NOT the wire standard's, so there is\n" +
+    "  no cross-connector `events.` prefix a reader may rely on. `examples/02` closes normally: an\n" +
+    "  example is a composition root and may reach the extension.\n" +
+    "  RULED (fm-orchestrator): the reader-side direction is PART KIND, not channel name — `ag-ui.frame`\n" +
+    "  is a core concept, so a surface identifies event traffic by the part it carries and needs no\n" +
+    "  naming guarantee. Making the prefix normative was REJECTED: it would rewrite connector.ts:165-167\n" +
+    "  to fit two cells that never tested subscription scope. That covers display, NOT what a surface\n" +
+    "  SUBSCRIBES to; if a real scoping need appears it returns as its own proposal.\n" +
+    "  These cells were also MISNAMED — see their new names: the predicate is an AST use-check over the\n" +
+    "  file's source, never a filter. They stay red because those two files do not reference the\n" +
+    "  vocabulary, which is the true and much narrower fact.\n" +
     "\n" +
-    "A GREEN HERE IS NOT A PRODUCTION CLAIM — the strongest limit on this suite, so read it last:\n" +
-    "  The cells ask whether a surface's rendering path carries a frame's payload GIVEN a registered\n" +
-    "  part-renderer for `ag-ui.frame`. THIS SUITE REGISTERS THAT RENDERER ITSELF. Nothing that ships\n" +
-    "  does. Confirmed by execution against the binary's own link tree, with a positive control:\n" +
-    "    binary's graph (cli+manager+delivery+auth)  registered = FALSE\n" +
-    "    after explicitly loading connector-core     registered = TRUE    <- the control\n" +
-    "  No production file under bin/, implementations/ or packages/ imports @cotal-ai/connector-core;\n" +
-    "  extensions materialise per-command from requiredExtensions (command.ts:195); and no CLI command\n" +
-    "  declares any. So `cotal console` and `cotal join` render a frame as the unrenderable marker.\n" +
-    "  A green above means core's Registry and the rendering paths are correct — NOT that any shipped\n" +
-    "  surface displays a frame. The fix is a composition-root decision owned by whoever owns bin/.",
+    "WHAT A GREEN HERE NOW MEANS — read it last, and note this block USED TO SAY THE OPPOSITE:\n" +
+    "  Until `ag-ui.frame` was ruled a core concept, this suite REGISTERED the renderer itself and\n" +
+    "  nothing shipped did, so a green proved only that the rendering paths were correct. That is no\n" +
+    "  longer true and the old text stayed here after it stopped being true — printed every run, as\n" +
+    "  measured fact, on a tree that had already contradicted it.\n" +
+    "  NOW: the renderer lives in packages/core and registers on import of core. This suite performs\n" +
+    "  NO registration — the side-effect import was deleted, not repointed, so these cells fail if\n" +
+    "  core stops registering (proven: removing that one line reddens six console GATE cells).\n" +
+    "  So the console family here IS the shipped configuration: `cotal console`, `cotal join` and\n" +
+    "  examples/02 reach it through the same partsToText import a green above exercises.\n" +
+    "  STILL NOT A PIXEL CLAIM: no browser is opened and no DOM is asserted. The web pages are graded\n" +
+    "  by evaluating their shipped scripts, and that models production only because a separate cell\n" +
+    "  asserts each page REQUESTS agui-frame.js. A green means the text is produced and the producer\n" +
+    "  is wired in — not that it survives to the screen.",
 );
 if (gateFail > 0) {
   console.log(
