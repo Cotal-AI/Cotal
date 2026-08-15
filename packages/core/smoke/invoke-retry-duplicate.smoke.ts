@@ -9,8 +9,14 @@
  * The guard withholds that retry for `GOAL_BEARING_COMMANDS` — `["spawn", "launch"]` — matched by
  * command NAME. This suite grades BOTH sides of that boundary under ONE forced split:
  *
- *   - a goal-bearing command SURFACES, having executed exactly once (the guard bites); and
+ *   - EVERY goal-bearing command SURFACES, having executed exactly once (the guard bites); and
  *   - a mutating command OUTSIDE the allowlist is still retried, and executes TWICE.
+ *
+ * EVERY member, not a representative. Grading one name cannot see a guard that lost the others:
+ * narrowing the production test from `.includes(command)` to `command === GOAL_BEARING_COMMANDS[0]`
+ * leaves `launch` auto-retried, and a suite that only invokes `spawn` stays green through it — an
+ * executed survivor, not a hypothesis. So the loop below is driven by the exported constant, and
+ * adding a member to the allowlist adds a graded member here on the same commit.
  *
  * THE SECOND CELL RECORDS A KNOWN GAP, NOT AN APPROVAL. It asserts today's behaviour so the gap is
  * visible and measured rather than argued about, and so it fails loudly the day the general fix
@@ -19,7 +25,9 @@
  * resolved surface distinguishes a read from a mutation, and the allowlist is "a CONSERVATIVE
  * APPROXIMATION of 'unsafe to repeat'". `despawn` and `define-persona` mutate and are still retried,
  * held safe by convergence rather than by anything the wire says. **When a contract-level
- * effect/safety annotation lands, cell 5 must be inverted, not deleted.**
+ * effect/safety annotation lands, BOTH `KNOWN GAP` checks below must be inverted, not deleted** —
+ * the one asserting two executions, and the one asserting the caller is told nothing. The annotation
+ * has to reach `append` for that to happen: the target is one execution plus a surfaced refusal.
  *
  * WHY THE BOUNDARY NEEDS ITS OWN CELL. The guard's suite grades a read against a create. That pair
  * cannot see this one: a read has nothing to duplicate, so it says nothing about a command that
@@ -66,10 +74,11 @@ const OWNER = "u_op";
 // The two commands differ in ONE property: whether the name is on the allowlist. Read from the
 // exported constant rather than spelled here, so a change to the set breaks this suite loudly
 // instead of leaving it quietly grading the wrong pair.
-const GUARDED = GOAL_BEARING_COMMANDS[0]; // "spawn" — withheld from the retry
-const UNGUARDED = "append";               // mutating, not on the list — still retried
+const GUARDED = [...GOAL_BEARING_COMMANDS]; // every member — withheld from the retry
+const UNGUARDED = "append";                 // mutating, not on the list — still retried
 assert.ok(!GOAL_BEARING_COMMANDS.includes(UNGUARDED as (typeof GOAL_BEARING_COMMANDS)[number]),
   `${UNGUARDED} must NOT be goal-bearing or this suite grades nothing`);
+assert.ok(GUARDED.length > 0, "GOAL_BEARING_COMMANDS is empty — this suite would grade nothing");
 
 // A `CotalEndpoint` reads connection settings from the ambient environment, and this fixture stops
 // serving instances. Inheriting a real mesh's `COTAL_*` vars would aim that at someone else's space.
@@ -96,7 +105,7 @@ const cmdDecl = (name: string) => ({
 const DOC = {
   urn: "ai.cotal.invdup", revision: 1, attributes: [], events: [],
   // Identical declarations. Anything that diverges below is the allowlist and nothing else.
-  commands: [cmdDecl(UNGUARDED), cmdDecl(GUARDED)],
+  commands: [UNGUARDED, ...GUARDED].map(cmdDecl),
 };
 const DOC_ROOT = contractDigest(DOC);
 const DOC_MANIFEST = { v: 1 as const, root: DOC_ROOT, members: [] as string[] };
@@ -139,7 +148,7 @@ const sd = mkdtempSync(join(tmpdir(), "cotal-invdup-"));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 process.on("exit", () => { try { broker.kill("SIGKILL"); } catch { /* already gone */ } rmSync(sd, { recursive: true, force: true }); });
 
-let epGuarded: CotalEndpoint | undefined;
+const guardedCallers = new Map<string, CotalEndpoint>();
 let epUngarded: CotalEndpoint | undefined;
 let srvA: { stop: () => Promise<void> } | undefined;
 let srvB: { stop: () => Promise<void> } | undefined;
@@ -172,8 +181,8 @@ try {
       holder: { owner: OWNER }, authority, readClusterArtifact,
       readProcessEpoch: async () => gates.get(instanceId)!.processEpoch,
     });
-    // ONE handler body behind both names. Any difference in outcome is the allowlist, by construction.
-    const defs: EpCommandDef[] = [UNGUARDED, GUARDED].map((command) => ({
+    // ONE handler body behind every name. Any difference in outcome is the allowlist, by construction.
+    const defs: EpCommandDef[] = [UNGUARDED, ...GUARDED].map((command) => ({
       command,
       contract: { input: inC, output: outC },
       handler: (ctx) => {
@@ -207,13 +216,17 @@ try {
     await e.start();
     return e;
   };
-  epGuarded = await newCaller("caller-guarded");
+  // One caller PER guarded command, for the same reason there are two sides: a guarded refusal
+  // retains the stale resolve, so a second guarded call through the same caller would be staged by
+  // the outcome of the first rather than by the fixture. Independent callers keep each member's
+  // split its own fact.
+  for (const command of GUARDED) guardedCallers.set(command, await newCaller(`caller-${command}`));
   epUngarded = await newCaller("caller-unguarded");
 
-  for (const [e, tag] of [[epGuarded, "prime-guarded"], [epUngarded, "prime-unguarded"]] as const)
-    await e.invokeService(ENDPOINT, UNGUARDED, { tag });
-  check("both callers hold a resolve cache primed against A, which executed each write once",
-    ledger.length === 2 && ledger.every((l) => l.which === "A"), { ledger });
+  const allCallers = [...guardedCallers.values(), epUngarded];
+  for (const e of allCallers) await e.invokeService(ENDPOINT, UNGUARDED, { tag: "prime" });
+  check("every caller holds a resolve cache primed against A, which executed each write once",
+    ledger.length === allCallers.length && ledger.every((l) => l.which === "A"), { ledger });
 
   // Bring the replacement up, then retire EXACTLY the instance the cache describes. From here every
   // invoke is answered by an incarnation the cached resolve does not name.
@@ -222,21 +235,24 @@ try {
   srvA = undefined;
   await wait(300);
 
-  // ── side 1: the guard BITES on a goal-bearing command ──
-  const beforeGuarded = ledger.length;
-  let guardedErr: unknown;
-  let guardedReply: EpAttributedReply | undefined;
-  try { guardedReply = await epGuarded.invokeService(ENDPOINT, GUARDED, { tag: "guarded" }); }
-  catch (e) { guardedErr = e; }
-  const guardedRuns = ledger.length - beforeGuarded;
-  const guardedShape = { runs: guardedRuns, tail: since(beforeGuarded), err: guardedErr === undefined ? null : `${(guardedErr as EpEnvelopeError).code}`, reply: guardedReply?.reply };
+  // ── side 1: the guard BITES on EVERY goal-bearing command ──
+  const firstGuarded = ledger.length;
+  for (const command of GUARDED) {
+    const before = ledger.length;
+    let guardedErr: unknown;
+    let guardedReply: EpAttributedReply | undefined;
+    try { guardedReply = await guardedCallers.get(command)!.invokeService(ENDPOINT, command, { tag: command }); }
+    catch (e) { guardedErr = e; }
+    const runs = ledger.length - before;
+    const shape = { command, runs, tail: since(before), err: guardedErr === undefined ? null : `${(guardedErr as EpEnvelopeError).code}`, reply: guardedReply?.reply };
 
-  check(`a goal-bearing command (${GUARDED}) SURFACES the split instead of being retried`,
-    guardedErr instanceof EpEnvelopeError && guardedErr.code === "failed-precondition", guardedShape);
-  check(`${GUARDED} executed EXACTLY ONCE — the responder ran it, and the guard did not run it again`,
-    guardedRuns === 1 && since(beforeGuarded)[0]?.which === "B", guardedShape);
-  check("the refusal carries the unbound-responder marker the guard keys on",
-    guardedErr instanceof EpEnvelopeError && respondedButUnbound(guardedErr), guardedShape);
+    check(`a goal-bearing command (${command}) SURFACES the split instead of being retried`,
+      guardedErr instanceof EpEnvelopeError && guardedErr.code === "failed-precondition", shape);
+    check(`${command} executed EXACTLY ONCE — the responder ran it, and the guard did not run it again`,
+      runs === 1 && since(before)[0]?.which === "B", shape);
+    check(`${command}'s refusal carries the unbound-responder marker the guard keys on`,
+      guardedErr instanceof EpEnvelopeError && respondedButUnbound(guardedErr), shape);
+  }
 
   // ── side 2: THE DOCUMENTED GAP — a mutating command off the allowlist is still retried ──
   const beforeUnguarded = ledger.length;
@@ -251,10 +267,10 @@ try {
     unguardedRuns === 2 && since(beforeUnguarded).every((e) => e.tag === "gap"), unguardedShape);
   check(`KNOWN GAP: ${UNGUARDED} returns SUCCESS, so the caller never learns it ran twice`,
     unguardedReply?.reply.ok === true && unguardedErr === undefined, unguardedShape);
-  check("the two sides met the SAME split — every execution after the retirement landed on B",
-    since(beforeGuarded).every((e) => e.which === "B"), { tail: since(beforeGuarded) });
+  check("every side met the SAME split — every execution after the retirement landed on B",
+    since(firstGuarded).every((e) => e.which === "B"), { tail: since(firstGuarded) });
 } finally {
-  await epGuarded?.stop().catch(() => { /* already down */ });
+  for (const e of guardedCallers.values()) await e.stop().catch(() => { /* already down */ });
   await epUngarded?.stop().catch(() => { /* already down */ });
   await srvA?.stop().catch(() => { /* already down */ });
   await srvB?.stop().catch(() => { /* already down */ });
