@@ -12,11 +12,15 @@
 > Until the suites below are re-driven against ephemeral brokers, treat every count here as
 > **stamped, not confirmed**. Re-running is broker-backed and this lane does not hold a window.
 >
-> **PARTIALLY DISCHARGED, `Sat Aug 15 01:09:22 AM UTC 2026` → `01:10:57 AM UTC`, at `fe279b94`.**
-> The window opened and the three **committed** suites were re-driven. Their counts are now
-> **confirmed, not stamped** — logs in `runs/`, cell-by-cell roll-call in §"Re-drive at fe279b94".
-> **The m-probes in this directory were NOT re-driven in that pass and remain stamped.** Which
-> rows moved is stated in that section; do not read one discharged suite as discharging the file.
+> **DISCHARGED, `Sat Aug 15 01:09:22 AM UTC 2026` → `01:18:10 AM UTC`, at `fe279b94`.** The window
+> opened and everything re-runnable was re-driven: the three **committed** suites (45 + 39 + 9 named
+> cells, all `EXIT=0`) and **eight of the nine m-probes**, all reproducing identically. Those counts
+> are now **confirmed, not stamped** — logs in `runs/`, roll-calls in §"Re-drive at `fe279b94`" and
+> §"Re-drive of the m-probes".
+>
+> **ONE ROW GOT WORSE, and it is the row nothing else covers.** `m7-usermode` recorded itself as
+> never-run; it now runs and **FAILS** (`EXIT=1`, 2 passed, 1 failed, 7 VOID). **The user/bearer
+> path is UNMEASURED** — see that section. Every claim in this file about user mode is a **[R]**.
 
 Base `7cc74f50` (measured at `1aab1389`; delta since is release/docs only). All results DRIVEN against ephemeral loopback brokers. Each probe asserts its
 target is not the live broker as its first action. Refutation conditions are stated in each probe's
