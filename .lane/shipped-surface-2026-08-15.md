@@ -83,3 +83,20 @@ which I have not established for any channel in a dead-daemon state.
 **Calling it measured would be the same error this lane keeps catching in others.** It is a strong,
 specific, cheap-to-falsify prediction, and driving the real tool against the residue is the live arm
 that would settle it.
+
+---
+
+## VERSION LABEL CORRECTED — the finding is version-INDEPENDENT, not "shipped at 0.17.0"
+
+Measured after fm-orchestrator corrected his own artifact table (see `.lane/load-path-2026-08-15.md`
+for the full measured table and a more serious finding it turned up):
+
+- **Both** `@cotal-ai/connector-core` copies on this box are **0.17.0**, and each carries the surface
+  (3 `leaseLive` occurrences in `dist/agent.js`). The **0.16.0** figure belongs to the eight MCP
+  *extension* packages under `~/.config/cotal/extensions`, not to connector-core.
+- The lease-only `deliveryHealth` expression is present in **repo source**, **on `1aab1389`**, and in
+  **both installed 0.17.0 copies**.
+
+**So the correct label is not "shipped at version X" but "present across every copy of this code on
+this box, and on main".** Version-independent is the stronger and more accurate claim, and it is the
+one that survives any correction about which artifact a given seat loads.
