@@ -21,7 +21,8 @@ import {
   type HookEvent,
   type HookHandle,
 } from "@cotal-ai/connector-core";
-import type { TranscriptMirror } from "./transcript.js";
+import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
+import type { ClaudeEntry } from "./agui-map.js";
 
 /** A short, human-readable preview of a tool call: its most salient input, else compact JSON. */
 function toolDetail(name: unknown, input: unknown): { name: string; detail: string } | undefined {
@@ -34,8 +35,15 @@ function toolDetail(name: unknown, input: unknown): { name: string; detail: stri
 }
 
 export interface ClaudeHandleDeps {
-  /** The session's transcript mirror, read lazily — `mcp.ts` assigns it after the handler exists. */
-  mirror?: () => TranscriptMirror | undefined;
+  /**
+   * The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists.
+   *
+   * Deliberately the SAME `adopt(path)` / `flush(path)` shape the glyph mirror presented, because a
+   * hook must reply immediately and cannot await a publish. The holder is what keeps the emitter's
+   * async lifecycle behind that synchronous surface, so this file's call sites did not move when
+   * the mirror was replaced — the cutover is a substitution, not a new lifecycle.
+   */
+  events?: () => AguiEmitterHolder<ClaudeEntry> | undefined;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -85,7 +93,7 @@ export interface ClaudeHooks {
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
  */
 export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
-  const mirror = (): TranscriptMirror | undefined => deps.mirror?.();
+  const events = (): AguiEmitterHolder<ClaudeEntry> | undefined => deps.events?.();
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
    * fires moments later, this is *what* it's blocked on — so the dashboard shows the actual
@@ -149,7 +157,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     try {
       switch (event) {
         case "SessionStart": {
-          mirror()?.adopt(ev.transcript_path); // mirror from HERE — a resumed session never rebroadcasts
+          events()?.adopt(ev.transcript_path); // mirror from HERE — a resumed session never rebroadcasts
           // Claude Code reports the session's actual model here (the ONLY hook that carries it; absent
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
@@ -170,14 +178,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         }
         case "UserPromptSubmit":
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
-          mirror()?.flush(ev.transcript_path);
+          events()?.flush(ev.transcript_path);
           await safeStatus(agent, "working");
           return withContext(surfaceAutomatic(agent, ev));
         case "PreToolUse":
           // Remember what Claude is about to do; if it needs permission, the Notification
           // below turns this into the "blocked on" detail. Auto-approved tools just overwrite it.
           pendingTool = toolDetail(ev.tool_name, ev.tool_input);
-          mirror()?.flush(ev.transcript_path); // near-live mirror: each tool boundary ships the turn so far
+          events()?.flush(ev.transcript_path); // near-live mirror: each tool boundary ships the turn so far
           return {};
         case "Notification": {
           // Claude Code's Notification carries the human-readable reason the session is
@@ -195,7 +203,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "Stop":
         case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
-          mirror()?.flush(ev.transcript_path);
+          events()?.flush(ev.transcript_path);
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
           // wake one turn so its UserPromptSubmit surfaces the batch. (Ack sites are two: the
@@ -208,7 +216,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
         case "SessionEnd":
-          mirror()?.flush(ev.transcript_path); // best-effort — the process may exit before it lands
+          events()?.flush(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");
           return {};
         default:

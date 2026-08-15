@@ -19,18 +19,28 @@ import {
   feedbackLine,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
+  AguiEmitter,
+  AguiEmitterHolder,
+  EventWal,
+  JsonlFileSource,
+  ensureEventWalDir,
+  resolveEventsStateRoot,
 } from "@cotal-ai/connector-core";
+import { principalKey } from "@cotal-ai/core";
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
-import { TranscriptMirror, eventChannelForSession } from "./transcript.js";
+import { createClaudeMapper, type ClaudeEntry } from "./agui-map.js";
 
-/** Mirrors this session's transcript to `tr-<name>` — set in main() iff COTAL_EVENTS
- *  is on (buildLaunch sets it for managed sessions; personal sessions never mirror). */
-let mirror: TranscriptMirror | undefined;
+/** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set in main()
+ *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; personal sessions never
+ *  publish). Replaces the `tr-<name>` glyph-line mirror, which is gone. */
+let events: AguiEmitterHolder<ClaudeEntry> | undefined;
 
 /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
- *  Read `mirror` lazily: main() assigns it after this handler is built. `onReply` is the commit
+ *  Read `events` lazily: main() assigns it after this handler is built. `onReply` is the commit
  *  half — an injected batch is acked only once its reply is confirmed delivered. */
-const claude = createClaudeHandle({ mirror: () => mirror });
+const claude = createClaudeHandle({ events: () => events });
 
 async function main(): Promise<void> {
   // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
@@ -46,11 +56,51 @@ async function main(): Promise<void> {
   agent.start(); // background connect with retry — never blocks tool serving
 
   if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? ""))
-    // Keyed on the endpoint's OWN principal, not `config.name` — the channel the broker will
-    // enforce a grant against is derived from the same identity the connection authenticates as,
-    // so the manager's grant and this publish cannot name different subjects. Throws (fatal, via
-    // main().catch) when the session has no stable identity to key on; see eventChannelForSession.
-    mirror = new TranscriptMirror(agent, eventChannelForSession(agent.ep));
+    // The emitter is built LAZILY, on the first hook that hands over a transcript path: its source
+    // IS that transcript, whose location this process does not know until a hook says so, and
+    // `start()` reaches the broker — work that must not run for a session that never emits.
+    //
+    // The channel is derived inside the emitter from the endpoint's OWN principal, never from
+    // `config.name`, so the subject the broker enforces a grant against and the subject this
+    // publishes to are computed from the identity the connection authenticates as.
+    events = new AguiEmitterHolder<ClaudeEntry>(
+      async (transcriptPath: string) => {
+        // `[P5]`'s state root. Throws `EventsStateRootMissing` rather than defaulting to the
+        // working directory, because a WAL written somewhere no later start looks is silent.
+        const workspaceRoot = resolveEventsStateRoot(process.env);
+
+        // The native session IS the AG-UI thread (§3), and Claude Code names the transcript after
+        // it. Taken from the path rather than from any env: the hook's path is what the emitter
+        // actually reads, so deriving the thread from anything else could key a WAL to one session
+        // while consuming another's bytes.
+        const threadId = basename(transcriptPath, ".jsonl");
+        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+
+        // `[P10]`: the directory chain is made durable BEFORE the first transition, so a crash
+        // cannot lose the thread directory's own link and let a published thread reboot as virgin.
+        const { walPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+
+        // `subjectMayExist: false` is an HONEST claim, not a convenience default: this is a fresh
+        // native session id, so nothing has published under this (principal, thread) from an
+        // earlier process. A same-session connector restart finds the WAL on disk and never
+        // consults this flag. The one case it would be wrong for — a session that published and
+        // then lost its WAL — is exactly what `[P10]` above makes non-silent, which is why that
+        // fsync is a precondition of this line rather than a separate hardening.
+        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+
+        const mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID() });
+        return AguiEmitter.start<ClaudeEntry>({
+          endpoint: agent.ep,
+          wal,
+          source: new JsonlFileSource<ClaudeEntry>(transcriptPath),
+          map: mapper.map,
+        });
+      },
+      // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
+      // a failure reaches a human only if it is written somewhere. The holder is terminal on
+      // error — it does not retry — so this line is the whole record of why events stopped.
+      (e: Error) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}\n`),
+    );
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. Path + token come from the launch env (buildLaunch set them, and the hooks

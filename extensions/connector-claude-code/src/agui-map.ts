@@ -48,14 +48,28 @@
  * the predicate does select, on a session that contains the thing it selects. The three captures
  * here simply contain none. **Both numbers belong together; either alone misleads.**
  *
- * **What IS established, and what blocks — a COVERAGE gap, not a defective predicate:** on
- * agent-driven sessions, the workload this fleet actually runs, no run is ever opened and the
- * connector emits nothing. §3.1's session had a human typing 44 times *alongside* its 3068 mesh
- * messages; a spawned lane seat has **0 and 67**. The only turn-initiator here is the peer, and
- * §3.1's table sends every non-`human` origin to *nothing* — deliberately, on the sound ground that
- * re-emitting injected mesh messages would republish peer content onto a channel with a different
- * read ACL. So the open question is not whether `"human"` is the right token. It is **what opens a
- * run when nobody types**, and that is a design ruling, not something to infer here.
+ * **THIS WAS A COVERAGE GAP, IT WAS RULED, AND THE RULING IS IMPLEMENTED BELOW.** It read: on
+ * agent-driven sessions no run is ever opened and the connector emits nothing, because §3.1's table
+ * sent every non-`human` origin to *nothing*. §3.1's session had a human typing 44 times alongside
+ * its 3068 mesh messages; a spawned lane seat has **0 and 67**, so the open question was **what
+ * opens a run when nobody types**.
+ *
+ * **RULED (fm-orchestrator, `agui-events.md` §3.1): run-opening and attribution are two predicates,
+ * and that row was one predicate doing both jobs.** A run opens on
+ * `origin.kind ∈ { human, channel }`, ENUMERATED and never inferred; `task-notification` is named as
+ * known-and-not-a-turn; absent `origin` gets its own enumeration over `promptSource`. Attribution
+ * rides as `cotal.turnSource` — **a field on the run, never a gate on it**. The privacy argument is
+ * untouched: a `RUN_STARTED` attributed to a peer republishes no message body, so a peer-initiated
+ * turn can be a turn without re-emitting the peer's content. See {@link ORIGIN_RULE} and
+ * {@link ABSENT_ORIGIN_RULE}, which are where this now lives.
+ *
+ * **KEEP THIS PARAGRAPH HONEST.** Its earlier form said "no run is ever opened and the connector
+ * emits nothing" and "escalated as a plan defect rather than decided here" — describing the state
+ * before the ruling, directly above code that had already implemented it. A successor read it,
+ * believed it over the code, and escalated a closed question as a live blocker; the measurement that
+ * corrected it took one run of the real mapper (**67 runs / 5217 events** on the 5938-record
+ * session, `diagnose()` → `null`). **A stale header is not a documentation defect, it is a false
+ * claim about the function beneath it.** If the rule changes again, this paragraph changes with it.
  *
  * **DO NOT "FIX" THIS BY TREATING ABSENT `origin` AS HUMAN.** In a Claude session `user` is also the
  * role of a TOOL RESULT: that predicate selects **825** of the interactive session's 892 user
@@ -65,13 +79,12 @@
  * working. An earlier revision of this comment recorded (B) as HEADLESS-ONLY and asserted a human
  * turn is "a `user` entry with no `origin`"; both halves were wrong.
  *
- * **The rule is implemented exactly as specified and is NOT patched here.** Extending it to
- * `promptSource`, or to "a user entry with no origin", would be putting a guess in the connector:
- * "sdk" also covers programmatic injection, and over-emitting republishes other people's content
- * onto a channel with a different read ACL, which is the worse failure of the two. Escalated as a
- * plan defect against §3.1 rather than decided here. The smoke asserts the CONSEQUENCE, with a
- * control requiring the mapper to open a run on a genuine `origin.kind === "human"` entry, so
- * "opens no run" is a statement about the data and not about a broken rule.
+ * **The rule is implemented exactly as RULED, and still not guessed at.** `promptSource` was
+ * proposed as the selector and REJECTED: it is bounded by the partition it was inferred from, and
+ * "sdk" also covers programmatic injection. It survives only inside {@link ABSENT_ORIGIN_RULE},
+ * where there is no `origin.kind` to enumerate — a second table rather than a synthetic member,
+ * because an enumeration over `origin.kind` cannot classify a record that has none. Every value
+ * outside either table **fails loud** rather than being silently treated as not-a-turn.
  *
  * **(C) `TOOL_CALL_RESULT.messageId` is unstated in §3.1's table** (the row names only
  * `toolCallId`) while the real schema REQUIRES it. It is keyed the same way every other message
