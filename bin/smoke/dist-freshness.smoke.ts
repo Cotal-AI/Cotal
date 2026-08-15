@@ -24,7 +24,9 @@
  * AND IT PROVES THAT ORDERING ONLY AT THE START OF THE CHAIN. This is entry 1 of `smoke:ci`, and
  * EIGHT later entries rebuild `packages/core/dist` mid-chain — every one of them a
  * `pnpm --filter <pkg>... build` whose `...` suffix pulls core in as a dependency (entries 105, 129,
- * 159, 160, 161, 162, 163 and 205 at the time of writing, by position in this tree's chain). So a
+ * 159, 160, 161, 162, 163 and 205 — POSITIONS IN THE 222-ENTRY CHAIN AT `73dfea80` ON THIS BRANCH,
+ * stated with the tip because position is a property of a tip and a set quoted without one invites
+ * being compared against a different tree). So a
  * green here describes the tree as it stood before entry 2, and says nothing about what any suite
  * after entry 105 is reading. The check cannot see a rebuild that happens after it; nothing in its
  * output suggests otherwise, which is the part worth fixing. Re-running the same check after the
@@ -33,7 +35,9 @@
  * IF YOU WRITE THAT RE-RUN, IT GOES AFTER ENTRY 205, AND THE TRAP IS THE ENTRY NAMED `build`.
  * `smoke:build-current` does NOT build: its script body is a plain `tsx` run and it works in a
  * `mkdtemp` root. A scan for entries that build will match it anyway, because `\bbuild\b` matches
- * inside `build-current` — `-` is a word boundary. Two independent reads of this chain both landed
+ * inside `build-current` — `-` is a word boundary. THE TRAP ARRIVES WITH THIS BRANCH: that script is
+ * defined here and not on `main`, so anyone auditing the chain today will not meet it, and everyone
+ * auditing it after this merges will. Two independent reads of this chain both landed
  * on "eight rebuilds" while disagreeing about WHICH eight, one of them counting `build-current` as a
  * builder and missing `smoke:persona-announce` at 205, which is a real one. The agreeing count is
  * what stopped the disagreement being noticed. Resolve the membership, not the total, and place the
