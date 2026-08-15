@@ -49,11 +49,15 @@ const agent = new Proxy({} as MeshAgent, {
 registerCotalTools(pi, agent, configFromEnv());
 
 const withArgs = registered.filter((d) => Object.keys(d.parameters?.properties ?? {}).length > 0);
-check("tools with arguments are registered onto pi, so the closure assertion grades a non-empty set",
-  withArgs.length > 0, { registered: registered.length, withArgs: withArgs.length });
+const zeroArg = registered.filter((d) => Object.keys(d.parameters?.properties ?? {}).length === 0);
+// BOTH subsets, and both asserted non-empty. Grading only `withArgs` is what hid the hole this
+// suite exists to guard: a zero-argument tool was registered with an OPEN empty object, so
+// `{owner, actor}` on `cotal_roster` was accepted and discarded while every cell here stayed green.
+check("tools with arguments AND zero-argument tools are both registered, so neither closure case is ungraded",
+  withArgs.length > 0 && zeroArg.length > 0, { registered: registered.length, withArgs: withArgs.length, zeroArg: zeroArg.map((d) => d.name) });
 
-const open = withArgs.filter((d) => d.parameters.additionalProperties !== false);
-check(`every pi tool with arguments is registered CLOSED (${withArgs.length} tools)`,
+const open = registered.filter((d) => d.parameters.additionalProperties !== false);
+check(`EVERY pi tool is registered CLOSED, zero-argument ones included (${registered.length} tools, ${zeroArg.length} zero-argument)`,
   open.length === 0, { open: open.map((d) => d.name) });
 
 console.log(`\n${failures === 0 ? "PI-TOOL-CLOSED SMOKE OK ✅" : "PI-TOOL-CLOSED SMOKE FAILED"}  (${failures} failed)`);

@@ -21,19 +21,15 @@ function toContent(r: ToolResult) {
  *  channel_info, join, leave, spawn, feedback) on an MCP server. `source` names the
  *  hosting connector for outgoing feedback. */
 export function registerCotalTools(server: McpServer, agent: MeshAgent, config: AgentConfig, source?: string): void {
+  // No schemaless branch. Registering a tool WITHOUT an `inputSchema` is what let a no-argument
+  // tool accept `{owner, actor}` and drop it: the host has nothing to check against, so it forwards
+  // whatever arrived. Every spec now carries a closed object, empty ones included, and the host
+  // refuses the extras for us.
   for (const spec of cotalToolSpecs(config, source)) {
-    if (spec.schema) {
-      server.registerTool(
-        spec.name,
-        { title: spec.title, description: spec.description, inputSchema: spec.schema },
-        async (args: Record<string, unknown>) => toContent(await spec.run(agent, config, args)),
-      );
-    } else {
-      server.registerTool(
-        spec.name,
-        { title: spec.title, description: spec.description },
-        async () => toContent(await spec.run(agent, config, {})),
-      );
-    }
+    server.registerTool(
+      spec.name,
+      { title: spec.title, description: spec.description, inputSchema: spec.schema },
+      async (args: Record<string, unknown>) => toContent(await spec.run(agent, config, args)),
+    );
   }
 }

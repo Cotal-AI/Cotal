@@ -11,7 +11,7 @@
  * has to block on the bridge. Tool *calls* still ride the bridge at runtime.
  */
 import { z } from "zod";
-import { cotalToolSpecs, type AgentConfig } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, NO_TOOL_ARGS, type AgentConfig } from "@cotal-ai/connector-core";
 
 /** A Hermes plugin tool: name + description + a JSON-Schema object for its parameters. */
 export interface HermesToolDescriptor {
@@ -20,7 +20,10 @@ export interface HermesToolDescriptor {
   parameters: Record<string, unknown>;
 }
 
-const EMPTY_PARAMS: Record<string, unknown> = { type: "object", properties: {}, required: [] };
+/** The descriptor for a tool this connector calls with no caller-supplied arguments — rendered
+ *  from the same closed empty object the bridge enforces against, so the published contract and
+ *  the enforced one cannot drift and "no parameters" never reads as "parameters ignored". */
+const EMPTY_PARAMS: Record<string, unknown> = z.toJSONSchema(NO_TOOL_ARGS) as Record<string, unknown>;
 
 const PULL_INBOX_DESCRIPTION =
   "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic " +
@@ -32,7 +35,7 @@ export function hermesToolDescriptors(config: AgentConfig): HermesToolDescriptor
     if (spec.name === "cotal_inbox") {
       return { name: spec.name, description: PULL_INBOX_DESCRIPTION, parameters: EMPTY_PARAMS };
     }
-    const parameters = spec.schema ? (z.toJSONSchema(spec.schema) as Record<string, unknown>) : EMPTY_PARAMS;
+    const parameters = z.toJSONSchema(spec.schema) as Record<string, unknown>;
     return { name: spec.name, description: spec.description, parameters };
   });
 }

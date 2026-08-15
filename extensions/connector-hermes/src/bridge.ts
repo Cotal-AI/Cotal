@@ -30,6 +30,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import {
   cotalToolSpecs,
   parseToolArgs,
+  NO_TOOL_ARGS,
   type MeshAgent,
   type AgentConfig,
   type InboxItem,
@@ -124,11 +125,19 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
    *  descriptor we published, so this is the only place the spec's closed object can bite. An
    *  unmodelled key is refused by name rather than dropped: on the MCP and pi hosts the host
    *  itself refuses one, and a key the model believes it sent (`owner`, `actor`) must not go
-   *  silently missing here just because Hermes's validation lives outside our process. */
+   *  silently missing here just because Hermes's validation lives outside our process.
+   *
+   *  cotal_inbox is the one tool whose enforced contract is NOT the shared spec's: Hermes publishes
+   *  it with no parameters (`peek` is deliberately withheld — the pull is destructive here) and its
+   *  `scope` is ours, not the caller's. Validate against what we actually published, not against
+   *  the spec — otherwise `peek` passes the check and is then dropped by the substitution, which is
+   *  the silent-drop this seam exists to close, reopened for one tool. */
   const onTool = async (name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
     const spec = specs.get(name);
     if (!spec) throw new Error(`unknown cotal tool: ${name}`);
-    const a = name === "cotal_inbox" ? { scope: "pull-only" } : parseToolArgs(spec, args);
+    const published = name === "cotal_inbox" ? { ...spec, schema: NO_TOOL_ARGS } : spec;
+    const caller = parseToolArgs(published, args);
+    const a = name === "cotal_inbox" ? { scope: "pull-only" } : caller;
     const r = await spec.run(agent, config, a);
     return { text: r.text, isError: !!r.isError };
   };

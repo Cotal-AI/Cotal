@@ -16,6 +16,7 @@ import { isConcreteChannel } from "@cotal-ai/core";
 import {
   cotalToolSpecs,
   MESH_FIRST_STEER,
+  NO_TOOL_ARGS,
   type MeshAgent,
   type AgentConfig,
   type CotalToolInput,
@@ -41,8 +42,7 @@ const SEND_GUIDELINES = [
   MESH_FIRST_STEER,
 ];
 
-function toParameters(schema: CotalToolInput | undefined): TSchema {
-  if (!schema) return Type.Object({});
+function toParameters(schema: CotalToolInput): TSchema {
   // The shared spec's object is CLOSED, and a closed object emits `additionalProperties: false`
   // under every io mode — so pi's strict validation now refuses a stray key rather than matching
   // the other adapters' strip. That is the point: an unmodelled `owner`/`actor` must not vanish
@@ -97,8 +97,11 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
     pi.registerTool({
       name: spec.name,
       label: spec.title,
-       description: readonlyInbox ? PULL_INBOX_DESCRIPTION : spec.description,
-      parameters: readonlyInbox ? Type.Object({}) : toParameters(spec.schema),
+      description: readonlyInbox ? PULL_INBOX_DESCRIPTION : spec.description,
+      // pi's inbox takes nothing from the caller (`scope` is ours) — but a bare `Type.Object({})`
+      // is OPEN, so extras would be accepted and then discarded by the substitution below. Render
+      // the shared closed-empty object through the same path as every other tool.
+      parameters: toParameters(readonlyInbox ? NO_TOOL_ARGS : spec.schema),
       promptGuidelines: spec.name === "cotal_send" ? SEND_GUIDELINES : undefined,
       renderCall: SEND_TOOLS.has(spec.name)
         ? (args) => wrapped(sendCallLine(spec.name, config, (args ?? {}) as Record<string, unknown>))

@@ -86,5 +86,24 @@ check("the refusal names the rejected keys AND lists what the tool accepts",
 check("...and the refusal precedes the effect: the tool never reached the mesh agent",
   !out.includes("reached the mesh agent"), { out });
 
+// 5-6. The ZERO-ARGUMENT tools, which travel a different path and were the hole: one rendered
+// straight from an empty shape, and `cotal_inbox`, whose args this adapter REPLACES with its own
+// scope. Replacing the caller's object is correct; ignoring it is not — an extra key would have
+// been swallowed by the substitution on that tool alone.
+const ZERO = "cotal_roster";
+const zeroSpec = cotalToolSpecs(config, "opencode").find((s) => s.name === ZERO);
+if (!zeroSpec || Object.keys(zeroSpec.schema.shape).length !== 0) throw new Error(`${ZERO} is no longer a zero-argument tool — repoint this suite`);
+const zeroOut = String(await tools[ZERO].execute({ ...IDENTITY_EXTRA }, {} as never));
+check(`a ZERO-ARGUMENT tool (${ZERO}) is refused too, naming the keys and saying it takes none`,
+  zeroOut.startsWith("⚠") && Object.keys(IDENTITY_EXTRA).every((k) => zeroOut.includes(k)) &&
+    zeroOut.includes("no arguments") && !zeroOut.includes("reached the mesh agent"),
+  { zeroOut });
+
+const inboxOut = String(await tools.cotal_inbox.execute({ ...IDENTITY_EXTRA }, {} as never));
+check("cotal_inbox, whose args this adapter SUBSTITUTES, refuses the caller's extras rather than discarding them",
+  inboxOut.startsWith("⚠") && Object.keys(IDENTITY_EXTRA).every((k) => inboxOut.includes(k)) &&
+    !inboxOut.includes("reached the mesh agent"),
+  { inboxOut });
+
 console.log(`\n${failures === 0 ? "OPENCODE-TOOL-CLOSED SMOKE OK ✅" : "OPENCODE-TOOL-CLOSED SMOKE FAILED"}  (${failures} failed)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -14,7 +14,7 @@
  * silently. A type-only import keeps the bundle self-contained.
  */
 import type { ToolDefinition } from "@opencode-ai/plugin";
-import { cotalToolSpecs, parseToolArgs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, parseToolArgs, refuseAnyArgs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 
 /** Build the cotal_* tool map wired to one mesh agent, rendered from the shared specs. */
 export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<string, ToolDefinition> {
@@ -25,7 +25,12 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
         description:
           "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic stays queued; in focus mode, normal channel recall is also shown read-only.",
         args: {},
-        async execute() {
+        // Published with no arguments and `scope` supplied by us — but this host validates nothing,
+        // so ignoring the caller's object would silently swallow whatever it sent. Check it against
+        // the empty contract we published first, then substitute our own scope.
+        async execute(args: unknown) {
+          const refusal = refuseAnyArgs(spec.name, args);
+          if (refusal) return `⚠ ${refusal}`;
           const r = await spec.run(agent, config, { scope: "pull-only" });
           return r.isError ? `⚠ ${r.text}` : r.text;
         },
@@ -38,7 +43,7 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
       // object it walks that object's own properties as if they were fields, and the whole
       // `tool.list` response then fails to serialize — every cotal_* tool disappears, not just one.
       // So this host is advertised open, and closed below instead.
-      args: (spec.schema?.shape ?? {}) as Record<string, never>,
+      args: spec.schema.shape as Record<string, never>,
       async execute(args: unknown) {
         // OpenCode passes the model's object through UNVALIDATED (its `execute` type claims
         // otherwise), so this is the only place the closed object bites on this host. A stray

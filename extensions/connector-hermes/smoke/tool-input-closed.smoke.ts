@@ -49,10 +49,14 @@ const config = configFromEnv();
 // ── 1-2. what the sidecar is handed ──
 const descriptors = hermesToolDescriptors(config);
 const withArgs = descriptors.filter((d) => Object.keys((d.parameters as { properties?: object }).properties ?? {}).length > 0);
-check("tools with arguments are published to the sidecar, so the closure assertion grades a non-empty set",
-  withArgs.length > 0, { descriptors: descriptors.length, withArgs: withArgs.length });
-const open = withArgs.filter((d) => (d.parameters as { additionalProperties?: unknown }).additionalProperties !== false);
-check(`every published descriptor with arguments is CLOSED (${withArgs.length} tools)`,
+const zeroArg = descriptors.filter((d) => Object.keys((d.parameters as { properties?: object }).properties ?? {}).length === 0);
+// Both subsets, both required non-empty. Grading only `withArgs` hid the hole: the zero-argument
+// descriptors were published OPEN, so `{owner, actor}` on `cotal_roster` was accepted and dropped
+// while every cell in this file stayed green.
+check("descriptors with arguments AND zero-argument descriptors are both published, so neither closure case is ungraded",
+  withArgs.length > 0 && zeroArg.length > 0, { descriptors: descriptors.length, withArgs: withArgs.length, zeroArg: zeroArg.map((d) => d.name) });
+const open = descriptors.filter((d) => (d.parameters as { additionalProperties?: unknown }).additionalProperties !== false);
+check(`EVERY published descriptor is CLOSED, zero-argument ones included (${descriptors.length} tools, ${zeroArg.length} zero-argument)`,
   open.length === 0, { open: open.map((d) => d.name) });
 
 // ── 3-5. what the bridge does with a call ──
@@ -99,15 +103,18 @@ try {
     }
   });
 
-  sock.write(`${JSON.stringify({ t: "tool", id: "probe", name: TOOL, args: { ...IDENTITY_EXTRA } })}\n`);
-  const deadline = Date.now() + 5_000;
-  let result: Record<string, unknown> | undefined;
-  while (!result && Date.now() < deadline) {
-    result = replies.find((r) => r.t === "tool_result" && r.id === "probe");
-    if (!result) await new Promise((r) => setTimeout(r, 25));
-  }
-  sock.destroy();
+  const callTool = async (id: string, name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | undefined> => {
+    sock.write(`${JSON.stringify({ t: "tool", id, name, args })}\n`);
+    const deadline = Date.now() + 5_000;
+    let r: Record<string, unknown> | undefined;
+    while (!r && Date.now() < deadline) {
+      r = replies.find((x) => x.t === "tool_result" && x.id === id);
+      if (!r) await new Promise((res) => setTimeout(res, 25));
+    }
+    return r;
+  };
 
+  const result = await callTool("probe", TOOL, { ...IDENTITY_EXTRA });
   const error = String(result?.error ?? "");
   check("a tool frame carrying identity-shaped extras is REFUSED back over the bridge socket",
     !!result && result.ok === false, { result });
@@ -116,6 +123,32 @@ try {
     { error, accepted });
   check("...and the refusal precedes the effect: the tool never reached the mesh agent",
     agent.reached.length === 0, { reached: agent.reached });
+
+  // A ZERO-ARGUMENT tool over the same socket: a different path, and the one that was open.
+  const ZERO = "cotal_roster";
+  const zeroResult = await callTool("zero", ZERO, { ...IDENTITY_EXTRA });
+  const zeroError = String(zeroResult?.error ?? "");
+  check(`a ZERO-ARGUMENT tool (${ZERO}) is refused too, naming the keys and saying it takes none`,
+    !!zeroResult && zeroResult.ok === false && Object.keys(IDENTITY_EXTRA).every((k) => zeroError.includes(k)) &&
+      zeroError.includes("no arguments") && agent.reached.length === 0,
+    { zeroResult, reached: agent.reached });
+
+  // cotal_inbox is the bridge's one override: it discards the caller's object and supplies `scope`
+  // itself. Discarding is correct, ignoring is not — the extras vanished on that tool alone.
+  const inboxResult = await callTool("inbox", "cotal_inbox", { ...IDENTITY_EXTRA });
+  const inboxError = String(inboxResult?.error ?? "");
+  check("cotal_inbox, whose args the bridge SUBSTITUTES, refuses the caller's extras rather than discarding them",
+    !!inboxResult && inboxResult.ok === false && Object.keys(IDENTITY_EXTRA).every((k) => inboxError.includes(k)) &&
+      agent.reached.length === 0,
+    { inboxResult, reached: agent.reached });
+
+  // POSITIVE CONTROL: `agent.reached` is the witness for every "never reached" cell above, and a
+  // witness that cannot fire reads exactly like a refusal that works.
+  await callTool("control", TOOL, {});
+  check("CONTROL: a well-formed call DOES reach the agent — the witness can fire",
+    agent.reached.length > 0, { reached: agent.reached });
+
+  sock.destroy();
 } finally {
   await bridge.stop?.();
   rmSync(dir, { recursive: true, force: true });

@@ -58,44 +58,55 @@ const check = (label: string, ok: boolean, extra?: unknown): void => {
 
 const config = configFromEnv();
 const specs = cotalToolSpecs(config, "smoke");
-const withSchema = specs.filter((s) => s.schema);
+const withArgs = specs.filter((s) => Object.keys(s.schema.shape).length > 0);
+const zeroArg = specs.filter((s) => Object.keys(s.schema.shape).length === 0);
 
-check("the spec set carries schemas at all, so the closure assertions grade a non-empty set",
-  withSchema.length > 0, { specs: specs.length, withSchema: withSchema.length });
+// Two premises, both load-bearing. The first is the invariant that was broken: a spec authored
+// without a shape used to pass through the factory SCHEMALESS, and every adapter's schemaless path
+// forwards whatever it is handed — so `cotal_roster` with `{owner, actor}` succeeded on all five
+// hosts. The second keeps the closure loop below from being vacuous in the direction that matters:
+// if no zero-argument tool were present, the empty-closure case would go ungraded.
+check("EVERY spec carries a closed input object — the factory mints no schemaless tool",
+  specs.length > 0 && specs.every((s) => !!s.schema), { specs: specs.length });
+check(`the set contains BOTH argument-bearing and zero-argument tools, so neither closure case is ungraded`,
+  withArgs.length > 0 && zeroArg.length > 0, { withArgs: withArgs.length, zeroArg: zeroArg.map((s) => s.name) });
 
 // ── 2. the closure at the source ──
 // Identity-shaped on purpose: this is the confused-deputy case, not a generic typo. A tool that
 // accepted `owner` would be speaking for whoever the caller named.
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
 const notClosed: string[] = [];
-for (const spec of withSchema) {
-  const probe = spec.schema!.safeParse({ ...IDENTITY_EXTRA });
+for (const spec of specs) {
+  const probe = spec.schema.safeParse({ ...IDENTITY_EXTRA });
   const refusedTheExtras = !probe.success &&
     probe.error.issues.some((i) => i.code === "unrecognized_keys" && i.keys.some((k) => k in IDENTITY_EXTRA));
   if (!refusedTheExtras) notClosed.push(spec.name);
 }
-check(`every tool schema REFUSES an unmodelled key rather than stripping it (${withSchema.length} schemas)`,
+check(`every tool schema REFUSES an unmodelled key rather than stripping it (${specs.length} schemas, ${zeroArg.length} of them zero-argument)`,
   notClosed.length === 0, { notClosed });
 
 // ── 3-5. the shared MCP renderer, against a real server and a real client ──
-// `run` must never execute, so an agent that throws on any use is the right stub: if the refusal
-// failed to bite, the failure is loud rather than a quietly-mutated fixture.
-const ran: string[] = [];
+// The witness for "the handler never ran" is the AGENT, and it has to be: `registerCotalTools`
+// calls `cotalToolSpecs()` itself, so the array it registers is not the `specs` array above.
+// Wrapping `run` on a spec from `specs` therefore observes nothing the server ever calls, and its
+// counter reads zero whether the refusal bit or not. The agent proxy IS the object the server was
+// handed, so every property access it sees is an execution that got past the boundary.
+const reached: string[] = [];
 const agent = new Proxy({} as MeshAgent, {
-  get(_t, prop) { throw new Error(`the tool reached the mesh agent (${String(prop)}) — it should have been refused`); },
+  get(_t, prop) {
+    reached.push(String(prop));
+    throw new Error(`the tool reached the mesh agent (${String(prop)}) — it should have been refused`);
+  },
 });
 
 const server = new McpServer({ name: "tool-input-closed", version: "0.0.0" });
 registerCotalTools(server, agent, config, "smoke");
 
-// A tool with a schema, chosen from the rendered surface rather than named here, so this cannot
+// A tool with arguments, chosen from the rendered surface rather than named here, so this cannot
 // grade a tool that was removed. cotal_status takes optional args, so the extras are the ONLY
 // reason a call can fail — nothing else is missing.
 const probeName = "cotal_status";
-const probeSpec = withSchema.find((s) => s.name === probeName);
-if (!probeSpec) throw new Error(`${probeName} is no longer a schema-bearing tool — repoint this suite`);
-const originalRun = probeSpec.run.bind(probeSpec);
-probeSpec.run = (...args: Parameters<typeof originalRun>) => { ran.push(probeName); return originalRun(...args); };
+if (!withArgs.some((s) => s.name === probeName)) throw new Error(`${probeName} is no longer an argument-bearing tool — repoint this suite`);
 
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 const client = new Client({ name: "tool-input-closed-client", version: "0.0.0" });
@@ -106,6 +117,15 @@ const emitted = listed.tools.filter((t) => t.inputSchema && Object.keys(t.inputS
 const open = emitted.filter((t) => (t.inputSchema as { additionalProperties?: unknown }).additionalProperties !== false);
 check(`the MCP renderer EMITS additionalProperties:false for every tool with arguments (${emitted.length})`,
   emitted.length > 0 && open.length === 0, { open: open.map((t) => t.name) });
+
+// The zero-argument tools separately, because the filter above excludes them by construction and
+// they are the ones that regressed: registered without an `inputSchema`, a no-argument tool has
+// nothing for the host to check and forwards the extras to be dropped.
+const emittedZero = listed.tools.filter((t) => zeroArg.some((s) => s.name === t.name));
+const openZero = emittedZero.filter((t) => (t.inputSchema as { additionalProperties?: unknown } | undefined)?.additionalProperties !== false);
+check(`...and for every ZERO-ARGUMENT tool too, which is where the seam was open (${emittedZero.length})`,
+  emittedZero.length === zeroArg.length && emittedZero.length > 0 && openZero.length === 0,
+  { openZero: openZero.map((t) => t.name), expected: zeroArg.length });
 
 let refusal: string | undefined;
 let succeeded = false;
@@ -122,7 +142,38 @@ check("an MCP call carrying identity-shaped extras is REFUSED TO THE CALLER, nam
     Object.keys(IDENTITY_EXTRA).every((k) => refusal!.includes(k)),
   { refusal, succeeded });
 check("...and the tool's run never executed — the refusal precedes the effect, it does not report one",
-  ran.length === 0, { ran });
+  reached.length === 0, { reached });
+
+// A zero-argument tool through the SAME real client. This is the case that shipped broken, and it
+// cannot be inferred from the argument-bearing one: it travelled a different registration branch.
+let zeroRefusal: string | undefined;
+let zeroSucceeded = false;
+const zeroName = zeroArg[0].name;
+try {
+  const r = await client.callTool({ name: zeroName, arguments: { ...IDENTITY_EXTRA } });
+  zeroSucceeded = !r.isError;
+  if (r.isError) zeroRefusal = JSON.stringify(r.content);
+} catch (e) {
+  zeroRefusal = (e as Error).message;
+}
+check(`a ZERO-ARGUMENT tool (${zeroName}) also refuses identity-shaped extras rather than running without them`,
+  !zeroSucceeded && !!zeroRefusal && zeroRefusal.includes("unrecognized_keys") &&
+    Object.keys(IDENTITY_EXTRA).every((k) => zeroRefusal!.includes(k)) && reached.length === 0,
+  { zeroRefusal, zeroSucceeded, reached });
+
+// POSITIVE CONTROL, and the reason the two `reached.length === 0` assertions above mean anything:
+// a well-formed call must get PAST the boundary and touch the agent. Without this, a witness that
+// can never fire — the previous version wrapped `run` on a spec array the server never registered
+// — reads exactly like a refusal that works.
+let controlErr: string | undefined;
+try {
+  const r = await client.callTool({ name: probeName, arguments: {} });
+  if (r.isError) controlErr = JSON.stringify(r.content);
+} catch (e) {
+  controlErr = (e as Error).message;
+}
+check("CONTROL: a well-formed call to the same tool DOES reach the agent — the witness can fire",
+  reached.length > 0, { reached, controlErr });
 
 await client.close();
 await server.close();

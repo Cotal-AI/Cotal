@@ -52,10 +52,14 @@ try {
 
   const listed = await client.listTools();
   const withArgs = listed.tools.filter((t) => Object.keys(t.inputSchema?.properties ?? {}).length > 0);
-  check("tools with arguments are served, so the closure assertion grades a non-empty set",
-    withArgs.length > 0, { tools: listed.tools.length, withArgs: withArgs.length });
-  const open = withArgs.filter((t) => (t.inputSchema as { additionalProperties?: unknown }).additionalProperties !== false);
-  check(`every Codex-served tool with arguments advertises additionalProperties:false (${withArgs.length})`,
+  const zeroArg = listed.tools.filter((t) => Object.keys(t.inputSchema?.properties ?? {}).length === 0);
+  // Both subsets, both required non-empty. Grading only `withArgs` is what let the zero-argument
+  // tools ship OPEN: this connector registered them with no `inputSchema` at all, so the host had
+  // nothing to check and forwarded `{owner, actor}` to be dropped, with every cell here still green.
+  check("tools with arguments AND zero-argument tools are both served, so neither closure case is ungraded",
+    withArgs.length > 0 && zeroArg.length > 0, { tools: listed.tools.length, withArgs: withArgs.length, zeroArg: zeroArg.map((t) => t.name) });
+  const open = listed.tools.filter((t) => (t.inputSchema as { additionalProperties?: unknown } | undefined)?.additionalProperties !== false);
+  check(`EVERY Codex-served tool advertises additionalProperties:false (${listed.tools.length}, ${zeroArg.length} of them zero-argument)`,
     open.length === 0, { open: open.map((t) => t.name) });
 
   let refusal: string | undefined;
@@ -73,6 +77,28 @@ try {
     { refusal, succeeded });
   check("...and the refusal precedes the effect: the tool never reached the mesh agent",
     reached.length === 0, { reached });
+
+  // cotal_inbox is this connector's one override: it drops the spec's own arguments and supplies
+  // `scope` itself. Registered without an `inputSchema` that substitution silently ate whatever the
+  // caller sent, on that tool alone — the seam open at exactly the point nobody looks.
+  let inboxRefusal: string | undefined;
+  let inboxSucceeded = false;
+  try {
+    const r = await client.callTool({ name: "cotal_inbox", arguments: { ...IDENTITY_EXTRA } });
+    inboxSucceeded = !r.isError;
+    if (r.isError) inboxRefusal = JSON.stringify(r.content);
+  } catch (e) {
+    inboxRefusal = (e as Error).message;
+  }
+  check("cotal_inbox, whose arguments this connector SUBSTITUTES, refuses the caller's extras rather than discarding them",
+    !inboxSucceeded && !!inboxRefusal && Object.keys(IDENTITY_EXTRA).every((k) => inboxRefusal!.includes(k)) && reached.length === 0,
+    { inboxRefusal, inboxSucceeded, reached });
+
+  // POSITIVE CONTROL. `reached` is the witness for all three assertions above, and a witness that
+  // cannot fire is indistinguishable from a refusal that works.
+  await client.callTool({ name: TOOL, arguments: {} }).catch(() => { /* the stub agent is inert */ });
+  check("CONTROL: a well-formed call DOES reach the agent — the witness can fire",
+    reached.length > 0, { reached });
 } finally {
   await client.close().catch(() => { /* already down */ });
   await endpoint.close();
