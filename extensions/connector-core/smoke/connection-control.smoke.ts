@@ -233,7 +233,7 @@ async function main() {
   // ("an agent without capabilities: [connection] sees none of these verbs") as an unqualified rule,
   // and an unqualified rule with an unstated exception is how a grant story stops being true.
   // ⚠️ G5 IS INVERTED. It used to assert that an ungranted OPEN-MODE session DOES see the verbs, and
-  // called that carve-out "real and deliberate". mc-rev-authority filed it as a capability bypass and
+  // called that carve-out "real and deliberate". Review filed it as a capability bypass and
   // The recommendation was adopted: the carve-out contradicted BOTH docs pages, which say
   // capability-only and absent by default, and "open mode is outside the broker-security claims" does
   // not reach a LOCAL OPERATOR capability whose question is "may this agent take itself out of its
@@ -521,7 +521,7 @@ async function main() {
       authedSeen());
     // LABEL CORRECTED — the old name ("…so a deliberate departure is not a crash") claimed
     // DISCRIMINATION and asserted only that a chosen string APPEARS. Reproduced live by
-    // mc-rev-supervisor: a heartbeat-stale-but-routing-live endpoint renders the byte-identical
+    // Raised in review: a heartbeat-stale-but-routing-live endpoint renders the byte-identical
     // roster line, so this assertion holds in both the safe and the unsafe state. There is no
     // must-differ arm here and there cannot be one until presence carries a transition/source
     // field (DESIGN §9.1). The name now claims only what the predicate checks.
@@ -702,7 +702,7 @@ async function main() {
     console.log(`  ▸ RECORDED (not asserted) — anycast to a role with NO server bound:\n` +
       `      isError=${unserved.isError === true}  text=${JSON.stringify(String(unserved.text).slice(0, 200))}`);
 
-    // E16 — A DERIVED SUMMARY, NOT AN INDEPENDENT OBSERVATION. Named honestly after mc-rev-evidence
+    // E16 — A DERIVED SUMMARY, NOT AN INDEPENDENT OBSERVATION. Named honestly after review
     // showed the old name overclaimed twice over:
     //   (1) it drives NO new action — it re-reads `witnessed[]` and `strangerSaw[]` that E12 and E14
     //       already wrote, and those arrays only grow, so if E12 and E14 passed this CANNOT fail;
