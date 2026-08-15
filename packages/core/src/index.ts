@@ -45,6 +45,7 @@ export * from "./lease.js";
 export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
+export * from "./advisory-lock.js";
 export * from "./secret-fs.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";
