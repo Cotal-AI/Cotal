@@ -8,7 +8,7 @@
  *   COTAL_SPACE=<space> TRANSCRIPT=<path> tsx harness/observer.ts
  */
 import { appendFileSync } from "node:fs";
-import { CotalEndpoint, DEFAULT_SERVER, deliveryOf, type CotalMessage } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, deliveryOf, partsToText, type CotalMessage } from "@cotal-ai/core";
 
 const space = process.env.COTAL_SPACE || "console";
 const server = process.env.COTAL_SERVERS || DEFAULT_SERVER;
@@ -33,22 +33,27 @@ const out = process.env.TRANSCRIPT || "transcript.jsonl";
  * changes is that it is no longer the only thing written: the record now carries `parts` verbatim,
  * so nothing is dropped and a reader can see exactly what this line does not cover.
  *
- * **DELIBERATELY NOT UNIFIED HERE — AND THE PRECONDITION THAT DEFERRED IT HAS SINCE FIRED.** This
- * paragraph used to say the right fix was core's shared `partsToText`, absent here because the
- * branch was 157 commits behind `origin/main`, and that it "unifies when this branch has that
- * function". The branch has since merged `origin/main`, is 0 behind, and `partsToText` now names an
- * unrenderable kind instead of stringifying it away. **A deferral whose stated trigger has fired is
- * not a deferral any more; it is a stale note nobody is going to re-check.**
+ * **NOW UNIFIED, AND THE OWNERSHIP QUESTION THAT HELD IT BACK HAS BEEN ANSWERED.** This paragraph
+ * previously declined to adopt core's shared `partsToText` on the grounds that this file is one of
+ * the surfaces named in the AG-UI cutover's renderer precondition, that ownership of that work was
+ * open, and that closing the smallest third of a gate reads as progress on it and is not. **That
+ * reasoning was right and it is no longer load-bearing:** the precondition has since been ruled to
+ * be "no surface silently DROPS a part", not "every surface RENDERS one", and this file and
+ * `examples/04-frontier-faces/tools/studio.mjs` were assigned together. Real frame rendering and the
+ * `events.*` filter are separate, still-unowned work.
  *
- * It is still not unified here, and the honest reason is a DIFFERENT one, not the old one restated.
- * This file is one of the three surfaces named in the AG-UI cutover's renderer precondition
- * (`cotal console`, `implementations/web`, `examples/02`), and **ownership of that work is open.**
- * Unifying this single surface would close the smallest third of that gate while leaving the other
- * two — which reads as progress on the precondition and is not.
+ * **So this change is NON-SILENCE work and claims nothing more.** It does not advance frame
+ * rendering and must not be read as doing so.
  *
- * Census re-derived at this tip rather than carried: of the seven surfaces, **3 adopted**
- * `partsToText`, **2 keep a stringify-form copy** (`web/src/web/app.js`, `.../graph.js`) and **2 the
- * filter form** (this file, `examples/04-frontier-faces/tools/studio.mjs`).
+ * `text` above stays TEXT-ONLY on purpose, and that is not an oversight: `replay.ts` republishes
+ * this exact field as message content, so folding markers into it would replay
+ * `[unrenderable part kind …]` to the mesh as though an agent had typed it. The rendering goes in
+ * its own field instead, where a reader gets it and no republisher mistakes it for input.
+ *
+ * Census re-derived at this tip rather than carried: of the seven surfaces, **5 adopted**
+ * `partsToText` (`connector-core/src/agent.ts`, `cli/src/commands/join.ts`, `cli/src/view/mesh-view.ts`,
+ * this file, and `studio.mjs`) and **2 keep a stringify-form copy** (`web/src/web/app.js`,
+ * `.../graph.js`) — those two are routed to the lane that owns that tree, not to this one.
  */
 function text(msg: CotalMessage): string {
   return (msg.parts ?? [])
@@ -99,6 +104,11 @@ ep.tap((subject, msg) => {
       channel: msg.channel,
       toService: msg.toService,
       text: text(msg),
+      // The same message as a READER sees it, through core's shared renderer. Separate from `text`
+      // because they answer different questions and one of them is replayed: `text` is what an
+      // agent actually typed, `rendered` is what the message amounts to on a surface — including a
+      // named marker for any kind this build cannot draw.
+      rendered: partsToText(msg.parts ?? []),
       // EVERY part, verbatim and unrendered. `text` above covers only the text ones, so without
       // this a transcript loses whole parts silently — and a transcript that is quietly incomplete
       // is worse than one that is obviously empty, because `evaluate.ts` measures it either way.

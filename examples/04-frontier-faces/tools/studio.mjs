@@ -27,7 +27,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, provisionAgent } from "@cotal-ai/core";
+import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, partsToText, provisionAgent } from "@cotal-ai/core";
 import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // ---- paths + config -------------------------------------------------------------------------
@@ -428,7 +428,18 @@ function handleEvents(req, res) {
 // Strip stray model-leaked pseudo-tags (e.g. a hallucinated `</MESSAGE-v0>` envelope or a leftover
 // `[[face:x]]`) so the transcript stays clean.
 const clean = (t) => t.replace(/<\/?[A-Z][A-Z0-9-]*>/g, "").replace(/\[\[\s*face\s*:[^\]]*\]\]/gi, "").trim();
-const textOf = (msg) => clean(msg.parts.filter((p) => p.kind === "text").map((p) => p.text).join(""));
+/**
+ * The feed's rendering of a message, through core's shared `partsToText`.
+ *
+ * **This used to filter to text parts and silently drop the rest.** A message carrying only a
+ * non-text part — an `artifact`, an `ag-ui.frame` — rendered as the empty string and reached the
+ * operator's feed as a blank line, which tells them nothing arrived. `partsToText` instead names the
+ * kind it cannot draw, so an undrawable part reads as an honest gap rather than as silence.
+ *
+ * `clean` still runs after it: the pseudo-tag strip targets `<TAG>` and `[[face:x]]` forms, neither
+ * of which collides with the `[unrenderable part kind …]` marker, so the marker survives it.
+ */
+const textOf = (msg) => clean(partsToText(msg.parts ?? []));
 
 function normalizeMsg(msg, meta) {
   return {
