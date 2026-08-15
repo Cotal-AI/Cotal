@@ -829,6 +829,7 @@ See [Watch a mesh](watch-a-mesh.md).
 
 ```bash
 cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--signer]
+cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 ```
 
 | Flag | Default | Meaning |
@@ -839,12 +840,23 @@ cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--signer]
 | `--force` | off | With `--signer`: overwrite an existing file |
 | `--allow-subscribe <a,b>` | profile default | Read-ACL override |
 | `--allow-publish <a,b>` | profile default | Post-ACL override |
+| `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
+| `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
+| `--space <s>`, `--server <url>` | the resolved mesh | With `--provision`: which mesh to provision on |
 
 Mints a NATS creds file for a space in **static** auth mode, scoped to a profile and (optionally)
 explicit read/post ACLs. `--signer` emits an account-signing file for delegating minting to another
 host. A per-user-auth space refuses `mint`: agents there join under a logged-in user
 ([`login`](#login-logout) + [`actor grant`](#actor)), never via a handed-out creds file. See
 [Identity and auth](identity-and-auth.md).
+
+A plain mint is creds only: the identity can publish within its post ACL at once, but on an authed
+mesh its DM inbox and task queue are provisioner-pre-created and bind-only, so a **consuming**
+connect fails until they exist. `--provision` performs that pre-create in the same command (a
+provisioner cred is minted from the space's trust material, used, and dropped), so a long-running
+client you start yourself can receive DMs and role anycasts like a spawned seat. The command prints
+the identity's principal (its wire id) and lifecycle uid; a consuming client passes that uid as its
+`lifecycleUid`. Agent profile only; an open mesh needs none of this (peers self-create there).
 
 ## login, logout
 
