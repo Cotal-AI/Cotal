@@ -469,8 +469,20 @@ function managerRow(cmd: string): { marker: string; text: string } {
   }
 }
 
-/** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
- *  probes — displaying state is not depending on it), plus the key commands. */
+/** The **`cotal setup`** closing card: machine + mesh + web + manager + delivery status (read-only
+ *  probes — displaying state is not depending on it), plus the key commands.
+ *
+ *  THE NAME IN THIS COMMENT WAS WRONG AND IT COST A LANE REAL WORK. It read "The `cotal · status`
+ *  one-glance card" until 2026-08-15. This function is called from exactly ONE place — the end of
+ *  `setupCommand` — so it renders during `cotal setup` and nowhere else. `cotal status` is a separate
+ *  command that does not call it.
+ *
+ *  The correction is recorded rather than quietly applied because of what the wrong name DID: a lane
+ *  adding an operator-facing delivery health row read this sentence, believed the row would appear on
+ *  `cotal status`, and did not check the call site — the name asserted the answer, so the question was
+ *  never asked. The row shipped onto the onboarding card, which an operator sees once. If you rename
+ *  or move this function, fix this comment in the same change; a scope-describing comment that has
+ *  drifted from its call site is not a tidiness item, it is a trap with a measured price. */
 async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
