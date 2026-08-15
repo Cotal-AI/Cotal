@@ -4,7 +4,10 @@ Written 2026-08-15T06:36Z (`date -u`) **before the review seat exists**, deliber
 list of doubts I still hold while building, not a summary composed after the fact. Where I have
 already measured something against myself, the measurement is cited rather than the conclusion.
 
-**Grade this tip:** `e66ad5c8c6c9cbac7dc019fb958ff8e90f8019eb` on `feat/delivery-health`.
+**Grade this tip:** `4893a1d0` on `feat/delivery-health` — **re-derive it yourself with
+`git rev-parse HEAD`; do not trust this line.** (It read `e66ad5c8` when first written; the branch
+has moved and a stale hash in a brief is exactly the kind of thing that makes a verdict
+un-re-derivable.)
 Put `git rev-parse HEAD`, run from inside your own worktree, **in the verdict itself** — a verdict
 that does not name the artifact it graded cannot be re-derived, and I will not act on one that omits
 it. Cite `file:line` for every finding.
@@ -44,15 +47,27 @@ and suites `bin/smoke/delivery-guard.smoke.ts`, `bin/smoke/delivery-row.smoke.ts
 
 ## WHERE I WOULD ATTACK IT — ranked, and these are real doubts
 
-**1. THE ENTRY POINT IS UNPROVEN. This is the weakest claim in the whole lane.**
-Every cell I have drives `deliveryRow(...)` or the guard functions **directly**, with the caller
-injected. I have never driven a real `cotal setup` invocation and observed the delivery line come out
-of the actual card renderer. So a killed mutation in `delivery-row.ts` proves my tests *depend* on
-that code — it does **not** prove the card *reaches* it. If `setup.ts` renders the row behind a
-condition I got wrong, or the mesh argument is shaped differently in the real call, every green I
-have stays green and the operator sees nothing. **Attack the wiring in `setup.ts`, not the row.** If
-you can show the card path never calls `deliveryRow` under some realistic config, that is the most
-valuable finding available in this branch.
+**1. THE ENTRY POINT — NARROWED SINCE THIS BRIEF WAS WRITTEN, AND NOT CLOSED.**
+*(Updated 07:2xZ. The original text said the entry point was wholly unproven; that is no longer
+accurate and the update is recorded rather than the paragraph being rewritten as if it always said
+this.)*
+
+The doubt was right and **under-aimed**. I asked whether the card reaches `deliveryRow`. The real gap
+was one level up: **the row was on the wrong command entirely.** `readyCard` renders only at the end
+of `cotal setup`; `cotal status` — the command an operator runs to ask "is delivery working" — had no
+delivery row at all, only `managerHasDeliveryMarker()`, a BUILD marker. Every suite was green
+throughout, because none of them entered through a command.
+
+**Now closed:** the row is on `cotal status` (`status.ts`), and
+`implementations/cli/smoke/status-delivery-row.smoke.ts` drives the **real exported `status()`** —
+not a hand-built input — with the project root and the mesh registry separately sandboxed. Killed
+through `scripts/mutation-proof.mjs` on the named assertion, 16 baseline marks → 10 mutated.
+
+**STILL OPEN, and this is what to attack:** that cell exercises the **preflight-FAILURE** path,
+because that is what a broker-less box can reach. It never reaches
+`deliveryStatusRow` → `mintDeliveryCaller` → `deliveryRow`. **So "the command prints a delivery line"
+is proven and "the command reaches the health assessment" is not.** Everything on the preflight-OK
+path is still entry-point-unproven.
 
 **2. THE 1.5s PROBE DEADLINE IS A GUESS, AND THIS BOX IS AT LOAD 4.1.**
 `PROBE_DEADLINE_MS = 1_500` (`delivery-caller.ts:36`) was chosen because a card is rendered while an
@@ -102,6 +117,30 @@ assertion count** — my instrument here proves the token appears in the file, n
 that condition is produced for the right input, and I am explicitly not claiming the stronger thing
 from the weaker measurement. `clock-fault` at 2 is the thinnest and is where I would look first.
 Please do the real enumeration.
+
+**7. GRADE MY RETRACTION, NOT JUST MY CLAIMS.** *(Added 07:2xZ.)*
+I reported that a delivery row I added could satisfy a **security** assertion in
+`up-tls-routes-live.smoke.ts` — the regex `/connection\s+.*unreachable/`, applied to the whole of
+`cotal status`'s output, at two sites in that file. Then I **retracted the severity**: measured across
+every `PreflightFailure` kind, the set where my old phrasing matched and the legitimate `connection`
+row did NOT is **empty**, so the row was duplicate evidence and never the sole supplier.
+
+**A retraction is a claim too, and it has had less scrutiny than the claim it replaced.** Check it.
+Specifically: is there any path where `status` emits a line matching that regex while the `connection`
+row does not — a non-`preflight` route to the same output, an error string, a wrapped line? **The
+residual exposure I named is the preflight-OK path**, where `connection` renders green `ok` and the
+delivery text is built from broker error strings this lane does not author. **No cell covers it**, it
+needs a broker, and it is item 0 in `.lane/broker-work-owed.md`. If you can construct a case there, I
+retracted too far.
+
+**8. THE ITEM-0 INVARIANT CHECKER (`implementations/cli/smoke/_output-invariant.ts`).** *(Added.)*
+Exercised (24/24) but its live feed does not exist yet. The load-bearing decision is that an **empty
+match set REFUSES** rather than passing: the property is vacuous over an empty set, and the vacuous
+state is **correlated with the failure being modelled** — if the connection row were reworded or
+dropped, the checker would go green exactly as the evidence it protects stopped existing. **Grade
+whether the refusal is wired so a caller cannot accidentally treat it as a pass**, and whether
+keeping the negative-polarity twin as a separate function is right (their vacuity behaviour is
+inverse: empty means "no evidence" for one and "the property holds" for the other).
 
 ## THINGS I BELIEVE ARE SOUND, SO DISAGREEING IS HIGH VALUE
 
