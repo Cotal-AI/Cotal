@@ -152,7 +152,17 @@ supervisor runs from the checkout — so this is a **per-call-path** statement, 
 - `connection-control`: **45 passed / 0 failed / 0 VOID**, including the authed arm.
 - `connection-lifecycle`: **48 / 0**. `request-strand` and the start-leak probe driven and green.
 - **Mutation-proofed with named predicted cells**, with the mutant shown non-equivalent at the
-  broker — not merely reddening a cell.
+  broker — not merely reddening a cell. **Read the mechanism with that claim, because it changed
+  underneath it:** those proofs were obtained the *pre-seam* way, by compiling the mutant into the
+  shared `packages/core/dist` — which is precisely why they reached the connector, and precisely why
+  they had a blast radius. **The harness as it ships here cannot reproduce them through this suite**:
+  `--private-build` puts the mutant somewhere only the suite's own imports resolve, while the cells
+  drive a `MeshAgent` whose `@cotal-ai/core` resolves to the shared build, so a core mutation run
+  that way survives regardless of cell quality. Measured, with the survival diagnosed rather than
+  interpreted: `.meshctl-measurement/FINDING-mx14-survived-vacuously.md`.
+  **The evidence above stands and the mechanism that produced it is gone.** Safety and reach were
+  the same property; containing the blast radius removed the reach with it. Restoring the reach
+  safely is an open decision (register item 9), not a claim made here.
 - **Both suites now have names** (`smoke:connection-control`, `smoke:connection-lifecycle`). They
   had none: 45 cells and a lifecycle suite reachable from no `package.json` script, runnable only by
   someone who remembered a path. Deliberately **not** added to the `check` chain — naming a suite is
