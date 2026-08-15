@@ -460,11 +460,20 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
     back.records.map((r) => r.record.kind));
   // Equal is allowed: a lease is renewed under the SAME token, and the holder that lost its
   // appender to a stalled publish recovers by activating again under the lease it still has.
-  const again = await activateRun(js, jsm, takeover("r-5h", "d2", 2));
+  const again = await (async () => {
+    try { return await activateRun(js, jsm, takeover("r-5h", "d2", 2)); } catch { return undefined; }
+  })();
   c("the same token can activate again: that is one holder recovering, not two drivers",
-    again.steps().length === 2);
+    again?.steps().length === 2, again === undefined ? "refused" : again.steps().length);
   const newer = await activateRun(js, jsm, takeover("r-5h", "d3", 3));
-  c("and a NEWER token takes the run over as before", newer.lastSeq > again.lastSeq);
+  c("and a NEWER token takes the run over as before", newer.lastSeq > (again?.lastSeq ?? 0));
+  // Which activation the prefix is judged against matters: this run's FIRST is token 2 and its
+  // last is token 3, so a token-2 takeover is stale only if the LAST one is what answers.
+  let overtaken: unknown;
+  try { await activateRun(js, jsm, takeover("r-5h", "d2", 2)); } catch (e) { overtaken = e; }
+  c("a holder that has since been overtaken cannot re-activate on its old token",
+    overtaken instanceof StaleLeaseToken && (overtaken as StaleLeaseToken).held === 3,
+    `${(overtaken as Error)?.name}/${(overtaken as StaleLeaseToken)?.held}`);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
