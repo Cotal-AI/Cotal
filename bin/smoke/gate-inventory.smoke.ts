@@ -62,6 +62,17 @@ const UNGATED: Record<string, string> = {
   // REMOVING this line is part of the renderer work. When it goes green, gate it.
   "smoke:agui-renderer-precondition":
     "red by design until the renderer precondition is met; asserting the current broken state instead would invert its polarity. Gate it when it goes green",
+  // The THIRD red-on-purpose entry, and it exists because the SECOND one had a defect nothing in this
+  // repo could see: three AG-UI constructors called without a required argument, in the file whose
+  // failures ARE the merge gate. `tsx` does not typecheck, the package tsconfig is `"include":
+  // ["src"]` so `smoke/` is outside it, and an ungated suite is exercised by no gate run — three
+  // guards, none with jurisdiction. This suite derives which files a tsconfig SOMEBODY INVOKES
+  // actually covers, and every `smoke/` directory in the repo is outside its package's `include`, so
+  // it is red the day it lands. Going green means widening ~13 `include` arrays and fixing whatever
+  // the compiler then finds — a change that spans every lane, which is why it is not bundled here.
+  // REMOVING this line is part of that work.
+  "smoke:tsconfig-coverage":
+    "red by design: every smoke/ directory in the repo is outside its package's tsconfig include. Gate it when the include arrays are widened",
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
