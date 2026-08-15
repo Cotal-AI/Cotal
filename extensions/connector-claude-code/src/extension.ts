@@ -66,6 +66,12 @@ export const claudeConnector: Connector = {
     // agent actually did — OFF by default (transcripts are verbose and may carry sensitive
     // content); `--events` (opts.events === true) opts in. Personal sessions never mirror.
     if (opts.events === true) env.COTAL_EVENTS = "1";
+    // The event WAL's state root (`agui-events.md:676-687`). Forwarded ONLY when the launcher
+    // resolved one — deliberately with no `?? process.cwd()` fallback, because the whole reason this
+    // root exists is to keep per-agent durable state out of a working directory that "can point at
+    // any repo". A session that needs it and did not get it fails loud where it is consumed; a
+    // session that never emits does not need it at all.
+    if (opts.workspaceRoot) env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

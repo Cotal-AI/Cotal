@@ -156,6 +156,11 @@ export const codexConnector: Connector = {
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.events === true) env.COTAL_EVENTS = "1"; // gate the host's transcript mirror
+    // The event WAL's state root (`agui-events.md:676-687`), forwarded on every launch path so the
+    // root is present before the connector that consumes it cuts over. No `?? process.cwd()`
+    // fallback: this root exists precisely to keep durable per-agent state out of a working
+    // directory that can point at any repo, and a default would silently reintroduce that.
+    if (opts.workspaceRoot) env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     if (opts.prompt) env.COTAL_CODEX_PROMPT = opts.prompt; // auto-submitted first turn
     // The host picks TUI vs headless from its own stdout, and COTAL_CODEX_TUI overrides that. The
     // child's env is an ALLOW-LIST, so without forwarding it by name the override would silently

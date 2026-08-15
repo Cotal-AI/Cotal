@@ -154,6 +154,12 @@ export const opencodeConnector: Connector = {
     // workspace → root it at the launch dir (this process's cwd, which the child inherits), the
     // prior behavior. serve.ts requires this env (no silent cwd fallback).
     env.COTAL_OPENCODE_HOME = opts.workspaceRoot ?? process.cwd();
+    // The event WAL's state root (`agui-events.md:676-687`), forwarded on every launch path so the
+    // root is present before the connector that consumes it cuts over. Separate from
+    // `COTAL_OPENCODE_HOME` above and NOT given its cwd fallback: that fallback is a deliberate
+    // continuation of prior behaviour for the SQLite DB, whereas an event WAL rooted at whatever
+    // directory a launch happened to start in is the scattering this root exists to prevent.
+    if (opts.workspaceRoot) env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
 
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
