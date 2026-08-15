@@ -550,8 +550,43 @@ the boundary rather than exactly on it).
 of `exceeds the 900s cap` in the run log went **74 → 0**. Nothing else about the run was changed.
 
 **Defect 2 — NOT fixed, and it is why `m7` still has no evidence.** With the cap denial gone, `U0`
-still fails: `auth callout: denied …: signature verification failed`. So the callout rejects the
-correctly-signed bearer for a second, independent reason.
+still fails: `auth callout: denied …: signature verification failed`. ~~So the callout rejects the
+correctly-signed bearer for a second, independent reason.~~
+
+> ⚠️ **THAT SECOND SENTENCE IS WITHDRAWN — it was an ATTRIBUTION reported as an observation, and it
+> is the fifth thing this lane has had to take back for the same reason.** The denial line was read
+> out of a callout log written while **both** arms were connecting concurrently. `req.user_nkey`
+> (`callout.ts:292`) is minted per connect by the server and names no agent, and **`BAD` is the arm
+> whose whole purpose is to produce exactly that string.** One line, two candidate authors. The
+> connector's own stderr cannot break the tie either: `agent.ts:1138` writes
+> `[cotal-connector] endpoint error: …` with **no agent identity**, so two `MeshAgent`s in one
+> process are indistinguishable in the log. *(Recorded as a product gap — not patched from here.)*
+>
+> **The run log that the claim rested on was not kept**, so it cannot be re-read: `runs/` holds the
+> three suite logs and no `m7`. A claim whose only evidence is a discarded log is not a measurement.
+
+**What IS driven, at `02:19:17Z`, with NO broker and no network at all**
+(`.meshctl-measurement/meshctl-m7d2-token-only.mts`, `EXIT=0`, 3 passed / 0 failed). The probe mints
+the byte-identical bearer `m7`'s `signBearer` mints and hands it straight to `validateUserToken` with
+the key `m7` pins into the callout:
+
+| arm | result |
+| --- | --- |
+| **A1** right key, the fixture's own token | **ACCEPTED** |
+| **A2** inverse control, wrong-key token | **REFUSED — `signature verification failed`** |
+
+The refutation was written before the run: *A1 passing means the fixture is sound and defect 2 lives
+in the plumbing; A1 failing with that string means defect 2 reproduces with no broker at all.* A2 is
+what stops A1's pass from being vacuous — a validator that verified nothing would accept both. **A1
+passed. The fixture's token/key pair is not what fails `U0`**, and the cause of `U0` is now genuinely
+unknown rather than wrongly named.
+
+**Fixed in the probe, so the next run can attribute what it sees:** the arms are **sequenced**, not
+concurrent — `S` alone against a log cursor, then `BAD` against a second cursor — and two new
+`UX ATTRIBUTION` preconditions assert that the signature denial appears **in `BAD`'s window and not
+in `S`'s**. The property the concurrent form was bought for is kept: `UX` is still asserted while `S`
+is connected, so "BAD did not connect" still cannot mean "nothing was answering yet". **Unrun as of
+this commit — this lane holds no broker window.**
 
 **`UX` passing is worth nothing while `U0` fails, and this is the exact pattern this lane keeps
 finding.** `UX` asserts a bearer signed by the WRONG key does not connect — and it is green. But
@@ -566,7 +601,8 @@ without it seven cells would have reported a supervisor property that was never 
 sat in the connector's reconnect loop, which keeps the event loop alive. It was killed by a
 10-minute timeout at `143`. **`143` is the timeout's exit code, not the probe's verdict** — a suite
 that never exits hands you a number that means nothing about the code. The verdict had to be read
-out of the log.
+out of the log. **Fixed in the probe** (explicit exit at the end of `finally`, on the verdict the run
+produced); like the sequencing above, that fix is **committed unrun**.
 
 **Standing: the user/bearer path is UNMEASURED.** `m7` is the only probe covering it. Nothing in
 this file about user-mode connection control is measured, and any DESIGN sentence resting on `m7`

@@ -27,25 +27,34 @@
  *   node_modules/.bin/tsx implementations/auth/meshctl-m7-usermode.mts
  * Needs `nats-server` on PATH. Local-only, loopback-only.
  *
- * ⚠️ NOT YET RUN — BLOCKED ON THIS WORKTREE, NOT ON THE DESIGN. `implementations/auth` has no
- * `node_modules` here, so the auth package cannot load at all:
+ * ⚠️ STANDING AT THIS EDIT — RUNS, DOES NOT PASS, AND ITS LAST DIAGNOSIS WAS UNSOUND.
+ * The earlier "BLOCKED — `implementations/auth` has no `node_modules`" header is discharged: it has
+ * one, the probe loads, and it ran once (`EXIT=1`, 2 passed / 1 failed / 7 VOID). Three defects came
+ * out of that run. Defect 1 (the fixture minted a 960s token against a 900s lifetime cap) is FIXED
+ * below. Defects 2 and 3 are open, and defect 2's stated cause does not survive being checked:
  *
- *   Cannot find package '@nats-io/jwt' imported from implementations/auth/src/callout.ts
+ * **DEFECT 2 — `U0` fails, and "the callout rejects the correctly-signed bearer" was an
+ * ATTRIBUTION, not an observation.** The evidence for it was one line in the callout's log,
+ * `auth callout: denied <user_nkey>: signature verification failed`, read while BOTH arms were
+ * connecting concurrently. `req.user_nkey` is minted per connect by the server, so it names no
+ * agent — and `BAD` is the arm that is SUPPOSED to produce exactly that string. One denial line and
+ * two candidate authors is not evidence about either. The connector's own stderr does not break the
+ * tie: `agent.ts:1138` writes `[cotal-connector] endpoint error: …` with **no agent name**, so two
+ * MeshAgents in one process are indistinguishable in the log — recorded as a product gap, not
+ * patched from here.
  *
- * The worktree carries a PARTIAL dependency farm — `packages/core`, `packages/workspace`,
- * `implementations/{cli,delivery,manager}` are symlinked to the principal checkout and
- * `extensions/connector-core` is a real dir, but `implementations/auth` (and eight others) are
- * missing. Every leg this lane ran until now lived in a package that happened to have one.
+ * Driven, with no broker at all (`implementations/auth/m7d2-token-only.mts`): the fixture's own
+ * token, minted by the body below and handed to `validateUserToken` with the key this probe pins
+ * into the callout, **VERIFIES** — while a wrong-key token is refused for the signature, so the
+ * validator was verifying. **The fixture is exonerated; whatever fails `U0` is not the token.**
  *
- * Refutation stated before the diagnosis was cited: *if importing `implementations/auth/src/index.js`
- * succeeded, the blocker would be this probe rather than the worktree.* It failed, on a dependency
- * this probe never names.
+ * So the arms below are SEQUENCED rather than concurrent, which is what makes any denial line
+ * attributable: `S` runs alone in its own window, then `BAD` starts against a log cursor taken
+ * after `S` settled. What that costs and what it preserves is stated at the arms themselves.
  *
- * NOT worked around on purpose. Creating the missing symlink would point this worktree's resolution
- * into the principal checkout — a shared side effect across worktrees, invisible to `git status`,
- * which is the exact hazard class that put every result on this lane under review tonight. Routed to
- * fm-orchestrator instead. **NO CELL BELOW HAS EVER REPORTED A RESULT; treat the whole file as
- * unrun.**
+ * **DEFECT 3 — the probe printed its verdict and never exited**, sitting in the connector's
+ * reconnect loop until a 10-minute timeout killed it at `143`. `143` is the timeout's number, not a
+ * verdict. Handled at the end of `finally`, where the reason is written out.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -130,6 +139,7 @@ const signBearer = async (key: CryptoKey): Promise<string> => {
 writeFileSync(tokenFile, await signBearer(privateKey as CryptoKey));
 writeFileSync(badTokenFile, await signBearer(wrong.privateKey as CryptoKey));
 
+const calloutLog: string[] = [];
 let calloutNc: NatsConnection | undefined, witness: CotalEndpoint | undefined, prov: CotalEndpoint | undefined;
 let S: any, BAD: any;
 try {
@@ -148,7 +158,10 @@ try {
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => {},
     permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: ["general"], lifecycleUid: uid, scope: [] })),
-    log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
+    // Captured, not just printed. The arms below slice this by cursor to attribute a denial to the
+    // connection that caused it — `req.user_nkey` is per-connect and names no agent, so ordering is
+    // the only attribution available without changing the product.
+    log: (l) => { if (/denied|drop|fail/i.test(l)) { calloutLog.push(l); console.log("  [callout]", l); } },
   });
 
   // The USER-MODE spawn path provisions durables WITHOUT minting a cred (the bearer is the
@@ -187,15 +200,36 @@ try {
     userAuth: { ...cfg.userAuth, bearerCmd: ["sh", "-c", `cat "${badTokenFile}"`] },
   };
 
-  console.log("\n=== UX/U0: is the callout REALLY verifying? (paired arms, same window) ===");
-  S = new MeshAgent(cfg); BAD = new MeshAgent(badCfg);
-  S.start(300); BAD.start(300);
+  console.log("\n=== U0 then UX: is the callout REALLY verifying? (SEQUENCED arms, one live window) ===");
+  // WHY SEQUENCED, AND WHAT IT COSTS. Run concurrently, the two arms share one callout log in which
+  // `req.user_nkey` names no agent — so a denial line has two candidate authors and attributing it
+  // to either is a guess. Run in order, every line printed between two cursors belongs to the only
+  // connection that was being attempted between them.
+  // The property the concurrent form was bought for is PRESERVED: UX is still asserted inside a
+  // window in which the good bearer is CONNECTED — S is up and stays up while BAD is tried — so
+  // "BAD did not connect" still cannot mean "the broker/callout was not answering yet".
+  S = new MeshAgent(cfg);
+  const cursorS = calloutLog.length;
+  S.start(300);
   for (let i = 0; i < 90 && !S.connected; i++) await sleep(150);
-  // UX is asserted in the window in which U0 succeeded, so "did not connect" cannot mean "was slow".
+  const deniedS = calloutLog.slice(cursorS);
+  precondition("USER", "U0 CONTROL: the SAME fixture with a correctly-signed bearer DOES connect (so UX's arms could differ)",
+    S.connected, { connected: S.connected, calloutSaidWhileOnlyThisArmWasConnecting: deniedS });
+
+  BAD = new MeshAgent(badCfg);
+  const cursorBad = calloutLog.length;
+  BAD.start(300);
+  for (let i = 0; i < 40 && !BAD.connected; i++) await sleep(150);
+  const deniedBad = calloutLog.slice(cursorBad);
   precondition("USER", "UX a bearer signed by the WRONG key does NOT connect — the callout verifies, so this is really user mode",
     !BAD.connected, { bad: BAD.connected, good: S.connected });
-  precondition("USER", "U0 CONTROL: the SAME fixture with a correctly-signed bearer DOES connect (so UX's arms could differ)",
-    S.connected, { connected: S.connected });
+  // Not-connected is a weak signal on its own: an arm that never attempted looks identical. The
+  // callout must have SEEN this bearer and refused it, and refused it for the SIGNATURE — a denial
+  // naming ttl/aud/shape would mean UX proves something other than "the callout verifies keys".
+  precondition("USER", "UX ATTRIBUTION: the callout logged a SIGNATURE denial in the window where BAD was the only arm connecting",
+    deniedBad.some((l) => /signature verification failed/i.test(l)), { deniedBad, deniedS });
+  precondition("USER", "UX ATTRIBUTION: and S's own window carried NO signature denial — so the good bearer was never the one refused",
+    !deniedS.some((l) => /signature verification failed/i.test(l)), { deniedS });
   await BAD.stop().catch(() => { /* never came up */ });
   await sleep(1500);
 
@@ -249,4 +283,9 @@ try {
   for (let i = 0; i < 20 && srv.exitCode === null && srv.signalCode === null; i++) await sleep(100);
   rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   console.log("[cleanup] broker group signalled, scratch removed");
+  // DEFECT 3. Every handle this probe owns is closed above, and the process still does not exit —
+  // the connector's reconnect loop keeps the event loop alive, so the last run printed its verdict
+  // and then sat until an external 10-minute timeout killed it at 143. A suite that has to be killed
+  // hands you the KILLER's exit code, not its own. Exit on the verdict this run produced.
+  process.exit(process.exitCode ?? 0);
 }
