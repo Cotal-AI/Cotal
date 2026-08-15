@@ -66,3 +66,5 @@ M-R5 had to be taught twice. Read the sizes back:
 | `restoreA.rc` / `restoreB.rc` | `restore-clean.rc=0` — scoped to the mutated file |
 | `decoy-witness.txt` | the decoy's contents under mutant A: the observable effect |
 | `decoy-path.txt` | the decoy path (removed after the witness was taken) |
+| `run.sh` | the whole sequence, re-runnable, including the two refusal guards |
+| `baseline.out` / `.rc` | 26 passed, 0 failed / rc `0` — the unmutated program in the SAME run |

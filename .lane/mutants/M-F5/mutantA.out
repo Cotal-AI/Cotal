@@ -3,7 +3,7 @@
 ready-card — the manager row an operator actually reads
 
   ✓ HERMETIC-precondition: the scratch HOME is EMPTY before any run (a pre-created witness proves nothing)
-    alive| ? manager cannot establish: a local process is present but no manager instance is recorded for this root, so no health read was attempted — whether it is serving is unknown and unasked (pid 2695370 · .cotal/manager.pid) · no action recommended
+    alive| ? manager cannot establish: a local process is present but no manager instance is recorded for this root, so no health read was attempted — whether it is serving is unknown and unasked (pid 2704968 · .cotal/manager.pid) · no action recommended
   ✓ P0-control: the manager row was FOUND in the rendered card (an empty extract passes every absence check)
   ✓ ALIVE: an unrelated live pid is NEVER claimed running (no ✓ on the row)
   ✓ ALIVE: the row names its SOURCE — the pid and the pidfile it came from
@@ -29,8 +29,8 @@ ready-card — the manager row an operator actually reads
   ✓ CARDINALITY: all 4 states rendered a row (saw 4)
   ✗ FAIL: HERMETIC: the run's HOME-rooted state landed in the SCRATCH home (.agents, created by the run)
   ✓ HERMETIC: the run's COTAL_HOME-rooted state landed there too (onboarded.json — a separate redirection)
-  ✓ HERMETIC: the OPERATOR's real home is byte-for-byte unchanged across every run above
+  ✗ FAIL: HERMETIC: the OPERATOR's real home is byte-for-byte unchanged across every run above
   ✓ HERMETIC-control: the same comparator DOES report a change for the scratch home (else invariance is vacuous)
   ✓ HERMETIC: the project state landed in the scratch project root
 
-ready-card: 25 passed, 1 failed
+ready-card: 24 passed, 2 failed

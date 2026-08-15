@@ -1,5 +1,5 @@
 diff --git a/bin/smoke/ready-card.smoke.ts b/bin/smoke/ready-card.smoke.ts
-index eacaa880..85044fc8 100644
+index eacaa880..16e59963 100644
 --- a/bin/smoke/ready-card.smoke.ts
 +++ b/bin/smoke/ready-card.smoke.ts
 @@ -102,8 +102,8 @@ function homeFingerprint(dir: string): string {
@@ -9,7 +9,7 @@ index eacaa880..85044fc8 100644
 -if (REAL_HOME === HOME_D) throw new Error(`CANNOT MEASURE: the scratch HOME is the real HOME (${REAL_HOME})`);
 -const realHomeBefore = homeFingerprint(REAL_HOME);
 +
-+const realHomeBefore = homeFingerprint(HOME_D); // M-F5 mutant B: watch a path that DOES change
++const realHomeBefore = homeFingerprint(HOME_D); // M-F5 mutant B
  const scratchHomeBefore = homeFingerprint(HOME_D);
  // The witnesses must not pre-date the run, or every assertion below is satisfied by this suite's own
  // mkdir. This is the cell whose absence made the old pair vacuous.
