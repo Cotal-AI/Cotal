@@ -117,6 +117,7 @@ export {
   type EntryStatus,
   type JournalEntry,
   type JournalInit,
+  type JournalStore,
   type LookupVerdict,
 } from "./journal.js";
 

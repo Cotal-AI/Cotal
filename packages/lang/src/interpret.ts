@@ -366,7 +366,10 @@ class Interpreter {
     // is for every effect that never hops.
     const attempt = recorded?.attempt ?? 0;
     if (verdict.verdict === "miss") {
-      this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
+      // AWAITED, and the await is the point: the request id the handler is about to submit under
+      // has to be durable BEFORE the work is issued, or a crash in the gap leaves real work that
+      // nothing in the journal names.
+      await this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
     }
 
     const ctx: EffectContext = {
@@ -379,7 +382,7 @@ class Interpreter {
       attempt,
       ...(resume !== undefined ? { resume } : {}),
       bind: async (external) => {
-        this.journal.bind(key, external);
+        await this.journal.bind(key, external);
       },
     };
 
@@ -387,13 +390,13 @@ class Interpreter {
       const result = await perform(ctx, inputHash);
       assertCrossable(result, `the result of ${stepKeyString(key)}`);
       const endedAt = this.options.handler.now();
-      this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
+      await this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
       frame.clock.advance(endedAt);
       return result;
     } catch (e) {
       const endedAt = this.options.handler.now();
       if (e instanceof Cancelled) {
-        this.journal.settle(key, { status: "cancelled" }, endedAt);
+        await this.journal.settle(key, { status: "cancelled" }, endedAt);
         throw e;
       }
       // A handler may raise a language code directly, and it survives. The simulator's "unscripted
@@ -409,7 +412,7 @@ class Interpreter {
           : carried !== null
             ? { code: carried, kind: "handler-fault", message: (e as Error).message }
             : { code: "L4000", kind: "handler-fault", message: (e as Error).message };
-      this.journal.settle(key, { status: "failed", error }, endedAt);
+      await this.journal.settle(key, { status: "failed", error }, endedAt);
       frame.clock.advance(endedAt);
       throw e instanceof EffectError ? e : new EffectError(error.code, error.kind, error.message);
     }
@@ -820,7 +823,7 @@ class Interpreter {
             //
             // Name the open attempt on the pending row BEFORE issuing it, index and all.
             const nextId = attemptId(1);
-            this.journal.reissueAs(ctx.key, nextId, 1);
+            await this.journal.reissueAs(ctx.key, nextId, 1);
             const second = await handler.checkpoint(finalReq, { ...ctx, requestId: nextId, attempt: 1 });
             // ONE HOP. An escalation that can escalate again never terminates, so a second expiry
             // settles as expired and the program decides, exactly as `proceed` would.

@@ -82,11 +82,29 @@ export type LookupVerdict =
       readonly programHash: string;
     };
 
+/**
+ * Where a journal entry goes to survive the process that wrote it.
+ *
+ * The interpreter owns WHAT is recorded and WHEN; a store owns only durability, and it is handed
+ * whole entries rather than deltas so it never has to reconstruct one. `append` must resolve only
+ * once the entry is somewhere a resume on another host will find it — the pending half is awaited
+ * before the handler runs, so a store that resolves early hands back exactly the crash window the
+ * two-phase write exists to close.
+ *
+ * A run with no store is in-memory, which is what the simulator, the dry run and every test want:
+ * durability is a property of where a run is hosted, not of what a program means.
+ */
+export interface JournalStore {
+  append(entry: JournalEntry): Promise<void>;
+}
+
 export interface JournalInit {
   readonly run: string;
   readonly entries?: readonly JournalEntry[];
   /** Refuse to append. A migration's dry replay must never mutate the run it is checking. */
   readonly readOnly?: boolean;
+  /** Where appends go to survive this process. Omitted, the journal is in-memory only. */
+  readonly store?: JournalStore;
 }
 
 export class JournalReadOnlyError extends Error {
@@ -99,6 +117,7 @@ export class JournalReadOnlyError extends Error {
 export class Journal {
   readonly run: string;
   readonly readOnly: boolean;
+  private readonly store?: JournalStore;
   private readonly byKey = new Map<string, JournalEntry>();
   private readonly order: string[] = [];
   /** Every key the current replay has looked up. What is left over is an orphan. */
@@ -107,6 +126,7 @@ export class Journal {
   constructor(init: JournalInit) {
     this.run = init.run;
     this.readOnly = init.readOnly === true;
+    if (init.store !== undefined) this.store = init.store;
     for (const e of init.entries ?? []) {
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
@@ -143,8 +163,26 @@ export class Journal {
     return { verdict: "replay", entry };
   }
 
-  /** Append the `pending` half: the effect is about to be performed. */
-  begin(key: StepKey, inputHash: string, startedAt: number, requestId?: string): JournalEntry {
+  /**
+   * Durably record one entry, after the in-memory map already holds it.
+   *
+   * The map is updated by the caller BEFORE this is awaited, so a journal with no store behaves
+   * exactly as it did when every mutator was synchronous, and a caller that does not await still
+   * sees its own write. What awaiting buys is the only thing a store is for: that a crash after
+   * this point finds the entry, and a crash before it finds nothing to be confused by.
+   */
+  private async persist(entry: JournalEntry): Promise<void> {
+    if (this.store === undefined) return;
+    await this.store.append(entry);
+  }
+
+  /**
+   * Append the `pending` half: the effect is about to be performed.
+   *
+   * AWAIT THIS BEFORE DISPATCHING. The entry carries the request id the handler will submit under,
+   * and an identity that is not durable when the work is issued names nothing a resume can find.
+   */
+  async begin(key: StepKey, inputHash: string, startedAt: number, requestId?: string): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry: JournalEntry = {
@@ -163,6 +201,7 @@ export class Journal {
     this.byKey.set(k, entry);
     this.order.push(k);
     this.consumed.add(k);
+    await this.persist(entry);
     return entry;
   }
 
@@ -178,31 +217,35 @@ export class Journal {
    * The INDEX moves with the id, and it is the half that recovery reads: an id says what to submit
    * under, the index says how much of the chain is already spent.
    */
-  reissueAs(key: StepKey, requestId: string, attempt: number): void {
+  async reissueAs(key: StepKey, requestId: string, attempt: number): Promise<void> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`reissueAs before begin for ${k}`);
-    this.byKey.set(k, { ...entry, requestId, attempt });
+    const next = { ...entry, requestId, attempt };
+    this.byKey.set(k, next);
+    await this.persist(next);
   }
 
-  bind(key: StepKey, external: Readonly<Record<string, unknown>>): void {
+  async bind(key: StepKey, external: Readonly<Record<string, unknown>>): Promise<void> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`bind before begin for ${k}`);
-    this.byKey.set(k, { ...entry, external });
+    const next = { ...entry, external };
+    this.byKey.set(k, next);
+    await this.persist(next);
   }
 
   /** Append the `settled` half. */
-  settle(
+  async settle(
     key: StepKey,
     outcome:
       | { readonly status: "ok"; readonly result: unknown }
       | { readonly status: "failed"; readonly error: EntryError }
       | { readonly status: "cancelled" },
     endedAt: number,
-  ): JournalEntry {
+  ): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
@@ -216,6 +259,7 @@ export class Journal {
       ...(outcome.status === "failed" ? { error: outcome.error } : {}),
     };
     this.byKey.set(k, settled);
+    await this.persist(settled);
     return settled;
   }
 

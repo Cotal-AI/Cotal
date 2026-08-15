@@ -7,8 +7,11 @@
  * bug this keying scheme exists to prevent, so "diverged" has to be a verdict the interpreter
  * cannot accidentally treat as "miss".
  */
-import { Journal, RunClock } from "../src/journal.js";
+import { Journal, RunClock, type JournalEntry } from "../src/journal.js";
 import { KeyScope, digest } from "../src/keys.js";
+import { run } from "../src/interpret.js";
+import { SimHandler } from "../src/sim.js";
+import type { EffectHandler } from "../src/effects.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -28,8 +31,8 @@ const H = (v: unknown) => digest(v);
   const h = H({ agent: "builder" });
 
   ok("a fresh key misses", live.lookup(k, h).verdict === "miss");
-  live.begin(k, h, 1000);
-  live.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await live.begin(k, h, 1000);
+  await live.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
 
   // Resume: re-run from the top, so a NEW KeyScope allocates the same key again.
   const resumed = new Journal({ run: "r-1", entries: live.entries() });
@@ -48,8 +51,8 @@ const H = (v: unknown) => digest(v);
   const j = new Journal({ run: "r-2" });
   const s = new KeyScope();
   const k = s.nextEffect("ask", "estimate");
-  j.begin(k, H({ agent: "planner", schema: { days: "number" } }), 1000);
-  j.settle(k, { status: "ok", result: { days: 3 } }, 1100);
+  await j.begin(k, H({ agent: "planner", schema: { days: "number" } }), 1000);
+  await j.settle(k, { status: "ok", result: { days: 3 } }, 1100);
 
   const resumed = new Journal({ run: "r-2", entries: j.entries() });
   const s2 = new KeyScope();
@@ -76,8 +79,8 @@ const H = (v: unknown) => digest(v);
   const s = new KeyScope();
   const k = s.nextEffect("turn", "build");
   const h = H({ agent: "builder" });
-  j.begin(k, h, 1000);
-  j.bind(k, { goalId: "g-77" });
+  await j.begin(k, h, 1000);
+  await j.bind(k, { goalId: "g-77" });
   // ...and the host dies here, before the turn settles.
 
   const resumed = new Journal({ run: "r-3", entries: j.entries() });
@@ -95,11 +98,11 @@ const H = (v: unknown) => digest(v);
   const j = new Journal({ run: "r-4" });
   const s = new KeyScope();
   const kf = s.nextEffect("turn", "build");
-  j.begin(kf, H({ agent: "b" }), 1000);
-  j.settle(kf, { status: "failed", error: { code: "L4002", kind: "agent-down", message: "died" } }, 1100);
+  await j.begin(kf, H({ agent: "b" }), 1000);
+  await j.settle(kf, { status: "failed", error: { code: "L4002", kind: "agent-down", message: "died" } }, 1100);
   const kc = s.nextEffect("turn", "build");
-  j.begin(kc, H({ agent: "b" }), 1200);
-  j.settle(kc, { status: "cancelled" }, 1250);
+  await j.begin(kc, H({ agent: "b" }), 1200);
+  await j.settle(kc, { status: "cancelled" }, 1250);
 
   const r = new Journal({ run: "r-4", entries: j.entries() });
   const s2 = new KeyScope();
@@ -115,11 +118,11 @@ const H = (v: unknown) => digest(v);
   const j = new Journal({ run: "r-5" });
   const s = new KeyScope();
   const k0 = s.nextEffect("turn", "build");
-  j.begin(k0, H({ agent: "b1" }), 1000);
-  j.settle(k0, { status: "failed", error: { code: "L4002", kind: "agent-down", message: "died" } }, 1100);
+  await j.begin(k0, H({ agent: "b1" }), 1000);
+  await j.settle(k0, { status: "failed", error: { code: "L4002", kind: "agent-down", message: "died" } }, 1100);
   const k1 = s.nextEffect("turn", "build");
-  j.begin(k1, H({ agent: "b2" }), 1200);
-  j.settle(k1, { status: "ok", result: { status: "done", at: 1300 } }, 1300);
+  await j.begin(k1, H({ agent: "b2" }), 1200);
+  await j.settle(k1, { status: "ok", result: { status: "done", at: 1300 } }, 1300);
 
   const r = new Journal({ run: "r-5", entries: j.entries() });
   const s2 = new KeyScope();
@@ -137,8 +140,8 @@ const H = (v: unknown) => digest(v);
   const s = new KeyScope();
   for (const [kind, name] of [["turn", "build"], ["spawn", ""], ["sleep", ""]] as const) {
     const k = s.nextEffect(kind, name);
-    j.begin(k, H({ n: name }), 1000);
-    j.settle(k, { status: "ok", result: null }, 1100);
+    await j.begin(k, H({ n: name }), 1000);
+    await j.settle(k, { status: "ok", result: null }, 1100);
   }
 
   // The edited program only reaches the turn.
@@ -158,12 +161,17 @@ const H = (v: unknown) => digest(v);
 {
   const j = new Journal({ run: "r-7", readOnly: true });
   let threw = false;
+  let named = false;
   try {
-    j.begin(new KeyScope().nextEffect("turn", "build"), H({}), 1000);
-  } catch {
+    await j.begin(new KeyScope().nextEffect("turn", "build"), H({}), 1000);
+  } catch (e) {
     threw = true;
+    // The refusal has to say WHICH step it declined, or a dry replay that stops tells its caller
+    // nothing about where it stopped.
+    named = e instanceof Error && e.message.includes("/turn:build#0");
   }
   ok("a read-only journal refuses to append", threw);
+  ok("and the refusal names the step it declined", named);
 }
 
 // ---- 8) the run clock -------------------------------------------------------------------------
@@ -186,6 +194,95 @@ const H = (v: unknown) => digest(v);
   ok("and the parent is untouched before the join", root.now() === 1500);
   root.join([a, b]);
   ok("the join takes the maximum over all branches", root.now() === 9000);
+}
+
+// ---- 9) the durable store: what a crash would find, and WHEN ---------------------------------
+
+// The ordering is the whole property. A pending entry that becomes durable only after the handler
+// was called names work that already exists, which is the crash window the two-phase write exists
+// to close. So this section does not assert that appends happen; it asserts WHEN.
+
+{
+  const trace: string[] = [];
+  const store = {
+    append: async (e: JournalEntry) => {
+      trace.push(`store:${e.state}:${e.kind}:${e.name}`);
+    },
+  };
+
+  const j = new Journal({ run: "r-9", store });
+  const s = new KeyScope();
+  const k = s.nextEffect("turn", "build");
+  const h = H({ agent: "builder" });
+
+  await j.begin(k, h, 1000, "req-1");
+  ok("a begin reaches the store", trace[0] === "store:pending:turn:build", trace);
+  await j.bind(k, { goalId: "g-1" });
+  ok("a bind reaches the store, so a crash finds what the handler learned", trace[1] === "store:pending:turn:build");
+  await j.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  ok("a settle reaches the store", trace[2] === "store:settled:turn:build", trace);
+  ok("every write went to the store, none silently skipped", trace.length === 3, trace);
+
+  const persisted = j.get(k);
+  ok("and the in-memory view agrees with what was persisted", persisted?.status === "ok" && persisted.external?.goalId === "g-1");
+}
+
+{
+  // A journal with NO store is in-memory only: durability is a property of where a run is hosted,
+  // not of what a program means, so the simulator and the dry run must not need one.
+  const j = new Journal({ run: "r-9b" });
+  const k = new KeyScope().nextEffect("sleep", "");
+  await j.begin(k, H({ duration: "1m" }), 0);
+  await j.settle(k, { status: "ok", result: null }, 60_000);
+  ok("a journal with no store still records in memory", j.get(k)?.status === "ok");
+}
+
+{
+  // THE ORDERING CELL. A real program, a real interpreter, and a store that says when it was
+  // written relative to the handler being called.
+  const order: string[] = [];
+  // A REAL store does not finish in the same tick it was called in, and the distinction is the
+  // whole test: a store that records synchronously would show the right order whether or not the
+  // interpreter awaited it, so this one crosses a macrotask before it records — exactly as a write
+  // to a stream does. Now "durable before dispatch" is a claim only an awaited append can satisfy.
+  const store = {
+    append: async (e: JournalEntry) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      order.push(`append:${e.state}:${e.kind}`);
+    },
+  };
+  const sim = new SimHandler({ turns: { build: [{ status: "done" }] } });
+  // Built method by method rather than spread: a class instance's methods live on its prototype,
+  // so a spread wrapper is an object with none of them.
+  const watched: EffectHandler = {
+    now: () => sim.now(),
+    spawn: (req, ctx) => sim.spawn(req, ctx),
+    turn: async (req, ctx) => {
+      order.push("handler:turn");
+      return await sim.turn(req, ctx);
+    },
+    ask: (req, ctx) => sim.ask(req, ctx),
+    checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
+    sleep: (req, ctx) => sim.sleep(req, ctx),
+    wait: (req, ctx) => sim.wait(req, ctx),
+    notify: (req, ctx) => sim.notify(req, ctx),
+    monitor: (req, ctx) => sim.monitor(req, ctx),
+    openConclave: (req, ctx) => sim.openConclave(req, ctx),
+    closeConclave: (req, ctx) => sim.closeConclave(req, ctx),
+  };
+
+  const journal = new Journal({ run: "r-9c", store });
+  await run(`const b = await spawn("builder");\nawait turn(b, { name: "build" });`, {
+    runId: "r-9c",
+    handler: watched,
+    journal,
+  });
+
+  const pendingAt = order.indexOf("append:pending:turn");
+  const settledAt = order.indexOf("append:settled:turn");
+  const handlerAt = order.indexOf("handler:turn");
+  ok("the turn's PENDING entry is durable before the handler is called", pendingAt !== -1 && pendingAt < handlerAt, order);
+  ok("and its settled entry only after the handler returned", settledAt > handlerAt, order);
 }
 
 console.log(`journal.smoke: ${pass} checks passed`);
