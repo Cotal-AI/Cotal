@@ -21,6 +21,15 @@
  * exactly when it lies. Freshness is not correctness, and only a source/build identity manifest
  * would close that.
  *
+ * AND IT PROVES THAT ORDERING ONLY AT THE START OF THE CHAIN. This is entry 1 of `smoke:ci`, and
+ * EIGHT later entries rebuild `packages/core/dist` mid-chain — every one of them a
+ * `pnpm --filter <pkg>... build` whose `...` suffix pulls core in as a dependency (entries 105, 129,
+ * 159, 160, 161, 162, 163 and 205 at the time of writing, by position in this tree's chain). So a
+ * green here describes the tree as it stood before entry 2, and says nothing about what any suite
+ * after entry 105 is reading. The check cannot see a rebuild that happens after it; nothing in its
+ * output suggests otherwise, which is the part worth fixing. Re-running the same check after the
+ * last mid-chain build would close it, and is not done here.
+ *
  * BE HONEST ABOUT WHERE THIS BITES. In `smoke:ci` it is nearly inert, because the gate builds
  * before it runs — it can only catch a build that silently produced nothing for a package. Its real
  * use is the ad-hoc case: run it after editing core and before trusting a manager-side suite. That
