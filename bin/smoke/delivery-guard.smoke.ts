@@ -131,16 +131,27 @@ check("every state renders a non-empty line", allReports.every((r) => renderGuar
 // `.every` over a non-empty set: `allReports` is asserted non-empty first, since `.every` over an
 // empty set passes vacuously and would make this property meaningless.
 check("the property set is NON-EMPTY, so the .every assertions above are not vacuous", allReports.length === 6);
+// PINNING THE WHOLE SET IS NOT ENOUGH. The assertions below run over FILTERED PARTITIONS, and a
+// partition can empty out while `allReports.length` stays 6 — if `reporting` ever became
+// unconditionally true, the two NON-reporting properties would pass over an empty set and this file
+// would go green while asserting nothing about the states it exists to police. Each partition is
+// therefore pinned to its own size before any `.every()` over it is trusted.
+const nonReporting = allReports.filter((r) => !r.reporting);
+const reporting = allReports.filter((r) => r.reporting);
+check("the NON-reporting partition is non-empty and pinned", nonReporting.length === 3);
+check("the REPORTING partition is non-empty and pinned", reporting.length === 3);
+check("the two partitions exhaust the set — no state escapes both properties",
+  nonReporting.length + reporting.length === allReports.length);
 check("NO rendering contains a bare 'unknown' — a reader takes unknown for fine",
   allReports.every((r) => !/\bunknown\b/i.test(renderGuard(r))));
 check("every NON-reporting state renders a line saying health was NOT established",
-  allReports.filter((r) => !r.reporting).every((r) => /NOT ESTABLISHED/.test(renderGuard(r))));
+  nonReporting.every((r) => /NOT ESTABLISHED/.test(renderGuard(r))));
 check("no NON-reporting state renders as if it were current",
-  allReports.filter((r) => !r.reporting).every((r) => !/^\[observed/.test(renderGuard(r))));
+  nonReporting.every((r) => !/^\[observed/.test(renderGuard(r))));
 check("the stale render SHOWS its held reading but marks it NOT current",
   /is NOT current/.test(renderGuard(guardReport({ health: serving, observedAt: AT }, AT + MAX_AGE + 1, MAX_AGE))));
 check("every REPORTING state leads with the age of its observation",
-  allReports.filter((r) => r.reporting).every((r) => /^\[observed \d+ms ago\]/.test(renderGuard(r))));
+  reporting.every((r) => /^\[observed \d+ms ago\]/.test(renderGuard(r))));
 
 console.log(
   fail === 0
