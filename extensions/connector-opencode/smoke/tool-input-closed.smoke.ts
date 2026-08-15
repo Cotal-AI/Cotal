@@ -99,7 +99,15 @@ check(`a ZERO-ARGUMENT tool (${ZERO}) is refused too, naming the keys and saying
     zeroOut.includes("no arguments") && !zeroOut.includes("reached the mesh agent"),
   { zeroOut });
 
-const inboxOut = String(await tools.cotal_inbox.execute({ ...IDENTITY_EXTRA }, {} as never));
+// Caught, not awaited bare: if the refusal stops biting, `run` reaches the throwing agent proxy
+// and the exception would abort the file BEFORE this check could report — a suite that dies on the
+// line it is grading is red, but not red on its own assertion.
+let inboxOut: string;
+try {
+  inboxOut = String(await tools.cotal_inbox.execute({ ...IDENTITY_EXTRA }, {} as never));
+} catch (e) {
+  inboxOut = `threw: ${(e as Error).message}`;
+}
 check("cotal_inbox, whose args this adapter SUBSTITUTES, refuses the caller's extras rather than discarding them",
   inboxOut.startsWith("⚠") && Object.keys(IDENTITY_EXTRA).every((k) => inboxOut.includes(k)) &&
     !inboxOut.includes("reached the mesh agent"),
