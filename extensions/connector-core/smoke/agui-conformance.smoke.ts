@@ -231,18 +231,46 @@ c("MEASURED: the outcome discriminator key is `type`, and `status` is refused",
 //    whole vehicle collapses silently if a future release tightens it: events would still validate
 //    with the key STRIPPED, and every consumer would just stop seeing our metadata.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-const withMeta = runStarted({
-  threadId: "sess-1", runId: "turn-1", timestamp: TS,
-  cotal: { runIdSource: "connector", tsSource: "arrival" },
-});
-const passed = RunStartedEventSchema.safeParse(withMeta);
-c("an event carrying a `cotal` key is ACCEPTED", passed.success, JSON.stringify(passed));
-// Acceptance is not enough — a `.strip()` schema also accepts, and silently DELETES the key. That
-// is the failure this cell exists for, and asserting acceptance alone would miss it entirely.
-c("and the `cotal` key SURVIVES the parse rather than being stripped",
-  passed.success && JSON.stringify((passed as { data: Record<string, unknown> }).data.cotal) ===
-    JSON.stringify({ runIdSource: "connector", tsSource: "arrival" }),
-  passed.success ? (passed as { data: Record<string, unknown> }).data.cotal : "");
+// Swept over EVERY schema, not sampled on one. The header claims `.passthrough()` for the whole
+// vocabulary; sampling `RunStarted` alone proved it for a fourteenth of what was claimed, and a
+// release that tightened any OTHER event would have left this section green while that event's
+// metadata vanished. The vehicle is only as good as its narrowest member, so the sweep is
+// mechanical and a new event cannot be added without being covered.
+const CM = { runIdSource: "connector", tsSource: "arrival" } as const;
+const CM_JSON = JSON.stringify(CM);
+const metaCarriers: Array<[string, { safeParse: (v: unknown) => { success: boolean; data?: unknown } }, unknown]> = [
+  ["runStarted", RunStartedEventSchema, runStarted({ threadId: "sess-1", runId: "turn-1", timestamp: TS, cotal: CM })],
+  ["runFinished", RunFinishedEventSchema, runFinished({ threadId: "sess-1", runId: "turn-1", timestamp: TS, cotal: CM })],
+  ["runError", RunErrorEventSchema, runError({ message: "boom", timestamp: TS, code: "E1", cotal: CM })],
+  ["textMessageStart", TextMessageStartEventSchema, textMessageStart({ messageId: "u1#0", timestamp: TS, role: "assistant", cotal: CM })],
+  ["textMessageContent", TextMessageContentEventSchema, textMessageContent({ messageId: "u1#0", delta: "hello", timestamp: TS, cotal: CM })],
+  ["textMessageEnd", TextMessageEndEventSchema, textMessageEnd({ messageId: "u1#0", timestamp: TS, cotal: CM })],
+  ["reasoningMessageStart", ReasoningMessageStartEventSchema, reasoningMessageStart({ messageId: "th1#0", timestamp: TS, cotal: CM })],
+  ["reasoningMessageContent", ReasoningMessageContentEventSchema, reasoningMessageContent({ messageId: "th1#0", delta: "think", timestamp: TS, cotal: CM })],
+  ["reasoningMessageEnd", ReasoningMessageEndEventSchema, reasoningMessageEnd({ messageId: "th1#0", timestamp: TS, cotal: CM })],
+  ["toolCallStart", ToolCallStartEventSchema, toolCallStart({ toolCallId: "tc1", toolCallName: "Read", timestamp: TS, cotal: CM })],
+  ["toolCallArgs", ToolCallArgsEventSchema, toolCallArgs({ toolCallId: "tc1", delta: "{}", timestamp: TS, cotal: CM })],
+  ["toolCallEnd", ToolCallEndEventSchema, toolCallEnd({ toolCallId: "tc1", timestamp: TS, cotal: CM })],
+  ["toolCallResult", ToolCallResultEventSchema, toolCallResult({ messageId: "r1#0", toolCallId: "tc1", content: "ok", timestamp: TS, cotal: CM })],
+  // CUSTOM has no constructor — the `cotal.*` table is empty BY POLICY (§5), which is a rule this
+  // plane enforces and not a property of the schema. Built by hand so the schema-level sweep stays
+  // complete; the policy refusal is asserted separately in section 5.
+  ["custom", CustomEventSchema, { type: "CUSTOM", name: "x", value: {}, timestamp: TS, cotal: CM }],
+];
+c("the passthrough sweep covers every schema the parse block covers",
+  metaCarriers.length === 14, metaCarriers.length);
+
+let notAccepted = "", stripped = "";
+for (const [name, schema, event] of metaCarriers) {
+  const r = schema.safeParse(event);
+  if (!r.success) { notAccepted += `${name} `; continue; }
+  // Acceptance is not enough — a `.strip()` schema also accepts, and silently DELETES the key. That
+  // is the failure this cell exists for, and asserting acceptance alone would miss it entirely.
+  if (JSON.stringify((r.data as Record<string, unknown>).cotal) !== CM_JSON) stripped += `${name} `;
+}
+c("EVERY event carrying a `cotal` key is ACCEPTED", notAccepted === "", notAccepted);
+c("and on EVERY one the `cotal` key SURVIVES the parse rather than being stripped",
+  stripped === "", stripped);
 
 // The boundary of the vehicle, measured: `RunFinishedOutcomeSchema` is STRICT, so `cotal` rides an
 // EVENT and never an `outcome`. Recorded as a cell because "AG-UI is passthrough" is exactly the
