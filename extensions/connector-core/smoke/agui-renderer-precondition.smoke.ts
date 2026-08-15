@@ -147,6 +147,57 @@ if (existsSync(sharedBrowserRenderer)) {
   console.log("  tree carries NO shared browser renderer; pages hold their own copies");
 }
 
+// AND THE FRAME RENDERER THE PAGES REGISTER, for the same reason: load what SHIPS, not a subset of
+// it. `parts.js` is a DISPATCHER — it consults `window.COTAL_PART_RENDERERS` and falls back to a
+// named marker when a kind has no renderer. Loading it alone therefore measures a configuration no
+// page runs, and the marker it returns is a TRUE statement about THIS CONTEXT and a false one about
+// production.
+//
+// **THIS IS THE SECOND TIME THIS FILE PRODUCED A FALSE FAILURE BY THE SAME LOGIC AND A DIFFERENT
+// MECHANISM**, and the first is documented at length above: the console family imported core by
+// PATH, so a renderer registered into the package singleton was invisible and the suite reported the
+// gate shut on a renderer that worked. This half failed the same direction for a plainer reason — it
+// simply never loaded the second file. `index.html` and `graph.html` both load `agui-frame.js`, and
+// a suite grading those pages must load what they load.
+//
+// The warning that file already carried applies verbatim to its own web half: **an instrument that
+// fails toward refusal is believed, because a red gate looks like diligence.** Here it would have
+// reported the binding precondition unmet on a surface that meets it — and this suite IS the merge
+// gate, so a false red is not a harmless conservatism, it is a wrong answer to the only question the
+// file exists to answer.
+//
+// Order is not load-bearing (the dispatcher reads the registry at call time and this file creates it
+// if absent), but the pages' order is used anyway: a suite that grades a page should not depend on
+// being cleverer than the page.
+const browserFrameRenderer = join(WEB, "agui-frame.js");
+if (existsSync(browserFrameRenderer)) {
+  // eslint-disable-next-line no-eval
+  eval(readFileSync(browserFrameRenderer, "utf8"));
+  const reg = (globalThis as { COTAL_PART_RENDERERS?: Record<string, unknown> }).COTAL_PART_RENDERERS;
+  console.log(`  tree carries agui-frame.js; registered part kinds: ${JSON.stringify(Object.keys(reg ?? {}))}`);
+} else {
+  console.log("  tree carries NO browser frame renderer; the web pages cannot draw a frame");
+}
+
+// ── THE GATE MUST NOT ASSUME ITS OWN PRECONDITION ────────────────────────────────────────────────
+// Loading `agui-frame.js` by PATH is only a fair model of production if the PAGES actually load it.
+// Another suite (`implementations/web/smoke/agui-frame-dispatch`) asserts the script tags and the
+// `PAGE` allow-list row — but a gate that depends on a fact asserted in a DIFFERENT FILE has a hole
+// exactly the width of that file being deleted, renamed or skipped, and this gate's whole purpose is
+// to be the thing that cannot be talked around.
+//
+// So it is re-asserted HERE, against the shipped HTML, as a `[GATE]` cell. Without it this file
+// would grade a configuration it invented: eval the renderer, watch the canary come through, and
+// report the precondition met on pages that never requested the script. **That is the false-GREEN
+// twin of the false-RED this same block just fixed, and it is the more dangerous direction** — a red
+// gate gets argued with, a green one gets merged.
+for (const page of ["index.html", "graph.html"] as const) {
+  const file = join(WEB, page);
+  const html = existsSync(file) ? readFileSync(file, "utf8") : "";
+  c(`[GATE] ${page} actually requests the frame renderer this suite evaluated`,
+    html.includes('src="/agui-frame.js"'), `no <script src="/agui-frame.js"> in ${page}`);
+}
+
 /**
  * One surface: does the frame's text reach the string this surface hands its body renderer?
  *
@@ -181,14 +232,14 @@ if (existsSync(sharedBrowserRenderer)) {
  * import in `bin/run.ts`, or `requiredExtensions` on the viewing commands) and is owned by whoever
  * owns `bin/`, not by this suite.
  */
-function gradeSurface(surface: string, rendered: string | null) {
+function gradeSurface(surface: string, registration: string, rendered: string | null) {
   if (rendered === null) {
-    c(`[GATE] ${surface} rendered output CONTAINS the frame's text [given a registered renderer — production registers none]`, false, "rendering path not found in this tree");
+    c(`[GATE] ${surface} rendered output CONTAINS the frame's text ${registration}`, false, "rendering path not found in this tree");
     return;
   }
   console.log(`  ${surface} -> ${JSON.stringify(rendered)}  (len ${rendered.length})`);
   // THE GATE CELL. Not "did it produce something" — did it produce THE FRAME.
-  c(`[GATE] ${surface} rendered output CONTAINS the frame's text [given a registered renderer — production registers none]`, rendered.includes(CANARY));
+  c(`[GATE] ${surface} rendered output CONTAINS the frame's text ${registration}`, rendered.includes(CANARY));
   // The weaker, separately-ruled property: an undrawable part must not render as nothing. Graded as
   // its own cell because the two answers are different facts and a reader who sees one must not
   // conclude the other — a surface can be perfectly non-silent and still display no frame.
@@ -255,15 +306,35 @@ if (GRADING_FOREIGN_TREE)
     `  NOTE: web surfaces graded from ${TREE}; the console surface is resolved through THIS package ` +
       `(${OWN_TREE}) and does NOT follow COTAL_RENDERER_TREE.`,
   );
-const SURFACES: readonly { name: string; render: ((p: unknown[]) => string) | null }[] = [
+/**
+ * `registration` IS PART OF EACH CELL'S NAME, and it must be per-surface because the surfaces no
+ * longer agree on it.
+ *
+ * One shared clamp used to read *"[given a registered renderer — production registers none]"* on
+ * every cell, and that was accurate while nothing shipped a registration. **It stopped being
+ * accurate for the web pages the moment `agui-frame.js` landed**: `index.html` and `graph.html` both
+ * load it, so those surfaces register in PRODUCTION, not merely in this suite. The console family is
+ * unchanged — this file imports the provider itself and no composition root does.
+ *
+ * Leaving one string on both would put a FALSE sentence in the name of a PASSING cell, which is the
+ * worst place for one: a green line is read as a summary and never opened, so the misstatement
+ * travels further than the cell does. The clamp is the part a reader uses to decide what the green
+ * MEANS, and two surfaces meaning different things by it is exactly the drift this file was built to
+ * refuse elsewhere.
+ */
+const CONSOLE_CLAMP = "[given a registered renderer — production registers none]";
+const WEB_CLAMP = "[renderer registered as production does, via the page's own script tag]";
+
+const SURFACES: readonly { name: string; registration: string; render: ((p: unknown[]) => string) | null }[] = [
   {
     name: GRADING_FOREIGN_TREE
       ? "cli console / join / examples-02 (core partsToText, THIS package — not the graded tree)"
       : "cli console / join / examples-02 (core partsToText)",
+    registration: CONSOLE_CLAMP,
     render: (p) => corePartsToText(p as never),
   },
-  { name: "implementations/web app.js", render: bodyText ? (p) => bodyText({ parts: p }) : null },
-  { name: "implementations/web graph.js", render: partsText ? (p) => partsText({ parts: p }) : null },
+  { name: "implementations/web app.js", registration: WEB_CLAMP, render: bodyText ? (p) => bodyText({ parts: p }) : null },
+  { name: "implementations/web graph.js", registration: WEB_CLAMP, render: partsText ? (p) => partsText({ parts: p }) : null },
 ];
 
 // FALSIFIABLE, not decorative: when a foreign tree is being graded, the console surface's LABEL must
@@ -272,7 +343,7 @@ const SURFACES: readonly { name: string; render: ((p: unknown[]) => string) | nu
 c("[scope] the console surface names its own tree when it differs from the graded tree",
   !GRADING_FOREIGN_TREE || SURFACES[0].name.includes("not the graded tree"), SURFACES[0].name);
 
-for (const s of SURFACES) gradeSurface(s.name, s.render ? s.render(parts) : null);
+for (const s of SURFACES) gradeSurface(s.name, s.registration, s.render ? s.render(parts) : null);
 const graphBody = SURFACES[2].render ? SURFACES[2].render(parts) : null;
 
 /**
