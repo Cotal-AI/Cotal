@@ -192,17 +192,22 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   // And it is recoverable, which is the entire reason the two failures are different types: the
   // interference fires once, so the second round replays the moved journal and claims it.
   let interfered = false;
-  const fourth = await activateRun(js, jsm, takeover("r-3", "d5", 5), {
-    attempts: 3,
-    onReplayed: async (r) => {
-      if (interfered) return;
-      interfered = true;
-      await rawAppend("r-3", r.lastSeq, step("r-3", 101));
-    },
-  });
+  let fourth: Awaited<ReturnType<typeof activateRun>> | undefined;
+  let retryError: unknown;
+  try {
+    fourth = await activateRun(js, jsm, takeover("r-3", "d5", 5), {
+      attempts: 3,
+      onReplayed: async (r) => {
+        if (interfered) return;
+        interfered = true;
+        await rawAppend("r-3", r.lastSeq, step("r-3", 101));
+      },
+    });
+  } catch (e) { retryError = e; }
   c("a losing activation retries and wins on the next round, with the interloper's entry now in its prefix",
-    fourth.replayed.some((r) => r.record.kind === "step" && JSON.stringify((r.record as { entry: unknown }).entry) === '{"n":101}'),
-    fourth.replayed.length);
+    retryError === undefined
+    && fourth!.replayed.some((r) => r.record.kind === "step" && JSON.stringify((r.record as { entry: unknown }).entry) === '{"n":101}'),
+    String(retryError ?? fourth!.replayed.length));
 }
 
 // ── 4) two branches of one scope append at once ───────────────────────────────────────────────
@@ -244,6 +249,29 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
     back.records.map((r) => r.record.kind));
 }
 
+// ── 5b) the refusal is REMEMBERED, not re-derived from the broker each time ───────────────────
+//
+// "Refuses without touching the wire" is not decoration. A superseded driver must be terminal on
+// its own account: if the only thing stopping it is the server answering no again, then a broker
+// that is slow, partitioned, or momentarily agreeable is a driver back on a run it has lost. This
+// runs the appender on its OWN connection and takes the connection away after the refusal — the
+// answer must still be "superseded", not a transport error.
+{
+  const nc2 = await connect({ servers });
+  const jsm2 = await jetstreamManager(nc2);
+  const js2 = jetstream(nc2);
+  const stale = await activateRun(js2, jsm2, takeover("r-5b", "d1", 1));
+  await activateRun(js, jsm, takeover("r-5b", "d2", 2));
+  let first: unknown;
+  try { await stale.append({ n: 1 }, 1); } catch (e) { first = e; }
+  c("the stale driver is refused while it still has a connection", first instanceof RunSuperseded);
+  await nc2.close();
+  let afterClose: unknown;
+  try { await stale.append({ n: 2 }, 2); } catch (e) { afterClose = e; }
+  c("and it is STILL superseded with no broker to ask: the refusal is its own state, not a round trip",
+    afterClose instanceof RunSuperseded, `${(afterClose as Error)?.name}: ${String((afterClose as Error)?.message).slice(0, 60)}`);
+}
+
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
 {
   const x = await activateRun(js, jsm, takeover("r-6a", "d1", 1));
@@ -251,10 +279,16 @@ const step = (run: string, n: number) => ({ v: 1, kind: "step", run, at: n, entr
   await y.append({ other: true }, 1);
   await y.append({ other: true }, 2);
   const seq = await x.append({ mine: true }, 3);
-  c("a run's fence is its own subject: another run's appends do not invalidate it", seq > 0);
+  await y.append({ other: true }, 4);
+  // The SECOND append is the one that discriminates: a head advanced by counting locally rather
+  // than from the PubAck agrees with reality only while a run's sequences happen to be contiguous,
+  // which they are not the moment any other run shares the stream.
+  const seq2 = await x.append({ mine: true }, 5);
+  c("a run's fence is its own subject: another run's appends neither invalidate it nor renumber it",
+    seq > 0 && seq2 > seq && !x.isSuperseded, `${seq} then ${seq2}`);
   c("and each run reads back only its own records",
-    (await replayRunJournal(js, jsm, SPACE, "r-6a")).records.length === 2
-    && (await replayRunJournal(js, jsm, SPACE, "r-6b")).records.length === 3);
+    (await replayRunJournal(js, jsm, SPACE, "r-6a")).records.length === 3
+    && (await replayRunJournal(js, jsm, SPACE, "r-6b")).records.length === 4);
 }
 
 // ── 7) the head cannot come from STREAM.INFO, which is why it comes from the replay ───────────
