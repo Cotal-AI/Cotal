@@ -234,7 +234,7 @@ async function main() {
   // and an unqualified rule with an unstated exception is how a grant story stops being true.
   // ⚠️ G5 IS INVERTED. It used to assert that an ungranted OPEN-MODE session DOES see the verbs, and
   // called that carve-out "real and deliberate". mc-rev-authority filed it as a capability bypass and
-  // fm-orchestrator adopted the recommendation: the carve-out contradicted BOTH docs pages, which say
+  // The recommendation was adopted: the carve-out contradicted BOTH docs pages, which say
   // capability-only and absent by default, and "open mode is outside the broker-security claims" does
   // not reach a LOCAL OPERATOR capability whose question is "may this agent take itself out of its
   // supervisor's reach?" The permissive disjunct is gone; `connection` is required in every mode.
