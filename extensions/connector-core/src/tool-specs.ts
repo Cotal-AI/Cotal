@@ -775,10 +775,18 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_reconnect",
       title: "Cotal: reconnect to the mesh",
       description:
-        "Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status (Reconnected ✓; Reconnect failed, still retrying automatically; or this session is shutting down).",
+        "Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status: Reconnected ✓, or a refusal naming the condition that failed in the same `Refused [reason]:` form as cotal_connect and cotal_disconnect, so you can branch on the reason instead of matching the sentence.",
       async run(agent) {
         const r = await agent.reconnect();
-        return r.ok ? ok(r.message) : err(r.message);
+        if (r.ok) return ok(r.message);
+        // The named reason has to SURVIVE the tool boundary, because the tool boundary is where the
+        // caller lives. `agent.reconnect()` returns the same `ConnectionRefusal` vocabulary that
+        // connect and disconnect return, and this runner used to emit `err(r.message)` and drop it —
+        // so a caller had to tell shutting-down, deliberate-disconnect, transition, auth, credential
+        // source and broker failures apart by matching English, on the one verb of the three that
+        // gave it nothing to branch on. Same `Refused [reason]:` shape as `renderOutcome`, so one
+        // parse works across the whole surface.
+        return err(r.reason ? `Refused [${r.reason}]: ${r.message}` : r.message);
       },
     },
     {

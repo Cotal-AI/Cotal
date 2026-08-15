@@ -454,14 +454,20 @@ async function main() {
     sc1.isError === true && sc1.text.includes("[shutting-down]") && !sc1.text.includes("[already-connected]")
       && sc1.text.includes("start a new session instead"), sc1.text);
   const sr1 = await run("cotal_reconnect", A, cfgA, {});
-  // NOTE, and it is a finding rather than a preference: `agent.reconnect()` carries a `reason` field
-  // added so a caller could branch instead of matching English, and `cotal_reconnect`'s runner
-  // returns `err(r.message)` — dropping it. So at the TOOL boundary, where a caller actually lives,
-  // this refusal is prose only. Asserted here as what it IS, not as what it should be.
-  check("S1d reconnect during teardown refuses, and says which condition — in ENGLISH ONLY (see note)",
-    sr1.isError === true && /shutting down/i.test(sr1.text), sr1.text);
-  check("S1e and that is the gap: the tool drops the named reason its own agent returned",
-    !sr1.text.includes("[shutting-down]"), sr1.text);
+  // THESE TWO CELLS USED TO COUNT THE DEFECT GREEN. `agent.reconnect()` carries a `reason` from the
+  // same vocabulary connect and disconnect return; the runner emitted `err(r.message)` and dropped
+  // it, so at the TOOL boundary — where the caller actually lives — this one refusal of the three
+  // was prose only. The cells asserted that absence and passed, which made the suite a record of
+  // the defect rather than a guard against it: fixing the code would have turned them RED. A cell
+  // that documents a gap must be written so that CLOSING the gap is what makes it pass.
+  check("S1d reconnect during teardown refuses as [shutting-down] FROM THE SESSION GUARD, not the endpoint's fallback",
+    sr1.isError === true && sr1.text.includes("[shutting-down]") && /this session is shutting down/i.test(sr1.text)
+      && !sr1.text.includes("endpoint stopped"), sr1.text);
+  // The machine-readable half: a caller branching on the token gets the same vocabulary member the
+  // other two verbs give it, rather than having to match a sentence that is free to be reworded.
+  const srToken = /\[([a-z-]+)\]/.exec(sr1.text)?.[1];
+  check("S1e a caller can BRANCH on that reason instead of matching English — the token parses to the vocabulary member the agent returned",
+    srToken === "shutting-down", { token: srToken, text: sr1.text });
   await stopping;
 
   await A.stop();

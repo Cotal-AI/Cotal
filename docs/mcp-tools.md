@@ -290,7 +290,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 
 *reconnect to the mesh*
 
-Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status (Reconnected ✓; Reconnect failed, still retrying automatically; or this session is shutting down).
+Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status: Reconnected ✓, or a refusal naming the condition that failed in the same `Refused [reason]:` form as cotal_connect and cotal_disconnect, so you can branch on the reason instead of matching the sentence.
 
 - **Side-effect:** tears down and rebuilds your own mesh connection.
 - **Available:** always.
