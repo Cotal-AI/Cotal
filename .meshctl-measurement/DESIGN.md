@@ -391,6 +391,39 @@ spawn impact was an inference I did not test and it does not hold.
 
 ## 3. What does the supervisor see?
 
+> ## ⚠️ BLOCKED — HIGH. THIS SECTION'S CENTRAL CLAIM IS REFUTED AT THE SHIPPED PRODUCT.
+>
+> **`mc-rev-supervisor` reproduced it live, with controls** (`verdicts/mc-rev-supervisor.md`). A
+> heartbeat-stale-but-**routing-live** endpoint and a genuinely disconnected one render the
+> **byte-identical** roster line — `· subject/worker — offline: disconnected: requested` — while the
+> first one's publishes are still being **delivered**. Controls passed; `EXIT=0`.
+>
+> **Why:** `disconnect()` writes the cause into **freeform `activity`** (`endpoint.ts:1394-1403`),
+> which **any live endpoint can set** (`:1967-1970`); `Presence` has **no transition/cause/source
+> discriminator** (`types.ts:70-89`); and stale-heartbeat materialisation and explicit offline
+> **both preserve `activity`** and both become `status:"offline"` (`:4263-4267,4309-4333`).
+>
+> **The honest statement, and it is what the tool now says: THE CAUSE TEXT IS DISPLAYED; THE
+> DEPARTURE IS NOT DISTINGUISHABLE.** Every sentence in this section claiming a supervisor can tell
+> a departure from a silence is **withdrawn**. **This lane may not claim safe supervisory
+> discrimination** (fm-orchestrator's ruling).
+>
+> **My own cells are the demonstration, not the defence.** `A2`/`E5` assert only that a *chosen
+> string appears*, under a label claiming discrimination, **with no must-differ arm**
+> (`connection-control.smoke.ts:393-399`). **A cell whose assertion holds in both the safe and the
+> unsafe state is not evidence about either.**
+>
+> **CLEARANCE BAR (adopted verbatim from the seat, and the follow-on slice is named in §9):** a
+> machine-readable transition/source/cause discriminator, surfaced by `cotal_roster` and by any
+> external observer/UI, **plus a must-differ test across all three states — deliberate disconnect,
+> heartbeat-stale-but-routing-live, and crash.** Until that exists, **§3 is partially undelivered
+> and is labelled so.**
+>
+> **What survives below is still true and still worth having:** the ordering (announce, confirm at
+> the broker, then tear down), the fail-closed refusal when the announcement cannot be confirmed,
+> and the normative definition of confirmation. **Those make the transition RELIABLE. They do not
+> make it IDENTIFIABLE, and this section previously conflated the two.**
+
 Today, from an observer's seat, the three ways to go dark are **[M — F2, F10]**:
 
 | how it went dark | what an observer sees |
@@ -887,3 +920,85 @@ the same lens.
   grant; an epoch moved underneath it.
 - A user-facing surface, so an E2E stage before the human gate: a user team from outside the build,
   docs as its only map.
+
+---
+
+## 9. Follow-on slices — NAMED, SCOPED, NOT STARTED
+
+**fm-orchestrator's disposition ruling, `02:4xZ`: the three BLOCKs do NOT gate the lane — they gate
+the CLAIMS.** The behaviour is measured (`45/0`, `39/0`, `9/0`, and user mode `11/1/0` end to end
+through the real tool with an independent witness). **What was false was not the behaviour; it was
+the sentences about it.** Those sentences are corrected in the same change as this section, because
+*a false supervisory guarantee on a live tool surface is a defect the moment it ships*.
+
+**Neither slice below is started, and neither will be without a scope agreed first.** They are named
+here so the feature lands **honestly labelled** rather than waiting on two pieces of real
+engineering, and so nobody inherits a claim the code does not keep.
+
+### 9.1 A wire-level transition/source/cause discriminator — clears the §3 BLOCK
+
+**Why:** presence carries `status`, freeform `activity`, attention/modes, `lifecycleUid` and `ts` —
+**no transition, no source, no cause.** So a deliberate departure, a stale heartbeat, and a crash
+are the same bytes to an observer.
+
+**Clearance bar** (the reviewer's, adopted verbatim rather than restated in my own words):
+a machine-readable transition/source/cause discriminator, surfaced by `cotal_roster` **and** by an
+external observer/UI, **plus a must-differ test covering all three states — deliberate disconnect,
+heartbeat-stale-but-routing-live, and crash.** ⚠️ **Must-differ is the whole point: a test that only
+shows the deliberate case carrying its cause is the cell that already exists and already passes in
+both the safe and the unsafe state.**
+
+**This is a SPEC change** (a new presence field is wire), so it is not a lane-local fix.
+
+### 9.2 Typed caller outcomes for the refusal taxonomy — clears the §2 BLOCK
+
+**Why, in one measurement:** holding the phase constant before any dial, a credential source throwing
+`vault unavailable` classified as **`broker-unreachable`**; changing **only its English** to
+`credential source unavailable` classified as **`credential-source-unavailable`**.
+
+> **A reason derived by matching the TEXT of a failure is not a classification of the failure. It is
+> a classification of the message, and it changes when someone rewords a string with no behaviour
+> change at all.**
+
+Three concrete defects, all cited in `verdicts/mc-rev-refusal.md`:
+1. classification **text-matches** (`endpoint.ts:383-396`) while the source that failed runs at
+   `:990-1014`;
+2. `reconnect()` **discards post-dial state** (`:1351-1355`) where `connect()` correctly passes it
+   (`:1535-1544`) — so a broker that accepted 4 connections and failed the bind on
+   `jetstream is not enabled` reported `broker-unreachable`;
+3. materially different end states **collapse into one reason** — reassert succeeded and failed both
+   give `transition-unconfirmed`; retraction succeeded and failed both give `teardown-failed`.
+
+**Clearance bar:** classify **at the condition**, never by matching message text; split or
+discriminate the collapsed reasons so a caller can branch on the repair status; and **stop
+flattening `reason` at the tool boundary** — `cotal_reconnect` today throws away a `reason`
+`MeshAgent` already computed (`tool-specs.ts:769-776`).
+
+**Also inside this slice, and not to be lost:** `isError=true` is **not** universal at every host.
+MCP preserves it; the OpenCode adapter converts it to a normally-resolved warning string, so the
+obvious `try/catch` caller **reports success on a refusal**.
+
+### 9.3 The unmeasured limit that must NOT be argued away
+
+**`U8` is RED: `{ execsBefore: 1, execsAfter: 1 }`** — a self-directed reconnect does **not** re-exec
+the bearer command, so the session returns presenting authority obtained **before** it left.
+
+**`calloutPermissions` re-reads the current ledger row at every mint, so the grant may well be
+re-read by a mechanism that never needs a fresh exchange.** ⚠️ **That is a plausible MECHANISM, not
+a RESULT, and it is not allowed to stand in for the measurement.** Whether a **revoked bearer** or a
+**narrowed grant** is actually caught on return is **NOT MEASURED**, and the probe is not written.
+
+### 9.4 Open-mode capability bypass — MEDIUM, confirmed
+
+`tool-specs.ts:177` forces the verbs on whenever both auth fields are absent, so a **no-capability
+open-mode agent receives them**. That contradicts `docs/mcp-tools.md` and `docs/agent-files.md`,
+which both say capability-only. **Open mode being outside the broker-security claims does not excuse
+bypassing a local operator capability whose question is expressly "may this agent take itself out of
+its supervisor's reach?"** Recommendation on the record: require explicit `connection` in **every**
+mode and drop the left disjunct.
+
+### 9.5 The E2E live half — blocked on a deployment precondition, not on this lane
+
+See `FINDING-e2e-blocked-by-skew.md`. The installed connector the mesh runs has **zero** occurrences
+of the verbs; they exist only on this unpushed branch. **No seat on this mesh can exercise them.**
+The four unrun checks are named there so their absence is never read as coverage.
