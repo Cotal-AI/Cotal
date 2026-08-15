@@ -145,6 +145,7 @@ const DECLARED = ["D1a", "D1-ctl", "D1b", "D1c", "D1d", "D1e",
                   "D3a", "D3b", "D3c", "D3d", "D3e", "D3f", "D3g", "D3h", "D3i", "D3j", "D3k", "D3l", "D3m",
                   "D4-ctl", "D4a", "D4b", "D4c", "D4d", "D4e", "D4f",
                   "D5e", "D5a", "D5b", "D5f", "D5-ctl", "D5c", "D5d", "D5-ctl2",
+                  "D5g", "D5h", "D5i", "D5j", "D5-ctl3",
                   "D6-ctl", "D6a", "D6b", "D6c", "D6d"];
 
 /** Broker-side truth. `total_connections` is CUMULATIVE (it only ever rises, so it witnesses a
@@ -682,19 +683,28 @@ try {
   armCheck("ARM 5", "D5-ctl CONTROL: with the request settled the SAME call succeeds (so D5a's refusal was the condition, not the path)",
     d5ctl.outcome === "disconnected", d5ctl);
 
-  // ── D5c/D5d — transition-unconfirmed ─────────────────────────────────────────────────────────
+  // ── D5c/D5d — transition-unconfirmed, the QUIET branch ───────────────────────────────────────
   // The branch under test is the QUIET one: the presence write neither throws nor returns a broker
   // revision. A departure that cannot be confirmed must refuse and STAY CONNECTED rather than go
   // dark silently — going dark on an unconfirmed write is precisely how a peer's roster ends up
   // showing a live agent as departed.
+  //
+  // THE TAG IS NOT THE SITE. `transition-unconfirmed` has TWO producers on this path — the quiet
+  // one below and the throwing one at `endpoint.ts:1451` — so a cell that asserts only the tag
+  // cannot say which fired, and a mutation to either is gradeable by the other's cell. That is the
+  // MX17 defect one refusal over. Each of these arms therefore asserts its own DETAIL text and
+  // asserts the other's absent, so the two cannot cover for each other.
+  const QUIET = "returned no broker revision";        // endpoint.ts:1463
+  const THREW = "could not be confirmed at the broker"; // endpoint.ts:1451
   const backForD5 = await e.connect();
   precondition("ARM 5", "the subject is back on the mesh, so the unconfirmed branch is reachable at all",
     backForD5.outcome === "connected", backForD5);
   const realPublish = (e as any).publishPresence.bind(e);
   (e as any).publishPresence = async () => undefined; // stored-or-not is exactly what is unknown
   const d5u = await e.disconnect("arm5-unconfirmed");
-  armCheck("ARM 5", "D5c an unconfirmable departure refuses as transition-unconfirmed, not as a success",
-    d5u.outcome === "refused" && (d5u as any).reason === "transition-unconfirmed", d5u);
+  armCheck("ARM 5", "D5c an unconfirmable departure refuses as transition-unconfirmed FROM THE QUIET BRANCH, not as a success and not from the throwing one",
+    d5u.outcome === "refused" && (d5u as any).reason === "transition-unconfirmed"
+      && (d5u as any).detail.includes(QUIET) && !(d5u as any).detail.includes(THREW), d5u);
   armCheck("ARM 5", "D5d and it stays CONNECTED rather than going dark on an unconfirmed write",
     (e as any).nc !== undefined && e.isSelfDisconnected() === false,
     { hasNc: (e as any).nc !== undefined, self: e.isSelfDisconnected() });
@@ -704,6 +714,58 @@ try {
   const d5uctl = await e.disconnect("arm5-unconfirmed-control");
   armCheck("ARM 5", "D5-ctl2 CONTROL: with the write confirming again the SAME call succeeds (so D5c's arms can differ)",
     d5uctl.outcome === "disconnected", d5uctl);
+
+  // ── D5g–D5j — transition-unconfirmed, the THROWING branch, and the claim it must not make ────
+  // `endpoint.ts:1451` was UNREACHED by this suite rather than tested — a distinction only an entry
+  // probe or a red cell can draw, and from a green they are identical. D5c reaches the quiet branch
+  // by returning undefined; this reaches the throwing one by throwing, which is the difference
+  // between "the broker did not confirm" and "the write blew up on the way".
+  //
+  // AND IT CARRIES A SECOND CLAIM THE TAG CANNOT SEE. That branch re-asserts presence before
+  // refusing, and reports whether the re-assertion happened. Its docblock records that it once
+  // stated flatly that presence "has been re-asserted" while discarding the result — a refusal
+  // claiming a correction it never made, which is worse than one admitting it could not make it.
+  // Both wordings are reachable and neither was asserted anywhere, so both run here: a refusal that
+  // always claims the good outcome passes a single-arm test perfectly.
+  const REASSERTED = "current presence HAS been re-asserted";
+  const NOT_REASSERTED = "COULD NOT BE RE-ASSERTED";
+  const backForD5g = await e.connect();
+  precondition("ARM 5", "the subject is back on the mesh, so the throwing branch is reachable at all",
+    backForD5g.outcome === "connected", backForD5g);
+
+  // Arm A — the write throws EVERY time, so the re-assertion fails too.
+  (e as any).publishPresence = async () => { throw new Error("presence write blew up"); };
+  const d5t = await e.disconnect("arm5-threw");
+  armCheck("ARM 5", "D5g a departure write that THROWS refuses as transition-unconfirmed FROM THE THROWING BRANCH, not from the quiet one",
+    d5t.outcome === "refused" && (d5t as any).reason === "transition-unconfirmed"
+      && (d5t as any).detail.includes(THREW) && !(d5t as any).detail.includes(QUIET), d5t);
+  armCheck("ARM 5", "D5h and it stays CONNECTED — a write that threw is not a departure",
+    (e as any).nc !== undefined && e.isSelfDisconnected() === false,
+    { hasNc: (e as any).nc !== undefined, self: e.isSelfDisconnected() });
+  armCheck("ARM 5", "D5i when the re-assertion also fails the refusal SAYS SO, instead of claiming a correction it never made",
+    d5t.outcome === "refused" && (d5t as any).detail.includes(NOT_REASSERTED)
+      && !(d5t as any).detail.includes(REASSERTED), d5t);
+
+  // Arm B — a TRANSIENT failure: the departure write throws once, the re-assertion then succeeds.
+  // This is D5i's paired arm. Without it, "it said COULD NOT" is equally explained by a branch that
+  // says COULD NOT unconditionally, and D5i would prove nothing about the reported outcome.
+  (e as any).transitionInFlight = false;
+  (e as any).admissionClosed = false;
+  let throwsLeft = 1;
+  (e as any).publishPresence = async (...a: unknown[]) =>
+    throwsLeft-- > 0 ? Promise.reject(new Error("presence write blew up once")) : realPublish(...a);
+  const d5r = await e.disconnect("arm5-threw-then-recovered");
+  armCheck("ARM 5", "D5j and when the re-assertion DOES land the same branch reports that instead (so D5i's text is the condition, not the branch)",
+    d5r.outcome === "refused" && (d5r as any).reason === "transition-unconfirmed"
+      && (d5r as any).detail.includes(REASSERTED) && !(d5r as any).detail.includes(NOT_REASSERTED),
+    { detail: (d5r as any).detail, throwsLeft });
+
+  (e as any).publishPresence = realPublish;
+  (e as any).transitionInFlight = false;
+  (e as any).admissionClosed = false;
+  const d5tctl = await e.disconnect("arm5-threw-control");
+  armCheck("ARM 5", "D5-ctl3 CONTROL: with the write no longer throwing the SAME call succeeds (so D5g's arms can differ)",
+    d5tctl.outcome === "disconnected", d5tctl);
 
   // ══ ARM 6 — THE CLASSIFIER'S TWO UNASSERTED OUTPUTS ══════════════════════════════════════════
   // `classifyConnectFailure` turns a dial failure into a named reason, and its own docblock records
