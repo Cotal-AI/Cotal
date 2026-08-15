@@ -30,7 +30,8 @@ import { join } from "node:path";
 import {
   CotalEndpoint, assessDeliveryHealth, type DeliveryHealth, LEASE_TTL_MS,
   serverConfig, setupSpaceStreams, mintCreds, newIdentity, idFromCreds, isReachable,
-  createSpaceAuth, instancePinnedInstrumentCapabilities, DEV_OWNER, mintLifecycleUid,
+  createSpaceAuth, instancePinnedInstrumentCapabilities, DEV_OWNER, mintLifecycleUid, provisionAgent,
+  seedChannelRegistry,
 } from "../packages/core/src/index.js";
 import { MeshAgent } from "../extensions/connector-core/src/agent.js";
 import { pickFreePort } from "../implementations/delivery/smoke/_free-port.js";
@@ -200,16 +201,80 @@ try {
 
   // The MeshAgent is the REAL surface behind cotal_channels. Joined BEFORE the kill on purpose:
   // the residue state only exists for a session that had a membership when the daemon died.
+  // PROVISION THE AGENT THE WAY A MANAGER DOES. Run 1 of this window minted agent creds directly and
+  // the connector logged `mesh unreachable (consumer not found)`: an agent's Plane-3 footprint
+  // (dm_/dlv_ durables + the read ACL) is created by a PROVISIONER, not by holding a cred. Without
+  // that, no durable membership is ever established and the whole arm measures a state that never
+  // existed — which is precisely how run 1's A1 control failed.
+  // ONE identity, used for both the cred and the card — they must be the same nkey, and calling
+  // newIdentity() twice mints two.
+  const mgrId = newIdentity();
+  const provCreds = await mintCreds(auth, mgrId, "provisioner");
+  const mgr = new CotalEndpoint({
+    space, servers: SERVERS, creds: provCreds,
+    card: { id: mgrId.id, name: "window-provisioner", role: "provisioner", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+  });
+  watchErrors("provisioner", mgr);
+  await mgr.start();
+  endpoints.push(mgr);
+
   const chan = `window-${randomUUID().slice(0, 6)}`;
-  const auid = randomUUID().replace(/-/g, "");
-  const acreds = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: auid });
+
+  // REGISTER the channel. `listChannels()` — the source of every row `cotal_channels` renders — reads
+  // the channel REGISTRY, so an ad-hoc channel name yields no row at all and `deliveryHealth` is
+  // undefined for a reason that has nothing to do with daemon health. The class is written
+  // EXPLICITLY rather than relying on the `?? "durable"` resolution default, so the arm does not
+  // depend on a fallback it is not testing.
+  await seedChannelRegistry({
+    servers: SERVERS, space, creds: provCreds,
+    file: { channels: { [chan]: { deliveryClass: "durable" } } },
+  });
+
+  const aId = newIdentity();
+  const auid = mintLifecycleUid();
+  // `role` is not cosmetic: `provisionAgentDurables` creates the role's TASK queue only when it is
+  // passed (`if (opts.role) provisionTaskQueue(opts.role)`), and without it the connector loops on a
+  // denied `$JS.API.CONSUMER.INFO.TASK_<space>.svc_agent` and never reaches a durable join.
+  // "general" is authorized alongside the arm's channel because the connector joins it regardless of
+  // this list, and an unauthorized live sub there tears down the session before Plane-3 is reached.
+  const acreds = await provisionAgent(mgr, auth, aId, {
+    subscribe: ["general", chan], allowSubscribe: ["general", chan], lifecycleUid: auid, role: "agent",
+  });
+  // NO `as never`. The cast this line used to carry is what made runs 4-6 measure nothing:
+  // `AgentConfig` names the read set `subscribe`, not `channels` (config.ts:48), so the cast
+  // silently discarded the channel list and the agent joined nothing at all — `listChannels()`
+  // returned []. A cast that suppresses a config-shape error buys a compile and pays for it in
+  // arms that redden for a reason the compiler already knew.
   agent = new MeshAgent({
-    space, servers: SERVERS, creds: acreds, channels: [chan],
-    name: "window-agent", role: "agent", owner: DEV_OWNER, lifecycleUid: auid ?? mintLifecycleUid(),
-  } as never);
+    space, servers: SERVERS, creds: acreds, id: aId.id, lifecycleUid: auid,
+    name: "window-agent", role: "agent", kind: "agent", tls: false,
+    subscribe: ["general", chan], allowSubscribe: ["general", chan], allowPublish: [chan],
+  });
   watchErrors("mesh-agent", agent.ep);
   await agent.start();
-  await wait(1500); // let the boot durable self-join land
+
+  // POLL for the boot durable join instead of sleeping a guessed interval. A fixed wait is what let
+  // run 1 walk into A1 with no membership; this makes "the membership never landed" a NAMED setup
+  // failure rather than a silent precondition that reddens the arm downstream.
+  let joined = false;
+  for (let i = 0; i < 80; i++) {
+    if (agent.ep.hasDurableMembership(chan)) { joined = true; break; }
+    await wait(250);
+  }
+  check("A-setup: the durable membership was ESTABLISHED while the daemon was alive", joined);
+  if (!joined) {
+    // Ask the daemon DIRECTLY why, instead of inferring from the absence. The boot path swallows a
+    // `durable:false` into a background retry, so the reason never reaches the console.
+    try {
+      const r = await agent.ep.durableJoinChannel(chan);
+      console.error(`  diagnostic: durableJoinChannel("${chan}") -> ${JSON.stringify(r)}`);
+    } catch (e) {
+      console.error(`  diagnostic: durableJoinChannel("${chan}") THREW -> ${(e as Error).message}`);
+    }
+    console.error(`  diagnostic: rows -> ${JSON.stringify(await agent.listChannels())}`);
+    throw new Error("Arm A precondition failed: no durable membership — the arm measures nothing");
+  }
 
   const rowFor = async (c: string) => (await agent!.listChannels()).find((r) => r.channel === c);
   const liveRow = await rowFor(chan);
