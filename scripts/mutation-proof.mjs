@@ -11,6 +11,9 @@
  *   - the target string appears more than once   → you mutated something else as well
  *   - the suite dies EARLY for an unrelated reason → red, but not the red you claimed
  *   - the run never reached the new check at all → green that never executed the test
+ *   - the named cell was SKIPPED, not failed        → the suite's own "this is not evidence" line
+ *                                                     names the cell, so a substring match reads
+ *                                                     the disclaimer as the proof: a false KILLED
  *   - the restore silently fails                 → the next person inherits a broken tree
  *
  * Each of those has happened. This runs the experiment so that none of them can pass as a result.
@@ -327,14 +330,40 @@ function proveOne(m, opts) {
       };
     }
     // Red is necessary but not sufficient: it has to be red for the reason claimed, or an unrelated
-    // early failure reads as proof.
-    if (m.expectRed && !r.output.includes(m.expectRed)) {
-      return {
-        label,
-        verdict: "WRONG-RED",
-        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`,
-        ticks,
-      };
+    // early failure reads as proof. Matched PER LINE, not against the whole output — see below.
+    if (m.expectRed) {
+      const carrying = r.output.split("\n").filter((l) => l.includes(m.expectRed));
+      if (!carrying.length) {
+        return {
+          label,
+          verdict: "WRONG-RED",
+          why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`,
+          ticks,
+        };
+      }
+      // A whole-output substring match reads a suite's DISCLAIMER as the thing it disclaims. Measured,
+      // not theorised: a run where the named cell was skipped because its arm's fixture was
+      // contaminated printed `⊘ VOID (...): <cell name>` — the only occurrence of the expected string
+      // in the entire output — and this harness reported KILLED. The cell never executed.
+      //
+      // A safety mechanism's output is still text, and another mechanism reading that text by
+      // substring will read "this is not evidence" AS the evidence. So a line that marks a cell as
+      // not-evaluated cannot be the line that proves it failed.
+      //
+      // Reported as its own verdict rather than folded into WRONG-RED, because "the cell did not
+      // fail" and "the cell was never run" are different facts with different remedies — and
+      // collapsing two causes into one string is the defect this tool exists to catch.
+      //
+      // Fail-closed by construction: a cell whose NAME happens to match the marker is graded
+      // NOT-EVALUATED rather than KILLED, which refuses to certify rather than certifying wrongly.
+      if (carrying.every((l) => opts.notEvaluated.test(l))) {
+        return {
+          label,
+          verdict: "NOT-EVALUATED",
+          why: `exited ${r.status}, but every line naming ${JSON.stringify(m.expectRed)} marks it as NOT RUN (${JSON.stringify(carrying[0].trim().slice(0, 120))}) — a skipped cell is not a killed one`,
+          ticks,
+        };
+      }
     }
     // The tick floor is a HEURISTIC for "did it get far enough to be about my check", and it must
     // never overrule direct evidence. A matched `expectRed` IS that evidence: the suite printed the
@@ -366,6 +395,12 @@ let opts = {
   command: a.command,
   timeoutMs: Number(a.timeout ?? 900_000),
   progressPattern: a["progress-pattern"],
+  // Lines that mark a cell as NOT RUN. A suite that skips a cell still PRINTS its name, so these
+  // are the lines that must never be read as proof the cell failed. Deliberately case-sensitive
+  // and marker-shaped: prose in a cell's own name ("a missing grant is refused") must not match,
+  // or a real kill would be graded NOT-EVALUATED. Override with --not-evaluated <regex> for a
+  // runner that marks skips differently.
+  notEvaluated: new RegExp(a["not-evaluated"] ?? "⊘|\\bVOID\\b|NOT EVALUATED|NEVER RAN|\\bSKIPPED\\b"),
   // --private-build <pkgDir>: compile the mutant into a scratch dir inside that package and point
   // the suite at it, instead of writing the package's SHARED dist that other worktrees and
   // installed extensions resolve.
