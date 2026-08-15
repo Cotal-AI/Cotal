@@ -245,6 +245,36 @@ check("the gate block was lifted out of handleRequest", Boolean(gateBlock), { le
 check("CONTROL: a block that is not in the file lifts nothing",
   webTs.indexOf("    const verdict = gate.checkNothing(") === -1);
 
+// THE SHIPPED HANDLER, PARSED. Derived here because the cells below need it before section 5 reads
+// it structurally. Every string-slice version of these checks was eventually beaten by a shape it
+// did not model — the property is about statements, so it is asserted over statements.
+const handlerBody = (() => {
+  const sf = ts.createSourceFile("web.ts", webTs, ts.ScriptTarget.ES2022, true);
+  let found: ts.Block | undefined;
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "handleRequest"
+      && n.initializer && ts.isArrowFunction(n.initializer) && ts.isBlock(n.initializer.body)
+    ) found = n.initializer.body;
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return found;
+})();
+const stmts = handlerBody?.statements ?? ts.factory.createNodeArray<ts.Statement>([]);
+// A `const <name> = …` statement whose declared name matches, or undefined for anything else. Any
+// other statement kind in one of these slots fails the cell by returning undefined.
+const declName = (s: ts.Statement | undefined): string | undefined =>
+  s !== undefined && ts.isVariableStatement(s) && s.declarationList.declarations.length === 1
+    && ts.isIdentifier(s.declarationList.declarations[0].name)
+    ? s.declarationList.declarations[0].name.text
+    : undefined;
+const ifCond = (s: ts.Statement | undefined): string | undefined =>
+  s !== undefined && ts.isIfStatement(s) ? s.expression.getText() : undefined;
+const gateInit = stmts[2] !== undefined && ts.isVariableStatement(stmts[2])
+  ? stmts[2].declarationList.declarations[0]?.initializer?.getText() ?? ""
+  : "";
+
 type Recorded = { status: number; headers: Record<string, string>; body: string; routeReached: boolean };
 // The METHOD is a fixture dimension too, and it was the next one held constant: `req` was `{}`, so
 // `req.method` was `undefined` in every cell. Gating the refusal predicate on `req.method !== "POST"`
@@ -346,7 +376,13 @@ check("NON-VACUITY: the refusal sweep covers several paths INCLUDING the destruc
 // list omits `/api/dms`, `/api/activity`, the history route, and a predicate conjoined with
 // `path !== "/api/dms"` refuses all six sampled paths while letting DMs through. Sampling cannot fix
 // that; the property can. The refusal branch must depend on the VERDICT ALONE.
-const refusalCond = gateBlock.slice(gateBlock.indexOf("if ("), gateBlock.indexOf(") {"));
+// FROM THE AST, not from a string slice. The slice took `indexOf("if (")` to `indexOf(") {")` over
+// the lifted block; inserting a `switch (path) {` above the refusal put a `) {` BEFORE the first
+// `if (`, so the slice inverted and extracted the empty string. The suite went red — but on this
+// non-vacuity cell, which says only "extraction failed" and names nothing about the bypass. A guard
+// that fails safe is not the same as a cell that detects. The condition now comes from the parsed
+// refusal statement, which cannot invert.
+const refusalCond = ifCond(stmts[3]) ?? "";
 check("NON-VACUITY: the refusal condition was extracted and mentions the verdict",
   refusalCond.includes("verdict"), { refusalCond });
 for (const forbidden of ["path", "req.", "method", "query"]) {
@@ -400,36 +436,16 @@ const gateAt = webTs.indexOf("const verdict = gate.check(req, query);");
 const handlerAt = webTs.indexOf("const handleRequest = async (req: IncomingMessage, res: ServerResponse)");
 check("NON-VACUITY: the handler's start and the gate were both located in the shipped source",
   gateAt !== -1 && handlerAt !== -1 && handlerAt < gateAt, { handlerAt, gateAt });
-const handlerBody = (() => {
-  const sf = ts.createSourceFile("web.ts", webTs, ts.ScriptTarget.ES2022, true);
-  let found: ts.Block | undefined;
-  const visit = (n: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "handleRequest"
-      && n.initializer && ts.isArrowFunction(n.initializer) && ts.isBlock(n.initializer.body)
-    ) found = n.initializer.body;
-    ts.forEachChild(n, visit);
-  };
-  visit(sf);
-  return found;
-})();
 check("NON-VACUITY: the shipped handleRequest was found IN THE AST and has a statement body",
   handlerBody !== undefined && handlerBody.statements.length > 3, { statements: handlerBody?.statements.length });
-// A `const <name> = …` statement whose declared name matches, or undefined for anything else. Any
-// other statement kind in one of the first three slots fails the cell by returning undefined.
-const declName = (s: ts.Statement | undefined): string | undefined =>
-  s !== undefined && ts.isVariableStatement(s) && s.declarationList.declarations.length === 1
-    && ts.isIdentifier(s.declarationList.declarations[0].name)
-    ? s.declarationList.declarations[0].name.text
-    : undefined;
-const stmts = handlerBody?.statements ?? ts.factory.createNodeArray<ts.Statement>([]);
-const gateInit = stmts[2] !== undefined && ts.isVariableStatement(stmts[2])
-  ? stmts[2].declarationList.declarations[0]?.initializer?.getText() ?? ""
-  : "";
 check("the handler's first THREE STATEMENTS are the path parse, the query parse, and the gate call — nothing else precedes the gate",
   declName(stmts[0]) === "path" && declName(stmts[1]) === "query"
     && declName(stmts[2]) === "verdict" && gateInit.includes("gate.check(req, query)"),
   { first: [declName(stmts[0]), declName(stmts[1]), declName(stmts[2])], gateInit });
+check("…and statements 4 and 5 are the REFUSAL and EXCHANGE handlers, so no route can sit between the gate and its refusal",
+  (ifCond(stmts[3]) ?? "").includes('"refuse" in verdict')
+    && (ifCond(stmts[4]) ?? "").includes('"exchange" in verdict'),
+  { third: ifCond(stmts[3]), fourth: ifCond(stmts[4]) });
 
 // TIMING SAFETY IS NOT OBSERVABLE FROM OUTPUTS, so it cannot be tested functionally. Replacing the
 // comparison with plain `===` produces an identical boolean for every vector in this file — measured,
@@ -445,6 +461,15 @@ check("secretEquals compares with timingSafeEqual — the constant-time property
   secretEqualsSrc.includes("timingSafeEqual(ab, bb)"), { secretEqualsSrc });
 check("…and does not short-circuit to a plain string comparison",
   !/return\s+a\s*===\s*b/.test(secretEqualsSrc), { secretEqualsSrc });
+// THE LENGTH-MISMATCH BRANCH IS A SEPARATE PROPERTY, and pinning the equal-length compare did not
+// cover it: deleting the dummy `timingSafeEqual(ab, ab)` left 112/112 green. Unlike the `===` case
+// above, this one IS measurable — lifting the shipped helper and timing 200k calls per batch,
+// medians of 9 batches, a length mismatch went from 1034ns (dummy present, 1.05x the same-length
+// cost) to 572ns (dummy deleted, 1.69x cheaper). That is the secret's LENGTH leaking through timing.
+// It is pinned structurally rather than with a timing cell because a timing cell on a loaded CI
+// runner is flaky, and a flaky cell is worse than an honest structural one.
+check("…and the LENGTH-MISMATCH branch still does the work before failing, so a wrong length costs the same as a wrong value",
+  secretEqualsSrc.includes("timingSafeEqual(ab, ab)"), { secretEqualsSrc });
 
 // ── 6. THE SESSION FILE'S MODE, DRIVEN AGAINST A REAL FILE ──────────────────────────────────────
 // This file holds the launch URL and the readiness nonce, so its mode is a credential boundary. No
