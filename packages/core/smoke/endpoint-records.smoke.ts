@@ -49,11 +49,15 @@ c("a dotted endpoint tokenizes in the key", recordSpecKey(RECORD_KINDS.contracts
 // set resolved once at run start. Split, because the pins and the program hash are spec (they are
 // decided at start and never move) while the lease and the state are status (they move constantly),
 // and a single atomic key would make every lease renewal rewrite the pins.
+c("`run` is a CORE kind, not a registration: single-label names are core-reserved",
+  RECORD_KINDS.run?.kind === "run" && RECORD_KINDS.run.mediation === "mediated");
+// Asserted BEFORE the key cell, because an unsplit kind makes `recordSpecKey` throw and the suite
+// would die outside every assertion rather than reddening on the claim that was actually broken.
+c("and it is SPLIT, so a lease renewal does not rewrite the pins it sits beside",
+  RECORD_KINDS.run?.split === true);
 c("a run record keys by its hosting endpoint then its run id",
   recordSpecKey(RECORD_KINDS.run, ["manager", "r-1"]) === "run.manager.r-1.spec"
   && recordStatusKey(RECORD_KINDS.run, ["manager", "r-1"]) === "run.manager.r-1.status");
-c("`run` is a CORE kind, not a registration: single-label names are core-reserved",
-  RECORD_KINDS.run?.kind === "run" && RECORD_KINDS.run.split === true && RECORD_KINDS.run.mediation === "mediated");
 c("and it is caller-readable, unlike the authority-control kinds", callerReadableRecordKind("run") === true);
 throws("a runId that is not an id token is refused rather than tokenized into another run's key",
   () => recordSpecKey(RECORD_KINDS.run, ["manager", "r/1"]));
