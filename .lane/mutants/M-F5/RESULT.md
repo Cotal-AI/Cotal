@@ -14,6 +14,21 @@ before/after fingerprint (presence AND mtime) over the marker paths a `setup` ru
 `prediction.txt` was committed before the file was touched, naming the cells rather than a count,
 and registering non-equivalence in advance for each mutant.
 
+> ## ⚠️ SUPERSEDED — this record is a COMPOSITE. The authoritative run is `.lane/mutants/M-F5-rerun/`
+>
+> This document combined a first run's mutant-A number with a second run's baseline. **A composite
+> presented as one run is unfalsifiable**, because nothing in it tells a later reader which halves
+> belong together — so it has been replaced by a fresh single run rather than repaired in place.
+> Annotating it (which an earlier turn did, below) was the wrong fix: a record corrected by reading
+> numbers off an old output is a third artifact agreeing with neither run.
+>
+> **Read `.lane/mutants/M-F5-rerun/RESULT.md` instead.** In that single run: baseline `28/0`,
+> mutant A `27/1` on exactly its predicted cell, mutant B `27/1` on exactly its predicted cell,
+> both restores verified. The artifacts in THIS directory are kept unmodified because they are
+> evidence of what that run actually did.
+>
+> The correction below is retained for the record and remains accurate about these artifacts.
+>
 > ## ⚠️ CORRECTION — this table was WRONG for mutant A, and the claim beneath it was too
 >
 > Review (`fmh-rev-gate`) found it and was right. Corrected here against the **preserved

@@ -1,0 +1,24 @@
+diff --git a/bin/smoke/ready-card.smoke.ts b/bin/smoke/ready-card.smoke.ts
+index 2119682f..9b3ed0ff 100644
+--- a/bin/smoke/ready-card.smoke.ts
++++ b/bin/smoke/ready-card.smoke.ts
+@@ -171,8 +171,8 @@ function homeFingerprint(dir: string, markers: readonly string[] = HOME_MARKERS)
+ }
+ const REAL_HOME = process.env.HOME;
+ if (REAL_HOME === undefined || REAL_HOME === "") throw new Error("CANNOT MEASURE: no HOME in this environment — the protected path cannot be identified, so its invariance cannot be asserted");
+-if (REAL_HOME === HOME_D) throw new Error(`CANNOT MEASURE: the scratch HOME is the real HOME (${REAL_HOME})`);
+-const realHomeBefore = homeFingerprint(REAL_HOME, COTAL_WRITE_MARKERS);
++
++const realHomeBefore = homeFingerprint(HOME_D, COTAL_WRITE_MARKERS); // M-F5 mutant B
+ const scratchHomeBefore = homeFingerprint(HOME_D);
+ // The witnesses must not pre-date the run, or every assertion below is satisfied by this suite's own
+ // mkdir. This is the cell whose absence made the old pair vacuous.
+@@ -281,7 +281,7 @@ check("HERMETIC: the run's COTAL_HOME-rooted state landed there too (onboarded.j
+   existsSync(join(HOME_D, "onboarded.json")));
+ // The protected path, asserted directly rather than by proxy.
+ check("HERMETIC: the OPERATOR's real home is byte-for-byte unchanged across every run above",
+-  homeFingerprint(REAL_HOME, COTAL_WRITE_MARKERS) === realHomeBefore);
++  homeFingerprint(HOME_D, COTAL_WRITE_MARKERS) === realHomeBefore);
+ // ⚠️ The inverse. Without it, the cell above passes for a fingerprint function that can see nothing —
+ // which is exactly how the pair it replaced failed. Same comparator, a directory that DID change.
+ check("HERMETIC-control: the same comparator DOES report a change for the scratch home (else invariance is vacuous)",
