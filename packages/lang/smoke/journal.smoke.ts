@@ -542,4 +542,60 @@ await sleep("3h", { name: "after-the-catch" });
     journalEntryKeyString(e3) === stepKeyString(unnamed), [journalEntryKeyString(e3), stepKeyString(unnamed)]);
 }
 
+// ── SEEDING FROM AN APPEND LOG, which is the only shape a real driver holds ─────────────────────
+//
+// Every cell here that says WRONG TODAY pins a defect and is written to die when it is repaired.
+//
+// The stream is append-only and says so in its own suite: `journal-store.smoke` asserts that
+// "settling appends a second record rather than editing the first", so ONE step is TWO records on
+// the broker. `RunJournalAppender.steps()` hands back every step record in order
+// (`packages/core/src/run-journal.ts:579-581`), and the driver seeds a journal straight from it
+// (`implementations/runtime/src/run-driver.ts:250-258`). So a resumed run's journal is seeded with
+// two rows per completed step, in production, today — this is not a hypothetical caller.
+//
+// The journal folds that log HALFWAY: `byKey` keeps the last write, `order` keeps both keys. Its
+// two views then disagree with each other, which is what makes this a bug rather than a contract
+// question — nothing here is asking the journal to accept a shape it rejects.
+{
+  const root = new KeyScope();
+  const k = root.nextEffect("sleep", "nap");
+  const src = new Journal({ run: "log" });
+  const pending = await src.begin(k, H({ d: 1 }), 1_000);
+  const settled = await src.settle(k, { status: "ok", result: null }, 2_000);
+
+  // The log, exactly as the appender would replay it: the pending record, then the settled one.
+  const asLogged: JournalEntry[] = [pending, settled];
+  const seeded = new Journal({ run: "log", entries: asLogged });
+
+  ok("the log really does carry two rows for one step, which is what append-only means",
+    asLogged.length === 2 && journalEntryKeyString(pending) === journalEntryKeyString(settled),
+    asLogged.map((e) => `${journalEntryKeyString(e)}:${e.state}`));
+
+  // THE POSITIVE CONTROL, and it is what makes the rest a defect rather than a misuse. The keyed
+  // half of the fold is right: the lookup resolves to the settled row and the effect ceiling counts
+  // the step once. A journal that could not read this input at all would be a contract question.
+  ok("the KEYED view folds correctly: the ceiling counts the step once, not twice",
+    seeded.dispatchedEffects() === 1, seeded.dispatchedEffects());
+
+  // WRONG TODAY. `entries()` is documented as the prompt context for repair, and it reports history
+  // this run does not have: two rows where one step happened.
+  ok("WRONG TODAY: the ORDERED view does not fold — one step comes back as two entries",
+    seeded.entries().length === 2, seeded.entries().map((e) => `${journalEntryKeyString(e)}:${e.state}`));
+
+  // WRONG TODAY, and worse than a duplicate: the pending row is not echoed, it is REWRITTEN. Both
+  // rows resolve through `byKey`, so the seeded journal reports two SETTLED rows for a step that
+  // settled once — a reader counting completed work counts it twice, and the pending row it was
+  // given has vanished without anything saying so.
+  ok("WRONG TODAY: and the PENDING row comes back as a second copy of the settled one",
+    seeded.entries().every((e) => e.state === "settled"),
+    seeded.entries().map((e) => e.state));
+
+  // WRONG TODAY, and this is the one with a live consumer. `migrate` builds its orphan table from
+  // `orphans()` (`implementations/runtime/src/migrate.ts:205`) and computes `consumedThrough` from
+  // its length, so a doubled orphan is a doubled row in the operator's table and arithmetic over a
+  // doubled input — one decision presented as two, about a step that happened once.
+  ok("WRONG TODAY: an unconsumed step is an orphan TWICE, so the migrate table double-counts it",
+    seeded.orphans().length === 2, seeded.orphans().map((e) => journalEntryKeyString(e)));
+}
+
 console.log(`journal.smoke: ${pass} checks passed`);
