@@ -27,9 +27,11 @@ export interface EpErrorDetail {
 /**
  * `details[].kind` for a `failed-precondition` raised because a responder ANSWERED but was not the
  * incarnation this handle resolved against (§13.2). It marks the one fact a caller cannot recover
- * from the code alone: **the request reached a live responder that handled it**. A retry therefore
- * re-executes, so this is exactly the case an automatic re-invoke must not treat as "the incarnation
- * is gone, resolve again" — that premise is false here, and acting on it duplicates the effect.
+ * from the code alone: **the request drew an attributed reply from a live responder**. That reply
+ * may be a refusal (validation, authorization, admission, business) or a result; the marker does
+ * not say which, and it does not prove the command executed or that any effect landed. What it
+ * rules out is the reading "the incarnation is gone, resolve again": a retry here is a SECOND
+ * ATTEMPT that may duplicate an effect, so an automatic re-invoke must not take it as a repair.
  */
 export const EP_UNBOUND_RESPONDER = "ai.cotal.ep.unbound-responder";
 

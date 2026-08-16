@@ -48,6 +48,7 @@ import {
   instancePinnedInstrumentCapabilities, respondedButUnbound, EP_UNBOUND_RESPONDER, CotalEndpoint,
   isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS,
   type EpCaller,
+  type ResolvedService,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -427,6 +428,39 @@ try {
       check("...and does NOT return the second execution's success",
         (returned as { reply?: { ok?: boolean } } | undefined)?.reply?.ok !== true,
         (returned as { reply?: unknown } | undefined)?.reply);
+
+      // ---- THE ENDPOINT KEY REACHES THE GUARD --------------------------------------------------
+      // The classifier cells above prove `isRepeatSafeCommand` refuses an unknown endpoint. They
+      // do not prove the guard ASKS with the endpoint it was called for: a guard hardcoded to
+      // `isRepeatSafeCommand("manager", command)` passes every one of them, and it passed this
+      // whole suite. MEASURED: that mutation reported SURVIVED at 38/38, the full baseline. So drive
+      // the guard from `invokeService` with a NON-manager endpoint argument and a command the
+      // MANAGER classifies repeat-safe (`ps`): the endpoint key is then the only thing standing
+      // between "surface" and "retry".
+      //
+      // Fixture: no third-party service is booted here. The cache is seeded under the third-party
+      // name with a copy of the manager's resolved record (whose rails ARE the live manager's), so
+      // the request draws a real attributed reply from a real responder that is not the ghost the
+      // record binds to. That is exactly the guard's input. The `endpoint` argument, which is what
+      // the guard and the cache key read, is the third-party name throughout.
+      const third = "pin-third-party";
+      const mgrRecord = cache.get(MANAGER_ENDPOINT) as (ResolvedService & { responder: { instanceId: string } }) | undefined;
+      check("the manager record is still cached (the seed below copies it)", mgrRecord !== undefined);
+      if (mgrRecord) cache.set(third, { ...mgrRecord, responder: { ...mgrRecord.responder, instanceId: ghost } });
+      let thirdThrew: unknown;
+      let thirdReturned: unknown;
+      try {
+        thirdReturned = await ep.invokeService(third, "ps");
+      } catch (e) { thirdThrew = e; }
+      check("a manager-safe command name on an UNKNOWN endpoint still SURFACES its split (the guard asked with the endpoint, not with \"manager\")",
+        respondedButUnbound(thirdThrew),
+        thirdThrew instanceof Error ? thirdThrew.message.slice(0, 200) : { returned: (thirdReturned as { reply?: unknown } | undefined)?.reply });
+      // Same witness as the purge cell: a guard that let this through drops the cached resolve
+      // BEFORE re-resolving, so the ghost is gone whether or not the re-resolve then failed.
+      check("...and the unknown endpoint's cached resolve was NOT dropped (no retry started)",
+        cache.get(third)?.responder.instanceId === ghost,
+        { want: ghost, got: cache.get(third)?.responder.instanceId });
+      cache.delete(third);
 
       // ---- THE CLASSIFIER AND THE GUARD, GRADED TOGETHER ---------------------------------------
       // Everything above this line grades them SEPARATELY: the classification checks call

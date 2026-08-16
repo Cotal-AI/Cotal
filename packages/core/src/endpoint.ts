@@ -1383,14 +1383,15 @@ export class CotalEndpoint extends EventEmitter {
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       } catch (e) {
         if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-        // DO NOT auto-retry a command that a responder already HANDLED. This recovery was
+        // DO NOT auto-retry a command that a responder already ANSWERED. This recovery was
         // written for one reading of `failed-precondition` — "the describe-bound incarnation is gone
         // (restart or supersede), so re-resolve and invoke the current one" — and on that reading a
         // second invoke is a repair, because the first never ran. That premise fails for the other
         // producer of this code: the describe-bound currency check also fires when a DIFFERENT live
         // instance wins the class queue and REPLIES, which in a multi-manager space is an ordinary
-        // split, not a supersession. There the request DID reach a responder and was executed, and
-        // the error is raised afterwards, so re-invoking executes it twice.
+        // split, not a supersession. There the request DID reach a responder, which may have
+        // executed it or refused it (the marker cannot tell), and the error is raised afterwards,
+        // so re-invoking is a second attempt that may duplicate whatever effect the first had.
         //
         // Removing the retry outright is not an option either: in a two-manager space roughly half
         // of all class-queue calls split, so every other `ps` would surface an error the retry used
