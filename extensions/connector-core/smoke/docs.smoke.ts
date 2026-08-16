@@ -19,6 +19,7 @@ const repoRoot = join(here, "..", "..", "..");
   const shipped = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")).version;
   assert.equal(DOCS_VERSION, shipped, `bundled docs v${DOCS_VERSION} != shipped v${shipped} — run pnpm gen:docsbundle`);
 }
+console.log("✓ 1 — the bundled docs are stamped with the shipped version");
 
 // 2 — index: names the version, lists the normative sources, and offers real page slugs.
 {
@@ -32,6 +33,7 @@ const repoRoot = join(here, "..", "..", "..");
   assert.equal(empty.isError, undefined);
   assert.equal(empty.text, index, "no-arg call returns the index");
 }
+console.log("✓ 2 — the index names the version and offers real page slugs");
 
 // 3 — page reads: real markdown, with a bundled-source note; spec/schema aliases resolve.
 {
@@ -50,6 +52,7 @@ const repoRoot = join(here, "..", "..", "..");
   const alt = await runDocs({ page: "Architecture.md" });
   assert.match(alt.text, /# Architecture/);
 }
+console.log("✓ 3 — page reads carry real markdown; spec/schema aliases resolve");
 
 // 4 — unknown page fails loud and lists what's available.
 {
@@ -57,6 +60,7 @@ const repoRoot = join(here, "..", "..", "..");
   assert.equal(miss.isError, true);
   assert.match(miss.text, /spec, schema/, "error lists the available pages");
 }
+console.log("✓ 4 — an unknown page fails loud and lists what is available");
 
 // 5 — BM25 section search: ranks the right page, returns section headings + full-page pointers.
 {
@@ -115,5 +119,6 @@ const repoRoot = join(here, "..", "..", "..");
   const none = await runDocs({ query: "zzzznotawordzzzz" });
   assert.match(none.text, /No matches/);
 }
+console.log("✓ 5 — BM25 section search");
 
-console.log("docs.smoke: OK");
+console.log("docs.smoke: OK — 5 sections");

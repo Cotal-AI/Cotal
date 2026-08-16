@@ -2,7 +2,7 @@
   "suite": "extensions/connector-core/smoke/docs.smoke.ts",
   "guard": "a subject wildcard with no literal form in the corpus still reaches the sections that name its base subject",
   "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:docs",
-  "completionMarker": "docs.smoke: OK",
+  "completionMarker": "✓ 4 — an unknown page fails loud and lists what is available",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/docs-wildcard-base.json",
   "why": [
     "This suite sat RED on main and nothing anywhere executed it: `smoke:docs` is in the `check`",
@@ -48,7 +48,22 @@
     "segment expansion entirely (`if (t.includes(\".\")) for (const seg of ...)` -> `if (false)`)",
     "leaves the suite GREEN. The cell named \"a dotted path matches on its segments\" only asserts",
     "`searchDocs(\"cotal.schema.json\").length > 0`, which the raw whole-token match satisfies on its",
-    "own, so it does not test segment matching. Out of scope here; flagged for whoever owns it."
+    "own, so it does not test segment matching. Out of scope here; flagged for whoever owns it.",
+    "",
+    "MARKER IS UPSTREAM ON PURPOSE. The suite's terminal line sits AFTER the mutated region, so every",
+    "real kill stops before it and the tool cannot tell a kill from a run that died at cell 1 -- it",
+    "graded both mutations INCONCLUSIVE for exactly that reason. The marker named here is section 4's,",
+    "printed before the search section, so reaching it proves the run got as far as the region under",
+    "test. The per-section marks were added in the same change: this suite reported one word for some",
+    "thirty assertions, which is also why nobody could see it was red.",
+    "",
+    "RESTORE IS INCOMPLETE HERE AND IT IS THIS CONFIG'S FAULT, not the tool's. mutation-proof restores",
+    "the file it edited -- `src` -- and verifies that restore. It cannot know the command's build step",
+    "copied the mutant into `dist`, which is what this suite actually loads. So the tree is clean and",
+    "`dist` still holds the last mutant: a bare `pnpm smoke:docs` immediately afterwards grades a",
+    "mutant nobody put there, and it looks like a fresh regression. Observed, not theorised. Within",
+    "this config it is self-correcting because the command rebuilds first; run the build once by hand",
+    "after a session with it."
   ],
   "mutations": [
     {
