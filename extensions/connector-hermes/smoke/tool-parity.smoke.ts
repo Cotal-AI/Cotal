@@ -22,6 +22,11 @@ process.env.COTAL_NAME ||= "hermes-1";
 // suite opens no TCP connection to the value at all (verified against a listener that counted
 // zero accepts), so the line discloses a CONFIG input, not traffic. If that ever stops being
 // true, this line is already where a reader would look.
+// This file reaches CI by a DIFFERENT ROAD from its six siblings: it is not a `smoke:*` script
+// and no root script names it, so an audit that sweeps the `smoke:ci` chain concludes it is
+// unreachable. It runs through this package's own `test` script, which `pnpm -r --if-present
+// test` picks up — the repo's `test` root, invoked by `check` and by CI's unit job. Gated, just
+// not by the chain. Do not delete this pattern here on the grounds that the file looks dead.
 const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;
 process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
 console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED from the environment" : "suite default"})`);
