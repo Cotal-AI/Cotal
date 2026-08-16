@@ -167,6 +167,38 @@ const noIdAndSurrogate = admit({ ...sub1, id: undefined, args: { s: "\uD800" } }
 c("c7 no-usable-id BEFORE no-canonical-form when both breach",
   noIdAndSurrogate.outcome === "quarantine" && noIdAndSurrogate.cause === "no-usable-id", noIdAndSurrogate);
 
+// c8 — DUPLICATE NAMES, which no post-parse check can see. `JSON.parse('{"id":"a","id":"b"}')`
+// yields `{id:"b"}` and reports nothing, so a submission two conforming implementations could read
+// DIFFERENTLY arrived here looking ordinary. The module claimed this cause from the day it was
+// written and the case was UNREACHABLE — not untested, unrepresentable. A reviewer found it; no
+// mutant aimed at this file could have, because a mutation of an unreachable branch survives.
+const dupRaw = new TextEncoder().encode('{"id":"req-1","id":"req-2","op":{"endpoint":"manager","command":"spawn"}}');
+const dupDecided = decideAdmission(dupRaw, JSON.parse(new TextDecoder().decode(dupRaw)), subj, CEIL);
+c("c8 duplicate object names quarantine as no-canonical-form",
+  dupDecided.outcome === "quarantine" && dupDecided.cause === "no-canonical-form", dupDecided);
+// The raw bytes carry THREE names and the parsed value has TWO. That difference IS the finding,
+// so the cell states both sides rather than a bare count I could get wrong — and did: I first
+// wrote 3, which is the number in the bytes, not the number that survives the parse.
+c("c8 and the parsed value alone CANNOT show it — the duplicate is gone before the decision sees it",
+  Object.keys(JSON.parse(new TextDecoder().decode(dupRaw))).length === 2
+  && (JSON.parse(new TextDecoder().decode(dupRaw)) as { id: string }).id === "req-2");
+// Nested, so the scanner is not merely checking the top level.
+const dupNested = new TextEncoder().encode('{"id":"req-1","args":{"a":1,"a":2}}');
+c("c8 a duplicate NESTED name is caught too",
+  decideAdmission(dupNested, JSON.parse(new TextDecoder().decode(dupNested)), subj, CEIL).cause === "no-canonical-form");
+// THE NEGATIVE SIDE, which is what stops the scanner degenerating into "refuse everything".
+// The fixture is BUILT and then serialised, never hand-escaped: a string containing `{"a":1}`, a
+// string ending in a backslash, and the same name repeated in sibling objects and array elements
+// are all legal, and my first attempt at writing those escapes by hand produced invalid JSON.
+const trickyBody = {
+  id: "req-1",
+  args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } },
+};
+const trickyOk = new TextEncoder().encode(JSON.stringify(trickyBody));
+const trickyDecided = decideAdmission(trickyOk, JSON.parse(new TextDecoder().decode(trickyOk)), subj, CEIL);
+c("c8 braces and escaped quotes INSIDE a string are not structure", trickyDecided.outcome === "admit", trickyDecided);
+c("c8 the same name in SIBLING objects and array elements is legal", trickyDecided.outcome === "admit");
+
 const unparseable = decideAdmission(new Uint8Array([0xff, 0xfe]), undefined, subj, CEIL);
 c("c5 unparseable bytes take the same distinct cause",
   unparseable.outcome === "quarantine" && unparseable.cause === "no-usable-id", unparseable);

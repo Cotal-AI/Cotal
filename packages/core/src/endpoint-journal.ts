@@ -158,6 +158,59 @@ function measure(value: unknown): { depth: number; items: number } {
  *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
  *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
  *  hear about (SPEC:1610-1612). */
+/**
+ * Duplicate object names in the RAW bytes, which no post-parse check can see.
+ *
+ * `JSON.parse('{"id":"a","id":"b"}')` yields `{id:"b"}` and reports nothing. So a submission that
+ * two conforming implementations could read DIFFERENTLY — one taking the first name, one the last —
+ * arrives at the decision looking perfectly ordinary. That is the precise failure amendment A1
+ * exists to prevent: two implementations deciding the same bytes differently and DURABLY.
+ *
+ * The module has claimed duplicate names as a `no-canonical-form` cause since it was written, and
+ * the case was UNREACHABLE — not untested, unrepresentable, because the seam handed the decision a
+ * value from which the duplicate had already been erased. Found by a reviewer, not by any of the
+ * mutants aimed at this file.
+ *
+ * A scanner, not a regex: strings can contain braces, colons and escaped quotes, and a recogniser
+ * that succeeds on a prefix is a parser that lies. This walks the bytes once and tracks a name set
+ * per open object. It runs only on input already inside the byte ceiling.
+ */
+export function hasDuplicateNames(text: string): { duplicate: true; name: string } | { duplicate: false } {
+  const stack: Array<Set<string> | null> = []; // Set = object frame, null = array frame
+  let i = 0;
+  const n = text.length;
+  let expectName = false;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"') {
+      // Read one complete string, honouring escapes, so its contents can never be mistaken for
+      // structure. `\\` must consume both characters or a trailing `\"` reads as an open quote.
+      let j = i + 1, out = "";
+      while (j < n) {
+        const cj = text[j];
+        if (cj === "\\") { out += text[j + 1] ?? ""; j += 2; continue; }
+        if (cj === '"') break;
+        out += cj; j++;
+      }
+      if (j >= n) return { duplicate: false }; // unterminated: not our error to report
+      const top = stack[stack.length - 1];
+      if (expectName && top instanceof Set) {
+        if (top.has(out)) return { duplicate: true, name: out };
+        top.add(out);
+        expectName = false;
+      }
+      i = j + 1;
+      continue;
+    }
+    if (ch === "{") { stack.push(new Set()); expectName = true; i++; continue; }
+    if (ch === "[") { stack.push(null); expectName = false; i++; continue; }
+    if (ch === "}" || ch === "]") { stack.pop(); expectName = false; i++; continue; }
+    if (ch === ",") { expectName = stack[stack.length - 1] instanceof Set; i++; continue; }
+    i++;
+  }
+  return { duplicate: false };
+}
+
 export function decideAdmission(
   rawBytes: Uint8Array,
   parsedBody: unknown,
@@ -193,6 +246,20 @@ export function decideAdmission(
   catch (e) {
     return { outcome: "quarantine", cause: "no-usable-id",
       detail: `\`id\` is not within the token grammar, so it names no subject: ${(e as Error).message}` };
+  }
+
+  // DUPLICATE NAMES, decided from the RAW bytes because the parsed value cannot show them. Placed
+  // after the id check so the causes stay ordered by what the operator can act on, and before the
+  // fingerprint because a submission two implementations could read differently has no canonical
+  // form to fingerprint.
+  let rawText: string | undefined;
+  try { rawText = new TextDecoder("utf-8", { fatal: false }).decode(rawBytes); } catch { rawText = undefined; }
+  if (rawText !== undefined) {
+    const dup = hasDuplicateNames(rawText);
+    if (dup.duplicate)
+      return { outcome: "quarantine", cause: "no-canonical-form",
+        detail: `duplicate object name ${JSON.stringify(dup.name)}: two conforming implementations `
+              + `may read this submission differently, so it has no interoperable canonical form` };
   }
 
   let object: Record<string, unknown>, fingerprint: string;
