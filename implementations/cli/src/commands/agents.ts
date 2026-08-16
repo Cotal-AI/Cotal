@@ -53,7 +53,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   const on = await pinForTarget(v, "cotal stop");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, on);
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   failIfNotOk(reply);
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
@@ -159,7 +159,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
   if (v.on) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: v.on });
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
@@ -184,7 +184,8 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
   // unreachable (pin 3).
   if (t.auth.bearer) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner");
+    // `ps` has `--on` (declared, not passed on this branch), so a split may name it as the remedy.
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: v.on });
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
@@ -252,7 +253,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const on = await pinForTarget(v as never, "cotal attach");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, on);
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   failIfNotOk(reply);
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive

@@ -20,7 +20,7 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, registryReadFailed, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail,
   type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail,
 } from "./endpoint-envelope.js";
@@ -650,7 +650,11 @@ export async function epScatter(
     });
 
     // Reconcile shortly after T, bounded by its OWN explicit budget (not a second full `deadlineMs`):
-    // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`.
+    // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`. Only the
+    // bound's own (marked) refusal passes through as is; the hook is an untrusted caller-supplied
+    // boundary, so whatever IT throws, `unavailable` included, is the read failing and is normalized
+    // and marked here. Keying the pass-through on the code let a hook's bare `unavailable` escape
+    // unmarked, and an unmarked refusal is what a consumer cannot classify.
     let current: Map<string, EpRegistrationState>;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -659,7 +663,7 @@ export async function epScatter(
         new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within its ${reconcileDeadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`, [registryReadDetail(op)])), reconcileDeadlineMs); }),
       ]);
     } catch (e) {
-      if (e instanceof EpEnvelopeError && e.code === "unavailable") throw e; // the reconcile bound
+      if (registryReadFailed(e)) throw e; // the reconcile bound above
       throw new EpEnvelopeError("failed-precondition", `the scatter registration reconcile is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${failMsg(e)}`, [registryReadDetail(op)]);
     } finally {
       if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);

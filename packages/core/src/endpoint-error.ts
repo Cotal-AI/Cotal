@@ -67,15 +67,18 @@ export function respondedButUnbound(e: unknown): boolean {
 }
 
 /**
- * `details[].kind` for a refusal raised because the request drew NO REPLY AT ALL: the broker
- * reported no responder on the subject, or the reply deadline elapsed with nothing attributed to
- * the request. It marks the one fact a consumer cannot recover from the code alone: **nothing
- * answered**. The same codes are also raised where something did answer or where the failure is a
- * read on the caller's own side (a responder's `ok:false` describe reply is rethrown under its own
- * code, `unavailable` included; a store or registry read fails after the describe was answered), so
- * `unavailable` or `deadline-exceeded` on its own is not evidence of silence. Only the producers
- * that observed the silence set this marker; a consumer that states a reachability verdict keys on
- * it, never on the code.
+ * `details[].kind` for a refusal raised because NO VALID REPLY REACHED THE CALLER: the broker
+ * reported no responder on the subject, or the reply deadline elapsed with no reply attributed to
+ * the request on its nonce. A frame that fails the request binding (another nonce or endpoint, an
+ * unparseable body, a mismatched echoed id) is dropped and is not an answer, so a deadline that
+ * follows such a frame is marked too: the marker says nothing the caller could attribute to the
+ * request arrived, not that no bytes did. It marks the one fact a consumer cannot recover from the
+ * code alone: **nothing answered the request as sent**. The same codes are also raised where
+ * something did answer or where the failure is a read on the caller's own side (a responder's
+ * `ok:false` describe reply is rethrown under its own code, `unavailable` included; a store or
+ * registry read fails after the describe was answered), so `unavailable` or `deadline-exceeded` on
+ * its own is not evidence of silence. Only the producers that observed the silence set this marker;
+ * a consumer that states a reachability verdict keys on it, never on the code.
  */
 export const EP_UNANSWERED = "ai.cotal.ep.unanswered";
 
@@ -86,8 +89,8 @@ export interface EpUnansweredDetail extends EpErrorDetail {
   command: string;
 }
 
-/** True iff `e` carries the {@link EP_UNANSWERED} marker: the request drew no reply at all (no
- *  responder, or the deadline elapsed unanswered). */
+/** True iff `e` carries the {@link EP_UNANSWERED} marker: no valid reply reached the caller (no
+ *  responder, or the deadline elapsed with nothing attributed to the request). */
 export function unansweredRequest(e: unknown): boolean {
   return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_UNANSWERED);
 }

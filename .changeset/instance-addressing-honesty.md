@@ -27,8 +27,10 @@ An unpinned class-queue split no longer implies the effect did not land. Describ
 separate trips through the same anycast queue, so in a multi-instance space the instance that won
 the queue received the request and may have executed it, possibly after the error was raised. The
 core message now says so and points at `ps`/`inspect`/roster before any retry; it stops at "a call
-that addresses one instance does not split", and the CLI, which owns the flag, adds that
-`--on <instance>` is how to pin one.
+that addresses one instance does not split". The CLI adds `--on <instance>` as the remedy, and only
+on the commands that have the flag (`ps`, `stop`, `attach`, `spawn --detach`), which declare it to
+the shared renderer; `models`, `up` and `down` ride the same rails and split the same way, and are
+no longer told to type a flag they do not have. Absence of a pin is not evidence of the flag.
 
 And a split is no longer silently retried into a duplicate effect. The client recovered from
 `failed-precondition` by dropping its cached resolve and invoking again, which is a repair when the

@@ -261,7 +261,7 @@ async function spawnDetached(
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
-  }, t.auth, "owner", START_TIMEOUT_MS, values.on);
+  }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: values.on });
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(

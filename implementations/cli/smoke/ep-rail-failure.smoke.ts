@@ -41,7 +41,7 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   // endpoint-verbs.ts epCall: the broker's no-responders control frame (marked).
   const r = epRailFailure(ep("unavailable", "no responder for manager.ps (SPEC 13.5)", [unansweredMark]));
   c("no-responder (marked) unpinned: unanswered=true and the verdict is stated", r.unanswered === true && r.error?.startsWith("no manager reachable on the ep rails (unavailable: no responder for manager.ps") === true, r);
-  const p = epRailFailure(ep("unavailable", "no responder for manager.ps (SPEC 13.5)", [unansweredMark]), IID);
+  const p = epRailFailure(ep("unavailable", "no responder for manager.ps (SPEC 13.5)", [unansweredMark]), { instanceId: IID });
   c("no-responder (marked) pinned: names the instance, never 'no manager reachable'", p.unanswered === true && p.error === `manager instance ${IID} did not answer (unavailable: no responder for manager.ps (SPEC 13.5))`, p);
 }
 {
@@ -56,7 +56,7 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   // endpoint-invoke.ts:179 the responder's OWN ok:false describe reply, rethrown under its code (unmarked).
   const r = epRailFailure(ep("unavailable", "describe(manager) failed: trusted auth view failed"));
   c("answered ok:false describe (`unavailable`, unmarked): unanswered=false, printed as is, NO verdict", r.unanswered === false && r.error === "unavailable: describe(manager) failed: trusted auth view failed", r);
-  const p = epRailFailure(ep("unavailable", "describe(manager) failed: trusted auth view failed"), IID);
+  const p = epRailFailure(ep("unavailable", "describe(manager) failed: trusted auth view failed"), { instanceId: IID });
   c("answered ok:false describe pinned: still no 'did not answer'", p.unanswered === false && !VERDICT.test(p.error ?? ""), p);
 }
 {
@@ -80,13 +80,16 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   c("scatter freeze deadline (registry-marked `deadline-exceeded`): the registry outcome, NO reachability verdict", f.unanswered === false && f.error?.startsWith("the manager registry could not be read") === true && !VERDICT.test(f.error), f);
 }
 {
-  // The unpinned class-queue split (EP_UNBOUND_RESPONDER on failed-precondition): the --on hint, only unpinned.
+  // The unpinned class-queue split (EP_UNBOUND_RESPONDER on failed-precondition): the --on hint is
+  // offered only to a caller that DECLARED it has the flag (a `pin` present) and did not pass it.
   const mark = { kind: EP_UNBOUND_RESPONDER, endpoint: "manager", command: "ps", answeredBy: "2".repeat(26), boundTo: IID, pinned: false };
-  const r = epRailFailure(ep("failed-precondition", "a different instance answered", [mark]));
-  c("unpinned split: printed as is plus the --on hint, NO verdict", r.unanswered === false && r.error?.endsWith("Pin one manager instance with --on <instance> (the whole id, as `ps` prints it) to avoid the split.") === true && !VERDICT.test(r.error), r);
-  const p = epRailFailure(ep("failed-precondition", "a different instance answered", [mark]), IID);
+  const r = epRailFailure(ep("failed-precondition", "a different instance answered", [mark]), {});
+  c("unpinned split on a caller WITH --on (pin declared, not passed): printed as is plus the --on hint, NO verdict", r.unanswered === false && r.error?.endsWith("Pin one manager instance with --on <instance> (the whole id, as `ps` prints it) to avoid the split.") === true && !VERDICT.test(r.error), r);
+  const n = epRailFailure(ep("failed-precondition", "a different instance answered", [mark]));
+  c("the same split on a caller WITHOUT --on (`models`, `up`, `down`: no pin declared): printed as is, NO --on hint", n.unanswered === false && n.error === "failed-precondition: a different instance answered", n);
+  const p = epRailFailure(ep("failed-precondition", "a different instance answered", [mark]), { instanceId: IID });
   c("pinned split: no --on hint (it was passed)", p.unanswered === false && !p.error?.includes("--on"), p);
-  const x = epRailFailure(ep("expired", "same instance, other epoch", [{ ...mark, answeredEpoch: 4, heldEpoch: 3, reference: "bind" }]));
+  const x = epRailFailure(ep("expired", "same instance, other epoch", [{ ...mark, answeredEpoch: 4, heldEpoch: 3, reference: "bind" }]), {});
   c("marked `expired` (stale-epoch bind): printed as is, no --on hint, NO verdict", x.unanswered === false && x.error === "expired: same instance, other epoch", x);
 }
 {
@@ -94,7 +97,7 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   c("broker-refused describe: printed as is, NO verdict", r.unanswered === false && r.error === "permission-denied: the describe for manager was REFUSED BY THE BROKER, not unanswered", r);
   const n = epRailFailure(new Error("connection closed"));
   c("a non-EpEnvelopeError carries no provenance: message alone, unanswered=false, NO verdict", n.unanswered === false && n.error === "connection closed", n);
-  const np = epRailFailure(new Error("connection closed"), IID);
+  const np = epRailFailure(new Error("connection closed"), { instanceId: IID });
   c("a non-EpEnvelopeError pinned: still no 'did not answer'", np.unanswered === false && np.error === "connection closed", np);
 }
 
@@ -145,7 +148,7 @@ try {
     // is the unanswered producer on this path; the verdict is stated, unpinned and pinned.
     const [r, p] = await Promise.all([
       askManager(SPACE, SERVER, "ps", undefined, {}, "any", 2000),
-      askManager(SPACE, SERVER, "ps", undefined, {}, "any", 2000, IID),
+      askManager(SPACE, SERVER, "ps", undefined, {}, "any", 2000, { instanceId: IID }),
     ]);
     c("live: no responder at all, unpinned: unanswered=true and 'no manager reachable' (the positive control)",
       r.ok === false && r.unanswered === true && r.error?.startsWith("no manager reachable on the ep rails (deadline-exceeded: no describe reply from manager") === true, r);

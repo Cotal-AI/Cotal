@@ -177,8 +177,9 @@ async function askManagerEp(
   auth: ControlAuth,
   reach: ControlReach,
   timeoutMs?: number,
-  instanceId?: string,
+  pin?: ManagerPin,
 ): Promise<ManagerReply> {
+  const instanceId = pin?.instanceId;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
@@ -244,7 +245,7 @@ async function askManagerEp(
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    return epRailFailure(e, instanceId);
+    return epRailFailure(e, pin);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -256,6 +257,15 @@ async function askManagerEp(
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
  *  predicate in another file. */
 export type ManagerReply = ControlReply & { unanswered?: boolean };
+
+/** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
+ *  (`ps`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator typed, if
+ *  anything. Its presence is what lets the renderer offer `--on` as a remedy: a command without the
+ *  flag (`models`, `up`, `down`) rides the same rails, splits the same way, and must not be told to
+ *  type a flag it does not have. Absence of a pin therefore never means "not passed". */
+export interface ManagerPin {
+  instanceId?: string;
+}
 
 /** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never
  *  by the catalog code: a responder's own `ok:false` describe reply is rethrown under ITS code
@@ -275,7 +285,8 @@ export type ManagerReply = ControlReply & { unanswered?: boolean };
  *    stop.
  *  A failure that is not an {@link EpEnvelopeError} carries no answer provenance at all, so no verdict
  *  is stated for it either: its message stands alone. */
-export function epRailFailure(e: unknown, instanceId?: string): ManagerReply {
+export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
+  const instanceId = pin?.instanceId;
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
@@ -289,11 +300,12 @@ export function epRailFailure(e: unknown, instanceId?: string): ManagerReply {
   if (registryReadFailed(e))
     return { ok: false, unanswered: false, error: `the manager registry could not be read: a broker read on this side, not the managers' silence, and they may all be up. Retry; if it persists, look at the broker's JetStream (${detail})` };
   // The unpinned class-queue split. Core says a call that addresses one instance does not split
-  // and stops there (a CLI flag name does not belong in a core error); this is the surface that
-  // has the flag, and on this path the unpinned branch is reached exactly when it was not passed.
+  // and stops there (a CLI flag name does not belong in a core error). The flag is named here only
+  // when the CALLER declared it has one (`pin` present) and did not pass it: an absent `pin` is a
+  // command with no `--on` at all, and telling it to type one is the same dead end one layer down.
   // A marked `expired` is the other producer (a stale-epoch bind) and its remedy is re-resolving,
   // so the flag is offered only for the split.
-  const unpinnedSplit = e.code === "failed-precondition" && respondedButUnbound(e) && instanceId === undefined;
+  const unpinnedSplit = e.code === "failed-precondition" && respondedButUnbound(e) && pin !== undefined && instanceId === undefined;
   return { ok: false, unanswered: false, error: `${detail}${unpinnedSplit ? " Pin one manager instance with --on <instance> (the whole id, as `ps` prints it) to avoid the split." : ""}` };
 }
 
@@ -315,11 +327,11 @@ export async function askManager(
   auth: ControlAuth = {},
   reach: ControlReach = "owner",
   timeoutMs?: number,
-  instanceId?: string,
+  pin?: ManagerPin,
 ): Promise<ManagerReply> {
   // A user bearer or a minted static instrument carries its own ep caller triple: ride it.
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerEp(space, server, op, args, auth, reach, timeoutMs, instanceId);
+    return askManagerEp(space, server, op, args, auth, reach, timeoutMs, pin);
   // A raw `--creds` file with NO minted triple is a pre-1c generation's cred (no ep rows). The ctl
   // rail it used to ride is gone (1d), so refuse loud with the recovery rather than hang.
   if (auth.creds)
@@ -327,7 +339,7 @@ export async function askManager(
   // OPEN mesh: no credential system. The manager registered its service under DEV_OWNER and the
   // broker enforces nothing, so synthesize a fresh DEV_OWNER caller triple and connect bare.
   const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
-  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs, instanceId);
+  return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs, pin);
 }
 
 /** One instance's slot in a class scatter (P2 item 3): a REACHABLE instance carries its attributed

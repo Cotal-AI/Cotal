@@ -201,6 +201,11 @@ try {
     c("a never-settling reconcile is marked EP_REGISTRY_READ_FAILED, not EP_UNANSWERED", registryReadFailed(hung) && !unansweredRequest(hung), hung);
     const unread = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }));
     c("an unreadable reconcile is marked EP_REGISTRY_READ_FAILED, not EP_UNANSWERED", registryReadFailed(unread) && !unansweredRequest(unread), unread);
+    // The hook is an untrusted boundary: its OWN bare `unavailable` is the read failing, normalized
+    // to failed-precondition and marked like any other unreadable reconcile. It used to pass through
+    // unmarked because the catch keyed the pass-through on the code, not on the bound's marker.
+    const hookUnavail = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new EpEnvelopeError("unavailable", "kv gateway down"); } }));
+    c("a hook's own bare `unavailable` is normalized to failed-precondition AND marked EP_REGISTRY_READ_FAILED (no unmarked pass-through)", hookUnavail instanceof EpEnvelopeError && hookUnavail.code === "failed-precondition" && registryReadFailed(hookUnavail), hookUnavail);
   }
   await rejects("scatter FAILS LOUD when the reconcile omits a frozen slot (incomplete read can't authorize completion)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: B, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "failed-precondition");
