@@ -104,6 +104,24 @@
       "note": "A census keyed on TEXT cannot tell a call site from a fixture, and this file is the one guaranteed to hold fixtures: without the exclusion it reported EIGHT files defaulting the variable when seven do, and graded its own negative controls as though they were suites. The published count was wrong by one and nothing said so. The exclusion is computed from `import.meta.url` rather than written as a path, so it cannot grow into an allowlist, and this cell is what stops it going dead if the fixtures ever stop matching."
     },
     {
+      "name": "the interpolation may sit ANYWHERE after `broker:`, so a commented one satisfies a literal line",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:[^\\n]*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "expectRed": "fixture: the INTERPOLATION parked in a trailing comment is rejected too",
+      "cell": "fixture: the INTERPOLATION parked in a trailing comment is rejected too",
+      "note": "THE NEXT MEMBER OF THE FAMILY, found by review after the first was closed, and the lesson is that closing the members you were shown is not closing the family. Requiring the interpolation was right and requiring it ANYWHERE ON THE LINE was not: park it in a trailing comment, hardcode the address in the template, and the line prints a literal every run while the check is satisfied. It is also the plausible careless edit rather than a contrived one, because it is what somebody leaves behind after pinning an address to debug something."
+    },
+    {
+      "name": "the self-exclusion is repointed at a real suite, which stops grading it and lets this file in",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const self = relative(repoRoot, fileURLToPath(import.meta.url));",
+      "replace": "const self = \"bin/smoke/launch-parity.smoke.ts\";",
+      "expectRed": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "cell": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "note": "CARDINALITY IS NOT IDENTITY, and a cell that counts a carve-out without naming it leaves the carve-out free to point elsewhere. Raised by review: repointing `self` keeps `excluded` at one, keeps the census the same size, keeps the span-directories cell green, and silently stops grading a real suite while this file walks into the census through its own compliant fixture. The cell now names the path as a LITERAL rather than re-deriving it from `self`, which would have made it a tautology that this mutation passes."
+    },
+    {
       "name": "the census narrows back to dot access, so the same assignment under brackets is INVISIBLE",
       "file": "bin/smoke/broker-disclosure.smoke.ts",
       "find": "const VAR = String.raw`process\\.env(?:\\.COTAL_SERVERS|\\[[\"']COTAL_SERVERS[\"']\\])`;",

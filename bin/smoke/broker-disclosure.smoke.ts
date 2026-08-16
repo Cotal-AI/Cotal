@@ -52,8 +52,24 @@ const CAPTURES = new RegExp(String.raw`${VAR}\s*!==?\s*(?:undefined|null)`);
  * SINGLE LINE, on purpose and stated so it is a rule rather than an accident: a disclosure wrapped
  * across lines by a formatter will not match and its file will go RED. That is the loud direction,
  * and the fix is to keep the line whole.
+ *
+ * THE INTERPOLATION MUST BE WHAT FOLLOWS `broker:`, not merely something later on the line. Review
+ * found the next member of the family once the first was closed: park the interpolation in a
+ * TRAILING COMMENT, hardcode the address in the template, and a pattern that accepted `${…}`
+ * anywhere after `broker:` was satisfied by a line that printed a literal every run. That is the
+ * plausible careless edit in this family, because it is what somebody leaves behind after pinning
+ * an address to debug something.
+ *
+ * WHAT READING SOURCE CANNOT DO, named rather than implied, because a boundary nobody wrote down
+ * gets mistaken for coverage. This checks that the line is SHAPED like a disclosure. It cannot
+ * follow evaluation, so a line that builds the value and then discards it stays accepted: a
+ * disclosing template with a `.replace` chained onto it that overwrites the whole string, and the
+ * comma-expression form that evaluates the disclosing template and hands `console.log` something
+ * else. Both are deliberate sabotage rather than a careless edit, and closing them means executing
+ * repository source inside a guard, which buys less than it costs. Measured and left open, not
+ * overlooked.
  */
-const PRINTS = new RegExp(String.raw`console\.log\([^\n]*broker:[^\n]*\$\{\s*${VAR}\s*\}`);
+const PRINTS = new RegExp(String.raw`console\.log\([^\n]*broker:\s*\$\{\s*${VAR}\s*\}`);
 
 let pass = 0;
 let fail = 0;
@@ -71,12 +87,12 @@ const check = (name: string, ok: boolean, extra?: unknown): void => {
 const self = relative(repoRoot, fileURLToPath(import.meta.url));
 
 const defaulters: string[] = [];
-let excluded = 0;
+const excludedPaths: string[] = [];
 for (const file of sources(repoRoot)) {
   const text = readFileSync(file, "utf8");
   if (!DEFAULTS.test(text)) continue;
   const rel = relative(repoRoot, file);
-  if (rel === self) { excluded += 1; continue; }
+  if (rel === self) { excludedPaths.push(rel); continue; }
   defaulters.push(rel);
 }
 defaulters.sort();
@@ -95,10 +111,14 @@ check(
 // 1b — and the exclusion is exactly this file, still matching. If the fixtures below ever stop
 // carrying the pattern the exclusion has quietly become dead, which is the same shape as an
 // allowlist entry nobody notices has stopped matching anything.
+// The path is named as a LITERAL and not re-derived from `self`, which would make the cell a
+// tautology. Cardinality alone leaves the carve-out free to point somewhere else: rewriting `self`
+// to a real suite keeps the count at one, keeps the census size unchanged, and silently stops
+// grading that suite while this file walks in through its own compliant fixture.
 check(
   "exactly one file is excluded from the census, and it is this file's own fixtures",
-  excluded === 1,
-  { excluded, self },
+  excludedPaths.length === 1 && excludedPaths[0]!.endsWith("bin/smoke/broker-disclosure.smoke.ts"),
+  { excludedPaths, self },
 );
 
 /** What the guard asks of one file. Extracted so it can be aimed at a fixture as well as at the
@@ -150,6 +170,14 @@ function evaluate(text: string): { prints: boolean; ordered: boolean } {
     + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
     + 'console.log(`• broker: nats://127.0.0.1:4222`); // was process.env.COTAL_SERVERS\n'
     + 'void brokerFromEnv;\n';
+  // The next member of the family, found by review once the first was closed: the interpolation is
+  // present and correct and is INSIDE A COMMENT, while the template prints a literal. A pattern that
+  // took `${…}` anywhere after `broker:` accepted it, which is why the interpolation now has to be
+  // the thing that FOLLOWS `broker:` rather than merely something later on the line.
+  const COMMENTED_INTERP = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
+    + 'console.log(`• broker: nats://127.0.0.1:4222`); // ${process.env.COTAL_SERVERS}\n'
+    + 'void brokerFromEnv;\n';
   // The census direction. A file this cannot SEE is not rejected, it is absent, and every per-file
   // cell is generated from the census -- so a shape it does not know costs cells rather than reds.
   const BRACKET = 'const brokerFromEnv = process.env["COTAL_SERVERS"] !== undefined;\n'
@@ -162,6 +190,8 @@ function evaluate(text: string): { prints: boolean; ordered: boolean } {
     !evaluate(DOLLARLESS).prints);
   check("fixture: a hardcoded address with the variable in a trailing comment is rejected",
     !evaluate(HARDCODED).prints);
+  check("fixture: the INTERPOLATION parked in a trailing comment is rejected too",
+    !evaluate(COMMENTED_INTERP).prints);
   check("fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
     DEFAULTS.test(BRACKET) && evaluate(BRACKET).prints && evaluate(BRACKET).ordered);
 }
