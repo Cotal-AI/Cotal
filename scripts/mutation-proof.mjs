@@ -181,11 +181,16 @@ function proveOne(m, opts) {
     // kill by a suite that never reached its own end. When a config names the marker its suite
     // prints last, its absence is INCONCLUSIVE: the run did not finish, which is not a kill and is
     // not a survival either. A harness with only two verdicts rounds this one to the convenient side.
-    if (opts.completionMarker && !r.output.includes(opts.completionMarker)) {
+    // Per mutation first: a fail-fast suite has no single line that always prints, so each mutation
+    // names the marker just UPSTREAM of the region it breaks. The marker must be independent of the
+    // outcome the mutation changes — a line that only prints on success means absence proves the
+    // mutation WORKED, and every genuine kill would be graded INCONCLUSIVE instead.
+    const marker = m.completionMarker ?? opts.completionMarker;
+    if (marker && !r.output.includes(marker)) {
       return {
         label,
         verdict: "INCONCLUSIVE",
-        why: `red, and named — but the suite never printed ${JSON.stringify(opts.completionMarker)}, so it did not run to the end and this is not evidence about one cell`,
+        why: `red, and named — but the run never printed ${JSON.stringify(marker)}, so it did not reach the region under test and this is not evidence about one cell`,
         ticks,
       };
     }
@@ -221,7 +226,7 @@ let opts = {
  */
 const MUTATION_KEYS = [
   "name", "label", "file", "find", "replace", "expectRed", "allowMultiple", "command",
-  "cell", "cellTemplate", "id", "note",
+  "cell", "cellTemplate", "completionMarker", "id", "note",
 ];
 
 if (a.config) {
