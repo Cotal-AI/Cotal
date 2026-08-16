@@ -60,19 +60,54 @@ check(
   { defaulters },
 );
 
-// 2 — the disclosure itself, per file.
-for (const f of defaulters) {
-  const text = readFileSync(join(repoRoot, f), "utf8");
-  check(`${f} prints the broker it resolved`, PRINTS.test(text));
-  // The inherited/defaulted distinction is the forensically useful half, and it is only knowable
-  // BEFORE the `||=` runs. Capturing it afterwards reads the value the suite just wrote.
+/** What the guard asks of one file. Extracted so it can be aimed at a fixture as well as at the
+ *  repo: with every real file compliant, dropping a requirement here changes no real verdict, and
+ *  a check nothing exercises is a check nobody can prove. */
+function evaluate(text: string): { prints: boolean; ordered: boolean } {
   const capture = text.search(CAPTURES);
   const assign = text.search(DEFAULTS);
+  // The inherited/defaulted distinction is the forensically useful half, and it is only knowable
+  // BEFORE the `||=` runs — afterwards the variable is set either way, so a capture below the
+  // assignment reads the value the suite just wrote and reports every run as inherited.
+  return { prints: PRINTS.test(text), ordered: capture !== -1 && capture < assign };
+}
+
+// 2 — the census spans more than one top-level directory. Every cell below is generated per
+// discovered file, so a census that narrows does not FAIL cells, it stops emitting them — and a
+// suite with fewer cells still exits 0. The pattern living outside `extensions/` is the whole
+// reason the first count of these files was wrong, so a census that cannot see outside one
+// directory is the failure this cell is here to catch, not an incidental property.
+{
+  const tops = new Set(defaulters.map((f) => f.split("/")[0]));
   check(
-    `${f} records whether the value was inherited, before \`||=\` overwrites the evidence`,
-    capture !== -1 && capture < assign,
-    { captureAt: capture, assignAt: assign },
+    "the census spans more than one top-level directory, so it is keyed on content and not on location",
+    tops.size > 1,
+    { tops: [...tops] },
   );
+}
+
+// 3 — the checker rejects a file that discloses in the wrong ORDER. Aimed at a fixture rather than
+// at the repo, because every real file is compliant: without a negative control, removing the
+// ordering requirement would pass and the requirement would be unprovable.
+{
+  const GOOD = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
+    + 'console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED" : "default"})`);\n';
+  const SWAPPED = 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
+    + 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED" : "default"})`);\n';
+  const MUTE = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\nvoid brokerFromEnv;\n';
+  check("fixture: a compliant file passes both requirements", evaluate(GOOD).prints && evaluate(GOOD).ordered);
+  check("fixture: a file that captures AFTER the `||=` is rejected on order", !evaluate(SWAPPED).ordered);
+  check("fixture: a file that never prints the broker is rejected on disclosure", !evaluate(MUTE).prints);
+}
+
+// 4 — the disclosure itself, per real file.
+for (const f of defaulters) {
+  const { prints, ordered } = evaluate(readFileSync(join(repoRoot, f), "utf8"));
+  check(`${f} prints the broker it resolved`, prints);
+  check(`${f} records whether the value was inherited, before \`||=\` overwrites the evidence`, ordered);
 }
 
 console.log(`\nBROKER-DISCLOSURE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

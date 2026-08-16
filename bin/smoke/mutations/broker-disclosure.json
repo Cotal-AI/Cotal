@@ -37,7 +37,16 @@
     "SPECIFIER BOUNDARY: not applicable, and checked rather than assumed. This suite imports no",
     "workspace package at all -- only `node:fs`, `node:path`, `node:url` -- and reads the mutated",
     "files as TEXT from disk. There is no `dist` in the path and no build in the command, so the",
-    "bytes mutated are the bytes graded."
+    "bytes mutated are the bytes graded.",
+    "",
+    "TWO MUTATIONS SURVIVED THE FIRST RUN AND BOTH SURVIVALS WERE THE SUITE'S FAULT, fixed on the",
+    "test side rather than by re-aiming. (1) Scoping the census to `extensions/` did not redden any",
+    "cell -- it DELETED two, because every per-file cell is generated from the census, and a suite",
+    "with fewer cells still exits 0. A guard whose coverage shrinks silently with its input is the",
+    "same shape as the allowlist entry that stops matching anything. (2) Dropping the ordering",
+    "requirement changed no verdict, because every real file is compliant -- a requirement no input",
+    "exercises cannot be proved by the corpus, however many files the corpus has. The first is now a",
+    "cell about the census itself, the second a negative fixture. Neither mutation was weakened."
   ],
   "mutations": [
     {
@@ -54,18 +63,18 @@
       "file": "bin/smoke/broker-disclosure.smoke.ts",
       "find": "for (const file of sources(repoRoot)) {",
       "replace": "for (const file of sources(join(repoRoot, \"extensions\"))) {",
-      "expectRed": "bin/smoke/launch-parity.smoke.ts prints the broker it resolved",
-      "cell": "bin/smoke/launch-parity.smoke.ts prints the broker it resolved",
-      "note": "The mutation is a real person's first instinct, and it is why the original report said six. The cell it kills is named for the file that lives outside the directory -- so the kill is the census proving it is not keyed on location."
+      "expectRed": "the census spans more than one top-level directory, so it is keyed on content and not on location",
+      "cell": "the census spans more than one top-level directory, so it is keyed on content and not on location",
+      "note": "The mutation is a real person's first instinct, and it is why the original count of these files was six. It first SURVIVED: narrowing the census does not FAIL the per-file cells, it stops emitting them, and a suite with two fewer cells still exits 0. That is a guard whose strength shrinks with its input and reports nothing -- so the suite gained a cell that asserts the census SPANS more than one top-level directory, which is the property the finding was actually about."
     },
     {
       "name": "the inherited-capture is allowed to sit AFTER the assignment that destroys the evidence",
       "file": "bin/smoke/broker-disclosure.smoke.ts",
       "find": "    capture !== -1 && capture < assign,",
       "replace": "    capture !== -1,",
-      "expectRed": "records whether the value was inherited, before `||=` overwrites the evidence",
-      "cell": "records whether the value was inherited, before `||=` overwrites the evidence",
-      "note": "Presence-not-position, and the resulting suite would accept a disclosure that reports EVERY run as inherited. Paired with mutation 4, which moves a real capture below its assignment: mutation 3 proves the check would stop noticing, mutation 4 proves it notices today."
+      "expectRed": "fixture: a file that captures AFTER the `||=` is rejected on order",
+      "cell": "fixture: a file that captures AFTER the `||=` is rejected on order",
+      "note": "Presence-not-position: the resulting checker accepts a disclosure that reports EVERY run as inherited. It first SURVIVED, and correctly -- every real file is compliant, so dropping the requirement changed no real verdict. A requirement that no input exercises cannot be proved by the corpus, so the suite now carries its own negative control and this mutation is aimed at that fixture. Paired with mutation 4, which puts the same defect in a real file: the fixture proves the checker still looks, mutation 4 proves it is looking at the repo."
     },
     {
       "name": "PAIRED: a real file captures the flag after its own `||=`, so the disclosure always says inherited",
