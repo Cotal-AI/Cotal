@@ -32,7 +32,6 @@ import {
   timerWriterConsumerConfig,
   timerWriterDurable,
   armCheckpointTimer,
-  handleCheckpointFire,
   readCheckpointSettle,
   readCheckpointAnswer,
   readCheckpointStatus,
@@ -43,7 +42,6 @@ import {
   eptReqStreamName,
   eptStreamName,
   eptSubject,
-  type CheckpointRef,
 } from "@cotal-ai/core";
 import {
   MeshHandler,
@@ -102,17 +100,27 @@ const armPending = async (expect: number): Promise<number> => {
   return armed;
 };
 
-/** Take the broker's own FIRE for a token and expire the checkpoint it names. */
-const deliverFire = async (ref: CheckpointRef, now: number, epoch = EPOCH): Promise<number> => {
-  const subject = eptSubject(SPACE, EP, IID, epoch, ref.token, "fire");
+/** Whether the broker has published its own `.fire` for a token — an OBSERVATION of the timer
+ *  plane, never a delivery. This suite used to hand the fire to `handleCheckpointFire` itself, and
+ *  that is what kept the expiry cell green while nothing in the tree took a fire. */
+const brokerFired = async (token: string, epoch = EPOCH): Promise<boolean> => {
+  const subject = eptSubject(SPACE, EP, IID, epoch, token, "fire");
   const fired = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: subject }).catch(() => null);
-  if (fired === null) return -1;
-  const v = await handleCheckpointFire(kv, js, jsm, SPACE, {
-    ref, instanceId: IID, epoch,
-    msg: { subject, headers: fired.header, data: fired.data },
-    now,
-  });
-  return v.acted ? 1 : 0;
+  return fired !== null && fired !== undefined;
+};
+
+/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops: a bare `await`
+ *  on a pause that never expires is graded on the harness's patience rather than on the code. */
+const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
+  try {
+    const got = await Promise.race([p.then((v) => ({ v })), late]);
+    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
+    return got.v;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 };
 
 const NOW = Date.now(); // real schedules need real wall-clock deadlines
@@ -230,18 +238,25 @@ const tokenOf = async (runId: string): Promise<string | undefined> => {
   const source = `
 const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "proceed" });
 `;
+  // Its OWN handler, on a clock that MOVES. Everywhere else here the clock is pinned so a deadline
+  // is a value the cells can name; this block's subject is a deadline actually passing, and a clock
+  // frozen before its own deadline judges every real fire premature and re-arms instead of expiring.
+  const expiring = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => Date.now());
   const driven = startRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "cp-3", source, lease: lease("m1", 1, takeovers + 1), handler,
+    space: SPACE, endpoint: EP, kv, runId: "cp-3", source, lease: lease("m1", 1, takeovers + 1), handler: expiring,
   });
   let token: string | undefined;
   for (let i = 0; i < 100 && token === undefined; i += 1) { token = await tokenOf("cp-3"); if (token === undefined) await wait(50); }
   await armPending(4);
-  while (Date.now() < NOW + 2_400) await wait(100);
-  const acted = await deliverFire({ endpoint: EP, token: token! }, NOW + 2_500);
-  c("the deadline fires and expires the checkpoint", acted === 1, acted);
+  const armedAt = await readCheckpointStatus(kv, { endpoint: EP, token: token! });
+  while (Date.now() < (armedAt?.value.deadline ?? 0) + 400) await wait(100);
+  c("the broker publishes the deadline's own fire, and nobody hands it to the handler",
+    await brokerFired(token!));
+  // Progress mark, printed upstream of everything that touches the fire.
+  console.log("• 3 — nobody answers: the deadline is armed and past due");
 
-  const out = await driven;
-  const rec = out.status === "completed"
+  const out = (await withDeadline(driven, 30_000, "the run"))!;
+  const rec = out?.status === "completed"
     ? (out.result.journal.entries().find((e) => e.kind === "checkpoint")?.result as { outcome?: string })
     : undefined;
   c("the program sees an EXPIRY, not an empty answer", rec?.outcome === "expired", JSON.stringify(rec));
@@ -251,14 +266,14 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   // and if nobody drove the run at all the plane's own fail-closed expiry is what refuses.
   let late: unknown;
   try {
-    await resolveCheckpoint(deps, { runId: "cp-3", stepKey: STEP, by: "david", value: "too late", now: NOW + 3_000 });
+    await resolveCheckpoint(deps, { runId: "cp-3", stepKey: STEP, by: "david", value: "too late", now: Date.now() });
   } catch (e) { late = e; }
   c("a resolver arriving after the run recorded the expiry is refused at the journal, by name",
     late instanceof CheckpointNotOpen && late.why === "settled", (late as Error)?.message?.slice(0, 70));
 
   let closed: unknown;
   try {
-    await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: token! }, presenter: HOLDER, now: NOW + 3_000, answerId: "zzz" });
+    await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: token! }, presenter: HOLDER, now: Date.now(), answerId: "zzz" });
   } catch (e) { closed = e; }
   c("and the plane refuses the token itself: expiry fails the checkpoint CLOSED, answer or no answer",
     (closed as { code?: string })?.code === "failed-precondition", (closed as Error)?.message?.slice(0, 70));

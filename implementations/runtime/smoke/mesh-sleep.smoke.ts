@@ -28,13 +28,11 @@ import {
   timerWriterConsumerConfig,
   timerWriterDurable,
   armCheckpointTimer,
-  handleCheckpointFire,
   readCheckpointStatus,
   readCheckpointSettle,
   eptReqStreamName,
   eptStreamName,
   eptSubject,
-  type CheckpointRef,
 } from "@cotal-ai/core";
 import { MeshHandler, EpfSettleWatcher } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -48,6 +46,22 @@ const HOLDER = { id: "manager", lifecycleUid: "u_meshsleep" };
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops. A bare `await`
+ *  on a pause that never expires hangs the whole file, which scores as a timeout — graded on the
+ *  harness's patience rather than on the code, and indistinguishable from a broker that never came
+ *  up. So every wait that is asserting termination carries its own deadline. */
+const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
+  try {
+    const got = await Promise.race([p.then((v) => ({ v })), late]);
+    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
+    return got.v;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-meshsleep-"));
@@ -73,9 +87,12 @@ const kv = await openRecordsBucket(nc, SPACE);
 await jsm.consumers.add(eptReqStreamName(SPACE), timerWriterConsumerConfig(SPACE, { ackWaitMs: 5_000 }));
 const writerC = await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
 const wctx = await timerWriterContext(nc, SPACE);
+// Short, and deliberately so: a fetch window that straddles a deadline collects the RE-ARM the fire
+// handler emits under owner-behind clock skew, and the cell counting schedule requests would then be
+// counting the pump's correct behaviour as a second arming.
 const armPending = async (expect: number): Promise<number> => {
   let armed = 0;
-  for await (const m of await writerC.fetch({ max_messages: expect, expires: 2_000 })) {
+  for await (const m of await writerC.fetch({ max_messages: expect, expires: 1_000 })) {
     const r = await armCheckpointTimer(wctx, { subject: m.subject, headers: m.headers, data: m.data });
     if (r.armed) armed += 1;
     m.ack();
@@ -83,30 +100,32 @@ const armPending = async (expect: number): Promise<number> => {
   return armed;
 };
 
-/** Take the broker's FIRE for this token and expire the checkpoint it names. */
-const deliverFire = async (ref: CheckpointRef, now: number): Promise<number> => {
-  const subject = eptSubject(SPACE, EP, IID, EPOCH, ref.token, "fire");
+/** Whether the broker has published its own `.fire` for this token yet — an OBSERVATION of the
+ *  timer plane, never a delivery. Nothing in this suite hands the handler a fire: taking one is the
+ *  handler's own job, and a suite that did it on the handler's behalf would be grading itself. */
+const brokerFired = async (token: string): Promise<boolean> => {
+  const subject = eptSubject(SPACE, EP, IID, EPOCH, token, "fire");
   const fired = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: subject }).catch(() => null);
-  if (fired === null) return -1;
-  const v = await handleCheckpointFire(kv, js, jsm, SPACE, {
-    ref, instanceId: IID, epoch: EPOCH,
-    msg: { subject, headers: fired.header, data: fired.data },
-    now,
-  });
-  return v.acted ? 1 : 0;
+  return fired !== null && fired !== undefined;
 };
 
 // A REAL wall clock, because the schedules are real: the broker arms an actual timer at the deadline
-// this handler computes, and a fabricated future clock would arm one that fires next year. The
-// handler's clock is still pinned to one reading so the deadline is a value the cells can name.
+// this handler computes, and a fabricated future clock would arm one that fires next year. It is
+// read through a variable rather than called directly so a deadline is a value the cells can name —
+// and it is ADVANCED when real time passes, because expiry is a judgement about the owner's clock
+// and a clock frozen before its own deadline would judge every real fire premature.
 const NOW = Date.now();
-/** Sit until the broker's own timer is genuinely past due, then give it a moment to publish. */
-const waitPast = async (deadline: number) => { while (Date.now() < deadline + 400) await wait(100); };
+let CLOCK = NOW;
+/** Sit until the broker's own timer is genuinely past due, then let the owner's clock see it. */
+const waitPast = async (deadline: number) => {
+  while (Date.now() < deadline + 400) await wait(100);
+  CLOCK = Date.now();
+};
 const handler = new MeshHandler(
   kv, js, jsm,
   { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
-  () => NOW,
+  () => CLOCK,
 );
 
 // A step's identity, exactly as the interpreter would hand it over: recorded on the pending entry
@@ -116,7 +135,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
 
 // ── 1) a sleep pauses durably before it waits ────────────────────────────────────────────────
 {
-  const sleeping = handler.sleep({ duration: "2s" }, ctx(TOKEN));
+  const sleeping = handler.sleep({ duration: "4s" }, ctx(TOKEN));
   // Give the mint time to land, then look at what exists BEFORE anything fires. A durable pause
   // that is only in memory is the defect this whole plane exists to prevent.
   await wait(300);
@@ -124,20 +143,28 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   c("the sleep is a durable checkpoint before it is a wait: a `waiting` status exists",
     st?.value.state === "waiting", st?.value.state);
   c("with the deadline the duration asked for, in the owner's clock",
-    st?.value.deadline === NOW + 2_000, `${st?.value.deadline} vs ${NOW + 2_000}`);
+    st?.value.deadline === NOW + 4_000, `${st?.value.deadline} vs ${NOW + 4_000}`);
 
   const armed = await armPending(4);
   c("and the timer writer had exactly ONE schedule request to arm: the MINT asks, the handler never does",
     armed === 1, armed);
+  // A PROGRESS MARK, printed upstream of everything that touches the fire. Without one, a mutation
+  // that stops the run before this point is indistinguishable from a suite that noticed nothing.
+  console.log("• 1 — the pause is durable and exactly one schedule was armed");
 
-  // Now the fire — the broker's own, not one we wrote. This is the timer expiring, which for a
-  // sleep is the whole story: nobody will ever resolve this token.
-  await waitPast(NOW + 2_000);
-  const acted = await deliverFire({ endpoint: EP, token: TOKEN }, NOW + 2_500);
-  c("the fire expires the checkpoint", acted === 1, acted);
+  // Now the fire — the broker's own, and nobody hands it over. This is the timer expiring, which
+  // for a sleep is the whole story: nobody will ever resolve this token.
+  await waitPast(NOW + 4_000);
+  c("the broker published its own fire on the token's subject", await brokerFired(TOKEN));
 
-  await sleeping;
-  c("and the effect returns once the settle fact exists", true);
+  // THE CELL THIS SUITE WAS MISSING, and the one that used to pass by doing the handler's work for
+  // it. Every green timeout cell here called `handleCheckpointFire` by hand, so what was graded was
+  // that the checkpoint plane expires a pause when somebody delivers its fire — which was true, and
+  // was never the question. Nothing in the tree delivered one. Measured on a live broker: a two
+  // second sleep, one schedule armed, the fire published, and four seconds later the status still
+  // `waiting`, no settle fact, the effect still pending. A pause that is durable and permanent.
+  await withDeadline(sleeping, 20_000, "the sleep effect");
+  c("and the effect returns on its own: taking the fire is the handler's job, not a caller's", true);
   const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN });
   c("the settle fact is the expiry, not an answer: a sleep is a checkpoint nobody answers",
     settle?.settle === "expired", settle?.settle);
@@ -149,6 +176,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
 // If this minted a second checkpoint, a run that crashed while asleep would come back holding two
 // timers and would be settled by whichever fired first — under a deadline nobody chose.
 {
+  console.log("• 2 — the same step after a crash");
   const TOKEN2 = "cnRlc3RfYXR0YWNoX3Rva2VuXzAwMDI";
   const first = handler.sleep({ duration: "6s" }, ctx(TOKEN2));
   await wait(300);
@@ -168,10 +196,11 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
     `${before?.value.deadline} vs ${after?.value.deadline}`);
   c("with no second schedule request left unarmed behind it", (await armPending(4)) <= 1);
 
-  await waitPast(NOW + 6_000);
-  const acted = await deliverFire({ endpoint: EP, token: TOKEN2 }, NOW + 6_500);
-  c("one fire settles it", acted === 1, acted);
-  await Promise.all([first, second]);
+  // Read from the RECORD rather than recomputed here: the deadline is whatever the mint wrote, and
+  // a test that recomputed it would be asserting against its own arithmetic.
+  await waitPast(before!.value.deadline);
+  c("the broker published one fire, for the one timer that was armed", await brokerFired(TOKEN2));
+  await withDeadline(Promise.all([first, second]), 20_000, "both waiters");
   c("and BOTH waiters return: they were waiting on one fact, not two", true);
 }
 

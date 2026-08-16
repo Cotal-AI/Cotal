@@ -36,14 +36,12 @@ import {
   timerWriterConsumerConfig,
   timerWriterDurable,
   armCheckpointTimer,
-  handleCheckpointFire,
   readCheckpointStatus,
   chatStream,
   chatSubject,
   eptReqStreamName,
   eptStreamName,
   eptSubject,
-  type CheckpointRef,
   type CotalMessage,
 } from "@cotal-ai/core";
 import {
@@ -65,6 +63,21 @@ const CHANNEL = "build";
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops: a bare `await`
+ *  on a deadline nothing expires hangs the file, and `mutation-proof` grades a hang INCONCLUSIVE —
+ *  "a hang is not a red" — so a guard asserted by a bare await grades nothing. */
+const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
+  try {
+    const got = await Promise.race([p.then((v) => ({ v })), late]);
+    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
+    return got.v;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-meshwait-"));
@@ -98,16 +111,15 @@ const armPending = async (expect = 8): Promise<number> => {
   }
   return armed;
 };
-const deliverFire = async (ref: CheckpointRef, now: number): Promise<number> => {
-  const subject = eptSubject(SPACE, EP, IID, EPOCH, ref.token, "fire");
+/** Whether the broker has published its own `.fire` for this token — an OBSERVATION of the timer
+ *  plane, never a delivery. This suite used to call `handleCheckpointFire` here on the handler's
+ *  behalf, and that is what made every timeout cell green while nothing in the tree took a fire:
+ *  what was graded was that the checkpoint plane expires a pause when somebody delivers its fire,
+ *  which was true and was never the question. */
+const brokerFired = async (token: string): Promise<boolean> => {
+  const subject = eptSubject(SPACE, EP, IID, EPOCH, token, "fire");
   const fired = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: subject }).catch(() => null);
-  if (fired === null) return -1;
-  const v = await handleCheckpointFire(kv, js, jsm, SPACE, {
-    ref, instanceId: IID, epoch: EPOCH,
-    msg: { subject, headers: fired.header, data: fired.data },
-    now,
-  });
-  return v.acted ? 1 : 0;
+  return fired !== null && fired !== undefined;
 };
 
 // A REAL clock, because the schedules are real: the broker arms an actual timer at the deadline the
@@ -115,12 +127,13 @@ const deliverFire = async (ref: CheckpointRef, now: number): Promise<number> => 
 // thinks is in the future — which is exactly how an `idle` window that traffic is supposed to be
 // pushing out fires anyway.
 const now = () => Date.now();
-/** Fire a token's timer once the broker's own schedule is genuinely past due. */
-const fireWhenDue = async (token: string): Promise<number> => {
+/** Sit until this token's own schedule is genuinely past due, and answer whether the broker
+ *  published its fire. Nothing is delivered: taking the fire is the handler's job. */
+const pastDue = async (token: string): Promise<boolean> => {
   const st = await readCheckpointStatus(kv, { endpoint: EP, token });
-  if (st === undefined) return -2;
+  if (st === undefined) return false;
   while (Date.now() < st.value.deadline + 400) await wait(100);
-  return await deliverFire({ endpoint: EP, token }, Date.now());
+  return await brokerFired(token);
 };
 const handler = new MeshHandler(
   kv, js, jsm,
@@ -208,7 +221,7 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const awaited = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "3s" }, k);
   await wait(300);
   await armPending();
-  const got = (await Promise.race([awaited, fireWhenDue(id).then(() => awaited)])) as CotalMessage;
+  const got = (await Promise.race([awaited, pastDue(id).then(() => awaited)])) as CotalMessage;
   c("a message published while no waiter was running still answers the wait that comes back",
     (got?.parts?.[0] as { text?: string })?.text === "landed while the host was down", JSON.stringify(got?.parts));
 }
@@ -226,8 +239,8 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const awaited = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "2s" }, k);
   await wait(400);
   await armPending();
-  await fireWhenDue(id);
-  const got = await awaited;
+  await pastDue(id);
+  const got = await withDeadline(awaited, 25_000, "the wait with nothing to match");
   c("a message from before the wait began does not answer it: an await is about the future", got === null, JSON.stringify(got));
 }
 
@@ -242,8 +255,11 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   c("keyed by the step's own request id, so a resume re-derives it rather than remembering it",
     st?.value.deadline !== undefined);
   c("and the timer writer had a schedule request to arm for it", (await armPending()) === 1);
-  c("the fire expires it", (await fireWhenDue(id)) === 1);
-  c("and the wait resolves NULL rather than throwing, so `??` is `otherwise`", (await awaited) === null);
+  c("the broker publishes its own fire for it, and nobody hands that fire to the handler", await pastDue(id));
+  // Progress mark, printed upstream of everything that touches the fire.
+  console.log("• 5 — the wait's timeout is minted, armed, and past due");
+  c("and the wait resolves NULL rather than throwing, so `??` is `otherwise`",
+    (await withDeadline(awaited, 25_000, "the timed-out wait")) === null);
 }
 
 // ── 6) a resumed attempt returns the message it already matched, and awaits nothing new ───────
@@ -259,9 +275,9 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const second = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "3s" }, k2);
   await wait(200);
   await armPending();
-  // Terminating either way again: with the re-bind in place nothing is even minted (fireWhenDue
-  // answers -2 and does nothing), and without it the wait would otherwise sit here forever.
-  const again = (await Promise.race([second, fireWhenDue(tok("rebind")).then(() => second)])) as CotalMessage;
+  // Terminating either way again: with the re-bind in place nothing is even minted (`pastDue`
+  // finds no status and returns at once), and without it the wait would otherwise sit here forever.
+  const again = (await Promise.race([second, pastDue(tok("rebind")).then(() => second)])) as CotalMessage;
   c("a resumed attempt answers from the sequence it recorded, with no second event",
     again?.id === first?.id, `${again?.id} vs ${first?.id}`);
   c("and the re-bind mints no deadline at all: the wait it is completing already had one",
@@ -323,8 +339,9 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
     `${first?.value.deadline} -> ${live?.value.deadline}`);
 
   // Traffic stops. The window closes on its own, which is the event.
-  c("the idle window closes on its own once the traffic stops", (await fireWhenDue(id)) === 1);
-  const got = (await awaited) as { channel?: string };
+  c("the idle window closes on its own once the traffic stops", await pastDue(id));
+  console.log("• 7 — the idle window was pushed out by traffic and is now past due");
+  const got = (await withDeadline(awaited, 25_000, "the idle wait")) as { channel?: string };
   c("and when the traffic stops, the idle window closes and the wait resolves", got?.channel === CHANNEL, JSON.stringify(got));
 }
 
@@ -422,8 +439,8 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   const awaited = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "2s" }, k);
   await wait(400);
   await armPending();
-  await fireWhenDue(id);
-  const got = await awaited;
+  await pastDue(id);
+  const got = await withDeadline(awaited, 25_000, "the expiring wait");
   c("a wait that reaches its deadline ends as null", got === null, JSON.stringify(got));
   c("and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
     (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(id)).then(() => "still-there", () => "gone")) === "gone");

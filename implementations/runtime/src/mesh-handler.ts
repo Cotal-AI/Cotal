@@ -22,8 +22,11 @@ import {
   readCheckpointAnswer,
   readCheckpointStatus,
   reconcileCheckpointSchedule,
+  handleCheckpointFire,
   checkpointSettleSubject,
   epfStreamName,
+  eptStreamName,
+  eptSubject,
   chatStream,
   chatSubject,
   isConcreteChannel,
@@ -469,9 +472,60 @@ export class MeshHandler {
     });
   }
 
-  /** Has this deadline settled? `undefined` for "no deadline" and for "not yet". */
+  /**
+   * Take the broker's `.fire` for this deadline, if it has published one, and let the checkpoint
+   * plane judge it. Answers whether the fire SETTLED the pause.
+   *
+   * **This is the step the whole timer plane was missing a caller for.** The broker arms a real
+   * schedule and publishes a real fire, and the fire is the only thing that can expire a pause
+   * nobody answers - but a fire is a MESSAGE, not a settlement, and `handleCheckpointFire` is what
+   * turns one into the other. Nothing outside the suites was calling it. Measured on a live broker
+   * before this existed: a two-second `sleep`, the timer writer arming one schedule, the fire
+   * published on the token's own subject, and four seconds later the status still `waiting`, no
+   * settle fact, and the effect still pending. The pause was durable, correct, and permanent.
+   *
+   * READ BY SUBJECT, not by a subscription, because the fire is a RECORD of a deadline passing and
+   * this is asked repeatedly by callers that are already polling. `last_by_subj` gives the current
+   * one whether it arrived a moment ago or while this host was down, which is the case a resume
+   * lands in - a subscription that only saw new messages would miss the fire that is the reason the
+   * run has something to resume.
+   *
+   * IDEMPOTENT BY THE PLANE, not by bookkeeping here: a fire handed over twice finds the pause
+   * already settled and declines. The one repeated verdict with a side effect is `re-armed`, which
+   * re-emits the current generation's schedule under owner-behind clock skew; over-emission is
+   * idempotent at the timer writer and the skew window is seconds, so it costs a re-emit per poll
+   * for as long as this host's clock is behind the broker's, and remembering which fire had already
+   * been judged would be this file keeping state the plane already holds.
+   */
+  private async takeFire(ref: CheckpointRef): Promise<boolean> {
+    const subject = eptSubject(
+      this.binding.space, ref.endpoint,
+      this.binding.instanceId, this.binding.epoch, ref.token, "fire",
+    );
+    const fired = await this.jsm.streams
+      .getMessage(eptStreamName(this.binding.space), { last_by_subj: subject })
+      .catch(() => null);
+    if (fired === null || fired === undefined) return false;
+    const verdict = await handleCheckpointFire(this.kv, this.js, this.jsm, this.binding.space, {
+      ref,
+      instanceId: this.binding.instanceId,
+      epoch: this.binding.epoch,
+      msg: { subject, ...(fired.header !== undefined ? { headers: fired.header } : {}), data: fired.data },
+      now: this.now(),
+    });
+    return verdict.acted;
+  }
+
+  /** Has this deadline settled? `undefined` for "no deadline" and for "not yet".
+   *
+   *  A `wait` observes its deadlines by polling this, so the fire is taken on the same poll: the
+   *  settle fact a `wait` is reading for is one this process has to produce, and reading for it
+   *  without ever producing it is how a `wait` with a timeout waited past its timeout forever. */
   private async expired(ref: CheckpointRef | undefined): Promise<CheckpointSettleFact | undefined> {
     if (ref === undefined) return undefined;
+    const settled = await readCheckpointSettle(this.jsm, this.binding.space, ref);
+    if (settled !== undefined) return settled;
+    if (!(await this.takeFire(ref))) return undefined;
     return await readCheckpointSettle(this.jsm, this.binding.space, ref);
   }
 
@@ -514,7 +568,34 @@ export class MeshHandler {
    */
   private async settle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
     const already = await readCheckpointSettle(this.jsm, this.binding.space, ref);
-    return already ?? (await this.watcher.awaitSettle(ref));
+    if (already !== undefined) return already;
+    // The watcher waits for the FACT. For a pause with an answer the fact arrives because somebody
+    // answered; for a pause nobody answers - a `sleep`, or a `checkpoint` whose timeout wins - it
+    // arrives only because this process took the fire and the plane wrote it. So the two run
+    // together for the life of one wait, and the pump ends when the wait does.
+    const wait = { over: false };
+    const pump = this.pumpFires(ref, wait);
+    try {
+      return await Promise.race([
+        this.watcher.awaitSettle(ref),
+        // A pump that ENDED is not an answer - only a pump that FAILED is. A failure here means
+        // this process cannot expire the pause, which is the state that used to be indistinguishable
+        // from waiting, so it is raised rather than absorbed: the step stays pending and is retried.
+        pump.then<CheckpointSettleFact>(() => new Promise<never>(() => {})),
+      ]);
+    } finally {
+      wait.over = true;
+    }
+  }
+
+  /** Take this deadline's fire for as long as somebody is waiting on it. */
+  private async pumpFires(ref: CheckpointRef, wait: { over: boolean }): Promise<void> {
+    while (!wait.over) {
+      await this.takeFire(ref);
+      // Unrefed: the loop is ended by the flag, not by this timer, and a wait that is already over
+      // must not hold the process open for one more poll on its way out.
+      await new Promise((r) => setTimeout(r, FIRE_POLL_MS).unref());
+    }
   }
 }
 
@@ -545,6 +626,10 @@ export function waitConsumerConfig(space: string, requestId: string, channel: st
 /** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
  *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
 const WAIT_POLL_MS = 2_000;
+
+/** How often a pause that nobody will answer looks for the broker's fire. Same argument as
+ *  `WAIT_POLL_MS`: the deadline is durable and this is only how late its observation can be. */
+const FIRE_POLL_MS = 2_000;
 
 /** A second deadline for one step, derived so a resume re-derives it instead of remembering it.
  *  Same shape and alphabet as a request id, so it is a valid `<token>` by construction. */
