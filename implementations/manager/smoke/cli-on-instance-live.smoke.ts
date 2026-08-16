@@ -248,6 +248,14 @@ try {
     ghost.status !== 0, { status: ghost.status, tail: ghostOut.slice(-300) });
   check("...and fails as an unanswered pinned describe (the no-fallbacks shape, not some other error)",
     /no describe reply from manager within/i.test(ghostOut), ghostOut.slice(-300));
+  // WHAT THE HEADLINE SAYS. Two live managers answered `ps` seconds earlier; the operator typed an
+  // instance that is not there. The CLI wrapper used to prefix EVERY ep-rail failure with "no
+  // manager reachable", so a typo in `--on` read as an empty mesh and sent the operator to the
+  // broker (measured on a live three-manager mesh in review). A pinned call that went unanswered
+  // must name the instance and must not pronounce on the mesh.
+  check("...and the headline names the INSTANCE that did not answer, not an unreachable mesh",
+    new RegExp(`manager instance ${absent} did not answer`).test(ghostOut) && !/no manager reachable/i.test(ghostOut),
+    ghostOut.slice(-300));
 
   // ---- 5. THE OTHER FORWARDING SITES ----------------------------------------------------------
   // `ps` is not the only command with `--on`, and the other three do NOT reach the seam through it.
@@ -286,6 +294,8 @@ try {
     check(`${site.what} HONOURS --on — it deadlines on the pinned rail instead of asking the class queue`,
       pinnedDescribeDeadline.test(out),
       { status: r.status, tail: out.slice(-400) });
+    check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
+      !/no manager reachable/i.test(out), out.slice(-300));
   }
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);

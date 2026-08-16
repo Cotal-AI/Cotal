@@ -241,11 +241,28 @@ async function askManagerEp(
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    const msg = e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message;
-    return { ok: false, error: `no manager reachable on the ep rails (${msg})` };
+    return { ok: false, error: epRailFailure(e, instanceId) };
   } finally {
     await nc.drain().catch(() => nc.close());
   }
+}
+
+/** Render an ep-rail failure for the operator. The reachability verdict ("no manager reachable")
+ *  is stated only where the call went UNANSWERED (no responder, or the deadline elapsed) and nothing
+ *  was pinned. Every other refusal already states its own cause, and prepending the verdict made
+ *  the headline contradict the body: a describe REFUSED BY THE BROKER read as an unreachable manager,
+ *  which is precisely the misreading the refusal was reworded to stop. An unanswered PINNED call
+ *  names the instance instead: three managers may be answering while the one the operator typed
+ *  is not there, so "no manager reachable" sends them to the broker for a typo. Measured on a live
+ *  three-manager mesh during review. `up`'s resume readiness poll keys on the unpinned verdict
+ *  prefix (it waits only for an answer), so that prefix is kept verbatim for that case. */
+function epRailFailure(e: unknown, instanceId?: string): string {
+  if (!(e instanceof EpEnvelopeError)) return `no manager reachable on the ep rails (${(e as Error).message})`;
+  const unanswered = e.code === "unavailable" || e.code === "deadline-exceeded";
+  if (!unanswered) return `${e.code}: ${e.message}`;
+  return instanceId !== undefined
+    ? `manager instance ${instanceId} did not answer (${e.code}: ${e.message})`
+    : `no manager reachable on the ep rails (${e.code}: ${e.message})`;
 }
 
 /** Send one control command to the manager over the v0.4 service-endpoint rails and disconnect —
@@ -328,8 +345,7 @@ async function askManagerScatterEp(
     for (const instanceId of result.missing) instances.push({ instanceId, reachable: false });
     return { ok: true, instances };
   } catch (e) {
-    const msg = e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message;
-    return { ok: false, error: `no manager reachable on the ep rails (${msg})` };
+    return { ok: false, error: epRailFailure(e) };
   } finally {
     await nc.drain().catch(() => nc.close());
   }

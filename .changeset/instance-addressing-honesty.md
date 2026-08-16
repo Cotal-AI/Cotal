@@ -71,6 +71,13 @@ fail-open shape this replaced. That is the clearest statement of what the list i
 stand-in for something the wire does not yet carry — a safety annotation on the command contract and
 an effect outcome in the reply — which remains open.
 
+The CLI no longer prefixes every failed manager call with "no manager reachable on the ep rails".
+That verdict is stated only where the call went unanswered and nothing was pinned; a refusal that
+states its own cause (a describe refused by the broker, a split, a stale epoch) is printed as it is,
+because the prefix contradicted it, and an unanswered `--on <instance>` names the instance that did
+not answer instead of pronouncing on the mesh (measured: three managers answering, one typo in
+`--on`, "no manager reachable").
+
 `ps` prints the full instance id in its multi-manager view. That view appears only where the split
 makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
 26-32 character lifecycle token — so an abbreviated header named the remedy and withheld the value
