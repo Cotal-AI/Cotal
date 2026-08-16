@@ -365,6 +365,31 @@ r = runTool([
 check("a genuine survivor at EXACTLY the baseline still reports SURVIVED",
   r.status !== 0 && r.stdout.includes("SURVIVED") && !r.stdout.includes("INCONCLUSIVE"), r.stdout.slice(-500));
 
+// 7e-octies. THE SURVIVOR THAT IS ABOUT NOTHING. An empty baseline hit-set turns the survivor checks
+// off, because a suite that prints nothing on a pass makes the label's absence uninformative. It is
+// also exactly what a mutation running the WRONG SUITE looks like — the cell is not there to print.
+// The verdict stays SURVIVED (for a throw-only suite it is right) and must NAME the ambiguity.
+writeFileSync(
+  join(root, "silent.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    // Prints NOTHING on a pass; throws on a failure. Nothing here reads the mutated branch.
+    "if (admit(1) !== true) { console.log('  \u2717 FAIL: the guard admits a small value'); process.exit(1); }",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm silent", { cwd: root });
+r = runTool([
+  "--command", `${process.execPath} silent.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard admits a small value",
+]);
+check("a survivor whose cell never printed in the GREEN run is SURVIVED and says the absence is ambiguous",
+  r.status !== 0 && r.stdout.includes("SURVIVED") && r.stdout.includes("appears nowhere in the green run"),
+  r.stdout.slice(-500));
+
 // 7e-quinquies. RESTORING THE FILE IS NOT RESTORING THE TREE. When the command under test compiles
 // the mutated source, the run leaves a build artefact made FROM THE MUTANT; the sha check proves
 // only that the source is byte-identical again, and a `dist/` is gitignored, so the git recovery
