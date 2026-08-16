@@ -32,7 +32,7 @@ import {
   canonicalizerGrants, canonicalizerWorkGrants, activatorGrants, activatorContext, readPoolOccupancy,
   effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
-  commitPrincipalGrants, goalWriterGrants, contractPublisherGrants,
+  commitPrincipalGrants, goalWriterGrants, contractPublisherGrants, recordAtomicKey,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS,
@@ -45,7 +45,10 @@ import {
 import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
-const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
+// A PASSING CELL PRINTS: `mutation-proof` counts `✓` marks to tell "the mutation applied and no
+// cell caught it" apart from "the run died before reaching the cell". A suite silent on success
+// reports zero marks, so that protection is inert while the runner still prints a count.
+const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown) => { try { fn(); c(n, false, "no throw"); } catch { c(n, true); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -290,12 +293,49 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
     ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
   })());
+// ── A6: the three journal-action coordination kinds ────────────────────────────────────────────
+// Registration and grant are TWO claims and the amendment needed both. A registry entry pins a key
+// grammar and confers no authority; the grant builder decides the commit path's records keys BY
+// KIND and default-denies anything it does not name. Either half alone ships something that looks
+// present and does nothing, which is why each is asserted separately below.
+for (const [kind, quals] of [["goaleff", 6], ["epname", 2], ["epmig", 1]] as const) {
+  const def = RECORD_KINDS[kind as keyof typeof RECORD_KINDS];
+  c(`A6 \`${kind}\` is a REGISTERED core record kind`, def !== undefined && def.kind === kind, def);
+  c(`A6 \`${kind}\` is UNSPLIT (an atomic coordination row, no .spec/.status)`, def?.split === false, def?.split);
+  c(`A6 \`${kind}\` is written by the commit path`,
+    def?.writers.spec === "commit-path" && def?.writers.status === "commit-path", def?.writers);
+  c(`A6 \`${kind}\` pins ${quals} qualifier(s)`, def?.qualifiers.length === quals, def?.qualifiers.length);
+}
+// The GRAMMARS, built rather than described — a key grammar stated in a comment is not a key.
+c("A6 `goaleff` keys on the caller triple, the goalId AND the acceptance generation",
+  recordAtomicKey(RECORD_KINDS.goaleff, ["manager", "u_abc", "worker", "u".repeat(26), "g1", "77"])
+  === `goaleff.manager.u_abc.worker.${"u".repeat(26)}.g1.77`);
+// Keyed by the NAME, not by a caller: two callers racing for one name MUST contend on one key, and
+// a caller-scoped grammar would make that contention impossible by construction.
+c("A6 `epname` keys on the NAME, with no caller triple",
+  recordAtomicKey(RECORD_KINDS.epname, ["manager", "worker-7"]) === "epname.manager.worker-7");
+c("A6 `epmig` is ONE key per endpoint", recordAtomicKey(RECORD_KINDS.epmig, ["manager"]) === "epmig.manager");
+
+// RAISED, NOT SETTLED — and asserted so it cannot merge unnoticed. These three are ordinary
+// (non-authority) kinds, so `callerReadableRecordKind` admits them and the reader-config seam would
+// accept a durable over their subtrees. For `goaleff` that mirrors `goalidx`, whose key also
+// carries the caller triple. For `epname` and `epmig` it does NOT: their keys carry no caller, so
+// an admitted filter is endpoint-wide — every name claim, and the cutover manifest. Whether that is
+// correct is an authority decision inside an authority change, so it is pinned here at today's
+// answer rather than quietly chosen; if the ruling narrows it, this cell dies and says so.
+for (const kind of ["goaleff", "epname", "epmig"])
+  c(`A6 TODAY: \`${kind}\` is caller-readable (non-authority) — RAISED with fm-orchestrator, not settled here`,
+    callerReadableRecordKind(kind) === true);
+
 c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, the must-5 reconcile-index write, and the must-5 own-gate read — nothing else",
   (() => {
     const g = goalWriterGrants(SPACE, "manager", CONN);
     return JSON.stringify(g.publish) === JSON.stringify([
       "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
       "$KV.cotal_records_epbind.goalidx.manager.>",
+      "$KV.cotal_records_epbind.goaleff.manager.>",
+      "$KV.cotal_records_epbind.epname.manager.>",
+      "$KV.cotal_records_epbind.epmig.manager",
       "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
       "cotal.epbind.epf.manager.goal.*.*.*.*.result",
       "cotal.epbind.epf.manager.eff.>",
@@ -316,6 +356,15 @@ c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the go
       // authority — the boot sweep enumerates the index over the provisioner, never this connection)
       && g.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>")
       && g.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind")
+      // A6: registering a kind does NOT grant it. This builder decides the commit path's records
+      // keys BY KIND and default-denies anything it does not name, so a registry entry with no row
+      // here is an authority row that authorizes nothing — the shape the amendment exists to stop.
+      && g.publish.includes("$KV.cotal_records_epbind.goaleff.manager.>")
+      && g.publish.includes("$KV.cotal_records_epbind.epname.manager.>")
+      // `epmig` is ONE key per endpoint, so its row is the exact key and NOT a `.>` subtree: a
+      // wildcard here would grant an endpoint-wide namespace for a single-key kind.
+      && g.publish.includes("$KV.cotal_records_epbind.epmig.manager")
+      && !g.publish.includes("$KV.cotal_records_epbind.epmig.manager.>")
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER."));
   })());
 c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",

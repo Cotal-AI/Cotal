@@ -1020,6 +1020,17 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
   // index over the PROVISIONER, never this standing connection).
   const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
+  // A6 — the three journal-action coordination kinds. ENUMERATED, not inherited: a kind's registry
+  // entry pins its grammar and mediation class and confers NO grant, because this builder decides
+  // the commit path's records keys by kind and anything it does not name is default-denied. A
+  // registry entry without a row here is an authority row that authorizes nothing.
+  // Each is key-pinned to THIS endpoint's subtree, exactly as `goalidx` is: `goaleff` is the
+  // at-most-one-launch election, `epname` the durable name claim, `epmig` the cutover manifest.
+  const journalRows = [
+    `$KV.${recordsBucket(space)}.goaleff.${e}.>`,
+    `$KV.${recordsBucket(space)}.epname.${e}.>`,
+    `$KV.${recordsBucket(space)}.epmig.${e}`,
+  ];
   // must-5 (a) — the own-gate currency belt: the manager reads its OWN issuance gate
   // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
   // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
@@ -1028,7 +1039,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // metadata, never bearer bytes), here on a standing rather than one-shot connection. The manager
   // reads ONLY `epgate.<e>.<iid>`; (a) is the fast-fail belt, (b) barrier-revoke is the durable fence.
   const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
-  return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
+  return { publish: [bindLeaf, indexRow, ...journalRows, gateRead, ...base.publish], subscribe: base.subscribe };
 }
 
 /** The manager's SESSION-LEDGER rows (P2 item 6): the standing connection that owns the §13.6
