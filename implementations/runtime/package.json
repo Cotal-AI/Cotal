@@ -20,7 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/journal-store.smoke.ts",
+    "test": "tsx smoke/mesh-seam.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
