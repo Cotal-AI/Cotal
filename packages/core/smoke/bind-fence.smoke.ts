@@ -64,7 +64,7 @@ const throws = (name: string, fn: () => unknown, code?: string) => {
 /** Declared, not implied: a live suite can end early in ways that redden no cell — a broker that
  *  never came up, a hang the runner kills, a top-level rejection — and `fail === 0` reads as PASS
  *  in every one of them, with the exit code to match. */
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 20;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -167,12 +167,22 @@ try {
     runs[IID_A] === 1, runs[IID_A]);
   c("...the reply is still attributed to the instance that refused, off the SUBJECT",
     refused.responder.instanceId === IID_A && refused.responder.epoch === EPOCH, refused.responder);
+  // §13.3 END TO END, over a real serve and a real broker. `bind-refused` is THIS implementation's
+  // vocabulary; `outcome` is the spec's, and a conformant peer that has never heard of the marker
+  // reads only this field. Emitting one without the other is precisely what makes two
+  // implementations disagree about whether the command ran — so this grades the whole path: the
+  // responder set it before dispatching to the handler, it crossed the wire, and the reply parser
+  // preserved it rather than rebuilding the error without it.
+  c("...and `outcome: not-executed`, the field a peer that does not know the marker reads",
+    refused.reply.error?.outcome === "not-executed", refused.reply.error);
 
   console.log("\n2. the same instance at another epoch is a different incarnation");
   const stale = await call({ instanceId: IID_A, epoch: EPOCH + 7 });
   c("a bind to a later epoch of the SAME instance is expired, not failed-precondition",
     stale.reply.ok === false && stale.reply.error?.code === "expired" && replyRefusedBeforeEffect(stale.reply.error), stale.reply);
   c("...and it too ran nothing", runs[IID_A] === 1, runs[IID_A]);
+  c("...and it too states `not-executed`: both fence arms are refusals BEFORE the handler",
+    stale.reply.error?.outcome === "not-executed", stale.reply.error);
   const exact = await call({ instanceId: IID_A, epoch: EPOCH });
   c("a bind to the EXACT incarnation is served (the fence admits, it does not just refuse)",
     exact.reply.ok === true && runs[IID_A] === 2, { reply: exact.reply, runs: runs[IID_A] });
