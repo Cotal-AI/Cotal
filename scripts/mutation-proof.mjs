@@ -27,7 +27,7 @@ import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from "n
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -229,7 +229,9 @@ let opts = {
 };
 
 if (a.config) {
-  const cfg = JSON.parse(readFileSync(join(cwd, a.config), "utf8"));
+  // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
+  // the repo, and the tool dies on ENOENT with the two paths glued together.
+  const cfg = JSON.parse(readFileSync(resolve(cwd, a.config), "utf8"));
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
   opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
