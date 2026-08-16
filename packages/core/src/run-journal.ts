@@ -406,9 +406,18 @@ export async function replayRunJournal(
   try {
     return await readReplay(js, stream, durable, created, subject, runId);
   } finally {
-    // Best effort: a leaked per-takeover consumer is inert (nobody else will ever name it) and the
-    // stream's own limits reap it, but leaving one per attempt would be litter with no purpose.
-    try { await jsm.consumers.delete(stream, durable); } catch { /* already gone, or going */ }
+    // ONLY "already gone" is swallowed. The earlier catch-all rested on the stream's limits reaping
+    // the leftovers, and they do not: WFJ sets neither `max_consumers` nor `consumer_limits`, which
+    // the server normalizes to unlimited with an inactive threshold of zero, and a durable at zero
+    // gets no delete timer at all. So every delete that failed for any other reason left a consumer
+    // behind for good — one per takeover, forever. The consumer now carries its own threshold (see
+    // `runJournalConsumerConfig`) so the server reaps it regardless, and a delete that fails for a
+    // reason we did not name is raised rather than hidden.
+    try {
+      await jsm.consumers.delete(stream, durable);
+    } catch (e) {
+      if (!isConsumerNotFound(e)) throw e;
+    }
   }
 }
 
@@ -464,16 +473,30 @@ async function readReplay(
   return { records, lastSeq: records[records.length - 1]!.seq };
 }
 
+/**
+ * The bytes of a record, produced BEFORE any publish is attempted.
+ *
+ * Serialization is the caller's own failure and must not be inside the window where an outcome is
+ * classified. `isCasLoss` reads a `code` off whatever was thrown, so an entry whose `toJSON` threw
+ * an object carrying `code: 10071` used to read as "the stream refused this append" — a local bug
+ * reported as a supersession, which is the one answer a driver acts on by standing down for good.
+ * And an appender that treats "no PubAck" as terminal would retire a run over it, when in truth
+ * nothing was sent, nothing landed, and nothing moved.
+ */
+function encodeRecord(record: RunJournalRecord): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(record));
+}
+
 async function publishFenced(
   js: JetStreamClient,
   subject: string,
-  record: RunJournalRecord,
+  body: Uint8Array,
   expected: number,
 ): Promise<{ ok: true; seq: number } | { ok: false; cause: unknown }> {
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", String(expected));
   try {
-    const pa = await js.publish(subject, new TextEncoder().encode(JSON.stringify(record)), { headers: h });
+    const pa = await js.publish(subject, body, { headers: h });
     return { ok: true, seq: pa.seq };
   } catch (e) {
     if (isCasLoss(e)) return { ok: false, cause: e };
@@ -571,13 +594,21 @@ export class RunJournalAppender {
     // again, which is the one thing the barrier forbids.
     if (this.dead !== undefined) throw this.dead;
     const record: RunJournalStep = { v: 1, kind: "step", run: this.run, n: this.nextN, at, entry };
-    // EVERY outcome without a PubAck is terminal, not just a refusal. A publish that throws leaves
-    // the head unknown, and the next queued append would reuse the stale expectation: measured, an
-    // entry that failed to serialize was followed by the NEXT entry landing at the same head, so the
-    // journal read back {n:0},{n:2} with a live appender and a hole where {n:1} should be.
+    // Bytes first, and deliberately outside the try below. Nothing has been sent, so a record that
+    // cannot be serialized leaves the head and the ordinal exactly where they were: the next append
+    // takes the same `n` at the same expectation, and this appender is still the run's.
+    const body = encodeRecord(record);
+    // Every outcome without a PubAck is terminal ONCE THE BYTES HAVE GONE OUT, not just a refusal:
+    // a publish that throws in flight leaves the head unknown, and the next queued append would
+    // reuse the stale expectation — measured, an entry that failed on the wire was followed by the
+    // next entry landing at the same head, so the journal read back a hole with a live appender.
+    // The bytes above are the boundary. A record that could not be serialized never reached the
+    // wire: the head is where it was, `n` is where it was, and this run is still ours. Poisoning
+    // there would end a run over a local bug — and, because `isCasLoss` reads a `code` off whatever
+    // was thrown, a thrown object carrying one would have retired it as a supersession.
     let r: { ok: true; seq: number } | { ok: false; cause: unknown };
     try {
-      r = await publishFenced(this.js, this.subject, record, this.seq);
+      r = await publishFenced(this.js, this.subject, body, this.seq);
     } catch (e) {
       this.dead = new RunJournalStalled(this.run, this.subject, this.seq, e);
       throw this.dead;
@@ -786,7 +817,7 @@ export async function activateRun(
     // known, which needs no handle on it. Production passes no hook, so this clone costs nothing
     // there; where it is passed, it is the caller's copy and mutating it changes nothing.
     if (opts.onReplayed !== undefined) await opts.onReplayed(structuredClone(replay));
-    const r = await publishFenced(js, subject, activation, lastSeq);
+    const r = await publishFenced(js, subject, encodeRecord(activation), lastSeq);
     // The activation's PubAck is the line: before it this driver has performed nothing and holds
     // nothing, after it the run's subject is its own until someone else activates.
     if (r.ok) return RunJournalAppender.of(js, t.runId, subject, prefix, r.seq);

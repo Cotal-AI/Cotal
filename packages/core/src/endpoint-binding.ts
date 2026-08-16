@@ -880,11 +880,12 @@ export function runJournalConsumerConfig(
    * other's live fetch — measured, two concurrent takeovers on a six-record run left one with 1 of 6
    * and a terminal incomplete-replay error, and eight produced raw `consumer deleted` and
    * `ConsumerNotFoundError` from the API. A consumer nobody else names cannot be inherited, nor
-   * deleted out from under its owner. The grant pins the run and the filter, not this token, so it
-   * may be freely chosen per attempt.
+   * deleted out from under its owner. The grant pins this token EXACTLY — a consumer name is one
+   * subject token and no pattern covers part of one — so it is chosen when the rows are minted, with
+   * the lease, and not afterwards by the driver.
    */
   takeoverId: string,
-  opts: { ackWaitMs?: number; maxAckPending?: number } = {},
+  opts: { ackWaitMs?: number; maxAckPending?: number; inactiveThresholdMs?: number } = {},
 ): Partial<ConsumerConfig> {
   return family(wfjStreamName(space), {
     durable_name: `wfj_${assertIdToken(runId, "runId")}_${assertIdToken(takeoverId, "takeoverId")}`,
@@ -893,6 +894,12 @@ export function runJournalConsumerConfig(
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
     max_ack_pending: opts.maxAckPending ?? 1000,
+    // A REAPER, because nothing else is one. This consumer is created, read and deleted inside a
+    // single replay, so it should never outlive one — but a delete can fail, and the stream cannot
+    // clean up after it: WFJ sets neither `max_consumers` nor `consumer_limits`, which normalize to
+    // unlimited and to an inactive threshold of zero, and a durable at zero is given no delete timer
+    // at all. Without this, one takeover whose delete failed leaks a durable permanently.
+    inactive_threshold: nanos(opts.inactiveThresholdMs ?? 300_000),
   });
 }
 

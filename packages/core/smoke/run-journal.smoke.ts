@@ -317,30 +317,45 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     afterClose instanceof RunSuperseded, `${(afterClose as Error)?.name}: ${String((afterClose as Error)?.message).slice(0, 60)}`);
 }
 
-// ── 5c) an append that ends without a PubAck is terminal too, refusal or not ──────────────────
+// ── 5c) an append that ends without a PubAck is terminal too — once it has reached the wire ───
 //
 // The first barrier poisoned the pump only on a CAS refusal, and everything else — a timeout, a
 // dropped connection, an entry that will not serialize — was rethrown with the head untouched and
 // the appender still live. Measured, that is not a lost write but a HOLE: the failed entry's
 // successor was published at the same expectation, landed, and the journal read back {n:0},{n:2}
-// with no indication anything was missing. A replay resumes from a prefix that never happened.
+// with no indication anything was missing.
+//
+// The rule that fixed it was "no PubAck is terminal", and it was too total by one case. A record
+// that cannot be SERIALIZED never reached the wire: the head is not unknown, it is exactly where it
+// was, and nothing landed. Retiring the run for it would end a run over a bad payload — and it would
+// also read as a supersession, because `isCasLoss` inspects a `code` and a thrown object can carry
+// one. So the boundary is the wire: bytes are made first, and only what happens after them poisons.
 {
   const a = await activateRun(js, jsm, startRun("r-5c", "d1", 1));
   await a.append({ n: 0 }, 0);
   // Two appends issued together: the first cannot be serialized (a bigint), the second is ordinary.
   const results = await Promise.allSettled([a.append({ n: 1, bad: 1n }, 1), a.append({ n: 2 }, 2)]);
-  c("an append that never reached the broker fails as a lost head, not as a raw TypeError",
-    results[0]!.status === "rejected" && (results[0] as PromiseRejectedResult).reason instanceof RunJournalStalled,
+  c("an entry that cannot be serialized fails as itself: this process's bug, reported as one",
+    results[0]!.status === "rejected"
+    && !((results[0] as PromiseRejectedResult).reason instanceof RunJournalStalled)
+    && (results[0] as PromiseRejectedResult).reason instanceof TypeError,
     String((results[0] as PromiseRejectedResult)?.reason).slice(0, 80));
-  c("and it carries the underlying cause rather than hiding it",
-    ((results[0] as PromiseRejectedResult)?.reason as RunJournalStalled)?.cause instanceof TypeError);
-  c("the NEXT queued append does not reuse the stale expectation", results[1]!.status === "rejected",
-    results[1]!.status === "fulfilled" ? `landed at seq ${(results[1] as PromiseFulfilledResult<number>).value}` : "rejected");
-  c("the appender is finished, though nobody superseded it", a.isFinished && !a.isSuperseded);
+  c("and it is NOT read as the stream refusing the append: a local throw can carry a CAS code",
+    !((results[0] as PromiseRejectedResult).reason instanceof RunSuperseded));
+  c("the appender is untouched, because nothing was sent and nothing moved", !a.isFinished);
+  c("so the next append lands, at the expectation the failed one never spent",
+    results[1]!.status === "fulfilled",
+    results[1]!.status === "rejected" ? String((results[1] as PromiseRejectedResult).reason).slice(0, 60) : "ok");
   const back = await replayRunJournal(js, jsm, SPACE, "r-5c", tid());
-  const steps = back.records.filter((r) => r.record.kind === "step").map((r) => (r.record as { entry: unknown }).entry);
-  c("and the journal has no hole: the entry after the failure is absent, not written over its gap",
-    steps.length === 1 && (steps[0] as { n: number }).n === 0, JSON.stringify(steps));
+  const steps = back.records.filter((r) => r.record.kind === "step");
+  // The property the earlier rule was protecting, and the one that actually matters: the ORDINAL
+  // chain is unbroken. The entry that could not be written is simply not there — which is what an
+  // unwritten entry is — and its successor did not land over its gap.
+  c("and the journal has no hole: the ordinals are contiguous across the failure",
+    steps.every((r, i) => r.record.n === i + 1), steps.map((r) => r.record.n));
+  c("with the unserializable entry absent rather than half-written",
+    steps.map((r) => (r.record as { entry: { n: number } }).entry.n).join(",") === "0,2",
+    steps.map((r) => (r.record as { entry: unknown }).entry));
 }
 
 // ── 5d) the same, when the connection is what went away ───────────────────────────────────────
@@ -757,6 +772,81 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   const landed = (await replayRunJournalRaw("r-5p2")).at(-1) as RunJournalActivation;
   c("a takeover reassigned while its replay is in flight still lands as the tuple that was read",
     landed.run === "r-5p2" && landed.holder === "d2", landed);
+}
+
+// ── 5q) a record missing from the TAIL, which the chain cannot see either ────────────────────
+//
+// The chain catches an interior hole because the ordinals stop being contiguous. Delete the NEWEST
+// record and they stay contiguous — the run simply replays as a shorter, intact one. And the head
+// the fence compares against comes back rolled to the surviving message, because a delete marks the
+// subject's last as needing recalculation and the per-subject state is recomputed from what
+// survives. So the CAS accepts an append at a head the run already moved past.
+//
+// This cell RECORDS the hazard rather than claiming a fix: no anchor inside the journal can detect
+// its own truncated tail, because every record it could check against is the part that is gone. The
+// answer is an anchor OUTSIDE the journal — the run record's high-water ordinal — and that is filed
+// as its own slice item, not smuggled in here.
+{
+  const a = await activateRun(js, jsm, startRun("r-5q", "d1", 1));
+  for (let n = 0; n < 3; n += 1) await a.append({ n }, n);
+  const before = await replayRunJournal(js, jsm, SPACE, "r-5q", tid());
+  c("the run replays whole while every record is there", before.records.length === 4, before.records.length);
+
+  await jsm.streams.deleteMessage(STREAM, before.records[before.records.length - 1]!.seq);
+  const after = await replayRunJournal(js, jsm, SPACE, "r-5q", tid());
+  c("with its newest record deleted the run replays SHORT — and intact, which is the problem",
+    after.records.length === 3 && after.records.every((r, i) => r.record.n === i),
+    after.records.map((r) => r.record.n));
+  c("and the head the fence compares against rolled back with it",
+    after.lastSeq < before.lastSeq, `${after.lastSeq} vs ${before.lastSeq}`);
+
+  // The consequence, stated as an outcome rather than as an argument: a successor activates over a
+  // run whose last recorded step is gone, and the effect that step recorded will be performed again.
+  const successor = await activateRun(js, jsm, takeover("r-5q", "d2", 2));
+  c("a successor activates on the rolled-back head: nothing in the journal can refuse this",
+    successor.lastSeq > 0, successor.lastSeq);
+  c("and it resumes from a prefix that is missing the work the run really did",
+    successor.steps().length === 2, successor.steps().length);
+}
+
+// ── 5r) a local failure is not the stream saying no ──────────────────────────────────────────
+//
+// `isCasLoss` reads a `code` off whatever was thrown. Serialization used to happen INSIDE that
+// catch, so an entry whose `toJSON` threw an object carrying `code: 10071` was classified as a
+// refused append — and a refused append is the one answer a driver acts on by standing down, for
+// good. A bug in this process would have retired the run.
+{
+  const a = await activateRun(js, jsm, startRun("r-5r", "d1", 1));
+  const poison = { get entry() { throw Object.assign(new Error("toJSON blew up"), { code: 10071 }); } };
+  let local: unknown;
+  try { await a.append(poison as never, 1); } catch (e) { local = e; }
+  c("an entry that cannot be serialized fails as ITSELF, not as a supersession",
+    local instanceof Error && !(local instanceof RunSuperseded) && /toJSON blew up/.test((local as Error).message),
+    `${(local as Error)?.name}: ${(local as Error)?.message}`);
+  // And the run is still this driver's: nothing was refused, so nothing was lost.
+  c("and the appender is NOT retired by it: a local bug does not end a run",
+    !a.isFinished, a.isFinished);
+  c("it can still append", (await a.append({ ok: true }, 2)) > 0);
+}
+
+// ── 5s) the replay consumer cleans up, and says so when it cannot ────────────────────────────
+//
+// The delete used to swallow every error, resting on the stream's limits to reap what was left.
+// They do not: WFJ sets neither `max_consumers` nor `consumer_limits`, which normalize to unlimited
+// and to an inactive threshold of zero, and a durable at zero is given no delete timer. One failed
+// delete per takeover would have been permanent. Two halves: the consumer carries its own reaper,
+// and a delete that fails for a reason we did not name is raised rather than hidden.
+{
+  const cfg = runJournalConsumerConfig(SPACE, "r-5s", "tk1");
+  c("the replay consumer carries an inactivity threshold, so the server reaps it even if we cannot",
+    typeof cfg.inactive_threshold === "number" && cfg.inactive_threshold > 0, cfg.inactive_threshold);
+
+  const a = await activateRun(js, jsm, startRun("r-5s", "d1", 1));
+  await a.append({ n: 0 }, 1);
+  const before = (await jsm.consumers.list(STREAM).next()).length;
+  await replayRunJournal(js, jsm, SPACE, "r-5s", tid());
+  const after = (await jsm.consumers.list(STREAM).next()).length;
+  c("an ordinary replay leaves no consumer behind at all", after === before, `${before} -> ${after}`);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
