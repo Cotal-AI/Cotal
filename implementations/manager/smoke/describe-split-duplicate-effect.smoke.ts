@@ -121,6 +121,10 @@ try {
     card: { name: "epsplit-caller", owner: DEV_OWNER, actor: id.id, kind: "endpoint" },
   });
   ep.on("error", () => {});
+  // The fence's repair path emits this when it re-resolves and re-issues a bind-refused call. On a
+  // tip that predates the fence the event simply never fires, which keeps one instrument on both.
+  let recoveriesThisTrial = 0, recoveriesTotal = 0;
+  ep.on("split-recovered", () => { recoveriesThisTrial++; recoveriesTotal++; });
   await ep.start();
 
   const N = 24;
@@ -129,6 +133,7 @@ try {
     inRoot1: boolean; inRoot2: boolean; both: boolean;
     callerSaw: "ok" | "app-error" | "throw";
     detail: string;
+    repairs: number;
   };
   const trials: Trial[] = [];
   let bindRefused = 0;
@@ -138,6 +143,7 @@ try {
     const name = `epsplit-${i}`;
     let callerSaw: Trial["callerSaw"] = "ok";
     let detail = "";
+    recoveriesThisTrial = 0;
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
         { name, persona: `probe persona ${i}` }, { deadlineMs: 15_000 });
@@ -155,7 +161,7 @@ try {
     }
     const inRoot1 = existsSync(agentFilePath(root1, name));
     const inRoot2 = existsSync(agentFilePath(root2, name));
-    trials.push({ i, name, inRoot1, inRoot2, both: inRoot1 && inRoot2, callerSaw, detail });
+    trials.push({ i, name, inRoot1, inRoot2, both: inRoot1 && inRoot2, callerSaw, detail, repairs: recoveriesThisTrial });
   }
 
   const answered = trials.filter((t) => t.inRoot1 || t.inRoot2);
@@ -178,6 +184,14 @@ try {
   console.log(`                (D = duplicate across both instances, a/b = single effect, - = none)`);
 
   console.log(`     refusals carrying ${EP_BIND_REFUSED}: ${bindRefused}`);
+  const repaired = trials.filter((t) => t.repairs > 0);
+  const repairedOk = repaired.filter((t) => t.callerSaw === "ok");
+  console.log(`\n3. the repair path, measured on a LIVE contended queue (not a constructed re-seed)`);
+  console.log(`     trials where a re-issue was attempted:  ${repaired.length}`);
+  console.log(`     ...that HEALED into a success:          ${repairedOk.length}`);
+  console.log(`     ...that split AGAIN and surfaced:       ${repaired.length - repairedOk.length}`);
+  console.log(`     self-heal rate: ${repaired.length === 0 ? "n/a (no repair attempted)" : `${((repairedOk.length / repaired.length) * 100).toFixed(0)}%`}`);
+  console.log(`     total recoveries emitted: ${recoveriesTotal}`);
 
   console.log(`\n=== FINDING ===`);
   if (dupes.length > 0) {
