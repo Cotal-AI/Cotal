@@ -41,6 +41,9 @@ import {
   run as runProgram,
   SimHandler,
   type JournalEntry,
+  type EffectContext,
+  type EffectHandler,
+  stepKeyString,
   type JournalStore,
 } from "@cotal-ai/lang";
 import { planFork, commitFork, ForkNotAdmissible, CutJournal, CutReached, RunJournalStore } from "../src/index.js";
@@ -164,8 +167,16 @@ const plan = async (
     p.admissible === true, p.refusals);
   c("its cut is NOT the resume walk's answer", p.cut.length !== wrongCut.length,
     { plan: keys(p.cut), resume: wrongCut });
-  c("it holds the scope entry and the sibling branch that ran before the cut",
-    keys(p.cut).join() === "/parallel:pair#0,/parallel:pair#0/b:a/sleep:a#0", keys(p.cut));
+  // THIS CELL USED TO BLESS THE DEFECT. It asserted the enclosing `/parallel:pair#0` entry belonged
+  // in the cut, which is what made claim 1 false: the child replays in RESUME mode, where a settled
+  // scope is taken wholesale, so it never re-entered and its first live step landed after the whole
+  // combinator — never re-running the step it was forked for, and inheriting a recorded result that
+  // already answered the branch the caller wanted re-decided. A cell can be green, specific, and
+  // wrong, and this one was all three for as long as it existed.
+  c("it holds the sibling branch that ran before the cut, and NOT the scope enclosing it",
+    keys(p.cut).join() === "/parallel:pair#0/b:a/sleep:a#0", keys(p.cut));
+  c("the enclosing scope is projected out, so the child re-enters instead of short-circuiting past it",
+    !keys(p.cut).includes("/parallel:pair#0"), keys(p.cut));
   c("and neither the cut step nor the step after the scope",
     !keys(p.cut).includes(CUT) && !keys(p.cut).includes("/sleep:after#0"), keys(p.cut));
 }
@@ -244,10 +255,38 @@ const plan = async (
       parent: "r-scoped", entries: sEntries, source: SCOPED,
       fromStepKey: "/parallel:pair#0/b:b/sleep:b#0",
     });
-    c("KNOWN DEFECT (claim 1): a cut inside a branch is admitted with no refusal at all",
+    c("a cut inside a branch of a `parallel` is admissible — re-entering it is sound",
       sp.admissible === true && sp.refusals.length === 0, sp.refusals);
-    c("KNOWN DEFECT (claim 1): its prefix carries the SETTLED enclosing scope fact",
-      keys(sp.cut).includes("/parallel:pair#0"), keys(sp.cut));
+    c("REPAIRED (claim 1): the settled enclosing scope is NOT in the prefix",
+      !keys(sp.cut).includes("/parallel:pair#0"), keys(sp.cut));
+    c("but the sibling branch that ran before the cut still is, so the child replays it rather than redoing it",
+      keys(sp.cut).includes("/parallel:pair#0/b:a/sleep:a#0"), keys(sp.cut));
+
+    // THE ONLY CELL THAT MEASURES THE FORK RATHER THAN THE PLANNER.
+    //
+    // Every other cell in this file asserts the SHAPE OF THE PLAN — which keys came back — and a
+    // plan agreeing with itself is what let claim 1 stand through 200 determinism trials and three
+    // journal shapes. What falsified it was seeding a child with exactly the entries `commitFork`
+    // writes and printing the first step the child actually asks to PERFORM. So that is what this
+    // does. It runs the child in the ordinary resume mode a driver would use, not in the migration
+    // mode the planner uses, because the defect lived precisely in the gap between those two.
+    const seeded = new Journal({
+      run: "s-child",
+      entries: sp.cut.map((e) => ({ ...e, run: "s-child" })),
+    });
+    let firstLive: string | null = null;
+    const spy: EffectHandler = {
+      ...new SimHandler({}),
+      now: () => NOW,
+      sleep: async (rq: unknown, ctx: EffectContext) => {
+        firstLive ??= stepKeyString(ctx.key);
+        return await new SimHandler({}).sleep(rq as never, ctx);
+      },
+    } as unknown as EffectHandler;
+    await runProgram(SCOPED, { runId: "s-child", handler: spy, journal: seeded, pins: PINS });
+
+    c("the CHILD's first live step is the step it was forked to re-run, not the one after the scope",
+      firstLive === "/parallel:pair#0/b:b/sleep:b#0", { firstLive, expected: "/parallel:pair#0/b:b/sleep:b#0" });
     let sConsumed: number | string;
     try {
       sConsumed = new Journal({

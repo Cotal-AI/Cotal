@@ -52,6 +52,9 @@ import {
   type StepKey,
 } from "@cotal-ai/lang";
 
+/** The journal kinds that open a scope, i.e. whose entry can ENCLOSE a cut point. */
+const SCOPE_KINDS = new Set<string>(["parallel", "race", "fanOut", "conclave"]);
+
 /** One reason a fork was refused, carrying the code a reader repairs against (§11). */
 export interface ForkRefusal {
   readonly code: string;
@@ -236,7 +239,45 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   }
 
   const orphaned = new Set(journal.orphans().map((e) => journalEntryKeyString(e)));
-  const cut = reached ? req.entries.filter((e) => !orphaned.has(journalEntryKeyString(e))) : [];
+
+  // THE FRONTIER PROJECTION. A scope that ENCLOSES the cut point must not be copied as settled.
+  //
+  // The dry walk runs in migration mode, which descends into a recorded scope rather than
+  // short-circuiting it, so the cut point inside a branch is reached and everything before it is
+  // consumed — including the scope's own entry. The CHILD, though, replays in RESUME mode, where a
+  // settled scope entry is taken wholesale: it reads the recorded result, never re-enters, and its
+  // first live step lands after the whole combinator. The child then never re-runs the step it was
+  // forked for, and the recorded result it inherits already contains the answer for the branch the
+  // caller wanted re-decided. Admissible, no refusal, wrong child — the worst shape available.
+  //
+  // Dropping the enclosing entry makes the child re-enter the combinator: sibling branches replay
+  // from their own entries, which are still in the cut, and the branch holding the cut point runs
+  // live from it. That is what a fork means here.
+  const enclosing = req.entries.filter((e) => {
+    const k = journalEntryKeyString(e);
+    return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);
+  });
+
+  // Re-entering is only sound for a scope whose branches all RUN. A `race` decided a winner, and a
+  // child that re-enters would race again — re-deciding, on a fresh handler, something the parent
+  // recorded. That is not a fork of the run, it is a different run. Refused rather than re-raced,
+  // and refused rather than copied-as-settled, because both of those are silent.
+  for (const e of enclosing) {
+    if (e.kind === "parallel" || e.kind === "fanOut") continue;
+    refusals.push({
+      code: "L5020",
+      step: journalEntryKeyString(e),
+      why: `the cut is inside a \`${e.kind}\`, whose outcome this run already decided. Re-entering it would decide it again on a fresh handler, and copying it settled would make the child skip the step it was forked to re-run. Fork at a step outside the ${e.kind}, or at the ${e.kind} itself.`,
+    });
+  }
+
+  const projected = new Set(enclosing.map((e) => journalEntryKeyString(e)));
+  const cut = reached
+    ? req.entries.filter((e) => {
+        const k = journalEntryKeyString(e);
+        return !orphaned.has(k) && !projected.has(k);
+      })
+    : [];
 
   // §8.5 step 3, at plan time rather than at commit time. `onFork: "respawn"` mints a fresh agent at
   // the frontier and `"adopt"` shares the parent's; both name a durable agent handle, and `spawn`

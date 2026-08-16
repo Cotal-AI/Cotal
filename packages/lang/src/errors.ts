@@ -119,6 +119,7 @@ export const CATALOG = {
   // face.
   L5017: "Fork cut step is not in the journal",
   L5018: "Fork cut was never reached",
+  L5020: "A fork cut lies inside a scope whose outcome was already decided",
   L5019: "Fork cannot honour `onFork` on this host",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
