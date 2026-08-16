@@ -622,15 +622,23 @@ const plan = async (
   const atLoser = await atKey(RACED, LOSER);
   c("a cut at the loser's step is refused, and L5020 is the right half of that",
     atLoser.admissible === false && atLoser.refusals.some((r) => r.code === "L5020"), atLoser.refusals);
-  c("WRONG TODAY: L5018 rides along, about a step the parent recorded and settled",
-    atLoser.refusals.some((r) => r.code === "L5018"), atLoser.refusals);
+  c("REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+    !atLoser.refusals.some((r) => r.code === "L5018"), atLoser.refusals);
+  c("and the refusal set is exactly the one true code, so it reads as one repair",
+    atLoser.refusals.length === 1, atLoser.refusals);
 
-  // WRONG TODAY, and the cheapest of the four. A refused plan still hands back a plausible-looking
-  // cut, so a caller that reads `cut` without reading `admissible` gets something usable. The
-  // unreached path already returns nothing; the refused-but-reached path does not.
+  // REPAIRED, and it was the cheapest of the four. A refused plan used to hand back a
+  // plausible-looking cut, so a caller reading `cut` without reading `admissible` got something
+  // usable-shaped out of a fork that will not happen. The unreached path already returned nothing;
+  // the refused-but-reached path now does too.
   const atWinner = await atKey(RACED, WINNER);
-  c("WRONG TODAY: an INADMISSIBLE plan still carries a non-empty cut",
-    atWinner.admissible === false && atWinner.cut.length > 0, { cut: keys(atWinner.cut) });
+  c("REPAIRED: an INADMISSIBLE plan carries no cut",
+    atWinner.admissible === false && atWinner.cut.length === 0, { cut: keys(atWinner.cut) });
+  // The narrowness of that, in the same block: emptiness must come from the REFUSAL, not from the
+  // plan having stopped producing cuts. `control` is admissible over the same journal and carries
+  // the full prefix.
+  c("and an admissible plan over the same journal still carries its prefix",
+    control.admissible === true && control.cut.length === 3, keys(control.cut));
 }
 
 console.log(`fork-run.smoke: ${ok} passed, ${fail} failed`);

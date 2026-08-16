@@ -223,21 +223,6 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     }
   }
 
-  // L5018 says one specific thing: the program's own path does not arrive at this step. When the
-  // walk stopped for a reason of its OWN — it diverged (L5001), or it could not enter a scope
-  // (L5014) — the path may well arrive there and that sentence is FALSE. Emitting it beside the true
-  // refusal is worse than emitting nothing: both codes are actionable and they prescribe opposite
-  // repairs, so the caller re-keys a step that was correct all along instead of forking before the
-  // conclave. A refusal set is only a repair instruction if every code in it is true.
-  const stoppedForAnotherReason = refusals.some((r) => r.code === "L5001" || r.code === "L5014");
-  if (!reached && recorded && !stoppedForAnotherReason) {
-    refusals.push({
-      code: "L5018",
-      step: req.fromStepKey,
-      why: "the step is recorded, but this replay never reached it — the program's own path does not arrive there. A cut that was never reached is the whole journal, and copying the whole journal is not a fork.",
-    });
-  }
-
   const orphaned = new Set(journal.orphans().map((e) => journalEntryKeyString(e)));
 
   // THE FRONTIER PROJECTION. A scope that ENCLOSES the cut point must not be copied as settled.
@@ -271,13 +256,44 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     });
   }
 
+  // L5018 says one specific thing: the program's own path does not arrive at this step. When the
+  // walk stopped for a reason of its OWN — it diverged (L5001), it could not enter a scope (L5014),
+  // or the step sits inside a scope whose losing arms the walk does not enter at all (L5020) — the
+  // path may well arrive there and that sentence is FALSE. Emitting it beside the true refusal is
+  // worse than emitting nothing: both codes are actionable and they prescribe opposite repairs, so
+  // the caller re-keys a step that was correct all along instead of forking before the conclave. A
+  // refusal set is only a repair instruction if every code in it is true.
+  //
+  // L5020 is in that set for a reason worth stating: a `race` LOSER's step is recorded, settled, and
+  // genuinely performed by the parent — every arm of a race runs — yet the migration walk enters
+  // only the recorded winner, so `reached` is false for a key the program does reach. L5018 there
+  // told the caller their program does not go somewhere it does go.
+  //
+  // This runs after the projection because the gate has to be able to SEE L5020; a `some()` over a
+  // refusal set that has not been filled yet is a check that cannot fail.
+  const stoppedForAnotherReason = refusals.some(
+    (r) => r.code === "L5001" || r.code === "L5014" || r.code === "L5020",
+  );
+  if (!reached && recorded && !stoppedForAnotherReason) {
+    refusals.push({
+      code: "L5018",
+      step: req.fromStepKey,
+      why: "the step is recorded, but this replay never reached it — the program's own path does not arrive there. A cut that was never reached is the whole journal, and copying the whole journal is not a fork.",
+    });
+  }
+
   const projected = new Set(enclosing.map((e) => journalEntryKeyString(e)));
-  const cut = reached
-    ? req.entries.filter((e) => {
-        const k = journalEntryKeyString(e);
-        return !orphaned.has(k) && !projected.has(k);
-      })
-    : [];
+  // A REFUSED PLAN CARRIES NO CUT. An unreached walk already returned nothing, on the ground that a
+  // plausible-looking prefix is worse than an empty one; a plan that was reached and then refused
+  // has exactly the same hazard and had exactly the opposite behaviour. A caller reading `cut`
+  // without reading `admissible` got something usable-shaped out of a fork that will not happen.
+  const cut =
+    reached && refusals.length === 0
+      ? req.entries.filter((e) => {
+          const k = journalEntryKeyString(e);
+          return !orphaned.has(k) && !projected.has(k);
+        })
+      : [];
 
   // §8.5 step 3, at plan time rather than at commit time. `onFork: "respawn"` mints a fresh agent at
   // the frontier and `"adopt"` shares the parent's; both name a durable agent handle, and `spawn`
