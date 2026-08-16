@@ -70,8 +70,8 @@
     {
       "name": "the inherited-capture is allowed to sit AFTER the assignment that destroys the evidence",
       "file": "bin/smoke/broker-disclosure.smoke.ts",
-      "find": "    capture !== -1 && capture < assign,",
-      "replace": "    capture !== -1,",
+      "find": "  return { prints: PRINTS.test(text), ordered: capture !== -1 && capture < assign };",
+      "replace": "  return { prints: PRINTS.test(text), ordered: capture !== -1 };",
       "expectRed": "fixture: a file that captures AFTER the `||=` is rejected on order",
       "cell": "fixture: a file that captures AFTER the `||=` is rejected on order",
       "note": "Presence-not-position: the resulting checker accepts a disclosure that reports EVERY run as inherited. It first SURVIVED, and correctly -- every real file is compliant, so dropping the requirement changed no real verdict. A requirement that no input exercises cannot be proved by the corpus, so the suite now carries its own negative control and this mutation is aimed at that fixture. Paired with mutation 4, which puts the same defect in a real file: the fixture proves the checker still looks, mutation 4 proves it is looking at the repo."
