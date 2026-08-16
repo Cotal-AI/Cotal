@@ -92,7 +92,12 @@ r = runTool([
   "--find", "this string is not in the file",
   "--replace", "x",
 ]);
-check("an absent target is an ERROR, not a verdict", r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("not found"));
+// This cell went red silently when the preflight landed and nothing told me, because nothing runs
+// this file: it moved the refusal from a per-mutation ERROR line to an upfront refusal, which is
+// the better behaviour and a different surface. So the cell now asserts the INTENT — an absent
+// target never grades anything — rather than the word the old surface happened to print.
+check("an absent target is refused, not graded", r.status !== 0 && r.stdout.includes("not found"), r.stdout.slice(-300));
+check("...and nothing is graded under it", !r.stdout.includes("mutation(s) did not produce"), r.stdout.slice(-300));
 
 // 4. An ambiguous target must ERROR: the experiment must change only what was named.
 r = runTool([
@@ -223,6 +228,44 @@ writeFileSync(outside, JSON.stringify({
 r = runTool(["--config", outside]);
 check("a run that never reaches the suite's end is INCONCLUSIVE, not KILLED",
   r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("KILLED"), r.stdout.slice(-400));
+
+// 7g. THE MIRROR OF 7f, AND THE ONE THE ORDERING DECIDES. 7f only needs the completion check to sit
+// above KILLED. This needs it above SURVIVED as well: the mutant ends the run with exit 0 before the
+// region is ever entered, so the suite "passes" — and SURVIVED is an ACCUSATION that the suite has a
+// hole, made about code that never executed. Measured before the fix: "the suite PASSED with the
+// implementation broken", about a guard two lines below the exit.
+writeFileSync(outside, JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  completionMarker: "  ✓ done",
+  mutations: [{
+    name: "the run ends cleanly before the region under test",
+    file: "src/impl.js",
+    find: "if (n > 10)\n    return false;",
+    replace: "process.exit(0);",
+    expectRed: "oversized values are refused",
+  }],
+}));
+r = runTool(["--config", outside]);
+check("a CLEAN exit that never reached the region is INCONCLUSIVE, not SURVIVED",
+  r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+// 7h. A run that printed nothing at all says THAT, rather than blaming the assertion for not
+// printing. Same verdict either way, but the reason is what a reader acts on: "your assertion never
+// printed" sends them to re-aim a mutation that is aimed correctly.
+writeFileSync(outside, JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  completionMarker: "  ✓ done",
+  mutations: [{
+    name: "the module ends the process at import, silently",
+    file: "src/impl.js",
+    find: "export const unrelated = () => 'untouched';",
+    replace: "process.exit(9);",
+    expectRed: "oversized values are refused",
+  }],
+}));
+r = runTool(["--config", outside]);
+check("a run with NO OUTPUT is named as never having started", r.stdout.includes("NO OUTPUT"), r.stdout.slice(-400));
+
 rmSync(dirname(outside), { recursive: true, force: true });
 rmSync(cfgPath);
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg-gone", { cwd: root });

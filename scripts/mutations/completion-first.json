@@ -1,0 +1,29 @@
+{
+  "guard": "the completion check runs ahead of EVERY verdict, not only ahead of the red one",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "progressPattern": "✓",
+  "completionMarker": "an absolute --config path is read where it is",
+  "mutations": [
+    {
+      "name": "the completion check is disabled outright",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "if (marker !== undefined && !r.output.includes(marker)) {",
+      "replace": "if (false) {",
+      "expectRed": "a CLEAN exit that never reached the region is INCONCLUSIVE, not SURVIVED"
+    },
+    {
+      "name": "THE ORDERING: the completion check applies only to a red run, as it did before",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "if (marker !== undefined && !r.output.includes(marker)) {",
+      "replace": "if (marker !== undefined && !r.output.includes(marker) && r.status !== 0) {",
+      "expectRed": "a CLEAN exit that never reached the region is INCONCLUSIVE, not SURVIVED"
+    },
+    {
+      "name": "a run that printed nothing is blamed on the assertion instead",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "why: r.output.trim() === \"\"",
+      "replace": "why: false",
+      "expectRed": "a run with NO OUTPUT is named as never having started"
+    }
+  ]
+}

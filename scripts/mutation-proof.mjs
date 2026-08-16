@@ -145,6 +145,34 @@ function proveOne(m, opts) {
     if (!restored) return { label, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
 
     if (r.timedOut) return { label, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
+
+    // THE COMPLETION CHECK COMES FIRST, FOR EVERY VERDICT — NOT ONLY FOR THE RED ONE.
+    // It used to sit one branch above KILLED, which passes the two obvious controls (a crash with
+    // no output, a crash mid-cell) and fails the two that matter. A mutant that exits 0 before ever
+    // reaching the region graded SURVIVED — and a survivor is an ACCUSATION that the suite has a
+    // hole, made about code the run never entered. Measured: a mutation replacing a function body
+    // with `process.exit(0)` reported "the suite PASSED with the implementation broken" about a
+    // guard two lines further down that was never executed. The red side is the same asymmetry
+    // mirrored: a genuine early cell failure whose text happens to contain the named string, plus a
+    // stop before the region, is a plausible-looking kill with a real cell name attached.
+    //
+    // An incomplete run is not a kill and it is not a survival. It is an absence of evidence, and
+    // the only verdict that says so is INCONCLUSIVE.
+    const marker = m.completionMarker ?? opts.completionMarker;
+    if (marker !== undefined && !r.output.includes(marker)) {
+      return {
+        label,
+        verdict: "INCONCLUSIVE",
+        why: r.output.trim() === ""
+          // Naming this case separately is not cosmetic. Graded as a red-for-the-wrong-reason, it
+          // reads "your assertion never printed", which sends a reader to re-aim a mutation that is
+          // aimed correctly; the truth is that nothing ran at all.
+          ? `the run produced NO OUTPUT — it never started, so this says nothing about any cell (exit ${r.status})`
+          : `the run never printed ${JSON.stringify(marker)}, so it stopped before the region under test; a verdict here would be about the stop, not about one cell (exit ${r.status})`,
+        ticks,
+      };
+    }
+
     if (r.status === 0) {
       return {
         label,
@@ -176,24 +204,12 @@ function proveOne(m, opts) {
         ticks,
       };
     }
-    // A named red says the assertion fired. It does not say the SUITE RAN — a mutant that crashes
-    // the run after forty cells can print a failure line carrying the named string and be graded a
-    // kill by a suite that never reached its own end. When a config names the marker its suite
-    // prints last, its absence is INCONCLUSIVE: the run did not finish, which is not a kill and is
-    // not a survival either. A harness with only two verdicts rounds this one to the convenient side.
-    // Per mutation first: a fail-fast suite has no single line that always prints, so each mutation
-    // names the marker just UPSTREAM of the region it breaks. The marker must be independent of the
-    // outcome the mutation changes — a line that only prints on success means absence proves the
-    // mutation WORKED, and every genuine kill would be graded INCONCLUSIVE instead.
-    const marker = m.completionMarker ?? opts.completionMarker;
-    if (marker && !r.output.includes(marker)) {
-      return {
-        label,
-        verdict: "INCONCLUSIVE",
-        why: `red, and named — but the run never printed ${JSON.stringify(marker)}, so it did not reach the region under test and this is not evidence about one cell`,
-        ticks,
-      };
-    }
+    // A named red says the assertion fired. It does not say the SUITE RAN — which is why the marker
+    // check above runs before any of this. Per mutation first: a fail-fast suite has no single line
+    // that always prints, so each mutation names the marker just UPSTREAM of the region it breaks.
+    // The marker must be independent of the outcome the mutation changes — a line that only prints
+    // on success means absence proves the mutation WORKED, and every genuine kill would be graded
+    // INCONCLUSIVE instead.
     return { label, verdict: "KILLED", why: m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`, ticks };
   } catch (e) {
     restore();
