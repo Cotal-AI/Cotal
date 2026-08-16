@@ -495,6 +495,54 @@ check("POSITIVE CONTROL for the sentinel: an ALLOWED request DOES reach the rout
 // `createServer`, leaves the adjacency intact and SURVIVES 128/128. So this guard catches insertion
 // between the gate and the handler and nothing else. Anyone reading it should know that, which is
 // why the survivor is written down here instead of being left for the next reviewer to rediscover.
+//
+// ── THE FOUR KNOWN SURVIVORS, AND WHAT EACH ONE MEASURES ────────────────────────────────────────
+// Independent adversarial review reproduced the boundary above and found three more bypasses. All
+// four are recorded here, each with the survivor written beside the guard it walks past, because a
+// limitation discovered twice is a limitation that was never written down. EVERY ONE of them was
+// applied to a clean tree, ran `128 passed, 0 failed` (rc=0 from an EXIT-trap artifact) AND passed
+// `pnpm --filter @cotal-ai/web typecheck` (rc=0), then was restored with the source blob verified by
+// hash. So each is a COMPILING, TEST-PASSING bypass: the compiler is not a backstop for any of them.
+//
+// (1) web.ts, below the handler: `gate.check = () => undefined;`
+//     SURVIVES. The adjacency guard below sees nothing between the gate and the handler.
+//     Non-equivalence proven on a real gate: shipped `check` returns `{refuse:"unauthenticated"}`
+//     for a bare request and `{refuse:"cross-origin"}` for a foreign Origin; the mutant returns
+//     `undefined` for every input, i.e. every named refusal becomes a silent allow.
+//
+// (2) web.ts, before the gate-creation line: a nested, explicitly typed function ALSO named
+//     `makeAuthGate` whose `check` always allows.
+//     SURVIVES, and it defeats the text pins on their own terms: the gate-creation text and the
+//     gate-to-handler adjacency stay BYTE-IDENTICAL while the binding changes. The cells resolve
+//     this module's top-level import; the production closure resolves the nested declaration.
+//     THE GENERAL LESSON, worth more than this cell: exact text is fail-closed against harmless
+//     reformatting, but it does NOT establish identifier identity.
+//
+// (3) web.ts refusal write: end the body BEFORE the status write.
+//     SURVIVES, because both response recorders in this file (see the `writeHead`/`end` fakes)
+//     retain only FINAL field values and do not model CALL ORDER. Measured on a live Node HTTP
+//     server: shipped ordering returns 401, the swapped ordering returns **200** with body
+//     `{"error":"unauthenticated"}` — the later `writeHead` throws ERR_HTTP_HEADERS_SENT after the
+//     body is already on the wire. So the condition is still NAMED in the body but is no longer
+//     client-distinguishable from success by status. A fixture that records status-at-end rather
+//     than call order cannot see this, which is exactly why it is a limitation and not a cell.
+//
+// (4) web.ts `createServer` listener: emit a 200 JSON empty result and return before
+//     `handleRequest`.
+//     SURVIVES because ZERO cells in this suite drive the server callback. Note TypeScript did not
+//     flag the now-unreachable handler call.
+//
+// WHAT THE SUITE DOES STILL PROVE, stated so this block is not read as "the tests are worthless":
+// deleting the handler's refusal response entirely DOES die on the named cell
+// `unauthenticated verdict becomes a 401`. The handler-prefix cells are sound FOR CODE THEY REACH.
+// Every survivor above either walks around that prefix or exploits response ordering the fakes do
+// not model — none of them shows a covered assertion to be wrong.
+//
+// THE ONE DURABLE FIX, deliberately NOT attempted here: drive a real HTTP request through the
+// actual server wiring (or refactor the server/handler composition into a directly executable
+// factory the test invokes end-to-end). A cheaper substitute that cannot drive the real running
+// server would be a fixture wearing an integration test's name — the same defect shape as (3).
+// Tracked as a follow-up, not as a blocker on this change.
 {
   const decl = "  const gate = makeAuthGate(port);\n\n  const handleRequest = async (req: IncomingMessage, res: ServerResponse)";
   check("INTERIM: the handler's gate is created by makeAuthGate and NOTHING sits between that and the handler",
