@@ -41,14 +41,79 @@ function controlFailure(action: string, e: unknown): ToolResult {
   return err(`${action}: no manager reachable (${detail}). Is the manager running?`);
 }
 
+/** A tool's input contract: a **CLOSED** Zod object. Closed is the whole point — an unknown
+ *  top-level key is REFUSED, never stripped.
+ *
+ *  A plain `z.object` DROPS unknown keys, so a caller-supplied `owner`/`actor`/`caller` argument
+ *  vanished silently and the tool ran as if it had never been sent. That is not a refusal; it is a
+ *  refusal-shaped absence, and it is indistinguishable from the argument having been rejected. The
+ *  identity a tool acts under comes from the connector's own credential and never from a tool
+ *  argument, and an attempt to supply one must be visibly turned away rather than quietly ignored. */
+export type CotalToolInput = z.ZodObject<z.ZodRawShape>;
+
 /** One Cotal tool, independent of any host's tool API. */
 export interface CotalToolSpec {
   name: string;
   title: string;
   description: string;
-  /** A Zod raw shape — MCP `inputSchema` / OpenCode `args`. Omit for no-argument tools. */
-  schema?: z.ZodRawShape;
+  /** The CLOSED input object — see {@link CotalToolInput}. **Always present**, empty for a
+   *  no-argument tool: a tool that takes nothing still takes nothing *closed*, or `{owner, actor}`
+   *  on `cotal_roster` is swallowed by the very hole this type exists to shut. Adapters render from
+   *  THIS; none of them re-derives an open object, and none of them can, because
+   *  {@link cotalToolSpecs} is the only source and it closes every shape on the way out. */
+  schema: CotalToolInput;
   run(agent: MeshAgent, config: AgentConfig, args: any): Promise<ToolResult> | ToolResult;
+}
+
+/** How a tool is AUTHORED: a raw shape, which reads better inline than a wrapped object, and
+ *  omitted entirely by a tool that takes no arguments. The closing happens once, in
+ *  {@link cotalToolSpecs} — including the empty case, so "no arguments" and "any arguments" cannot
+ *  be confused by an author's omission. */
+interface CotalToolSpecDecl extends Omit<CotalToolSpec, "schema"> {
+  schema?: z.ZodRawShape;
+}
+
+/**
+ * Validate raw tool args against a spec's closed input, for the adapters whose host does NOT
+ * validate for them: the args arrive exactly as the model wrote them, so this is the boundary.
+ *
+ * The MCP hosts and pi refuse an unmodelled key themselves — their `execute` is never reached.
+ * The Hermes sidecar and OpenCode both hand the raw object straight through, so without this an
+ * `owner`/`actor` the model believes it sent would reach {@link CotalToolSpec.run} unmentioned, or
+ * be dropped by the first `z.object` to touch it. Refuse it by name instead: a wrong call the
+ * caller can see and repair beats a right-looking call that quietly did something else.
+ */
+export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string, unknown> {
+  const parsed = spec.schema.safeParse(args ?? {});
+  if (parsed.success) return parsed.data as Record<string, unknown>;
+  const unknownKeys = parsed.error.issues.flatMap((i) => (i.code === "unrecognized_keys" ? i.keys : []));
+  const accepted = Object.keys(spec.schema.shape);
+  throw new Error(
+    unknownKeys.length
+      ? `${spec.name}: unknown argument(s): ${unknownKeys.join(", ")} — ${accepted.length ? `this tool accepts only: ${accepted.join(", ")}` : "this tool takes no arguments"}`
+      : `${spec.name}: invalid arguments: ${parsed.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+  );
+}
+
+/**
+ * Refuse ANY caller-supplied argument to a tool an adapter publishes with none — returning the
+ * refusal text, or `undefined` when the call is clean.
+ *
+ * `cotal_inbox` is the case: two adapters override it to pull quiet ambient only and supply the
+ * `scope` themselves, so the caller's object is replaced wholesale. Replacing it is correct;
+ * *ignoring* it is not — an `owner`/`actor` the model believes it sent would vanish on that one
+ * tool while every sibling refuses it. The wording matches {@link parseToolArgs} so a caller cannot
+ * tell which mechanism turned it away, and this stays dependency-free for hosts that bundle.
+ */
+/** The closed EMPTY input, for an adapter that republishes a tool with no arguments of its own.
+ *  A host given this refuses extras itself; a host given no `inputSchema` at all forwards them. */
+export const NO_TOOL_ARGS: CotalToolInput = z.strictObject({});
+
+export function refuseAnyArgs(name: string, args: unknown): string | undefined {
+  const keys = args && typeof args === "object" ? Object.keys(args as Record<string, unknown>) : [];
+  return keys.length ? `${name}: unknown argument(s): ${keys.join(", ")} — this tool takes no arguments` : undefined;
 }
 
 function statusGlyph(s: PresenceStatus): string {
@@ -131,7 +196,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // use them, instead of discovering the denial by trying. cotal_despawn stays (its no-name
   // self-despawn is granted to all). controlFailure remains the backstop if a wire denial slips by.
   const canSpawn = !config.creds || (config.capabilities?.includes("spawn") ?? false);
-  const specs: CotalToolSpec[] = [
+  const specs: CotalToolSpecDecl[] = [
     {
       name: "cotal_orientation",
       title: "Cotal: orient (who you are & what you can do)",
@@ -732,5 +797,16 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
     },
   ];
-  return specs.filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona"));
+  // CLOSE EVERY SHAPE, EXACTLY ONCE, HERE. This is the only place a `CotalToolSpec` is minted, so
+  // an adapter cannot be handed an open object and no author can forget to close one — the seam is
+  // as strict as its renderers only if the strictness is not restated four times.
+  //
+  // `?? {}` is load-bearing, not tidiness: a spec authored without a shape used to pass through
+  // schemaless, and every adapter's schemaless path accepts whatever it is handed. `cotal_roster`
+  // with `{owner, actor}` therefore succeeded on all five hosts while this factory advertised that
+  // it had closed the seam. A no-argument tool gets a closed EMPTY object, so the refusal is the
+  // same refusal everywhere and "takes nothing" never degrades into "takes anything".
+  return specs
+    .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona"))
+    .map((spec) => ({ ...spec, schema: z.strictObject(spec.schema ?? {}) }));
 }

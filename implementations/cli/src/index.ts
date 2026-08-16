@@ -1,5 +1,5 @@
 import { registry, type Command } from "@cotal-ai/core";
-import { targetFlags, type LocalProcess } from "@cotal-ai/workspace";
+import { serverFlag, spaceFlag, targetFlags, type LocalProcess } from "@cotal-ai/workspace";
 import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
@@ -219,6 +219,10 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "with --signer: overwrite an existing file" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override (comma-separated)" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "post ACL override (comma-separated)" },
+      { name: "role", type: "string", value: "<role>", description: "agent role: scopes its anycast task queue (svc_<role>); overrides the agent file" },
+      { name: "provision", type: "boolean", description: "agent profile: also pre-create the identity's bind-only DM/deliver durables (+ role task queue) on the live mesh, so the credential can consume; needs the broker reachable" },
+      spaceFlag,
+      serverFlag,
     ],
     run: mint,
   },

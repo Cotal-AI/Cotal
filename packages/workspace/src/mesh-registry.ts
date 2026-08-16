@@ -229,7 +229,7 @@ export function pruneMesh(space: string): boolean {
  *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps
  *  the short form there rather than expanding it. realpath collapses both. Falls back to `resolve`
  *  for a root that no longer exists on disk. */
-function canonicalRoot(p: string): string {
+export function canonicalRoot(p: string): string {
   try { return realpathSync.native(p); } catch { return resolve(p); }
 }
 

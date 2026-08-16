@@ -1,5 +1,179 @@
 # @cotal-ai/core
 
+## 0.18.0
+
+### Minor Changes
+
+- 0ab9b4d: Move the auth plane's retirement rail off the retired `ctl` surface onto the endpoint subjects
+
+  The auth plane served its generic "retire a lifecycle" operation on
+  `ctl.auth-admin.<owner>.<actor>`, a rail the spec retires in full and states must
+  not be handled. Rows written onto a deleted rail are defects rather than
+  exceptions to it, so the rail moves to
+  `ep.one.auth.retire-lifecycle.handle.<target triple>.<caller triple>.<nonce>`
+  instead of the cut growing a carve-out.
+
+  Two things get stronger on the way. The reply is now derived from the parsed
+  request, so there is no argument through which a caller- or payload-supplied
+  reply target could arrive; and the request and reply planes are disjoint, so the
+  listener credential cannot express a request subject at all. The per-despawn
+  requester credential now pins both its caller triple and exactly one target
+  incarnation, so a leaked requester cannot be re-aimed at another lifecycle.
+
+  Serve-time authorization additionally requires that the serve registration a
+  request names belongs to the requesting principal. The previous two-token
+  subject could not express the caller beyond a recyclable alias, so the rail
+  accepted any registered instance's registration. This is alias-level binding:
+  the registration is keyed by an id that is stable across restarts and carries no
+  lifecycle uid, so a same-principal predecessor presenting the current epoch is
+  still accepted.
+
+  The spec rows also described an authorization mechanism the implementation had
+  already replaced, and now describe what ships.
+
+  This is a subject-plane migration, not a completed endpoint migration. The rail
+  carries the endpoint subjects but still exchanges the pre-v0.4 request and reply
+  bodies, registers no service record, serves no `describe`, and has no contract
+  artifact — so a generic endpoint client can neither discover nor invoke the
+  command. That gap is tracked separately, with the acceptance test being that a
+  generic client can do both. The one acceptance-path hole is closed here rather
+  than deferred: the request carries an id, the reply echoes it, and a reply that
+  does not echo is refused, so a wrong-id success cannot clear a retirement hold.
+
+  The requester's grant pins its target with the `handle` mode, which is normatively
+  redemption-minted. This path is not: there is no issuer-signed artifact, no
+  redemption step, and no lineage — the row is built directly from the minting
+  manager's coordinates under root authority. It is used because it is the only
+  target mode that can pin an exact incarnation, and the serve-time handler
+  re-checks that triple against the current mapping. This is a documented
+  deviation, not compliant handle semantics, and it is stated at the mint site and
+  in the ownership matrix row. It resolves with the same tracked work as the
+  envelope, since the mode and the envelope are one wire-conformance surface.
+
+- 208ad1f: Add a guarded way out of an issuance gate left frozen by a crashed manager restart.
+
+  When a manager restart is killed between deregistration and the successor's completion, the
+  endpoint's issuance gate is left frozen under a registration operation whose holder no longer
+  exists. Failing closed there is correct — it is what stops two incarnations serving at once — but
+  until now nothing could lift it, so every subsequent restart failed the same way and the only exits
+  were driving the internals by hand or discarding state.
+
+  `cotal reconcile-gate` verifies the freeze-holder is gone, logs what it found, and then completes
+  the dead operation exactly as the interrupted restart would have: revoke the credential family,
+  verify-evict its holders, and reopen the gate at the unchanged coordinate with the generation
+  advanced by one. It is a CLI command rather than a verb on the manager endpoint because the state
+  it repairs is precisely "the manager cannot complete registration" — an endpoint-served repair
+  would be unreachable exactly when it is needed.
+
+  The affirmative check required a read half that did not exist. The only principal-scoped liveness
+  was fused with the KICK inside `evictPrincipal`, so using it as a precheck would have killed a live
+  holder before anything could refuse on its behalf. This adds a read-only `principalLiveness`
+  delivery-admin verb (observer credential only, closed query, a reply bound to the exact principal
+  asked about) reporting `live` / `gone` / `unknown` with scan completeness kept separate. Its sweep
+  is the strict one the plane-liveness oracle already used — full reply validation plus the
+  single-server proof — now extracted and shared by both, so a probe can never be laxer than the
+  repair it authorizes.
+
+  Every refusal names its condition (`holder-alive`, `holder-unknown`, `liveness-unestablishable`,
+  `not-frozen`, `wrong-op-kind`, `no-gate`, `eviction-unverified`, `raced`). A timeout is
+  unknowability rather than death, the probe is a precondition on top of the barrier's own verified
+  eviction rather than a replacement for it, and there is no force flag and no path that discards
+  gate state.
+
+  Two defects in the shared `$SYS` scan surface were found while proving this and are fixed here,
+  because the guarded command is only as good as the observation it stands on.
+
+  A paginated CONNZ sweep could read a **lost later page as sweep-complete**. The first page comes
+  back full with more promised, the next round is silent or answers with an empty page while its own
+  total still says there is more, and the loop treated that as the end of the data. Since "complete
+  sweep, principal not found" is the definition of verified-gone, a connection living on the page that
+  was never delivered read as absent — so verified eviction could report gone for a principal that was
+  alive. Both the read-only observation and the scan/kick/re-scan primitive had the same shape, which
+  also meant the two of them were not the independent checks they looked like. A sweep now tracks
+  which servers still owe it a page and fails closed when one stops delivering; a sweep that genuinely
+  finishes across several pages still concludes gone, so nothing wedges.
+
+  The delivery daemon's `$SYS` sweeps were **not bound to the account it serves**. All three
+  delivery-admin executors resolved their scan account from the working directory at request time, and
+  the detached daemon inherits its launcher's directory for life — so a daemon started from a tree
+  that resolves a different mesh root would sweep a foreign account and answer a confident, wrong
+  "gone". The root is now pinned once at start, and the account read from disk is cross-checked
+  against the account the daemon's own credential authenticates as.
+
+- 4d14037: `cotal_persona`: defining a persona no longer announces on the mesh by default
+
+  Defining a persona used to post "persona X is now available — spawn it to bring it online" on the
+  definer's first concrete channel — `#general` for most personas, since nothing ever chose the
+  destination: the send passed no channel, so it fell through to whichever concrete channel happened
+  to be first in the caller's list. Standing up a review panel therefore put one broadcast per seat
+  into every peer's inbox, and the wording read as an instruction to strangers to launch an agent they
+  knew nothing about, from a principal they had no relationship with.
+
+  `cotal_persona` and `MeshAgent.definePersona` now take an optional `announce` channel:
+
+  - **Omitted (the default): silent.** Nothing is published.
+  - **Supplied: that channel only**, never one inferred from ordering, with post rights enforced by
+    the broker as for any other message and no fallback. The channel is validated before the write, so
+    an empty string, a wildcard, or a name the subject layer would rewrite is refused loudly rather
+    than publishing somewhere you did not name.
+  - The message is now a statement of what the sender did rather than an imperative aimed at the
+    reader.
+  - A persona whose announcement is refused is reported as **saved but not announced**, pointing at
+    `allowPublish` — not as a failed definition, which named the wrong fix and invited a retry that
+    posted the duplicate.
+
+  No durable or deliberately-consultable read path is removed: `cotal personas list` / `show` read the
+  catalog directly within a workspace, and `cotal_spawn` still fails loud on a name that does not
+  exist. What is lost is unsolicited awareness of a bare name — real discovery, but incidental,
+  incomplete (no prompt, model, or role) and invisible to anyone who joined later.
+
+  `@cotal-ai/core` gains `isPublishPermissionDenied`, a public helper beside `isPermissionDenied` that
+  is true only for a typed permission violation whose `operation` is `"publish"`. `isPermissionDenied`
+  is deliberately operation-agnostic — it separates a denial from a missing service, where the
+  operation is irrelevant — so it cannot answer "did this message get stored?". A JetStream publish is
+  request/PubAck, and a denial on the reply-inbox _subscription_ rejects `js.publish()` while the
+  stream may already hold the message. Callers that report delivery must ask the narrower question.
+
+### Patch Changes
+
+- f6b8b27: fix(core): reconcile presence/lease bucket TTLs at `cotal up`
+
+  A presence or lease KV bucket created by a cotal that predated the bucket TTLs kept no `max_age` and never expired dead presence records or stale leases, so a crashed agent could linger in the roster / raw KV as live indefinitely (#286). `kvm.create(bucket, { ttl })` never updates an existing bucket, so repeat `cotal up` runs could not fix it either. `setupSpaceStreams` now reconciles the three TTL'd buckets' `max_age` via `STREAM.UPDATE` on every `cotal up` (idempotent: a bucket already at the TTL is skipped; the `duplicate_window` is lowered in the same update to satisfy `duplicate_window <= max_age`), and the `provisioner` credential is granted `STREAM.UPDATE` on exactly those three streams — nothing else. The reconcile reads the config back afterwards and throws unless `max_age` came back exactly as intended and `duplicate_window` does not exceed it — it does not verify the window came back as sent, and it does not prove expiry is enforced. That is a drift detector, not proof of enforcement, and the limit is worth stating: on the supported nats-server floor the update is applied in two places — the in-memory stream config, and the file store — and the server ignores the file store's error while answering `STREAM.INFO` from memory. A metadata-write fault (EACCES, ENOSPC) can therefore return OK, read back correctly, and leave the backing store without an expiry timer. This read-back cannot see that, because both fields it reads come from the config that did update — but it is not undetectable: the STREAMED snapshot's first `meta.inf` entry carries the file store's own config, so a store-side detector exists and was reproduced live. It is not wired in here: the snapshot scope this repo already models REJECTS these three buckets, so it would need a new exact scope or a widening of the reconcile credential to whole-body authority over liveness data — an unsettled authority question, not merely a cost one, though the cost is real too (it scales with bucket size, and a snapshot carries the bucket's records); a behavioural suite proves records actually age out on a healthy server, and the detector is recorded in the tracking issue. The remaining window is documented with its upstream mechanism in the tracking issue. `reconcileBucketTtl` is exported so that fail-closed behaviour can be driven directly against a broker that accepts an update without applying it.
+
+  **Behaviour change worth stating plainly: `cotal up` against a mesh that is ALREADY RUNNING now performs a config write on it.** It has to — a bucket can only have drifted on a mesh that has been running since before the TTLs existed, and that is exactly the case that previously returned "already running" without reconciling anything, so the fix repaired only the deployments that never had the problem. The reconcile runs before the success line (a tick printed over an unreconciled mesh is the silent drift this removes), refuses loudly rather than continuing if it cannot complete, and reads first — a mesh already at the intended TTLs takes three reads and no writes, so a repeat `cotal up` stays a no-op. When it does change something it says so. Authed meshes mint an ephemeral `provisioner` credential for it, the same enumerated scope the create path already mints and discarded with the connection; open meshes need no credential and are not exempt, since the TTL'd buckets are not mode-gated — the fix rides `setupSpaceStreams`'s existing credential contract rather than introducing a new rule.
+
+  **A limit of the read-first skip, corrected after review.** Where an unenforced bucket ends up depends on WHEN the metadata write failed, and an earlier draft of this note generalised from one reproduction. `writeStreamMeta` performs two writes — `meta.inf` then `meta.sum` — with no pair-level atomicity. A failure before the first commits leaves persisted state coherent and old, so a restart reveals it and the next reconcile repairs it. A failure BETWEEN the two leaves `meta.inf` new and `meta.sum` old; on restart the server logs `checksums do not match` and recovery skips the stream, so `STREAM.INFO` returns not-found and the reconcile cannot repair it. Both branches were reproduced live during review. So the worst case is an unavailable bucket, not merely an unexpired one — rarer than the first branch and more severe.
+
+- d361951: Release the connection `probeConnect` never established.
+
+  `probeConnect` is the one connect site whose normal case is a dial that fails — it exists to be
+  pointed at addresses that may not answer. Against an address that BLACKHOLES (SYN unanswered)
+  rather than REFUSES (RST) it returned its correct verdict on the deadline and then leaked the
+  pending socket: one orphaned socket per probe, reclaimed only when the OS SYN timeout fired
+  minutes later, so the process could not exit. A probe against a non-routable literal returned
+  `unreachable` at 1006ms against a 1000ms contract and the process still had to be killed at 20s,
+  while five probes left five socket fds behind and never gave them back.
+
+  The teardown could not be added where it appeared to be missing. It is upstream:
+  `@nats-io/transport-node`'s `NodeTransport.dial()` keeps its socket in a local until the handshake
+  resolves, so `this.socket` is still undefined when the client's own connect timeout wins its race
+  and the catch calls `transport.close()` — whose teardown is `this.socket?.destroy()`, a destroy of
+  nothing. No caller option (`reconnect: false`, `timeout`) reaches the orphan, and a `finally` here
+  would close a connection we never got.
+
+  So the address is now reached on a socket we own before it is handed to `connect()`, and that
+  socket is destroyed on every exit path. The gate asks only whether TCP completes, never whether
+  NATS is speaking there, so a TLS-first listener still passes it and goes on to a real connect, and
+  `connect()` receives the remainder of the budget its own timeout always covered. No verdict
+  changes: anything past the gate had to complete a handshake for `connect()` to have gotten
+  anywhere either, and both paths now share one failure classifier, so a locally provable credential
+  death stays `stale-auth` instead of being downgraded to `unreachable` by a dark address.
+
+  Operators see no behaviour change from the `cotal` binary, which force-exits at the end of a
+  command and so escaped the leak. What was affected is anything embedding `probeConnect` as a
+  library — including this repo's own suites, one of which had to route around the path entirely to
+  stop hanging as a gate step.
+
 ## 0.17.0
 
 ### Minor Changes

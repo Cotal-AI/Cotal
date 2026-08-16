@@ -30,8 +30,9 @@ let expandAll = false; // channel-wide: expand every clamped message body (else 
 const esc = (s) =>
   String(s).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
 const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const bodyText = (msg) =>
-  (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ");
+// Shared with graph.js via parts.js (loaded before this file). It names a part kind it cannot
+// draw instead of rendering it as the empty string, which read as "nothing arrived".
+const bodyText = (msg) => window.COTAL_PARTS.partsToText(msg.parts);
 function ago(ts) {
   const s = Math.max(0, (Date.now() - ts) / 1000);
   if (s < 45) return "just now";
@@ -807,12 +808,33 @@ async function refresh() {
     select(selected);
   } else {
     activity = await (await fetch("/api/activity?limit=200")).json();
+    // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
+    // requested, so the payload claim is overwritten at ingress rather than downstream.
+    for (const e of activity) if (e?.msg) e.msg.channel = e.channel;
     renderCenter();
   }
 }
 
 function onMessage(entry) {
   const { mode, msg } = entry;
+  // TRUST IS DECIDED ONCE, HERE. The server sends the channel it took from the SUBJECT (a publish
+  // grant is per-channel, so that token is covered by the minted grant); `msg.channel` is the
+  // publisher's own claim and is backed by nothing. Overwrite the claim at this boundary so no
+  // downstream reader — the channel list, the counts, the unread badges, the transcript — has to
+  // know which of the two it is holding.
+  //
+  // THE ASSIGNMENT IS UNCONDITIONAL, AND THAT IS THE WHOLE FIX. This first read
+  // `if (entry.channel) msg.channel = entry.channel;`, which FAILS OPEN: on `inst` and `svc` there
+  // is no authoritative channel, so the guard was false and the publisher's claim SURVIVED. `tap()`
+  // only JSON-decodes, so a DM or anycast payload can carry any `channel` string it likes — and
+  // `msg.channel` is consumed below with NO MODE GATE, which filed that message into the named
+  // channel's transcript and incremented its count. A sender could appear to post into a channel it
+  // holds no publish grant for. Assigning unconditionally leaves a non-chat message with
+  // `undefined`, which is the truth: it has no channel.
+  //
+  // A conditional trust rule is not a trust rule. "Overwrite when I have something better" leaves
+  // the untrusted value in place exactly when the trusted one is missing.
+  msg.channel = entry.channel;
   if (!activity.some((e) => e.msg.id === msg.id)) {
     activity.push(entry);
     if (activity.length > 500) activity.shift();
