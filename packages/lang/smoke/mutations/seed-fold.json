@@ -40,9 +40,9 @@
       "file": "packages/lang/src/journal.ts",
       "find": "      if (!this.order.includes(full)) this.order.push(full);",
       "replace": "      if (this.order.length === 0) this.order.push(full);",
-      "expectRed": "two different steps are still two entries: the fold is by key, not a collapse",
-      "cell": "two different steps are still two entries: the fold is by key, not a collapse",
-      "note": "The narrowness twin. A fold that kept one entry satisfies the first mutation perfectly and erases a run's history; the cells above cannot tell the two apart because their fixture has ONE step in it."
+      "expectRed": "steps the new program never reached are orphans",
+      "cell": "steps the new program never reached are orphans",
+      "note": "The narrowness twin, RE-AIMED at the cell that actually fires. A collapsing fold satisfies the first mutation perfectly and erases a run's history, so it must be graded -- but this suite is FAIL-FAST, and the collapse reddens `steps the new program never reached are orphans` (journal.smoke:152) long before the fold's own block is reached. Naming a later cell graded WRONG-RED: the suite exited 1 for a true reason at an assertion that was not the one under test, which is indistinguishable from a kill only if nobody reads which cell died. The block's own narrowness cell is kept -- a reader of the fold looks there, not 400 lines up -- and is redundant for THIS mutation, which is recorded rather than hidden."
     },
     {
       "name": "the fold reorders history by completion",
