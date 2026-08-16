@@ -19,7 +19,20 @@
  * (5) cross-principal namespace disjointness (the canonicalizer's dec/quar/bind families never
  * overlap the commit principal's five fact families; per-kind record writers stay disjoint).
  *
- * KNOWN RECORDED GAPS (not failures): the record-writer and timer-writer PRINCIPAL profiles are
+ * KNOWN RECORDED GAPS (not failures): the CANONICALIZER principal holds neither of the two
+ * authorities SPEC gives it — the `epf.<e>.dec.>`/`.quar.>` fact publish (SPEC:1591-1596: the
+ * canonicalizer publishes the decision or quarantine fact and terminally acks only after it
+ * durably exists) nor the leader-served `STREAM.MSG.GET.EPF_<space>` of the row titled
+ * "Canonicalizer CAS-winner + terminal read" (SPEC:2719, which it needs to read the winning fact
+ * on redelivery). Its builders emit its EPJ consumer rows plus the EPW work publish, and the
+ * holder-set fixture below asserts that absence POSITIVELY by listing `canonicalizer:EPW_<space>`
+ * and no `canonicalizer:EPF_<space>`. That is correct today — no production path mints a
+ * canonicalizer principal at all — and it is recorded HERE rather than left to be inferred from a
+ * fixture, because an exact-list expectation reads as complete whether or not anyone checked. Its
+ * rows land with the canonicalizer's first real minting call site, never before: a grant reviewed
+ * against a fixture is graded by the fixture's author.
+ *
+ * Also: the record-writer and timer-writer PRINCIPAL profiles are
  * not yet composed in production (their daemons are post-D14 wiring), so the writer-table's
  * records/EPT currency-read rows (`STREAM.MSG.GET` for the processEpoch / generation-deadline
  * fences) have no emitting builder yet; when those daemons land, their rows join the fixture
@@ -531,8 +544,16 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   const canonSubjects = gen["canonicalizer"].publish.filter((r) => r.startsWith("cotal."));
   const commitSubjects = gen["commit"].publish.filter((r) => r.startsWith("cotal."));
   const overlaps = canonSubjects.flatMap((a) => commitSubjects.filter((b) => subjectsOverlap(a, b)).map((b) => `${a} ∩ ${b}`));
-  c("the canonicalizer's subject rows and the commit principal's do not INTERSECT (dec/quar/bind vs the five commit families; subsumption caught, not just exact dupes)",
-    overlaps.length === 0, overlaps);
+  // WHAT THIS COMPARES TODAY, said exactly, because the label used to name three families the set
+  // does not contain. `canonSubjects` resolves to ONE row — `cotal.<space>.epw.<e>.>` — since the
+  // canonicalizer's builders emit its EPJ consumer rows plus the EPW work publish and nothing else.
+  // The dec/quar/bind publish SPEC:1591-1596 gives the canonicalizer is not in any builder yet (see
+  // the recorded gap in this file's header), so it cannot be on either side of this intersection.
+  // The cell still earns its place — a builder broadened to an ancestor that SUBSUMES a foreign
+  // family fails here, which is its stated purpose — but it is a subsumption guard over the rows
+  // that exist, not the cross-family proof its old label advertised.
+  c("the canonicalizer's subject rows and the commit principal's do not INTERSECT (today: the EPW work publish vs the five EPF commit families; subsumption caught, not just exact dupes)",
+    overlaps.length === 0, { overlaps, canonSubjects, commitSubjects });
   // The commit families must not COVER a canonicalizer decision subject either (an open ancestor
   // `epf.<e>.>` would subsume `.dec.`/`.quar.` without containing the substring).
   const decQuar = [`cotal.${S}.epf.${EPJ}.dec.x`, `cotal.${S}.epf.${EPJ}.quar.x`];
