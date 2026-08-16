@@ -18,6 +18,8 @@
 import { run, RuntimeFault, UnwalkableScope } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
+import { stepKeyString } from "../src/keys.js";
+import type { EffectContext } from "../src/effects.js";
 import { journalEntryKeyString } from "../src/journal.js";
 
 let pass = 0, fail = 0;
@@ -43,6 +45,28 @@ const checkHandler = (now: number) => {
     spawn: stop, turn: stop, ask: stop, checkpoint: stop, sleep: stop,
     wait: stop, notify: stop, monitor: stop, openConclave: stop, closeConclave: stop,
   } as never;
+};
+
+const EFFECTS = ["spawn", "turn", "ask", "checkpoint", "sleep", "wait", "notify", "monitor", "openConclave", "closeConclave"] as const;
+
+/**
+ * A sim handler that also RECORDS which steps it was asked to perform.
+ *
+ * The throwing handler above answers "did the walk reach new work?" only where the throw survives
+ * the way out. Inside a `race` it does not — the winner tie-break drops a losing arm's rejection —
+ * so a question about work performed has to be asked at the point the work is requested.
+ */
+const tapped = (): [never, string[]] => {
+  const asked: string[] = [];
+  const sim = new SimHandler({} as never) as unknown as Record<string, (r: unknown, c: EffectContext) => Promise<unknown>>;
+  const h: Record<string, unknown> = { now: () => (sim as unknown as { now: () => number }).now() };
+  for (const m of EFFECTS) {
+    h[m] = async (r: unknown, c: EffectContext) => {
+      asked.push(stepKeyString(c.key));
+      return await sim[m]!(r, c);
+    };
+  }
+  return [h as never, asked];
 };
 
 const keys = (entries: readonly JournalEntry[]) => entries.map((e) => journalEntryKeyString(e));
@@ -150,12 +174,8 @@ await sleep("1s", { name: "after-race" });
     !raceOrphans.some((k) => losers.some((b) => k.includes(`/b:${b}/`))), JSON.stringify({ losers, raceOrphans }));
   ok("nothing at all is orphaned when the source did not change", raceOrphans.length === 0, raceOrphans);
 
-  // The one above passes against a build that walks the losers too, because an UNEDITED loser
-  // replays clean either way — so it is not the cell that proves the losers are skipped. EDIT the
-  // losing branch, and the two builds part company: skipping it is silent, entering it hits a hash
-  // that no longer matches and refuses the migration over a branch the race already decided. This
-  // is the other diagonal of section 1 — that one catches a walk that reports too LITTLE, this one
-  // catches a walk that reports too MUCH — and the two mutants have different casualty lists.
+  // An edit INSIDE the loser is invisible, which is the contract — but read the note below before
+  // treating this cell as the proof of it.
   const DURATION: Record<string, string> = { x: "1s", y: "2s" };
   const loser = losers[0] as string;
   const EDITED_LOSER = RACE.replace(
@@ -168,10 +188,84 @@ await sleep("1s", { name: "after-race" });
   const overLoser = await run(EDITED_LOSER, {
     runId: "r-race", handler: checkHandler(10_000_000), journal: rj3, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
-  ok("a migration does not enter a branch the race decided, so an edit inside the LOSER is invisible",
+  ok("an edit inside a branch the race decided does not refuse the migration",
     overLoser === null, `${overLoser?.name}: ${overLoser?.message?.slice(0, 140)}`);
   ok("and the loser's steps are still accounted for rather than orphaned",
     keys(rj3.orphans()).length === 0, keys(rj3.orphans()));
+
+  // WHY THAT PAIR IS NOT THE PROOF, AND WHAT IS.
+  //
+  // Both cells above pass against a build that walks the losers too, and the mutation that removes
+  // the branch filter SURVIVES them. Not because the divergence does not happen — the loser really
+  // does raise `RunDivergence` — but because the race's winner tie-break DISCARDS it: on a full
+  // replay every branch clock reads the same instant, so declaration order picks the winner and a
+  // losing arm's rejection is dropped on the floor. An edit inside a loser is therefore invisible
+  // for TWO independent reasons, and a cell that cannot tell them apart is asserting the one it did
+  // not mean.
+  //
+  // So the proof is about WORK, not about the answer: the harm in walking a decided branch is that
+  // the branch's steps get performed, and nothing downstream unperforms them. Give the loser a step
+  // the recorded run never had and watch what the handler is ASKED for. Skipping the branch asks for
+  // nothing; entering it asks for real work inside an arm the race already settled — and no
+  // tie-break can swallow a request that was already made.
+  const [recorder, asked] = tapped();
+
+  const EXTRA = RACE.replace(
+    `await sleep("${DURATION[loser]}", { name: "${loser}-work" }); return "${loser}";`,
+    `await sleep("${DURATION[loser]}", { name: "${loser}-work" }); await sleep("1s", { name: "${loser}-extra" }); return "${loser}";`,
+  );
+  ok("the extra step landed inside the losing branch", EXTRA !== RACE, JSON.stringify({ loser }));
+
+  // WRITABLE, deliberately: on a read-only journal the frontier is refused by the journal before the
+  // handler is ever called, so the cell would be proving the journal's refusal and not the walk's
+  // branch selection.
+  const rj4 = new Journal({ run: "r-race", entries: rj.entries() });
+  await run(EXTRA, { runId: "r-race", handler: recorder, journal: rj4, migration: true })
+    .then(() => null, (e: unknown) => e as Error);
+  ok("a migration performs NO new work inside a branch the race decided",
+    !asked.some((k) => k.includes(`/b:${loser}/`)), JSON.stringify(asked));
+
+  // …and the recorder can see work at all, or the cell above passes because nothing was watching.
+  const [watcher, seen] = tapped();
+  const rj5 = new Journal({ run: "r-race", entries: rj.entries() });
+  await run(`${RACE}\nawait sleep("5s", { name: "brand-new" });`, {
+    runId: "r-race", handler: watcher, journal: rj5, migration: true,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("the same instrument DOES record a step the recorded run never had",
+    seen.some((k) => k.includes("brand-new")), JSON.stringify(seen));
+}
+
+// ---- 2b) a fanOut walks the branches the RECORDED run had, not the ones the edit added ----------
+{
+  // A fanOut has no losers, so the walk's branch set is the recorded one — and the edit can change
+  // it in both directions. A branch the new source DROPPED must orphan its steps, which is the same
+  // reporting rule as section 1. A branch the new source ADDED is not the check's subject: the walk
+  // exists to say what the edit removed and what no longer hashes, and performing brand-new work
+  // inside it would make a check that reads the journal into a run that writes to the world.
+  const ITEMS = (list: string) =>
+    `await fanOut([${list}], async (lens) => { await sleep("1m", { name: lens }); return lens; }, { name: "reviews", key: (lens) => lens });`;
+
+  const fj = new Journal({ run: "r-fan" });
+  await run(ITEMS(`"a", "b"`), { runId: "r-fan", handler: new SimHandler({}), journal: fj });
+  ok("the recorded fanOut has both branches",
+    keys(fj.entries()).filter((k) => k.includes("/b:")).length === 2, keys(fj.entries()));
+
+  const [handler, asked] = tapped();
+  const fj2 = new Journal({ run: "r-fan", entries: fj.entries() });
+  const added = await run(ITEMS(`"a", "b", "c"`), {
+    runId: "r-fan", handler, journal: fj2, migration: true,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("a migration completes over a fanOut the edit widened", added === null, `${added?.name}: ${added?.message?.slice(0, 140)}`);
+  ok("and performs no work in the branch the edit added",
+    !asked.some((k) => k.includes("/b:c/")), JSON.stringify(asked));
+
+  const fj3 = new Journal({ run: "r-fan", entries: fj.entries(), readOnly: true });
+  const dropped = await run(ITEMS(`"a"`), {
+    runId: "r-fan", handler: checkHandler(10_000_000), journal: fj3, migration: true,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("a migration completes over a fanOut the edit narrowed", dropped === null, `${dropped?.name}: ${dropped?.message?.slice(0, 140)}`);
+  ok("and the dropped branch's step is an orphan, which is the whole point of walking",
+    keys(fj3.orphans()).some((k) => k.includes("/b:b/")), keys(fj3.orphans()));
 }
 
 // ---- 3) a divergence INSIDE the winning branch is seen, because the branch is entered -----------
