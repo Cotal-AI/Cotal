@@ -25,6 +25,21 @@
       "find": "why: r.output.trim() === \"\"",
       "replace": "why: false",
       "expectRed": "a run with NO OUTPUT is named as never having started"
+    },
+    {
+      "name": "an exit code alone is enough for a PASS again",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "    if (r.status === 0 && !printedFailures) {",
+      "replace": "    if (r.status === 0) {",
+      "expectRed": "a suite whose teardown forces exit 0 over real failures is not a SURVIVED"
+    },
+    {
+      "name": "the failure vocabulary is widened until it fires on a clean run",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "const FAILURE_EVIDENCE = \"(?:^|[\\\\s:])(?:✗|FAIL\\\\b|FAILED\\\\b|AssertionError)|\\\\b[1-9]\\\\d* failed\\\\b\";",
+      "replace": "const FAILURE_EVIDENCE = \"failed\";",
+      "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
+      "note": "A pattern matching the word 'failed' anywhere fires on the summary line of a CLEAN run ('0 failed'), which turns every genuine survivor into a WRONG-RED. Narrowness is the whole design of this default."
     }
   ]
 }

@@ -98,6 +98,18 @@ const progressCount = (output, pattern) => {
   return (output.match(re) ?? []).length;
 };
 
+/**
+ * What counts as a suite SAYING IT FAILED, independent of its exit code.
+ *
+ * Deliberately narrow: this only ever downgrades a green, so a false positive here turns a genuine
+ * survivor into a visible WRONG-RED rather than into silence — but a check that fires on innocent
+ * text is a check people route around, so it matches only unambiguous verdict vocabulary: a `✗`
+ * marker, a FAIL/FAILED word, an `AssertionError`, or a summary counting a NON-ZERO failure ("0
+ * failed" is exactly what a clean run prints). Override per config or per mutation with
+ * `failurePattern` when a suite spells its verdicts some other way.
+ */
+const FAILURE_EVIDENCE = "(?:^|[\\s:])(?:✗|FAIL\\b|FAILED\\b|AssertionError)|\\b[1-9]\\d* failed\\b";
+
 function proveOne(m, opts) {
   const cwd = opts.cwd;
   const path = join(cwd, m.file);
@@ -173,7 +185,17 @@ function proveOne(m, opts) {
       };
     }
 
-    if (r.status === 0) {
+    // AN EXIT CODE IS NOT A PASS. A suite's own teardown gets the last word on the way out, and a
+    // cleanup handler that calls `process.exit(0)` overrides the `process.exitCode = 1` the suite
+    // set for itself — measured in the wild by another lane, and reproduced here: a counting suite
+    // printed "✗ FAIL: the guard refuses zero" and "2 passed, 1 failed", and exited 0. Graded on the
+    // exit code alone that is a SURVIVED, which publishes "the suite does not test this" about a
+    // check the suite had just caught. A suite cannot defend against its own teardown; the grader
+    // has to. So a PASS needs POSITIVE evidence: exit 0, the run's own terminal marker, and no
+    // failure printed anywhere in the output.
+    const failRe = new RegExp(m.failurePattern ?? opts.failurePattern ?? FAILURE_EVIDENCE, "m");
+    const printedFailures = failRe.test(r.output);
+    if (r.status === 0 && !printedFailures) {
       return {
         label,
         verdict: "SURVIVED",
@@ -181,13 +203,18 @@ function proveOne(m, opts) {
         ticks,
       };
     }
+    // Exit 0 WITH failures printed is not a survival, and it is not automatically a kill either: it
+    // is a red whose exit code cannot be trusted, so it goes through the same naming below. Falling
+    // straight to INCONCLUSIVE instead would be a false negative on a test that just did its job,
+    // and the repair anyone reaches for after one of those is to weaken the test.
+    const untrusted = r.status === 0 ? " (the suite exited 0 while printing failures — its own teardown overrode the code)" : "";
     // Red is necessary but not sufficient: it has to be red for the reason claimed, or an unrelated
     // early failure reads as proof.
     if (m.expectRed && !r.output.includes(m.expectRed)) {
       return {
         label,
         verdict: "WRONG-RED",
-        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`,
+        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}${untrusted}`,
         ticks,
       };
     }
@@ -210,7 +237,7 @@ function proveOne(m, opts) {
     // The marker must be independent of the outcome the mutation changes — a line that only prints
     // on success means absence proves the mutation WORKED, and every genuine kill would be graded
     // INCONCLUSIVE instead.
-    return { label, verdict: "KILLED", why: m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`, ticks };
+    return { label, verdict: "KILLED", why: `${m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`}${untrusted}`, ticks };
   } catch (e) {
     restore();
     return { label, verdict: "ERROR", why: `harness threw: ${e.message}` };
@@ -242,7 +269,7 @@ let opts = {
  */
 const MUTATION_KEYS = [
   "name", "label", "file", "find", "replace", "expectRed", "allowMultiple", "command",
-  "cell", "cellTemplate", "completionMarker", "id", "note",
+  "cell", "cellTemplate", "completionMarker", "failurePattern", "id", "note",
 ];
 
 if (a.config) {
@@ -260,7 +287,7 @@ if (a.config) {
         usage(`mutation ${JSON.stringify(m.name ?? m.label ?? m.file)} carries the unknown key ${JSON.stringify(k)}. This tool would ignore it — and if it is a misspelt "expectRed", every mutation below would report KILLED on any red at all. Known keys: ${MUTATION_KEYS.join(", ")}`);
     }
   }
-  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker };
+  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker, failurePattern: cfg.failurePattern ?? opts.failurePattern };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
   mutations = [{ file: a.file, find: a.find, replace: a.replace, expectRed: a["expect-red"] }];
 } else {

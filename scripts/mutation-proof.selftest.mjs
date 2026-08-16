@@ -266,6 +266,53 @@ writeFileSync(outside, JSON.stringify({
 r = runTool(["--config", outside]);
 check("a run with NO OUTPUT is named as never having started", r.stdout.includes("NO OUTPUT"), r.stdout.slice(-400));
 
+// 7i. AN EXIT CODE IS NOT A PASS. A counting suite that sets `process.exitCode = 1` and then calls
+// a teardown which exits 0 hands the grader a clean code over a run that printed real failures.
+// Graded on the code alone that is a SURVIVED — "the suite does not test this", published about a
+// check the suite had just caught. The suite cannot defend against its own teardown; the grader has
+// to, by requiring positive evidence of a pass rather than the absence of a red one.
+writeFileSync(
+  join(root, "count.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let passed = 0, failed = 0;",
+    "const c = (n, ok) => { if (ok) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.log(`  ✗ FAIL: ${n}`); } };",
+    "c('oversized values are refused', admit(50) === false);",
+    "console.log(`  ✓ done: ${passed} passed, ${failed} failed`);",
+    "process.exitCode = failed > 0 ? 1 : 0;",
+    "process.exit(0);   // the teardown gets the last word",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm count", { cwd: root });
+writeFileSync(outside, JSON.stringify({
+  command: `${process.execPath} count.mjs`,
+  completionMarker: "  ✓ done",
+  mutations: [{ ...baseMutation, expectRed: "oversized values are refused" }],
+}));
+r = runTool(["--config", outside]);
+check("a suite whose teardown forces exit 0 over real failures is not a SURVIVED",
+  !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+check("...and the untrustworthy exit code is named in the verdict",
+  r.stdout.includes("teardown overrode the code"), r.stdout.slice(-400));
+
+// And the mirror, so the requirement cannot be satisfied by never reporting SURVIVED again: a
+// genuinely untested change on the SAME suite still comes back SURVIVED.
+writeFileSync(outside, JSON.stringify({
+  command: `${process.execPath} count.mjs`,
+  completionMarker: "  ✓ done",
+  mutations: [{
+    name: "an untested function is changed",
+    file: "src/impl.js",
+    find: "'untouched'",
+    replace: "'mutated'",
+    expectRed: "oversized values are refused",
+  }],
+}));
+r = runTool(["--config", outside]);
+check("...while a change nothing tests is still SURVIVED on that same suite",
+  r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
 rmSync(dirname(outside), { recursive: true, force: true });
 rmSync(cfgPath);
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg-gone", { cwd: root });
