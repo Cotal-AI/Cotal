@@ -279,8 +279,13 @@ try {
   try { await poke(); } catch (e) { goneThrew = e; }
   const msg = goneThrew instanceof Error ? goneThrew.message : String(goneThrew);
   c("it still states the command was not run", /WAS NOT RUN/.test(msg), msg.slice(0, 200));
+  // NOT `/describe|resolve/`: that matched the UNWRAPPED error too, because the unwrapped error IS
+  // the describe failure — so the cell was green with the fix and green without it, and graded
+  // nothing on its own. Measured, not suspected: both mutations below reported 2 red where this
+  // cell should have made 3. Anchored instead on the phrase only the wrapper emits, so the cell
+  // fails when the refusal is replaced by the resolve rather than subordinated to it.
   c("...and names the resolve failure as the reason the repair could not be attempted",
-    /describe|resolve/i.test(msg), msg.slice(0, 200));
+    /re-issue could not be resolved: /.test(msg), msg.slice(0, 200));
   c("...and still carries the bind-refused marker, so a caller keys on the same fact either way",
     replyRefusedBeforeEffect(goneThrew instanceof EpEnvelopeError ? goneThrew.toEpError() : undefined),
     goneThrew instanceof EpEnvelopeError ? goneThrew.details : goneThrew);

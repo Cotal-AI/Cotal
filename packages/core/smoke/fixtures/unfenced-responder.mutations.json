@@ -2,7 +2,7 @@
   "command": "pnpm smoke:unfenced-responder",
   "mutations": [
     {
-      "name": "PREDICTED KILLED (4 red) - the allowlist gate removed, so the caller re-issues against a responder that already ran the command",
+      "name": "PREDICTED KILLED (2 red, corrected from 4) - the allowlist gate removed, so the caller re-issues against a responder that already ran the command",
       "file": "packages/core/src/endpoint.ts",
       "find": "          if (!isRepeatSafeCommand(endpoint, command)) throw e;\n",
       "replace": "",
