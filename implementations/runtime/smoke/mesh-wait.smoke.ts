@@ -16,7 +16,7 @@
  * pushed out by traffic, which is what `heartbeatCheckpoint` exists for. The cell that matters
  * there is a CARDINALITY one: exactly one armed schedule at the CURRENT generation. An existence
  * assertion passes while a superseded generation is quietly discarded, which is the shape that
- * produced this lane's best finding.
+ * produced the best finding in this package.
  *
  * Run: pnpm smoke:runtime-mesh-wait   (needs nats-server on PATH)
  */
@@ -204,7 +204,7 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
   await wait(200);
   const { ctx: k } = ctx(id);
   // The timeout is here so a MISS ends as `null` instead of waiting forever: a cell that hangs when
-  // its claim fails reddens no line, it just stops the suite (this lane's R15-B rule).
+  // its claim fails reddens no line, it just stops the suite.
   const awaited = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "3s" }, k);
   await wait(300);
   await armPending();

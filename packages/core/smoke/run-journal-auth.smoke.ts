@@ -1,7 +1,7 @@
 /**
  * The run driver's journal grants, against an ENFORCING broker.
  *
- * Every other suite in this lane runs on an open broker, so it proves what the code does and nothing
+ * Every other suite for this plane runs on an open broker, so it proves what the code does and nothing
  * about what a credential permits. That gap shipped a real defect: the replay consumer's grant rows
  * carried `wfj_<runId>_*`, which reads like a pattern and is not one — NATS treats `*` as a wildcard
  * only as a WHOLE dot-delimited token, so those rows were literal strings matching no real API

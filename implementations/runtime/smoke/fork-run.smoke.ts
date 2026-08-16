@@ -648,7 +648,7 @@ const plan = async (
   // Lost-branch policy is NAMED and DEFINED NOWHERE, and routing losers into the existing
   // orphan table would change what already-working UNEDITED source does: every migration over a
   // race with a rejected-kind orphan in a losing arm would start being refused. That is a semantic
-  // decision, so it is a SPEC proposal rather than something this lane invents. The cell stays red-
+  // decision, so it is a SPEC proposal rather than something this package invents. The cell stays red-
   // when-fixed until that lands.
   c("WRONG TODAY: an unedited fork sweeps the loser's step into the prefix rather than dispositioning it",
     keys(control.cut).includes(LOSER), keys(control.cut));

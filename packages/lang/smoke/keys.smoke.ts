@@ -214,7 +214,7 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
 // ---- g3: stepKeyString is NOT injective, pinned as a KNOWN DEFECT ---------------------------
 //
 // These cells assert what the code does TODAY and are written to DIE. The repair makes them fail,
-// and that is the point: they are the tripwire for a defect this lane did not detect and is now
+// and that is the point: they are the tripwire for a defect the suite did not detect and is now
 // fixing against its own model of it. A cell that must break when the bug is fixed has no
 // correct-looking state to pass in, so it cannot go quietly vacuous the way a forward-looking
 // assertion can.
