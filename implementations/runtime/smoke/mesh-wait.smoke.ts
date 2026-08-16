@@ -187,7 +187,19 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 // created on resume, would start from "now" and this message would never have happened.
 {
   const id = tok("durable");
-  await jsm.consumers.add(chatStream(SPACE), waitConsumerConfig(SPACE, id, CHANNEL) as never);
+  // The consumer is created from the CONTRACT written out here, not from the function under test.
+  // Building the fixture with `waitConsumerConfig` was the first version and it graded nothing: a
+  // mutation to the derivation moved the fixture with it, and the cell passed with the link broken.
+  c("the wait durable's name is `wfw_<requestId>` — a derivation something else can reproduce",
+    waitConsumerName(id) === `wfw_${id}`, waitConsumerName(id));
+  c("and its filter is the channel, from any principal", 
+    (waitConsumerConfig(SPACE, id, CHANNEL) as { filter_subject: string }).filter_subject === chatSubject(SPACE, "*", "*", CHANNEL));
+  await jsm.consumers.add(chatStream(SPACE), {
+    durable_name: `wfw_${id}`,
+    filter_subject: chatSubject(SPACE, "*", "*", CHANNEL),
+    ack_policy: "explicit" as never,
+    deliver_policy: "new" as never,
+  });
   await say("landed while the host was down");
   await wait(200);
   const { ctx: k } = ctx(id);
