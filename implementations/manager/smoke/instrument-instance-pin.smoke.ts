@@ -46,7 +46,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
-  instancePinnedInstrumentCapabilities, respondedButUnbound, EP_UNBOUND_RESPONDER, CotalEndpoint,
+  instancePinnedInstrumentCapabilities, respondedButUnbound, replyRefusedBeforeEffect, EP_UNBOUND_RESPONDER, CotalEndpoint,
   isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS,
   type EpCaller,
   type ResolvedService,
@@ -95,6 +95,25 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  and after a call, compare the delta. */
 const pubs = (ep: CotalEndpoint): number =>
   (ep as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+
+/**
+ * THE DISPOSITION AND THE EFFECT MUST AGREE — the deterministic form of "exactly once", and the
+ * reason "exactly once" could not be asserted literally.
+ *
+ * A re-issue goes back through the SAME class queue, so in a two-manager space it can be refused a
+ * second time. That is not a defect and it is not new (the single retry long predates this change);
+ * it means a call may legitimately end having run ZERO times. `=== 1` would therefore be a flaky
+ * assertion of a true property, which is the worst of both — it would go red on a correct run about
+ * half the time, and the fix would be to weaken it until it stopped noticing anything.
+ *
+ * What IS deterministic is the biconditional: a reply carrying the bind refusal means the command
+ * did not run, and any other reply means it ran exactly once. A duplicate breaks it (two runs on one
+ * reply); a lost effect reported as success breaks it; a refusal after the handler ran breaks it.
+ */
+const dispositionAgrees = (
+  reply: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } | undefined,
+  ranDelta: number,
+): boolean => ranDelta === (replyRefusedBeforeEffect(reply?.error) ? 0 : 1);
 
 const readTolerant = async (
   ep: CotalEndpoint, label: string, attempts = 6,
@@ -152,6 +171,32 @@ try {
   for (const r of [root1, root2]) recordMesh({ space, server: SERVERS, root: r, mode: "auth", ts: new Date().toISOString() });
   m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root1 });
   m2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root2 });
+  /**
+   * THE EXECUTION COUNTER — the instrument this suite did not have, and the reason several of its
+   * cells had to be re-cut rather than merely re-run.
+   *
+   * Every cell below that once asked "did the effect happen twice" asked it as "did more than one
+   * message leave the caller". That proxy held while a split was detected AFTER the responder had
+   * handled the request: a second publish then meant a second execution. Under the pre-effect fence
+   * it is the opposite — the first attempt is refused before the handler, so the SECOND publish
+   * carries the FIRST execution, and the proxy now reports a repaired call and a duplicated one
+   * identically. Counting publishes cannot be made to work here; it has to be counted where the
+   * effect is applied.
+   *
+   * So: wrap each served command's handler, per manager, and count entries. The fence sits ahead of
+   * the handler, so an increment means the command RAN — not that a request arrived, not that a
+   * reply came back. Installed before `start()` because the defs are built at serve time.
+   */
+  const ran: Record<string, number> = Object.create(null);
+  const totalRuns = (command: string): number => ran[command] ?? 0;
+  for (const m of [m1, m2]) {
+    const priv = m as unknown as { managerServiceDefs: () => { command: string; handler: (ctx: unknown) => unknown }[] };
+    const orig = priv.managerServiceDefs.bind(priv);
+    priv.managerServiceDefs = () => orig().map((d) => ({
+      ...d,
+      handler: (ctx: unknown) => { ran[d.command] = (ran[d.command] ?? 0) + 1; return d.handler(ctx); },
+    }));
+  }
   await m1.start();
   await m2.start();
   const IID1 = (m1 as unknown as MgrPriv).managerInstanceId;
@@ -311,26 +356,55 @@ try {
         cached !== undefined && ghost !== IID1 && ghost !== IID2 && /^[a-z0-9]{26,32}$/.test(ghost), ghost);
       if (cached) cached.responder.instanceId = ghost;
 
-      // (a) A CREATING command must surface. `spawn` names a persona that does not exist, so the
-      // manager refuses it cheaply; no agent is started. What matters is that the request REACHED a
-      // responder, which is enough to make a second invoke a second attempt that may duplicate the effect. Without the guard the
-      // catch drops the cache, re-resolves against a real instance and invokes AGAIN, and that
-      // second call is the duplicate; the caller is handed its success and never learns of the split.
+      // (a) A CREATING command. `spawn` names a persona that does not exist, so a manager that
+      // REACHES the handler refuses it cheaply; no agent is started. The handler entry is still
+      // counted, which is what makes "how many times did this run" answerable at all.
+      //
+      // WHAT MOVED, AND WHY THESE CELLS ARE RE-CUT RATHER THAN RETIRED. The claim they were written
+      // for — a caller is never handed the success of a SECOND execution — has not changed and is
+      // still asserted below, on the execution counter. What changed is the mechanism that keeps it
+      // true, and therefore what the caller sees on the way. These managers now carry the pre-effect
+      // fence: the first attempt is REFUSED before the handler, so the split no longer surfaces as a
+      // throw the caller must interpret, and the re-issue that follows is a first attempt rather
+      // than a second. The old assertions (`SURFACES`, `failed-precondition`, the
+      // responder-answered marker) described the only disposition available when a split could only
+      // be caught after the fact; they are now the disposition of a caller talking to a responder
+      // that predates the fence, which `smoke:unfenced-responder` drives directly and which this
+      // fixture can no longer produce — every manager here is fenced.
+      const spawnedBefore = totalRuns("spawn");
       let threw: unknown;
       let returned: unknown;
       try {
         returned = await ep.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${randomUUID().slice(0, 6)}`, agent: "claude" });
       } catch (e) { threw = e; }
-      check("a CREATING command's split SURFACES instead of being swallowed by a second invoke",
-        threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
-      check("...as failed-precondition", threw instanceof EpEnvelopeError && threw.code === "failed-precondition",
-        threw instanceof Error ? threw.message.slice(0, 160) : threw);
-      check("...carrying the responder-answered marker, which is what gates the retry",
-        respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
-      const detail = (threw instanceof EpEnvelopeError ? threw.details ?? [] : []).find((d) => d.kind === EP_UNBOUND_RESPONDER);
-      check("...and the marker names the instance that actually answered it",
-        typeof detail?.answeredBy === "string" && (detail.answeredBy === IID1 || detail.answeredBy === IID2),
-        detail);
+      const spawnReply = (returned as { reply?: { ok?: boolean; error?: { code?: string } } } | undefined)?.reply;
+      // THE INVARIANT, UNCHANGED AND NOW MEASURED DIRECTLY. It used to be inferred from a publish
+      // count; it is now the count of handler entries, which is the property itself.
+      check("a CREATING command still runs AT MOST ONCE across the split (execution count, not publish count)",
+        totalRuns("spawn") - spawnedBefore <= 1, { ran: totalRuns("spawn") - spawnedBefore, threw, spawnReply });
+      // NARROWED, and the narrowing is the fence: this used to assert the call SURFACED. It no
+      // longer does, because the refusal arrives before the effect and the client repairs it. The
+      // surfacing case is not gone from the world — it is the version-skewed pair, and it is graded
+      // in `smoke:unfenced-responder`, not here.
+      check("...and it no longer SURFACES to the caller: the fence refused the first attempt before any effect",
+        threw === undefined, threw instanceof Error ? threw.message.slice(0, 200) : threw);
+      // The old `failed-precondition` cell, re-cut: the code is unchanged, but it now arrives on a
+      // REPLY the client acted on rather than on a throw the caller had to. `spawn` on a persona
+      // that does not exist is itself a failed-precondition, so the code alone cannot tell the two
+      // apart — the marker is what distinguishes them, which is why the next cell exists.
+      check("...the re-issue reached a live manager and got that manager's own answer",
+        spawnReply?.ok === false && spawnReply.error?.code === "failed-precondition", spawnReply);
+      // MOVED, not deleted: the responder-answered marker is what a caller gets from a responder
+      // WITHOUT the fence. Asserting its ABSENCE here is the same claim from the other side, and it
+      // is what would redden if a manager in this fixture ever stopped fencing.
+      check("...and the responder-answered marker is absent, because no responder here answered without fencing",
+        !respondedButUnbound(threw)
+        && (threw instanceof EpEnvelopeError ? (threw.details ?? []) : []).every((d) => d.kind !== EP_UNBOUND_RESPONDER),
+        threw instanceof EpEnvelopeError ? threw.details : threw);
+      // ...and the recovery is COUNTED, which is the only reason the split rate stays visible once
+      // the client stops handing splits to the operator.
+      check("...and the split was counted as recovered, so handling it did not make it unmeasurable",
+        ep.splitRecoveryCount >= 1, ep.splitRecoveryCount);
 
       // (b) THE OTHER SIDE OF THE BOUNDARY, and the reason (a) is a narrow guard rather than a blanket
       // one. A read must still self-heal: in a two-manager space roughly half of all class-queue calls
@@ -348,12 +422,36 @@ try {
       // re-resolve, invoke again). Whether that second invoke then succeeds or splits once more is
       // a coin flip in a two-manager space, so the witness is the cache, which the heal leaves
       // bound to a REAL instance either way; a widened guard would have dropped it and thrown.
+      // AND WHICH MECHANISM HEALED IT IS NOW ASSERTED, not left to whichever one happens to be
+      // reachable. This cell used to pass because the allowlist let a read be re-issued after the
+      // split had already been reported. It passes today because the fence refuses the read before
+      // it runs and the client recovers from the refusal — a different mechanism, the same green,
+      // and nothing in the suite said so. A cell that silently changes which code it defends keeps
+      // its tick while the thing it was written to defend stops being exercised, so the two
+      // mechanisms are separated here: this arm asserts the REFUSAL path (the recovery counter
+      // moves), and the allowlist path is asserted where it is still reachable — against a
+      // responder without a fence, in `smoke:unfenced-responder`.
       const readPubs = pubs(ep);
+      const readSplitsBefore = ep.splitRecoveryCount;
+      const psBefore = totalRuns("ps");
       let readThrew: unknown;
-      try { await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
+      let readLanded: { reply?: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } } | undefined;
+      try { readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
       const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
         afterRead === IID1 || afterRead === IID2, { afterRead, threw: readThrew instanceof Error ? readThrew.message.slice(0, 120) : readThrew });
+      check("...and it healed through the REFUSAL, not the allowlist: the recovery counter moved",
+        ep.splitRecoveryCount === readSplitsBefore + 1,
+        { before: readSplitsBefore, after: ep.splitRecoveryCount });
+      // A read is repeat-safe, so a duplicate would be harmless — which is exactly why it is the one
+      // place a duplicate could hide. Counted anyway: under the fence the first attempt is refused
+      // before the handler, so even here the effect lands once.
+      // NOT `=== 1`: the re-issue can split again, so a correct run may end with the read never
+      // having run. The claim that IS total is that the reply and the effect agree.
+      const readReply = (readThrew === undefined ? readLanded?.reply : undefined);
+      check("...and the read's disposition matches its effect: refused ⇒ it never ran, answered ⇒ it ran once",
+        readThrew !== undefined || dispositionAgrees(readReply, totalRuns("ps") - psBefore),
+        { ran: totalRuns("ps") - psBefore, reply: readReply });
       // A re-resolve is a describe plus the contract-store reads behind it, so the heal is many
       // publishes; the point is that it is MORE than the single publish a held guard leaves.
       check("...and that heal re-issued (more than the one publish a held guard leaves)",
@@ -434,30 +532,61 @@ try {
       let threw: unknown;
       let returned: unknown;
       const purgePubs = pubs(ep);
+      const purgedBefore = totalRuns("purge");
+      const purgeSplitsBefore = ep.splitRecoveryCount;
       try {
         returned = await ep.invokeService(MANAGER_ENDPOINT, "purge", { includeDms: false });
       } catch (e) { threw = e; }
-      check("a DESTRUCTIVE non-creating command's split SURFACES: it is not purged a second time",
-        threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
-      check("...carrying the responder-answered marker (so the caller can tell it may already have run)",
-        respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
-      // THE DIRECT WITNESS: exactly one publish left this connection. A retry re-issues (a describe
-      // and a second invoke), and asserting on the throw alone cannot tell "the guard held" from
-      // "the retry ran and split again", because a second split throws the same error.
-      check("...and NOTHING was re-issued: exactly one publish (no describe, no second invoke)",
-        pubs(ep) - purgePubs === 1, { publishes: pubs(ep) - purgePubs });
-      // AND THE STALE BIND IS GONE. The bind named an incarnation a different live instance has
-      // answered for; had it stayed, every later deliberate call on this handle would have reused
-      // it and met the same refusal (adversarial review, distsys lens: permanent on an endpoint
-      // with no repeat-safe command to heal it through). Dropping it is not a retry, as the
-      // publish count just proved.
-      check("...and the stale bind was dropped, so a deliberate re-issue re-resolves",
-        cache.get(MANAGER_ENDPOINT) === undefined, { got: cache.get(MANAGER_ENDPOINT)?.responder.instanceId });
-      // The narrow-guard version of this code returned a SUCCESS here, having purged twice. Naming
-      // that explicitly so a future reader knows which way this cell fails.
-      check("...and does NOT return the second execution's success",
-        (returned as { reply?: { ok?: boolean } } | undefined)?.reply?.ok !== true,
-        (returned as { reply?: unknown } | undefined)?.reply);
+      // THE CLAIM, UNCHANGED SINCE THIS CELL WAS WRITTEN: a destructive, non-convergent command is
+      // never applied twice because a call split. `purge` reaches a real STREAM.PURGE, and its
+      // second execution deletes messages published between the two, so "the first one already
+      // deleted everything" is false the moment anyone is still publishing.
+      //
+      // WHAT MOVED: how it is measured, and it had to move. This asserted "exactly one publish left
+      // the caller", which meant one execution only while a split was caught AFTER the responder
+      // handled the request. With the pre-effect fence the first attempt is refused before the
+      // handler and the SECOND publish carries the FIRST execution — so the old instrument now
+      // reports a correctly repaired call and a duplicated one identically. It is replaced by a
+      // count taken where the effect is applied, which is the property itself rather than a proxy
+      // for it.
+      const purgeReply = (returned as { reply?: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } } | undefined)?.reply;
+      check("a DESTRUCTIVE non-creating command is NEVER purged twice across the split (handler entries, not publishes)",
+        totalRuns("purge") - purgedBefore <= 1, { ran: totalRuns("purge") - purgedBefore, threw });
+      check("...and its disposition matches its effect: refused ⇒ nothing was purged, answered ⇒ purged once",
+        threw !== undefined || dispositionAgrees(purgeReply, totalRuns("purge") - purgedBefore),
+        { ran: totalRuns("purge") - purgedBefore, reply: purgeReply });
+      // NARROWED BY THE FENCE: this used to assert the split SURFACED, because after-the-fact
+      // detection left the caller nothing better. The refusal arrives before the effect now, so the
+      // client repairs it and the operator is not asked to verify anything.
+      check("...and it no longer surfaces: the refusal arrived before the effect, so there was nothing to verify",
+        threw === undefined, threw instanceof Error ? threw.message.slice(0, 200) : threw);
+      check("...carrying no responder-answered marker, because no responder here answered without fencing",
+        !respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
+      // NARROWED, and this is the one where the old instrument was not merely stale but INVERTED:
+      // a re-issue is now the CORRECT behaviour for a command the allowlist would never repeat, so
+      // "exactly one publish" would today be the signature of a client that had STRANDED on its
+      // stale bind. What must still hold is that the extra publishes carry no extra effect, which
+      // the execution count above states directly.
+      check("...and the re-issue DID go out — more than one publish, and every one of them safe",
+        pubs(ep) - purgePubs > 1, { publishes: pubs(ep) - purgePubs });
+      // GROUP B, NARROWED TO WHAT IT ACTUALLY MEASURES. The claim was: the bind naming a gone
+      // incarnation must not survive the call, or every later deliberate call on this long-lived
+      // handle reuses it and meets the same refusal forever — permanent, on an endpoint with no
+      // repeat-safe command to heal it through. That claim is intact. What is no longer true is the
+      // instrument: the cache is not EMPTY, because a re-issue that SUCCEEDED repopulated it with a
+      // live record. Empty was only ever the shape of "dropped and not replaced".
+      const rebound = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
+      check("...and the stale bind did not survive the call: the handle is bound to a LIVE incarnation, not the ghost",
+        rebound === undefined || rebound === IID1 || rebound === IID2, { rebound, ghost });
+      check("...and the recovery was counted, so a handled split is still a measurable one",
+        ep.splitRecoveryCount === purgeSplitsBefore + 1, { before: purgeSplitsBefore, after: ep.splitRecoveryCount });
+      // The narrow-guard version of this code returned a SUCCESS here having purged TWICE. The
+      // success is now legitimate and the difference is not visible in the reply at all — only in
+      // the execution count above, which is exactly why that count had to exist before this cell
+      // could be re-cut.
+      check("...and any success it returns is the FIRST execution's, never a second's",
+        purgeReply?.ok !== true || totalRuns("purge") - purgedBefore === 1,
+        { reply: purgeReply, ran: totalRuns("purge") - purgedBefore });
 
       // ---- THE INTERLEAVING THAT MADE THE DROP NECESSARY ------------------------------------------
       // A long-lived client resolved instance A; A is replaced; B answers a mutating call; the
@@ -497,16 +626,32 @@ try {
       let thirdThrew: unknown;
       let thirdReturned: unknown;
       const thirdPubs = pubs(ep);
+      const thirdPsBefore = totalRuns("ps");
       try {
         thirdReturned = await ep.invokeService(third, "ps");
       } catch (e) { thirdThrew = e; }
-      check("a manager-safe command name on an UNKNOWN endpoint still SURFACES its split (the guard asked with the endpoint, not with \"manager\")",
-        respondedButUnbound(thirdThrew),
-        thirdThrew instanceof Error ? thirdThrew.message.slice(0, 200) : { returned: (thirdReturned as { reply?: unknown } | undefined)?.reply });
-      // Same witnesses as the purge cell: one publish (a guard that let this through would have
-      // re-issued a describe for the third-party name and failed on it), and the stale bind gone.
-      check("...and NOTHING was re-issued for the unknown endpoint: exactly one publish",
-        pubs(ep) - thirdPubs === 1, { publishes: pubs(ep) - thirdPubs });
+      // RE-CUT, AND THE CONDITION THAT MOVED IT IS WHICH LAYER READS THE ENDPOINT KEY. This asserted
+      // the responder-answered marker, because the ALLOWLIST was what stood between "surface" and
+      // "retry" and the allowlist is keyed by endpoint. The bind-refusal path is not gated by the
+      // allowlist at all, so that is no longer the layer under test here — the RESOLVE is, and it is
+      // keyed by endpoint just as load-bearingly: a recovery that looked up "manager" would have
+      // re-issued against a live manager under a third-party name. The witness is therefore the
+      // endpoint the account NAMES, which is derivable and unforgeable from the fixture.
+      const thirdMsg = thirdThrew instanceof Error ? thirdThrew.message : String(thirdThrew);
+      check("a manager-safe command name on an UNKNOWN endpoint still surfaces, and names THAT endpoint rather than \"manager\"",
+        thirdThrew !== undefined && thirdMsg.includes(third) && !thirdMsg.includes(`${MANAGER_ENDPOINT}.ps`),
+        thirdMsg.slice(0, 220));
+      check("...and it states the command was not run, which is what makes re-issuing it safe",
+        /WAS NOT RUN/.test(thirdMsg)
+        && replyRefusedBeforeEffect(thirdThrew instanceof EpEnvelopeError ? thirdThrew.toEpError() : undefined),
+        thirdMsg.slice(0, 220));
+      // INVERTED, deliberately. This asserted exactly ONE publish, because a re-issue was the defect.
+      // A re-issue is now the correct response to a refusal that proves nothing ran, so one publish
+      // would today be the signature of a client stranded on its stale bind. What must still hold is
+      // that no effect went with the extra publish — the manager's `ps` handler was never entered.
+      check("...and the re-issue WAS attempted (more than one publish) while nothing ran for it",
+        pubs(ep) - thirdPubs > 1 && totalRuns("ps") === thirdPsBefore,
+        { publishes: pubs(ep) - thirdPubs });
       check("...and the unknown endpoint's stale bind was dropped",
         cache.get(third) === undefined, { got: cache.get(third)?.responder.instanceId });
       cache.delete(third);
@@ -575,7 +720,8 @@ try {
         "abort-preservation": attempt,
       };
       const notReached: string[] = [];
-      const retriedAnyway: string[] = [];
+      const ranTwice: string[] = [];
+      const mismatched: string[] = [];
       const bindKept: string[] = [];
       for (const command of MANAGER_ADMIN_COMMANDS) {
         if (command === "purge") continue; // already graded above, in full
@@ -585,10 +731,11 @@ try {
         if (cache.get(MANAGER_ENDPOINT) === undefined) await readTolerant(ep, `re-resolve before ${command}`);
         const c = cache.get(MANAGER_ENDPOINT);
         if (c) c.responder.instanceId = ghost;
-        const before = pubs(ep);
+        const ranBefore = totalRuns(command);
         let err: unknown;
+        let res: unknown;
         try {
-          await ep.invokeService(MANAGER_ENDPOINT, command, adminArgs[command] ?? {});
+          res = await ep.invokeService(MANAGER_ENDPOINT, command, adminArgs[command] ?? {});
         } catch (e) { err = e; }
         // ORDER MATTERS, and getting it wrong made this cell nondeterministic in the mutated
         // direction. When a guard lets the command through, the retry either succeeds (no error, so
@@ -597,21 +744,36 @@ try {
         // The publish count is the stronger witness and it is checked first: more than one publish
         // means the command reached a responder AND was re-issued, whichever way the second invoke
         // landed. A missing marker only means "never got there" when exactly one publish went out.
-        if (pubs(ep) - before !== 1) { retriedAnyway.push(command); continue; }
-        if (!respondedButUnbound(err)) { notReached.push(command); continue; }
-        if (cache.get(MANAGER_ENDPOINT) !== undefined) bindKept.push(command);
+        // RE-CUT WITH THE COUNTER, and the witness had to change because the old one inverted. The
+        // publish count used to mean "was it re-issued", and a re-issue used to be the defect. Under
+        // the fence the re-issue is the repair and the publish count can no longer separate a
+        // repaired call from a duplicated one — only the handler-entry count can.
+        const delta = totalRuns(command) - ranBefore;
+        const reply = (res as { reply?: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } } | undefined)?.reply;
+        const refused = replyRefusedBeforeEffect(reply?.error)
+          || (err instanceof EpEnvelopeError && replyRefusedBeforeEffect(err.toEpError()));
+        // REACHED means the request got as far as a responder: it either ran, or came back refused
+        // by one. Neither ⇒ the command never got there and the rest of the loop grades nothing.
+        if (!refused && delta === 0) { notReached.push(command); continue; }
+        if (delta > 1) ranTwice.push(command);
+        if (err === undefined && !dispositionAgrees(reply, delta)) mismatched.push(command);
+        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId === ghost) bindKept.push(command);
       }
       check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
         notReached.length === 0, { notReached });
-      check("...and none of them is quietly retried: the guard reads the classifier, not a fixed list",
-        retriedAnyway.length === 0,
-        { retriedAnyway, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
-      check("...and each surfaced split dropped the stale bind (a deliberate re-issue re-resolves)",
+      // WAS: "none of them is quietly retried". A retry was the defect while a split could only be
+      // caught after the responder had handled the request. It is now the repair, and the property
+      // that replaced it is the one the old cell was protecting all along.
+      check("...and NONE of them ran twice, across the whole admin vocabulary (handler entries)",
+        ranTwice.length === 0, { ranTwice, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
+      check("...and every one of their dispositions matched its effect: refused ⇒ it never ran",
+        mismatched.length === 0, { mismatched });
+      check("...and none is left bound to the gone incarnation (a deliberate re-issue re-resolves)",
         bindKept.length === 0, { bindKept });
     } finally { await ep.stop().catch(() => {}); }
   }
 
-  console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
+console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {
   await m1?.stop().catch(() => {});
   await m2?.stop().catch(() => {});
