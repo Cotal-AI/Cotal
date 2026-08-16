@@ -162,7 +162,7 @@ function measure(value: unknown): { depth: number; items: number } {
  *  that fails before a fingerprint exists quarantines, because there is no caller-addressed
  *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
  *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
- *  hear about (SPEC:1610-1612). */
+ *  hear about (SPEC:1677-1679). */
 /**
  * Duplicate object names in the RAW bytes, which no post-parse check can see.
  *
@@ -231,7 +231,7 @@ function decimalValueKey(literal: string): string {
 }
 
 /**
- * Out-of-range numbers in the RAW bytes — the fourth I-JSON condition SPEC:1587-1588 names
+ * Out-of-range numbers in the RAW bytes — the fourth I-JSON condition SPEC:1654-1655 names
  * ("unparseable, duplicate object names, lone surrogate, out-of-range number") and the only one
  * this module did not enforce.
  *

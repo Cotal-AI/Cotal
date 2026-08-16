@@ -62,7 +62,7 @@ c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances`, an IN-MEMORY m
 pending("the CANONICALIZER writes goalidx create-only BEFORE the bind (step 4a), so the index no longer depends on a live manager's memory");
 
 console.log("\n── THE MECHANISM THAT MUST LIVE — read this before deleting anything ──");
-// SPEC:2239 REQUIRES a provisioner sweep over `goalidx`. J2 replaces the IMPLEMENTATION and never
+// SPEC:2391 REQUIRES a provisioner sweep over `goalidx`. J2 replaces the IMPLEMENTATION and never
 // the MECHANISM. Three orphan classes exist that the effects durable structurally cannot see — the
 // worst being a crash after `goalidx` and before the bind, where no decision message will ever
 // exist, so the occupancy row leaks FOREVER if the sweep is gone.
@@ -75,7 +75,7 @@ const sweepBody = sweepStart < 0 ? "" : src.slice(sweepStart, src.indexOf("\n  p
 c("the sweep body was located and is non-trivial (so the cell below reads something)",
   sweepBody.length > 500, { bytes: sweepBody.length });
 c("the boot sweep EXISTS and enumerates goalidx over a scoped provisioner credential — "
-  + "SPEC:2239 REQUIRES this mechanism; J2 replaces its IMPLEMENTATION and never the mechanism itself. "
+  + "SPEC:2391 REQUIRES this mechanism; J2 replaces its IMPLEMENTATION and never the mechanism itself. "
   + "IF THIS CELL IS FAILING BECAUSE YOU DELETED THE SWEEP, THAT IS THE BUG, NOT THIS CELL. "
   + "A crash after goalidx and before the bind produces no decision message ever, so the effects "
   + "durable cannot see it and the row leaks forever with no sweep.",

@@ -470,7 +470,7 @@ const throwsMsg = (label: string, fn: () => unknown, needle: string) => {
 admitsFloor("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", undefined, HORIZON);
 admitsFloor("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction "
   + "spelling, not a zero-length retention", 0, HORIZON);
-// THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON (SPEC:3008-3011). This pair used to read
+// THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON (SPEC:3203-3206). This pair used to read
 // "a fact age EXACTLY at the horizon is admitted" and it was WRONG — 24 h of EPF retention evicts
 // the 90-day receipts whose reconstruction source the acceptance fact IS. A reviewer found it by
 // reading the spec sentence the row cited rather than the row. The lesson generalises past this
@@ -566,7 +566,7 @@ try {
   const ept = await cfg(eptStreamName(SPACE));
   c("EPT has message schedules ENABLED", ept.allow_msg_schedules === true);
   const epw = await cfg(epwStreamName(SPACE));
-  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC 13.6:1797-1799)",
+  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC 13.6:1864-1866)",
     epw.retention === "workqueue" && epw.allow_direct === false);
   const epc = await cfg(epcStreamName(SPACE));
   c("EPC has no age eviction (artifacts are permanent)", epc.allow_direct === true && epc.max_age === 0);

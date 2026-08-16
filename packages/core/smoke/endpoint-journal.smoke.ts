@@ -228,7 +228,7 @@ admits("c8 a string spelling out a name is CONTENT, never structure", { id: "r",
 admits("c8 quoted braces and a trailing backslash are content too",
   { id: "req-1", args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } } });
 
-// c10 — OUT-OF-RANGE NUMBERS, the fourth I-JSON condition SPEC:1587-1588 names and the last one
+// c10 — OUT-OF-RANGE NUMBERS, the fourth I-JSON condition SPEC:1654-1655 names and the last one
 // this module did not enforce. Found the same way c8 was and NOT the way the rest of this file was:
 // by reading what the SPEC names against what the code can produce. No mutant could have found it,
 // and that is a property of the class rather than of the effort — the evidence is destroyed by
@@ -303,7 +303,7 @@ c("c5 and that cause is no-canonical-form, not no-usable-id",
 
 // c6 — the ONLY ceiling-adjacent outcome that produces a caller-addressed decision fact. It is a
 // rejection rather than a quarantine for exactly one reason: the fingerprint exists by then, so
-// there is a caller-scoped subject to write the answer to (SPEC:1610-1612).
+// there is a caller-scoped subject to write the answer to (SPEC:1677-1679).
 // AND IT IS REACHABLE WITHOUT CONTRIVANCE, which is why the two paths differ at all: the
 // fingerprint replaces `auth` with a DIGEST, so a one-character secret becomes 71 characters and
 // the canonical form is larger than the bytes that arrived. Measured here: 91 raw, 229 canonical.

@@ -143,12 +143,12 @@ export interface EndpointStreamOptions {
 /**
  * The §13.12 RETENTION FLOOR on decision facts, enforced at the only site that exists.
  *
- * SPEC:2985 requires EPF retention ≥ the horizons, and SPEC:3000-3001 states it by OUTCOME: no
+ * SPEC:3180 requires EPF retention ≥ the horizons, and SPEC:3195-3196 states it by OUTCOME: no
  * removal cause may drop a protected fact early. The §13.4 idempotency horizon is realized BY that
  * retention and never by a clock — the create-only CAS returns the recorded decision for exactly as
  * long as the fact exists. So a fact age below the horizon does not shorten a guarantee, it deletes
  * the mechanism: once the decision fact is evicted, a redelivered submission finds no winner to
- * read and is accepted as NEW WORK, which is the failure SPEC:1651 names in as many words.
+ * read and is accepted as NEW WORK, which is the failure SPEC:1718 names in as many words.
  *
  * WHY THIS IS A THROW AND NOT A CLAMP. The field's own contract was that horizons are "enforced by
  * policy above the broker, never by silently losing facts under a horizon" — and nothing was above
@@ -162,7 +162,7 @@ export function assertFactRetentionFloor(
   factMaxAgeMs: number | undefined,
   terms: { horizonMs: number; resultRetentionMs?: number; receiptRetentionMs?: number } | number,
 ): void {
-  // THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON ALONE (SPEC:3008-3011: "`EPF_<space>`
+  // THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON ALONE (SPEC:3203-3206: "`EPF_<space>`
   // retention >= max(idempotency horizon, result retention, receipt retention), because the
   // acceptance fact is the durable reconstruction source for receipts"). Checking only the horizon
   // admitted the exact config a caller would write first — `factMaxAgeMs` at the 24 h default —
@@ -188,7 +188,7 @@ export function assertFactRetentionFloor(
       `factMaxAgeMs ${factMaxAgeMs} is below the declared ${binding} ${floor}: EPF facts would be evicted `
       + `while that promise still stands — a redelivered submission whose decision fact has gone is accepted `
       + `as NEW WORK rather than resolved to its recorded decision, and a receipt whose acceptance fact has `
-      + `gone can no longer be reconstructed (SPEC:2985, :3000-3001, :3008-3011)`,
+      + `gone can no longer be reconstructed (SPEC:3180, :3000-3001, :3008-3011)`,
     );
 }
 
@@ -276,7 +276,7 @@ export async function createEndpointStreams(
   // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
   // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
   // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
-  // STREAM.MSG.GET (SPEC 13.6:1797-1799), never a follower-servable Direct Get whose stale miss
+  // STREAM.MSG.GET (SPEC 13.6:1864-1866), never a follower-servable Direct Get whose stale miss
   // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
   // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
   await jsm.streams.add({
@@ -1047,7 +1047,7 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   const p = spacePrefix(space);
   const records = recordsBucket(space);
   const publish = [
-    // ONE terminal subject per goal (SPEC:1394, the §13.9 "Result/receipt/terminal/resume facts"
+    // ONE terminal subject per goal (SPEC:1413, the §13.9 "Result/receipt/terminal/resume facts"
     // row): the exact-arity `…result` leaf, never an `…result.*` epoch-scoped variant — a per-epoch
     // subject hid a legitimate pre-restart winner from every reader.
     `${p}.epf.${e}.goal.*.*.*.*.result`,
@@ -1129,7 +1129,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
  *  serving a session is gone. So it is standing and renewable, while the rails it records are
  *  per-session, exact-subject, and die with their session ({@link import("./provision.js").Profile}
  *  `session-serving` / `session-caller`). An earlier revision fused the two into one standing
- *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2526 ("no
+ *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2721 ("no
  *  standing EPS grant exists on either side") and let one credential read and write every live
  *  session's bytes at that epoch. Splitting on the lifetime boundary is what removes the wildcard:
  *  the standing half no longer has rails to widen.

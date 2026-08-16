@@ -177,7 +177,7 @@ admits("a non-action request WITHOUT goalId is admitted",
 //    it against these cells; it passed.
 //
 //    The fix is not a stronger assertion, it is DECORRELATION: a journal-class command that does
-//    NOT declare the action composite. Every action command's submissions are journal (SPEC:1446),
+//    NOT declare the action composite. Every action command's submissions are journal (SPEC:1465),
 //    and that is emphatically not the converse — the composite is a command MARKER, and journal is
 //    a class that plenty of non-action commands use. These two cells are the only place in the
 //    suite where the two inputs disagree, and they are therefore the only place either is tested.

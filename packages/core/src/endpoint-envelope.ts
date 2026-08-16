@@ -336,7 +336,7 @@ export function assertClassMatches(env: EndpointRequest, declaredClass: EpClass)
 }
 
 /** The ACTION-COMPOSITE agreement check: `goalId` is a MUST for a command whose registered
- *  declaration carries the action marker and MUST be absent otherwise (SPEC:1448). Split out for
+ *  declaration carries the action marker and MUST be absent otherwise (SPEC:1467). Split out for
  *  the same reason as the class check — it needs the contract in hand.
  *
  *  Both directions are refusals, and neither is a default. A missing `goalId` on an action command

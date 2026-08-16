@@ -78,8 +78,8 @@ export interface ClusterCommand {
   outputDigest: string;
   traits?: string[];
   /** The ACTION COMPOSITE marker. Present only as `true`; absence means "not an action". It is a
-   *  command marker and NOT a class (SPEC:1446) — an action command's submissions are `journal`,
-   *  but the marker is what makes `goalId` a MUST on the envelope (SPEC:1448). */
+   *  command marker and NOT a class (SPEC:1465) — an action command's submissions are `journal`,
+   *  but the marker is what makes `goalId` a MUST on the envelope (SPEC:1467). */
   action?: true;
   /** Declared iff `action` — the ceiling is a MUST for every command that accepts journal-class
    *  submissions, and the canonicalizer reads it from here, never from a constant. */
