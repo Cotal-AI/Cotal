@@ -30,7 +30,8 @@
  * Cells 5 and 6 grade the describe's permission watch and the split-retry guard, and both reach
  * into internals on purpose (the transport's status-listener registry; `Endpoint`'s resolved-service
  * cache). Neither has a public accessor, and both guard regressions that every functional assertion
- * in this file would miss — a leaked listener per resolve, and a mutating command executed twice.
+ * in this file would miss: a leaked listener per resolve, and a mutating command re-issued after a
+ * responder already answered it (a second attempt that may duplicate its effect).
  *
  * Run: pnpm smoke:instrument-instance-pin
  */
@@ -274,9 +275,10 @@ try {
   // invoking AGAIN. That was written for one reading of the code — "the describe-bound incarnation
   // is gone, so the first invoke never ran, and a second is a repair". The describe-bound currency
   // check also raises it in a case where that premise is FALSE: a different live instance wins the
-  // class queue and REPLIES, so the request was received and executed, and the error is raised
-  // afterwards. Re-invoking there executes a mutating command twice — the "one spawn, several
-  // seats" shape — while the error text tells the operator not to retry.
+  // class queue and REPLIES, so the request was received and answered (executed or refused; the
+  // reply does not say which), and the error is raised afterwards. Re-invoking there is a second
+  // attempt at a mutating command that may already have taken effect (the "one spawn, several
+  // seats" shape) while the error text tells the operator not to retry.
   //
   // Made deterministic rather than raced: resolve for real, then doctor the CACHED responder id to
   // an instance that does not exist. Every subsequent class-queue answer is then "not the bound
