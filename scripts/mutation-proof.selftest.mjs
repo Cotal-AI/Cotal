@@ -306,6 +306,39 @@ check("a green run that never printed the named cell is INCONCLUSIVE, not SURVIV
   r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("never printed the named assertion")
   && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
 
+// 7e-quinquies. RESTORING THE FILE IS NOT RESTORING THE TREE. When the command under test compiles
+// the mutated source, the run leaves a build artefact made FROM THE MUTANT; the sha check proves
+// only that the source is byte-identical again, and a `dist/` is gitignored, so the git recovery
+// this tool insists on before it starts does not cover it. `afterRestore` runs after the source is
+// back, so whatever it regenerates is regenerated from the original.
+writeFileSync(
+  join(root, "compile.mjs"),
+  [
+    "import { readFileSync, writeFileSync } from 'node:fs';",
+    "writeFileSync('built.txt', readFileSync('src/impl.js', 'utf8'));",
+    "",
+  ].join("\n"),
+);
+writeFileSync(join(root, "built.txt"), readFileSync(join(root, "src/impl.js"), "utf8"));
+writeFileSync(
+  join(root, "after.json"),
+  JSON.stringify({
+    command: `${process.execPath} compile.mjs && ${process.execPath} suite.mjs`,
+    mutations: [{
+      name: "leaves a build artefact behind",
+      file: "src/impl.js", find: "if (n > 10)\n    return false;", replace: "if (false)\n    return false;",
+      expectRed: "oversized values are refused",
+      afterRestore: `${process.execPath} compile.mjs`,
+    }],
+  }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm compile", { cwd: root });
+r = runTool(["--config", "after.json"]);
+check("afterRestore regenerates derived output from the RESTORED source",
+  r.stdout.includes("KILLED")
+  && readFileSync(join(root, "built.txt"), "utf8") === readFileSync(join(root, "src/impl.js"), "utf8"),
+  { stdout: r.stdout.slice(-300) });
+
 // 7f. A mis-spelled key is silently dropped by every JSON reader. In an instrument whose whole
 // premise is that each step of the experiment has a way to lie, a `label:` that should have been
 // `name:` — or an `expectred:` that should have been `expectRed:` — is one of them.

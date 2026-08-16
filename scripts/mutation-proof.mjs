@@ -12,6 +12,21 @@
  *   - the suite dies EARLY for an unrelated reason → red, but not the red you claimed
  *   - the run never reached the new check at all → green that never executed the test
  *   - the restore silently fails                 → the next person inherits a broken tree
+ *   - the mutation applied and the run NEVER SAW IT → the file changed; the thing under test read a
+ *                                                  DIFFERENT copy of it. `@cotal-ai/core` resolves
+ *                                                  to `dist/`, so a suite under `implementations/*`
+ *                                                  audits the last BUILD, not `src`. Measured: two
+ *                                                  authority changes to `endpoint-binding.ts` left
+ *                                                  the 59-cell matrix audit fully green; with a
+ *                                                  core build prepended, the same two mutations
+ *                                                  KILLED on the assertions predicted for them.
+ *                                                  Give such a mutation a `command` that builds
+ *                                                  first — AND an `afterRestore` that rebuilds, or
+ *                                                  the tree keeps a `dist/` compiled FROM THE
+ *                                                  MUTANT after the source is put back. `dist/` is
+ *                                                  gitignored, so git cannot be the recovery for it,
+ *                                                  and the repo's own freshness check is an mtime
+ *                                                  ORDERING test that a newer-but-wrong build passes.
  *
  * Each of those has happened. This runs the experiment so that none of them can pass as a result.
  *
@@ -35,7 +50,7 @@ const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
 function usage(msg) {
   say(`${C.red}${msg}${C.off}\n`);
-  say(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(2, 27).join("\n").replace(/^ \* ?/gm, ""));
+  say(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(2, 40).join("\n").replace(/^ \* ?/gm, ""));
   process.exit(2);
 }
 
@@ -105,7 +120,7 @@ const progressCount = (output, pattern) => {
 /** Keys a mutation may carry. An unknown key is an ERROR, not a shrug: this tool exists because
  *  every step of the experiment has a way to lie, and "the field I set was quietly ignored" is one
  *  of them — a mis-spelled `expectRed` turns a graded proof into an ungraded red. */
-const MUTATION_KEYS = new Set(["name", "file", "find", "replace", "expectRed", "command", "allowMultiple"]);
+const MUTATION_KEYS = new Set(["name", "file", "find", "replace", "expectRed", "command", "allowMultiple", "afterRestore"]);
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
@@ -139,10 +154,22 @@ function proveOne(m, opts) {
   copyFileSync(path, backup);
   const shaBefore = sha(path);
 
+  // Restoring the FILE is not restoring the TREE when the command under test compiles it. The sha
+  // check below proves the source is byte-identical again; it says nothing about a `dist/` the run
+  // produced from the mutant, which is gitignored and therefore outside the recovery this tool
+  // insists on before it starts. `afterRestore` runs AFTER the source is back, so whatever it
+  // regenerates is regenerated from the original.
   const restore = () => {
     copyFileSync(backup, path);
     const ok = sha(path) === shaBefore;
     rmSync(backup, { force: true });
+    if (ok && m.afterRestore) {
+      const rr = run(m.afterRestore, cwd, opts.timeoutMs);
+      if (rr.status !== 0) {
+        say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
+        return false;
+      }
+    }
     return ok;
   };
 
