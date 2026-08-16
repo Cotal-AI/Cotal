@@ -8,16 +8,16 @@
     "Every mutation in fork-cut.json was authored against a cell that had just been written for it,",
     "so its clean sweep measures the guards that were aimed at and says nothing about the rest. This",
     "config is the opposite experiment: it mutates guards NO cell was written for and PREDICTS",
-    "SURVIVED. A survivor here is a finding — a guard nothing is watching — not a failure.",
+    "SURVIVED. A survivor here is a finding \u2014 a guard nothing is watching \u2014 not a failure.",
     "",
     "It carries two positive controls that predict KILLED. Without them a batch of survivors is",
     "ambiguous between 'these guards are unasserted' and 'the suite did not run at all', which are",
     "the same observation from outside. The controls are what make the survivors mean something.",
     "",
-    "FIRST RUN, 2026-08-16: 5/5 predictions matched — both controls KILLED, all three probes",
+    "FIRST RUN, 2026-08-16: 5/5 predictions matched \u2014 both controls KILLED, all three probes",
     "SURVIVED, no unexpected kills. Then the three survivors turned out NOT to be one category.",
     "A surviving mutant means either 'no cell watches this guard' or 'this guard has no observable",
-    "effect at all', and those demand opposite repairs — write a cell, or delete the code. Telling",
+    "effect at all', and those demand opposite repairs \u2014 write a cell, or delete the code. Telling",
     "them apart needs a second step the mutation cannot do for you: run the shipped guard and the",
     "mutated one over every input the guard was written for and see whether ANY input distinguishes",
     "them. See `redundant` below for the one that did not."
@@ -46,11 +46,10 @@
       "file": "implementations/runtime/src/fork.ts",
       "find": "    } else if (!(err instanceof ForkFrontier) && !(err instanceof JournalReadOnlyError)) {",
       "replace": "    } else if (false && !(err instanceof JournalReadOnlyError)) {",
-      "expectRed": "(none — no cell drives an unexpected error class through planFork)",
+      "expectRed": "(none \u2014 no cell drives an unexpected error class through planFork)",
       "cell": "an unexpected error class propagates out of planFork rather than becoming a false L5018",
       "completionMarker": "fork-run.smoke:",
-      "status": "SURVIVED, NOT CONFIRMED AS A FINDING. A survivor is evidence only once the mutant is shown to reproduce a defect, and this one is not: nothing has demonstrated that an error outside the five known classes is raised on any path the cells drive, so 'swallowed' may be unobservable for a reason that has nothing to do with assertion. Recorded as unconfirmed rather than counted as an unasserted guard.",
-      "note": "SURVIVED 2026-08-16 as predicted, and left as a live finding rather than half-closed. Swallowing here is not silent — `reached` stays false and the caller gets L5018 — so the failure is a TRUE-shaped refusal with a FALSE reason, the same defect the L5014 pairing just fixed one branch of. To assert it a cell needs the walk to raise an error outside the five known classes, which the DSL gives no direct way to do from a source string; the cheapest honest route is a stub source module that throws, and that is a suite-harness change rather than a cell."
+      "note": "SURVIVED, NOT CONFIRMED AS A FINDING. A survivor is evidence only once the mutant is shown to reproduce a defect, and this one is not: nothing has demonstrated that an error outside the five known classes is raised on any path the cells drive, so 'swallowed' may be unobservable for a reason that has nothing to do with assertion. Recorded as unconfirmed rather than counted as an unasserted guard. SURVIVED 2026-08-16 as predicted, and left as a live finding rather than half-closed. Swallowing here is not silent \u2014 `reached` stays false and the caller gets L5018 \u2014 so the failure is a TRUE-shaped refusal with a FALSE reason, the same defect the L5014 pairing just fixed one branch of. To assert it a cell needs the walk to raise an error outside the five known classes, which the DSL gives no direct way to do from a source string; the cheapest honest route is a stub source module that throws, and that is a suite-harness change rather than a cell."
     }
   ],
   "resolved": [
@@ -58,7 +57,7 @@
       "name": "an unwalkable scope on the way to the cut raises no L5014",
       "found": "2026-08-16",
       "why": "SURVIVED as predicted: `L5014` and `UnwalkableScope` appeared ZERO times in the suite. `planFork` had a whole refusal branch for a scope the walk cannot enter and no cell had ever produced one. Closed by four cells forking past a settled conclave; the mutation moved to fork-cut.json, where it is now predicted KILLED. It is NOT recorded in both files: a mutation counted in the confirm set and the probe set at once is double-counted.",
-      "alsoFound": "The cell that closed it immediately failed on something the probe could not have shown: planFork emitted L5014 AND L5018 together, and L5018's sentence — the program's own path does not arrive there — is false when the path arrives and the walk simply could not follow it. Measured across all three stop reasons: divergence gave [L5001, L5018], the conclave gave [L5014, L5018], a genuinely unreached step gave [L5018]. Fixed at the guard; both directions now have mutations."
+      "alsoFound": "The cell that closed it immediately failed on something the probe could not have shown: planFork emitted L5014 AND L5018 together, and L5018's sentence \u2014 the program's own path does not arrive there \u2014 is false when the path arrives and the walk simply could not follow it. Measured across all three stop reasons: divergence gave [L5001, L5018], the conclave gave [L5014, L5018], a genuinely unreached step gave [L5018]. Fixed at the guard; both directions now have mutations."
     }
   ],
   "redundant": [
@@ -66,7 +65,7 @@
       "name": "unwrapCut's self-referential-reason stop is removed",
       "find": "    if (inner === undefined || inner === cur) return cur;",
       "found": "2026-08-16",
-      "why": "SURVIVED as predicted, but it is NOT an unasserted guard and no cell should be written for it. Running the shipped guard against the mutated one over every shape it was written for — a 1-cycle, a 2-cycle, a plain chain, no reason at all, and a chain deeper than the bound — returns an IDENTICAL result in all five cases: the `for` loop's own bound of 8 already terminates every cycle, and `inner === cur` only ever catches the 1-cycle the bound would catch anyway. No input distinguishes them, so no cell could kill it. Recorded here rather than in `unasserted` because the repair is the opposite one: this is dead weight in the source, not a hole in the suite. Left in place as its own decision rather than deleted in a test commit."
+      "why": "SURVIVED as predicted, but it is NOT an unasserted guard and no cell should be written for it. Running the shipped guard against the mutated one over every shape it was written for \u2014 a 1-cycle, a 2-cycle, a plain chain, no reason at all, and a chain deeper than the bound \u2014 returns an IDENTICAL result in all five cases: the `for` loop's own bound of 8 already terminates every cycle, and `inner === cur` only ever catches the 1-cycle the bound would catch anyway. No input distinguishes them, so no cell could kill it. Recorded here rather than in `unasserted` because the repair is the opposite one: this is dead weight in the source, not a hole in the suite. Left in place as its own decision rather than deleted in a test commit."
     }
   ]
 }
