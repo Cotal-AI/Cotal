@@ -65,9 +65,17 @@ redefined into something that mutates.
 `models` is deliberately not on that list even though it is a read command. With `{refresh: true}` it
 reaches the connector's model listing and, for OpenCode, re-fetches provider catalogs and rewrites a
 cache — the same name, in the same grant class, answering differently because of an argument the
-classification cannot see. A plain `cotal models` therefore surfaces a split rather than absorbing it
-in a multi-instance space; encoding per-command argument rules here would reintroduce exactly the
-fail-open shape this replaced. That is the clearest statement of what the list is: a client-side
+classification cannot see. A long-lived client invoking `models` through `invokeService` therefore
+surfaces a split rather than absorbing it in a multi-instance space; encoding per-command argument
+rules here would reintroduce exactly the fail-open shape this replaced.
+
+Where this table bites, precisely: it is read only by `CotalEndpoint.invokeService`, the long-lived
+client path. Its shipped callers are the connector's `cotal_*` manager tools (spawn, inspect, stop,
+despawn, purge, define-persona), `cotal spawn -f` (launch) and `cotal down -f` (despawn), whose
+splits now surface instead of being re-issued, plus the repeat-safe `ps` reads of `spawn -f`,
+`down -f` and the console, which keep absorbing them. The one-shot CLI commands (`cotal ps`,
+`cotal models`, `stop`, `attach`, `spawn --detach`) resolve fresh and invoke once on a short-lived
+connection; they had no cached bind and no retry, and are unchanged. That is the clearest statement of what the list is: a client-side
 stand-in for something the wire does not yet carry — a safety annotation on the command contract and
 an effect outcome in the reply — which remains open.
 

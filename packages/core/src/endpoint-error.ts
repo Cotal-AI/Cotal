@@ -37,6 +37,28 @@ export interface EpErrorDetail {
  */
 export const EP_UNBOUND_RESPONDER = "ai.cotal.ep.unbound-responder";
 
+/** The {@link EP_UNBOUND_RESPONDER} payload. Two producers set it. The describe-bound currency check
+ *  (a DIFFERENT instance answered) sets `answeredBy` and `boundTo`, and they differ. The stale-epoch
+ *  refusal (the SAME instance answered at another epoch) sets `answeredEpoch` and `heldEpoch`, and
+ *  says in `reference` what `heldEpoch` is: `bind`, the epoch this caller's own resolve bound (a
+ *  responder ahead of it is a successor and the handle is the stale side), or `registry`, a currency
+ *  read of the responder's current registered epoch (nothing of the caller's is stale; a responder
+ *  behind it is a superseded incarnation still answering). `boundTo` is set only where a bind exists. */
+export interface EpUnboundResponderDetail extends EpErrorDetail {
+  kind: typeof EP_UNBOUND_RESPONDER;
+  endpoint: string;
+  command: string;
+  /** The instance whose attributed reply was refused. */
+  answeredBy: string;
+  /** The instance this handle resolved against; absent when the caller holds no bind. */
+  boundTo?: string;
+  answeredEpoch?: number;
+  heldEpoch?: number;
+  reference?: "bind" | "registry";
+  /** Whether the call addressed one instance (`inst` rail) rather than the class queue. */
+  pinned: boolean;
+}
+
 /** True iff `e` carries the {@link EP_UNBOUND_RESPONDER} marker: a responder ANSWERED the request
  *  (an attributed reply, which may be a refusal or a result), so retrying it is a second attempt
  *  that may duplicate an effect, not a repair. */

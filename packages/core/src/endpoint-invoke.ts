@@ -402,7 +402,14 @@ export async function invokeCommand(
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
-  }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch ?? describeBound });
+  }, {
+    deadlineMs: opts.deadlineMs ?? 10_000,
+    currentEpoch: opts.currentEpoch ?? describeBound,
+    // What the currency hook returns decides how a stale-epoch refusal is worded and marked: the
+    // describe-bound default is this handle's own bind (a responder ahead of it is a successor and
+    // the handle is the stale side); a caller-supplied hook is a registry read by epCall's contract.
+    currencyReference: opts.currentEpoch ? "registry" : "bind",
+  });
 }
 
 /** Submit an ACTION command and FOLLOW its goal to the terminal (P2 item 2, 2b): since 2a a

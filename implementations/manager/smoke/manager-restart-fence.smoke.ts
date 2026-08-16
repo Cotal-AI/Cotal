@@ -74,6 +74,7 @@ const reqFor = (goalId: string): ParsedEpRequest =>
 
 let mgr: InstanceType<typeof Manager> | undefined;
 let client: CotalEndpoint | undefined;
+let reader: CotalEndpoint | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-mrf-js-"))], { stdio: "ignore" });
   kids.push(broker);
@@ -124,6 +125,20 @@ try {
   check("a long-lived client is bound to incarnation 1 before the restart",
     warm.reply.ok === true && cache.get(MANAGER_ENDPOINT)?.responder.instanceId === iid1 && cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1,
     { reply: warm.reply, bound: cache.get(MANAGER_ENDPOINT)?.responder });
+  // A SECOND long-lived client, bound the same honest way, for the read arm below: it obtains its
+  // stale bind by outliving the restart, not by having one written into it.
+  reader = new CotalEndpoint({
+    space: SPACE, servers: SERVER, lifecycleUid: mintLifecycleUid(),
+    card: { name: "restart-reader", role: "operator", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+  });
+  reader.on("error", () => {});
+  await reader.start();
+  const readerCache = (reader as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const readerPubs = (): number => (reader as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const readerWarm = await reader.invokeService(MANAGER_ENDPOINT, "ps");
+  check("...and so is a second client, kept for the read arm",
+    readerWarm.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
 
   // ── restart: incarnation 2 (same root) ──
   await mgr.stop();
@@ -172,21 +187,23 @@ try {
       again === undefined && againReply?.responder.instanceId === iid1 && againReply.responder.epoch === epoch2,
       { threw: again instanceof Error ? again.message.slice(0, 160) : again, responder: againReply?.responder, epoch2 });
 
-    // THE READ ARM: a repeat-safe command bound to the stale epoch heals inside ONE call (drop,
-    // re-resolve, re-issue), exactly as it does on the split. Force the old epoch back onto the
-    // fresh bind and read once.
-    const fresh = cache.get(MANAGER_ENDPOINT);
-    check("the re-issue left a fresh bind, at the successor's epoch", fresh?.responder.epoch === epoch2, fresh?.responder);
-    if (fresh) fresh.responder.epoch = epoch1;
-    const readBefore = pubs();
+    check("the re-issue left a fresh bind, at the successor's epoch", cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2, cache.get(MANAGER_ENDPOINT)?.responder);
+
+    // THE READ ARM: the second client, still bound to (iid1, epoch 0) from before the restart, reads
+    // ONCE. A repeat-safe command on a stale-epoch bind heals inside that one call (drop, re-resolve,
+    // re-issue), exactly as it does on the split. Its stale bind is real: obtained by outliving the
+    // restart, not written into the cache by the test.
+    check("the reader is still bound to the pre-restart epoch (its stale bind is real, not fabricated)",
+      readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
+    const readBefore = readerPubs();
     let readThrew: unknown;
     let read: EpAttributedReply | undefined;
-    try { read = await client.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
+    try { read = await reader!.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
     check("a READ bound to the stale epoch heals inside ONE call and comes back bound to the successor",
-      readThrew === undefined && read?.reply.ok === true && cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2,
-      { threw: readThrew instanceof Error ? readThrew.message.slice(0, 160) : readThrew, bound: cache.get(MANAGER_ENDPOINT)?.responder });
+      readThrew === undefined && read?.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2,
+      { threw: readThrew instanceof Error ? readThrew.message.slice(0, 160) : readThrew, bound: readerCache.get(MANAGER_ENDPOINT)?.responder });
     check("...and that heal re-issued (more than the one publish a held guard leaves)",
-      pubs() - readBefore > 1, { publishes: pubs() - readBefore });
+      readerPubs() - readBefore > 1, { publishes: readerPubs() - readBefore });
   }
 
   // THE INVERSION, driven by a real restart. The advanced epoch does not hide the pre-restart fact
@@ -210,6 +227,7 @@ try {
   check("...and the durable terminal is still the pre-restart one, not the successor's",
     after?.state === "failed" && (after?.data as { by?: string })?.by === "pre-restart", after);
 } finally {
+  await reader?.stop().catch(() => {});
   await client?.stop().catch(() => {});
   await mgr?.stop().catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }

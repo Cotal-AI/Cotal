@@ -85,7 +85,11 @@ across restarts and advances its process epoch when it comes back, so callers ad
 specific manager without caring which process currently serves it. An untargeted spawn
 rides class anycast (any manager may accept, and the acceptance records which one did);
 `cotal spawn --on <instance>` pins one instance by its exact id. There are no ordinal
-aliases: a display may show a short label, but routing always uses the exact id. `ps` and
+aliases and no short forms: wherever a display names an instance you can address, it prints
+the whole id, because `--on` takes nothing else. Pinning is not only a preference: the
+resolve and the invoke are separate trips through the same anycast queue, so in a
+multi-manager space an unpinned call can be received and answered by one instance while
+the caller is told it did not bind, and `--on` is the way to avoid that split. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled unreachable,

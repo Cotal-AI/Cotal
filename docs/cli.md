@@ -566,7 +566,10 @@ renders each managed agent's last credential-refresh outcome, fail-closed.
 - **Static / open mesh.** Bare `ps` is a **class scatter**: it freezes the live manager class from
   the records registry, merges every registered instance's agents grouped and attributed per
   instance, and a non-answering instance is shown `unreachable` (never silently omitted).
-  `--on <instance>` pins the read to one exact instance id instead.
+  `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
+  rather than falling through: a well-formed id that no live manager carries is reported as
+  `manager instance <id> did not answer` (nothing else is asked), and a credential without that
+  instance's rail is reported as refused by the broker, not as an unresponsive manager.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a

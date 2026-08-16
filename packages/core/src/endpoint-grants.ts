@@ -213,8 +213,14 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  a provider round-trip that rewrites a cache. Same command name, same grant class, opposite
  *  answer, decided by an ARGUMENT this table cannot see. Rather than encode per-command argument
  *  rules here — the fail-open shape all over again — `models` is simply not repeat-safe. The cost
- *  is that a plain `cotal models` surfaces a split instead of absorbing it in a multi-instance
- *  space; the alternative was a wrong answer for the refreshing caller.
+ *  is that a long-lived client invoking `models` through `CotalEndpoint.invokeService` surfaces a
+ *  split instead of absorbing it in a multi-instance space; the alternative was a wrong answer for
+ *  the refreshing caller. (The `cotal models` CLI is NOT affected: like every `askManager` command it
+ *  resolves fresh and invokes once on a short-lived connection, with no bind to go stale and no
+ *  retry for this table to gate. This table is read in exactly one place, `invokeService`, whose
+ *  shipped callers are the connector's `cotal_*` manager tools, `cotal spawn -f` (launch),
+ *  `cotal down -f` (despawn), and the repeat-safe `ps` reads of `spawn -f`, `down -f` and the
+ *  console.)
  *
  *  That exclusion is also the clearest statement of what this whole table is: a client-side
  *  heuristic standing in for something the wire does not carry. The general fix is a safety

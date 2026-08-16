@@ -312,9 +312,9 @@ try {
     // regression that unmarked only one call site must not hide behind the other.
     const d = unboundDetail(e);
     c("...carrying the responder-answered marker on the `inst` rail", respondedButUnbound(e), e instanceof Error ? e.message.slice(0, 160) : e);
-    c("...whose details name the instance, both epochs, and the pinned rail",
-      d?.answeredBy === IID && d?.boundTo === IID && d?.answeredEpoch === 9 && d?.heldEpoch === 3 && d?.pinned === true, d);
-    c("...and the message says the responder is a SUCCESSOR (answered 9 > held 3): the handle is the stale side",
+    c("...whose details name the instance, both epochs, the pinned rail, and that the reference is this handle's BIND",
+      d?.answeredBy === IID && d?.boundTo === IID && d?.answeredEpoch === 9 && d?.heldEpoch === 3 && d?.reference === "bind" && d?.pinned === true, d);
+    c("...and the message says the responder is a SUCCESSOR (answered 9 > bound 3): the handle is the stale side",
       e instanceof Error && /SUCCESSOR/.test(e.message) && !/SUPERSEDED incarnation/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
   }
   {
@@ -365,13 +365,27 @@ try {
     await sub.drain();
     c("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2:1187-1189)",
       e instanceof EpEnvelopeError && e.code === "expired", e instanceof Error ? e.message.slice(0, 120) : e);
-    // The other direction: the responder is BEHIND what the caller holds (a superseded incarnation
-    // still connected answered), so the reply is what is rejected and the handle is not the stale side.
+    // A caller-supplied `currentEpoch` is a REGISTRY read by this verb's contract (nothing of the
+    // caller's is a bind), and the responder is BEHIND it: a superseded incarnation still connected
+    // answered, so the reply is what is rejected. The marker says the reference is the registry and
+    // carries no `boundTo`, and the message makes no claim about a handle.
     const d = unboundDetail(e);
-    c("...carrying the responder-answered marker on the `one` rail, unpinned, with both epochs",
-      respondedButUnbound(e) && d?.answeredBy === OID && d?.answeredEpoch === 4 && d?.heldEpoch === 5 && d?.pinned === false, d);
-    c("...and the message says a SUPERSEDED incarnation answered (answered 4 < held 5), not that the handle is stale",
-      e instanceof Error && /SUPERSEDED incarnation/.test(e.message) && !/SUCCESSOR/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
+    c("...carrying the responder-answered marker on the `one` rail, unpinned, with both epochs and a REGISTRY reference (no boundTo)",
+      respondedButUnbound(e) && d?.answeredBy === OID && d?.answeredEpoch === 4 && d?.heldEpoch === 5 && d?.reference === "registry" && d?.boundTo === undefined && d?.pinned === false, d);
+    c("...and the message says a SUPERSEDED incarnation answered (answered 4 < registry 5), never that a handle is stale",
+      e instanceof Error && /SUPERSEDED incarnation/.test(e.message) && !/SUCCESSOR|handle/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
+  }
+  {
+    // The registry read can also LAG a restart: the responder answers AHEAD of the read. That is not
+    // a stale handle (there is none), and the message must not tell the caller to re-resolve.
+    const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 9, ok: true, data: { which: "ahead" } }]); // answers at epoch 9
+    const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 4 }));
+    await sub.drain();
+    const d = unboundDetail(e);
+    c("epCall `one` rejects a reply AHEAD of the registry read as `expired`, marked, reference registry",
+      e instanceof EpEnvelopeError && e.code === "expired" && d?.reference === "registry" && d?.answeredEpoch === 9 && d?.heldEpoch === 4, d);
+    c("...and the message says the READ lags, not that a handle is stale (no re-resolve advice, no SUCCESSOR)",
+      e instanceof Error && /ahead of the registry read/.test(e.message) && !/SUCCESSOR|handle|re-resolve/.test(e.message), e instanceof Error ? e.message.slice(0, 220) : e);
   }
   await rejects("epCall on the `one` rail WITHOUT currentEpoch refuses bad-request (queue winner is not implicitly current)",
     () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 200, currentEpoch: undefined as unknown as () => number }), "bad-request");
