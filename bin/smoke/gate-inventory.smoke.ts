@@ -54,6 +54,10 @@ const UNGATED: Record<string, string> = {
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
   "smoke:web-seed:live": "full live stack",
+  // Mints a real agent-class caller against a real broker and reads a real daemon's lease over a real
+  // round-trip, so it needs the full live stack rather than the PR gate. Its non-live twins DO gate:
+  // smoke:delivery-guard and smoke:delivery-row. Owner: unowned, from #439.
+  "smoke:delivery-card-live": "full live stack: real broker, real daemon, real round-trip. Owner: unowned, from #439",
   // NOT dead, despite the obvious reading. v0.4 removed the MANAGER's ctl tiers, not the ctl rail:
   // `ctl.delivery` survives as the delivery daemon's carve-out, still built by subjects.ts and still
   // served by endpoint.ts (CONTROL_DELIVERY / CONTROL_DELIVERY_ADMIN). This suite pins the security
