@@ -232,6 +232,38 @@ await sleep("3h", { name: "after-the-catch" });
     why(lost));
   c("and it stopped at the refusal rather than performing the catch block's effects",
     handler2.performed.length < 3, handler2.performed);
+
+  // The sharper shape, and the one a dead appender MASKS: when the catch block performs no further
+  // effect, nothing else tries to append, so a swallowed refusal is never re-raised and the run
+  // returns NORMALLY — a driver reporting success over a journal missing the tail of its own run.
+  // Losing the journal has to end the run by itself, not by whatever the program does next.
+  const QUIET = `
+try {
+  await sleep("1h", { name: "first" });
+} catch (e) {
+}
+`;
+  let letGo!: () => void;
+  const held = new Promise<void>((r) => { letGo = r; });
+  class HeldOnce extends CountingHandler {
+    override async sleep(req: Parameters<CountingHandler["sleep"]>[0], ctx: Parameters<CountingHandler["sleep"]>[1]) {
+      const out = await super.sleep(req, ctx);
+      await held;
+      return out;
+    }
+  }
+  const quiet = new HeldOnce();
+  const running = startRun(js, jsm, {
+    space: SPACE, runId: "d-5b", source: QUIET, lease: lease("m1", 1, 1), handler: quiet,
+  });
+  await wait(300);
+  await activateRun(js, jsm, {
+    space: SPACE, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, at: 1, expect: "existing",
+  });
+  letGo();
+  const quietOut = await attempt(running);
+  c("a run whose catch block is EMPTY still cannot report success over a journal it lost",
+    quietOut.status === "released", why(quietOut));
 }
 
 // ── 5) a journal belongs to ONE run, at both ends ────────────────────────────────────────────
