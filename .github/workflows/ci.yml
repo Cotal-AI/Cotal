@@ -49,7 +49,18 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     steps:
+      # Full history, because `smoke:mutation-reachable` scopes itself to this lane's diff via
+      # `git diff origin/main...HEAD`. The default depth-1 checkout has neither the ref nor a shared
+      # ancestor, and the two failures are DIFFERENT: without the ref git says `bad revision`, and
+      # with the ref but no history it says `no merge base`. Fetching the ref alone therefore looks
+      # like the fix and is not one, which is why the depth is here rather than a lone fetch step.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Named explicitly rather than relying on what a full checkout happens to leave behind: the
+      # suite needs `origin/main` to RESOLVE, and that is cheap to guarantee and expensive to assume.
+      - name: origin/main available for lane-diff scoping
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
