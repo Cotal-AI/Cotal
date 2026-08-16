@@ -143,6 +143,11 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.match(text, /roles present: board \(1\), filler \(9\), worker \(2\)/);
   assert.match(text, /found by its ROLE/, "the card carries the addressing rule, not just the counts");
   assert.match(text, /cotal_roster/, "and names the tool that turns a role into an address");
+  // The three clauses that are instructions rather than motivation. A probe that rewrote the
+  // middle one survived a version of this block that pinned only the slogan above, and the middle
+  // one is the part that decides whether an agent addresses the peer or broadcasts at its role.
+  assert.match(text, /take that peer's name from cotal_roster, and message it directly/,
+    "the card says how to turn the role into an address, not only that a role is the thing to use");
 
   // No roles at all ⇒ no line and no rule. A sentence about how to address a role, printed to an
   // agent in a space with none, is advice that cannot be acted on.
