@@ -1379,7 +1379,9 @@ export class CotalEndpoint extends EventEmitter {
    *  command did not run and only knowing that someone answered:
    *   - the RESPONDER fenced it on the request's `bind` (§13.2, an `ok:false` reply marked
    *     {@link replyRefusedBeforeEffect}): the command did not run, so the stale bind is dropped and
-   *     the call is re-issued ONCE for any command.
+   *     the call is re-issued ONCE for any command. If that re-issue cannot even be resolved, the
+   *     refusal is what surfaces — still saying the command did not run — with the resolve failure
+   *     named as the reason the repair could not be attempted.
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
    *     `failed-precondition`; the same instance at a later epoch after a same-root restart,
    *     `expired`) — which is what happens against a responder too old to know the field. There the
@@ -1432,7 +1434,33 @@ export class CotalEndpoint extends EventEmitter {
             endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
           });
           this.resolvedServices.delete(endpoint);
-          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+          // THE RE-ISSUE CAN FAIL, AND THE REFUSAL IS THE HALF WORTH KEEPING. Re-resolving goes back
+          // to the registry, and an endpoint that has since RETIRED answers nothing: the caller was
+          // handed `no describe reply from <endpoint> within 10000ms` — ten seconds later, about a
+          // describe it never asked for — while the refusal, the one fact that says its handle is
+          // stale AND that nothing ran, was discarded on the way. Measured on the pin suite's
+          // third-party cell, where the guard used to surface the marker immediately.
+          //
+          // So a failed re-issue rethrows the ORIGINAL refusal, carrying its details, with the
+          // resolve failure named as the reason the repair could not be attempted. The code is the
+          // refusal's own — `failed-precondition` for a different instance, `expired` for the same
+          // instance at another epoch — and a marker arriving on any OTHER code is incoherent in the
+          // same way a refusal attributed to the bound incarnation is (§13.3): the body does not get
+          // to carry the fence's marker while claiming a failure the fence cannot produce.
+          const raw = r.reply.error?.code;
+          const refusalCode = raw === "expired" ? ("expired" as const)
+            : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
+          if (refusalCode === undefined)
+            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
+          try {
+            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+          } catch (reissue) {
+            throw new EpEnvelopeError(
+              refusalCode,
+              `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
+              r.reply.error?.details,
+            );
+          }
         }
         return r;
       } catch (e) {
@@ -1494,7 +1522,13 @@ export class CotalEndpoint extends EventEmitter {
         // client publishes can produce one after a reply: the describe-bound currency read is the
         // cached epoch, never garbled), so it is the resolve's own refusal, before any command was
         // published; re-resolving once is a repair. Everything else surfaces as it is.
-        if (e.code !== "failed-precondition") throw e;
+        // ...and a refusal this method itself raised after a FAILED re-issue is not unmarked either.
+        // It carries the fence's marker and the refusal's own `failed-precondition`, so without this
+        // it fell straight into the re-resolve below — a THIRD attempt at a command whose second one
+        // could not even be resolved, with the refusal discarded on the way. Measured, not reasoned:
+        // `smoke:unfenced-responder`'s fenced arm executed the handler twice more before this guard
+        // existed. The marker means the disposition is already decided, whichever code carries it.
+        if (e.code !== "failed-precondition" || replyRefusedBeforeEffect(e.toEpError())) throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }

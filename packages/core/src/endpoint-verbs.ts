@@ -20,8 +20,8 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, registryReadFailed, replyRefusedBeforeEffect, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
-  type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_BIND_REFUSED, registryReadFailed, replyRefusedBeforeEffect, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail,
   type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock,
 } from "./endpoint-envelope.js";
 import type { JetStreamManager } from "@nats-io/jetstream";
@@ -342,6 +342,23 @@ export async function epCall(
       const r = attributed.responder;
       if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)
         throw new EpEnvelopeError("internal", `${op.endpoint} instance ${r.instanceId} refused ${op.command} as the wrong incarnation, but the reply subject attributes it to exactly the bound one (${op.bind.instanceId} epoch ${op.bind.epoch}); the body does not get to contradict its own attribution (SPEC 13.3)`);
+      // AND THE REFUSAL MUST BE AN ANSWER TO *THIS* REQUEST, FROM *THIS* RESPONDER. A caller acts on
+      // this marker by re-issuing a command it would otherwise never repeat, so the marker is the
+      // one place where a responder's word moves the caller's hand. It is not enough that the word
+      // is present: a fence produces it by comparing the request's own bind against its own
+      // identity, so both halves are DERIVABLE by the caller and are checked rather than believed.
+      // A detail whose `boundTo` is not the block this request carried was not computed from this
+      // request; a `servedBy` that disagrees with the reply subject is a body contradicting its own
+      // attribution, the same defect the check above refuses in its other direction. Neither is a
+      // refusal a responder without a fence could have produced by accident, so both are `internal`
+      // — the caller does not get a "did not run" it cannot derive, and does not re-issue on one.
+      const refusal = (attributed.reply.error?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
+      if (refusal === undefined)
+        throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} came back marked ${EP_BIND_REFUSED} with no such detail to derive it from (SPEC 13.3)`);
+      if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)
+        throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} against bind ${refusal.boundTo.instanceId} epoch ${refusal.boundTo.epoch}, but this request carried ${op.bind.instanceId} epoch ${op.bind.epoch}; a refusal computed from another request proves nothing about this one (SPEC 13.3)`);
+      if (refusal.servedBy.instanceId !== r.instanceId || refusal.servedBy.epoch !== r.epoch)
+        throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} claiming to be served by ${refusal.servedBy.instanceId} epoch ${refusal.servedBy.epoch}, but the reply subject attributes it to ${r.instanceId} epoch ${r.epoch}; the body does not get to contradict its own attribution (SPEC 13.3)`);
       return attributed;
     }
     if (route.mode === "one") {
