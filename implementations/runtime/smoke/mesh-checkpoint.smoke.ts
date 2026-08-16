@@ -36,6 +36,8 @@ import {
   readCheckpointAnswer,
   readCheckpointStatus,
   resumeCheckpoint,
+  mintCheckpoint,
+  activateRun,
   checkpointAnswerId,
   eptReqStreamName,
   eptStreamName,
@@ -302,19 +304,6 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
   const settled = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token });
   c("the bypassing resume settles with NO answerId", settled?.settle === "resumed" && settled?.answerId === undefined, JSON.stringify(settled));
 
-  // The pause is now settled but the JOURNAL still says pending, so a resolver still finds the
-  // token and still files its answer — and the plane refuses to present it. That is the ordering
-  // this command is built around: the record is written BEFORE the token is presented, so a
-  // refusal (or a crash) between the two leaves an answer nobody accepted rather than a run
-  // released with its answer nowhere.
-  const lateId = checkpointAnswerId({ token, by: "carol", value: "mine" });
-  let refused: unknown;
-  try {
-    await resolveCheckpoint(deps, { runId: "cp-6", stepKey: STEP, by: "carol", value: "mine", now: NOW + 1_100 });
-  } catch (e) { refused = e; }
-  c("a resolver whose presentation is refused is told so", (refused as { code?: string })?.code === "conflict", (refused as Error)?.message?.slice(0, 50));
-  c("and its answer is on disk anyway: the payload is written BEFORE the fact that releases the run",
-    (await readCheckpointAnswer(kv, EP, token, lateId))?.by === "carol");
   const raised = await outcome;
   // The interpreter turns a handler's throw into an L4000 handler-fault — the effect FAILED, which
   // is the honest record. What matters is that nothing returned a `resolved` checkpoint carrying a
@@ -324,6 +313,48 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
     && (raised as Error)?.message?.includes("settled as resumed"), (raised as Error)?.message?.slice(0, 70));
   c("naming the class the driver raises, so the failure is diagnosable rather than generic",
     new CheckpointAnswerMissing("t", undefined).name === "CheckpointAnswerMissing");
+}
+
+// ── 6b) the answer is written BEFORE the token is presented ──────────────────────────────────
+//
+// A resolver whose PRESENTATION is refused must still have filed its answer, because the record is
+// the payload and the settle is the fact that releases the run: in this order a refusal (or a
+// crash) between the two leaves an answer nobody accepted, which is harmless, and in the other
+// order it leaves a run released with its answer nowhere.
+//
+// The journal here is BUILT rather than driven, and deliberately: the window this cell needs — a
+// step still pending while its checkpoint is already settled — closes the moment a live driver
+// notices, so a cell that raced for it would be flaky about the thing it is trying to prove.
+// That `openCheckpointToken` is reached through a real replay is proven by every other cell here.
+{
+  const RUN = "cp-6b";
+  const TOKEN = "cnRlc3RfcHJlc2VudGF0aW9uX29yZGVy";
+  const appender = await activateRun(js, jsm, {
+    space: SPACE, runId: RUN, holder: "m1", fencingToken: 1, epoch: 1,
+    takeoverId: `t${(takeovers += 1)}`, at: NOW, expect: "new",
+  });
+  await appender.append({
+    v: 1, seq: 0, run: RUN, scope: "", kind: "checkpoint", name: "approve", occurrence: 0,
+    inputHash: "sha256:built", requestId: TOKEN, attempt: 0, state: "pending", startedAt: NOW,
+  }, NOW);
+  await mintCheckpoint(kv, js, SPACE, {
+    ref: { endpoint: EP, token: TOKEN }, instanceId: IID, epoch: EPOCH, holder: HOLDER,
+    deadline: NOW + 3_600_000, now: NOW,
+  });
+  await armPending(4);
+  // Somebody else settles it first — an expiry would do just as well; what matters is that the
+  // presentation this resolver is about to make cannot win.
+  await resumeCheckpoint(kv, js, jsm, SPACE, { ref: { endpoint: EP, token: TOKEN }, presenter: HOLDER, now: NOW + 500 });
+
+  const lateId = checkpointAnswerId({ token: TOKEN, by: "carol", value: "mine" });
+  let refused: unknown;
+  try {
+    await resolveCheckpoint(deps, { runId: RUN, stepKey: STEP, by: "carol", value: "mine", now: NOW + 1_100 });
+  } catch (e) { refused = e; }
+  c("a resolver whose presentation is refused is told so, not told it succeeded",
+    (refused as { code?: string })?.code === "conflict", (refused as Error)?.message?.slice(0, 60));
+  c("and its answer is on disk anyway: the payload is written BEFORE the fact that releases the run",
+    (await readCheckpointAnswer(kv, EP, TOKEN, lateId))?.by === "carol");
 }
 
 // ── 7) a run adopted at a new epoch re-arms its pauses, or its timers fire where nobody reads ──
