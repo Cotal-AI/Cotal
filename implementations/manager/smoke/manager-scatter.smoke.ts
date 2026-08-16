@@ -25,7 +25,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand,
+  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand, instancePinnedInstrumentCapabilities,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
@@ -85,7 +85,13 @@ try {
   const callerId = newIdentity();
   const callerUid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
-  const callerCreds = await mintCreds(auth, callerId, "control-caller-privileged", { lifecycleUid: callerUid });
+  // Pinned to the frozen class, which is the shape the CLI mints after its freeze-then-mint pass:
+  // an exact-iid row per instance, no wildcard. Without these rows the scatter's liveness probe is
+  // refused at the broker and the severed-instance case below serves out its whole budget.
+  const callerCreds = await mintCreds(auth, callerId, "control-caller-privileged", {
+    lifecycleUid: callerUid,
+    endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", [IID1, IID2]),
+  });
   nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
 
   console.log("1. the instrument FREEZES the expected set (its scoped §13.9 records read)");
@@ -129,27 +135,33 @@ try {
   // FAST. Kept as-is (bounded is still worth asserting) and joined by the claim it was read as
   // making.
   //
-  // THE END-TO-END GAP, MEASURED RATHER THAN ASSUMED. `epScatterService` now wires a liveness probe
-  // that ends the gather once the broker affirms an instance holds no subscription, and
-  // `smoke:scatter-liveness` proves the gather depends on that verdict. It does NOT prove a real
-  // caller produces one — the suite hands the hook in, and mutation-proof says so itself.
+  // THE END-TO-END PROOF for the liveness probe, and it has to be here rather than in
+  // `smoke:scatter-liveness`. That suite hands `epScatter` its hook directly, which proves the
+  // gather DEPENDS on a verdict but not that any real caller produces one — mutation-proof says so
+  // itself. Nothing is handed in here: a real `scatterCommand` over a real broker, against a manager
+  // severed exactly as a crash severs it (serve loop torn down, svc record left READY), under the
+  // instrument's own credential.
   //
-  // Here nothing is handed in, and the answer is that the probe is INERT on this path. It publishes
-  // `describe` on the target's `ep.inst.…` rail, and the `control-caller-privileged` instrument holds
-  // no instance route: the one-shot mint happens BEFORE the freeze, so a `ps` (no `--on`) carries no
-  // instance rows at all. The publish is refused by the broker, no 503 comes back, the verdict is
-  // `unknown`, and `unknown` licenses nothing — so this path still serves out its full budget.
+  // WHAT MAKES IT REACHABLE IS THE CREDENTIAL, NOT THE GATHER, and `cotal ps` does not carry it
+  // today — so read this cell for exactly what it proves and no more. The probe publishes `describe`
+  // on the target's `ep.inst.…` rail; the instrument is one-shot and minted before the freeze, so a
+  // `ps` without `--on` holds no instance rows, the publish is refused, no no-responders frame comes
+  // back, the verdict is `unknown`, and `unknown` licenses nothing. This suite mints the pinned
+  // capabilities explicitly, which is why the gather ends early here.
   //
-  // The obvious fix is a wildcard instance row for the instrument tier. That is a widening THREE
-  // REVIEW SEATS ALREADY REFUSED (inst-route-grant.smoke.ts:115 asserts `!r.includes(".*.")`), and it
-  // is not mine to overturn on my own argument. The alternative that keeps the invariant intact is to
-  // freeze FIRST and mint the instrument with an exact-iid row per frozen instance — a change to the
-  // credential flow, not to the gather.
+  // The CLI wiring that would produce that credential (freeze the class first, re-mint against the
+  // frozen ids — exact ids only, so the `inst-route-grant` no-wildcard boundary stays intact) was
+  // built and then REMOVED, because it was measured on a live mesh and made `cotal ps` SLOWER:
+  // 13.8s -> 17.0s. The extra connect and freeze cost ~3.2s and bought nothing there, because of the
+  // three registered managers only ONE was a true corpse (`gone` in 123ms); another answered nothing
+  // for 8s while still HOLDING its subscriptions, so it is hung rather than gone and no liveness
+  // probe may shortcut it — "connected but slow" and "connected but wedged" are the same observation.
+  // A hung instance therefore still costs the full deadline, which is correct.
   //
-  // So this cell asserts the GAP, deliberately. It is a tripwire: it goes RED the moment the probe
-  // starts working end to end, which is exactly when this comment stops being true.
-  check("the probe is INERT on the operator path (no instance route in the instrument) — the gap is recorded, never mistaken for coverage",
-    elapsed >= 2_500, { elapsed, budgetMs: 3_000, why: "ep.inst publish refused: no instance row in a no---on mint" });
+  // So the mechanism is proven and its cost is not yet worth paying on the operator path. The
+  // remaining slowness there is a HUNG MANAGER, which is a different defect.
+  check("a severed instance is affirmed gone by the BROKER, so the gather ends instead of serving out its budget",
+    elapsed < 1_500, { elapsed, budgetMs: 3_000 });
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
   await m2?.stop().catch(() => {});

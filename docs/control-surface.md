@@ -91,6 +91,21 @@ expected set from the service registry, invokes each under a shared deadline, an
 results with per-instance attribution. A non-answering instance is labelled unreachable,
 never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.md](cli.md).
 
+The expected set comes from the **registry**, which records registration rather than liveness.
+An instance that crashes never deregisters, so it stays in the set and the gather has nothing
+left to wait for but an answer that cannot come — it pays the whole deadline, on every scatter,
+indefinitely. A scatter can therefore be given a per-instance liveness probe: when the broker
+itself reports that an instance holds no subscription on its own instance rail, the gather stops
+waiting for it. Only that affirmative report counts. A lapsed presence entry, a probe that timed
+out, and a probe that failed are all *absence of evidence*, and treating any of them as death
+would turn a slow correct answer into a fast wrong one — so they leave the full deadline standing.
+Nothing about the outcome changes either way: an instance that did not answer is still
+unreachable, still surfaced, and the scatter is still not complete.
+
+This does not help against an instance that is **connected but not answering**. A hung manager
+holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full
+deadline. That is the correct result, not a gap in the probe.
+
 ## Attach sessions
 
 `cotal attach` no longer returns a `ws://127.0.0.1` URL. It creates a one-use, holder-bound
