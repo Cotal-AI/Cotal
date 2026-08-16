@@ -213,6 +213,41 @@ const plan = async (
   catch (e) { consumed = `threw: ${(e as Error).message.slice(0, 60)}`; }
   c("the child inherits the prefix's effect CONSUMPTION, not just the ceiling — provisional, by construction",
     consumed === 2, consumed);
+
+  // THE SCOPED TWIN, and the cell above is why it exists. `2` there is measured over a program with
+  // NO SCOPES, so the claim-1 repair — which projects enclosing scope rows out of the cut — cannot
+  // change it. As a re-open trigger for "does the child inherit the consumption" it was blind to the
+  // only case that puts the question in doubt: it is live on the flat input and dead on the scoped
+  // one, and every liveness check on it passes.
+  //
+  // This pins the SCOPED number instead, and pins it as behaviour-under-a-known-defect rather than
+  // as behaviour that is right. Today a cut inside a branch is admissible with NO refusal and its
+  // prefix carries the settled `/parallel:pair#0` fact, whose recorded result already holds b=2 —
+  // the value the child was forked to re-decide, and which it then short-circuits over instead of
+  // performing. So the count below is charged for a decision the child never makes.
+  //
+  // WHEN CLAIM 1 IS REPAIRED THIS CELL FAILS, and that is its whole purpose: the repair changes what
+  // is in the cut, and a fork-inheritance closure that rested on "the prefix is the child's history"
+  // must be re-argued at that moment rather than inherited silently.
+  {
+    const sEntries = await record("r-scoped", SCOPED);
+    const sp = await plan({
+      parent: "r-scoped", entries: sEntries, source: SCOPED,
+      fromStepKey: "/parallel:pair#0/b:b/sleep:b#0",
+    });
+    c("KNOWN DEFECT (claim 1): a cut inside a branch is admitted with no refusal at all",
+      sp.admissible === true && sp.refusals.length === 0, sp.refusals);
+    c("KNOWN DEFECT (claim 1): its prefix carries the SETTLED enclosing scope fact",
+      keys(sp.cut).includes("/parallel:pair#0"), keys(sp.cut));
+    let sConsumed: number | string;
+    try {
+      sConsumed = new Journal({
+        run: "r-schild", entries: sp.cut.map((e) => ({ ...e, run: "r-schild" })),
+      }).dispatchedEffects();
+    } catch (e) { sConsumed = `threw: ${(e as Error).message.slice(0, 60)}`; }
+    c("so the ceiling charges the child for a scope whose result already answers the step it was forked to redo",
+      sConsumed === 1, { consumed: sConsumed, cut: keys(sp.cut) });
+  }
 }
 
 // ── 4) the refusals, each naming a different repair ────────────────────────────────────────────
