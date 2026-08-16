@@ -463,18 +463,30 @@ const plan = async (
       parent: "r-race-fork", entries: rEntries, source: RACE, fromStepKey: "/sleep:after#0",
     });
     c("a fork past an UNEDITED settled race is admissible", clean.admissible === true, clean.refusals);
+    // CAUGHT, deliberately. The claim is that planFork REPORTS this rather than raising it, so a
+    // build that raises has to redden this cell — not abort the file before the cells below it and
+    // before the terminal marker, which grades as "the suite stopped" rather than as a finding.
     const renamed = await plan({
       parent: "r-race-fork", entries: rEntries, fromStepKey: "/sleep:after#0",
       source: RACE.split(`  ${won}:`).join(`  ${won}${won}:`),
-    });
+    }).then((r) => r, (e: unknown) => e as Error);
     c("a fork over a race whose winning arm the source renamed away RETURNS rather than hanging",
-      typeof renamed.admissible === "boolean", renamed);
+      !(renamed instanceof Error), (renamed as Error)?.name);
+    // The three below are ABOUT the report, so a raise makes each of them false rather than
+    // skipped. A skip would leave the suite green on the claim it stopped being able to check, and
+    // "no evidence" scored as a pass is the false negative whose repair is always a weaker test.
+    const raised = renamed instanceof Error ? (renamed as Error).name : null;
     c("and it is refused with L5022, naming the arm the source no longer declares",
-      code(renamed, "L5022") && renamed.refusals.some((r) => r.why.includes(won)), renamed.refusals);
+      raised === null && code(renamed as Exclude<typeof renamed, Error>, "L5022")
+        && (renamed as Exclude<typeof renamed, Error>).refusals.some((r) => r.why.includes(won)),
+      raised ?? (renamed as Exclude<typeof renamed, Error>).refusals);
     c("not with L5014, which would send the caller to fork before a conclave that is not there",
-      noCode(renamed, "L5014"), renamed.refusals);
-    c("and a refused fork carries no cut", renamed.admissible === false && renamed.cut.length === 0,
-      { admissible: renamed.admissible, cut: keys(renamed.cut) });
+      raised === null && noCode(renamed as Exclude<typeof renamed, Error>, "L5014"),
+      raised ?? (renamed as Exclude<typeof renamed, Error>).refusals);
+    c("and a refused fork carries no cut",
+      raised === null && (renamed as Exclude<typeof renamed, Error>).admissible === false
+        && (renamed as Exclude<typeof renamed, Error>).cut.length === 0,
+      raised ?? { admissible: (renamed as Exclude<typeof renamed, Error>).admissible });
   }
 
   // A spawn in the CUT, which a fork must respawn or adopt at the frontier.
