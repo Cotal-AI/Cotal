@@ -679,6 +679,46 @@ const plan = async (
     control.admissible === true && control.cut.length === 3, keys(control.cut));
 }
 
+// ── 7) THE SHAPE THE CALLER ACTUALLY HOLDS ─────────────────────────────────────────────────────
+//
+// Every other block in this file hands `planFork` a KEYED view, because `record()` builds one from
+// `Journal.entries()`. No driver has one. The stream is append-only — `journal-store.smoke` proves
+// one step is two records — `RunJournalAppender.steps()` replays every step record in order, and
+// `run-driver.ts:250-258` seeds a journal straight from it. **A suite that only ever passes the
+// tidy shape cannot see what the real caller's shape does**, which is why this block exists.
+//
+// The language now folds that log when it SEEDS a journal. `planFork` filters `req.entries`
+// directly, so it does not.
+{
+  const log: JournalEntry[] = [];
+  const j = new Journal({
+    run: "r-log",
+    store: { load: async () => [], append: async (e: JournalEntry) => { log.push(e); } },
+  });
+  await runProgram(FLAT, { runId: "r-log", handler: new SimHandler({ clock: { start: NOW } }), journal: j, pins: PINS });
+
+  c("the log really carries two rows per step, which is what append-only means",
+    log.length === 2 * [...j.entries()].length, { rows: log.length, steps: [...j.entries()].length });
+
+  const p = await plan({ parent: "r-log", entries: log, source: FLAT, fromStepKey: "/sleep:three#0" });
+  c("a fork over the log is admissible, exactly as it is over the keyed view",
+    p.admissible === true && p.refusals.length === 0, p.refusals);
+
+  // WRONG TODAY. The prefix carries the pending row AND the settled row of every copied step, so
+  // the child inherits a history twice the size of the one its parent performed. It is silent:
+  // nothing refuses, and the keys are all correct — there are simply two of each.
+  c("WRONG TODAY: the cut carries two rows for every step, because it filters the raw list",
+    keys(p.cut).length === 4 && new Set(keys(p.cut)).size === 2, keys(p.cut));
+
+  // And the reason it is worth repairing at the fork rather than left to the child's journal to
+  // absorb: `commitFork` COPIES the cut, so the doubling is written to the child's durable stream
+  // as real records. The seeded journal folds them on read; the stream keeps them forever.
+  c("and the same fork over the keyed view carries one row per step, which is the answer both should give",
+    keys((await plan({ parent: "r-log", entries: [...j.entries()], source: FLAT, fromStepKey: "/sleep:three#0" })).cut)
+      .join() === "/sleep:one#0,/sleep:two#0",
+    keys((await plan({ parent: "r-log", entries: [...j.entries()], source: FLAT, fromStepKey: "/sleep:three#0" })).cut));
+}
+
 console.log(`fork-run.smoke: ${ok} passed, ${fail} failed`);
 done();
 process.exit(fail === 0 ? 0 : 1);
