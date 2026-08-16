@@ -235,6 +235,16 @@ const plan = async (
   c("and an unreached plan carries no cut at all, rather than a plausible one",
     unreached.cut.length === 0, keys(unreached.cut));
 
+  // AN EMPTY CUT IS TWO DIFFERENT ANSWERS, and only one of them is admissible. Above it means the
+  // walk never reached the step, and the plan is REFUSED. Here it means the step is the run's FIRST,
+  // so nothing happened before it — a fork at the beginning is a legal fork of no history, and a
+  // refusal would be wrong. The pair is what makes `cut.length === 0` readable at all; on its own it
+  // would be a number that means "refused" in one plan and "correct" in the next.
+  const atFirst = await plan({ entries, source: FLAT, fromStepKey: "/sleep:one#0" });
+  c("a fork at the run's FIRST step is admissible", atFirst.admissible === true, atFirst.refusals);
+  c("and its cut is empty because nothing happened before it, not because nothing was reached",
+    atFirst.cut.length === 0 && atFirst.fromStep === "/sleep:one#0", { cut: keys(atFirst.cut), at: atFirst.fromStep });
+
   const pinned = await plan({ entries, source: FLAT, fromStepKey: "/sleep:three#0", newProgramHash: "sha256:new" });
   c("a fork onto a new program is refused, because nothing pins a program hash", code(pinned, "L5002"), pinned.refusals);
 
