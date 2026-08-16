@@ -1045,8 +1045,13 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  connection is broker-DENIED every goal write, which is the item-2 privilege separation (the
  *  dedicated writer is minted on a distinct connection, the serve rails stay serve-only). All of
  *  commitPrincipalGrants' D32 residuals carry unchanged (payload-blind create-only publish; raw
- *  `$KV` cannot enforce the per-key CAS the substrate layers on; the two body-selected
- *  `STREAM.MSG.GET` reads expose EPF + records space-wide). The reply inbox is connection-scoped
+ *  `$KV` cannot enforce the per-key CAS the substrate layers on). **THREE body-selected
+ *  `STREAM.MSG.GET` reads, not two**: EPF and records space-wide from the commit-principal base,
+ *  PLUS the own-gate read on the AUTHORITY store (`KV_cotal_auth_<space>`) added here. That third
+ *  one is the widest of the three and it was missing from this list while the builder emitted it —
+ *  a residual you do not name is a residual nobody weighs. It makes this the only endpoint-side
+ *  principal that reads the credential/gate store, which is why the D32 matrix audit now carries it
+ *  as an explicit holder-set entry. The reply inbox is connection-scoped
  *  (`_INBOX_<connId>.>`). The `eff`/`wrk`/`receipt`/`cp`/`lease` families in the commit-principal
  *  base are inert for a goal-only endpoint (the manager writes none) but are the commit-principal
  *  profile's standard ceiling; a tighter goal-only ceiling is a follow-up if the panel prefers it. */

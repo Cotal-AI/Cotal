@@ -40,7 +40,7 @@
  */
 import {
   canonicalizerGrants, canonicalizerWorkGrants, effectsBindGrants, recordWriterGrants, timerWriterGrants,
-  poolOwnerBindGrants, provisionerConsumerGrants, admissionMediatorGrants, retirementCleanerGrants,
+  poolOwnerBindGrants, provisionerConsumerGrants, admissionMediatorGrants, retirementCleanerGrants, goalWriterGrants,
   commitPrincipalGrants, contractPublisherGrants, activatorGrants, epCallerGrantRows, epServeGrantRows,
   RECORD_KINDS, epwStreamName, epjStreamName, eptReqStreamName, epfStreamName,
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
@@ -175,6 +175,34 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.INFO",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "commit": { publish: [
+    "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result",
+    "cotal.d32m.epf.jobsrv.eff.>",
+    "cotal.d32m.epf.jobsrv.receipt.>",
+    "cotal.d32m.epf.jobsrv.wrk.>",
+    "cotal.d32m.epf.jobsrv.cp.>",
+    "$KV.cotal_records_d32m.goal.jobsrv.>",
+    "$KV.cotal_records_d32m.cp.jobsrv.>",
+    "$KV.cotal_records_d32m.lease.jobsrv.>",
+    "$JS.API.STREAM.MSG.GET.EPF_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.INFO",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // The SELF-MEDIATED GOAL-WRITER (P2 item 2). It was outside this file entirely while having a
+  // production mint, and that is the gap worth stating plainly: it IS reviewed — an exact-list cell
+  // in `packages/core/smoke/endpoint-binding.smoke.ts` pins every row of it — but the tests HERE are
+  // AGGREGATE ones. "No unreviewed principal appeared" iterates the principals this file builds;
+  // the STREAM.MSG.GET holder set is an exact list over the same set; the cross-principal
+  // disjointness greps compare the members of that set to each other. A profile absent from the set
+  // passes all of them by not being in them. **An exact-list expectation reads as complete whether
+  // or not anyone checked** — and this one holds THREE leader-served reads, including the
+  // authority store, which no other endpoint-side principal in the holder list has.
+  "goal-writer": { publish: [
+    "cotal.d32m.epf.jobsrv.goal.*.*.*.*.bind",
+    "$KV.cotal_records_d32m.goalidx.jobsrv.>",
+    "$KV.cotal_records_d32m.goaleff.jobsrv.>",
+    "$KV.cotal_records_d32m.epname.jobsrv.>",
+    "$KV.cotal_records_d32m.epmig.jobsrv",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
     "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result",
     "cotal.d32m.epf.jobsrv.eff.>",
     "cotal.d32m.epf.jobsrv.receipt.>",
@@ -391,6 +419,7 @@ put("records-reader-bind", { publish: readerBindGrants(recordsKvStreamName(S), r
 put("mediator", admissionMediatorGrants(S, EPJ, CONN));
 put("cleaner", retirementCleanerGrants(S, EPJ, ["pa", "pb"], CONN));
 put("commit", commitPrincipalGrants(S, EPJ, CONN));
+put("goal-writer", goalWriterGrants(S, EPJ, CONN));
 put("contract-publisher", contractPublisherGrants(S, CONN));
 put("activator", activatorGrants(S, EPJ, "pa", CONN));
 put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID }));
@@ -506,6 +535,11 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "mediator:KV_cotal_records_d32m", "mediator:EPF_d32m", "mediator:EPW_d32m",
     "cleaner:EPF_d32m",
     "commit:EPF_d32m", "commit:KV_cotal_records_d32m",
+    // The self-mediated goal-writer carries the commit principal's two reads AND a third:
+    // a bucket-blind leader read of the AUTHORITY store for its own gate row. It is the only
+    // endpoint-side principal in this list that reads `KV_cotal_auth`, and it is listed here
+    // so that fact is a reviewed entry rather than something a reader would have to derive.
+    "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
@@ -521,6 +555,25 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   ]);
   c("the STREAM.MSG.GET holder set equals the enumerated trusted list exactly",
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());
+}
+
+// (2b') EXACTLY ONE principal may hold BOTH sides of the goal fact chain. SPEC:2711 splits the
+// `.bind` leaf from the commit principal's `.result` and says so in the row itself ("no writer
+// overlap"); the self-mediated goal-writer (P2 item 2) unions them ON PURPOSE, because a Model-B
+// endpoint accepts and commits on one connection. That union is safe only while it is UNIQUE and
+// only while neither holder can also forge a DECISION — so both halves are asserted here rather
+// than left to the reader of a fixture. Assert the SET, not just the count: a second holder and a
+// different single holder would tie on a count alone.
+{
+  const both = allRows.reduce((acc, { principal, row }) => {
+    if (row.endsWith(".bind")) (acc[principal] ??= new Set()).add("bind");
+    if (row.endsWith(".result")) (acc[principal] ??= new Set()).add("result");
+    return acc;
+  }, {} as Record<string, Set<string>>);
+  const holders = Object.entries(both).filter(([, k]) => k.has("bind") && k.has("result")).map(([n]) => n).sort();
+  const decOrQuar = allRows.filter(({ principal, row }) => holders.includes(principal) && /\.(dec|quar)\./.test(row));
+  c("the goal-writer is the ONE principal holding both the `.bind` leaf and the `.result` terminal, and it can forge NO decision",
+    JSON.stringify(holders) === JSON.stringify(["goal-writer"]) && decOrQuar.length === 0, { holders, decOrQuar });
 }
 
 // (2c) Direct-Get tails are fully qualified; the body-selected records pair is auth-path-only.
