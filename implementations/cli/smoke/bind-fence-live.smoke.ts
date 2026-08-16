@@ -60,6 +60,20 @@ const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
 const VERDICT = /no manager reachable|did not answer/;
 
+// THE SAME LIVE-BROKER GUARD THE SIBLING LIVE SUITES CARRY, and this file needed it: it spawns the
+// REAL binary with the ambient environment, and the binary resolves a mesh from the environment
+// BEFORE it reads any flag. `up` passes `--server`, but the readiness poll and the teardown did not
+// — so a stray `COTAL_SERVERS` pointed a `ps` at production, where the fixture's space is empty and
+// the poll could report "serving" having never seen this manager, and pointed `cotal down` at
+// production too. That is exactly the vacuous cell this suite exists to avoid, in the suite itself.
+// Scrubbed AND flagged: the deletions fix the inheritance, the sweep refuses if anything else in
+// the environment still names the live host, and every `cli()` below now states its server.
+const LIVE_HOST = "broker.cotal.ai";
+for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
+for (const [k, v] of Object.entries(process.env))
+  if (typeof v === "string" && v.includes(LIVE_HOST)) throw new Error(`refusing to run: ${k} points at the live broker (${v})`);
+if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(SERVER)) throw new Error(`this fixture only runs against an ephemeral loopback broker; got ${SERVER}`);
+
 const home = mkdtempSync(join(tmpdir(), "cotal-split-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-split-root-"));
 const env = { ...process.env, COTAL_HOME: home };
@@ -113,7 +127,7 @@ try {
   // would call ready.
   let serving = false;
   for (let i = 0; i < 20 && !serving; i++) {
-    if (cli("ps", "--space", SPACE).status === 0) serving = true;
+    if (cli("ps", "--space", SPACE, "--server", SERVER).status === 0) serving = true;
     else await sleep(1000);
   }
   ok("the manager answers control", serving);
@@ -170,7 +184,7 @@ try {
 } finally {
   // Always bare `cotal down`, never pkill — and it must run even when a cell above threw, or the
   // fixture leaks a broker on the fixed port and the NEXT run silently grades a stale mesh.
-  cli("down");
+  cli("down", "--server", SERVER);
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }
