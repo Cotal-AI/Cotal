@@ -328,7 +328,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 
     let diverged: unknown;
     try {
-      await resume(src(p.bagB), live.journal, { runId, handler: new SimHandler(script) });
+      await resume(src(p.bagB), live.journal, { runId, pins: live.pins, handler: new SimHandler(script) });
     } catch (e) {
       diverged = e;
     }

@@ -121,6 +121,11 @@ export const CATALOG = {
   L5018: "Fork cut was never reached",
   L5020: "A fork cut lies inside a scope whose outcome was already decided",
   L5019: "Fork cannot honour `onFork` on this host",
+  // Allocated from THIS FILE, same rule. A resume that is handed history but not the pins that
+  // history was written under does not fail anywhere: it re-resolves them, takes this host's clock
+  // as the run's epoch and this interpreter's default as the seed, and carries on. Nothing in the
+  // journal disagrees, because pure draws are not journalled and the clock is not a recorded fact.
+  L5021: "Resume over a journal without the run's pins",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",

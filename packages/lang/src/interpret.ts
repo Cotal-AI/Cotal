@@ -1816,6 +1816,29 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
   const programHash = programHashOf(source);
   // A resume is handed the pins the run STARTED under and binds to them; a fresh run resolves them
   // once, here, and hands them back for the run record.
+  //
+  // AND A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING. Handed history but no pins, this
+  // used to re-resolve them and carry on, which is not a smaller version of the right behaviour —
+  // it is a different run wearing the same journal. Measured on a journal recorded at epoch
+  // 1000000000000 and resumed a day later without pins: `now()` before the first effect returned
+  // the RESUMING host's clock (1000086400000), the run clock stayed on that host's time even AFTER
+  // a replayed `sleep` whose recorded `endedAt` was 1000000001000, and a pinned seed was replaced
+  // by the runId default so `random()` moved from 0.6367686 to 0.5057680. Nothing refused, because
+  // nothing could: pure draws are not journalled and the epoch is not a recorded fact, so there is
+  // no divergence for the replay to catch. Every production caller already passes pins; this makes
+  // the contract the code's rather than the caller's memory.
+  //
+  // A journal with NO entries is a different thing and stays allowed: that is a FRESH run being
+  // handed a journal for its store, not a resume.
+  if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {
+    throw new RuntimeFault(
+      "L5021",
+      `run ${options.runId} was handed a journal with ${options.journal.entries().length} recorded step(s) but no pins. The pins are what decide `
+        + `the run's logical epoch and its seed, so resolving them again here would make this a different run against a journal that was not `
+        + `written for it — silently, because neither the clock nor a pure draw is a recorded fact the replay could diverge on.\n\n`
+        + `Options\n  pass the pins from the run record\n  start a fresh run instead of resuming this journal`,
+    );
+  }
   const pins =
     options.pins !== undefined ? bindPins(options.pins, options) : resolvePins(options, options.handler.now());
   const interp = new Interpreter(ast as AnyNode, options, programHash, pins);

@@ -108,6 +108,10 @@ const recorded = new Journal({ run: "r-live" });
 const live = await run(LIVE, { runId: "r-live", handler: new SimHandler(SCRIPT as never), journal: recorded })
   .then((r) => r, (e: unknown) => e as Error);
 ok("the recorded run completed", !(live instanceof Error), (live as Error)?.message?.slice(0, 120));
+// Every walk below is over a COPY of this journal, and a walk is a resume: it carries the pins the
+// recorded run was pinned to, because re-resolving them would put the walk on this host's clock and
+// on a re-seeded PRNG — a different run reading the same history.
+const livePins = (live as { pins: import("../src/index.js").RunPins }).pins;
 const recordedKeys = keys(recorded.entries());
 ok("its journal holds the checkpoint, inside branch `a`",
   recordedKeys.some((k) => k.includes("/b:a/checkpoint:approve")), recordedKeys);
@@ -119,7 +123,7 @@ const walk = async (migration: boolean) => {
   const outcome = await run(EDITED, {
     runId: "r-live",
     handler: checkHandler(recorded.entries().length === 0 ? 0 : 10_000_000),
-    journal: j,
+    journal: j, pins: livePins,
     migration,
   }).then(() => null, (e: unknown) => e as Error);
   return { outcome, orphans: keys(j.orphans()) };
@@ -159,14 +163,14 @@ await race({
 await sleep("1s", { name: "after-race" });
 `;
   const rj = new Journal({ run: "r-race" });
-  await run(RACE, { runId: "r-race", handler: new SimHandler({}), journal: rj });
+  const racePins = (await run(RACE, { runId: "r-race", handler: new SimHandler({}), journal: rj })).pins;
   const scope = rj.entries().find((e) => e.kind === "race");
   const losers = (scope as { cancel?: { losers: readonly string[] } })?.cancel?.losers ?? [];
   ok("the race recorded at least one loser", losers.length > 0, JSON.stringify(scope?.result));
 
   const rj2 = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
   const outcome = await run(RACE, {
-    runId: "r-race", handler: checkHandler(10_000_000), journal: rj2, migration: true,
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rj2, pins: racePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("the migration walk completes over an unedited race", outcome === null, outcome?.message?.slice(0, 120));
   const raceOrphans = keys(rj2.orphans());
@@ -186,7 +190,7 @@ await sleep("1s", { name: "after-race" });
 
   const rj3 = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
   const overLoser = await run(EDITED_LOSER, {
-    runId: "r-race", handler: checkHandler(10_000_000), journal: rj3, migration: true,
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rj3, pins: racePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("REPAIRED: an edit inside a branch the race decided now refuses the migration",
     overLoser?.name === "RunDivergence", `${overLoser?.name}: ${overLoser?.message?.slice(0, 140)}`);
@@ -213,7 +217,7 @@ await sleep("1s", { name: "after-race" });
   ok("the reindent landed", REINDENTED !== RACE, { loser });
   const rjReindent = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
   const overReindent = await run(REINDENTED, {
-    runId: "r-race", handler: checkHandler(10_000_000), journal: rjReindent, migration: true,
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rjReindent, pins: racePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a REINDENTED losing arm is not an edited one: same structure, same digest, walk completes",
     overReindent === null, `${overReindent?.name}: ${overReindent?.message?.slice(0, 120)}`);
@@ -231,7 +235,7 @@ await sleep("1s", { name: "after-race" });
   ok("the edit landed on the winning branch", EDITED_WINNER !== RACE, { winner });
   const rjWinner = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
   const overWinner = await run(EDITED_WINNER, {
-    runId: "r-race", handler: checkHandler(10_000_000), journal: rjWinner, migration: true,
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rjWinner, pins: racePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("an edit in the WINNING arm diverges at the STEP it broke, not at the scope",
     overWinner?.name === "RunDivergence" &&
@@ -245,7 +249,7 @@ await sleep("1s", { name: "after-race" });
   // arm. One string comparison, and it never fires on source that did not change.
   const rjResume = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
   const resumed = await run(EDITED_LOSER, {
-    runId: "r-race", handler: checkHandler(10_000_000), journal: rjResume, migration: false,
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rjResume, pins: racePins, migration: false,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a RESUME of the same edited source diverges as well, rather than replaying past it",
     resumed?.name === "RunDivergence", `${resumed?.name}: ${resumed?.message?.slice(0, 140)}`);
@@ -278,7 +282,7 @@ await sleep("1s", { name: "after-race" });
   // handler is ever called, so the cell would be proving the journal's refusal and not the walk's
   // branch selection.
   const rj4 = new Journal({ run: "r-race", entries: rj.entries() });
-  await run(EXTRA, { runId: "r-race", handler: recorder, journal: rj4, migration: true })
+  await run(EXTRA, { runId: "r-race", handler: recorder, journal: rj4, pins: racePins, migration: true })
     .then(() => null, (e: unknown) => e as Error);
   ok("a migration performs NO new work inside a branch the race decided",
     !asked.some((k) => k.includes(`/b:${loser}/`)), JSON.stringify(asked));
@@ -287,7 +291,7 @@ await sleep("1s", { name: "after-race" });
   const [watcher, seen] = tapped();
   const rj5 = new Journal({ run: "r-race", entries: rj.entries() });
   await run(`${RACE}\nawait sleep("5s", { name: "brand-new" });`, {
-    runId: "r-race", handler: watcher, journal: rj5, migration: true,
+    runId: "r-race", handler: watcher, journal: rj5, pins: racePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("the same instrument DOES record a step the recorded run never had",
     seen.some((k) => k.includes("brand-new")), JSON.stringify(seen));
@@ -304,14 +308,14 @@ await sleep("1s", { name: "after-race" });
     `await fanOut([${list}], async (lens) => { await sleep("1m", { name: lens }); return lens; }, { name: "reviews", key: (lens) => lens });`;
 
   const fj = new Journal({ run: "r-fan" });
-  await run(ITEMS(`"a", "b"`), { runId: "r-fan", handler: new SimHandler({}), journal: fj });
+  const fanPins = (await run(ITEMS(`"a", "b"`), { runId: "r-fan", handler: new SimHandler({}), journal: fj })).pins;
   ok("the recorded fanOut has both branches",
     keys(fj.entries()).filter((k) => k.includes("/b:")).length === 2, keys(fj.entries()));
 
   const [handler, asked] = tapped();
   const fj2 = new Journal({ run: "r-fan", entries: fj.entries() });
   const added = await run(ITEMS(`"a", "b", "c"`), {
-    runId: "r-fan", handler, journal: fj2, migration: true,
+    runId: "r-fan", handler, journal: fj2, pins: fanPins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a migration completes over a fanOut the edit widened", added === null, `${added?.name}: ${added?.message?.slice(0, 140)}`);
   ok("and performs no work in the branch the edit added",
@@ -319,7 +323,7 @@ await sleep("1s", { name: "after-race" });
 
   const fj3 = new Journal({ run: "r-fan", entries: fj.entries(), readOnly: true });
   const dropped = await run(ITEMS(`"a"`), {
-    runId: "r-fan", handler: checkHandler(10_000_000), journal: fj3, migration: true,
+    runId: "r-fan", handler: checkHandler(10_000_000), journal: fj3, pins: fanPins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a migration completes over a fanOut the edit narrowed", dropped === null, `${dropped?.name}: ${dropped?.message?.slice(0, 140)}`);
   // BOTH HALVES, because "b orphaned" alone is also what a walk that entered NOTHING would report,
@@ -335,7 +339,7 @@ await sleep("1s", { name: "after-race" });
   const DIVERGED = EDITED.replace('await sleep("1s", { name: "after-approve" })', 'await sleep("9s", { name: "after-approve" })');
   const j = new Journal({ run: "r-live", entries: recorded.entries(), readOnly: true });
   const outcome = await run(DIVERGED, {
-    runId: "r-live", handler: checkHandler(10_000_000), journal: j, migration: true,
+    runId: "r-live", handler: checkHandler(10_000_000), journal: j, pins: livePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("an edited input inside the winning branch diverges", outcome?.name === "RunDivergence", outcome?.name);
   ok("and it names the step, in branch coordinates",
@@ -343,7 +347,7 @@ await sleep("1s", { name: "after-race" });
 
   const resumeWalk = new Journal({ run: "r-live", entries: recorded.entries(), readOnly: true });
   const hidden = await run(DIVERGED, {
-    runId: "r-live", handler: checkHandler(10_000_000), journal: resumeWalk, migration: false,
+    runId: "r-live", handler: checkHandler(10_000_000), journal: resumeWalk, pins: livePins, migration: false,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a resume-shaped walk never sees it, because it never enters the branch", hidden === null, hidden?.name);
 }
@@ -358,12 +362,13 @@ const team = await conclave([], async (room) => {
 `;
   const j = new Journal({ run: "r-conclave" });
   const first = await run(CONCLAVE, { runId: "r-conclave", handler: new SimHandler({}), journal: j })
-    .then(() => null, (e: unknown) => e as Error);
-  ok("a conclave run records", first === null, first?.message?.slice(0, 120));
+    .then((r) => r, (e: unknown) => e as Error);
+  ok("a conclave run records", !(first instanceof Error), (first as Error)?.message?.slice(0, 120));
+  const conclavePins = (first as { pins: import("../src/index.js").RunPins }).pins;
 
   const j2 = new Journal({ run: "r-conclave", entries: j.entries(), readOnly: true });
   const refused = await run(CONCLAVE, {
-    runId: "r-conclave", handler: checkHandler(10_000_000), journal: j2, migration: true,
+    runId: "r-conclave", handler: checkHandler(10_000_000), journal: j2, pins: conclavePins, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a migration REFUSES to walk it rather than consuming what it cannot check",
     refused instanceof UnwalkableScope, refused?.name);
@@ -372,7 +377,7 @@ const team = await conclave([], async (room) => {
 
   const j3 = new Journal({ run: "r-conclave", entries: j.entries(), readOnly: true });
   const resumed = await run(CONCLAVE, {
-    runId: "r-conclave", handler: checkHandler(10_000_000), journal: j3, migration: false,
+    runId: "r-conclave", handler: checkHandler(10_000_000), journal: j3, pins: conclavePins, migration: false,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a RESUME still short-circuits it, which is correct: nothing under it can have been removed",
     resumed === null, resumed?.name);

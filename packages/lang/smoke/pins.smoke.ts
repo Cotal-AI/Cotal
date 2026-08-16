@@ -187,6 +187,65 @@ while (n < 50) {
     caught instanceof Error && caught.message.includes("more than 5 effects"));
 }
 
+// ---- 9) A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING ------------------------------
+//
+// Section 3 proves the epoch is honoured when the pins are HANDED OVER. This is the hole beside it:
+// the pins were optional, so a caller could pass history and omit them, and nothing refused. The
+// harm is measured below rather than asserted — with the guard removed, the same journal resumed on
+// a host a day later ran at the resuming host's epoch and re-seeded its PRNG, and no divergence
+// fired, because neither the clock nor a pure draw is a recorded fact for a replay to compare.
+
+{
+  const P = `
+let t = now()
+let r = random()
+log({ t: t, r: r })
+await sleep("1s", { name: "s" })
+`;
+  const EPOCH = 1_000_000_000_000;
+  const LATER = EPOCH + 86_400_000;
+  const seen: unknown[] = [];
+  const sink = (l: { values: readonly unknown[] }) => { seen.push(l.values[0]); };
+
+  const live = await run(P, {
+    runId: "r-9", seed: "a-deliberate-seed",
+    handler: new SimHandler({ clock: { start: EPOCH } }), onLog: sink,
+  });
+
+  let refused: unknown;
+  try {
+    await resume(P, new Journal({ run: "r-9", entries: live.journal.entries() }), {
+      runId: "r-9", handler: new SimHandler({ clock: { start: LATER } }), onLog: sink,
+    });
+  } catch (e) { refused = e; }
+  ok("a resume over a recorded journal with no pins is REFUSED", (refused as { code?: string })?.code === "L5021", String(refused).slice(0, 90));
+  ok("and the refusal says the pins are what decide the epoch and the seed",
+    String(refused).includes("logical epoch") && String(refused).includes("seed"), String(refused).slice(0, 200));
+
+  // NARROWNESS, and it is load-bearing: a journal with NO entries is a fresh run being handed a
+  // journal for its store, not a resume. Refusing that would break the ordinary way a driver
+  // supplies storage, so the guard must read the entries and not merely the option.
+  const fresh = await run(P, {
+    runId: "r-9b", handler: new SimHandler({ clock: { start: EPOCH } }),
+    journal: new Journal({ run: "r-9b" }),
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("while a run handed an EMPTY journal is still a fresh run, not a refused resume", fresh === null, String(fresh).slice(0, 90));
+
+  const liveDraw = (seen[0] as { r: number })?.r;
+
+  // And the pins that were handed over are the ones the resume ran under, so the cell above is
+  // about the omission rather than about resuming at all.
+  seen.length = 0;
+  const carried = await resume(P, new Journal({ run: "r-9", entries: live.journal.entries() }), {
+    runId: "r-9", pins: live.pins, handler: new SimHandler({ clock: { start: LATER } }), onLog: sink,
+  });
+  ok("a resume that carries the pins replays at the RECORDED epoch, not this host's",
+    (seen[0] as { t: number })?.t === EPOCH, seen[0]);
+  ok("and draws the same number, because the seed came back with the pins rather than being re-defaulted",
+    (seen[0] as { r: number })?.r === liveDraw && carried.pins.seed === "a-deliberate-seed",
+    { live: liveDraw, replayed: (seen[0] as { r: number })?.r, seed: carried.pins.seed });
+}
+
 // ---- 8) the two codes exist in the catalog, with their titles -------------------------
 
 {
@@ -194,6 +253,7 @@ while (n < 50) {
   ok("L5008 is in the catalog", CATALOG.L5008 === "Resume under a different language version");
   ok("L5005's title says what an author must do about it",
     CATALOG.L5005 === "A pending effect cannot be recovered");
+  ok("L5021 is in the catalog", CATALOG.L5021 === "Resume over a journal without the run's pins");
 }
 
 console.log(`pins.smoke: ${pass} checks passed`);

@@ -53,6 +53,9 @@ log(r.index, r.value);
 `;
 
 let raceJournal: Journal;
+// The pins the recorded race ran under. Every replay below is a resume and carries them: resolving
+// them again would put the replay on this host's clock and a re-seeded PRNG.
+let racePins: import("../src/index.js").RunPins;
 {
   logged.length = 0;
   // Caught, because the way a race breaks is not always a wrong answer. A rule that lets the
@@ -69,6 +72,7 @@ let raceJournal: Journal;
   ok("a live race resolves rather than failing on the branch it cancelled", liveError === undefined,
     String(liveError).slice(0, 80));
   raceJournal = r.journal;
+  racePins = r.pins;
 
   const scope = scopeOf(r.journal, "race");
   ok("a race appends a scope entry of its own kind", scope !== undefined && scope.kind === "race");
@@ -136,7 +140,7 @@ let raceJournal: Journal;
   // quietly resolve. Completing is the proof that no branch was entered.
   logged.length = 0;
   const j = new Journal({ run: "r-1", entries: raceJournal.entries() });
-  await resume(RACE, j, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+  await resume(RACE, j, { runId: "r-1", pins: racePins, handler: new SimHandler({}), onLog: sink });
   ok(
     "a settled race ENTERS NO BRANCH: neither arm's body ran",
     !logged.some((l) => String(l[0]).startsWith("entered-")),
@@ -178,7 +182,7 @@ let raceJournal: Journal;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     logged.length = 0;
     const jj = new Journal({ run: "r-1", entries });
-    await resume(RACE, jj, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+    await resume(RACE, jj, { runId: "r-1", pins: racePins, handler: new SimHandler({}), onLog: sink });
     winners.push(logged.find((l) => l.length === 2)?.[0]);
   }
   ok("a re-entered race resolves the SAME arm every time", new Set(winners).size === 1, winners);
@@ -298,11 +302,13 @@ log("out", out);
 `;
 
 let conclaveJournal: Journal;
+let conclavePins: import("../src/index.js").RunPins;
 {
   logged.length = 0;
   const { handler, calls } = watching(new SimHandler({}));
   const r = await run(CONCLAVE, { runId: "c-1", handler, onLog: sink });
   conclaveJournal = r.journal;
+  conclavePins = r.pins;
 
   ok("a conclave opens and closes around its body", JSON.stringify(calls) === '["open","close"]', calls);
   ok("the body ran between them", logged.some((l) => l[0] === "inside"));
@@ -342,7 +348,7 @@ let conclaveJournal: Journal;
   logged.length = 0;
   const { handler, calls } = watching(new SimHandler({}));
   const j = new Journal({ run: "c-1", entries: conclaveJournal.entries() });
-  await resume(CONCLAVE, j, { runId: "c-1", handler, onLog: sink });
+  await resume(CONCLAVE, j, { runId: "c-1", pins: conclavePins, handler, onLog: sink });
   ok("a settled conclave re-opens nothing", JSON.stringify(calls) === "[]", calls);
   ok("and enters no branch", !logged.some((l) => l[0] === "inside"), logged);
   ok("the program still receives the recorded room", logged.find((l) => l[0] === "out")?.[1] === "war-room", logged);
@@ -363,7 +369,7 @@ await conclave([a], async (ch) => ch.channel, { name: "huddle" });
   const r = await run(BEFORE, { runId: "c-2", handler });
   let caught: unknown;
   try {
-    await resume(AFTER, new Journal({ run: "c-2", entries: r.journal.entries() }), { runId: "c-2", handler });
+    await resume(AFTER, new Journal({ run: "c-2", entries: r.journal.entries() }), { runId: "c-2", pins: r.pins, handler });
   } catch (e) {
     caught = e;
   }
@@ -622,7 +628,7 @@ await race({
   // lands on this cell rather than killing the suite from outside any assertion.
   let winner: unknown;
   try {
-    await resume(RACE, jj, { runId: "r-1", handler: new SimHandler({}), onLog: sink });
+    await resume(RACE, jj, { runId: "r-1", pins: racePins, handler: new SimHandler({}), onLog: sink });
     winner = logged.find((l) => l.length === 2)?.[0];
   } catch (e) {
     winner = `threw:${(e as Error).name}`;
