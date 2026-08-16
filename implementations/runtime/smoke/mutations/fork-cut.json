@@ -175,13 +175,13 @@
       "note": "The defect exactly as it shipped, and it is invisible to every other block in this file because they all build a KEYED view with `Journal.entries()`. Only the block that hands `planFork` an append log -- the shape a driver actually holds -- can see it."
     },
     {
-      "name": "the plan folds the WRONG view",
+      "name": "the fold drops a row from the prefix",
       "file": "implementations/runtime/src/fork.ts",
       "find": "  const entries = journal.entries();",
-      "replace": "  const entries = journal.orphans();",
+      "replace": "  const entries = journal.entries().slice(1);",
       "expectRed": "the cut is what happened BEFORE it",
       "cell": "the cut is what happened BEFORE it",
-      "note": "The narrowness twin, and its FIRST form was wrong in a way worth recording. `entries = []` satisfies 'one row per step' trivially -- but an empty prefix makes later blocks in this suite throw on a plan they assumed admissible, so the run died before printing its marker and graded INCONCLUSIVE: red, and not evidence about any cell. A twin has to be survivable enough to reach the assertion it names. `orphans()` is also a folded entry list and also one row per step -- it is simply the WRONG set, the steps AFTER the cut rather than before it -- so it tests that the fold names the right view without destroying the run."
+      "note": "The narrowness twin, THIRD form, and the two discarded forms are why it reads like this.\n  (1) `entries = []` graded INCONCLUSIVE: an empty prefix makes later blocks throw on a plan they assumed admissible, so the run died before printing its marker -- red, and not evidence about any cell.\n  (2) `entries = journal.orphans()` graded SURVIVED, and the mutant simply DOES NOT REPRODUCE: this line is taken before the walk runs, when nothing is consumed yet, so `orphans()` and `entries()` are the same array. A mutation that is a no-op at its own program point is not a suite hole, and reading that SURVIVED as one would have sent me to write a cell for a defect that cannot occur.\n  Dropping one row is the claim that actually matters beside 'one row per step': the fold must return the WHOLE prefix, not part of it. A de-dup that kept only the last write overall would pass every other cell in this config and hand each child a truncated history."
     }
   ],
   "unkillable": [
