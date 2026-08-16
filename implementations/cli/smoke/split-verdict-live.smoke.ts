@@ -47,6 +47,20 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
+
+/** How many cells this file must run. A live suite can end early in ways that redden NO line — a
+ *  guard that returns before the fixture is up, a hang the runner kills, a top-level rejection that
+ *  tears the process down before the summary — and `fail === 0` reads as PASS in every one of them,
+ *  with a zero exit code, which is the only bit anyone downstream looks at. So the count is declared
+ *  rather than implied, and checked on the way out however the process leaves. */
+const EXPECTED_CELLS = 13;
+process.on("exit", () => {
+  const ran = pass + fail;
+  if (ran !== EXPECTED_CELLS) {
+    console.log(`\nSUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+    process.exitCode = 1;
+  }
+});
 const cli = (...args: string[]) => spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const portOpen = (port: number) =>
@@ -141,5 +155,7 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+// `exitCode`, not `exit()`: the completeness handler above has to be able to override a zero, and
+// an explicit exit here would also cut the fixture's teardown short.
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+process.exitCode = fail === 0 ? 0 : 1;
