@@ -14,7 +14,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, EpEnvelopeError,
-  submissionFingerprint, decideAdmission, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
+  submissionFingerprint, decideAdmission, hasOutOfRangeNumber, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
   epfEffectSubject, parseEffectFact,
   epjStreamName, epfStreamName, canonDurable,
   parseDecisionFact, parseQuarantineFact, assertFactFits,
@@ -227,6 +227,70 @@ admits("c8 and the same after an ARRAY of objects closes", { id: "req-1", c: [{ 
 admits("c8 a string spelling out a name is CONTENT, never structure", { id: "r", a: '":"x", "id', b: 2 });
 admits("c8 quoted braces and a trailing backslash are content too",
   { id: "req-1", args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } } });
+
+// c10 — OUT-OF-RANGE NUMBERS, the fourth I-JSON condition SPEC:1587-1588 names and the last one
+// this module did not enforce. Found the same way c8 was and NOT the way the rest of this file was:
+// by reading what the SPEC names against what the code can produce. No mutant could have found it,
+// and that is a property of the class rather than of the effort — the evidence is destroyed by
+// `JSON.parse` before any guard could run, so a mutant aimed at a post-parse branch SURVIVES, and a
+// survivor here is indistinguishable from a suite hole.
+//
+// The literal has to be spelled into the JSON TEXT: there is no JS value for it to be built from,
+// because the value that would build it is already the wrong one.
+const withNumber = (lit: string) => JSON.stringify({ ...sub1, args: { n: 0 } }).replace('"n":0', `"n":${lit}`);
+const decideText = (json: string) => decideAdmission(new TextEncoder().encode(json), JSON.parse(json), subj, CEIL);
+const numberQuarantines = (label: string, lit: string) => {
+  const d = decideText(withNumber(lit));
+  c(label, d.outcome === "quarantine" && d.cause === "no-canonical-form", d);
+};
+
+// THE DEFECT, stated as what the caller loses rather than as a cause code. This one is not a
+// submission two implementations MIGHT read differently: it is one THIS implementation already read
+// differently from what was sent, and admitting it binds the altered value durably and forever.
+c("c10 the precision case really does change value on the way through — the cell's whole reason",
+  JSON.parse(withNumber("12345678901234567890")).args.n === 12345678901234567000
+  && String(JSON.parse(withNumber("12345678901234567890")).args.n) !== "12345678901234567890");
+numberQuarantines("c10 a number past 2^53 has no interoperable value and quarantines", "12345678901234567890");
+numberQuarantines("c10 overflow to Infinity quarantines", "1e400");
+numberQuarantines("c10 underflow to zero quarantines", "1e-400");
+numberQuarantines("c10 a denormal that rounds to a DIFFERENT denormal quarantines", "4e-324");
+// THE LIMIT OF THE OBVIOUS INSTRUMENT, asserted rather than described, because the whole failure
+// family this campaign kept finding is a title that implies a class it does not cover. A
+// safe-integer test is the instrument anyone would reach for first, and on the underflow case it
+// does not merely fail to flag it — it passes AFFIRMATIVELY on the corpse of the value.
+c("c10 and a safe-integer test would have said YES to the underflow case: 1e-400 parses to exactly "
+  + "0, and Number.isSafeInteger(0) is true — round-trip stability is the predicate, not magnitude",
+  JSON.parse(withNumber("1e-400")).args.n === 0 && Number.isSafeInteger(JSON.parse(withNumber("1e-400")).args.n));
+
+// THE NEGATIVE SIDE. Without these the scanner is "refuse every number", which would quarantine
+// every real submission and pass every positive cell above.
+const numberAdmits = (label: string, lit: string) => {
+  const d = decideText(withNumber(lit));
+  c(label, d.outcome === "admit", d);
+};
+// 0.1 is NOT exactly representable in binary, and it is legal: RFC 8785 canonicalises from the
+// double, and every conforming reader round-trips this literal to the same one. Magnitude is not
+// the question; stability is.
+numberAdmits("c10 0.1 is admitted — inexact in binary, but round-trip stable in every reader", "0.1");
+numberAdmits("c10 the largest safe integer is admitted", "9007199254740991");
+numberAdmits("c10 a large number that IS exactly representable is admitted", "1e21");
+numberAdmits("c10 a differently-SPELLED same value is admitted (1.50 is 1.5)", "1.50");
+numberAdmits("c10 and so is 15e-1, and 1e2, and -0 (RFC 8785 serialises -0 as 0)", "15e-1");
+numberAdmits("c10 exponent spelling does not make a number out of range", "1e2");
+numberAdmits("c10 -0 is a legal spelling of zero, not a value that changed", "-0");
+// The digits are CONTENT. If the scanner stops skipping strings, this quarantines and every caller
+// carrying a long digit string in an argument is refused.
+c("c10 the SAME digits inside a string are content, never a number",
+  decideText(JSON.stringify({ ...sub1, args: { n: "12345678901234567890" } })).outcome === "admit");
+c("c10 …asserted on the scanner directly, so the claim is about the skip and not about the caller",
+  hasOutOfRangeNumber('{"a":"12345678901234567890"}').outOfRange === false
+  && hasOutOfRangeNumber('{"a":12345678901234567890}').outOfRange === true);
+// THE LIMIT OF THE SCANNER ITSELF, same shape as c8's: it reads the RAW BYTES. A caller path that
+// hands `decideAdmission` a parsed body which did not come from these bytes is not covered by any
+// cell above, because there are no bytes to scan.
+c("c10 the scan is a claim about the BYTES: a body not derived from them is outside every cell above",
+  decideAdmission(new TextEncoder().encode(JSON.stringify(sub1)),
+    { ...sub1, args: { n: 12345678901234567890 } }, subj, CEIL).outcome === "admit");
 
 const unparseable = decideAdmission(new Uint8Array([0xff, 0xfe]), undefined, subj, CEIL);
 c("c5 unparseable bytes take the same distinct cause",

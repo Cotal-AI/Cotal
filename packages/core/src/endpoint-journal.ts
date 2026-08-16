@@ -211,6 +211,83 @@ export function hasDuplicateNames(text: string): { duplicate: true; name: string
   return { duplicate: false };
 }
 
+/** The exact decimal value a JSON number literal denotes, as a comparable key: sign, significant
+ *  digits, and scale. `1.50`, `1.5` and `15e-1` all key the same because they ARE the same number;
+ *  `-0` and `0` key the same because RFC 8785 serialises both as `0`. A literal that is not a JSON
+ *  number keys to itself, so it can never compare equal to a normalised one. */
+function decimalValueKey(literal: string): string {
+  const m = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(literal);
+  if (!m) return `?${literal}`;
+  const [, sign, int, frac = "", exp = "0"] = m;
+  const digits = (int + frac).replace(/^0+/, "");
+  if (digits === "") return "0";
+  const trimmed = digits.replace(/0+$/, "");
+  return `${sign}${trimmed}e${Number(exp) - frac.length + (digits.length - trimmed.length)}`;
+}
+
+/**
+ * Out-of-range numbers in the RAW bytes — the fourth I-JSON condition SPEC:1587-1588 names
+ * ("unparseable, duplicate object names, lone surrogate, out-of-range number") and the only one
+ * this module did not enforce.
+ *
+ * WHY RAW BYTES, and why no mutant could ever have found this. `JSON.parse('12345678901234567890')`
+ * yields `12345678901234567000` and reports nothing: the caller sent one number and the durable
+ * decision binds a different one. After the parse the information is GONE, so a mutant aimed at a
+ * post-parse branch would have SURVIVED and read as a suite hole. This class is not reachable by
+ * mutation by construction; it is reached by asking what the SPEC names and whether the code can
+ * produce it at all.
+ *
+ * THE PREDICATE IS ROUND-TRIP STABILITY, not a safe-integer test, and the difference is not
+ * academic: `1e-400` parses to exactly `0`, and `Number.isSafeInteger(0)` is `true` — the underflow
+ * case does not merely escape a safe-integer test, it passes one AFFIRMATIVELY while the value it
+ * came from has been destroyed. Stability is also the right criterion on its own terms: RFC 8785
+ * canonicalises from the double, so two implementations agree exactly when the literal survives
+ * text → double → text. `0.1` is therefore fine (it is not exactly representable, but its shortest
+ * round-trip form is `0.1` in every conforming reader); `12345678901234567890` is not.
+ *
+ * A scanner for the same reason `hasDuplicateNames` is one: digits inside a string are not numbers,
+ * and a recogniser that succeeds on a prefix is a parser that lies.
+ */
+export function hasOutOfRangeNumber(
+  text: string,
+): { outOfRange: true; literal: string; reads: string } | { outOfRange: false } {
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n) {
+        if (text[j] === "\\") { j += 2; continue; }
+        if (text[j] === '"') break;
+        j++;
+      }
+      if (j >= n) return { outOfRange: false }; // unterminated: not our error to report
+      i = j + 1;
+      continue;
+    }
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      let j = i;
+      if (text[j] === "-") j++;
+      while (j < n && text[j] >= "0" && text[j] <= "9") j++;
+      if (text[j] === ".") { j++; while (j < n && text[j] >= "0" && text[j] <= "9") j++; }
+      if (text[j] === "e" || text[j] === "E") {
+        j++;
+        if (text[j] === "+" || text[j] === "-") j++;
+        while (j < n && text[j] >= "0" && text[j] <= "9") j++;
+      }
+      const literal = text.slice(i, j);
+      const value = Number(literal);
+      if (!Number.isFinite(value) || decimalValueKey(literal) !== decimalValueKey(String(value)))
+        return { outOfRange: true, literal, reads: String(value) };
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return { outOfRange: false };
+}
+
 export function decideAdmission(
   rawBytes: Uint8Array,
   parsedBody: unknown,
@@ -260,6 +337,16 @@ export function decideAdmission(
       return { outcome: "quarantine", cause: "no-canonical-form",
         detail: `duplicate object name ${JSON.stringify(dup.name)}: two conforming implementations `
               + `may read this submission differently, so it has no interoperable canonical form` };
+
+    // OUT-OF-RANGE NUMBERS, same cause and the same reason: decided from the raw bytes because the
+    // parsed value has already lost the evidence. This one is not a submission two implementations
+    // MIGHT read differently — it is one THIS implementation has already read differently from what
+    // the caller wrote, and admitting it binds the altered value durably.
+    const num = hasOutOfRangeNumber(rawText);
+    if (num.outOfRange)
+      return { outcome: "quarantine", cause: "no-canonical-form",
+        detail: `number ${num.literal} has no interoperable I-JSON value: it reads back as `
+              + `${num.reads}, so the decision would bind a value the caller did not send` };
   }
 
   let object: Record<string, unknown>, fingerprint: string;
