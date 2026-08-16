@@ -44,7 +44,7 @@ export const AGUI_FRAME_KIND = "ag-ui.frame";
  * a hand-copied literal that nothing compares to its source is exactly the drift this lane has
  * already shipped once. If that smoke is ever deleted, these become unverified copies.
  */
-export const AGUI_EVENT_TYPE = {
+export const AGUI_EVENT_TYPE = Object.freeze({
   RUN_STARTED: "RUN_STARTED",
   RUN_FINISHED: "RUN_FINISHED",
   RUN_ERROR: "RUN_ERROR",
@@ -59,7 +59,7 @@ export const AGUI_EVENT_TYPE = {
   REASONING_MESSAGE_CONTENT: "REASONING_MESSAGE_CONTENT",
   REASONING_MESSAGE_END: "REASONING_MESSAGE_END",
   CUSTOM: "CUSTOM",
-} as const;
+} as const);
 
 /**
  * Is this part an AG-UI frame? A boolean, never a throw.

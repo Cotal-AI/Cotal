@@ -210,7 +210,7 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
  * The registered provider. `name` IS the part kind, which is how core resolves it without knowing
  * what the kind means.
  */
-export const aguiFramePartRenderer: PartRenderer = {
+export const aguiFramePartRenderer: PartRenderer = Object.freeze({
   kind: "part-renderer",
   name: AGUI_FRAME_KIND,
   render(part: Part): string {
@@ -224,6 +224,6 @@ export const aguiFramePartRenderer: PartRenderer = {
     // exercise exists to remove.
     return lines.length > 0 ? lines.join("\n") : `[AG-UI frame with ${events.length} event(s) and nothing to show]`;
   },
-};
+});
 
 registry.register(aguiFramePartRenderer);
