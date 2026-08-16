@@ -44,6 +44,15 @@
       "replace": "    fromHash: programHashOf(req.source),",
       "expectRed": "while fromHash is carried as the caller's claim, because nothing here pins one",
       "cell": "while fromHash is carried as the caller's claim, because nothing here pins one"
+    },
+    {
+      "name": "the walk's `branch missing` refusal is not translated into the report",
+      "file": "implementations/runtime/src/migrate.ts",
+      "find": "    } else if (e instanceof UnwalkableScope || e instanceof ScopeBranchMissing) {",
+      "replace": "    } else if (e instanceof UnwalkableScope) {",
+      "expectRed": "and the missing branch is reported, not consumed",
+      "cell": "and the missing branch is reported, not consumed",
+      "note": "The half a lang-side cell cannot see. The THROW is asserted in migrate.smoke; what nothing watched was this file TRANSLATING it into `unwalkable`, and an untranslated one falls through to the rethrow and reaches the caller as a raw exception instead of a report. The seat's earlier finding on this suite was exactly a translation branch nothing watched."
     }
   ]
 }

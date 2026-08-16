@@ -84,7 +84,7 @@
       "replace": "    } else if (err instanceof UnwalkableScope) {\n      /* mutated: the refusal is dropped */",
       "expectRed": "a fork past a settled conclave is refused with L5014, not waved through",
       "cell": "a fork past a settled conclave is refused with L5014, not waved through",
-      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there — nothing watched L5014 — and is predicted KILLED here now that a cell does."
+      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there \u2014 nothing watched L5014 \u2014 and is predicted KILLED here now that a cell does."
     },
     {
       "name": "L5018 rides along beside a refusal that already explains the stop",
@@ -101,7 +101,7 @@
       "replace": "  if (false && !reached && recorded && !stoppedForAnotherReason) {",
       "expectRed": "with L5018, because a cut never reached is the whole journal",
       "cell": "with L5018, because a cut never reached is the whole journal",
-      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything — a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
+      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything \u2014 a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
     },
     {
       "name": "the enclosing scope is copied settled, so the child short-circuits past its own cut",
@@ -182,13 +182,33 @@
       "expectRed": "the cut is what happened BEFORE it",
       "cell": "the cut is what happened BEFORE it",
       "note": "The narrowness twin, THIRD form, and the two discarded forms are why it reads like this.\n  (1) `entries = []` graded INCONCLUSIVE: an empty prefix makes later blocks throw on a plan they assumed admissible, so the run died before printing its marker -- red, and not evidence about any cell.\n  (2) `entries = journal.orphans()` graded SURVIVED, and the mutant simply DOES NOT REPRODUCE: this line is taken before the walk runs, when nothing is consumed yet, so `orphans()` and `entries()` are the same array. A mutation that is a no-op at its own program point is not a suite hole, and reading that SURVIVED as one would have sent me to write a cell for a defect that cannot occur.\n  Dropping one row is the claim that actually matters beside 'one row per step': the fold must return the WHOLE prefix, not part of it. A de-dup that kept only the last write overall would pass every other cell in this config and hand each child a truncated history."
+    },
+    {
+      "name": "planFork does not translate `branch missing` into a refusal at all",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (err instanceof ScopeBranchMissing) {",
+      "replace": "    } else if (false) {",
+      "expectRed": "a fork over a race whose winning arm the source renamed away RETURNS rather than hanging",
+      "cell": "a fork over a race whose winning arm the source renamed away RETURNS rather than hanging",
+      "completionMarker": "fork-run.smoke:",
+      "note": "Untranslated, it falls to the rethrow and planFork raises instead of reporting. The lang-side cells prove the THROW; this file's half is the translation, which is the category the fork-unasserted probe found surviving once already."
+    },
+    {
+      "name": "the refusal is filed under L5014, the other way a walk fails to enter a scope",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "      refusals.push({\n        code: \"L5022\",",
+      "replace": "      refusals.push({\n        code: \"L5014\",",
+      "expectRed": "not with L5014, which would send the caller to fork before a conclave that is not there",
+      "cell": "not with L5014, which would send the caller to fork before a conclave that is not there",
+      "completionMarker": "fork-run.smoke:",
+      "note": "A TRUE-shaped refusal with a FALSE reason, which is the same defect the L5014/L5018 pairing above was written for: both codes mean the walk stopped at a scope, and only the code tells the caller whether to fork before a conclave or to put an arm's name back."
     }
   ],
   "unkillable": [
     {
       "name": "an activation expecting a NEW run accepts one whose journal has records",
       "file": "packages/core/src/run-journal.ts",
-      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild — the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
+      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild \u2014 the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
     },
     {
       "name": "the `reached` clause of the cut's gate",

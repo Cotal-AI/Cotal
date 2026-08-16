@@ -441,6 +441,42 @@ const plan = async (
       { admissible: past.admissible, cut: keys(past.cut) });
   }
 
+  // THE OTHER WAY THE WALK FAILS TO ENTER A SCOPE, and it did not refuse at all: it HUNG. A fork
+  // walks in migration mode, so it enters a settled race's recorded winning arm; rename that arm in
+  // the source and the walk filtered the arms down to nothing and awaited `Promise.race([])`, which
+  // never settles. `planFork` returned no verdict — not a refusal, not a cut, nothing.
+  //
+  // Its own code and not L5014's, for the same reason the pairing above matters: both stop the walk
+  // at a scope, but a conclave stops it because the handle was never journalled and this one because
+  // the arm is gone, and a caller told the wrong one repairs the wrong thing.
+  {
+    const RACE =
+      `await race({\n  x: async () => { await sleep("1s", { name: "x-work" }); return "x"; },\n` +
+      `  y: async () => { await sleep("2s", { name: "y-work" }); return "y"; },\n}, { name: "pick" });\n` +
+      `await sleep("2m", { name: "after" });`;
+    const rEntries = await record("r-race-fork", RACE);
+    const won = (rEntries.find((e) => e.kind === "race")?.result as
+      { value?: { index?: string } } | undefined)?.value?.index as string;
+    // THE CONTROL. A planFork that refused every race would satisfy the refusal cells below, and a
+    // suite cannot tell "this edit is refused" from "this shape is refused" without it.
+    const clean = await plan({
+      parent: "r-race-fork", entries: rEntries, source: RACE, fromStepKey: "/sleep:after#0",
+    });
+    c("a fork past an UNEDITED settled race is admissible", clean.admissible === true, clean.refusals);
+    const renamed = await plan({
+      parent: "r-race-fork", entries: rEntries, fromStepKey: "/sleep:after#0",
+      source: RACE.split(`  ${won}:`).join(`  ${won}${won}:`),
+    });
+    c("a fork over a race whose winning arm the source renamed away RETURNS rather than hanging",
+      typeof renamed.admissible === "boolean", renamed);
+    c("and it is refused with L5022, naming the arm the source no longer declares",
+      code(renamed, "L5022") && renamed.refusals.some((r) => r.why.includes(won)), renamed.refusals);
+    c("not with L5014, which would send the caller to fork before a conclave that is not there",
+      noCode(renamed, "L5014"), renamed.refusals);
+    c("and a refused fork carries no cut", renamed.admissible === false && renamed.cut.length === 0,
+      { admissible: renamed.admissible, cut: keys(renamed.cut) });
+  }
+
   // A spawn in the CUT, which a fork must respawn or adopt at the frontier.
   const spawned = await record(
     "r-spawn",

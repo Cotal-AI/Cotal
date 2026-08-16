@@ -261,6 +261,29 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("a conclave the walk cannot enter is refused rather than consumed", cr.unwalkable !== undefined, cr);
   c("and the refusal names the scope", cr.unwalkable?.step.includes("conclave:huddle") === true, cr.unwalkable);
   c("which is not admissible either", cr.admissible === false, cr);
+
+  // AND THE OTHER WAY A WALK FAILS TO ENTER A SCOPE: the arm is simply gone from the source.
+  // Reported through the same `unwalkable` field, because that field's whole job is "the walk could
+  // not enter this scope, and that is a refusal rather than a silent consume" — but with its own
+  // code in the message, because the repairs differ. A conclave needs a fork; this one needs the
+  // arm's name back, and an author sent looking inside an arm's body finds the one place nothing
+  // changed. Before the guard the walk awaited `Promise.race([])` and this call NEVER RETURNED.
+  const RACE = `await race({\n  x: async () => { await sleep("1s", { name: "x-work" }); return "x"; },\n  y: async () => { await sleep("2s", { name: "y-work" }); return "y"; },\n}, { name: "pick" });`;
+  const raceEntries = await record("r-race-rename", RACE);
+  const won = (raceEntries.find((e) => e.kind === "race")?.result as
+    { value?: { index?: string } } | undefined)?.value?.index as string;
+  c("the recorded race names its winner", typeof won === "string", won);
+  // THE CONTROL, first: without it the refusal below is what a walk that refused every race
+  // would also produce, and those are different systems wearing one green.
+  const raceOk = await checkOrThrew("r-race-rename", raceEntries, RACE);
+  c("an unedited race migrates admissibly", raceOk.admissible === true && raceOk.unwalkable === undefined, raceOk);
+  const rr = await checkOrThrew("r-race-rename", raceEntries, RACE.split(`  ${won}:`).join(`  ${won}${won}:`));
+  c("a walk into a renamed winning arm RETURNS a report rather than hanging", !(rr instanceof Error),
+    (rr as unknown as Error)?.name);
+  c("and the missing branch is reported, not consumed", rr.unwalkable !== undefined, rr);
+  c("with L5022 and the arm's name, so the repair is the name and not the body",
+    rr.unwalkable?.why.includes("L5022") === true && rr.unwalkable?.why.includes(won) === true, rr.unwalkable);
+  c("and a migration that could not enter a recorded arm is not admissible", rr.admissible === false, rr);
 }
 
 // ── 7) the commit: two writes, two acts, and a refusal before either ──────────────────────────
