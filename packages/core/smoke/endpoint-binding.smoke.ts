@@ -41,6 +41,7 @@ import {
   EP_AUTHZ_MODES, isEpAuthzMode, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, contractDigest,
   EP_ERROR_CODES, RESERVED_COMMANDS,
   type EpCaller, type RecordKindDef,
+  assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -427,6 +428,48 @@ throws("a branded config with a post-mint deliver_subject refuses (family consum
     return provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: cfg }]);
   });
 
+// ── the §13.12 fact-retention floor (broker-free) ───────────────────────────────────────────────
+// The horizon is realized BY retention and never by a clock: the create-only CAS returns the
+// recorded decision for exactly as long as the fact exists. So a fact age under the horizon does
+// not shorten a guarantee, it removes the mechanism — and a redelivered submission whose fact has
+// been evicted is accepted as NEW WORK.
+//
+// THIS CHECK EXISTS BECAUSE THE INVARIANT WAS DELEGATED TO A LAYER THAT DID NOT EXIST. The field's
+// contract said horizons are "enforced by policy above the broker", and nothing was above the
+// broker: the constant naming the horizon had ZERO readers in the tree. The cell below pins that
+// directly, because an exported constant with no readers is a claim nobody is making, and it is
+// the cheapest possible signal for "an invariant that was described and never wired".
+const HORIZON = 24 * 60 * 60 * 1000;
+c("the horizon constant is what the floor is measured against — it now has a READER, which is the "
+  + "whole tell: before this check it was exported and read by nothing, so the invariant it names "
+  + "participated in no code path at all",
+  IDEMPOTENCY_HORIZON_MS_DEFAULT === HORIZON, IDEMPOTENCY_HORIZON_MS_DEFAULT);
+throws("a fact age BELOW the horizon is refused at creation, not clamped and not accepted",
+  () => assertFactRetentionFloor(HORIZON - 1, HORIZON));
+throws("and a wildly short one is refused the same way (a minute against a day)",
+  () => assertFactRetentionFloor(60_000, HORIZON));
+// The two values that must NOT throw, without which the check is "refuse every configuration" and
+// every positive cell above still passes.
+assertFactRetentionFloor(undefined, HORIZON);
+c("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", true);
+assertFactRetentionFloor(0, HORIZON);
+c("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction spelling, "
+  + "not a zero-length retention", true);
+assertFactRetentionFloor(HORIZON, HORIZON);
+c("a fact age EXACTLY at the horizon is admitted: the floor is `below`, not `at or below`", true);
+assertFactRetentionFloor(HORIZON * 90, HORIZON);
+c("and a longer retention is admitted (SPEC's floor is a minimum, never a target)", true);
+// The horizon is DECLARED, never compiled in — the same lesson as A1's admission ceiling. A space
+// retaining decisions for a week must have its fact age measured against ITS horizon, and this cell
+// is the one that fails if the floor is ever hardcoded to the module default.
+throws("the floor is measured against the DECLARED horizon, not this module's default: 48h of facts "
+  + "is refused under a 90-day declared horizon, though it passes the default",
+  () => assertFactRetentionFloor(2 * HORIZON, 90 * HORIZON));
+throws("a non-positive declared horizon is refused rather than treated as absent",
+  () => assertFactRetentionFloor(HORIZON, 0));
+throws("a fractional fact age is refused (a wire duration is a safe integer)",
+  () => assertFactRetentionFloor(HORIZON + 0.5, HORIZON));
+
 // ── the resources + live behaviors (real broker) ──
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epbind-"));
@@ -444,6 +487,23 @@ try {
   await createEndpointStreams(jsm, kvm, SPACE);
   await createEndpointStreams(jsm, kvm, SPACE); // identical re-run: idempotent, no throw
   c("createEndpointStreams is idempotent", true);
+
+  // REACH, not just behaviour. Every floor cell above calls the validator DIRECTLY, and a validator
+  // that is exported and never invoked passes all of them — the same shape as registering a record
+  // kind without granting it. This one goes through the real entry point, and it must refuse BEFORE
+  // touching the broker: a config that breaches the floor may not leave a half-built space behind.
+  {
+    const breaching = { space: `${SPACE}-floor`, factMaxAgeMs: 60_000 };
+    let threw: Error | undefined;
+    try { await createEndpointStreams(jsm, kvm, breaching.space, { factMaxAgeMs: breaching.factMaxAgeMs }); }
+    catch (e) { threw = e as Error; }
+    c("createEndpointStreams REFUSES a fact age below the horizon — the floor is reached from the real entry point",
+      threw !== undefined && /below the declared idempotency horizon/.test(threw.message), threw?.message);
+    // …and refused EARLY: no stream of that space exists, so the breach never half-built anything.
+    let leaked = false;
+    try { await jsm.streams.info(epfStreamName(breaching.space)); leaked = true; } catch { /* absent, as required */ }
+    c("and it refused BEFORE creating anything — the breaching space has no EPF stream", !leaked);
+  }
 
   // Config assertions — the §13.12 table, read back from the broker.
   const cfg = async (name: string) => (await jsm.streams.info(name)).config;

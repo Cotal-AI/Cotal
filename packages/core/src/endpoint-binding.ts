@@ -33,7 +33,7 @@ import {
 } from "./endpoint-subjects.js";
 import type { RecordKindDef } from "./endpoint-records.js";
 import { AUTHORITY_KIND_DEFS, callerReadableRecordKind } from "./endpoint-records.js";
-import { epjStreamName, epfStreamName, canonDurable } from "./endpoint-journal.js";
+import { epjStreamName, epfStreamName, canonDurable, IDEMPOTENCY_HORIZON_MS_DEFAULT } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
 
 // Re-exported so the binding module presents the complete §13.12 name table even though the
@@ -114,15 +114,53 @@ export const EP_AUTH_MARKER_TTL_MS = 60 * 60 * 1000;
 export interface EndpointStreamOptions {
   /** Age bound on EPJ (default {@link EP_SUBMISSION_MAX_AGE_MS}). Floor: canonicalizer recovery lag. */
   submissionMaxAgeMs?: number;
-  /** Age bound on EPF; 0/omitted = no age eviction (facts are the canonical record; horizons
-   *  are enforced by policy above the broker, never by silently losing facts under a horizon). */
+  /** Age bound on EPF; 0/omitted = no age eviction (facts are the canonical record; a horizon is
+   *  never realized by silently losing facts under it). A positive value below the declared
+   *  idempotency horizon is REFUSED at creation — see {@link assertFactRetentionFloor}. */
   factMaxAgeMs?: number;
+  /** The space's DECLARED idempotency horizon (§13.4 item 6; default
+   *  {@link IDEMPOTENCY_HORIZON_MS_DEFAULT}). Declared rather than compiled in, for the same reason
+   *  the admission ceiling is: a space that retains decisions longer must have its fact retention
+   *  measured against ITS horizon, not against this module's default. */
+  idempotencyHorizonMs?: number;
   /** Age bound on EPE (default {@link EP_EVENT_MAX_AGE_MS}). */
   eventMaxAgeMs?: number;
   /** Age bound on EPT_REQ + EPR (default {@link EP_INGRESS_MAX_AGE_MS}). Floor: writer recovery lag. */
   ingressMaxAgeMs?: number;
   /** Age bound on EPT (default {@link EP_TIMER_MAX_AGE_MS}). Floor: max deadline + margin. */
   timerMaxAgeMs?: number;
+}
+
+/**
+ * The §13.12 RETENTION FLOOR on decision facts, enforced at the only site that exists.
+ *
+ * SPEC:2985 requires EPF retention ≥ the horizons, and SPEC:3000-3001 states it by OUTCOME: no
+ * removal cause may drop a protected fact early. The §13.4 idempotency horizon is realized BY that
+ * retention and never by a clock — the create-only CAS returns the recorded decision for exactly as
+ * long as the fact exists. So a fact age below the horizon does not shorten a guarantee, it deletes
+ * the mechanism: once the decision fact is evicted, a redelivered submission finds no winner to
+ * read and is accepted as NEW WORK, which is the failure SPEC:1651 names in as many words.
+ *
+ * WHY THIS IS A THROW AND NOT A CLAMP. The field's own contract was that horizons are "enforced by
+ * policy above the broker, never by silently losing facts under a horizon" — and nothing was above
+ * the broker: `IDEMPOTENCY_HORIZON_MS_DEFAULT` was exported with no readers anywhere in the tree, so
+ * the constant naming the horizon participated in nothing. A delegation to a layer that does not
+ * exist is an unenforced invariant with a comment on it, and the comment is what stops anyone
+ * noticing. Refusing the configuration is not contrary to that position but the only implementation
+ * of it: a throw at creation loses no facts; it declines a setup that would.
+ */
+export function assertFactRetentionFloor(factMaxAgeMs: number | undefined, horizonMs: number): void {
+  if (!Number.isSafeInteger(horizonMs) || horizonMs <= 0)
+    throw new Error(`idempotencyHorizonMs ${JSON.stringify(horizonMs)} is not a positive safe integer (§13.4 item 6)`);
+  if (factMaxAgeMs === undefined || factMaxAgeMs === 0) return; // no age eviction: the floor cannot be breached
+  if (!Number.isSafeInteger(factMaxAgeMs) || factMaxAgeMs < 0)
+    throw new Error(`factMaxAgeMs ${JSON.stringify(factMaxAgeMs)} is not a non-negative safe integer`);
+  if (factMaxAgeMs < horizonMs)
+    throw new Error(
+      `factMaxAgeMs ${factMaxAgeMs} is below the declared idempotency horizon ${horizonMs}: decision facts `
+      + `would be evicted while the horizon still promises them, and a redelivered submission whose fact `
+      + `has gone is accepted as NEW WORK rather than resolved to its recorded decision (SPEC:2985, :3000-3001)`,
+    );
 }
 
 /**
@@ -143,6 +181,8 @@ export async function createEndpointStreams(
   opts: EndpointStreamOptions = {},
 ): Promise<void> {
   const p = spacePrefix(space);
+  // Refused BEFORE the first stream exists, so a breaching config never leaves a half-built space.
+  assertFactRetentionFloor(opts.factMaxAgeMs, opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT);
   // EPJ — raw submissions, untrusted, at-least-once. NO allow_direct (nothing reads it but the
   // canonicalizer's durable and harness MSG.GET); duplicate window pinned to the server minimum.
   await jsm.streams.add({
