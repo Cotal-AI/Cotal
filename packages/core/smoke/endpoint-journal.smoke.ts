@@ -15,6 +15,7 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, EpEnvelopeError,
   submissionFingerprint, decideAdmission, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
+  epfEffectSubject, parseEffectFact,
   epjStreamName, epfStreamName, canonDurable,
   parseDecisionFact, parseQuarantineFact, assertFactFits,
   appendSubmission, publishFactCreateOnly, readLastFact,
@@ -32,6 +33,13 @@ let ok = 0, fail = 0;
 // kills stand; the floor that backs it up simply was not there, and nothing said so.
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown) => { try { fn(); c(n, false, "no throw"); } catch { c(n, true); } };
+/** Assert a throw AND that it is about the right thing. A bare `throws` passes on a refusal for the
+ *  WRONG reason, which matters wherever two guards can refuse the same fixture — the cells below
+ *  cross a discriminant check and a closed-key check, and a bare throw cannot tell which fired. */
+const refusesWith = (n: string, fn: () => unknown, matching: RegExp) => {
+  try { fn(); c(n, false, "did NOT throw"); }
+  catch (e) { const m = (e as Error).message; c(n, matching.test(m), { expected: String(matching), got: m }); }
+};
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const UID = "u".repeat(26);
@@ -261,6 +269,32 @@ const pooled: AcceptanceFact = { ...acc, route: "pool.builds", workExpiry: 1_720
 c("a pool-routed acceptance carries its workExpiry", (parseDecisionFact(pooled, accSubj) as AcceptanceFact).workExpiry === 1_720_600_100_000);
 throws("a pool route WITHOUT workExpiry refuses", () => parseDecisionFact({ ...acc, route: "pool.builds" }, accSubj));
 throws("an effects route WITH workExpiry refuses", () => parseDecisionFact({ ...acc, workExpiry: 5 }, accSubj));
+// c9 — THE EFFECT COMPLETION UNION'S `outcome` DISCRIMINANT, which nothing in this tree read.
+// Found by a static sweep of every refusal code the source can emit against every suite in the
+// repo: `"ran"` was the one literal with ZERO occurrences in 301 suite files. It is not Lane A
+// behaviour and predates this branch — but it sits in the file J1 hardens, and the refusal below
+// was unasserted, so a mutation could delete it and no suite anywhere would notice.
+//
+// THE SHARPER HALF IS WHAT THE SOURCE CLAIMS ABOUT ITS READERS. The union's doc comment says every
+// member declares its outcome "so ... every reader is forced to read the outcome". The two readers
+// that exist test `"cancelled" in fact` — the STRUCTURAL check the discriminant was added to make
+// unnecessary. The claim is about callers, and no caller honours it. Asserted here at the parser,
+// where it is decidable, rather than left as a sentence about code elsewhere.
+const effSubj = epfEffectSubject("demo", "manager", caller, "eff-1");
+const effRan = { v: 1, id: "eff-1", fingerprint: f1.fingerprint, caller: { id: "u_abc.worker", lifecycleUid: UID }, sourceSeq: 7, ts: 1_720_600_000_000, outcome: "ran" };
+c("c9 a `ran` effect fact parses AND carries the discriminant", parseEffectFact(effRan, effSubj).outcome === "ran");
+refusesWith("c9 an effect fact with NO outcome refuses, naming the discriminant",
+  () => parseEffectFact({ ...effRan, outcome: undefined }, effSubj), /outcome must be/);
+refusesWith("c9 an effect fact claiming a foreign outcome refuses, naming the discriminant",
+  () => parseEffectFact({ ...effRan, outcome: "ok" }, effSubj), /outcome must be/);
+// The comment promises a member cannot claim one outcome while carrying the other's fields. That is
+// the closed-key check, and it is a DIFFERENT rule from the discriminant — so it gets its own cell
+// in each direction rather than riding on the one above.
+refusesWith("c9 `ran` carrying the cancelled block refuses on CLOSED KEYS, not on the discriminant",
+  () => parseEffectFact({ ...effRan, cancelled: { opId: "op-1", target: { owner: "u_abc", actor: "worker", lifecycleUid: UID } } }, effSubj), /unknown field|closed|cancelled/);
+refusesWith("c9 and `cancelled` WITHOUT its block refuses",
+  () => parseEffectFact({ ...effRan, outcome: "cancelled" }, effSubj), /cancelled/);
+
 const rej: RejectionFact = {
   v: 1, id: "req-1", decision: "rejected", fingerprint: f1.fingerprint,
   error: { code: "conflict", detail: "same id, different fingerprint" },
