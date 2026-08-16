@@ -704,11 +704,13 @@ const plan = async (
   c("a fork over the log is admissible, exactly as it is over the keyed view",
     p.admissible === true && p.refusals.length === 0, p.refusals);
 
-  // WRONG TODAY. The prefix carries the pending row AND the settled row of every copied step, so
-  // the child inherits a history twice the size of the one its parent performed. It is silent:
-  // nothing refuses, and the keys are all correct — there are simply two of each.
-  c("WRONG TODAY: the cut carries two rows for every step, because it filters the raw list",
-    keys(p.cut).length === 4 && new Set(keys(p.cut)).size === 2, keys(p.cut));
+  // REPAIRED. The prefix used to carry the pending row AND the settled row of every copied step, so
+  // the child inherited a history twice the size of the one its parent performed — silently, with
+  // every key correct and simply two of each. The plan now addresses the journal's keyed view.
+  c("REPAIRED: the cut carries one row per step, folded by the journal rather than by a second rule",
+    keys(p.cut).length === 2 && new Set(keys(p.cut)).size === 2, keys(p.cut));
+  c("and it is the SETTLED row that survives, not the pending one the log opened with",
+    p.cut.every((e) => e.state === "settled"), p.cut.map((e) => `${journalEntryKeyString(e)}:${e.state}`));
 
   // And the reason it is worth repairing at the fork rather than left to the child's journal to
   // absorb: `commitFork` COPIES the cut, so the doubling is written to the child's durable stream

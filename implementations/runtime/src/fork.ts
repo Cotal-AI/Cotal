@@ -176,7 +176,26 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     });
   }
 
-  const recorded = req.entries.some((e) => journalEntryKeyString(e) === req.fromStepKey);
+  const journal = new CutJournal(
+    { run: req.parent, entries: req.entries, readOnly: true },
+    req.fromStepKey,
+  );
+
+  // THE CALLER'S LIST IS AN APPEND LOG, and every step in it appears at least twice.
+  //
+  // The stream is append-only: settling appends a second record rather than editing the first, so a
+  // completed step is a pending record AND a settled one. `RunJournalAppender.steps()` replays every
+  // step record in order and the driver seeds a journal straight from it, which is the only shape a
+  // real caller holds — this file's own suite was building a KEYED view with `Journal.entries()` and
+  // was therefore blind to it. Filtering `req.entries` put both rows of every copied step into the
+  // prefix, and `commitFork` COPIES the prefix, so the doubling was written to the child's durable
+  // stream as real records. Silent, with every key correct and simply two of each.
+  //
+  // The fold is the journal's, not a second copy of the rule: the entries below are its keyed view,
+  // last write per step in the order the run performed them.
+  const entries = journal.entries();
+
+  const recorded = entries.some((e) => journalEntryKeyString(e) === req.fromStepKey);
   if (!recorded) {
     refusals.push({
       code: "L5017",
@@ -184,11 +203,6 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
       why: "the journal has no entry under this key; a fork cuts at a step the parent actually recorded, and a key that names nothing would silently cut at the end of history",
     });
   }
-
-  const journal = new CutJournal(
-    { run: req.parent, entries: req.entries, readOnly: true },
-    req.fromStepKey,
-  );
 
   let reached = false;
   try {
@@ -238,7 +252,7 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   // Dropping the enclosing entry makes the child re-enter the combinator: sibling branches replay
   // from their own entries, which are still in the cut, and the branch holding the cut point runs
   // live from it. That is what a fork means here.
-  const enclosing = req.entries.filter((e) => {
+  const enclosing = entries.filter((e) => {
     const k = journalEntryKeyString(e);
     return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);
   });
@@ -289,7 +303,7 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   // without reading `admissible` got something usable-shaped out of a fork that will not happen.
   const cut =
     reached && refusals.length === 0
-      ? req.entries.filter((e) => {
+      ? entries.filter((e) => {
           const k = journalEntryKeyString(e);
           return !orphaned.has(k) && !projected.has(k);
         })
