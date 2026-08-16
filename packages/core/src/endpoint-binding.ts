@@ -1136,7 +1136,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
  *  serving a session is gone. So it is standing and renewable, while the rails it records are
  *  per-session, exact-subject, and die with their session ({@link import("./provision.js").Profile}
  *  `session-serving` / `session-caller`). An earlier revision fused the two into one standing
- *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2721 ("no
+ *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2753 ("no
  *  standing EPS grant exists on either side") and let one credential read and write every live
  *  session's bytes at that epoch. Splitting on the lifetime boundary is what removes the wildcard:
  *  the standing half no longer has rails to widen.

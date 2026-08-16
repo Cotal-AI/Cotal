@@ -1,5 +1,9 @@
 /** The ACTION COMPOSITE: its declaration in the cluster document, and the two envelope checks it
- *  gates (SPEC §13.7 :1446/:1448).
+ *  gates: the `class` field row (SPEC:1465, `MUST equal the command's declared class`) and the
+ *  `goalId` row (SPEC:1467, a MUST for a command whose contract declares the action composite).
+ *  ANCHORED BY PHRASE AS WELL AS LINE. This header cited :1446/:1448 — a subject-grammar
+ *  sentence and a blank line — while the body of this same file cited :1465/:1467 correctly. A
+ *  line number is a derived value nothing re-derives; the phrase is the thing itself.
  *
  *  The composite is a COMMAND MARKER, not a class. An action command's submissions are journal-class,
  *  so `action` implies `class: "journal"` — but the implication runs one way, and the marker is what

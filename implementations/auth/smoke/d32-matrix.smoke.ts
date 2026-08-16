@@ -376,7 +376,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   // P2 item 6: the manager's per-session SERVING credential — the EXACT mirror of `session-caller`
   // with the rail directions swapped, for ONE session. It replaces a STANDING writer that held
   // `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch, against
-  // SPEC 13.9:2721 ("no standing EPS grant exists on either side"). No KV and no JS-API at all: the
+  // SPEC:2753 ("no standing EPS grant exists on either side", §13.6 session credentials). No KV and no JS-API at all: the
   // serving side drives bytes, and the ledger belongs to the standing credential below.
   "session-serving": { publish: [
     `cotal.d32m.eps.manager.${SC_SID}.3.out`,
