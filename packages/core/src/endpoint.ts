@@ -1415,7 +1415,16 @@ export class CotalEndpoint extends EventEmitter {
         // read from a mutation. The allowlist is the honest stand-in until it can. The general fix
         // is a safety annotation on the command contract plus an effect-outcome in the reply; that
         // is a SPEC change and is not made here.
-        if (respondedButUnbound(e) && !isRepeatSafeCommand(endpoint, command)) throw e;
+        if (respondedButUnbound(e) && !isRepeatSafeCommand(endpoint, command)) {
+          // Surface it, but drop the stale bind FIRST. The bind that just failed names an
+          // incarnation a different live instance has answered for; on a long-lived client every
+          // later DELIBERATE call on this endpoint would otherwise reuse it, meet the same currency
+          // refusal, and never reach the live incarnation - permanently, on an endpoint with no
+          // repeat-safe command to heal it through. Dropping the bind is not a retry: nothing is
+          // re-issued here, and the next call is the caller's, made after it has verified.
+          this.resolvedServices.delete(endpoint);
+          throw e;
+        }
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }

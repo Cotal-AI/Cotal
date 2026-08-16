@@ -89,6 +89,13 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  call and went red on an otherwise green sweep. Shared, so the next cell that needs a warm read
  *  cannot quietly reintroduce it. The tolerance is explicit and bounded; it is not a retry loop
  *  hiding a failure, because a genuine break exhausts all six attempts and still reports. */
+/** PUB count on the endpoint's own connection: the direct witness for "nothing was re-issued".
+ *  One invoke on a cached resolve is exactly ONE publish; the self-heal path re-resolves (a
+ *  describe plus the contract-store reads behind it) and invokes again, so it is many. Read before
+ *  and after a call, compare the delta. */
+const pubs = (ep: CotalEndpoint): number =>
+  (ep as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+
 const readTolerant = async (
   ep: CotalEndpoint, label: string, attempts = 6,
 ): Promise<{ ok: boolean; tries: number; last?: unknown }> => {
@@ -330,10 +337,27 @@ try {
       // split, so surfacing them all would break `ps` about every other run for nothing — re-running a
       // read duplicates no effect. Without this cell the guard could quietly widen to every command
       // and every assertion above would stay green while ordinary reads started failing.
+      // The surfaced split above DROPPED the stale bind (that is part of the contract now: a
+      // deliberate re-issue must reach the live incarnation), so re-resolve before forcing again.
+      const rewarm = await readTolerant(ep, "re-resolve before the read arm");
       const cached2 = cache.get(MANAGER_ENDPOINT);
+      check("the read arm re-resolved after the surfaced split (so its forced split is real)",
+        rewarm.ok && cached2 !== undefined, rewarm.last);
       if (cached2) cached2.responder.instanceId = ghost;
-      const healed = await readTolerant(ep, "read-after-forced-split");
-      check("a READ with the same forced split still self-heals — the guard did not widen", healed.ok, healed.last);
+      // ONE call, not a tolerant loop: the heal must happen INSIDE invokeService (drop the bind,
+      // re-resolve, invoke again). Whether that second invoke then succeeds or splits once more is
+      // a coin flip in a two-manager space, so the witness is the cache, which the heal leaves
+      // bound to a REAL instance either way; a widened guard would have dropped it and thrown.
+      const readPubs = pubs(ep);
+      let readThrew: unknown;
+      try { await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
+      const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
+      check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
+        afterRead === IID1 || afterRead === IID2, { afterRead, threw: readThrew instanceof Error ? readThrew.message.slice(0, 120) : readThrew });
+      // A re-resolve is a describe plus the contract-store reads behind it, so the heal is many
+      // publishes; the point is that it is MORE than the single publish a held guard leaves.
+      check("...and that heal re-issued (more than the one publish a held guard leaves)",
+        pubs(ep) - readPubs > 1, { publishes: pubs(ep) - readPubs });
     } finally { await ep.stop().catch(() => {}); }
   }
 
@@ -409,6 +433,7 @@ try {
 
       let threw: unknown;
       let returned: unknown;
+      const purgePubs = pubs(ep);
       try {
         returned = await ep.invokeService(MANAGER_ENDPOINT, "purge", { includeDms: false });
       } catch (e) { threw = e; }
@@ -416,20 +441,38 @@ try {
         threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
       check("...carrying the responder-answered marker (so the caller can tell it may already have run)",
         respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
-      // THE GUARD MUST NOT HAVE DROPPED THE CACHE. This is the deterministic half, and it is what
-      // makes the sweep below possible. `invokeService` deletes the cached resolve and re-invokes
-      // AFTER the guard; so if the guard let this command through, the ghost id is gone and a real
-      // instance has taken its place — observable regardless of whether the second invoke then
-      // happened to succeed or to split again. Asserting on the throw alone cannot distinguish
-      // those, because a second split throws the same error the guard would have thrown.
-      check("...and the cached resolve was NOT dropped — the retry never started",
-        cache.get(MANAGER_ENDPOINT)?.responder.instanceId === ghost,
-        { want: ghost, got: cache.get(MANAGER_ENDPOINT)?.responder.instanceId });
+      // THE DIRECT WITNESS: exactly one publish left this connection. A retry re-issues (a describe
+      // and a second invoke), and asserting on the throw alone cannot tell "the guard held" from
+      // "the retry ran and split again", because a second split throws the same error.
+      check("...and NOTHING was re-issued: exactly one publish (no describe, no second invoke)",
+        pubs(ep) - purgePubs === 1, { publishes: pubs(ep) - purgePubs });
+      // AND THE STALE BIND IS GONE. The bind named an incarnation a different live instance has
+      // answered for; had it stayed, every later deliberate call on this handle would have reused
+      // it and met the same refusal (adversarial review, distsys lens: permanent on an endpoint
+      // with no repeat-safe command to heal it through). Dropping it is not a retry, as the
+      // publish count just proved.
+      check("...and the stale bind was dropped, so a deliberate re-issue re-resolves",
+        cache.get(MANAGER_ENDPOINT) === undefined, { got: cache.get(MANAGER_ENDPOINT)?.responder.instanceId });
       // The narrow-guard version of this code returned a SUCCESS here, having purged twice. Naming
       // that explicitly so a future reader knows which way this cell fails.
       check("...and does NOT return the second execution's success",
         (returned as { reply?: { ok?: boolean } } | undefined)?.reply?.ok !== true,
         (returned as { reply?: unknown } | undefined)?.reply);
+
+      // ---- THE INTERLEAVING THAT MADE THE DROP NECESSARY ------------------------------------------
+      // A long-lived client resolved instance A; A is replaced; B answers a mutating call; the
+      // split surfaces. The operator verifies and DELIBERATELY re-issues. With the bind retained,
+      // that re-issue was still bound to A, met the same refusal, and could never reach B; on an
+      // endpoint whose commands are all unsafe there was no other way out of it. So: the very next
+      // call on this handle must NOT be bound to the ghost any more. It re-resolves and either
+      // succeeds or splits against a REAL instance (a coin flip in this fixture, so both are
+      // accepted); what it must never do is name the ghost as what it is bound to.
+      let again: unknown;
+      try { await ep.invokeService(MANAGER_ENDPOINT, "purge", { includeDms: false }); } catch (e) { again = e; }
+      const againDetail = (again instanceof EpEnvelopeError ? again.details ?? [] : []).find((d) => d.kind === EP_UNBOUND_RESPONDER);
+      check("a DELIBERATE re-issue after the surfaced split is no longer bound to the gone incarnation",
+        again === undefined || (againDetail !== undefined && againDetail.boundTo !== ghost),
+        { boundTo: againDetail?.boundTo, ghost, threw: again instanceof Error ? again.message.slice(0, 120) : again });
 
       // ---- THE ENDPOINT KEY REACHES THE GUARD --------------------------------------------------
       // The classifier cells above prove `isRepeatSafeCommand` refuses an unknown endpoint. They
@@ -446,22 +489,26 @@ try {
       // record binds to. That is exactly the guard's input. The `endpoint` argument, which is what
       // the guard and the cache key read, is the third-party name throughout.
       const third = "pin-third-party";
+      // The surfaced splits above dropped the manager bind; re-resolve so there is a record to copy.
+      if (cache.get(MANAGER_ENDPOINT) === undefined) await readTolerant(ep, "re-resolve before the third-party seed");
       const mgrRecord = cache.get(MANAGER_ENDPOINT) as (ResolvedService & { responder: { instanceId: string } }) | undefined;
-      check("the manager record is still cached (the seed below copies it)", mgrRecord !== undefined);
+      check("the manager record is cached again (the seed below copies it)", mgrRecord !== undefined);
       if (mgrRecord) cache.set(third, { ...mgrRecord, responder: { ...mgrRecord.responder, instanceId: ghost } });
       let thirdThrew: unknown;
       let thirdReturned: unknown;
+      const thirdPubs = pubs(ep);
       try {
         thirdReturned = await ep.invokeService(third, "ps");
       } catch (e) { thirdThrew = e; }
       check("a manager-safe command name on an UNKNOWN endpoint still SURFACES its split (the guard asked with the endpoint, not with \"manager\")",
         respondedButUnbound(thirdThrew),
         thirdThrew instanceof Error ? thirdThrew.message.slice(0, 200) : { returned: (thirdReturned as { reply?: unknown } | undefined)?.reply });
-      // Same witness as the purge cell: a guard that let this through drops the cached resolve
-      // BEFORE re-resolving, so the ghost is gone whether or not the re-resolve then failed.
-      check("...and the unknown endpoint's cached resolve was NOT dropped (no retry started)",
-        cache.get(third)?.responder.instanceId === ghost,
-        { want: ghost, got: cache.get(third)?.responder.instanceId });
+      // Same witnesses as the purge cell: one publish (a guard that let this through would have
+      // re-issued a describe for the third-party name and failed on it), and the stale bind gone.
+      check("...and NOTHING was re-issued for the unknown endpoint: exactly one publish",
+        pubs(ep) - thirdPubs === 1, { publishes: pubs(ep) - thirdPubs });
+      check("...and the unknown endpoint's stale bind was dropped",
+        cache.get(third) === undefined, { got: cache.get(third)?.responder.instanceId });
       cache.delete(third);
 
       // ---- THE CLASSIFIER AND THE GUARD, GRADED TOGETHER ---------------------------------------
@@ -483,20 +530,23 @@ try {
       // graded here the day it lands, without anyone remembering to add a cell, and no hardcoded
       // subset of commands can satisfy it.
       //
-      // The assertion is the CACHE, not the throw, and that choice is load-bearing. A second invoke
-      // can split again and throw the identical error, so "it threw" does not separate "the guard
-      // held" from "the retry ran and failed too" — roughly a coin flip each time, which would make
-      // this cell flaky rather than wrong. The cache is deterministic: `invokeService` drops it only
-      // on the path the guard is there to prevent.
-      // AND THE SWEEP MUST PROVE IT RAN. The first version of this loop asserted only the cache, and
-      // it passed with the guard replaced by a hardcoded `command === "spawn" || command === "purge"`
-      // — SURVIVED at 37/37, the full baseline, twice. The reason is the failure mode this file is
-      // otherwise careful about: a command that never reaches a responder leaves the cache untouched
-      // too, so "the ghost is still cached" was satisfied by commands that had proved nothing. A
-      // vacuous pass and a real pass looked identical.
+      // The assertion is the PUBLISH COUNT, not the throw, and that choice is load-bearing. A
+      // second invoke can split again and throw the identical error, so "it threw" does not separate
+      // "the guard held" from "the retry ran and failed too", roughly a coin flip each time, which
+      // would make this cell flaky rather than wrong. The publish count is deterministic: one
+      // publish means nothing was re-issued; a retry adds a describe and a second invoke. (An
+      // earlier version used the cache as this witness; the guard now DROPS the stale bind on
+      // purpose, so the cache can no longer tell "held" from "retried", and the count is the direct
+      // measurement anyway.)
+      // AND THE SWEEP MUST PROVE IT RAN. The first version of this loop asserted only its witness,
+      // and it passed with the guard replaced by a hardcoded `command === "spawn" || command ===
+      // "purge"`: SURVIVED at 37/37, the full baseline, twice. The reason is the failure mode this
+      // file is otherwise careful about: a command that never reaches a responder re-issues nothing
+      // either, so the witness was satisfied by commands that had proved nothing. A vacuous pass
+      // and a real pass looked identical.
       //
       // So each iteration must first establish that it actually reached the guard, and only then is
-      // the cache meaningful. `notReached` is not a tolerance: it is red, because a command that
+      // the witness meaningful. `notReached` is not a tolerance: it is red, because a command that
       // cannot get there is a hole in the sweep and must be seen rather than absorbed.
       //
       // WHAT THE MARKER PROVES, EXACTLY — narrower than an earlier draft of this comment claimed,
@@ -526,10 +576,16 @@ try {
       };
       const notReached: string[] = [];
       const retriedAnyway: string[] = [];
+      const bindKept: string[] = [];
       for (const command of MANAGER_ADMIN_COMMANDS) {
         if (command === "purge") continue; // already graded above, in full
+        // Every surfaced split drops the bind, so re-resolve (a tolerant read) before forcing the
+        // ghost again; without a cached record there is nothing to doctor and the call would
+        // simply resolve for real.
+        if (cache.get(MANAGER_ENDPOINT) === undefined) await readTolerant(ep, `re-resolve before ${command}`);
         const c = cache.get(MANAGER_ENDPOINT);
-        if (c) c.responder.instanceId = ghost; // re-force: a preceding iteration may have healed it
+        if (c) c.responder.instanceId = ghost;
+        const before = pubs(ep);
         let err: unknown;
         try {
           await ep.invokeService(MANAGER_ENDPOINT, command, adminArgs[command] ?? {});
@@ -538,17 +594,20 @@ try {
         // direction. When a guard lets the command through, the retry either succeeds (no error, so
         // no marker) or splits again (marker present) — a coin flip per command. Testing the marker
         // first therefore sorted the SAME defect into two different buckets depending on the toss.
-        // The cache is the stronger witness and it is checked first: if it moved, the command
-        // provably reached a responder AND was retried, whichever way the second invoke landed. A
-        // missing marker only means "never got there" when the cache also did not move.
-        if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId !== ghost) { retriedAnyway.push(command); continue; }
-        if (!respondedButUnbound(err)) notReached.push(command);
+        // The publish count is the stronger witness and it is checked first: more than one publish
+        // means the command reached a responder AND was re-issued, whichever way the second invoke
+        // landed. A missing marker only means "never got there" when exactly one publish went out.
+        if (pubs(ep) - before !== 1) { retriedAnyway.push(command); continue; }
+        if (!respondedButUnbound(err)) { notReached.push(command); continue; }
+        if (cache.get(MANAGER_ENDPOINT) !== undefined) bindKept.push(command);
       }
       check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
         notReached.length === 0, { notReached });
       check("...and none of them is quietly retried — the guard reads the classifier, not a fixed list",
         retriedAnyway.length === 0,
         { retriedAnyway, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
+      check("...and each surfaced split dropped the stale bind (a deliberate re-issue re-resolves)",
+        bindKept.length === 0, { bindKept });
     } finally { await ep.stop().catch(() => {}); }
   }
 
