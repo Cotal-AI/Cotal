@@ -37,6 +37,9 @@ import {
   readRunMigration,
   listRunMigrations,
   markRunMigrationApplied,
+  RECORD_KINDS,
+  recordSpecKey,
+  createRecordEntry,
   type RunMigrationSpecValue,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -178,6 +181,34 @@ const content = (over: Partial<Omit<RunMigrationSpecValue, "at">> = {}): Omit<Ru
 
   const other = await listRunMigrations(kv, EP, OTHER);
   c("another run's history is empty, which is what scoping means", other.length === 0, other.length);
+}
+
+// ── 5) a record this schema does not know is refused, not returned ─────────────────────────────
+{
+  // Filed STRAIGHT INTO THE STORE, the way a foreign writer or a future version would — the writer
+  // above cannot produce these, so a cell that went through it would be asserting against a shape
+  // the code makes impossible and proving nothing about the reader.
+  const FUTURE = "f".repeat(43);
+  await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.migration, [EP, RUN, FUTURE]), {
+    ...content(), at: NOW, reason: "a field a later version added",
+  });
+  const unknown = await caught(async () => await readRunMigration(kv, EP, RUN, FUTURE));
+  c("an unknown field is refused rather than read past: record schemas are closed",
+    unknown instanceof EpEnvelopeError, unknown?.name);
+  c("and the refusal says which field", unknown?.message.includes("reason") === true, unknown?.message?.slice(0, 140));
+
+  const BROKEN = "b".repeat(43);
+  const { toHash: _dropped, ...withoutTarget } = content();
+  await createRecordEntry(kv, recordSpecKey(RECORD_KINDS.migration, [EP, RUN, BROKEN]), { ...withoutTarget, at: NOW });
+  const malformed = await caught(async () => await readRunMigration(kv, EP, RUN, BROKEN));
+  c("a migration naming no target source is refused: garbled state never authorizes",
+    malformed instanceof EpEnvelopeError, malformed?.name);
+
+  // …and the enumeration is downstream of the same reader, so one bad record does not become a
+  // history that silently omits it.
+  const listed = await caught(async () => await listRunMigrations(kv, EP, RUN));
+  c("the history refuses too rather than skipping the record it could not read",
+    listed instanceof EpEnvelopeError, listed?.name);
 }
 
 console.log(`run-migration.smoke: ${ok} passed, ${fail} failed`);
