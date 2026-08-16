@@ -245,7 +245,20 @@ export class Journal {
       // without re-running the program that produced it.
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;
       this.byKey.set(full, e);
-      this.order.push(full);
+      // FOLD THE LOG. A seed is an APPEND LOG, not a keyed view: the stream carries the pending
+      // record and the settled one as two records (`journal-store.smoke`: "settling appends a second
+      // record rather than editing the first"), `RunJournalAppender.steps()` replays both, and the
+      // driver seeds a journal straight from that. `byKey` already folds — last write wins, which is
+      // the settled row — so pushing the key again put the SAME entry in `order` twice and left the
+      // journal's two views disagreeing: the ceiling counted one step and `entries()` reported two,
+      // both resolving through `byKey`, so the pending row came back as a second copy of the settled
+      // one. `orphans()` reads `order`, so an unconsumed step reached the migrate table twice — one
+      // decision presented to an operator as two, about a step that happened once.
+      //
+      // FIRST occurrence, not last: `order` is the order the run PERFORMED its steps in, and a step
+      // begins when its pending row is written. Re-pushing on settle would reorder history by
+      // completion, which is a different sequence and not the one a reader is looking for.
+      if (!this.order.includes(full)) this.order.push(full);
       if (e.seq >= this.nextSeq) this.nextSeq = e.seq + 1;
     }
   }

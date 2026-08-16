@@ -577,25 +577,45 @@ await sleep("3h", { name: "after-the-catch" });
   ok("the KEYED view folds correctly: the ceiling counts the step once, not twice",
     seeded.dispatchedEffects() === 1, seeded.dispatchedEffects());
 
-  // WRONG TODAY. `entries()` is documented as the prompt context for repair, and it reports history
-  // this run does not have: two rows where one step happened.
-  ok("WRONG TODAY: the ORDERED view does not fold — one step comes back as two entries",
-    seeded.entries().length === 2, seeded.entries().map((e) => `${journalEntryKeyString(e)}:${e.state}`));
+  // REPAIRED. `entries()` is documented as the prompt context for repair, and it used to report
+  // history this run does not have: two rows where one step happened.
+  ok("REPAIRED: the ORDERED view folds too — one step is one entry",
+    seeded.entries().length === 1, seeded.entries().map((e) => `${journalEntryKeyString(e)}:${e.state}`));
 
-  // WRONG TODAY, and worse than a duplicate: the pending row is not echoed, it is REWRITTEN. Both
-  // rows resolve through `byKey`, so the seeded journal reports two SETTLED rows for a step that
-  // settled once — a reader counting completed work counts it twice, and the pending row it was
-  // given has vanished without anything saying so.
-  ok("WRONG TODAY: and the PENDING row comes back as a second copy of the settled one",
-    seeded.entries().every((e) => e.state === "settled"),
-    seeded.entries().map((e) => e.state));
+  // WHICH row survives is its own claim, and the opposite of the one the bug had. The duplicate
+  // used to make the PENDING row come back as a second copy of the settled one; the fold keeps the
+  // last write, so the step reads as what it ended up being rather than as what it started as.
+  ok("and it is the LAST write, so a step that settled reads settled",
+    seeded.entries()[0]?.state === "settled" && seeded.entries()[0]?.status === "ok",
+    seeded.entries()[0]);
 
-  // WRONG TODAY, and this is the one with a live consumer. `migrate` builds its orphan table from
-  // `orphans()` (`implementations/runtime/src/migrate.ts:205`) and computes `consumedThrough` from
-  // its length, so a doubled orphan is a doubled row in the operator's table and arithmetic over a
-  // doubled input — one decision presented as two, about a step that happened once.
-  ok("WRONG TODAY: an unconsumed step is an orphan TWICE, so the migrate table double-counts it",
-    seeded.orphans().length === 2, seeded.orphans().map((e) => journalEntryKeyString(e)));
+  // The live consumer. `migrate` builds its orphan table from `orphans()`
+  // (`implementations/runtime/src/migrate.ts:205`) and computes `consumedThrough` from its length,
+  // so a doubled orphan was a doubled row in the operator's table and arithmetic over a doubled
+  // input — one decision presented as two, about a step that happened once.
+  ok("and an unconsumed step is an orphan ONCE, so the migrate table counts one decision",
+    seeded.orphans().length === 1, seeded.orphans().map((e) => journalEntryKeyString(e)));
+
+  // THE NARROWNESS, and it is two claims because the fold can be wrong in two directions.
+  //
+  // A fold that collapsed everything to one entry would satisfy all three cells above perfectly and
+  // erase a run's history. And a fold keyed on the LAST occurrence would keep every step but
+  // reorder them by COMPLETION rather than by start — a different sequence, silently, and exactly
+  // the one a reader of a concurrent run must not be given: with `b` beginning before `a` settles,
+  // last-occurrence ordering reports `b` first, so a repair reader sees the run doing its work in an
+  // order it never did.
+  const ka = root.nextEffect("sleep", "a");
+  const kb = root.nextEffect("sleep", "b");
+  const src2 = new Journal({ run: "log2" });
+  const pa = await src2.begin(ka, H({ d: 1 }), 1_000);
+  const pb = await src2.begin(kb, H({ d: 2 }), 1_100);
+  const sa = await src2.settle(ka, { status: "ok", result: null }, 3_000);
+  const two = new Journal({ run: "log2", entries: [pa, pb, sa] });
+  ok("two different steps are still two entries: the fold is by key, not a collapse",
+    two.entries().length === 2, two.entries().map((e) => journalEntryKeyString(e)));
+  ok("and they keep the order the run PERFORMED them in, not the order they finished in",
+    two.entries().map((e) => journalEntryKeyString(e)).join() === "/sleep:a#0,/sleep:b#0",
+    two.entries().map((e) => `${journalEntryKeyString(e)}:${e.state}`));
 }
 
 console.log(`journal.smoke: ${pass} checks passed`);
