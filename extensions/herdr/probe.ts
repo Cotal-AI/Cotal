@@ -25,6 +25,9 @@
  * The event is "the payload becomes visible to the instrument", which is the very property the
  * control asserts, and the deadline is the failure — never a warning, never a quiet pass.
  *
+ * This module also owns the nonce the instrument matches on, because the nonce IS the selector:
+ * how much of the machine `ourProcs()` can see is decided entirely by what that string is.
+ *
  * The probe is injected so this is testable without a race: `probe.smoke.ts` drives it with
  * synthetic probes and a fake clock, so every branch is graded deterministically. A race cannot be
  * killed deterministically through the live path; through an injected probe it can.
@@ -107,4 +110,37 @@ export function visibilityDetail(o: VisibilityOutcome): string {
     case "unavailable":
       return `the instrument could not take a single reading in ${o.tries} attempts over ${o.elapsedMs}ms — this says nothing about whether the process exists: ${o.error}`;
   }
+}
+
+
+/**
+ * The payload nonce, and the tag the survivor instrument matches.
+ *
+ * The payload is `sleep <nonce>`, so the nonce has to be a string `sleep` accepts as a duration AND
+ * a string no other run can produce. The previous form was `12${process.pid % 1000}`, which fails
+ * the second requirement in two ways — and the second is much likelier than the first:
+ *
+ *   • BIRTHDAY: only 1000 distinct values, so two concurrent soaks on one host can share a nonce.
+ *   • PREFIX, and this is the sharp one: the tag is matched with `includes`, and the values are
+ *     variable-width. `pid % 1000 === 1` yields the tag `sleep 121`, `pid % 1000 === 10` yields
+ *     `sleep 1210` — and "sleep 1210".includes("sleep 121") is TRUE. One soak counts another's
+ *     payloads without any value collision at all.
+ *
+ * Either way the damage is two-directional and lands inside the same run: a neighbour's live
+ * payload makes the positive control pass when this run's own instrument might not have worked,
+ * and a neighbour's payload still running at the end makes "no agent processes survive" fail when
+ * nothing leaked. A green that was bought by another process, and a red that belongs to one.
+ *
+ * Fixed-width and high-entropy fixes both: 64 bits in a zero-padded fractional part. The width is
+ * constant, so no tag can ever be a prefix of another. `sleep` parses the value as a double and
+ * ignores precision it cannot represent, but the ARGV string keeps every digit — and argv is what
+ * `ps` reports and what the instrument matches, which is the only thing that has to be unique.
+ */
+export function soakNonce(randomBits: () => bigint): string {
+  return `12000.${randomBits().toString().padStart(20, "0")}`;
+}
+
+/** What `ourProcs()` greps for. One definition, so the payload and the matcher cannot drift. */
+export function agentTag(nonce: string): string {
+  return `sleep ${nonce}`;
 }

@@ -20,7 +20,9 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { waitUntilVisible, visibilityDetail, type VisibilityOutcome } from "./probe.js";
+import { waitUntilVisible, visibilityDetail, soakNonce, agentTag, type VisibilityOutcome } from "./probe.js";
+import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -142,6 +144,72 @@ console.log("\n5. the soak's control is wired to the wait (the seam, asserted)")
   // the count that failed — and during a race those two legitimately disagree.
   check("...and the survivor red reports the sample that decided it, not a fresh sweep",
     !/still running`\s*\)/.test(src) || /\$\{survivors\} still running/.test(src));
+}
+
+// ================================================================================================
+// SECOND FINDING, INDEPENDENT OF THE FIRST: the nonce could match another run's payload.
+// ================================================================================================
+// Separate on purpose. Everything above is about WHEN the instrument looks; this is about WHAT it
+// can see. They are the same instrument's correctness and they fail in the same run, but either
+// could be right while the other is wrong, so they are judged apart.
+//
+// `12${process.pid % 1000}` gave 1000 values, and — sharper — variable width under an `includes`
+// match. `pid % 1000 === 1` tags `sleep 121`; `pid % 1000 === 10` tags `sleep 1210`; the first is
+// a substring of the second. Two-directional damage inside one run: a neighbour's live payload can
+// pass this run's positive control, and a neighbour's surviving payload can fail its leak check.
+
+console.log("\n6. the nonce cannot match another run's payload");
+{
+  const bits = () => randomBytes(8).readBigUInt64BE();
+  const nonces = Array.from({ length: 200 }, () => soakNonce(bits));
+  check("200 nonces are 200 distinct values",
+    new Set(nonces).size === 200, { distinct: new Set(nonces).size });
+  // The pid form is CONSTANT within a process, which is what made concurrent runs collide.
+  const pidForm = Array.from({ length: 200 }, () => `12${process.pid % 1000}`);
+  check("...whereas the pid-derived form yields exactly one value per process — the defect, named",
+    new Set(pidForm).size === 1);
+  // Fixed width is what kills the prefix case. Value-uniqueness alone would NOT: the old form had
+  // 1000 distinct values and still let `sleep 121` match `sleep 1210`.
+  const tags = nonces.map(agentTag);
+  check("...every tag is the same length, so none can be a prefix of another",
+    new Set(tags.map((t) => t.length)).size === 1, { widths: [...new Set(tags.map((t) => t.length))] });
+  check("...and no tag is a substring of any other (the `includes` match is safe)",
+    !tags.some((a, i) => tags.some((b, j) => i !== j && b.includes(a))));
+  const oldA = agentTag(`12${1}`), oldB = agentTag(`12${10}`);
+  check("...unlike the old form, where one run's tag matched another run's command line",
+    oldB.includes(oldA), { oldA, oldB });
+}
+
+// ---- 7. AND THE NONCE IS STILL A PAYLOAD THAT ACTUALLY RUNS -----------------------------------
+// A unique string that `sleep` REJECTS would be worse than the collision: the payload would exit
+// instantly and the control would fail every time. This is the lesson from building the repro for
+// this very issue — a non-numeric nonce made `sleep` exit with "invalid time interval", and the
+// resulting clean 0-seen looked exactly like the finding being hunted. So prove the subject RAN
+// rather than infer it from a count.
+console.log("\n7. the nonce is a duration `sleep` accepts, proven by running it");
+{
+  const nonce = soakNonce(() => randomBytes(8).readBigUInt64BE());
+  const child = spawn("sleep", [nonce], { stdio: "ignore", detached: true });
+  child.unref();
+  await new Promise((r) => setTimeout(r, 400));
+  const alive = execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })
+    .split("\n").filter((l) => l.includes(agentTag(nonce))).length;
+  check("the payload is alive 400ms later — the nonce was accepted, not rejected as a duration",
+    alive >= 1, { alive, nonce, exited: child.exitCode });
+  check("...and the FULL nonce survives onto argv, which is what the instrument matches",
+    alive >= 1);
+  try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+  try { execFileSync("pkill", ["-f", agentTag(nonce)]); } catch { /* nothing left */ }
+}
+
+// ---- 8. THE SOAK USES IT (the second seam) ----------------------------------------------------
+console.log("\n8. the soak's nonce comes from the shared definition, not a local pid expression");
+{
+  const src = readFileSync(join(import.meta.dirname, "soak.ts"), "utf8");
+  check("soak.ts builds its nonce with soakNonce()", /SOAK_NONCE\s*=\s*soakNonce\(/.test(src));
+  check("...and its tag with agentTag()", /AGENT_TAG\s*=\s*agentTag\(/.test(src));
+  check("...and no longer derives either from process.pid",
+    !/process\.pid\s*%/.test(src));
 }
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed\n`);

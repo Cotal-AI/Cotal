@@ -12,7 +12,8 @@
  */
 import * as herdr from "./src/driver.js";
 import { HerdrRuntime } from "./src/runtime.js";
-import { waitUntilVisible, visibilityDetail } from "./probe.js";
+import { waitUntilVisible, visibilityDetail, soakNonce, agentTag } from "./probe.js";
+import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,9 +28,10 @@ const CYCLES = Number(process.env.COTAL_HERDR_SOAK_CYCLES ?? 25);
  *  all — the real processes are `sleep 120` and the launcher `node …/cotal-herdr-launch-X/launch.mjs`. So the
  *  survivor count was structurally incapable of ever being nonzero: a guaranteed-green check that
  *  measured nothing. The nonce keeps the count scoped to THIS run, so a neighbouring lane's agents
- *  on a shared machine still cannot be charged to it. */
-const SOAK_NONCE = `12${process.pid % 1000}`;
-const AGENT_TAG = `sleep ${SOAK_NONCE}`;
+ *  on a shared machine still cannot be charged to it — see `soakNonce` for why it must be
+ *  fixed-width and high-entropy to actually deliver that, which the pid-derived form did not. */
+const SOAK_NONCE = soakNonce(() => randomBytes(8).readBigUInt64BE());
+const AGENT_TAG = agentTag(SOAK_NONCE);
 
 let passed = 0;
 let failed = 0;
