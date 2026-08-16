@@ -36,6 +36,13 @@ exists because a split used to be detected after the responder had handled the r
 could not tell a duplicate-able effect from a repaired one and had to fail closed; a bind refusal
 removes the uncertainty rather than working around it, so the re-issue is a first attempt.
 
+That recovery is counted, and the counter is the point. Handling a split makes it invisible, and
+the routing event is the only evidence the split exists at all — silence it and the split rate
+becomes unmeasurable exactly as it becomes survivable. `CotalEndpoint.splitRecoveryCount` is
+always on and never behind a flag, and a `split-recovered` event carries the same fact for anyone
+listening; the event can be missed, the count cannot. On a live two-manager mesh, 5 of 6 unpinned
+class-anycast reads split, so this is not a rare-event counter.
+
 The caller-side check remains, and remains necessary: a responder that predates the fence ignores
 the field and executes, which leaves the older after-the-fact report — and the allowlist — as the
 only protection in a skewed pair. `--on` still addresses a specific manager, but it is no longer
