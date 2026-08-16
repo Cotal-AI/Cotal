@@ -9,3 +9,4 @@
  * manager daemon.
  */
 export { RunJournalStore, RunJournalUnavailable } from "./journal-store.js";
+export { startRun, driveRun, type RunLease, type DriveRequest, type DriveOutcome } from "./run-driver.js";
