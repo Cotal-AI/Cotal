@@ -31,12 +31,13 @@ to avoid the split.
 
 And a split is no longer silently retried into a duplicate effect. The client recovered from
 `failed-precondition` by dropping its cached resolve and invoking again, which is a repair when the
-bound incarnation is gone but a second execution when the error came from a different live instance
-answering the class queue — request received, executed, error raised afterwards. Re-invoking there
-ran the command twice, automatically, while the error text told the operator not to retry; it is
-the mechanism behind one spawn producing several seats. The retry now happens only for commands
+bound incarnation is gone but a second attempt when the error came from a different live instance
+answering the class queue: request received and answered (executed or refused; the reply does not
+say which), error raised afterwards. Re-invoking there re-issued the command automatically, while
+the error text told the operator not to retry; it is the mechanism behind one spawn producing
+several seats. The retry now happens only for commands
 whose second execution is observably indistinguishable from one — the reads and `describe`. Every
-other command surfaces the split to its caller, carrying a marker that says a responder did handle
+other command surfaces the split to its caller, carrying a marker that says a responder did answer
 the request, so the caller can check before deciding.
 
 That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by

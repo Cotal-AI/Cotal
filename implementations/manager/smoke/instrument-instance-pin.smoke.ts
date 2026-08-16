@@ -304,7 +304,7 @@ try {
 
       // (a) A CREATING command must surface. `spawn` names a persona that does not exist, so the
       // manager refuses it cheaply — no agent is started. What matters is that the request REACHED a
-      // responder, which is enough to make a second invoke a second execution. Without the guard the
+      // responder, which is enough to make a second invoke a second attempt that may duplicate the effect. Without the guard the
       // catch drops the cache, re-resolves against a real instance and invokes AGAIN, and that
       // second call is the duplicate; the caller is handed its success and never learns of the split.
       let threw: unknown;
@@ -319,7 +319,7 @@ try {
       check("...carrying the responder-answered marker, which is what gates the retry",
         respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
       const detail = (threw instanceof EpEnvelopeError ? threw.details ?? [] : []).find((d) => d.kind === EP_UNBOUND_RESPONDER);
-      check("...and the marker names the instance that actually handled it",
+      check("...and the marker names the instance that actually answered it",
         typeof detail?.answeredBy === "string" && (detail.answeredBy === IID1 || detail.answeredBy === IID2),
         detail);
 

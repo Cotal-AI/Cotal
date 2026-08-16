@@ -35,8 +35,9 @@ export interface EpErrorDetail {
  */
 export const EP_UNBOUND_RESPONDER = "ai.cotal.ep.unbound-responder";
 
-/** True iff `e` carries the {@link EP_UNBOUND_RESPONDER} marker — i.e. a responder handled the
- *  request, so retrying it is a SECOND execution, not a repair. */
+/** True iff `e` carries the {@link EP_UNBOUND_RESPONDER} marker: a responder ANSWERED the request
+ *  (an attributed reply, which may be a refusal or a result), so retrying it is a second attempt
+ *  that may duplicate an effect, not a repair. */
 export function respondedButUnbound(e: unknown): boolean {
   return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_UNBOUND_RESPONDER);
 }
