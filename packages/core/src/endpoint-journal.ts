@@ -98,6 +98,111 @@ export function submissionFingerprint(
   return { object, fingerprint: contractDigest(object) }; // contractDigest throws on non-I-JSON → quarantine
 }
 
+// ---- admission: the CLOSED outcome table (§13.4 item 2, amendment A1) ------------------------
+
+/** Why a submission was quarantined. CLOSED and mutually exclusive: a reader branches on the
+ *  cause without knowing the order the canonicalizer evaluated its checks in.
+ *
+ *  `no-usable-id` is deliberately DISTINCT from the three ceiling causes. Both end in quarantine,
+ *  but they are different facts about the submission — one says "you sent more than this endpoint
+ *  admits", the other says "these bytes name no request at all" — and an operator who cannot tell
+ *  them apart cannot tell a misconfigured caller from a corrupt one. */
+export type AdmissionQuarantineCause =
+  | "submission-too-large"      // raw bytes over the declared ceiling, decided BEFORE parsing
+  | "submission-too-deep"
+  | "submission-too-many-items"
+  | "no-canonical-form"         // parses, but carries values with no interoperable RFC 8785 form
+  | "no-usable-id";             // unparseable, or parseable with no `id` to address a decision to
+
+/** The closed set of admission outcomes. Exactly three, and the third is the only one that
+ *  produces a caller-addressed decision fact: a quarantine has no fingerprint to address one
+ *  with, which is the whole reason the two paths differ. */
+export type AdmissionOutcome =
+  | { outcome: "quarantine"; cause: AdmissionQuarantineCause; detail: string }
+  | { outcome: "reject"; code: "resource-exhausted"; detail: string; fingerprint: string; object: Record<string, unknown> }
+  | { outcome: "admit"; fingerprint: string; object: Record<string, unknown> };
+
+/** Depth and member/item counts of a parsed JSON value, measured in one walk.
+ *  Iterative rather than recursive: the input is untrusted and a recursive walk would blow the
+ *  JS stack on a deeply nested submission — which is a CRASH, not a decision, and this endpoint's
+ *  entire contract is that every submission reaches a durable decision. */
+function measure(value: unknown): { depth: number; items: number } {
+  let depth = 0, items = 0;
+  const stack: Array<{ v: unknown; d: number }> = [{ v: value, d: 1 }];
+  while (stack.length > 0) {
+    const { v, d } = stack.pop()!;
+    if (d > depth) depth = d;
+    if (Array.isArray(v)) {
+      items += v.length;
+      for (const child of v) stack.push({ v: child, d: d + 1 });
+    } else if (v !== null && typeof v === "object") {
+      const entries = Object.values(v as Record<string, unknown>);
+      items += entries.length;
+      for (const child of entries) stack.push({ v: child, d: d + 1 });
+    }
+  }
+  return { depth, items };
+}
+
+/** Decide ONE submission against the endpoint's DECLARED ceiling (§13.7 `admissionCeiling`).
+ *
+ *  The ceiling is a parameter and never a constant, because two conforming implementations must
+ *  not be able to decide the same bytes differently and durably. That is also why nothing here
+ *  reads a clock: the outcome is a function of the bytes and the declaration alone, so a
+ *  redelivery of the same submission reaches the same durable answer however long any worker
+ *  took. A watchdog may re-deliver; it may never decide.
+ *
+ *  ORDER IS PART OF THE CONTRACT, and the reason is the fingerprint. The raw-byte ceiling is
+ *  evaluated BEFORE parsing, because parsing is the work the ceiling exists to refuse. Everything
+ *  that fails before a fingerprint exists quarantines, because there is no caller-addressed
+ *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
+ *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
+ *  hear about (SPEC:1610-1612). */
+export function decideAdmission(
+  rawBytes: Uint8Array,
+  parsedBody: unknown,
+  subject: ParsedEpRequest,
+  ceiling: { maxBytes: number; maxDepth: number; maxItems: number },
+): AdmissionOutcome {
+  if (rawBytes.byteLength > ceiling.maxBytes)
+    return { outcome: "quarantine", cause: "submission-too-large",
+      detail: `${rawBytes.byteLength} raw bytes over the declared maxBytes ${ceiling.maxBytes}` };
+
+  if (parsedBody === undefined)
+    return { outcome: "quarantine", cause: "no-usable-id", detail: "bytes do not parse as JSON" };
+
+  const { depth, items } = measure(parsedBody);
+  if (depth > ceiling.maxDepth)
+    return { outcome: "quarantine", cause: "submission-too-deep",
+      detail: `depth ${depth} over the declared maxDepth ${ceiling.maxDepth}` };
+  if (items > ceiling.maxItems)
+    return { outcome: "quarantine", cause: "submission-too-many-items",
+      detail: `${items} members/items over the declared maxItems ${ceiling.maxItems}` };
+
+  const id = (parsedBody !== null && typeof parsedBody === "object" && !Array.isArray(parsedBody))
+    ? (parsedBody as Record<string, unknown>).id : undefined;
+  if (typeof id !== "string" || id.length === 0)
+    return { outcome: "quarantine", cause: "no-usable-id",
+      detail: "no `id`: there is no caller-scoped subject to address a decision to" };
+
+  let object: Record<string, unknown>, fingerprint: string;
+  try {
+    ({ object, fingerprint } = submissionFingerprint(parsedBody, subject));
+  } catch (e) {
+    return { outcome: "quarantine", cause: "no-canonical-form", detail: (e as Error).message };
+  }
+
+  // POST-CANONICAL. The canonical form is what an acceptance embeds and what every consumer
+  // re-derives, so it is the form the ceiling has to hold for. A breach here is REJECTED rather
+  // than quarantined for one reason only: the fingerprint exists, so the caller can be told.
+  const canonicalBytes = new TextEncoder().encode(JSON.stringify(object)).byteLength;
+  if (canonicalBytes > ceiling.maxBytes)
+    return { outcome: "reject", code: "resource-exhausted", fingerprint, object,
+      detail: `canonical form is ${canonicalBytes} bytes, over the declared maxBytes ${ceiling.maxBytes}` };
+
+  return { outcome: "admit", fingerprint, object };
+}
+
 // ---- fact shapes (§13.4 items 3 and 5) and their consuming-boundary validators ---------------
 
 export interface FactCaller { id: string; lifecycleUid: string }

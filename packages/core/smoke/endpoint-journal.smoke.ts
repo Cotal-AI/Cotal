@@ -14,7 +14,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, EpEnvelopeError,
-  submissionFingerprint, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
+  submissionFingerprint, decideAdmission, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
   epjStreamName, epfStreamName, canonDurable,
   parseDecisionFact, parseQuarantineFact, assertFactFits,
   appendSubmission, publishFactCreateOnly, readLastFact,
@@ -59,6 +59,73 @@ c("wrong-typed carried auth is fingerprinted AS CARRIED, never collapsed onto ab
   submissionFingerprint({ ...sub1, auth: null }, subj).fingerprint !== f1.fingerprint
   && submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint !== f1.fingerprint
   && submissionFingerprint({ ...sub1, auth: null }, subj).fingerprint !== submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint);
+
+// ── admission: the CLOSED outcome table against a DECLARED ceiling (broker-free) ──
+// Every ceiling here is a parameter read from a declaration, never a constant. That is the whole
+// point of amendment A1: two conforming implementations must not be able to decide the same bytes
+// differently and durably, and a constant compiled into one of them can.
+const CEIL = { maxBytes: 4096, maxDepth: 8, maxItems: 64 };
+const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+const admit = (body: unknown, over: Partial<typeof CEIL> = {}, raw?: Uint8Array) =>
+  decideAdmission(raw ?? bytes(body), body, subj, { ...CEIL, ...over });
+
+// c1 — the RAW-byte ceiling, decided BEFORE parsing. Parsing is the work the ceiling exists to
+// refuse, so a ceiling evaluated after it has already paid the cost it was meant to avoid.
+const overRaw = admit(sub1, {}, new Uint8Array(CEIL.maxBytes + 1));
+c("c1 raw bytes over maxBytes quarantine", overRaw.outcome === "quarantine", overRaw);
+c("c1 names the size cause", overRaw.outcome === "quarantine" && overRaw.cause === "submission-too-large", overRaw);
+
+// c2/c3 — depth and member counts, on the PARSED value.
+let deep: unknown = 1;
+for (let i = 0; i < 12; i++) deep = { n: deep };
+const overDeep = admit({ ...sub1, args: deep });
+c("c2 depth over maxDepth quarantines", overDeep.outcome === "quarantine", overDeep);
+c("c2 names the depth cause", overDeep.outcome === "quarantine" && overDeep.cause === "submission-too-deep", overDeep);
+const overItems = admit({ ...sub1, args: { list: Array.from({ length: 200 }, (_, i) => i) } });
+c("c3 item count over maxItems quarantines", overItems.outcome === "quarantine", overItems);
+c("c3 names the item cause", overItems.outcome === "quarantine" && overItems.cause === "submission-too-many-items", overItems);
+
+// c4 — DETERMINISM, which is what makes wall time non-semantic. The same submission decides the
+// same way on every delivery, and a submission inside every ceiling is NEVER quarantined however
+// long a worker takes: nothing in the decision reads a clock, so there is no elapsed time for a
+// redelivery to disagree about.
+const first = admit(sub1), second = admit(sub1);
+c("c4 the same submission decides identically on redelivery",
+  JSON.stringify(first) === JSON.stringify(second), { first, second });
+c("c4 a within-ceiling submission is ADMITTED, never quarantined", first.outcome === "admit", first);
+c("c4 admission carries the fingerprint the caller can correlate on",
+  first.outcome === "admit" && first.fingerprint === submissionFingerprint(sub1, subj).fingerprint);
+
+// c5 — no usable `id`, and it is a DISTINCT cause from the ceilings. Both quarantine; they are
+// different facts about the submission, and an operator who cannot tell them apart cannot tell a
+// misconfigured caller from a corrupt one.
+const noId = admit({ ...sub1, id: undefined });
+c("c5 a submission with no usable id quarantines", noId.outcome === "quarantine", noId);
+c("c5 the cause is DISTINCT from every ceiling cause",
+  noId.outcome === "quarantine" && noId.cause === "no-usable-id", noId);
+const unparseable = decideAdmission(new Uint8Array([0xff, 0xfe]), undefined, subj, CEIL);
+c("c5 unparseable bytes take the same distinct cause",
+  unparseable.outcome === "quarantine" && unparseable.cause === "no-usable-id", unparseable);
+c("c5 a lone surrogate has no canonical form and says so",
+  admit({ ...sub1, args: { s: "\uD800" } }).outcome === "quarantine");
+const surrogate = admit({ ...sub1, args: { s: "\uD800" } });
+c("c5 and that cause is no-canonical-form, not no-usable-id",
+  surrogate.outcome === "quarantine" && surrogate.cause === "no-canonical-form", surrogate);
+
+// c6 — the ONLY ceiling-adjacent outcome that produces a caller-addressed decision fact. It is a
+// rejection rather than a quarantine for exactly one reason: the fingerprint exists by then, so
+// there is a caller-scoped subject to write the answer to (SPEC:1610-1612).
+// AND IT IS REACHABLE WITHOUT CONTRIVANCE, which is why the two paths differ at all: the
+// fingerprint replaces `auth` with a DIGEST, so a one-character secret becomes 71 characters and
+// the canonical form is larger than the bytes that arrived. Measured here: 91 raw, 229 canonical.
+const authed = { v: 1, id: "req-c6", op: { endpoint: "manager", command: "spawn" }, class: "journal", auth: "s" };
+c("c6 the canonical form can EXCEED the raw bytes (auth becomes a digest)",
+  bytes(authed).byteLength < new TextEncoder().encode(JSON.stringify(submissionFingerprint(authed, subj).object)).byteLength);
+const post = admit(authed, { maxBytes: 150 });
+c("c6 a post-canonical breach REJECTS, never quarantines", post.outcome === "reject", post);
+c("c6 the rejection is resource-exhausted", post.outcome === "reject" && post.code === "resource-exhausted", post);
+c("c6 and it carries the fingerprint that makes the caller addressable",
+  post.outcome === "reject" && post.fingerprint.startsWith("sha256:"), post);
 
 // ── fact shapes + consuming-boundary validation (broker-free) ──
 // Every consuming boundary proves body↔subject agreement, so the parsers take the authenticated
