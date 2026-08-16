@@ -1,6 +1,7 @@
 ---
 "@cotal-ai/core": patch
 "@cotal-ai/cli": patch
+"@cotal-ai/connector-core": patch
 ---
 
 Say what a refused publish, a goal deadline, and a class-queue split actually proved.
@@ -108,3 +109,14 @@ queue, so the flag was accepted there and silently ignored. An empty `--on` (`--
 shell variable) is refused at the flag on all four commands: `ps` and the detached `spawn` carried it
 to the mint, which refused it as an invalid token, while `stop` and `attach` read it as absent and
 fell through to the seat lookup, so one input had two answers and one of them was a dropped pin.
+
+The peer-side manager tools stop reading silence off the catalog code too. `MeshAgent`'s manager
+invoke reported "no responder answered - a manager may be down, or this credential holds no <cmd>
+capability and the broker denied the request" for every `deadline-exceeded`, and the bare code for
+everything else. That was wrong in both directions. The broker's no-responders 503 arrives as
+`unavailable` carrying the unanswered marker, so the one case where the capability explanation is
+certain was the one case that did not get it: an agent denied a capability was told only
+"unavailable". And an answered `ok:false` describe is also `unavailable`, deliberately unmarked
+because a manager did answer -- and this surface is read by agents, where a claim of silence invites
+the retry that duplicates a spawn. Same code, opposite conditions, separated only by the marker,
+which is now what the verdict keys on.
