@@ -847,6 +847,34 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   await replayRunJournal(js, jsm, SPACE, "r-5s", tid());
   const after = (await jsm.consumers.list(STREAM).next()).length;
   c("an ordinary replay leaves no consumer behind at all", after === before, `${before} -> ${after}`);
+
+  // And the half that was silence before: a delete that fails for a reason we did not name is a
+  // consumer left on the stream, and the caller is the only one who can do anything about it.
+  const deaf = {
+    ...jsm,
+    consumers: {
+      ...jsm.consumers,
+      add: jsm.consumers.add.bind(jsm.consumers),
+      delete: async () => { throw Object.assign(new Error("insufficient resources"), { code: 10023 }); },
+    },
+  } as unknown as typeof jsm;
+  let unnamed: unknown;
+  try { await replayRunJournal(js, deaf, SPACE, "r-5s", tid()); } catch (e) { unnamed = e; }
+  c("a consumer whose delete failed for an unnamed reason is reported, not swallowed",
+    unnamed instanceof Error && /insufficient resources/.test((unnamed as Error).message),
+    `${(unnamed as Error)?.name}: ${String((unnamed as Error)?.message).slice(0, 50)}`);
+  c("and a delete that fails because it is ALREADY GONE stays silent: that is the success case",
+    await (async () => {
+      const gone = {
+        ...jsm,
+        consumers: {
+          ...jsm.consumers,
+          add: jsm.consumers.add.bind(jsm.consumers),
+          delete: async () => { throw Object.assign(new Error("consumer not found"), { code: 10014, name: "ConsumerNotFoundError" }); },
+        },
+      } as unknown as typeof jsm;
+      try { await replayRunJournal(js, gone, SPACE, "r-5s", tid()); return true; } catch { return false; }
+    })());
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
