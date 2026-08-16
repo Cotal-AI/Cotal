@@ -453,11 +453,29 @@ export class CotalEndpoint extends EventEmitter {
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) —
+   *  i.e. how many class-queue splits this endpoint has hit and survived.
+   *
+   *  IT IS COUNTED BECAUSE IT IS RECOVERED. Handling the split makes it invisible, and that
+   *  routing event is the only evidence the split exists at all: silence it and the split rate
+   *  becomes unmeasurable exactly as it becomes survivable — the failure gets handled and the
+   *  instrument that justified handling it gets destroyed. Measured on a live two-manager mesh,
+   *  5 of 6 unpinned class reads split, so this is not a rare-event counter.
+   *
+   *  Always on, never behind a flag: a counter you have to enable is not there when the thing you
+   *  needed it for happened. */
+  private splitsRecovered = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
   get principal(): { owner: string; actor: string } {
     return { owner: this.owner, actor: this.actor };
+  }
+
+  /** Class-queue splits this endpoint has hit and silently survived ({@link splitsRecovered}).
+   *  Pull it, or listen for `split-recovered` — the event can be missed, the count cannot. */
+  get splitRecoveryCount(): number {
+    return this.splitsRecovered;
   }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
@@ -1407,6 +1425,12 @@ export class CotalEndpoint extends EventEmitter {
         // it: the responder states it did not run the command, so re-issuing is a FIRST attempt, not
         // a second one. Re-resolve and re-issue exactly once; a second refusal surfaces.
         if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
+          // Counted before it is repaired, and emitted for anyone watching: see {@link splitsRecovered}.
+          // A recovery that leaves no trace takes the split rate with it.
+          this.splitsRecovered++;
+          this.emit("split-recovered", {
+            endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
+          });
           this.resolvedServices.delete(endpoint);
           return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
         }

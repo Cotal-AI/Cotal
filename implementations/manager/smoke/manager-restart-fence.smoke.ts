@@ -185,6 +185,9 @@ try {
     // cheaply and nothing starts, but it ANSWERS, at epoch 1, and that answer is what the cached
     // client must not mistake for its bound incarnation's).
     const before = pubs();
+    const splitsBefore = client.splitRecoveryCount;
+    const announced: Array<{ command?: string; servedBy?: { instanceId: string; epoch: number }; splitsRecovered?: number }> = [];
+    client.on("split-recovered", (e) => announced.push(e as (typeof announced)[number]));
     let threw: unknown;
     let reply: EpAttributedReply | undefined;
     try { reply = await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { threw = e; }
@@ -201,6 +204,17 @@ try {
       reply?.reply.ok === false && !/WAS NOT RUN/.test(reply.reply.error?.message ?? ""), reply?.reply.error);
     check("...and the stale (epoch 0) bind was replaced by the successor's, inside that one call",
       cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2, { got: cache.get(MANAGER_ENDPOINT)?.responder });
+    // THE RECOVERY IS COUNTED, and this is the cell that keeps it counted. Handling the split makes
+    // it invisible, and that routing event is the only evidence the split exists — so a recovery
+    // that leaves no trace destroys the very measurement that justified building the fence. The
+    // count is checked against a BEFORE value, not against zero: a counter stuck at a constant and
+    // a counter that never moves are the same reading unless you took both.
+    check("...and the silent recovery was COUNTED (the split stays measurable while being handled)",
+      client!.splitRecoveryCount === splitsBefore + 1, { before: splitsBefore, after: client!.splitRecoveryCount });
+    check("...and it was announced to anyone listening, naming the instance that refused",
+      announced.length === 1 && announced[0].command === "spawn" && announced[0].servedBy?.instanceId === iid1
+      && announced[0].servedBy?.epoch === epoch2 && announced[0].splitsRecovered === client!.splitRecoveryCount,
+      announced);
 
     // THE STRAND, OR NOT. The operator verifies and deliberately re-issues. With the bind retained,
     // this call reused (iid1, epoch 0), reached the successor AGAIN and came back `expired` again,

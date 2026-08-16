@@ -7,6 +7,20 @@
       "find": "        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {\n          this.resolvedServices.delete(endpoint);\n          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n        }\n",
       "replace": "",
       "expectRed": "the stale (epoch 0) bind was replaced by the successor's"
+    },
+    {
+      "name": "the recovery stops counting the split (handled, and the split rate goes with it)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          this.splitsRecovered++;\n",
+      "replace": "",
+      "expectRed": "the silent recovery was COUNTED"
+    },
+    {
+      "name": "the recovery stops announcing itself",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          this.emit(\"split-recovered\", {\n            endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,\n          });\n",
+      "replace": "",
+      "expectRed": "it was announced to anyone listening"
     }
   ]
 }
