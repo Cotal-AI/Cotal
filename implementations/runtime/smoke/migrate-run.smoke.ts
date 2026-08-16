@@ -195,7 +195,7 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
 
   const unknown = await check(RUN, entries, EDITED);
   c("an orphaned notify with NO notice filed is refused rather than assumed harmless",
-    rowFor(unknown, "notify:told")?.code === "L5005", rowFor(unknown, "notify:told"));
+    rowFor(unknown, "notify:told")?.code === "L5013", rowFor(unknown, "notify:told"));
   c("and it says the delivery cannot be ESTABLISHED, which is a different fact from not delivered",
     rowFor(unknown, "notify:told")?.why.includes("cannot be established") === true,
     rowFor(unknown, "notify:told")?.why);
@@ -211,7 +211,7 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
 
   const pending = await check(RUN, entries, EDITED);
   c("a notice that exists but was never carried is still refused",
-    rowFor(pending, "notify:told")?.code === "L5005", rowFor(pending, "notify:told"));
+    rowFor(pending, "notify:told")?.code === "L5013", rowFor(pending, "notify:told"));
   c("and says what migrating would do: deliver a decision the new program no longer makes",
     rowFor(pending, "notify:told")?.why.includes("no longer makes") === true, rowFor(pending, "notify:told")?.why);
   c("the migration is not admissible while it stands", pending.admissible === false, pending);

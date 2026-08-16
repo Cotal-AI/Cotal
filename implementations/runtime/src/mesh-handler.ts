@@ -116,6 +116,12 @@ export interface SettleWatcher {
   awaitSettle(ref: CheckpointRef): Promise<CheckpointSettleFact>;
 }
 
+/**
+ * The one subject the whole seam is gated by: every refused effect addresses an agent handle, and
+ * only `spawn` produces one. Named once so the five refusals cannot drift into five reasons.
+ */
+const ACTION_MACHINERY = "the durable-action machinery an agent handle comes from";
+
 export class MeshHandler {
   constructor(
     private readonly kv: KV,
@@ -231,7 +237,7 @@ export class MeshHandler {
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     const ev = req.event;
     if (ev.event === "replied" || ev.event === "down") {
-      throw new NotYetDurable(`wait(${ev.event}(…))`, "the durable-action machinery an agent handle comes from");
+      throw new NotYetDurable(`wait(${ev.event}(…))`, ACTION_MACHINERY);
     }
     if (!isConcreteChannel(ev.channel)) {
       throw new Error(`wait() cannot await a wildcard channel ("${ev.channel}"); an await names one channel`);
@@ -336,6 +342,63 @@ export class MeshHandler {
       });
     }
     return null;
+  }
+
+  // ── The Lane-A seam ────────────────────────────────────────────────────────────────────────────
+  //
+  // Every effect below addresses an AGENT HANDLE, and only `spawn` produces one. So the whole group
+  // is gated by a single subject — the durable-action machinery `spawn` rides — rather than by five
+  // separate absences, which is why they refuse through one class with one reason.
+  //
+  // THEY ARE HERE RATHER THAN ABSENT, and that is the point of the slice. A handler that simply
+  // lacks the method fails as a TypeError from inside the interpreter: a fault about JavaScript
+  // rather than about the run, at a call site that says nothing about what is missing or when it
+  // arrives. The refusal is the honest two-exit — the simulator performs all five, so a program
+  // using them can be written, validated and dry-run today, and a DURABLE run declines rather than
+  // performing an effect it could not recover after a crash.
+  //
+  // THE REFUSAL IS TERMINAL FOR THE RUN THAT HITS IT, and the mechanism is worth stating exactly
+  // rather than assumed. The interpreter settles the entry `failed` with the code the handler
+  // raised, so the step is recorded as attempted-and-failed and a resume replays that failure —
+  // the run does not heal the day Lane A lands. It is recorded as L5016 rather than a generic
+  // handler fault so the journal at least says which of the two happened.
+  //
+  // Whether it SHOULD be terminal is a live question and not this file's to settle: an effect a
+  // host cannot perform is closer to a release than to a failure, and leaving the entry pending
+  // would let a later driver perform it. That changes the interpreter's fault contract and a
+  // property other lanes have been told about, so it is referred up rather than taken here.
+
+  async spawn(_req: unknown, _ctx: EffectContext): Promise<never> {
+    throw new NotYetDurable("spawn(…)", ACTION_MACHINERY);
+  }
+
+  async turn(_req: unknown, _ctx: EffectContext): Promise<never> {
+    throw new NotYetDurable("turn(…)", ACTION_MACHINERY);
+  }
+
+  async ask(_req: unknown, _ctx: EffectContext): Promise<never> {
+    throw new NotYetDurable("ask(…)", ACTION_MACHINERY);
+  }
+
+  async monitor(_req: unknown, _ctx: EffectContext): Promise<never> {
+    throw new NotYetDurable("monitor(…)", ACTION_MACHINERY);
+  }
+
+  /**
+   * A conclave, refused with the rest — and this one is an OVER-refusal, stated rather than hidden.
+   *
+   * A conclave's members are agent handles, so the ordinary case is gated exactly like the others.
+   * `conclave([], …)` is not: a sub-team with nobody in it is a channel, and the channel plane is
+   * here. It is refused anyway, because shipping the empty case alone would put half a primitive on
+   * the durable plane — a program that works with no members and refuses with one is a worse thing
+   * to explain than a primitive that is not here yet.
+   */
+  async openConclave(_req: unknown, _ctx: EffectContext): Promise<never> {
+    throw new NotYetDurable("conclave(…)", ACTION_MACHINERY);
+  }
+
+  async closeConclave(_req: unknown, _ctx: EffectContext): Promise<never> {
+    throw new NotYetDurable("conclave(…)", ACTION_MACHINERY);
   }
 
   /** Mint a deadline, idempotently. The same token re-minted with the same deadline attaches. */
@@ -496,6 +559,17 @@ function matchesEvent(msg: CotalMessage, from: string | undefined, matcher: RegE
  * effect nothing can replay would be a lie the journal then carries forever.
  */
 export class NotYetDurable extends Error {
+  /**
+   * L5016, and it is load-bearing rather than decorative.
+   *
+   * The interpreter wraps a handler's fault into an `EffectError` and SETTLES the entry with it, so
+   * the class does not survive the boundary — a caller of `run()` sees an `EffectError`, and the
+   * journal keeps whatever code was on it. Without this the entry would read `L4000 handler-fault`:
+   * "the handler broke", written durably about a step nothing ever attempted. The interpreter
+   * honours an L-code a handler raises, so the recorded fact says what actually happened.
+   */
+  readonly code = "L5016";
+
   constructor(readonly effect: string, readonly needs: string) {
     super(
       `${effect} is not durable on this host yet: it rides ${needs}, which has not landed. ` +

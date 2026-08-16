@@ -99,6 +99,18 @@ export const CATALOG = {
   // own code because settling the entry instead would write down a failure for work nobody
   // attempted.
   L5012: "Run released before the next effect",
+  // The three refusals design 8.4's orphan table needs and does not number. Allocated here rather
+  // than reused, because a code that means two things is worse than a code that means nothing: the
+  // first three numbers this table wanted — L5005, L5006, L5007 — were already a pending effect, an
+  // oversized result, and a lost lease, and a reader acting on one of those would act on the wrong
+  // fact entirely.
+  L5013: "Orphaned undelivered `notice` on migrate",
+  L5014: "Orphaned open `conclave` on migrate",
+  L5015: "No orphan policy for this entry kind on migrate",
+  // A durable run reached an effect whose substrate has not landed on this host. Its own code
+  // because the alternative — a generic handler fault — records "the handler broke" for a step
+  // nothing ever attempted, and a reader of the journal cannot tell the two apart afterwards.
+  L5016: "Effect not durable on this host",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",

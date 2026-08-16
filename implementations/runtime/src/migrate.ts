@@ -285,11 +285,11 @@ function classify(
       if (consumed === true) return ignore("its notice was already carried by the addressee's next turn");
       if (consumed === undefined)
         return reject(
-          "L5005",
+          "L5013",
           "no notice is filed for this step, so whether it was delivered cannot be established; a migration does not guess about a decision already sent",
         );
       return reject(
-        "L5005",
+        "L5013",
         "the notice has not been carried by its addressee's next turn, and migrating would deliver a decision the new program no longer makes",
       );
     }
@@ -297,7 +297,7 @@ function classify(
     case "conclave":
       return e.closed === true
         ? ignore("the scope closed, so no membership outlives it")
-        : reject("L5006", "an open conclave is live membership the new program cannot close");
+        : reject("L5014", "an open conclave is live membership the new program cannot close");
 
     case "spawn":
       // §8.4 clears this row with `--adopt <handle>` or `--release`. NEITHER IS HONOURED HERE, and
@@ -343,7 +343,7 @@ function classify(
       // Anything a later version journals. A kind this table does not know is not a kind it may wave
       // through: the table is the safety property, and an unlisted kind means it has a hole.
       return reject(
-        "L5007",
+        "L5015",
         `no orphan policy is defined for a ${e.kind} entry, and a migration does not invent one`,
       );
   }
