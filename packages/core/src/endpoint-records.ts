@@ -308,6 +308,24 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "commit-path", status: "commit-path" },
     mediation: "mediated",
   },
+  answer: {
+    // The CHECKPOINT ANSWER: `answer.<endpoint>.<token>.<answerId>`, the payload half of a
+    // checkpoint resume. The one-use settle fact stays the small arbiter of the race and NAMES the
+    // answerId it accepted; this is where the value and the artifact digest live.
+    //
+    // `<answerId>` is in the KEY rather than one slot per token because a workflow checkpoint's
+    // holder is the run driver and every resolver presents as it: keyed by presenter, two racing
+    // resolvers overwrite one slot and the settle fact selects whichever wrote last instead of the
+    // one that won. Per-answer keys plus a named winner is the discriminator that key lacked.
+    //
+    // ATOMIC and create-only: an answer is one thing that happened, written once before its token
+    // is presented, never updated and never deleted.
+    kind: "answer",
+    qualifiers: [qEndpoint, qId("token"), qId("answerId")],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   lifecycle: {
     // The optional per-UID append-only audit detail — never the authority (that is the HEAD).
     kind: "lifecycle",

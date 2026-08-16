@@ -28,6 +28,7 @@ import {
   timerWriterDurable, timerWriterConsumerConfig,
   mintCheckpoint, heartbeatCheckpoint, readCheckpointStatus, readCheckpointSettle, readCheckpointSpec,
   armCheckpointTimer, handleCheckpointFire, resumeCheckpoint, reconcileCheckpointSchedule,
+  checkpointAnswerId, recordCheckpointAnswer, readCheckpointAnswer,
   timerWriterContext, checkpointSettleSubject, epfStreamName,
   type CheckpointRef,
 } from "../src/index.js";
@@ -501,6 +502,72 @@ try {
     const rec = await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cpm6"), instanceId: IID, epoch: EPOCH });
     c("the reconciler re-emits the CURRENT generation after a heartbeat advanced it", rec.reEmitted && rec.generation === 2);
     await drainAndArm(1);
+  }
+
+  // ── the ANSWER the settlement accepted (design §5.5 delta 1, §17 delta 4b) ──
+  //
+  // The payload of an answer lives in its own record; what the settle fact adds is the NAME of the
+  // one it took. Every resolver of a workflow checkpoint presents as the run driver, so without
+  // this field an answer cannot be matched back to the settlement that accepted it — the presenter
+  // is the same principal for all of them and discriminates nothing.
+  {
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpa1"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    const settled = await resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpa1"), presenter: holderA, now: NOW + 100, answerId: "ans-1" });
+    c("a resume that names an answer carries it on the one-use settle fact", settled.answerId === "ans-1", settled.answerId);
+    c("and the STATUS carries it too, which is what makes the fact reconstructable",
+      (await readCheckpointStatus(kv, ref("cpa1")))?.value.settledAnswerId === "ans-1");
+    // The status is the arbiter and the fact is its derived copy: purge the fact and the repair
+    // must rebuild the SAME answer, not a settlement that forgot which answer it accepted.
+    await jsm.streams.purge(epfStreamName(SPACE), { filter: checkpointSettleSubject(SPACE, ref("cpa1")) });
+    await reconcileCheckpointSchedule(kv, js, jsm, SPACE, { ref: ref("cpa1"), instanceId: IID, epoch: EPOCH });
+    c("a fact rebuilt after a crash still names the answer the status recorded",
+      (await readCheckpointSettle(jsm, SPACE, ref("cpa1")))?.answerId === "ans-1");
+
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpa2"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 60_000, now: NOW });
+    await drainAndArm(1);
+    await rejects("an answerId that is not an id token is refused at the resume seam, never written",
+      () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpa2"), presenter: holderA, now: NOW + 100, answerId: "not a token" }), "failed-precondition");
+    c("and the refused resume settled nothing: the checkpoint is still waiting",
+      (await readCheckpointStatus(kv, ref("cpa2")))?.value.state === "waiting");
+
+    // An expiry accepts nothing, so it may never name an answer — a fact claiming the deadline took
+    // somebody's answer would attribute a settlement nobody made. The resume below is PAST the
+    // deadline, so the fence turns it into an expiry with an answerId in hand.
+    await mintCheckpoint(kv, js, SPACE, { ref: ref("cpa3"), instanceId: IID, epoch: EPOCH, holder: holderA, deadline: NOW + 1_000, now: NOW });
+    await drainAndArm(1);
+    await rejects("a resume after the deadline still fails closed, answer or no answer",
+      () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpa3"), presenter: holderA, now: NOW + 2_000, answerId: "ans-late" }), "failed-precondition");
+    const expired = await readCheckpointSettle(jsm, SPACE, ref("cpa3"));
+    c("and the EXPIRY it drove names no answer at all", expired?.settle === "expired" && expired?.answerId === undefined, JSON.stringify(expired));
+  }
+
+  // ── the ANSWER RECORD itself: create-only, content-derived id, never overwritten ──
+  {
+    const token = "cpa1";
+    const id = checkpointAnswerId({ token, by: "david", value: { ship: true } });
+    c("an answer id is an id token by construction, so it can key a record and ride a settle fact",
+      /^[A-Za-z0-9_-]{1,64}$/.test(id) && id.length === 43, id);
+    c("the same answer derives the same id; a different one does not",
+      id === checkpointAnswerId({ token, by: "david", value: { ship: true } })
+      && id !== checkpointAnswerId({ token, by: "david", value: { ship: false } })
+      && id !== checkpointAnswerId({ token, by: "ann", value: { ship: true } }));
+
+    const value = { v: 1 as const, token, answerId: id, value: { ship: true }, by: "david", at: NOW };
+    const first = await recordCheckpointAnswer(kv, "manager", value);
+    c("filing an answer creates its record", first.created === true);
+    c("and it reads back with the payload and the ANSWERER, not the presenter",
+      JSON.stringify((await readCheckpointAnswer(kv, "manager", token, id))?.value) === JSON.stringify({ ship: true })
+      && (await readCheckpointAnswer(kv, "manager", token, id))?.by === "david");
+    const again = await recordCheckpointAnswer(kv, "manager", value);
+    c("filing the SAME answer again is this resolver's own retry, not a conflict", again.created === false);
+    await rejects("different content under the same id is refused rather than overwritten (an answer is not editable)",
+      () => recordCheckpointAnswer(kv, "manager", { ...value, value: { ship: false } }), "conflict");
+    c("an id nobody filed reads as absent, never as an empty answer",
+      (await readCheckpointAnswer(kv, "manager", token, "nobody-filed-this")) === undefined);
+    await kv.delete(`answer.manager.${token}.${id}`);
+    await rejects("a DEL marker on an answer refuses: an answer is something that happened",
+      () => readCheckpointAnswer(kv, "manager", token, id), "failed-precondition");
   }
 
   // ── fail-closed storage read ──
