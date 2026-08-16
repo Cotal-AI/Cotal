@@ -59,7 +59,7 @@ import {
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames } from "../ext-loader.js";
@@ -233,10 +233,11 @@ async function spawnDetached(
   const defaultPersona = defaultPersonaOverride();
   const ref = spawnPersonaRef(values.config, positionals);
   const managerConfigRef = values.config ?? (!positionals[0] && defaultPersona ? ref : undefined);
+  const on = onInstanceOrExit(values.on, "cotal spawn <persona> --detach");
   const t = await resolveControlTarget(
     { space: values.space, server: values.server, creds: values.creds },
     "control-caller-privileged",
-    values.on,
+    on,
   );
   provenance.read("mesh", `${t.space} (${t.server})`);
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
@@ -261,7 +262,7 @@ async function spawnDetached(
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
-  }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: values.on });
+  }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(

@@ -480,7 +480,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
 | `--allow-publish <a,b>` | deny | Post-ACL override |
 | `--detach`, `-d` | off | Launch via the manager into a detached PTY (reattach with `cotal attach`) |
-| `--on <instance>` | class anycast | With `--detach` only: pin the launch to one manager instance id (the whole id, as `ps` prints it). Refused on a foreground spawn (no manager to pin) and with `-f` (a manifest deploy launches through the manager class queue) |
+| `--on <instance>` | class anycast | With `--detach` only: pin the launch to one manager instance id (the whole id, as `ps` prints it). Refused on a foreground spawn (no manager to pin), with `-f` (a manifest deploy launches through the manager class queue), and when empty |
 | `--file <cotal.yaml>`, `-f` | — | Deploy a manifest onto the running mesh |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
@@ -556,7 +556,7 @@ cotal attach --name <n> [--on <instance>] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
-| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also

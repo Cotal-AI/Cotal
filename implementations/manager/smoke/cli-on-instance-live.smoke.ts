@@ -313,6 +313,30 @@ try {
       !/no manager reachable/i.test(out), out.slice(-300));
   }
 
+  // ---- 6. AN EMPTY `--on` IS REFUSED AT THE FLAG, ON EVERY SITE ------------------------------
+  // `--on ""` (or `--on "$INSTANCE"` with the variable unset) is falsy but present. Before this
+  // guard the four sites gave two answers to that one input: `ps` and detached `spawn` carried it
+  // to the mint, which refused it as an invalid token; `stop`/`attach` tested `if (v.on)`, read it
+  // as absent, and fell through to seat locality with the operator none the wiser. A dropped pin
+  // is a silent fallback. The assertion is on the up-front text, so a site that still forwards the
+  // empty value to the mint (a different refusal) or drops it (no refusal) fails this cell.
+  console.log("\n6. an EMPTY `--on` is refused at the flag on every site, never dropped or forwarded");
+  const emptyRefused = /--on requires a manager instance id/;
+  const emptySites: ReadonlyArray<{ what: string; argv: string[] }> = [
+    { what: "ps", argv: ["ps", "--on", "", "--space", space] },
+    { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", "", "--space", space] },
+    { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", "", "--space", space] },
+    { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", "", "--space", space] },
+  ];
+  for (const site of emptySites) {
+    const r = await cotal(site.argv, root1);
+    mustHaveRun(r, `\`${site.what} --on ""\``);
+    const out = strip(r.out);
+    check(`${site.what} --on "" is REFUSED at the flag (exit non-zero, the up-front text, not the mint's token error, not a seat miss)`,
+      r.status !== 0 && emptyRefused.test(out) && !/not a valid lifecycle token/i.test(out) && !/no managed agent/i.test(out),
+      { status: r.status, tail: out.slice(-300) });
+  }
+
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
   await m1?.stop().catch(() => {});

@@ -104,4 +104,7 @@ it needed, and `--on <prefix>` was refused as a malformed token. The `stop`/`att
 miss, which lists the instances that did not answer for the same purpose, prints them whole too and
 says the id must be passed as printed. `spawn` refuses `--on` outside a detached imperative spawn: a
 foreground spawn has no manager to pin and a manifest deploy launches through the manager class
-queue, so the flag was accepted there and silently ignored.
+queue, so the flag was accepted there and silently ignored. An empty `--on` (`--on ""`, an unset
+shell variable) is refused at the flag on all four commands: `ps` and the detached `spawn` carried it
+to the mint, which refused it as an invalid token, while `stop` and `attach` read it as absent and
+fell through to the seat lookup, so one input had two answers and one of them was a dropped pin.

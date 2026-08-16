@@ -267,6 +267,21 @@ export interface ManagerPin {
   instanceId?: string;
 }
 
+/** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
+ *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
+ *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
+ *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
+ *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. */
+export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
+  if (on === undefined) return undefined;
+  if (on === "") {
+    console.error(c.red(`✗ --on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`));
+    process.exit(1);
+  }
+  return on;
+}
+
 /** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never
  *  by the catalog code: a responder's own `ok:false` describe reply is rethrown under ITS code
  *  (`unavailable` included), and a store read after an answered describe raises the same code, so

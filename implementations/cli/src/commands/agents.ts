@@ -2,7 +2,7 @@ import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, t
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit } from "../lib/control.js";
 import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -113,7 +113,8 @@ async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promis
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
  *  instance to address, or exits with an error that says WHICH case the miss was. */
 async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<string | undefined> {
-  if (v.on) return v.on;
+  const on = onInstanceOrExit(v.on, verb);
+  if (on !== undefined) return on;
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
@@ -153,13 +154,14 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
+  const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
-  const t = await resolveControlTarget(v, "control-caller-privileged", v.on);
+  const t = await resolveControlTarget(v, "control-caller-privileged", on);
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
-  if (v.on) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: v.on });
+  if (on !== undefined) {
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: on });
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
@@ -184,8 +186,9 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
   // unreachable (pin 3).
   if (t.auth.bearer) {
-    // `ps` has `--on` (declared, not passed on this branch), so a split may name it as the remedy.
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: v.on });
+    // `ps` has `--on` and did not pass it on this branch (the pinned branch returned above), so a
+    // split may name it as the remedy: the pin is declared, empty.
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
