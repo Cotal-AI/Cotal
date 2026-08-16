@@ -92,9 +92,27 @@ for (const [field, bad] of [["maxBytes", 0], ["maxDepth", -1], ["maxItems", 1.5]
 
 // A ceiling with no submissions to bound, and a readiness bound with no goal to bound, are both
 // unreadable by anything — they would sit in the digest-verified surface saying nothing.
-throws("a ceiling without the marker is refused",
+throws("a ceiling on an EPHEMERAL command is refused",
   () => parseClusterDocument(doc(command({ class: "ephemeral", admissionCeiling: CEILING }))),
-  "without the action composite");
+  "receives no journal submissions");
+
+// ---------------------------------------------------------------------------------------------
+// A1 KEYS ON THE CLASS, NOT ON THE MARKER — and the gap survived because every negative above
+// changes TWO things at once. Each one drops the marker AND sets `class: "ephemeral"`, so the
+// command that has the class without the marker was never constructed, and it is the one A1's
+// MUST is actually about: `action` is a marker ON journal class, not the thing that creates it.
+// The old rule did two wrong things to that command in one breath — required no ceiling, and
+// REFUSED one, on the ground that it "cannot receive" submissions. `endpoint-service.ts` derives
+// the journal rail from `class === "journal"` with no reference to the marker, so it can.
+// ---------------------------------------------------------------------------------------------
+throws("a JOURNAL-class command without the marker must ALSO declare a ceiling — this is the case A1 names",
+  () => parseClusterDocument(doc(command({ class: "journal" }))),
+  "must declare admissionCeiling");
+const journalNoMarker = parseClusterDocument(doc(command({ class: "journal", admissionCeiling: CEILING })));
+ok("and it may DECLARE one: the marker is not what makes a command receive submissions",
+  journalNoMarker.commands[0].action === undefined
+  && JSON.stringify(journalNoMarker.commands[0].admissionCeiling) === JSON.stringify(CEILING),
+  journalNoMarker.commands[0]);
 throws("readinessDeadlineMs without the marker is refused",
   () => parseClusterDocument(doc(command({ class: "ephemeral", readinessDeadlineMs: 30_000 }))),
   "readiness is goal state");

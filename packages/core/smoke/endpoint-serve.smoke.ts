@@ -130,10 +130,14 @@ const DOC_REL = {
     cmd("audit", { targeted: true, modes: ["ledger"] }),
   ],
 };
-const DOC_JOURNAL = { urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: [cmd("submitjob", { class: "journal" })] };
+// A1: a JOURNAL-class command declares its admission ceiling whether or not it carries the action
+// marker — the marker sits on top of the class, and it is the CLASS that makes a command receive
+// submissions. This fixture predates that rule and went red when it landed, which is the rule
+// working: `submitjob` is a real journal-class non-action command, and it had no ceiling.
+const DOC_JOURNAL = { urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: [cmd("submitjob", { class: "journal", admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } })] };
 // A MIXED endpoint: one ephemeral (rail-served) command + one journal command. Both belong to
 // the credential/descriptor surface; only "run" gets a rail def (SPEC 13.4/13.7).
-const DOC_MIXED = { urn: "ai.cotal.mixed", revision: 1, attributes: [], events: [], commands: [cmd("run"), cmd("submitjob", { class: "journal" })] };
+const DOC_MIXED = { urn: "ai.cotal.mixed", revision: 1, attributes: [], events: [], commands: [cmd("run"), cmd("submitjob", { class: "journal", admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } })] };
 // §13.7 two-digest content addressing: the registered CLOSURE digest names a MANIFEST
 // `{v:1, root:<artifactDigest>, members:[]}`; the manifest's root names the cluster DOCUMENT.
 // The store (D8 provides the production epc reader) holds BOTH artifacts, each at its own digest.
@@ -509,7 +513,7 @@ try {
     // cluster and journal in another is ephemeral for the check, so a later journal
     // redeclaration cannot mask the earlier ephemeral one and sneak a virtual registration in.
     const DOC_EPH_RUN = { urn: "ai.cotal.ephrun", revision: 1, attributes: [], events: [], commands: [cmd("run")] };
-    const DOC_JRN_RUN = { urn: "ai.cotal.jrnrun", revision: 1, attributes: [], events: [], commands: [cmd("run", { class: "journal" })] };
+    const DOC_JRN_RUN = { urn: "ai.cotal.jrnrun", revision: 1, attributes: [], events: [], commands: [cmd("run", { class: "journal", admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } })] };
     const DC_EPH_RUN = register(DOC_EPH_RUN);
     const DC_JRN_RUN = register(DOC_JRN_RUN);
     // A command name declared in TWO clusters is an ambiguous surface: registration refuses the

@@ -164,9 +164,18 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
         invalid(`command "${name}" declares the action composite but class "${cmd.class}": an action command's submissions are journal-class (SPEC 13.7)`);
       action = true;
     }
+    // THE CEILING KEYS ON THE CLASS, NEVER ON THE MARKER (amendment A1). A1's MUST is on an
+    // endpoint that accepts JOURNAL-CLASS SUBMISSIONS, and the action composite is a marker on top
+    // of that class rather than the thing that creates it — so a `class: "journal"` command with no
+    // marker receives submissions exactly like an action command does. This keyed on `action` and
+    // therefore did two wrong things to that command at once: it required no ceiling, and it
+    // REFUSED one, on the stated ground that the command "cannot receive" submissions. That ground
+    // was false two files away — `endpoint-service.ts` derives the journal rail's bind rows from
+    // `class === "journal"` across the surface (`journalClass`), and refuses a non-journal class at
+    // the virtual-endpoint seam; neither reads the marker.
     let admissionCeiling: EpAdmissionCeiling | undefined;
-    if (action) {
-      const ceil = isRec(cmd.admissionCeiling) ? cmd.admissionCeiling : invalid(`action command "${name}" must declare admissionCeiling {maxBytes, maxDepth, maxItems}: the canonicalizer reads its ceilings from the digest-verified surface, never from a constant`);
+    if (cmd.class === "journal") {
+      const ceil = isRec(cmd.admissionCeiling) ? cmd.admissionCeiling : invalid(`journal-class command "${name}" must declare admissionCeiling {maxBytes, maxDepth, maxItems}: the canonicalizer reads its ceilings from the digest-verified surface, never from a constant`);
       const nums: Record<string, number> = {};
       for (const f of ["maxBytes", "maxDepth", "maxItems"] as const) {
         const v = ceil[f];
@@ -176,7 +185,7 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
       }
       admissionCeiling = { maxBytes: nums.maxBytes, maxDepth: nums.maxDepth, maxItems: nums.maxItems };
     } else if (cmd.admissionCeiling !== undefined) {
-      invalid(`command "${name}" declares admissionCeiling without the action composite: a ceiling on submissions the command cannot receive is unreadable by anything`);
+      invalid(`ephemeral command "${name}" declares admissionCeiling: an ephemeral command receives no journal submissions, so a ceiling on it is unreadable by anything`);
     }
     let readinessDeadlineMs: number | undefined;
     if (cmd.readinessDeadlineMs !== undefined) {
