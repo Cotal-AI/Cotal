@@ -439,15 +439,29 @@ try {
     `${seen.records.length} vs ${before.records.length - 1}`);
 }
 
-// ── 11) a run id is claimed once ─────────────────────────────────────────────────────────────
+// ── 11) a run id is claimed once, and the RECORD is what remembers ───────────────────────────
+//
+// The journal refuses a second start too, but only while it still has records. Purge them — a
+// retirement, an operator, a stream limit — and the journal has no opinion left: an empty subject
+// is exactly what a run that never started looks like. The spec is what survives that and says the
+// id is spent, which matters because a second start under FRESH pins is a different run wearing the
+// same name, and its journal would be a mix of two.
 {
   const again = await attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-9", source: PROGRAM, lease: lease("m3", 3, 3),
     handler: new CountingHandler(), seed: "a-different-seed",
   }));
-  c("starting a run that already has a spec is refused: the same id under fresh pins is a different run",
-    again.status === "released", why(again));
-  c("and the recorded pins are untouched by the attempt",
+  c("starting a run that already has a spec is refused", again.status === "released", why(again));
+
+  // Now take the journal's opinion away and ask again.
+  await jsm.streams.purge("WFJ_" + SPACE, { filter: `cotal.${SPACE}.wfj.d-9` });
+  const purged = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-9", source: PROGRAM, lease: lease("m4", 4, 4),
+    handler: new CountingHandler(), seed: "a-different-seed",
+  }));
+  c("and it is STILL refused with the journal purged: the record is what remembers the id is spent",
+    purged.status === "released", why(purged));
+  c("with the recorded pins untouched by either attempt",
     (await readRunRecord(kv, EP, "d-9"))!.spec.value.pins.seed === "seed-of-d-9");
 }
 
