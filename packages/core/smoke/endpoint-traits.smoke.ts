@@ -562,7 +562,9 @@ try {
   await rejects("a governed surface verified for a FOREIGN grant refuses at construction",
     () => serveEndpoint(nc, SPACE, grantPlain, plainDef, { public: true }, { traits: { governed: surfaceV1, guard, verifyPaymentProof } }));
 
-  const JOBS_CMDS = [{ name: "submitjob", class: "journal", targeted: false, capability: "jobs.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_PRICED] }];
+  // A journal-class command declares an admissionCeiling whether or not it carries the action
+  // marker (SPEC:1465 / §13.7): the class is what makes it receive submissions.
+  const JOBS_CMDS = [{ name: "submitjob", class: "journal", targeted: false, capability: "jobs.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_PRICED], admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } }];
   const DC_JOBS = register({ urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: JOBS_CMDS });
   await reg({ endpoint: "vaultjobs", owner: "u_op", clusterDigests: [DC_JOBS], protocol: { v: 1 } }, IID);
   const grantJobs = await grantFor("vaultjobs", IID);
