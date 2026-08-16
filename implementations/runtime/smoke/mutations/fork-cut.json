@@ -163,6 +163,24 @@
       "expectRed": "and an admissible plan over the same journal still carries its prefix",
       "cell": "and an admissible plan over the same journal still carries its prefix",
       "note": "The narrowness twin. `cut = []` unconditionally satisfies the removal above perfectly and makes every fork a fork of nothing -- admissible, empty-prefixed, and silent. Graded on the control cell in the same block rather than on a distant one, so the two mutations differ by exactly the condition under test."
+    },
+    {
+      "name": "the plan addresses the caller's raw list again",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const entries = journal.entries();",
+      "replace": "  const entries = req.entries;",
+      "expectRed": "REPAIRED: the cut carries one row per step, folded by the journal rather than by a second rule",
+      "cell": "REPAIRED: the cut carries one row per step, folded by the journal rather than by a second rule",
+      "note": "The defect exactly as it shipped, and it is invisible to every other block in this file because they all build a KEYED view with `Journal.entries()`. Only the block that hands `planFork` an append log -- the shape a driver actually holds -- can see it."
+    },
+    {
+      "name": "the fold returns nothing, so every fork is a fork of no history",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const entries = journal.entries();",
+      "replace": "  const entries: readonly JournalEntry[] = [];",
+      "expectRed": "the cut is what happened BEFORE it",
+      "cell": "the cut is what happened BEFORE it",
+      "note": "The narrowness twin. An empty fold satisfies the mutation above perfectly -- one row per step is trivially true of no rows -- and hands every child an empty prefix, which is admissible, silent, and wrong. Graded on block 1's cut, the plainest statement of what a prefix is, because this suite counts rather than throws and a broad mutation may redden more than the cell it names."
     }
   ],
   "unkillable": [
