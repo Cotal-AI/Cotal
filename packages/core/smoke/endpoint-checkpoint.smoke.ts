@@ -538,8 +538,13 @@ try {
     await drainAndArm(1);
     await rejects("a resume after the deadline still fails closed, answer or no answer",
       () => resumeCheckpoint(kv, js, jsm, SPACE, { ref: ref("cpa3"), presenter: holderA, now: NOW + 2_000, answerId: "ans-late" }), "failed-precondition");
-    const expired = await readCheckpointSettle(jsm, SPACE, ref("cpa3"));
-    c("and the EXPIRY it drove names no answer at all", expired?.settle === "expired" && expired?.answerId === undefined, JSON.stringify(expired));
+    // Read through the parser and treat its refusal as the OBSERVATION rather than letting it end
+    // the suite: an expiry that named an answer is exactly what the closed schema refuses, and a
+    // guard whose failure kills the run reddens no line and names no claim.
+    const expired = await readCheckpointSettle(jsm, SPACE, ref("cpa3")).catch((e: unknown) => e as Error);
+    c("and the EXPIRY it drove names no answer at all",
+      !(expired instanceof Error) && expired?.settle === "expired" && expired?.answerId === undefined,
+      expired instanceof Error ? expired.message : JSON.stringify(expired));
   }
 
   // ── the ANSWER RECORD itself: create-only, content-derived id, never overwritten ──
