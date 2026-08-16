@@ -450,15 +450,21 @@ throws("and a wildly short one is refused the same way (a minute against a day)"
   () => assertFactRetentionFloor(60_000, HORIZON));
 // The two values that must NOT throw, without which the check is "refuse every configuration" and
 // every positive cell above still passes.
-assertFactRetentionFloor(undefined, HORIZON);
-c("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", true);
-assertFactRetentionFloor(0, HORIZON);
-c("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction spelling, "
-  + "not a zero-length retention", true);
-assertFactRetentionFloor(HORIZON, HORIZON);
-c("a fact age EXACTLY at the horizon is admitted: the floor is `below`, not `at or below`", true);
-assertFactRetentionFloor(HORIZON * 90, HORIZON);
-c("and a longer retention is admitted (SPEC's floor is a minimum, never a target)", true);
+// A BARE CALL IS NOT A CELL, and the harness is what taught me: these were written as
+// `assertFactRetentionFloor(x, y); c(label, true)`, so a mutant that made one of them THROW killed
+// the process before the named cell could print. Two mutants graded WRONG-RED — "exited 1 but never
+// printed the expected failure" — at 105 marks against a 151 baseline, which is the mark count doing
+// exactly the job it exists for. It is the mirror of a bare `throws` passing on the wrong refusal:
+// there the cell is green for the wrong reason, here the cell never runs at all.
+const admitsFloor = (label: string, factMaxAgeMs: number | undefined, horizon: number) => {
+  try { assertFactRetentionFloor(factMaxAgeMs, horizon); c(label, true); }
+  catch (e) { c(label, false, (e as Error).message); }
+};
+admitsFloor("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", undefined, HORIZON);
+admitsFloor("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction "
+  + "spelling, not a zero-length retention", 0, HORIZON);
+admitsFloor("a fact age EXACTLY at the horizon is admitted: the floor is `below`, not `at or below`", HORIZON, HORIZON);
+admitsFloor("and a longer retention is admitted (SPEC's floor is a minimum, never a target)", HORIZON * 90, HORIZON);
 // The horizon is DECLARED, never compiled in — the same lesson as A1's admission ceiling. A space
 // retaining decisions for a week must have its fact age measured against ITS horizon, and this cell
 // is the one that fails if the floor is ever hardcoded to the module default.
