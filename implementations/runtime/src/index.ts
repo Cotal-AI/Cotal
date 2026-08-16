@@ -31,3 +31,13 @@ export {
   type ResolveCheckpointResult,
 } from "./resolve-checkpoint.js";
 export { renderRunContext, UnrenderableNotice, type RunContextRender } from "./run-context.js";
+export {
+  migrateRun,
+  commitMigration,
+  type MigrateRequest,
+  type MigrateReport,
+  type MigrateOrphan,
+  type MigrateOverrides,
+  type MigrateDivergence,
+  type OrphanVerdict,
+} from "./migrate.js";

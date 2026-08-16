@@ -181,7 +181,11 @@ export async function readRunNotice(
   addressee: string,
   noticeId: string,
 ): Promise<RunNoticeRead | undefined> {
-  const q = qualifiers(endpoint, runId, noticeAddresseeId(addressee), noticeId);
+  return await readByQualifiers(kv, qualifiers(endpoint, runId, noticeAddresseeId(addressee), noticeId), noticeId);
+}
+
+/** The same read from the KEY's own tokens, for a caller enumerating a run rather than an agent. */
+async function readByQualifiers(kv: KV, q: string[], noticeId: string): Promise<RunNoticeRead | undefined> {
   const merged = await readRecord(kv, RECORD_KINDS.notice, q);
   if (merged === undefined) return undefined;
   const spec = parseSpec(merged.spec.value, recordSpecKey(RECORD_KINDS.notice, q));
@@ -211,15 +215,43 @@ export async function listRunNotices(
 ): Promise<RunNoticeRead[]> {
   const addresseeId = noticeAddresseeId(addressee);
   const prefix = recordSpecKey(RECORD_KINDS.notice, qualifiers(endpoint, runId, addresseeId, "x")).slice(0, -"x.spec".length);
+  // ONE wildcard token, because the addressee is fixed and only the notice id varies.
+  return await scan(kv, `${prefix}*.spec`);
+}
+
+/**
+ * Every notice filed on one RUN, whoever it was addressed to, oldest first.
+ *
+ * The migrate rule (§8.4) asks a question the journal cannot answer on its own: a `notify` entry
+ * records an input HASH, not the agents it addressed, so "has this orphaned notify been consumed?"
+ * cannot be asked per addressee. It is asked per RUN, and each notice's own `step` says which entry
+ * it came from — which is why the step is in the value rather than only in the key.
+ */
+export async function listRunNoticesForRun(
+  kv: KV,
+  endpoint: string,
+  runId: string,
+): Promise<RunNoticeRead[]> {
+  const prefix = recordSpecKey(RECORD_KINDS.notice, qualifiers(endpoint, runId, "a", "n")).slice(0, -"a.n.spec".length);
+  // TWO, because both the addressee and the notice id vary — a KV filter's `*` is one token, and a
+  // single wildcard here would match a key shape that does not exist and return nothing at all.
+  return await scan(kv, `${prefix}*.*.spec`);
+}
+
+/** Read every notice a KV key filter matches. The filter is the caller's: `*` is one token. */
+async function scan(kv: KV, filter: string): Promise<RunNoticeRead[]> {
   const found: RunNoticeRead[] = [];
-  const keys = await kv.keys(`${prefix}*.spec`);
-  const ids: string[] = [];
-  for await (const key of keys) {
+  const seen = await kv.keys(filter);
+  const qs: string[][] = [];
+  for await (const key of seen) {
+    // The key is `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>.spec` and every qualifier is
+    // an id token, so the four the read wants are the four before `spec`. Taken from the KEY and
+    // not re-derived: an enumeration holds the addressee's digest, never the name it came from.
     const parts = key.split(".");
-    ids.push(parts[parts.length - 2]);
+    qs.push(parts.slice(parts.length - 5, parts.length - 1));
   }
-  for (const id of ids) {
-    const one = await readRunNotice(kv, endpoint, runId, addressee, id);
+  for (const q of qs) {
+    const one = await readByQualifiers(kv, q, q[q.length - 1] as string);
     if (one !== undefined) found.push(one);
   }
   found.sort((a, b) => (a.spec.at - b.spec.at) || (a.noticeId < b.noticeId ? -1 : a.noticeId > b.noticeId ? 1 : 0));
