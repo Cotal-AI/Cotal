@@ -28,9 +28,17 @@ honored, so the marker cannot be used to claim an effect away. It is refused rat
 where it has no reading: on `describe`, which is what produces a bind, and on the scatter rail,
 which addresses every incarnation by construction.
 
+A long-lived client recovers from the refusal instead of stranding on it. `invokeService` caches
+its resolve, and its existing split recovery keyed on a thrown marker — which a refusal, being an
+ordinary reply, never raises. It now keys on the reply too, drops the stale bind, and re-issues
+the call **once for any command**, not only for one on the repeat-safe allowlist. That allowlist
+exists because a split used to be detected after the responder had handled the request, so core
+could not tell a duplicate-able effect from a repaired one and had to fail closed; a bind refusal
+removes the uncertainty rather than working around it, so the re-issue is a first attempt.
+
 The caller-side check remains, and remains necessary: a responder that predates the fence ignores
-the field and executes, which leaves the older after-the-fact report as the only protection in a
-skewed pair. `--on` still addresses a specific manager, but it is no longer what stands between a
-split and a duplicated effect.
+the field and executes, which leaves the older after-the-fact report — and the allowlist — as the
+only protection in a skewed pair. `--on` still addresses a specific manager, but it is no longer
+what stands between a split and a duplicated effect.
 
 SPEC §13.2 and §13.3 carry the normative rules; `docs/control-surface.md` is updated.
