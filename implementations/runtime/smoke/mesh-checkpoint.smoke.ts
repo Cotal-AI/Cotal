@@ -116,7 +116,7 @@ const deliverFire = async (ref: CheckpointRef, now: number, epoch = EPOCH): Prom
 
 const NOW = Date.now(); // real schedules need real wall-clock deadlines
 const binding = {
-  space: SPACE, endpoint: EP, instanceId: IID, epoch: EPOCH, holder: HOLDER,
+  space: SPACE, endpoint: EP, runId: "r-cp", instanceId: IID, epoch: EPOCH, holder: HOLDER,
   defaultCheckpointTimeout: "1h",
 };
 const handler = new MeshHandler(kv, js, jsm, binding, new EpfSettleWatcher(js, jsm, SPACE, 3_000), () => NOW);

@@ -110,6 +110,8 @@ export {
   type SimScript,
 } from "./sim.js";
 
+export { notifyFactViolation } from "./notify-fact.js";
+
 export {
   Journal,
   JournalAppendRejected,

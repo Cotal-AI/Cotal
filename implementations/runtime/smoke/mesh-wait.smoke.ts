@@ -124,7 +124,7 @@ const fireWhenDue = async (token: string): Promise<number> => {
 };
 const handler = new MeshHandler(
   kv, js, jsm,
-  { space: SPACE, endpoint: EP, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+  { space: SPACE, endpoint: EP, runId: "r-wait", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   now,
 );

@@ -30,3 +30,4 @@ export {
   type ResolveCheckpointRequest,
   type ResolveCheckpointResult,
 } from "./resolve-checkpoint.js";
+export { renderRunContext, UnrenderableNotice, type RunContextRender } from "./run-context.js";

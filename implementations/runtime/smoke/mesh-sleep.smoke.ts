@@ -104,7 +104,7 @@ const NOW = Date.now();
 const waitPast = async (deadline: number) => { while (Date.now() < deadline + 400) await wait(100); };
 const handler = new MeshHandler(
   kv, js, jsm,
-  { space: SPACE, endpoint: EP, instanceId: IID, epoch: EPOCH, holder: HOLDER },
+  { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   () => NOW,
 );

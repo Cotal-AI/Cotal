@@ -28,6 +28,8 @@ import {
   chatSubject,
   isConcreteChannel,
   assertSafePattern,
+  runNoticeId,
+  writeRunNotice,
   type CheckpointRef,
   type CheckpointSettleFact,
   type CotalMessage,
@@ -41,8 +43,10 @@ import {
   type CheckpointRequest,
   type EffectContext,
   type JournalEntry,
+  type NotifyRequest,
   type SleepRequest,
   journalEntryKeyString,
+  stepKeyString,
 } from "@cotal-ai/lang";
 
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
@@ -50,6 +54,17 @@ export interface MeshHandlerBinding {
   readonly space: string;
   /** The endpoint hosting the driver — the manager daemon (§10). */
   readonly endpoint: string;
+  /**
+   * WHICH RUN this handler performs for.
+   *
+   * It is here rather than on `EffectContext` because the design's effect context deliberately
+   * carries the step's identity and nothing about the run (§6): `requestId` already folds the run
+   * in, and a handler that needed to name the run for recovery would be recovering by something
+   * other than the recorded identity. A NOTICE is keyed by its run, though — it is filed onto the
+   * run — so the run is part of what this handler is bound to. A drive is already shaped that way:
+   * the caller hands `drive()` a run id and a handler together.
+   */
+  readonly runId: string;
   readonly instanceId: string;
   readonly epoch: number;
   /**
@@ -288,6 +303,39 @@ export class MeshHandler {
         await this.jsm.consumers.delete(stream, durable);
       } catch { /* already gone, or never created — either way there is nothing to hold */ }
     }
+  }
+
+  /**
+   * `notify` writes one bounded decision record per addressee, onto the run.
+   *
+   * NOT a channel post, and that is the whole point of the primitive: a post would put the program
+   * into the conversation as a participant, where the design says conversation is the data plane and
+   * the program is the control plane. A notice is data filed on the run and rendered ahead of the
+   * addressee's next turn.
+   *
+   * **One call to N agents is N records, and a retry lands on its own.** The id is derived from the
+   * step's request id and the addressee, so a crash between the second and third write is repaired
+   * by re-running the call: the first two creates find their own bytes and return, the third
+   * happens. Nothing is written twice and nothing needs a memo of how far it got.
+   *
+   * The fact's bound is the language's and is enforced BEFORE this is reached (L3043 at the effect
+   * boundary), so a fact that could not be rendered as one table row cannot arrive here.
+   */
+  async notify(req: NotifyRequest, ctx: EffectContext): Promise<null> {
+    const at = this.now();
+    const step = stepKeyString(ctx.key);
+    for (const agent of req.agents) {
+      const noticeId = runNoticeId(ctx.requestId, agent.agent);
+      await writeRunNotice(this.kv, this.binding.endpoint, noticeId, {
+        v: 1,
+        run: this.binding.runId,
+        step,
+        addressee: agent.agent,
+        fact: req.fact,
+        at,
+      });
+    }
+    return null;
   }
 
   /** Mint a deadline, idempotently. The same token re-minted with the same deadline attaches. */

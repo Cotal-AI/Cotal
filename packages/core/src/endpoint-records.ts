@@ -326,6 +326,27 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "commit-path", status: "commit-path" },
     mediation: "mediated",
   },
+  notice: {
+    // The RUN NOTICE: `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, one bounded decision
+    // record written onto the run and addressed to one agent, rendered ahead of that agent's next
+    // turn. It is a record and NOT a channel post on purpose: a notice is program-authored bytes
+    // moving toward an agent's context, and a channel post would put the program into the
+    // conversation as a participant.
+    //
+    // `<addresseeId>` is DERIVED from the agent's name rather than being the name: an agent name is
+    // dotted and a dot is the key separator, so a raw name would silently re-tokenize the key into
+    // a different shape. The reader holds the handle and re-derives the same id, so per-addressee
+    // enumeration is still one prefix scan.
+    //
+    // SPLIT because consumption is a fact somebody else establishes later: the spec is the notice
+    // (immutable, create-only — a notice is something the program decided) and the status is its
+    // consumption, which migrate reads to refuse moving a run whose notice has not landed yet.
+    kind: "notice",
+    qualifiers: [qEndpoint, qId("runId"), qId("addresseeId"), qId("noticeId")],
+    split: true,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   lifecycle: {
     // The optional per-UID append-only audit detail — never the authority (that is the HEAD).
     kind: "lifecycle",

@@ -22,6 +22,7 @@ import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./jou
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
 import { parseDuration } from "./duration.js";
 import { PRIMITIVES, type EffectKind } from "./primitives.js";
+import { notifyFactViolation } from "./notify-fact.js";
 import { bindPins, resolvePins, type RunPins } from "./pins.js";
 import {
   Cancelled,
@@ -1035,6 +1036,13 @@ class Interpreter {
       case "notify": {
         const agents = deepFreeze(args[0]) as AgentHandleValue[];
         const fact = deepFreeze(args[1]) as { decision: string; outcome: string };
+        // THE BOUND, WHERE THE VALUE EXISTS. The validator checks a literal fact exactly and says
+        // so about the computed one; this is the computed one. It is checked BEFORE the entry is
+        // written, so a fact that breaks the bound never reaches a journal, a record, or a
+        // handler — an out-of-bound notice recorded as performed would be laundered bytes with a
+        // durable receipt. An error, never a truncation: a shortened notice still delivers.
+        const violation = notifyFactViolation(fact);
+        if (violation !== null) throw new RuntimeFault("L3043", violation);
         return await this.performEffect(
           "notify",
           stepName ?? "",
