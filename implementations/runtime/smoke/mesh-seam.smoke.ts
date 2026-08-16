@@ -99,11 +99,25 @@ const drive = async (source: string, handler: EffectHandler) =>
 // ── 1b) the other three, at the handler, where they can be reached ─────────────────────────────
 {
   for (const name of ["spawn", "turn", "ask", "monitor", "openConclave", "closeConclave"] as const) {
-    const fn = (mesh as unknown as Record<string, (r: unknown, c: unknown) => Promise<unknown>>)[name]!;
-    const e = await fn.call(mesh, {}, {} as never).then(() => null, (x: unknown) => x as Error);
+    const fn = (mesh as unknown as Record<string, unknown>)[name];
+    // GUARDED, because a missing method is precisely what this slice replaces: calling `undefined`
+    // would kill the process here and the cell would never print, which is red without being an
+    // answer. An absent seam is a FAILED CELL that names the method.
+    if (typeof fn !== "function") {
+      c(`${name} refuses at the handler, as the class itself`, false, "the method is absent");
+      c(`${name} carries the code that crosses the run boundary`, false, "the method is absent");
+      c(`${name} gives the one shared reason`, false, "the method is absent");
+      continue;
+    }
+    const e = await (fn as (r: unknown, c: unknown) => Promise<unknown>)
+      .call(mesh, {}, {} as never).then(() => null, (x: unknown) => x as Error);
     c(`${name} refuses at the handler, as the class itself`, e instanceof NotYetDurable, e?.name);
     c(`${name} carries the code that crosses the run boundary`,
       (e as unknown as { code?: string })?.code === "L5016", (e as unknown as { code?: string })?.code);
+    // ALL SIX, not just the two a program can reach: five refusals with five reasons would be five
+    // seams wearing one name, and only the shared reason makes it one gate with one subject.
+    c(`${name} gives the one shared reason`,
+      e?.message.includes("an agent handle comes from") === true, e?.message?.slice(0, 140));
   }
 }
 
