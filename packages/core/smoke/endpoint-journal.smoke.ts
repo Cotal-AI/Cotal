@@ -103,11 +103,22 @@ c("c4 a within-ceiling submission is ADMITTED, never quarantined", first.outcome
 // clock read at all. A source-level assertion is a weaker KIND of claim than a behavioural one,
 // and it is the strongest claim that is true here — the function takes no clock, so there is no
 // clock to inject and nothing behavioural to observe. Injecting one reddens this every time.
+// THE SPAN IS THE WHOLE CALLEE SET, NOT THE ENTRY POINT. The first version of this cell started at
+// `export function decideAdmission` and so did not cover `measure()`, which sits ABOVE it and which
+// the decision calls — a clock there would have passed a cell whose label says "the decision path".
+// A source-level claim is only as wide as the text it reads, so the span starts at the first callee.
+// `canonical.ts` is the one dependency outside this file; checked once, by hand, and it reads no
+// clock — recorded here because a hand check that is not written down has to be redone by the reader.
 const decisionSource = readFileSync(new URL("../src/endpoint-journal.ts", import.meta.url), "utf8");
-const decidePath = decisionSource.slice(decisionSource.indexOf("export function decideAdmission"));
+const spanFrom = decisionSource.indexOf("function measure(");
+const spanTo = decisionSource.indexOf("\n// ---- fact shapes");
+// A marker that moved would make `slice` silently return the wrong region — and an empty region
+// passes the regex trivially. The cell must fail loudly rather than pass vacuously.
+if (spanFrom < 0 || spanTo < 0 || spanTo <= spanFrom)
+  throw new Error(`c4 cannot locate the decision path in endpoint-journal.ts (from=${spanFrom} to=${spanTo}) — the markers moved; fix the span, do not delete the cell`);
+const decidePath = decisionSource.slice(spanFrom, spanTo);
 c("c4 the decision path reads no clock (the property, asserted where it is decidable)",
-  !/Date\.now|new Date|performance\.now|hrtime/.test(decidePath.slice(0, decidePath.indexOf("\n// ---- fact shapes"))),
-  decidePath.slice(0, 80));
+  !/Date\.now|new Date|performance\.now|hrtime/.test(decidePath), `${decidePath.length} bytes spanned`);
 c("c4 admission carries the fingerprint the caller can correlate on",
   first.outcome === "admit" && first.fingerprint === submissionFingerprint(sub1, subj).fingerprint);
 
