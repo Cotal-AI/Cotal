@@ -287,6 +287,23 @@ const plan = async (
 
     c("the CHILD's first live step is the step it was forked to re-run, not the one after the scope",
       firstLive === "/parallel:pair#0/b:b/sleep:b#0", { firstLive, expected: "/parallel:pair#0/b:b/sleep:b#0" });
+
+    // The other side of the projection, and the reason it is not simply "drop enclosing scopes".
+    // Re-entering is sound only where every branch RUNS. A `race` decided a winner; a child that
+    // re-entered would race again on a fresh handler and could resolve the other arm — re-deciding
+    // what the parent recorded. Copying it settled is the claim-1 defect; re-entering it is a
+    // different run. Both are silent, so it is refused instead.
+    const RACED =
+      `await race({ quick: async () => { await sleep("1m", { name: "q" }); return 1; }, ` +
+      `slow: async () => { await sleep("9m", { name: "s" }); return 2; } }, { name: "first" });\n` +
+      `await sleep("3m", { name: "after" });`;
+    const rEntries = await record("r-raced", RACED);
+    const winner = keys(rEntries).find((k) => k.includes("/b:") && k.endsWith("#0"));
+    const rp = await plan({ parent: "r-raced", entries: rEntries, source: RACED, fromStepKey: winner ?? "" });
+    c("a cut inside a decided `race` is refused with L5020 rather than re-raced",
+      rp.refusals.some((r) => r.code === "L5020"), { refusals: rp.refusals, at: winner });
+    c("and the refusal says where to fork instead, so the caller repairs rather than guesses",
+      rp.refusals.some((r) => r.code === "L5020" && r.why.includes("Fork at a step outside")), rp.refusals);
     let sConsumed: number | string;
     try {
       sConsumed = new Journal({

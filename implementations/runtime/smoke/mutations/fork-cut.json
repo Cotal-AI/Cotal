@@ -110,6 +110,32 @@
       "expectRed": "with L5018, because a cut never reached is the whole journal",
       "cell": "with L5018, because a cut never reached is the whole journal",
       "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything \u2014 a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
+    },
+    {
+      "name": "the enclosing scope is copied settled, so the child short-circuits past its own cut",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "        return !orphaned.has(k) && !projected.has(k);",
+      "replace": "        return !orphaned.has(k);",
+      "expectRed": "the CHILD's first live step is the step it was forked to re-run, not the one after the scope",
+      "cell": "the CHILD's first live step is the step it was forked to re-run, not the one after the scope",
+      "note": "Named on the CHILD-RUN cell on purpose, not on a plan-shape cell. Several plan-shape cells also redden, but they are the kind of assertion that let claim 1 survive 200 trials; the mutation is graded on the one that runs the child."
+    },
+    {
+      "name": "a cut inside a decided race is admitted instead of refused",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (e.kind === \"parallel\" || e.kind === \"fanOut\") continue;",
+      "replace": "    continue;",
+      "expectRed": "a cut inside a decided `race` is refused with L5020 rather than re-raced",
+      "cell": "a cut inside a decided `race` is refused with L5020 rather than re-raced"
+    },
+    {
+      "name": "the projection is too broad and drops scopes that do NOT enclose the cut",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);",
+      "replace": "    return SCOPE_KINDS.has(e.kind);",
+      "expectRed": "a fork at a recorded step is admissible",
+      "cell": "a fork at a recorded step is admissible",
+      "note": "The narrowness twin. Projecting EVERY scope entry would satisfy the first mutation perfectly while destroying any fork whose cut sits after an unrelated combinator -- the child would re-enter and re-run scopes it had already settled."
     }
   ],
   "unkillable": [
