@@ -7,7 +7,7 @@
  * Run: pnpm smoke:ep-journal   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -93,6 +93,21 @@ const first = admit(sub1), second = admit(sub1);
 c("c4 the same submission decides identically on redelivery",
   JSON.stringify(first) === JSON.stringify(second), { first, second });
 c("c4 a within-ceiling submission is ADMITTED, never quarantined", first.outcome === "admit", first);
+// AND THE TWO ASSERTIONS ABOVE CANNOT SEE A CLOCK, which mutation-proof demonstrated rather than
+// argued: injecting `if (Date.now() % 2 === 0) return quarantine` SURVIVED both of them. Two calls
+// microseconds apart agree with each other whatever the clock says, and the admit assertion is a
+// coin flip that lands right half the time — a cell that reddens on half its runs is worse than no
+// cell, because the half that passes reads as proof.
+//
+// So determinism is asserted where it is actually decidable: the decision path must contain no
+// clock read at all. A source-level assertion is a weaker KIND of claim than a behavioural one,
+// and it is the strongest claim that is true here — the function takes no clock, so there is no
+// clock to inject and nothing behavioural to observe. Injecting one reddens this every time.
+const decisionSource = readFileSync(new URL("../src/endpoint-journal.ts", import.meta.url), "utf8");
+const decidePath = decisionSource.slice(decisionSource.indexOf("export function decideAdmission"));
+c("c4 the decision path reads no clock (the property, asserted where it is decidable)",
+  !/Date\.now|new Date|performance\.now|hrtime/.test(decidePath.slice(0, decidePath.indexOf("\n// ---- fact shapes"))),
+  decidePath.slice(0, 80));
 c("c4 admission carries the fingerprint the caller can correlate on",
   first.outcome === "admit" && first.fingerprint === submissionFingerprint(sub1, subj).fingerprint);
 
