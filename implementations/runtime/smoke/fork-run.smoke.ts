@@ -27,9 +27,12 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable,
   createEndpointStreams,
+  activateRun,
   openRecordsBucket,
   readRunRecord,
+  RunAlreadyStarted,
 } from "@cotal-ai/core";
+import { jetstream } from "@nats-io/jetstream";
 import {
   CATALOG,
   Journal,
@@ -40,7 +43,7 @@ import {
   type JournalEntry,
   type JournalStore,
 } from "@cotal-ai/lang";
-import { planFork, commitFork, ForkNotAdmissible, CutJournal, CutReached } from "../src/index.js";
+import { planFork, commitFork, ForkNotAdmissible, CutJournal, CutReached, RunJournalStore } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "forkrun";
@@ -72,6 +75,8 @@ if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
 const nc = await connect({ servers: `nats://127.0.0.1:${PORT}` });
 await createEndpointStreams(await jetstreamManager(nc), new Kvm(nc), SPACE);
 const kv = await openRecordsBucket(nc, SPACE);
+const js = jetstream(nc);
+const jsm = await jetstreamManager(nc);
 
 /** Record a run in the simulator and hand back its journal entries. */
 const record = async (runId: string, source: string, script: unknown = {}): Promise<JournalEntry[]> => {
@@ -309,6 +314,50 @@ const plan = async (
     .then(() => null, (e: unknown) => e as Error);
   c("forking into a run that already exists is refused: a fork mints a new run",
     twice instanceof ForkNotAdmissible, twice?.name);
+
+  // THE RETRY THE CELL ABOVE DOES NOT COVER, AND THE HAND-BUILT STORE IS WHY. `commitFork`'s guard
+  // reads the RECORD, and the record is written LAST — so after a crash mid-copy there is no record
+  // to find, the guard passes, and a retry with the same child id appends the prefix a SECOND time.
+  // Against the collector above that is exactly what happens, and it is a corrupt journal.
+  //
+  // It is unreachable through the real path, and that is a claim about a DIFFERENT component, so it
+  // is proved here rather than assumed: a caller gets a durable store by activating the child's
+  // journal, and an activation that expects a NEW run refuses one whose journal already has records.
+  // A suite that builds its inputs by hand proves the code it drives and nothing about what reaches
+  // it — so the fence is observed, not reasoned about.
+  const retryHandBuilt = collector();
+  await commitFork(kv, EP, { ...p, child: "r-crash" }, retryHandBuilt.store);
+  c("a hand-built store lets a crashed fork be retried, and the prefix lands TWICE",
+    retryHandBuilt.got.length === 2 && dying.got.length === 1, { retry: retryHandBuilt.got.length, crashed: dying.got.length });
+
+  // The same crash, on the DURABLE plane this time: a real appender, dying after one entry, so the
+  // child ends up with journal records on the wire and no record — the exact state the write-last
+  // ordering produces. Then the retry, through the door a caller actually has.
+  const appender = await activateRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "r-durable", holder: "m1", fencingToken: 1, epoch: 1,
+    takeoverId: "t-first", at: NOW, expect: "new",
+  });
+  const real = new RunJournalStore(appender);
+  let wrote = 0;
+  const dyingReal: JournalStore = {
+    append: async (e: JournalEntry): Promise<void> => {
+      if (wrote >= 1) throw new Error("the store died mid-copy");
+      wrote += 1;
+      await real.append(e);
+    },
+  };
+  const durableCrash = await commitFork(kv, EP, { ...p, child: "r-durable" }, dyingReal)
+    .then(() => null, (e: unknown) => e as Error);
+  c("a durable copy that dies partway leaves entries on the wire and no record",
+    durableCrash !== null && wrote === 1 && (await readRunRecord(kv, EP, "r-durable")) === undefined,
+    { wrote, err: durableCrash?.message });
+
+  const fenced = await activateRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "r-durable", holder: "m2", fencingToken: 2, epoch: 1,
+    takeoverId: "t-retry", at: NOW, expect: "new",
+  }).then(() => null, (e: unknown) => e as Error);
+  c("and the retry is refused at the door a caller actually uses: a journal with records is not NEW",
+    fenced instanceof RunAlreadyStarted, fenced?.name ?? "activated");
 }
 
 console.log(`fork-run.smoke: ${ok} passed, ${fail} failed`);

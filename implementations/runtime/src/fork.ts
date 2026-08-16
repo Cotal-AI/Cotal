@@ -294,6 +294,13 @@ export async function commitFork(
 ): Promise<ForkCommitResult> {
   if (!plan.admissible) throw new ForkNotAdmissible(plan);
 
+  // THIS GUARD DOES NOT COVER A CRASHED FORK, and saying so is the point of the comment. The record
+  // is written LAST precisely so a partial fork is un-drivable, which means that after a crash there
+  // is no record here to find and this check passes. What refuses the retry is one layer out: a
+  // caller gets a durable store by activating the child's journal, and an activation expecting a NEW
+  // run refuses one whose journal already has records. Both halves have cells — including one that
+  // shows a HAND-BUILT store letting the prefix land twice, because a fence in another component is
+  // a claim this file cannot make on its own.
   const existing = await readRunRecord(kv, endpoint, plan.child);
   if (existing !== undefined) {
     throw new ForkNotAdmissible({
