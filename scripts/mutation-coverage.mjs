@@ -17,27 +17,46 @@
  *   node scripts/mutation-coverage.mjs                     # every config in the tree
  *   node scripts/mutation-coverage.mjs <config.json> …     # just these
  */
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { join } from "node:path";
 
-const DIRS = ["implementations/runtime/smoke/mutations", "packages/core/smoke/mutations"];
+/**
+ * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
+ * that moves would otherwise drop out of both numerator and denominator at once, leaving a ratio
+ * that is still plausible and no longer about the same suites.
+ */
 const args = process.argv.slice(2);
 const configs = args.length
   ? args
-  : DIRS.filter((d) => existsSync(d)).flatMap((d) =>
-      readdirSync(d).filter((f) => f.endsWith(".json")).map((f) => join(d, f)));
+  : execSync("git ls-files '*/smoke/mutations/*.json'", { encoding: "utf8" }).split("\n").filter(Boolean);
 
 if (configs.length === 0) {
-  console.error("no mutation configs found");
+  console.error("no mutation configs found under any smoke/mutations/ directory");
   process.exit(1);
 }
 
 let cells = 0, named = 0, mutations = 0, unkillable = 0;
 const rows = [];
 
+/**
+ * The mutation harness ignores keys it does not know, so a misspelt `expectRed` silently disables
+ * the strongest check it makes and every mutation then reports KILLED on any red at all — including
+ * an unrelated crash. A knob whose unrecognised value degrades to a default is exactly the failure
+ * this script exists to measure, so the key set is closed here and a typo is a hard error.
+ */
+const MUTATION_KEYS = ["name", "file", "find", "replace", "expectRed", "allowMultiple", "cell", "cellTemplate"];
+const REQUIRED = ["name", "file", "find", "replace", "expectRed", "cell"];
+
 for (const path of configs) {
   const cfg = JSON.parse(readFileSync(path, "utf8"));
+  for (const m of cfg.mutations) {
+    for (const k of Object.keys(m)) {
+      if (!MUTATION_KEYS.includes(k)) throw new Error(`${path}: mutation "${m.name}" carries the unknown key "${k}" — the harness would ignore it silently`);
+    }
+    for (const k of REQUIRED) {
+      if (typeof m[k] !== "string" || m[k] === "") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
+    }
+  }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   const m = out.match(/(\d+) passed, (\d+) failed/);
   if (!m) throw new Error(`${path}: \`${cfg.command}\` printed no "N passed, M failed" line`);
