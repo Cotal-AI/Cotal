@@ -41,7 +41,7 @@ import {
   EP_AUTHZ_MODES, isEpAuthzMode, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, contractDigest,
   EP_ERROR_CODES, RESERVED_COMMANDS,
   type EpCaller, type RecordKindDef,
-  assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT,
+  assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -456,15 +456,42 @@ throws("and a wildly short one is refused the same way (a minute against a day)"
 // printed the expected failure" — at 105 marks against a 151 baseline, which is the mark count doing
 // exactly the job it exists for. It is the mirror of a bare `throws` passing on the wrong refusal:
 // there the cell is green for the wrong reason, here the cell never runs at all.
-const admitsFloor = (label: string, factMaxAgeMs: number | undefined, horizon: number) => {
-  try { assertFactRetentionFloor(factMaxAgeMs, horizon); c(label, true); }
+type FloorTerms = number | { horizonMs: number; resultRetentionMs?: number; receiptRetentionMs?: number };
+const admitsFloor = (label: string, factMaxAgeMs: number | undefined, terms: FloorTerms) => {
+  try { assertFactRetentionFloor(factMaxAgeMs, terms); c(label, true); }
   catch (e) { c(label, false, (e as Error).message); }
+};
+/** A refusal whose MESSAGE must name a thing. `throws` proves only that something threw, and three
+ *  terms that all throw are indistinguishable to it. */
+const throwsMsg = (label: string, fn: () => unknown, needle: string) => {
+  try { fn(); c(label, false, "expected a throw, got a value"); }
+  catch (e) { const m = String((e as Error).message); c(label, m.includes(needle), m); }
 };
 admitsFloor("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", undefined, HORIZON);
 admitsFloor("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction "
   + "spelling, not a zero-length retention", 0, HORIZON);
-admitsFloor("a fact age EXACTLY at the horizon is admitted: the floor is `below`, not `at or below`", HORIZON, HORIZON);
-admitsFloor("and a longer retention is admitted (SPEC's floor is a minimum, never a target)", HORIZON * 90, HORIZON);
+// THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON (SPEC:3008-3011). This pair used to read
+// "a fact age EXACTLY at the horizon is admitted" and it was WRONG — 24 h of EPF retention evicts
+// the 90-day receipts whose reconstruction source the acceptance fact IS. A reviewer found it by
+// reading the spec sentence the row cited rather than the row. The lesson generalises past this
+// cell: **the guard passed the value a caller was most likely to write first**, which is worse than
+// no guard, because it certifies it.
+throws("a fact age exactly at the IDEMPOTENCY HORIZON is refused — the horizon is not the floor",
+  () => assertFactRetentionFloor(HORIZON, HORIZON));
+admitsFloor("a fact age exactly at the FLOOR (the largest term, receipt retention) is admitted: "
+  + "`below`, not `at or below`", RECEIPT_RETENTION_MS_DEFAULT, HORIZON);
+admitsFloor("and a longer retention is admitted (SPEC's floor is a minimum, never a target)",
+  RECEIPT_RETENTION_MS_DEFAULT * 2, HORIZON);
+// WHICH TERM BINDS is part of the contract, not decoration: the three differ by two orders of
+// magnitude, so "below 7776000000" leaves an operator guessing which promise it broke.
+throwsMsg("the refusal NAMES the binding term (receipt retention, not the horizon it is not)",
+  () => assertFactRetentionFloor(HORIZON, HORIZON), "declared receiptRetentionMs");
+throwsMsg("and when a DECLARED term is the largest, that one is named instead",
+  () => assertFactRetentionFloor(RECEIPT_RETENTION_MS_DEFAULT, { horizonMs: RECEIPT_RETENTION_MS_DEFAULT * 3 }),
+  "declared idempotencyHorizonMs");
+admitsFloor("a declared receipt retention BELOW the default lowers the floor with it — the terms are "
+  + "declared, never compiled in", 2 * HORIZON,
+  { horizonMs: HORIZON, resultRetentionMs: HORIZON, receiptRetentionMs: 2 * HORIZON });
 // The horizon is DECLARED, never compiled in — the same lesson as the admission ceiling. A space
 // retaining decisions for a week must have its fact age measured against ITS horizon, and this cell
 // is the one that fails if the floor is ever hardcoded to the module default.
@@ -503,8 +530,8 @@ try {
     let threw: Error | undefined;
     try { await createEndpointStreams(jsm, kvm, breaching.space, { factMaxAgeMs: breaching.factMaxAgeMs }); }
     catch (e) { threw = e as Error; }
-    c("createEndpointStreams REFUSES a fact age below the horizon — the floor is reached from the real entry point",
-      threw !== undefined && /below the declared idempotency horizon/.test(threw.message), threw?.message);
+    c("createEndpointStreams REFUSES a fact age below the floor — the floor is reached from the real entry point",
+      threw !== undefined && /below the declared receiptRetentionMs/.test(threw.message), threw?.message);
     // …and refused EARLY: no stream of that space exists, so the breach never half-built anything.
     let leaked = false;
     try { await jsm.streams.info(epfStreamName(breaching.space)); leaked = true; } catch { /* absent, as required */ }

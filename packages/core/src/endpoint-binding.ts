@@ -33,7 +33,7 @@ import {
 } from "./endpoint-subjects.js";
 import type { RecordKindDef } from "./endpoint-records.js";
 import { AUTHORITY_KIND_DEFS, callerReadableRecordKind } from "./endpoint-records.js";
-import { epjStreamName, epfStreamName, canonDurable, IDEMPOTENCY_HORIZON_MS_DEFAULT } from "./endpoint-journal.js";
+import { epjStreamName, epfStreamName, canonDurable, IDEMPOTENCY_HORIZON_MS_DEFAULT, RESULT_RETENTION_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
 
 // Re-exported so the binding module presents the complete §13.12 name table even though the
@@ -123,6 +123,15 @@ export interface EndpointStreamOptions {
    *  the admission ceiling is: a space that retains decisions longer must have its fact retention
    *  measured against ITS horizon, not against this module's default. */
   idempotencyHorizonMs?: number;
+  /** The space's DECLARED result retention (§13.6 item 5; default
+   *  {@link RESULT_RETENTION_MS_DEFAULT}). A goal's full terminal payload lives on EPF, so this is
+   *  a second term in the §13.12 floor, not a separate store's policy. */
+  resultRetentionMs?: number;
+  /** The space's DECLARED receipt retention (§13.10; default {@link RECEIPT_RETENTION_MS_DEFAULT},
+   *  90 d). **The LARGEST of the three terms by two orders of magnitude**, which is exactly why the
+   *  floor cannot be the horizon alone: a config at the 24 h horizon passed the old check and
+   *  evicted receipts on day one of ninety. */
+  receiptRetentionMs?: number;
   /** Age bound on EPE (default {@link EP_EVENT_MAX_AGE_MS}). */
   eventMaxAgeMs?: number;
   /** Age bound on EPT_REQ + EPR (default {@link EP_INGRESS_MAX_AGE_MS}). Floor: writer recovery lag. */
@@ -149,17 +158,37 @@ export interface EndpointStreamOptions {
  * noticing. Refusing the configuration is not contrary to that position but the only implementation
  * of it: a throw at creation loses no facts; it declines a setup that would.
  */
-export function assertFactRetentionFloor(factMaxAgeMs: number | undefined, horizonMs: number): void {
-  if (!Number.isSafeInteger(horizonMs) || horizonMs <= 0)
-    throw new Error(`idempotencyHorizonMs ${JSON.stringify(horizonMs)} is not a positive safe integer (§13.4 item 6)`);
+export function assertFactRetentionFloor(
+  factMaxAgeMs: number | undefined,
+  terms: { horizonMs: number; resultRetentionMs?: number; receiptRetentionMs?: number } | number,
+): void {
+  // THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON ALONE (SPEC:3008-3011: "`EPF_<space>`
+  // retention >= max(idempotency horizon, result retention, receipt retention), because the
+  // acceptance fact is the durable reconstruction source for receipts"). Checking only the horizon
+  // admitted the exact config a caller would write first — `factMaxAgeMs` at the 24 h default —
+  // and evicted receipts on day one of their ninety. A guard that passes the most likely wrong
+  // value is worse than no guard: it certifies it.
+  const t = typeof terms === "number" ? { horizonMs: terms } : terms;
+  const named: [string, number][] = [
+    ["idempotencyHorizonMs", t.horizonMs],
+    ["resultRetentionMs", t.resultRetentionMs ?? RESULT_RETENTION_MS_DEFAULT],
+    ["receiptRetentionMs", t.receiptRetentionMs ?? RECEIPT_RETENTION_MS_DEFAULT],
+  ];
+  for (const [name, v] of named)
+    if (!Number.isSafeInteger(v) || v <= 0)
+      throw new Error(`${name} ${JSON.stringify(v)} is not a positive safe integer (§13.12 retention floor)`);
   if (factMaxAgeMs === undefined || factMaxAgeMs === 0) return; // no age eviction: the floor cannot be breached
   if (!Number.isSafeInteger(factMaxAgeMs) || factMaxAgeMs < 0)
     throw new Error(`factMaxAgeMs ${JSON.stringify(factMaxAgeMs)} is not a non-negative safe integer`);
-  if (factMaxAgeMs < horizonMs)
+  // Report the term that BINDS, not the max: "below 7776000000" tells an operator nothing about
+  // which promise it broke, and the three terms differ by orders of magnitude.
+  const [binding, floor] = named.reduce((a, b) => (b[1] > a[1] ? b : a));
+  if (factMaxAgeMs < floor)
     throw new Error(
-      `factMaxAgeMs ${factMaxAgeMs} is below the declared idempotency horizon ${horizonMs}: decision facts `
-      + `would be evicted while the horizon still promises them, and a redelivered submission whose fact `
-      + `has gone is accepted as NEW WORK rather than resolved to its recorded decision (SPEC:2985, :3000-3001)`,
+      `factMaxAgeMs ${factMaxAgeMs} is below the declared ${binding} ${floor}: EPF facts would be evicted `
+      + `while that promise still stands — a redelivered submission whose decision fact has gone is accepted `
+      + `as NEW WORK rather than resolved to its recorded decision, and a receipt whose acceptance fact has `
+      + `gone can no longer be reconstructed (SPEC:2985, :3000-3001, :3008-3011)`,
     );
 }
 
@@ -182,7 +211,11 @@ export async function createEndpointStreams(
 ): Promise<void> {
   const p = spacePrefix(space);
   // Refused BEFORE the first stream exists, so a breaching config never leaves a half-built space.
-  assertFactRetentionFloor(opts.factMaxAgeMs, opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT);
+  assertFactRetentionFloor(opts.factMaxAgeMs, {
+    horizonMs: opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT,
+    ...(opts.resultRetentionMs !== undefined ? { resultRetentionMs: opts.resultRetentionMs } : {}),
+    ...(opts.receiptRetentionMs !== undefined ? { receiptRetentionMs: opts.receiptRetentionMs } : {}),
+  });
   // EPJ — raw submissions, untrusted, at-least-once. NO allow_direct (nothing reads it but the
   // canonicalizer's durable and harness MSG.GET); duplicate window pinned to the server minimum.
   await jsm.streams.add({

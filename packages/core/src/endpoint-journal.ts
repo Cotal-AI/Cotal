@@ -62,6 +62,11 @@ export function epfEffectSubject(space: string, endpoint: string, caller: EpCall
  *  decision-fact retention, never by a clock: the create-only CAS returns the recorded decision
  *  for exactly as long as the fact exists. */
 export const IDEMPOTENCY_HORIZON_MS_DEFAULT = 24 * 60 * 60 * 1000;
+/** §13.6 item 5: a goal's full terminal payload is retained at least this long (default 24 h). */
+export const RESULT_RETENTION_MS_DEFAULT = 24 * 60 * 60 * 1000;
+/** §13.10: receipt retention, default **90 d** — the largest term in the §13.12 EPF floor by two
+ *  orders of magnitude, and the one a floor written against the horizon alone silently drops. */
+export const RECEIPT_RETENTION_MS_DEFAULT = 90 * 24 * 60 * 60 * 1000;
 
 // ---- the semantic fingerprint (§13.4 item 2) -------------------------------------------------
 
