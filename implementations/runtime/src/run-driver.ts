@@ -147,9 +147,31 @@ export interface DriveRequest {
    *
    * A failure here is a failure to take the run over, and is not swallowed: a driver that resumed a
    * program whose pauses it could not re-arm would look like it was holding a run it cannot advance.
+   *
+   * OPTIONAL BECAUSE IT IS AN OVERRIDE, NOT BECAUSE THE REPAIR IS. A handler that knows how to
+   * repair its own external state says so with an `adopted` method, and the driver calls that when
+   * no callback is supplied — found by review, which noticed that this hook had NO caller anywhere
+   * in the tree, so every adopted run left its timers armed at the predecessor's coordinates. A
+   * seam that every future host must remember to wire is a defect waiting on its first host.
    */
   readonly onActivated?: (entries: readonly JournalEntry[]) => Promise<void>;
 }
+
+/**
+ * A handler that owns external state bound to whoever was holding the run, and can repair it.
+ *
+ * Declared here rather than on `EffectHandler` because it is the DRIVER's concern: the language's
+ * handler interface describes performing effects, and nothing in `packages/lang` has a notion of one
+ * host taking a run over from another.
+ */
+export interface AdoptingHandler {
+  adopted(entries: readonly JournalEntry[]): Promise<unknown>;
+}
+
+const adoptionOf = (handler: unknown): AdoptingHandler | undefined =>
+  typeof (handler as AdoptingHandler | undefined)?.adopted === "function"
+    ? (handler as AdoptingHandler)
+    : undefined;
 
 /**
  * What a drive attempt did, as a two-exit answer rather than a value plus exceptions.
@@ -248,7 +270,11 @@ async function drive(
   }
 
   const resumed = appender.steps() as readonly JournalEntry[];
-  if (req.onActivated !== undefined) await req.onActivated(resumed);
+  // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
+  // The default is the point: the hook was optional AND unwired, which is indistinguishable at
+  // runtime from a driver that has nothing to repair.
+  const adopt = req.onActivated ?? adoptionOf(req.handler)?.adopted.bind(req.handler);
+  if (adopt !== undefined) await adopt(resumed);
 
   const store = new RunJournalStore(appender);
   const journal = new Journal({

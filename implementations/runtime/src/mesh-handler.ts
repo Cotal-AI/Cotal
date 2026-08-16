@@ -137,6 +137,26 @@ export class MeshHandler {
   }
 
   /**
+   * WHAT to repair when this process takes a run over. The driver decides WHEN and calls this.
+   *
+   * The seam existed as an optional `onActivated` callback and NOTHING in the tree passed one — not
+   * the production path, not the driver's own suite — so every adopted run's timers stayed armed at
+   * the predecessor's coordinates, firing where nobody listens. An optional hook that must be wired
+   * correctly by every future host is a defect waiting on its first host; the handler that knows how
+   * to re-arm is the thing that should say so, and it is already the object the driver holds.
+   *
+   * Not swallowed here: a driver that resumed a program whose pauses it could not re-arm would look
+   * like it was holding a run it cannot advance, which is the failure this exists to prevent.
+   */
+  async adopted(entries: readonly JournalEntry[]): Promise<string[]> {
+    return await rearmOutstandingPauses(
+      { kv: this.kv, js: this.js, jsm: this.jsm },
+      this.binding,
+      entries,
+    );
+  }
+
+  /**
    * `sleep` is a checkpoint nobody answers.
    *
    * There is no separate timer plane and there should not be one: a durable pause with a deadline,

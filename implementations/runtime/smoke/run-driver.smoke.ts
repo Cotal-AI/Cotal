@@ -21,7 +21,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, RunJournalTailTruncated } from "@cotal-ai/core";
-import { SimHandler } from "@cotal-ai/lang";
+import { SimHandler, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -467,6 +467,77 @@ try {
     purged.status === "released", why(purged));
   c("with the recorded pins untouched by either attempt",
     (await readRunRecord(kv, EP, "d-9"))!.spec.value.pins.seed === "seed-of-d-9");
+}
+
+// ── 10) A HANDLER THAT OWNS EXTERNAL STATE REPAIRS IT ON TAKEOVER WITHOUT BEING WIRED TO ──────
+//
+// Found by review. The repair seam was an OPTIONAL `onActivated` callback, and nothing in the tree
+// passed one — not a production path, not this suite. An optional hook with no caller is
+// indistinguishable at runtime from a driver that has nothing to repair, and the thing it exists to
+// repair is a checkpoint's armed schedule: it fires onto a subject derived from the instance and
+// epoch that armed it, so an adopted run's timers fire where nobody is listening, and replaying the
+// program does not fix it — the pause replays as pending and goes straight back to waiting.
+//
+// So the default is not "do nothing": a handler that knows how to repair its own state declares
+// `adopted`, and the driver calls it. The callback remains, as an OVERRIDE.
+{
+  class AdoptingCounter extends CountingHandler {
+    seen: (readonly JournalEntry[])[] = [];
+    async adopted(entries: readonly JournalEntry[]): Promise<string[]> {
+      this.seen.push(entries);
+      return [];
+    }
+  }
+
+  const first = new AdoptingCounter();
+  const startedFresh = await startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m1", 1, takeovers += 1), handler: first,
+  });
+  // THE CONTROL, and it is the half that makes the next cell mean anything: a FRESH run is an
+  // activation too. If `adopted` fired on every activation regardless, a successor calling it would
+  // prove nothing about takeover — and re-arming timers for a run with no recorded prefix is work
+  // over an empty list, which is not wrong, only uninformative.
+  c("the fresh run completes", startedFresh.status === "completed",
+    startedFresh.status === "released" ? startedFresh.reason.name : startedFresh.status);
+  c("a fresh run's activation calls it with the empty prefix it actually resumed",
+    first.seen.length === 1 && first.seen[0]!.length === 0, first.seen.map((e) => e.length).join(","));
+
+  const second = new AdoptingCounter();
+  const taken = await driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m2", 2, takeovers += 1), handler: second,
+  });
+  c("a takeover completes", taken.status === "completed", taken.status === "released" ? taken.reason.name : taken.status);
+  c("REPAIRED: a successor repairs the previous holder's state WITHOUT any callback being wired",
+    second.seen.length === 1, second.seen.length);
+  // WITH THE PREFIX, not merely called. A repair handed nothing cannot re-arm anything, so "it was
+  // called" is not the property — "it was told what the run already did" is.
+  //
+  // FOUR records for TWO steps, and the number is the point rather than an accident of this fixture:
+  // the prefix is the raw append log the activation replayed, where a settled step is a pending
+  // record followed by a settled one. That is the shape the re-armer folds for itself — it reads the
+  // LAST record per key, so a pause that is over contributes nothing — and handing it the folded
+  // view instead would take that decision away from the thing that knows how to make it.
+  c("...and is handed the prefix the activation validated, which is what names the pauses to re-arm",
+    second.seen[0]?.length === 4, second.seen[0]?.length);
+
+  // THE OVERRIDE still wins, or the callback has quietly become dead surface.
+  const third = new AdoptingCounter();
+  let viaCallback = -1;
+  await driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m3", 3, takeovers += 1), handler: third,
+    onActivated: async (entries) => { viaCallback = entries.length; },
+  });
+  c("an explicit onActivated still wins: the default is a fallback, not a replacement",
+    viaCallback === 4 && third.seen.length === 0, { viaCallback, adopted: third.seen.length });
+
+  // NARROWNESS: a handler with no such method is not an error. Every other cell in this file uses
+  // one, so without this the driver could require `adopted` and nothing here would notice.
+  const plain = new CountingHandler();
+  const noHook = await driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m4", 4, takeovers += 1), handler: plain,
+  });
+  c("and a handler that owns no external state needs no method: the takeover still completes",
+    noHook.status === "completed", noHook.status === "released" ? noHook.reason.name : noHook.status);
 }
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
