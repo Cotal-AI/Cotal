@@ -92,7 +92,9 @@ resolve and the invoke are separate trips through the same anycast queue, so in 
 multi-manager space an unpinned call can be received and answered by one instance while
 the caller is told it did not bind. The commands that have `--on` (`ps`, `stop`, `attach`,
 `spawn --detach`) avoid that split by pinning; a command without the flag (`models`, `up`,
-`down`) has no pin to reach for and is told only that it did not bind. `ps` and
+`down`) has no pin to reach for, and its message says what the split means: the instance may
+have received and answered the request, a read is safe to re-issue, and a mutation is verified
+(`ps`/`inspect`/roster) before any retry. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled unreachable,
