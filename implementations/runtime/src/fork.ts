@@ -220,7 +220,14 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
     }
   }
 
-  if (!reached && recorded) {
+  // L5018 says one specific thing: the program's own path does not arrive at this step. When the
+  // walk stopped for a reason of its OWN — it diverged (L5001), or it could not enter a scope
+  // (L5014) — the path may well arrive there and that sentence is FALSE. Emitting it beside the true
+  // refusal is worse than emitting nothing: both codes are actionable and they prescribe opposite
+  // repairs, so the caller re-keys a step that was correct all along instead of forking before the
+  // conclave. A refusal set is only a repair instruction if every code in it is true.
+  const stoppedForAnotherReason = refusals.some((r) => r.code === "L5001" || r.code === "L5014");
+  if (!reached && recorded && !stoppedForAnotherReason) {
     refusals.push({
       code: "L5018",
       step: req.fromStepKey,

@@ -84,13 +84,39 @@
       "replace": "  if (existing !== undefined && false) {",
       "expectRed": "forking into a run that already exists is refused: a fork mints a new run",
       "cell": "forking into a run that already exists is refused: a fork mints a new run"
+    },
+    {
+      "name": "an unwalkable scope on the way to the cut raises no L5014",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (err instanceof UnwalkableScope) {\n      refusals.push({\n        code: \"L5014\",\n        step: err.scopeKey,\n        why: `the walk could not enter a scope on the way to the cut: ${err.message}`,\n      });",
+      "replace": "    } else if (err instanceof UnwalkableScope) {\n      /* mutated: the refusal is dropped */",
+      "expectRed": "a fork past a settled conclave is refused with L5014, not waved through",
+      "cell": "a fork past a settled conclave is refused with L5014, not waved through",
+      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there \u2014 nothing watched L5014 \u2014 and is predicted KILLED here now that a cell does."
+    },
+    {
+      "name": "L5018 rides along beside a refusal that already explains the stop",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!reached && recorded && !stoppedForAnotherReason) {",
+      "replace": "  if (!reached && recorded) {",
+      "expectRed": "and NOT with L5018, which would send the caller to repair a step key that is correct",
+      "cell": "and NOT with L5018, which would send the caller to repair a step key that is correct"
+    },
+    {
+      "name": "the L5018 gate is too broad and suppresses a genuinely unreached step",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!reached && recorded && !stoppedForAnotherReason) {",
+      "replace": "  if (false && !reached && recorded && !stoppedForAnotherReason) {",
+      "expectRed": "with L5018, because a cut never reached is the whole journal",
+      "cell": "with L5018, because a cut never reached is the whole journal",
+      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything \u2014 a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
     }
   ],
   "unkillable": [
     {
       "name": "an activation expecting a NEW run accepts one whose journal has records",
       "file": "packages/core/src/run-journal.ts",
-      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild — the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
+      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild \u2014 the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
     }
   ]
 }

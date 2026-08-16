@@ -219,6 +219,14 @@ const plan = async (
 {
   const entries = await record("r-parent", FLAT);
   const code = (p: Awaited<ReturnType<typeof plan>>, k: string) => p.refusals.some((x) => x.code === k);
+  /**
+   * Presence is half a claim. A cell named "with L5001, NOT with a cut refusal" that only calls
+   * `code()` checks the first clause and asserts nothing about the second — and the second was the
+   * one that was false: L5018 was riding along with every other refusal, telling the caller the
+   * program does not go there when it does. A cell that claims exclusivity has to be able to fail
+   * on the exclusivity.
+   */
+  const noCode = (p: Awaited<ReturnType<typeof plan>>, k: string) => !p.refusals.some((x) => x.code === k);
 
   const unknown = await plan({ entries, source: FLAT, fromStepKey: "/sleep:nope#0" });
   c("a step the journal never recorded is refused", unknown.admissible === false, unknown.refusals);
@@ -254,6 +262,34 @@ const plan = async (
   c("and the refusal says there is no plane to cut one from",
     wt.refusals.some((r) => r.why.includes("worktree plane")), wt.refusals);
 
+  // A scope the walk cannot ENTER, which is L5014 rather than L5018. Added because a mutation that
+  // deleted the whole L5014 branch SURVIVED: `L5014` and `UnwalkableScope` appeared zero times in
+  // this file. The throw itself is asserted on the lang side (migrate.smoke §4); what nothing
+  // watched was `planFork` TRANSLATING it into a refusal, which is this file's half of the seam.
+  //
+  // The pairing with L5018 is the point. Both come back "not admissible, cut empty", and the codes
+  // are the only thing that tells the caller whether the program never goes there (repair the key)
+  // or the walk could not follow it there (fork before the conclave). Swallowing the first would
+  // report the second, and the caller would repair a step key that was correct all along.
+  {
+    const CONCLAVE =
+      `const team = await conclave([], async (room) => {\n` +
+      `  await sleep("1s", { name: "inside" });\n  return "done";\n}, { name: "huddle" });\n` +
+      `await sleep("2m", { name: "after" });`;
+    const cEntries = await record("r-conclave", CONCLAVE);
+    const past = await plan({
+      parent: "r-conclave", entries: cEntries, source: CONCLAVE, fromStepKey: "/sleep:after#0",
+    });
+    c("a fork past a settled conclave is refused with L5014, not waved through",
+      code(past, "L5014"), past.refusals);
+    c("and NOT with L5018, which would send the caller to repair a step key that is correct",
+      noCode(past, "L5018"), past.refusals);
+    c("the refusal names the scope it could not enter, so the caller knows where to fork instead",
+      past.refusals.some((r) => r.code === "L5014" && r.step !== undefined), past.refusals);
+    c("and a refused fork carries no cut", past.admissible === false && past.cut.length === 0,
+      { admissible: past.admissible, cut: keys(past.cut) });
+  }
+
   // A spawn in the CUT, which §8.5 says the fork must respawn or adopt at the frontier.
   const spawned = await record(
     "r-spawn",
@@ -282,6 +318,8 @@ const plan = async (
   });
   c("a source that diverged before the cut is refused", diverged.admissible === false, diverged.refusals);
   c("with L5001, the divergence, not with a cut refusal", code(diverged, "L5001"), diverged.refusals);
+  c("and the 'not' in that sentence is checked: no L5018 rides along saying the path does not go there",
+    noCode(diverged, "L5018"), diverged.refusals);
   c("and every code this file hands out is in the language's catalog",
     [unknown, unreached, pinned, wt, withSpawn, diverged]
       .flatMap((p) => p.refusals.map((r) => r.code))

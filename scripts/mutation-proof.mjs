@@ -264,6 +264,30 @@ if (base.status !== 0) {
   process.exit(4);
 }
 say(`${C.green}baseline green${C.off} (${baseTicks} progress marks)`);
+
+// The reached-the-region protection is OPT-IN BY STRING MATCH, and a suite that prints its own
+// glyph — `ok`, `PASS`, anything but `✓` — scores zero marks and has that protection SILENTLY
+// DISABLED while every verdict still prints correctly. It fails open and says nothing, which is the
+// misspelt-key defect one layer out: in the output parser rather than in the config schema, where
+// the closed key set cannot see it.
+//
+// A suite with no marks is still gradable IF every mutation names a `completionMarker`, which is
+// the same protection stated per mutation instead of counted. What is not gradable is a run with
+// neither: then "the mutation applied and nothing caught it" and "the run died before reaching the
+// cell" produce an identical SURVIVED, and a survivor batch is exactly where that matters.
+if (baseTicks === 0) {
+  const unprotected = mutations.filter((m) => (m.completionMarker ?? opts.completionMarker) === undefined);
+  if (unprotected.length > 0) {
+    say(`${C.red}REFUSING: the baseline scored 0 progress marks and ${unprotected.length} mutation(s) name no completionMarker.${C.off}`);
+    say(`This suite prints no ${JSON.stringify(opts.progressPattern ?? "✓")}, so the reached-the-assertion guard counted nothing —`);
+    say("a SURVIVED here would be indistinguishable from a run that died before the cell.");
+    for (const m of unprotected) say(`  ${C.dim}- ${m.name ?? m.label ?? m.find.slice(0, 48)}${C.off}`);
+    say("Give each a completionMarker printed UPSTREAM of the mutated region, or --progress-pattern the glyph this suite actually prints.");
+    process.exit(5);
+  }
+  say(`${C.dim}  0 marks, but every mutation names a completionMarker — graded on those instead.${C.off}`);
+}
+
 if (opts.minTicks === undefined && baseTicks > 0) {
   // Default the floor just under the baseline: a mutated run that dies much earlier failed for
   // some other reason, and a run that never reaches the check is not evidence about it.
