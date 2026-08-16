@@ -33,6 +33,7 @@ import {
   runNoticeId,
 } from "@cotal-ai/core";
 import {
+  CATALOG,
   Journal,
   journalEntryKeyString,
   resolvePins,
@@ -270,6 +271,28 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("committing it refuses BY NAME rather than writing the fact somewhere it would be lost",
     e instanceof NotYetDurable, e?.name);
   c("and names what it is waiting for", e?.message.includes("pinned program hash") === true, e?.message?.slice(0, 200));
+}
+
+// ── 8) every code the table hands out is a code the language actually has ──────────────────────
+{
+  // Cheap, and it catches the easy half of the mistake this table already made once. It does NOT
+  // catch the hard half: three of these rows first shipped as L5005/L5006/L5007, which ARE in the
+  // catalog and mean a pending effect, an oversized result and a lost lease. A membership check
+  // reads green on a code that means something else entirely — so the rule is procedural and lives
+  // in the plan: allocate from the catalog file, never from memory.
+  const RUN = "r-codes";
+  const LIVE = `const dev = await spawn("dev", { name: "dev" });\n`
+    + `const a = await checkpoint("approve", "ship?", { timeout: "10m", onExpiry: "proceed" });\n`
+    + `await notify([dev], { decision: "shipped", outcome: "ok" }, { name: "told" });\n`
+    + `await sleep("1s", { name: "after" });`;
+  const entries = await record(RUN, LIVE, {
+    checkpoints: { approve: { status: "resolved", value: "yes", by: "david", at: NOW } },
+  });
+  const r = await check(RUN, entries, `await sleep("1s", { name: "after" });`);
+  const codes = r.orphans.filter((o) => o.code !== undefined).map((o) => o.code as string);
+  c("the edit orphaned enough to exercise more than one refusal", new Set(codes).size >= 3, codes);
+  c("and every code it handed out is in the language's catalog",
+    codes.every((k) => k in CATALOG), codes.filter((k) => !(k in CATALOG)));
 }
 
 console.log(`migrate-run.smoke: ${ok} passed, ${fail} failed`);
