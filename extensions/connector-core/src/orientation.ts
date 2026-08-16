@@ -74,6 +74,14 @@ export interface Orientation {
      * Peers with no role are counted in `present` and absent here: a peer that declares no role is
      * not addressable by one, and inventing a bucket for them would list something nobody can ask
      * for. Sorted by role name so the same space renders the same card twice running.
+     *
+     * OFFLINE HOLDERS ARE EXCLUDED, which is why this does not simply count the roster the way
+     * `present` does. An offline peer lingers in the roster by design, so counting it here would
+     * advertise a service that cannot answer — and the reader of this field acts on it by sending
+     * a message, so the cost of the stale entry is not a wrong number but an agent addressing a
+     * peer that is gone and waiting on a reply that is never coming. That is the same silent
+     * black hole the addressing rule below exists to steer around, arrived at from the other
+     * side. `present` keeps counting the roster: it answers "who is here", not "whom can I ask".
      */
     roles: { role: string; count: number }[];
   };
@@ -121,9 +129,11 @@ export function buildOrientation(
 
   // Counted over ALL peers, not the eight the summary shows: the point of this field is to answer
   // "is there one of these here" for a space too big to list, which is exactly the space where the
-  // summary has already truncated.
+  // summary has already truncated. Over all peers that can ANSWER, though — see `roles` above for
+  // why an offline holder is worse here than a missing one.
   const byRole = new Map<string, number>();
   for (const p of peers) {
+    if (p.status === "offline") continue;
     const role = p.card.role;
     if (role) byRole.set(role, (byRole.get(role) ?? 0) + 1);
   }

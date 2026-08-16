@@ -157,6 +157,44 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.ok(!renderOrientation(alone).includes("found by its ROLE"));
 }
 
+// 4c — an OFFLINE holder is not an addressable one.
+//
+// Found by a control rather than by review: an offline peer lingers in the roster by design, so
+// the first version of 4b counted it and the card advertised a service that could not answer.
+// The reader of this field acts on it by sending a message, so a stale holder does not read as a
+// wrong count — it reads as a peer that never replies, which is indistinguishable from one that
+// is broken. These pin the exclusion at both sizes: one holder of several, and the last one.
+{
+  const withDead = [
+    presence("B0000000000000000000000000000000000000000000", "board", "board", "offline"),
+    presence("B1000000000000000000000000000000000000000000", "board-2", "board", "idle"),
+    presence("C0000000000000000000000000000000000000000000", "carol", "worker", "offline"),
+  ];
+  const o = buildOrientation(agentStub({ roster: withDead }), cfg({ creds: "CREDS" }), [], 0);
+  assert.deepEqual(
+    o.peers.roles,
+    [{ role: "board", count: 1 }],
+    "an offline holder is not counted, and a role whose only holder is offline is not listed at all",
+  );
+  assert.equal(o.peers.present, 3, "`present` still counts the roster: it answers who is here, not whom I can ask");
+  // Scoped to the roles line on purpose. The summary above it still names carol/worker (offline),
+  // and should: that line reports who is on the roster, which is a different question from whom
+  // this agent can address. Asserting over the whole card would have conflated the two.
+  const rolesLine = renderOrientation(o).split("\n").find((l) => l.includes("roles present")) ?? "";
+  assert.match(rolesLine, /board \(1\)/);
+  assert.ok(!rolesLine.includes("worker"), "a role with no live holder does not reach the addressing line");
+
+  // The last live holder going offline must take the whole line with it, rule included — otherwise
+  // the card tells an agent how to address a role that nothing holds.
+  const allDead = buildOrientation(
+    agentStub({ roster: [presence("B0000000000000000000000000000000000000000000", "board", "board", "offline")] }),
+    cfg({ creds: "CREDS" }), [], 0,
+  );
+  assert.deepEqual(allDead.peers.roles, []);
+  assert.ok(!renderOrientation(allDead).includes("roles present"));
+  assert.ok(!renderOrientation(allDead).includes("found by its ROLE"));
+}
+
 // 5 — the shared connector bootstrap is exported and points agents at the tool.
 {
   assert.ok(ORIENTATION_BOOTSTRAP.length > 0, "bootstrap is non-empty");
