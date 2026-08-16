@@ -101,10 +101,23 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
   // no signal to rank it on: the corpus writes plain `$SYS` everywhere but one place, and a
   // namespace-prefix term was tried and rejected because every `mesh.` in the docs is the word
   // "mesh" ending a sentence, so it scores punctuation.
+  //
+  // UNWINDOWED, and the window it replaces was the same corpus fact in a smaller disguise. Asking
+  // for the spec inside the first ten hits reads as reachability and is not: the spec sits at rank
+  // six today, so the cell was carrying four slots of slack against one afternoon's corpus, and a
+  // docs wave that added four higher-scoring $SYS sections would have reddened it exactly the way
+  // the top-five version did. Worse, it let the limit argument be ignored: hardcoding the cut at
+  // six left every cell green. So the claim is now the one the code is actually responsible for —
+  // the base expansion makes the section REACHABLE — with no rank in it at all.
   assert.ok(
-    searchDocs("$SYS.>", 10).some((h) => h.slug === "spec"),
+    searchDocs("$SYS.>", Number.MAX_SAFE_INTEGER).some((h) => h.slug === "spec"),
     "‘$SYS.>’ reaches the spec section documenting the reserved $SYS prefix",
   );
+  // And the limit argument is HONOURED, which is what the window used to prove by accident and
+  // stopped proving the moment it had slack. Asserted against the count rather than against any
+  // page, so it holds whatever the corpus says: a hardcoded cut of any value fails one of these.
+  assert.equal(searchDocs("cotal", 1).length, 1, "a limit of one returns one section");
+  assert.equal(searchDocs("cotal", 4).length, 4, "a limit of four returns four, so the argument is read");
   assert.ok(searchDocs("cotal.schema.json").length > 0, "a dotted path matches on its segments");
 
   // `refresh` is page-only: on a search it is flagged, not silently ignored.

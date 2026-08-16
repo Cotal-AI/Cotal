@@ -44,6 +44,15 @@
     "result set are caught by the two cells below or by pre-existing cells, and manufacturing a",
     "third to make it gradable would be a mutation written for the report.",
     "",
+    "A REVIEWER'S SURVIVOR, FOUND AND CLOSED IN THE SAME ROUND, and it is the sharpest thing here.",
+    "The repair replaced \"the spec is in the default five\" with \"the spec is in the first ten\" and",
+    "called that reachability. It is not: the spec ranks SIXTH, so the new cell carried four slots of",
+    "slack against the same afternoon's corpus, a docs wave adding four higher-scoring $SYS sections",
+    "would have reddened it the same way, and any hardcoded cut of six or more left every cell green.",
+    "A corpus fact pinned as a code property does not stop being one because the window got wider.",
+    "The reachability cell is now UNWINDOWED and asserts no rank whatsoever, and the limit argument is",
+    "graded separately against a COUNT, which nothing in the corpus can move.",
+    "",
     "MEASURED SURVIVOR IN A CELL THAT IS NOT MINE, reported rather than fixed: disabling the dotted",
     "segment expansion entirely (`if (t.includes(\".\")) for (const seg of ...)` -> `if (false)`)",
     "leaves the suite GREEN. The cell named \"a dotted path matches on its segments\" only asserts",
@@ -83,6 +92,24 @@
       "expectRed": "‘$SYS.>’ reaches the spec section documenting the reserved $SYS prefix",
       "cell": "‘$SYS.>’ reaches the spec section documenting the reserved $SYS prefix",
       "note": "Aimed at the reachability cell alone and no broader: every other cell in the suite searches at the default, so only the one call that widens the window can see this. It is also the mutation that would silently restore the red -- the repair is that the spec is REACHABLE, and a hardcoded window is exactly what makes reachable and ranked the same claim again."
+    },
+    {
+      "name": "the limit is hardcoded at SIX, the value the old ten-hit window had slack for",
+      "file": "extensions/connector-core/src/docs.ts",
+      "find": "    if (hits.length >= limit) break;",
+      "replace": "    if (hits.length >= 6) break;",
+      "expectRed": "a limit of one returns one section",
+      "cell": "a limit of one returns one section",
+      "note": "A REVIEWER FOUND THIS AS A SURVIVOR AND IT IS THE POINT OF THE ROUND. The previous cell asked for the spec inside the first TEN hits; the spec sits at rank six, so the assertion was carrying four slots of slack against one afternoon's corpus and any hardcoded cut of six or more left every cell green. Mutation 2 above only killed because five happened to be below the spec's current rank -- it was grading the corpus, which is the exact defect this whole config exists to remove, one layer down. The reachability cell is now UNWINDOWED and claims no rank at all, and the limit argument is asserted against a COUNT instead, which no corpus fact can drift."
+    },
+    {
+      "name": "the limit is not applied at all, so every query returns the whole ranked corpus",
+      "file": "extensions/connector-core/src/docs.ts",
+      "find": "    if (hits.length >= limit) break;",
+      "replace": "    if (false) break;",
+      "expectRed": "a limit of one returns one section",
+      "cell": "a limit of one returns one section",
+      "note": "The other direction, and it is the one that reads as harmless: nothing is lost, everything is found, and a docs tool that answers a search with sixty-five sections has blown the context it was called to protect. The reachability cell CANNOT see this -- an unwindowed query is exactly what it asks for -- which is why the count cells are its pair rather than a duplicate of it."
     }
   ]
 }
