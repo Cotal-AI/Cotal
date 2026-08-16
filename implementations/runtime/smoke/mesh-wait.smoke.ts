@@ -334,9 +334,12 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 // additionally needs `monitor` to have registered interest. Both ride the same seam as the durable
 // actions themselves — one place to look when Lane A lands, not two.
 {
+  // BOUNDED. A refusal that stops refusing must be observable as "did not refuse", not as a suite
+  // that stops: an implementation which accepts one of these would otherwise wait for an event that
+  // is never coming, and a hang reddens no line.
   const refuse = async (event: unknown) => {
-    try { await handler.wait({ event } as never, ctx(tok("seam")).ctx); return undefined; }
-    catch (e) { return e; }
+    const p = handler.wait({ event, timeout: "3s" } as never, ctx(tok("seam")).ctx).then(() => undefined, (e: unknown) => e);
+    return await Promise.race([p, wait(6_000).then(() => new Error("DID NOT REFUSE"))]);
   };
   const replied = await refuse({ event: "replied", agent: "builder" });
   const down = await refuse({ event: "down", agent: "builder" });
@@ -349,8 +352,8 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 // ── 9) inputs that could not be awaited safely are refused at the call ────────────────────────
 {
   const refuse = async (event: unknown) => {
-    try { await handler.wait({ event } as never, ctx(tok("bad")).ctx); return undefined; }
-    catch (e) { return e as Error; }
+    const p = handler.wait({ event, timeout: "3s" } as never, ctx(tok("bad")).ctx).then(() => undefined, (e: unknown) => e as Error);
+    return await Promise.race([p, wait(6_000).then(() => new Error("DID NOT REFUSE"))]);
   };
   const wild = await refuse({ event: "message", channel: "team.>" });
   c("a wildcard channel is refused: an await names one channel", wild?.message.includes("wildcard"), wild?.message?.slice(0, 60));
