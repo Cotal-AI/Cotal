@@ -779,7 +779,13 @@ export async function activateRun(
       replayedTo: lastSeq,
       at: t.at,
     };
-    if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
+    // A COPY. `prefix` is the journal the interpreter will resume from, and slicing the array only
+    // detaches the array: the records inside it are shared, so a hook that reached into one would
+    // change what the run replays while WFJ still stores the original — a driver resuming from a
+    // history that is not the one on the wire. The hook exists to observe the moment the prefix is
+    // known, which needs no handle on it. Production passes no hook, so this clone costs nothing
+    // there; where it is passed, it is the caller's copy and mutating it changes nothing.
+    if (opts.onReplayed !== undefined) await opts.onReplayed(structuredClone(replay));
     const r = await publishFenced(js, subject, activation, lastSeq);
     // The activation's PubAck is the line: before it this driver has performed nothing and holds
     // nothing, after it the run's subject is its own until someone else activates.

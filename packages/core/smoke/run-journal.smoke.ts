@@ -698,7 +698,8 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 // is a record the barrier itself would then believe. The repo's WorkLease seams snapshot caller
 // input before awaiting for exactly this reason (`endpoint-work.ts:98-118`); this one now does too.
 {
-  await activateRun(js, jsm, startRun("r-5p", "d1", 1));
+  const d1 = await activateRun(js, jsm, startRun("r-5p", "d1", 1));
+  await d1.append({ marker: "as-recorded" }, 1);
   const t = { ...takeover("r-5p", "d2", 2) };
   const app = await activateRun(js, jsm, t, {
     onReplayed: async (replay) => {
@@ -707,7 +708,15 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
       t.epoch = 7;
       t.runId = "r-other";
       t.at = 999;
+      // Reach INTO the prefix, not just at the array around it: this is the journal the interpreter
+      // is about to resume from, and a mutated record here would make the run replay a history that
+      // is not the one WFJ stores.
       (replay.records as { record: RunJournalRecord; seq: number }[]).push(replay.records[0]!);
+      const inner = replay.records[0]!.record as RunJournalActivation;
+      inner.holder = "impostor";
+      inner.n = 99;
+      const step0 = replay.records[1]!.record as { entry: { marker: string } };
+      step0.entry.marker = "rewritten";
     },
   });
   const seen = await replayRunJournalRaw("r-5p");
@@ -718,9 +727,15 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("and the run it labels is the run whose subject it was published on",
     landed.run === "r-5p", landed.run);
   c("and the ordinal is the prefix that was VALIDATED, not one the hook grew after the fact",
-    landed.n === 1, landed.n);
-  c("the appender that comes back is bound to the validated prefix too",
-    app.steps().length === 0, app.steps().length);
+    landed.n === 2, landed.n);
+  // The one that matters: `steps()` IS the journal the interpreter resumes from. A shared reference
+  // here would make the run replay a history that is not the one on the wire — and be believed,
+  // because nothing downstream re-reads the subject.
+  c("the journal the appender hands the interpreter carries the entry as RECORDED, not as rewritten",
+    (app.steps()[0] as { marker: string })?.marker === "as-recorded", app.steps());
+  c("and the prefix the hook reached into is untouched on the wire too: it never had the real one",
+    (seen[0] as RunJournalActivation).holder === "d1" && (seen[0] as RunJournalActivation).n === 0,
+    seen[0]);
 }
 
 // ── 5p2) …and the window is not only the hook ────────────────────────────────────────────────
