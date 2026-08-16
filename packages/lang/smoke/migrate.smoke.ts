@@ -202,6 +202,54 @@ await sleep("1s", { name: "after-race" });
       (scope as { branchDigest?: string }).branchDigest?.startsWith("sha256:") === true,
     (scope as { branchDigest?: string })?.branchDigest);
 
+  // THE NARROWNESS. A digest that refused everything would satisfy the three cells above perfectly
+  // and make a decided race un-migratable and un-forkable. It is taken over the arm's STRUCTURE
+  // with source offsets stripped, so reindenting an arm is not editing it — a check that fired on
+  // whitespace is the false positive that teaches people to route around the check.
+  const REINDENTED = RACE.replace(
+    `  ${loser}: async () => { await sleep("${DURATION[loser]}", { name: "${loser}-work" }); return "${loser}"; },`,
+    `  ${loser}: async () => {\n    await sleep("${DURATION[loser]}", { name: "${loser}-work" });\n    return "${loser}";\n  },`,
+  );
+  ok("the reindent landed", REINDENTED !== RACE, { loser });
+  const rjReindent = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
+  const overReindent = await run(REINDENTED, {
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rjReindent, migration: true,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("a REINDENTED losing arm is not an edited one: same structure, same digest, walk completes",
+    overReindent === null, `${overReindent?.name}: ${overReindent?.message?.slice(0, 120)}`);
+
+  // AND IT COVERS THE LOSERS ONLY, which is the second half of the narrowness and the reason the
+  // winner's arm reads better than it would under a digest over every branch. The walk enters the
+  // winner entry by entry, so an edit there already diverges AT THE STEP IT BROKE — a strictly more
+  // useful error than "some arm of this race changed". A digest that bound the winner too would
+  // replace that step with the scope key and lose the location.
+  const winner = (scope?.result as { value?: { index?: string } } | undefined)?.value?.index as string;
+  const EDITED_WINNER = RACE.replace(
+    `sleep("${DURATION[winner]}", { name: "${winner}-work" })`,
+    `sleep("11s", { name: "${winner}-work" })`,
+  );
+  ok("the edit landed on the winning branch", EDITED_WINNER !== RACE, { winner });
+  const rjWinner = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
+  const overWinner = await run(EDITED_WINNER, {
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rjWinner, migration: true,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("an edit in the WINNING arm diverges at the STEP it broke, not at the scope",
+    overWinner?.name === "RunDivergence" &&
+      overWinner.message.includes(`/race:pick#0/b:${winner}/sleep:${winner}-work#0`),
+    overWinner?.message?.slice(0, 160));
+
+  // AND ON THE RESUME PATH TOO, which is not the design's letter — §8.5 puts the comparison in the
+  // migrate walk — but is the same guard on the same field, and a resume is where the edit is most
+  // silent: the run record carries no program hash (§17 delta 2), so nothing upstream refused the
+  // edited source before it got here, and a settled race is delivered from its entry without
+  // entering an arm. One string comparison, and it never fires on source that did not change.
+  const rjResume = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
+  const resumed = await run(EDITED_LOSER, {
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rjResume, migration: false,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("a RESUME of the same edited source diverges as well, rather than replaying past it",
+    resumed?.name === "RunDivergence", `${resumed?.name}: ${resumed?.message?.slice(0, 140)}`);
+
   // WHY THAT PAIR WAS NOT THE PROOF, AND WHAT IS. Kept, because the mutation it defends against is
   // still live: the digest closed the EDIT case, and this note is about the WALK case.
   //
