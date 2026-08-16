@@ -268,8 +268,21 @@ function proveOne(m, opts) {
         return { label, verdict: "INCONCLUSIVE",
           why: `exited 0 with ${ticks} progress marks against the green run's ${baseTicks} — the named assertion held, but cells that print when green did not print here, so the suite did NOT pass and something swallowed the exit code`, ticks };
       }
+      // A SURVIVED whose named assertion never appears in the GREEN run either is still a survivor
+      // for a throw-only suite (nothing prints on a pass, so absence carries no information) — but
+      // it is ALSO what you get when the mutation ran the WRONG SUITE, or when `expectRed` has a
+      // typo. Measured: a mutation merged between two config files lost its per-mutation `command`,
+      // inherited the file default, and ran a suite that does not contain the cell at all; it
+      // reported SURVIVED at exactly the baseline, and the baseline was another suite's. The verdict
+      // stays — for a throw-only suite it is correct — but it may not stay SILENT about which of the
+      // two it is, because the operator is the only one who can tell them apart.
+      const blind = baseHits.size === 0
+        ? " — NOTE: the named assertion appears nowhere in the green run either, so either this suite"
+          + " prints nothing on a pass (absence is normal) or it does not contain that cell at all"
+          + " (wrong `command`, or a stale `expectRed`). Check before trusting this verdict."
+        : "";
       return { label, verdict: "SURVIVED",
-        why: "the suite PASSED with the implementation broken — it does not test this", ticks };
+        why: `the suite PASSED with the implementation broken — it does not test this${blind}`, ticks };
     }
 
     if (named.length === 0) {
