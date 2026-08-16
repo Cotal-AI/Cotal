@@ -291,6 +291,17 @@ try {
     assertFactFits({ ...rej, caller: { id: "u_zed.worker", lifecycleUid: caller2.uid } }, 1024 * 1024));
   c("the same id under another caller is a DIFFERENT subject and wins", w3.won);
 
+  // THE LOSER'S READ IS BY SUBJECT, AND ONLY NOW IS THAT DECIDABLE. The assertion above cannot
+  // fail: create-only leaves EXACTLY ONE fact on `dSubj`, so any read that returns anything at all
+  // returns the winner, and a read with no last-by-subject semantics would have passed it. The
+  // stream's newest message is now w3's REJECTION on another caller's subject — a different
+  // decision, on a different subject, with the same request id. Re-reading `dSubj` here is the
+  // first point at which "reads the winner" and "reads the latest thing in the stream" give
+  // different answers, so it is the first point at which the claim is worth making.
+  const stillWinner = parseDecisionFact(await readLastFact(jsm, epfStreamName("epjrn"), dSubj), dSubj);
+  c("the loser's read is scoped to its SUBJECT, not to the stream's newest fact",
+    stillWinner.decision === "accepted", { stillWinner, streamNewestIs: "w3 rejection on subj2" });
+
   // Quarantine + goal-bind families: disjoint namespaces, same create-only discipline.
   const qSubj = epfQuarantineSubject("epjrn", "manager", seq);
   c("quarantine keys on the source sequence", qSubj.endsWith(`.quar.${seq}`));
