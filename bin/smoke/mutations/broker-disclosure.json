@@ -1,0 +1,80 @@
+{
+  "suite": "bin/smoke/broker-disclosure.smoke.ts",
+  "guard": "every file that defaults COTAL_SERVERS with `||=` also prints what it resolved, and records whether it was inherited before the assignment destroys that evidence",
+  "command": "pnpm smoke:broker-disclosure",
+  "completionMarker": "file(s) default COTAL_SERVERS",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/broker-disclosure.json",
+  "why": [
+    "The disclosure itself adds output, not a guard: nothing stopped a future edit from deleting a",
+    "line, and its absence is silent in exactly the way the disclosure exists to prevent. This",
+    "grades the CONVENTION rather than any one suite, so a new file that picks up the `||=` habit",
+    "is caught the day it lands rather than the day someone audits.",
+    "",
+    "THE CENSUS IS KEYED ON CONTENT, NOT ON A DIRECTORY, and that is the whole reason it finds",
+    "seven. A sweep of `extensions/` -- the obvious heuristic, and the one an earlier count used --",
+    "misses `bin/smoke/launch-parity.smoke.ts`, which carries the same default and lives elsewhere.",
+    "A census keyed on where a thing usually lives cannot see the one that lives somewhere else.",
+    "",
+    "THE ORDERING CELL IS NOT DECORATION. `||=` destroys the evidence it is being asked about: once",
+    "it has run, `process.env.COTAL_SERVERS` is set either way and nothing downstream can tell an",
+    "inherited value from the default. A capture placed after the assignment reads the value the",
+    "suite just wrote and reports every run as inherited -- output present, disclosure worthless.",
+    "So the guard checks POSITION, not merely presence, and mutation 3 is that exact regression.",
+    "",
+    "THE EMPTY-SET CELL IS THE ONE MOST LIKELY TO BE CALLED PARANOID AND IS NOT. Every other cell",
+    "in this suite is generated per discovered file, so if the census ever matches nothing -- a",
+    "regex drifting against a reformat, a directory added to SKIP -- the suite passes with zero",
+    "assertions and reports OK. That is a guard over an empty set: green forever, grading nothing.",
+    "It is the same shape as an allowlist entry that has quietly stopped matching anything.",
+    "",
+    "NOT GRADED, and named rather than implied: that the seven suites do not DIAL the address. That",
+    "was measured live -- a listener on the configured port counted zero accepts for all seven, and",
+    "each passes pointed at a blackhole -- and it is a fact about what those suites do at runtime,",
+    "which a source-reading guard cannot see. It is written in the comment above each line rather",
+    "than asserted here, because a check that cannot observe a connection must not claim there was",
+    "none.",
+    "",
+    "SPECIFIER BOUNDARY: not applicable, and checked rather than assumed. This suite imports no",
+    "workspace package at all -- only `node:fs`, `node:path`, `node:url` -- and reads the mutated",
+    "files as TEXT from disk. There is no `dist` in the path and no build in the command, so the",
+    "bytes mutated are the bytes graded."
+  ],
+  "mutations": [
+    {
+      "name": "one file's disclosure is deleted, which is the regression this guard exists for",
+      "file": "extensions/pi/smoke/tool-input-closed.smoke.ts",
+      "find": "console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? \"INHERITED from the environment\" : \"suite default\"})`);",
+      "replace": "void brokerFromEnv;",
+      "expectRed": "extensions/pi/smoke/tool-input-closed.smoke.ts prints the broker it resolved",
+      "cell": "extensions/pi/smoke/tool-input-closed.smoke.ts prints the broker it resolved",
+      "note": "A careless edit, not a malicious one: the line is dropped and the capture kept, which still typechecks and leaves that suite passing. Before this guard the whole repo stayed green."
+    },
+    {
+      "name": "the census is scoped to `extensions/`, the heuristic that produced a count of six",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "for (const file of sources(repoRoot)) {",
+      "replace": "for (const file of sources(join(repoRoot, \"extensions\"))) {",
+      "expectRed": "bin/smoke/launch-parity.smoke.ts prints the broker it resolved",
+      "cell": "bin/smoke/launch-parity.smoke.ts prints the broker it resolved",
+      "note": "The mutation is a real person's first instinct, and it is why the original report said six. The cell it kills is named for the file that lives outside the directory -- so the kill is the census proving it is not keyed on location."
+    },
+    {
+      "name": "the inherited-capture is allowed to sit AFTER the assignment that destroys the evidence",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "    capture !== -1 && capture < assign,",
+      "replace": "    capture !== -1,",
+      "expectRed": "records whether the value was inherited, before `||=` overwrites the evidence",
+      "cell": "records whether the value was inherited, before `||=` overwrites the evidence",
+      "note": "Presence-not-position, and the resulting suite would accept a disclosure that reports EVERY run as inherited. Paired with mutation 4, which moves a real capture below its assignment: mutation 3 proves the check would stop noticing, mutation 4 proves it notices today."
+    },
+    {
+      "name": "PAIRED: a real file captures the flag after its own `||=`, so the disclosure always says inherited",
+      "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
+      "find": "const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\nprocess.env.COTAL_SERVERS ||= \"nats://127.0.0.1:4222\";",
+      "replace": "process.env.COTAL_SERVERS ||= \"nats://127.0.0.1:4222\";\nconst brokerFromEnv = process.env.COTAL_SERVERS !== undefined;",
+      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
+      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
+      "note": "The defect wearing a healthy shape: two lines swapped, everything still compiles, the line still prints, and it is wrong every single run. This is the pair that makes mutation 3 mean something -- one shows the guard would stop looking, the other shows what it is looking at."
+    }
+  ]
+}

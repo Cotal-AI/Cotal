@@ -270,6 +270,7 @@
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",
     "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
+    "smoke:broker-disclosure": "tsx bin/smoke/broker-disclosure.smoke.ts",
     "smoke:spawn-detach:live": "tsx bin/smoke/spawn-detach-live.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
     "smoke:setup-pure:live": "pnpm --filter @cotal-ai/workspace... build && tsx bin/smoke/setup-pure-live.smoke.ts",
