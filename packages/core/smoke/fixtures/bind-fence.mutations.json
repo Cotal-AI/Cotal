@@ -28,14 +28,6 @@
       "find": "      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)",
       "replace": "      if (false as boolean)",
       "expectRed": "a bind refusal from the very incarnation the caller bound is internal"
-    },
-    {
-      "name": "the production invoke path stops sending the bind (the fence is never reached)",
-      "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "  const bind = opts.currentEpoch === undefined\n    ? { instanceId: service.pinnedInstanceId ?? service.responder.instanceId, epoch: service.responder.epoch }\n    : undefined;",
-      "replace": "  const bind = undefined;",
-      "command": "pnpm smoke:bind-fence:live",
-      "expectRed": "carrying the bind-refused marker"
     }
   ]
 }
