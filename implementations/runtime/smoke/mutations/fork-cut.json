@@ -2,6 +2,7 @@
   "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
   "guard": "The fork cut: computed in migration mode, ending before the step it names, inheriting the parent pins verbatim, and committed with the child record written last.",
   "command": "pnpm smoke:runtime-fork",
+  "completionMarker": "fork-run.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/fork-cut.json   # --config resolves against the repo root, never the cwd",
   "mutations": [
     {

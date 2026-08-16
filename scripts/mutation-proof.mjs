@@ -16,7 +16,7 @@
  * Each of those has happened. This runs the experiment so that none of them can pass as a result.
  *
  * Usage:
- *   node scripts/mutation-proof.mjs --config mutations.json
+ *   node scripts/mutation-proof.mjs --config mutations.json   (relative to --cwd, or an absolute path)
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
  *
@@ -27,7 +27,7 @@ import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from "n
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -176,6 +176,19 @@ function proveOne(m, opts) {
         ticks,
       };
     }
+    // A named red says the assertion fired. It does not say the SUITE RAN — a mutant that crashes
+    // the run after forty cells can print a failure line carrying the named string and be graded a
+    // kill by a suite that never reached its own end. When a config names the marker its suite
+    // prints last, its absence is INCONCLUSIVE: the run did not finish, which is not a kill and is
+    // not a survival either. A harness with only two verdicts rounds this one to the convenient side.
+    if (opts.completionMarker && !r.output.includes(opts.completionMarker)) {
+      return {
+        label,
+        verdict: "INCONCLUSIVE",
+        why: `red, and named — but the suite never printed ${JSON.stringify(opts.completionMarker)}, so it did not run to the end and this is not evidence about one cell`,
+        ticks,
+      };
+    }
     return { label, verdict: "KILLED", why: m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`, ticks };
   } catch (e) {
     restore();
@@ -212,7 +225,13 @@ const MUTATION_KEYS = [
 ];
 
 if (a.config) {
-  const cfg = JSON.parse(readFileSync(join(cwd, a.config), "utf8"));
+  // An ABSOLUTE config path is used as given. It used to be joined to the repo root, which turned
+  // `/tmp/x.json` into `<repo>/tmp/x.json` and died on ENOENT — so the only ways to run a config
+  // were to put it in the tree (dirtying the tree this tool then refuses) or to reach it with
+  // `../../../`. A harness whose own escape hatch is the only way to grade it is a harness whose
+  // guard is untested by construction. Relative paths still resolve against `cwd`, unchanged.
+  const cfgPath = isAbsolute(a.config) ? a.config : join(cwd, a.config);
+  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
   for (const m of mutations) {
     for (const k of Object.keys(m)) {
@@ -220,7 +239,7 @@ if (a.config) {
         usage(`mutation ${JSON.stringify(m.name ?? m.label ?? m.file)} carries the unknown key ${JSON.stringify(k)}. This tool would ignore it — and if it is a misspelt "expectRed", every mutation below would report KILLED on any red at all. Known keys: ${MUTATION_KEYS.join(", ")}`);
     }
   }
-  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks };
+  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
   mutations = [{ file: a.file, find: a.find, replace: a.replace, expectRed: a["expect-red"] }];
 } else {

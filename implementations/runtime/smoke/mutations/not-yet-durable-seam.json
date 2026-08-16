@@ -2,6 +2,7 @@
   "suite": "implementations/runtime/smoke/mesh-seam.smoke.ts",
   "guard": "The seam that refuses an effect whose substrate has not landed: it must refuse BY NAME, with a code that survives the interpreter, and must not swallow an effect it does not gate.",
   "command": "pnpm smoke:runtime-mesh-seam",
+  "completionMarker": "mesh-seam.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/not-yet-durable-seam.json   # --config resolves against the repo root, never the cwd",
   "mutations": [
     {

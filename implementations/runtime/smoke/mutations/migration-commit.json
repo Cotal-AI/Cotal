@@ -2,6 +2,7 @@
   "suite": "implementations/runtime/smoke/migrate-run.smoke.ts",
   "guard": "The commit that files a migration: refused when inadmissible, records who applied it, carries what the check found, and computes the target hash rather than taking the caller word for it.",
   "command": "pnpm smoke:runtime-migrate",
+  "completionMarker": "migrate-run.smoke:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/migration-commit.json   # --config resolves against the repo root, never the cwd",
   "mutations": [
     {

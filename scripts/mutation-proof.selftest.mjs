@@ -200,6 +200,30 @@ writeFileSync(cfgPath, JSON.stringify({
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg2", { cwd: root });
 r = runTool(["--config", "mut.json"]);
 check("`label` names the mutation the way `name` does", r.status === 0 && r.stdout.includes("the oversize guard is disabled"), r.stdout.slice(-300));
+
+// 7e. An ABSOLUTE config path is used as given, not joined to the repo root. A config that grades
+// this tool cannot live in the tree — committing it dirties the tree the tool then refuses — so
+// before this, the only way to run one was the tool's own `--allow-dirty` escape hatch.
+const outside = join(mkdtempSync(join(tmpdir(), "mutation-selftest-cfg-")), "outside.json");
+writeFileSync(outside, JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  mutations: [{ ...baseMutation, expectRed: "oversized values are refused" }],
+}));
+r = runTool(["--config", outside]);
+check("an absolute --config path is read where it is, not under the repo root", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
+
+// 7f. A suite that dies before its own end is INCONCLUSIVE, not a kill. The mutation below reddens
+// the named assertion AND stops the suite before it finishes — which is what a mutant that crashes
+// the run looks like, and it is not evidence about one cell.
+writeFileSync(outside, JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  completionMarker: "  ✓ done",
+  mutations: [{ ...baseMutation, expectRed: "oversized values are refused" }],
+}));
+r = runTool(["--config", outside]);
+check("a run that never reaches the suite's end is INCONCLUSIVE, not KILLED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("KILLED"), r.stdout.slice(-400));
+rmSync(dirname(outside), { recursive: true, force: true });
 rmSync(cfgPath);
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg-gone", { cwd: root });
 
