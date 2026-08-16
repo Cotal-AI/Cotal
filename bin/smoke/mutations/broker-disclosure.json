@@ -84,6 +84,33 @@
       "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
       "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
       "note": "The defect wearing a healthy shape: two lines swapped, everything still compiles, the line still prints, and it is wrong every single run. This is the pair that makes mutation 3 mean something -- one shows the guard would stop looking, the other shows what it is looking at."
+    },
+    {
+      "name": "the disclosure requirement drops back to the NAME, so `${` deleted is accepted",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:[^\\n]*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:[^\\n]*${VAR}`);",
+      "expectRed": "fixture: a line carrying the NAME without the interpolation is rejected",
+      "cell": "fixture: a line carrying the NAME without the interpolation is rejected: `${` is the value",
+      "note": "THE SHIPPED STATE BEFORE THIS ROUND, and it is the whole name-versus-value family in one character. A reviewer reproduced it against the suite's own `evaluate`: delete the `$` from `${process.env.COTAL_SERVERS}` and every cell stays green while the line prints the literal text `{process.env.COTAL_SERVERS}` at runtime. The cell was called \"prints the broker it resolved\" and never looked at whether anything was resolved. The corpus cannot prove this either way -- every real file is compliant -- so the fixtures are the only thing that can, which is the same argument mutation 3 already carries one level up."
+    },
+    {
+      "name": "the self-exclusion is removed, so the guard counts its own fixtures as real suites",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "  if (rel === self) { excluded += 1; continue; }",
+      "replace": "  if (false) { excluded += 1; continue; }",
+      "expectRed": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "cell": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "note": "A census keyed on TEXT cannot tell a call site from a fixture, and this file is the one guaranteed to hold fixtures: without the exclusion it reported EIGHT files defaulting the variable when seven do, and graded its own negative controls as though they were suites. The published count was wrong by one and nothing said so. The exclusion is computed from `import.meta.url` rather than written as a path, so it cannot grow into an allowlist, and this cell is what stops it going dead if the fixtures ever stop matching."
+    },
+    {
+      "name": "the census narrows back to dot access, so the same assignment under brackets is INVISIBLE",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const VAR = String.raw`process\\.env(?:\\.COTAL_SERVERS|\\[[\"']COTAL_SERVERS[\"']\\])`;",
+      "replace": "const VAR = String.raw`process\\.env\\.COTAL_SERVERS`;",
+      "expectRed": "fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
+      "cell": "fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
+      "note": "The dangerous direction, because it is SILENT. `process.env[\"COTAL_SERVERS\"] ||=` is the same assignment, and a census that cannot see it does not reject that file, it never enumerates it -- and every per-file cell is generated from the census, so the guard loses cells rather than going red. That is the same shape as scoping the sweep to `extensions/` (mutation 2), one level lower: there the census missed a DIRECTORY, here it misses a SPELLING. No file in the tree writes it this way today, which is exactly why only a fixture can hold the line."
     }
   ]
 }

@@ -31,9 +31,29 @@ function* sources(dir: string): Generator<string> {
   }
 }
 
-const DEFAULTS = /process\.env\.COTAL_SERVERS\s*\|\|=/;
-const CAPTURES = /process\.env\.COTAL_SERVERS\s*!==\s*undefined/;
-const PRINTS = /console\.log\([^\n]*broker:[^\n]*process\.env\.COTAL_SERVERS/;
+/** The variable, written either way people write it. Dot access is what the tree uses today and a
+ *  bracket read is the same assignment, so a census that knew only the first would MISS a file
+ *  silently: it would never enter the census, and every per-file cell is generated from the census.
+ *  `??=` is admitted for the same reason. A shape this does not know fails the safe direction only
+ *  if it is still SEEN, and the shapes it cannot see are the ones worth widening for. */
+const VAR = String.raw`process\.env(?:\.COTAL_SERVERS|\[["']COTAL_SERVERS["']\])`;
+const DEFAULTS = new RegExp(String.raw`${VAR}\s*(?:\|\||\?\?)=`);
+const CAPTURES = new RegExp(String.raw`${VAR}\s*!==?\s*(?:undefined|null)`);
+/**
+ * The disclosure line, and it requires the INTERPOLATION rather than the name.
+ *
+ * The earlier pattern asked only that the name appear on the line, and a guard that asserts a NAME
+ * where the behaviour depends on a VALUE is one character from present-and-inert. Deleting the `$`
+ * from `${process.env.COTAL_SERVERS}` left every cell green and printed the literal text
+ * `{process.env.COTAL_SERVERS}` at runtime, which is the disclosure saying nothing at all. So did a
+ * line that hardcoded the address and mentioned the variable in a trailing comment. Both are
+ * reproduced as fixtures below rather than argued about here.
+ *
+ * SINGLE LINE, on purpose and stated so it is a rule rather than an accident: a disclosure wrapped
+ * across lines by a formatter will not match and its file will go RED. That is the loud direction,
+ * and the fix is to keep the line whole.
+ */
+const PRINTS = new RegExp(String.raw`console\.log\([^\n]*broker:[^\n]*\$\{\s*${VAR}\s*\}`);
 
 let pass = 0;
 let fail = 0;
@@ -42,10 +62,22 @@ const check = (name: string, ok: boolean, extra?: unknown): void => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
 
+// THIS FILE, and only this file, is left out of its own census. A census keyed on TEXT cannot tell
+// a call site from a fixture, and the one file guaranteed to contain fixtures is the one that
+// carries them. Without this it reported eight files defaulting the variable when seven do, and
+// graded its own negative controls as if they were real suites. The exclusion is computed from
+// `import.meta.url` rather than written as a path, so it can only ever name this file: a carve-out
+// that could grow is the shape that later hides something, and this one cannot grow.
+const self = relative(repoRoot, fileURLToPath(import.meta.url));
+
 const defaulters: string[] = [];
+let excluded = 0;
 for (const file of sources(repoRoot)) {
   const text = readFileSync(file, "utf8");
-  if (DEFAULTS.test(text)) defaulters.push(relative(repoRoot, file));
+  if (!DEFAULTS.test(text)) continue;
+  const rel = relative(repoRoot, file);
+  if (rel === self) { excluded += 1; continue; }
+  defaulters.push(rel);
 }
 defaulters.sort();
 
@@ -58,6 +90,15 @@ check(
   "at least one file defaults COTAL_SERVERS, so this guard is grading a non-empty set",
   defaulters.length > 0,
   { defaulters },
+);
+
+// 1b — and the exclusion is exactly this file, still matching. If the fixtures below ever stop
+// carrying the pattern the exclusion has quietly become dead, which is the same shape as an
+// allowlist entry nobody notices has stopped matching anything.
+check(
+  "exactly one file is excluded from the census, and it is this file's own fixtures",
+  excluded === 1,
+  { excluded, self },
 );
 
 /** What the guard asks of one file. Extracted so it can be aimed at a fixture as well as at the
@@ -98,9 +139,31 @@ function evaluate(text: string): { prints: boolean; ordered: boolean } {
     + 'console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED" : "default"})`);\n';
   const MUTE = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
     + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\nvoid brokerFromEnv;\n';
+  // The NAME is present in all three of these and the VALUE is not, which is the whole family. A
+  // guard that asks only whether `process.env.COTAL_SERVERS` appears on the line is one character
+  // from present-and-inert, and the first of these is that one character: `${…}` with the `$`
+  // deleted prints the literal text `{process.env.COTAL_SERVERS}` and every cell stays green.
+  const DOLLARLESS = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
+    + 'console.log(`• broker: {process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED" : "default"})`);\n';
+  const HARDCODED = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
+    + 'console.log(`• broker: nats://127.0.0.1:4222`); // was process.env.COTAL_SERVERS\n'
+    + 'void brokerFromEnv;\n';
+  // The census direction. A file this cannot SEE is not rejected, it is absent, and every per-file
+  // cell is generated from the census -- so a shape it does not know costs cells rather than reds.
+  const BRACKET = 'const brokerFromEnv = process.env["COTAL_SERVERS"] !== undefined;\n'
+    + 'process.env["COTAL_SERVERS"] ??= "nats://127.0.0.1:4222";\n'
+    + 'console.log(`• broker: ${process.env["COTAL_SERVERS"]} (${brokerFromEnv ? "INHERITED" : "default"})`);\n';
   check("fixture: a compliant file passes both requirements", evaluate(GOOD).prints && evaluate(GOOD).ordered);
   check("fixture: a file that captures AFTER the `||=` is rejected on order", !evaluate(SWAPPED).ordered);
   check("fixture: a file that never prints the broker is rejected on disclosure", !evaluate(MUTE).prints);
+  check("fixture: a line carrying the NAME without the interpolation is rejected: `${` is the value",
+    !evaluate(DOLLARLESS).prints);
+  check("fixture: a hardcoded address with the variable in a trailing comment is rejected",
+    !evaluate(HARDCODED).prints);
+  check("fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
+    DEFAULTS.test(BRACKET) && evaluate(BRACKET).prints && evaluate(BRACKET).ordered);
 }
 
 // 4 — the disclosure itself, per real file.
