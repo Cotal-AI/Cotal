@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { connect, headers } from "@nats-io/transport-node";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import {
-  isReachable, EpEnvelopeError,
+  isReachable, EpEnvelopeError, respondedButUnbound, EP_UNBOUND_RESPONDER,
   compileContract,
   parseEpSubject, epReplySubject, epeSubject, spacePrefix,
   epCall, epCast, epWatchEvents, epScatter,
@@ -37,6 +37,12 @@ const rejects = async (n: string, fn: () => Promise<unknown>, code?: string) => 
   }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Run `fn` and hand back what it threw (undefined if it resolved), for cells that grade the error's
+ *  details and not just its code. */
+const caught = async (fn: () => Promise<unknown>): Promise<unknown> => { try { await fn(); return undefined; } catch (e) { return e; } };
+/** The {@link EP_UNBOUND_RESPONDER} detail on a thrown error, if any. */
+const unboundDetail = (e: unknown): Record<string, unknown> | undefined =>
+  e instanceof EpEnvelopeError ? (e.details ?? []).find((d) => d.kind === EP_UNBOUND_RESPONDER) : undefined;
 
 const SPACE = "epverbs";
 const ENDPOINT = "demo";
@@ -295,9 +301,21 @@ try {
   }
   {
     const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 9, ok: true, data: { which: "stale" } }]); // replies at a DIFFERENT epoch
-    await rejects("epCall rejects a STALE-epoch reply as `expired` (§13.2: callers reject stale replies)",
-      () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }), "expired");
+    const e = await caught(() => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }));
     await sub.drain();
+    c("epCall rejects a STALE-epoch reply as `expired` (§13.2: callers reject stale replies)",
+      e instanceof EpEnvelopeError && e.code === "expired", e instanceof Error ? e.message.slice(0, 120) : e);
+    // The refusal is raised AFTER an attributed reply, so it carries the responder-answered marker
+    // (a retry is a second attempt), with both epochs and the rail, and it says which side is stale:
+    // the responder is AHEAD of what this caller holds, so it is a successor and the caller's handle
+    // is the stale side. Graded on the `inst` rail directly: the `one` rail is graded below, and a
+    // regression that unmarked only one call site must not hide behind the other.
+    const d = unboundDetail(e);
+    c("...carrying the responder-answered marker on the `inst` rail", respondedButUnbound(e), e instanceof Error ? e.message.slice(0, 160) : e);
+    c("...whose details name the instance, both epochs, and the pinned rail",
+      d?.answeredBy === IID && d?.boundTo === IID && d?.answeredEpoch === 9 && d?.heldEpoch === 3 && d?.pinned === true, d);
+    c("...and the message says the responder is a SUCCESSOR (answered 9 > held 3): the handle is the stale side",
+      e instanceof Error && /SUCCESSOR/.test(e.message) && !/SUPERSEDED incarnation/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
   }
   {
     const sub = respond(nc, instFilter, () => [{ instanceId: "2".repeat(26), epoch: 3, ok: true, data: { which: "wrong" } }]); // replies as a DIFFERENT instance
@@ -343,9 +361,17 @@ try {
   }
   {
     const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 4, ok: true, data: { which: "stale" } }]); // answers at epoch 4
-    await rejects("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2:1187-1189)",
-      () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 5 }), "expired");
+    const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 5 }));
     await sub.drain();
+    c("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2:1187-1189)",
+      e instanceof EpEnvelopeError && e.code === "expired", e instanceof Error ? e.message.slice(0, 120) : e);
+    // The other direction: the responder is BEHIND what the caller holds (a superseded incarnation
+    // still connected answered), so the reply is what is rejected and the handle is not the stale side.
+    const d = unboundDetail(e);
+    c("...carrying the responder-answered marker on the `one` rail, unpinned, with both epochs",
+      respondedButUnbound(e) && d?.answeredBy === OID && d?.answeredEpoch === 4 && d?.heldEpoch === 5 && d?.pinned === false, d);
+    c("...and the message says a SUPERSEDED incarnation answered (answered 4 < held 5), not that the handle is stale",
+      e instanceof Error && /SUPERSEDED incarnation/.test(e.message) && !/SUCCESSOR/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
   }
   await rejects("epCall on the `one` rail WITHOUT currentEpoch refuses bad-request (queue winner is not implicitly current)",
     () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 200, currentEpoch: undefined as unknown as () => number }), "bad-request");
