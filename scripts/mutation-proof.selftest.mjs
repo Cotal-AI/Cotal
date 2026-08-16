@@ -170,6 +170,96 @@ r = runTool([
 ]);
 check("a named red at the FIRST assertion is KILLED, not WRONG-RED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
 
+// 7d. THE GREEN LINE THAT READ AS A RED. Suites here print `✓ <label>` on pass and `✗ FAIL: <label>`
+// on fail — the SAME label both ways. `expectRed` was matched with a substring search over the whole
+// transcript, so a mutation that left the named cell PASSING and crashed the suite somewhere else
+// satisfied it with the pass line, and the tool reported `KILLED — red, and named: <that cell>`.
+// A matched label is only evidence if the line it sits on is not the line a green run prints.
+writeFileSync(
+  join(root, "paired.mjs"),
+  [
+    "import { admit, unrelated } from './src/impl.js';",
+    "const c = (n, v) => { console.log(v ? `  ✓ ${n}` : `  ✗ FAIL: ${n}`); if (!v) process.exitCode = 1; };",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (unrelated() !== 'untouched') throw new Error('the unrelated helper blew up');",
+    "c('the unrelated helper is untouched', true);",
+    "",
+  ].join("\n"),
+);
+// 7e. Green after barely running is not a survivor. A mutated run that exits 0 having emitted no
+// progress marks never reached the check, and "the suite passed" is a claim about a suite that did
+// not run. The completion question has to be asked BEFORE the pass is believed, not after.
+writeFileSync(
+  join(root, "bails.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "if (admit(50) !== false) process.exit(0);",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+writeFileSync(
+  join(root, "unknown-key.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ label: "typo: the key is `name`", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
+  }),
+);
+writeFileSync(
+  join(root, "no-expect.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ name: "unnamed red", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)" }],
+  }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm more", { cwd: root });
+
+r = runTool([
+  "--command", `${process.execPath} paired.mjs`,
+  "--file", "src/impl.js",
+  "--find", "'untouched'",
+  "--replace", "'mutated'",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("a label matched on a PASS line is WRONG-RED, not KILLED",
+  r.status !== 0 && r.stdout.includes("WRONG-RED") && r.stdout.includes("prints when GREEN"), r.stdout.slice(-400));
+
+r = runTool([
+  "--command", `${process.execPath} bails.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("green with zero progress marks is INCONCLUSIVE, not SURVIVED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+// 7f. A mis-spelled key is silently dropped by every JSON reader. In an instrument whose whole
+// premise is that each step of the experiment has a way to lie, a `label:` that should have been
+// `name:` — or an `expectred:` that should have been `expectRed:` — is one of them.
+r = runTool(["--config", "unknown-key.json"]);
+check("an unknown mutation key is an ERROR, not a shrug",
+  r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("unknown mutation key"), r.stdout.slice(-300));
+
+// 7g. Mandatory since the first version's header, unenforced until now.
+r = runTool(["--config", "no-expect.json"]);
+check("a mutation with no expectRed is refused",
+  r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("no expectRed"), r.stdout.slice(-300));
+
+// 7h. `^  ✓` is the natural way to write "a progress line", and without the `m` flag it matched the
+// start of the transcript exactly once — so the floor compared 1 against 1 for every suite that
+// anchored, and the banner reported "1 progress marks" as though it had counted.
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--progress-pattern", "^  ✓",
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("an anchored progress pattern counts per LINE, not once per transcript",
+  r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });

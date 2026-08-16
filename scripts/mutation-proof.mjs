@@ -94,9 +94,18 @@ function run(command, cwd, timeoutMs) {
  * Convention-bound by nature, so it is advisory unless the caller supplies `progressPattern`.
  */
 const progressCount = (output, pattern) => {
-  const re = new RegExp(pattern ?? "✓", "g");
+  // `m`, not just `g`: a caller-supplied pattern that anchors with `^` (the natural way to say "a
+  // progress line", since a suite's marks are line-initial) matches ONCE without it — against the
+  // start of the whole transcript. The floor then compares 1 to 1 forever and silently never fires,
+  // while the baseline banner prints "1 progress marks" as though it had measured something.
+  const re = new RegExp(pattern ?? "✓", "gm");
   return (output.match(re) ?? []).length;
 };
+
+/** Keys a mutation may carry. An unknown key is an ERROR, not a shrug: this tool exists because
+ *  every step of the experiment has a way to lie, and "the field I set was quietly ignored" is one
+ *  of them — a mis-spelled `expectRed` turns a graded proof into an ungraded red. */
+const MUTATION_KEYS = new Set(["name", "file", "find", "replace", "expectRed", "command", "allowMultiple"]);
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
@@ -105,6 +114,8 @@ function proveOne(m, opts) {
   say(`\n${C.dim}────────────────────────────────────────────────────────${C.off}`);
   say(`${label}`);
 
+  const unknown = Object.keys(m).filter((k) => !MUTATION_KEYS.has(k));
+  if (unknown.length) return { label, verdict: "ERROR", why: `unknown mutation key(s): ${unknown.join(", ")}` };
   if (!existsSync(path)) return { label, verdict: "ERROR", why: `target file not found: ${m.file}` };
 
   const before = readFileSync(path, "utf8");
@@ -115,6 +126,13 @@ function proveOne(m, opts) {
   if (hits === 0) return { label, verdict: "ERROR", why: `target string not found in ${m.file} — nothing would have been mutated` };
   if (hits > 1 && !m.allowMultiple) {
     return { label, verdict: "ERROR", why: `target appears ${hits}× in ${m.file}; pass allowMultiple to mutate them all, or narrow it` };
+  }
+  // Declared mandatory at the top of this file since the first version, enforced only now. Without
+  // it the sole reach evidence is the tick floor, whose default is 1 — so a mutant that crashed the
+  // suite after its second mark out of four graded KILLED, exactly as if it had reddened the check.
+  // "It went red" and "it went red for my reason" really are the same exit code until you say which.
+  if (!m.expectRed) {
+    return { label, verdict: "ERROR", why: "no expectRed: name the assertion this mutation must redden, or the verdict is an accusation about nothing" };
   }
 
   const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(path).digest("hex").slice(0, 12)}.bak`);
@@ -145,38 +163,53 @@ function proveOne(m, opts) {
     if (!restored) return { label, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
 
     if (r.timedOut) return { label, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
+
+    // ---- FIRST QUESTION, ON EVERY PATH: did this run actually execute the check being graded? ---
+    //
+    // It used to be asked last, and only on the path where it could not matter. A matched
+    // `expectRed` short-circuited the floor outright, on the reasoning that a printed assertion IS
+    // direct evidence the suite reached it. The reasoning is right; the implementation was not.
+    // `output.includes(expectRed)` is a substring search over the whole transcript, and a suite that
+    // prints `✓ <label>` on PASS satisfies it with a GREEN line. So a mutation that left the named
+    // cell untouched and crashed the suite somewhere else graded KILLED, with the tool quoting back
+    // the label of an assertion that had just succeeded. Measured, not argued: in the rig, a mutant
+    // that made an unrelated guard THROW, named against a cell that passed, was reported
+    // `KILLED — red, and named: <that cell>`.
+    //
+    // The fix keeps the right reasoning and gets the evidence right. The question is not "was the
+    // label printed" but "did the named assertion CHANGE STATE", and the baseline run is the
+    // control that answers it: the line the label appears on when the suite is green is known, so a
+    // mutated run whose only occurrences are that same line has proved nothing about that cell.
+    // That is strictly stronger than the tick floor AND it is direct, so it does not reintroduce the
+    // false negative the floor caused on a suite's first assertion. Its one blind spot is a harness
+    // that prints byte-identical text on pass and on fail; such a harness cannot be graded by any
+    // signal this tool has, and no heuristic here should pretend otherwise.
+    const short = opts.minTicks !== undefined && ticks < opts.minTicks;
     if (r.status === 0) {
-      return {
-        label,
-        verdict: "SURVIVED",
-        why: "the suite PASSED with the implementation broken — it does not test this",
-        ticks,
-      };
+      // Green after barely running is not a survivor — it is a run that never reached the check,
+      // which is the fourth lie listed at the top of this file.
+      if (short) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0 but reached only ${ticks} progress marks (expected ≥ ${opts.minTicks}) — the suite did not run far enough for its pass to mean anything`, ticks };
+      }
+      return { label, verdict: "SURVIVED",
+        why: "the suite PASSED with the implementation broken — it does not test this", ticks };
     }
-    // Red is necessary but not sufficient: it has to be red for the reason claimed, or an unrelated
-    // early failure reads as proof.
-    if (m.expectRed && !r.output.includes(m.expectRed)) {
-      return {
-        label,
-        verdict: "WRONG-RED",
-        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`,
-        ticks,
-      };
+
+    const named = r.output.split("\n").filter((l) => l.includes(m.expectRed));
+    if (named.length === 0) {
+      return { label, verdict: "WRONG-RED",
+        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`, ticks };
     }
-    // The tick floor is a HEURISTIC for "did it get far enough to be about my check", and it must
-    // never overrule direct evidence. A matched `expectRed` IS that evidence: the suite printed the
-    // assertion we named. Letting the heuristic win graded a correct proof as WRONG-RED whenever the
-    // mutation targeted the suite's FIRST assertion — a false negative on a working test, which is
-    // the expensive direction, because the fix someone reaches for is to weaken the test.
-    if (!m.expectRed && opts.minTicks !== undefined && ticks < opts.minTicks) {
-      return {
-        label,
-        verdict: "WRONG-RED",
-        why: `died after only ${ticks} progress marks (expected ≥ ${opts.minTicks}) and no expectRed was given, so there is nothing to tie this red to your check`,
-        ticks,
-      };
+    const baseHits = new Set(
+      (opts.baseOutputBy?.get(m.command ?? opts.command) ?? "").split("\n").filter((l) => l.includes(m.expectRed)),
+    );
+    if (baseHits.size > 0 && named.every((l) => baseHits.has(l))) {
+      return { label, verdict: "WRONG-RED",
+        why: `exited ${r.status}, but the named assertion printed exactly what it prints when GREEN `
+           + `(${JSON.stringify(named[0].trim())}) — it did not go red, so this red is some other failure`, ticks };
     }
-    return { label, verdict: "KILLED", why: m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`, ticks };
+    return { label, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
   } catch (e) {
     restore();
     return { label, verdict: "ERROR", why: `harness threw: ${e.message}` };
@@ -218,6 +251,10 @@ assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 // all of it.
 const commands = [...new Set(mutations.map((m) => m.command ?? opts.command))];
 const baseTicksBy = new Map();
+// The green transcript is kept, not just its tally: it is the control that says what each named
+// assertion looks like when it PASSES, which is the only way to tell a red line from a green one
+// without guessing at a suite's marker convention.
+opts.baseOutputBy = new Map();
 for (const cmd of commands) {
   say(`${C.dim}baseline: ${cmd}${C.off}`);
   const base = run(cmd, cwd, opts.timeoutMs);
@@ -232,6 +269,7 @@ for (const cmd of commands) {
   say(`${C.green}baseline green${C.off} (${ticks} progress marks)`
     + (ticks === 0 ? ` ${C.yellow}— no progress marks: the reached-the-check floor cannot apply to this suite${C.off}` : ""));
   baseTicksBy.set(cmd, ticks);
+  opts.baseOutputBy.set(cmd, base.output);
 }
 if (opts.minTicks === undefined && [...baseTicksBy.values()].some((t) => t > 0)) {
   // Default the floor just under the baseline: a mutated run that dies much earlier failed for
