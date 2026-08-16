@@ -174,8 +174,8 @@ await sleep("1s", { name: "after-race" });
     !raceOrphans.some((k) => losers.some((b) => k.includes(`/b:${b}/`))), JSON.stringify({ losers, raceOrphans }));
   ok("nothing at all is orphaned when the source did not change", raceOrphans.length === 0, raceOrphans);
 
-  // An edit INSIDE the loser is invisible, which is the contract — but read the note below before
-  // treating this cell as the proof of it.
+  // An edit INSIDE the loser used to be invisible, which was the contract until §7.2's
+  // `branchDigest` landed — read the note below before treating this pair as the proof of either.
   const DURATION: Record<string, string> = { x: "1s", y: "2s" };
   const loser = losers[0] as string;
   const EDITED_LOSER = RACE.replace(
@@ -188,20 +188,30 @@ await sleep("1s", { name: "after-race" });
   const overLoser = await run(EDITED_LOSER, {
     runId: "r-race", handler: checkHandler(10_000_000), journal: rj3, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
-  ok("an edit inside a branch the race decided does not refuse the migration",
-    overLoser === null, `${overLoser?.name}: ${overLoser?.message?.slice(0, 140)}`);
-  ok("and the loser's steps are still accounted for rather than orphaned",
-    keys(rj3.orphans()).length === 0, keys(rj3.orphans()));
+  ok("REPAIRED: an edit inside a branch the race decided now refuses the migration",
+    overLoser?.name === "RunDivergence", `${overLoser?.name}: ${overLoser?.message?.slice(0, 140)}`);
+  // AT THE SCOPE, and the step it names is the load-bearing half. The walk never enters a decided
+  // loser, so a divergence reported from inside one would be a step nothing reached; the digest is
+  // bound into the scope entry and compared at the scope's own lookup, before a branch runs.
+  ok("at the scope that bound the arms, not at a step inside an arm nothing walked",
+    overLoser?.message?.includes("/race:pick#0") === true, overLoser?.message?.slice(0, 140));
+  // THE MECHANISM, asserted rather than inferred from the refusal: a refusal can come from
+  // anywhere, and this suite has just claimed which thing produced it.
+  ok("because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
+    typeof (scope as { branchDigest?: string })?.branchDigest === "string" &&
+      (scope as { branchDigest?: string }).branchDigest?.startsWith("sha256:") === true,
+    (scope as { branchDigest?: string })?.branchDigest);
 
-  // WHY THAT PAIR IS NOT THE PROOF, AND WHAT IS.
+  // WHY THAT PAIR WAS NOT THE PROOF, AND WHAT IS. Kept, because the mutation it defends against is
+  // still live: the digest closed the EDIT case, and this note is about the WALK case.
   //
-  // Both cells above pass against a build that walks the losers too, and the mutation that removes
-  // the branch filter SURVIVES them. Not because the divergence does not happen — the loser really
-  // does raise `RunDivergence` — but because the race's winner tie-break DISCARDS it: on a full
-  // replay every branch clock reads the same instant, so declaration order picks the winner and a
-  // losing arm's rejection is dropped on the floor. An edit inside a loser is therefore invisible
-  // for TWO independent reasons, and a cell that cannot tell them apart is asserting the one it did
-  // not mean.
+  // Both cells above used to pass against a build that walks the losers too, and the mutation that
+  // removes the branch filter SURVIVED them. Not because the divergence did not happen — the loser
+  // really does raise `RunDivergence` — but because the race's winner tie-break DISCARDS it: on a
+  // full replay every branch clock reads the same instant, so declaration order picks the winner
+  // and a losing arm's rejection is dropped on the floor. An edit inside a loser was therefore
+  // invisible for TWO independent reasons, and a cell that cannot tell them apart is asserting the
+  // one it did not mean. The digest fires at the scope's own lookup, upstream of both.
   //
   // So the proof is about WORK, not about the answer: the harm in walking a decided branch is that
   // the branch's steps get performed, and nothing downstream unperforms them. Give the loser a step

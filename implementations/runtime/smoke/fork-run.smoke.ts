@@ -612,22 +612,46 @@ const plan = async (
     winnerEdit.admissible === false && winnerEdit.refusals.some((r) => r.code === "L5018"),
     winnerEdit.refusals);
 
-  // WRONG TODAY. Same edit, other arm, and the plan is byte-for-byte the plan for source that was
-  // never edited at all. A fork onto edited source is the whole point of forking; this one accepts
-  // a program whose losing arm no longer contains the step the parent recorded under it.
-  c("WRONG TODAY: editing the LOSING arm is invisible — admissible, with no refusal at all",
-    loserEdit.admissible === true && loserEdit.refusals.length === 0, loserEdit.refusals);
-  c("WRONG TODAY: and its plan is indistinguishable from the plan for the UNEDITED source",
-    JSON.stringify(keys(loserEdit.cut)) === JSON.stringify(keys(control.cut)),
+  // REPAIRED by §7.2's `branchDigest`. The same edit on the other arm used to produce a plan
+  // byte-for-byte identical to the plan for source that was never edited at all; the losers' bodies
+  // are now bound into the scope entry, so it diverges at the scope rather than passing through it.
+  c("REPAIRED: editing the LOSING arm diverges, at the scope that bound it",
+    loserEdit.admissible === false && loserEdit.refusals.some((r) => r.code === "L5001"),
+    loserEdit.refusals);
+  c("and its plan is no longer indistinguishable from the plan for the UNEDITED source",
+    JSON.stringify(keys(loserEdit.cut)) !== JSON.stringify(keys(control.cut)),
     { edited: keys(loserEdit.cut), control: keys(control.cut) });
 
-  // WRONG TODAY, and this is the mechanism under the two above. The dry walk never looks the
-  // loser's entry up, so by §8.5's own definition ("ORPHANS = journal entries never looked up by
-  // the dry replay") it is an orphan and lost-branch policy decides it. Instead it is swept into
-  // the prefix as accounted-for, which is the wholesale consumption the design forbids: an effect
-  // the new source DELETED inside a losing arm never reaches the orphan table.
-  c("WRONG TODAY: the loser's recorded step is copied into the child's prefix rather than dispositioned",
-    keys(loserEdit.cut).includes(LOSER), keys(loserEdit.cut));
+  // THE NARROWNESS, in the same block, because a digest that refused everything would satisfy the
+  // cell above perfectly and make every fork over a race impossible. The digest is over STRUCTURE
+  // with source offsets stripped: reindenting a losing arm is not an edit to it, and a check that
+  // fired on whitespace is the false positive that teaches people to route around the check.
+  const REFORMATTED = RACED.replace(
+    `slow: async () => { await sleep("9m", { name: "s" }); return 2; }`,
+    `slow: async () => {\n      await sleep("9m", { name: "s" });\n      return 2;\n    }`,
+  );
+  const reformatted = await atKey(REFORMATTED, AFTER);
+  c("and a REFORMATTED losing arm is not an edited one: same structure, same digest, still admissible",
+    reformatted.admissible === true && reformatted.refusals.length === 0, reformatted.refusals);
+
+  // WRONG TODAY, and DELIBERATELY still wrong: the mechanism the digest hardens over rather than
+  // replaces. The dry walk never looks the loser's entry up, so by §8.5's own definition ("ORPHANS
+  // = journal entries never looked up by the dry replay") it is an orphan and lost-branch policy
+  // decides it. Instead it is swept into the prefix as accounted-for — the wholesale consumption
+  // that paragraph forbids by name, applied to the arms the winner's walk does not cover, so a
+  // resolved checkpoint inside a losing arm never reaches the orphan table.
+  //
+  // Measured on the UNEDITED source on purpose. Against edited source the digest now refuses the
+  // whole plan, which empties the cut and would make this cell pass for a reason that has nothing
+  // to do with disposition — a cell that dies for the wrong reason stops being a tripwire.
+  //
+  // §8.5 NAMES lost-branch policy and DEFINES IT NOWHERE, and routing losers into the existing
+  // orphan table would change what already-working UNEDITED source does: every migration over a
+  // race with a rejected-kind orphan in a losing arm would start being refused. That is a semantic
+  // decision, so it is a SPEC proposal rather than something this lane invents. The cell stays red-
+  // when-fixed until that lands.
+  c("WRONG TODAY: an unedited fork sweeps the loser's step into the prefix rather than dispositioning it",
+    keys(control.cut).includes(LOSER), keys(control.cut));
 
   // WRONG TODAY, a different failure with the same root: the walk does not go there, so the loser's
   // OWN step is reported unreached. L5018 tells the caller their program does not reach a step the

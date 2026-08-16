@@ -182,6 +182,31 @@ function unwrapScope(e: unknown): { reason: unknown; facts: ScopeFacts } {
  * so every place that has to describe a failure it did not construct goes through here. A recorded
  * entry saying "Cannot read properties of null" describes the recorder, not the run.
  */
+/**
+ * The digest fact, written wherever the loser set is — a race that FAILED owes its losers exactly
+ * as a winning one does, so it carries the digest too, and `replay-failed` compares it.
+ */
+function digestFacts(
+  of: ((losers: readonly string[]) => string | undefined) | undefined,
+  losers: readonly string[] | undefined,
+): { branchDigest?: string } {
+  if (of === undefined || losers === undefined) return {};
+  const d = of(losers);
+  return d === undefined ? {} : { branchDigest: d };
+}
+
+/** An AST subtree with its source offsets removed: what the code IS, not where it sits. */
+function stripPositions(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(stripPositions);
+  if (node === null || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    if (k === "start" || k === "end" || k === "loc" || k === "range") continue;
+    out[k] = stripPositions(v);
+  }
+  return out;
+}
+
 function messageOf(v: unknown): string {
   if (v instanceof Error) return v.message;
   const m = (v as { message?: unknown } | null | undefined)?.message;
@@ -1110,6 +1135,37 @@ class Interpreter {
    * the same named effect cannot race for a counter, and replay reproduces both regardless of
    * which one finished first.
    */
+  /**
+   * §7.2's `branchDigest`, over the arms a settled `race` will never be walked into.
+   *
+   * STRUCTURE, NOT TEXT AND NOT POSITION. Acorn nodes carry `start`/`end`, and an edit anywhere
+   * earlier in the file moves every offset after it — a digest over those would diverge on a run
+   * whose race nobody touched, which is the false positive that teaches people to bypass a check.
+   * Digesting the source SLICE instead would diverge on reindentation for the same reason. What is
+   * hashed is the branch body's shape with positions stripped, so a reformat is silent and an edit
+   * is not.
+   *
+   * Only the LOSERS, because only they are unwalked. The winner's arm is walked entry by entry and
+   * an edit inside it already diverges on the ordinary hash check with the step it broke named —
+   * a strictly better error than "some branch changed". Digesting the winner too would replace that
+   * error with this one, so it does not.
+   */
+  private branchDigester(branchesNode: AnyNode | undefined): ((losers: readonly string[]) => string | undefined) | undefined {
+    if (branchesNode?.type !== "ObjectExpression") return undefined;
+    const bodies = new Map<string, unknown>();
+    for (const p of (branchesNode.properties as AnyNode[] | undefined) ?? []) {
+      const key = p.key as AnyNode | undefined;
+      const named = (key?.name as string | undefined) ?? (key?.value as string | undefined);
+      if (named !== undefined) bodies.set(named, stripPositions(p.value));
+    }
+    return (losers) =>
+      digest(
+        [...losers]
+          .sort()
+          .map((n) => [n, bodies.has(n) ? bodies.get(n) : null]),
+      );
+  }
+
   async callScope(name: string, argNodes: AnyNode[], env: Env, frame: Frame): Promise<unknown> {
     const spec = PRIMITIVES[name];
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
@@ -1132,9 +1188,17 @@ class Interpreter {
         }
       : undefined;
 
-    return await this.performScope(scopeKey, frame, async (ctx, only) => await this.runScope(
-      name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame, ctx, only,
-    ), subject);
+    return await this.performScope(
+      scopeKey,
+      frame,
+      async (ctx, only) =>
+        await this.runScope(name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame, ctx, only),
+      subject,
+      // `race` alone. `parallel` and `fanOut` have no losers — every branch is a winner and the
+      // walk enters all of them — and a `conclave` cannot be walked into at all, so a digest there
+      // would bind arms nothing was ever going to miss.
+      name === "race" ? this.branchDigester(argNodes[0]) : undefined,
+    );
   }
 
   /**
@@ -1156,6 +1220,8 @@ class Interpreter {
     frame: Frame,
     body: (ctx: EffectContext, only?: ReadonlySet<string>) => Promise<ScopeOutcome>,
     subject?: unknown,
+    /** §7.2's `branchDigest` over a named loser set. Absent where there is nothing to digest. */
+    branchDigest?: (losers: readonly string[]) => string | undefined,
   ): Promise<unknown> {
     const inputHash = digest(
       subject === undefined
@@ -1170,6 +1236,19 @@ class Interpreter {
     if (verdict.verdict === "replay" || verdict.verdict === "replay-failed") {
       const entry = verdict.entry;
       const endedAt = entry.endedAt ?? this.options.handler.now();
+
+      // §8.5: "compare `branchDigest` if the entry carries one". The scope's own `inputHash` is
+      // `{kind, name}` — an arm's body is not in it — and a settled race is delivered from this
+      // entry without entering a branch, so without this comparison an edit inside a LOSING arm
+      // reaches nothing that could notice it. Both replay paths, not the migration path alone: a
+      // resume of edited source is exactly the case a divergence exists to make loud, and the run
+      // record carries no program hash to have refused it earlier (§17 delta 2).
+      if (entry.branchDigest !== undefined && branchDigest !== undefined) {
+        const now = branchDigest(entry.cancel?.losers ?? []);
+        if (now !== undefined && now !== entry.branchDigest) {
+          throw new RunDivergence(stepKeyString(scopeKey), entry.branchDigest, now);
+        }
+      }
 
       // A MIGRATION MUST NOT TAKE THE SHORT-CIRCUIT ABOVE.
       //
@@ -1290,7 +1369,10 @@ class Interpreter {
           : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
       // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
       // carries the intent too — and a conclave that closed says so even when its body failed.
-      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, facts);
+      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
+        ...facts,
+        ...digestFacts(branchDigest, facts.cancel?.losers),
+      });
       throw reason;
     }
 
@@ -1301,6 +1383,7 @@ class Interpreter {
       {
         ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
         ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
+        ...digestFacts(branchDigest, outcome.cancel?.losers),
       },
     );
     return outcome.value;

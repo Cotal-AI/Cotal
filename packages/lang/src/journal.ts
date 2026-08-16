@@ -68,6 +68,21 @@ export interface JournalEntry {
    */
   readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
   /**
+   * §7.2's `branchDigest`: what the arms this scope did NOT walk looked like when it ran.
+   *
+   * A settled `race` is replayed from its own entry, and a migration walks the RECORDED WINNING
+   * branch alone — so an edit inside a LOSING arm is invisible to every check the walk performs.
+   * Measured, not assumed: editing the winner's arm is caught, editing the loser's arm produced a
+   * plan byte-identical to the plan for source that was never edited, and the child ran silently.
+   * This binds the losers' bodies into the entry so that edit diverges directly.
+   *
+   * Optional by the design and optional here: it is written only where the branch bodies are
+   * literals in the source the interpreter is holding. A `race` over a variable has no branch node
+   * to digest, and inventing one is worse than carrying nothing — hence "compare it IF the entry
+   * carries one" rather than "require it".
+   */
+  readonly branchDigest?: string;
+  /**
    * A `conclave`'s CLOSURE, stated rather than inferred from the entry's state.
    *
    * The state cannot answer it. A cancelled conclave is `settled`/`cancelled` while its membership
@@ -364,6 +379,7 @@ export class Journal {
     facts: {
       readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
       readonly closed?: boolean;
+      readonly branchDigest?: string;
     } = {},
   ): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
@@ -379,6 +395,7 @@ export class Journal {
       ...(outcome.status === "failed" ? { error: outcome.error } : {}),
       ...(facts.cancel !== undefined ? { cancel: facts.cancel } : {}),
       ...(facts.closed !== undefined ? { closed: facts.closed } : {}),
+      ...(facts.branchDigest !== undefined ? { branchDigest: facts.branchDigest } : {}),
     };
     await this.persist(k, settled);
     this.byKey.set(k, settled);
