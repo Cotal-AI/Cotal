@@ -532,12 +532,15 @@ try {
 
   // NARROWNESS: a handler with no such method is not an error. Every other cell in this file uses
   // one, so without this the driver could require `adopted` and nothing here would notice.
+  // THROUGH `attempt`, for this file's own stated reason: a driver that DEMANDED the method would
+  // raise rather than return, and an escaping exception kills the suite instead of failing a cell —
+  // which grades as "the run stopped" and names no claim at all.
   const plain = new CountingHandler();
-  const noHook = await driveRun(js, jsm, {
+  const noHook = await attempt(driveRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m4", 4, takeovers += 1), handler: plain,
-  });
+  }));
   c("and a handler that owns no external state needs no method: the takeover still completes",
-    noHook.status === "completed", noHook.status === "released" ? noHook.reason.name : noHook.status);
+    noHook.status === "completed", why(noHook));
 }
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);

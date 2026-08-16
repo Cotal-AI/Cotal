@@ -66,7 +66,7 @@
       "replace": "  handler !== undefined",
       "expectRed": "and a handler that owns no external state needs no method: the takeover still completes",
       "cell": "and a handler that owns no external state needs no method: the takeover still completes",
-      "note": "The other narrowness twin. Every other cell in this file drives a handler that owns nothing external, so a driver that demanded the method would break the ordinary case while the takeover cells above stayed green."
+      "note": "The other narrowness twin. Every other cell in this file drives a handler that owns nothing external, so a driver that demanded the method would break the ordinary case while the takeover cells above stayed green. GRADED INCONCLUSIVE ON THE FIRST RUN, and the harness was right: demanding the method makes the FIRST cell in the file throw at bind time, so the suite died before its terminal marker and any verdict would have been about the stop. Fixed on the TEST side by routing the narrowness cell through this file's own `attempt` helper, which exists for exactly this -- an escaping exception kills the suite instead of failing a cell, and names no claim."
     }
   ]
 }
