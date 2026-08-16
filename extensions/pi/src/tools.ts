@@ -7,13 +7,20 @@
  * The one pi-specific tool is `cotal_inbox`: the driver keeps ownership of automatic traffic,
  * while the tool destructively pulls only quiet ambient (plus read-only focus recall).
  *
- * Schemas: the shared spec carries a Zod raw shape; pi's `registerTool` takes a TypeBox
+ * Schemas: the shared spec carries a CLOSED Zod object; pi's `registerTool` takes a TypeBox
  * TSchema. TypeBox schemas are plain JSON Schema, so we render Zod → JSON Schema (Zod 4's
  * `toJSONSchema`, the same path the Hermes connector uses) and brand it with `Type.Unsafe`.
  */
 import { z } from "zod";
 import { isConcreteChannel } from "@cotal-ai/core";
-import { cotalToolSpecs, MESH_FIRST_STEER, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import {
+  cotalToolSpecs,
+  MESH_FIRST_STEER,
+  NO_TOOL_ARGS,
+  type MeshAgent,
+  type AgentConfig,
+  type CotalToolInput,
+} from "@cotal-ai/connector-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 
@@ -35,12 +42,13 @@ const SEND_GUIDELINES = [
   MESH_FIRST_STEER,
 ];
 
-function toParameters(schema: z.ZodRawShape | undefined): TSchema {
-  if (!schema) return Type.Object({});
-  // io:"input" — the default (output) io emits `additionalProperties: false`, and pi validates
-  // args strictly against the schema, so a harmless stray key would fail a call that the same
-  // Zod shape accepts (strip mode) on the Claude Code / OpenCode paths. Input io matches those.
-  return Type.Unsafe(z.toJSONSchema(z.object(schema), { io: "input" }));
+function toParameters(schema: CotalToolInput): TSchema {
+  // The shared spec's object is CLOSED, and a closed object emits `additionalProperties: false`
+  // under every io mode — so pi's strict validation now refuses a stray key rather than matching
+  // the other adapters' strip. That is the point: an unmodelled `owner`/`actor` must not vanish
+  // silently on any host. io:"input" stays because this describes what a caller may SEND (it is
+  // what keeps a future `.default()` field optional here); it no longer decides closure.
+  return Type.Unsafe(z.toJSONSchema(schema, { io: "input" }));
 }
 
 /** `<label> → <target>: <text>` for a send-tool call, so the operator SEES what the model is
@@ -89,8 +97,11 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
     pi.registerTool({
       name: spec.name,
       label: spec.title,
-       description: readonlyInbox ? PULL_INBOX_DESCRIPTION : spec.description,
-      parameters: readonlyInbox ? Type.Object({}) : toParameters(spec.schema),
+      description: readonlyInbox ? PULL_INBOX_DESCRIPTION : spec.description,
+      // pi's inbox takes nothing from the caller (`scope` is ours) — but a bare `Type.Object({})`
+      // is OPEN, so extras would be accepted and then discarded by the substitution below. Render
+      // the shared closed-empty object through the same path as every other tool.
+      parameters: toParameters(readonlyInbox ? NO_TOOL_ARGS : spec.schema),
       promptGuidelines: spec.name === "cotal_send" ? SEND_GUIDELINES : undefined,
       renderCall: SEND_TOOLS.has(spec.name)
         ? (args) => wrapped(sendCallLine(spec.name, config, (args ?? {}) as Record<string, unknown>))
