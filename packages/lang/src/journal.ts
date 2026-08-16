@@ -83,6 +83,20 @@ export interface JournalEntry {
    */
   readonly branchDigest?: string;
   /**
+   * `branches`: the arm names this scope was made of, on a scope that FAILED.
+   *
+   * A successful scope carries them inside `result`, and `settle` writes `result` only when the
+   * status is `ok` — result and error are exclusive, which is right. The consequence was not: a
+   * FAILED scope recorded no arm names anywhere, so a migration reconstructed an empty winner set,
+   * entered no branch, and awaited `Promise.race([])`, which never settles. It hung on source
+   * nobody had edited. The names are not an outcome; they are what the scope WAS, and a scope that
+   * failed was still made of arms.
+   *
+   * Written only on the failed path, because the ok path already carries them and duplicating a
+   * fact into two places is how the two come to disagree.
+   */
+  readonly branches?: readonly string[];
+  /**
    * A `conclave`'s CLOSURE, stated rather than inferred from the entry's state.
    *
    * The state cannot answer it. A cancelled conclave is `settled`/`cancelled` while its membership
@@ -393,6 +407,7 @@ export class Journal {
       readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
       readonly closed?: boolean;
       readonly branchDigest?: string;
+      readonly branches?: readonly string[];
     } = {},
   ): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
@@ -409,6 +424,8 @@ export class Journal {
       ...(facts.cancel !== undefined ? { cancel: facts.cancel } : {}),
       ...(facts.closed !== undefined ? { closed: facts.closed } : {}),
       ...(facts.branchDigest !== undefined ? { branchDigest: facts.branchDigest } : {}),
+      // Only where `result` is not carrying them, so the two can never disagree.
+      ...(outcome.status !== "ok" && facts.branches !== undefined ? { branches: facts.branches } : {}),
     };
     await this.persist(k, settled);
     this.byKey.set(k, settled);

@@ -18,6 +18,7 @@
 import { run, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
+import { LANGUAGE_VERSION } from "../src/pins.js";
 import { stepKeyString } from "../src/keys.js";
 import type { EffectContext } from "../src/effects.js";
 import { journalEntryKeyString } from "../src/journal.js";
@@ -494,6 +495,113 @@ await parallel({
   }));
   ok("KNOWN GAP: a RESUME of a renamed winning arm is still silent, because it never enters an arm",
     resumedRename === null, `${(resumedRename as Error)?.name}: ${(resumedRename as Error)?.message?.slice(0, 90)}`);
+}
+
+// ---- 6) A SCOPE THAT FAILED IS STILL MADE OF ARMS ----------------------------------------------
+//
+// Section 5's guard was narrower than its own name. It asked "is every RECORDED branch present in
+// the source?", which is vacuously true when NO branch was recorded, so it passed and the walk
+// still entered nothing and still hung. And no branch was recorded for a whole class of scope: a
+// successful scope carries its arm names inside `result`, `settle` writes `result` only for
+// `status: "ok"` (result and error are exclusive, correctly), so a scope that FAILED recorded no
+// arm names anywhere. A migration over an UNEDITED program containing a failed race hung.
+//
+// The arm names are not an outcome, so they are a FACT on the entry now, written on the failed path
+// only, where `result` is not already carrying them. Two places, never both, so they cannot come to
+// disagree.
+//
+// Both directions are here on purpose. The `race` is the hang. The `parallel` is the silent one:
+// `Promise.all([])` RESOLVES, so a failed parallel returned the recorded error having entered
+// nothing, and an edit inside the failing arm was invisible rather than loud.
+{
+  const deadline = async (label: string, p: Promise<unknown>, ms = 2_000) => {
+    let t: ReturnType<typeof setTimeout>;
+    const timer = new Promise<"HUNG">((res) => { t = setTimeout(() => res("HUNG"), ms); });
+    const outcome = await Promise.race([p.then(() => null, (e: unknown) => e as Error), timer]);
+    clearTimeout(t!);
+    return outcome === "HUNG" ? new Error(`HUNG: ${label} did not return within ${ms}ms`) : outcome;
+  };
+  const PINS6 = { seed: "s6", startedAt: 1_700_000_000_000, yieldEvery: 1000, stepBudget: 100_000,
+    effectCeiling: 1000, languageVersion: LANGUAGE_VERSION, runId: "r6" } as never;
+
+  const record = async (runId: string, src: string) => {
+    const j6 = new Journal({ run: runId });
+    await run(src, { runId, handler: new SimHandler({} as never), journal: j6, pins: { ...(PINS6 as never as Record<string, unknown>), runId } as never })
+      .then(() => null, () => null);
+    return j6.entries();
+  };
+  /** The same entries as a run recorded them BEFORE scopes carried arm names on failure. */
+  const asLegacy = (es: readonly JournalEntry[]) =>
+    es.map((e) => { const c = { ...e } as Record<string, unknown>; delete c.branches; return c as JournalEntry; });
+  const walk6 = async (runId: string, src: string, es: readonly JournalEntry[]) =>
+    await deadline(`${runId} walk`, run(src, {
+      runId, handler: checkHandler(10_000_000), migration: true,
+      pins: { ...(PINS6 as never as Record<string, unknown>), runId } as never,
+      journal: new Journal({ run: runId, entries: es, readOnly: true }),
+    }));
+
+  const RACE6 = `
+await race({
+  x: async () => { await sleep("1s", { name: "x-work" }); throw "x blew up"; },
+  y: async () => { await sleep("2s", { name: "y-work" }); throw "y blew up"; },
+}, { name: "doomed" });
+`;
+  const raceEntries = await record("r6-race", RACE6);
+  const raceScope = raceEntries.find((e) => journalEntryKeyString(e).includes("race:doomed")
+    && (e as { state?: string }).state === "settled") as (JournalEntry & { branches?: readonly string[] }) | undefined;
+  ok("a race whose arms all threw settles FAILED", (raceScope as { status?: string })?.status === "failed",
+    JSON.stringify(raceScope)?.slice(0, 120));
+  ok("and it carries no `result`, which is why the arm names had nowhere to live",
+    (raceScope as { result?: unknown })?.result === undefined);
+  ok("so the arm names are recorded as a FACT on the entry instead",
+    JSON.stringify(raceScope?.branches) === JSON.stringify(["x", "y"]), raceScope?.branches);
+
+  // THE HANG, on source nobody edited. This is the cell that was failing before the fix, and it is
+  // deliberately over UNEDITED source: a migration that cannot walk what it recorded is broken
+  // before any edit is involved.
+  const sameRace = await walk6("r6-race", RACE6, raceEntries);
+  ok("a migration over an UNEDITED failed race returns rather than hanging",
+    !(sameRace as Error)?.message?.startsWith("HUNG"), `${(sameRace as Error)?.name}: ${(sameRace as Error)?.message?.slice(0, 80)}`);
+  ok("and what it returns is the failure the run recorded, because it entered the arm that failed",
+    String((sameRace as unknown) ?? "") === "x blew up", JSON.stringify(sameRace)?.slice(0, 90));
+
+  // THE OTHER DIRECTION. A failed `parallel` never hung, because `Promise.all([])` resolves — it
+  // handed back the recorded error having walked nothing, so an edit inside the failing arm was
+  // silent. Entering the arm turns that into new work at the step the edit made.
+  const PAR6 = `
+await parallel({
+  x: async () => { await sleep("1s", { name: "x-work" }); throw "x blew up"; },
+  y: async () => { await sleep("2s", { name: "y-work" }); },
+}, { name: "doomedp" });
+`;
+  const parEntries = await record("r6-par", PAR6);
+  ok("a failed parallel records its arm names too", 
+    JSON.stringify((parEntries.find((e) => journalEntryKeyString(e).includes("parallel:doomedp")
+      && (e as { state?: string }).state === "settled") as { branches?: readonly string[] } | undefined)?.branches)
+      === JSON.stringify(["x", "y"]));
+  const parEdited = await walk6("r6-par", PAR6.replace(`{ name: "x-work" }`, `{ name: "x-edited" }`), parEntries);
+  ok("an edit INSIDE a failed parallel's failing arm is now reached instead of being skipped",
+    (parEdited as Error)?.name === "JournalReadOnlyError" || (parEdited as Error) instanceof ReachedFrontier,
+    `${(parEdited as Error)?.name}: ${(parEdited as Error)?.message?.slice(0, 90)}`);
+
+  // THE BACKSTOP, for journals already written. Their entries carry no arm names and never will, so
+  // the walk still has nothing to enter — but it refuses by name instead of waiting forever. The
+  // message is its own, because "a recorded branch is missing" is FALSE here: nothing was recorded,
+  // and printing an empty `missing:` list would send a reader hunting for an arm that never existed.
+  const legacyRace = await walk6("r6-race", RACE6, asLegacy(raceEntries));
+  ok("a journal written before the fix refuses rather than hanging",
+    legacyRace instanceof ScopeBranchMissing, `${(legacyRace as Error)?.name}: ${(legacyRace as Error)?.message?.slice(0, 80)}`);
+  ok("and says the arm names are ABSENT rather than reporting a branch as missing",
+    (legacyRace as Error)?.message?.includes("recorded no branch names") === true
+      && (legacyRace as ScopeBranchMissing)?.recorded?.length === 0,
+    (legacyRace as Error)?.message?.split("\n")[0]);
+
+  // NARROWNESS. The empty-set backstop must not fire on a scope the SOURCE has no arms for, or it
+  // would refuse a legitimately emptied scope instead of letting the ordinary checks speak.
+  const emptied = await walk6("r6-race", `await race({}, { name: "doomed" });`, raceEntries);
+  ok("an emptied scope is not caught by the empty-set backstop, whose subject is the RECORD",
+    !(emptied instanceof ScopeBranchMissing) || (emptied as ScopeBranchMissing).recorded.length > 0,
+    `${(emptied as Error)?.name}: ${(emptied as Error)?.message?.slice(0, 80)}`);
 }
 
 console.log(`migrate.smoke: ${pass} passed, ${fail} failed`);

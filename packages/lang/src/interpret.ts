@@ -147,6 +147,16 @@ class Env {
 interface ScopeFacts {
   readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
   readonly closed?: boolean;
+  /**
+   * The scope's ARM NAMES, carried as a fact rather than left inside the result.
+   *
+   * A successful scope records `result: { branches, value }`, and `settle` writes `result` only for
+   * `status: "ok"` — result and error are exclusive, correctly. So a scope that FAILED recorded no
+   * branch list at all, and a migration reconstructed an EMPTY winner set from it, entered nothing,
+   * and awaited `Promise.race([])`, which never settles. The branch names are not a result; they
+   * are what the scope was, and a scope that failed was still made of arms.
+   */
+  readonly branches?: readonly string[];
 }
 
 /**
@@ -427,8 +437,18 @@ export class ScopeBranchMissing extends Error {
     readonly recorded: readonly string[],
     readonly source: readonly string[],
   ) {
-    super(
-      `L5022 A recorded branch is not in the migrated source\n\n  step  ${scopeKey}   BRANCH MISSING\n`
+    super(recorded.length === 0
+      // THE EMPTY CASE IS NOT THE SAME SENTENCE. "A recorded branch is not in the source" is false
+      // here: no branch was recorded at all, and saying "missing: " with nothing after it would
+      // send a reader looking through their source for an arm that was never named. The cause is
+      // the entry, not the edit, and the repair is different too.
+      ? `L5022 A settled scope recorded no branch names\n\n  step  ${scopeKey}   BRANCH NAMES ABSENT\n`
+        + `        source    ${source.join(", ")}\n\n`
+        + `This ${scope} settled before scopes recorded their arm names on failure, so the walk has `
+        + `nothing to tell it which arm ran. It cannot enter one, and entering none would wait `
+        + `forever on a scope with no branches in it.\n\nOptions\n  resume(run)   replay it rather `
+        + `than walking it\n  fork(run, "${scopeKey}")   re-run this scope on the current arms`
+      : `L5022 A recorded branch is not in the migrated source\n\n  step  ${scopeKey}   BRANCH MISSING\n`
         + `        recorded  ${recorded.join(", ")}\n        source    ${source.join(", ")}\n`
         + `        missing   ${missing.join(", ")}\n\n`
         + `This ${scope} settled on ${missing.length === 1 ? "a branch" : "branches"} the new source no longer declares, so the walk `
@@ -1294,8 +1314,12 @@ class Interpreter {
       // checks inside them, while the losers — decided, not removed — are accounted for as before.
       if (this.options.migration === true) {
         if (subject !== undefined) throw new UnwalkableScope(stepKeyString(scopeKey), "conclave");
+        // A SETTLED SCOPE CARRIES ITS ARM NAMES IN ONE OF TWO PLACES, and reading only the first
+        // is what made a failed scope look like a scope with no arms. `result` holds them when the
+        // scope succeeded; the `branches` FACT holds them when it failed, because `settle` writes
+        // no `result` for a failure.
         const recorded = entry.result as { branches?: readonly string[] } | undefined;
-        const branches = recorded?.branches ?? [];
+        const branches = recorded?.branches ?? entry.branches ?? [];
         const losers = new Set(entry.cancel?.losers ?? []);
         await this.journal.consumeScope(stepKeyString(scopeKey), endedAt, losers);
         try {
@@ -1460,6 +1484,15 @@ class Interpreter {
         if (missing.length > 0) {
           throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);
         }
+        // AND THE EMPTY CASE, which the check above cannot see: with no recorded branches at all,
+        // "every recorded branch is present" is vacuously true, so the guard passed and the walk
+        // still entered nothing and still hung. A guard over an empty set grades nothing and is
+        // green forever. Journals written before scopes recorded their arm names on failure are
+        // exactly that shape, so this refuses them by name instead of hanging on them. It cannot
+        // fire on a scope that has no arms in the source either, because `all` is empty then too.
+        if (only.size === 0 && all.length > 0) {
+          throw new ScopeBranchMissing(stepKeyString(ctx.key), name, [], [], all.map(([k]) => k));
+        }
       }
 
       const frames = entries.map(([k]) => frame.branch(scopeKind, scopeName, occurrence, k));
@@ -1490,7 +1523,7 @@ class Interpreter {
           await Promise.allSettled(running);
           frame.clock.join(frames.map((f) => f.clock));
           const losers = branches.filter((k) => k !== failed);
-          throw new ScopeFailed(e, { cancel: { losers, issued: false } });
+          throw new ScopeFailed(e, { branches, cancel: { losers, issued: false } });
         }
       }
 
@@ -1542,6 +1575,7 @@ class Interpreter {
         // cancelled — a losing arm can crash before the cancellation reaches it, so the intent has
         // to travel with the outcome exactly as it does for a winning race.
         throw new ScopeFailed(won.reason, {
+          branches,
           cancel: { losers: branches.filter((k) => k !== index), issued: false },
         });
       }
