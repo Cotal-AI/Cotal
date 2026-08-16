@@ -1,0 +1,12 @@
+{
+  "command": "pnpm smoke:manager-restart-fence",
+  "mutations": [
+    {
+      "name": "a long-lived client stops recovering from a bind refusal (the stale bind strands it)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {\n          this.resolvedServices.delete(endpoint);\n          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n        }\n",
+      "replace": "",
+      "expectRed": "the stale (epoch 0) bind was replaced by the successor's"
+    }
+  ]
+}

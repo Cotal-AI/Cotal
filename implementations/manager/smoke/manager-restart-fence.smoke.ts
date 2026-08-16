@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
 import {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, CotalEndpoint, EpEnvelopeError, respondedButUnbound,
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, CotalEndpoint, EpEnvelopeError,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
   type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
 } from "@cotal-ai/core";
@@ -152,13 +152,25 @@ try {
     epoch2 > epoch1 && M2.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
 
   // ── the long-lived client across the restart ──
-  // The split-retry guard's rule, on the ADJACENT path. A different instance answering is
-  // `failed-precondition` (graded in instrument-instance-pin); the SAME instance answering at a
-  // later epoch is `expired`, raised after the attributed reply exactly the same way. Distsys review
+  // WHAT A STALE-EPOCH CALL COSTS, AND WHY THAT CHANGED. A different instance answering is
+  // `failed-precondition`; the SAME instance answering at a later epoch is `expired`. Distsys review
   // measured, on a real same-root restart, that this path retained the stale (iid1, epoch 0) bind:
   // every later deliberate call reached the successor, may have applied its effect, came back
-  // `expired`, and stayed bound to epoch 0, so a long-lived client never recovered. Same rule as the
-  // split: drop the bind, re-issue nothing unsafe, let a repeat-safe read heal in one call.
+  // `expired`, and stayed bound to epoch 0, so a long-lived client never recovered.
+  //
+  // THE INVERSION HERE. This block used to require that an UNSAFE command surface that `expired` and
+  // re-issue NOTHING — the honest answer while the mismatch was only detectable on the reply, after
+  // the successor had already handled the request. The request now carries the incarnation the
+  // caller bound (§13.3), so the successor REFUSES IT BEFORE RUNNING IT and says so. That converts
+  // the cost from "surface an error the operator must go and verify" into "re-resolve and issue it
+  // for the first time", and the client does that inside the one call — for `spawn` as much as for
+  // a read, because what gated the old retry was not knowing whether the effect had landed.
+  //
+  // The old surfacing path is NOT deleted: a responder too old to know the field ignores it and
+  // executes, and there the caller-side check and the {@link isRepeatSafeCommand} allowlist are
+  // still the only protection. That skewed pair has no live producer here, so it is no longer
+  // gated by this suite — it keeps its unit coverage and nothing more, which is worth knowing
+  // before anyone reads the allowlist as dead code.
   console.log("\n-- a long-lived client's cached bind across the restart --");
   {
     // An UNSAFE command (`spawn` creates; the persona does not exist, so incarnation 2 refuses it
@@ -166,15 +178,21 @@ try {
     // client must not mistake for its bound incarnation's).
     const before = pubs();
     let threw: unknown;
-    try { await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { threw = e; }
-    check("the stale-epoch client's UNSAFE call is refused as `expired` (the successor answered at a later epoch)",
-      threw instanceof EpEnvelopeError && threw.code === "expired", threw instanceof Error ? `${(threw as EpEnvelopeError).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
-    check("...carrying the responder-answered marker (a responder DID answer; a retry is a second attempt)",
-      respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
-    check("...and the message says which side is stale: the responder is a SUCCESSOR of the incarnation this handle holds",
-      threw instanceof Error && /successor/i.test(threw.message), threw instanceof Error ? threw.message.slice(0, 260) : threw);
-    check("...and NOTHING was re-issued: exactly one publish", pubs() - before === 1, { publishes: pubs() - before });
-    check("...and the stale (epoch 0) bind was dropped", cache.get(MANAGER_ENDPOINT) === undefined, { got: cache.get(MANAGER_ENDPOINT)?.responder });
+    let reply: EpAttributedReply | undefined;
+    try { reply = await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { threw = e; }
+    check("the stale-epoch client's UNSAFE call no longer surfaces `expired` — the successor refused it before running it",
+      threw === undefined, threw instanceof Error ? `${(threw as EpEnvelopeError).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
+    check("...and what comes back is the SUCCESSOR's own answer, at ITS epoch",
+      reply?.responder.instanceId === iid1 && reply?.responder.epoch === epoch2, { responder: reply?.responder, epoch2 });
+    // The re-issue is the whole point, and it is only safe because the first attempt PROVED it did
+    // not run. Asserting the publish count is what tells a re-issue from a single lucky call: this
+    // cell is the exact inverse of the one it replaces, and it must not be able to pass both ways.
+    check("...it WAS re-issued (the old guard's single publish would have left the caller stranded)",
+      pubs() - before > 1, { publishes: pubs() - before });
+    check("...and the reply is the manager's own refusal, not the bind refusal (the second attempt really ran)",
+      reply?.reply.ok === false && !/WAS NOT RUN/.test(reply.reply.error?.message ?? ""), reply?.reply.error);
+    check("...and the stale (epoch 0) bind was replaced by the successor's, inside that one call",
+      cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2, { got: cache.get(MANAGER_ENDPOINT)?.responder });
 
     // THE STRAND, OR NOT. The operator verifies and deliberately re-issues. With the bind retained,
     // this call reused (iid1, epoch 0), reached the successor AGAIN and came back `expired` again,

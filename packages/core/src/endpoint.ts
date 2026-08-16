@@ -18,7 +18,7 @@ import {
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
-import { EpEnvelopeError, respondedButUnbound } from "./endpoint-envelope.js";
+import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
@@ -1356,13 +1356,18 @@ export class CotalEndpoint extends EventEmitter {
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
-   *  resolve is describe-bound currency: when an incarnation OTHER than the bound one answers a
-   *  later invoke (a different instance: `failed-precondition`; the same instance at a later epoch
-   *  after a same-root restart: `expired`; both marked {@link respondedButUnbound}), the stale bind
-   *  is dropped in every case, and the call is re-issued ONCE against the current incarnation only
-   *  for a command on the {@link isRepeatSafeCommand} allowlist. Any other command surfaces the
-   *  error instead: the request was received and answered by a live instance, so a second attempt
-   *  could duplicate its effect.
+   *  resolve is describe-bound currency, and a call that reaches the wrong incarnation is recovered
+   *  two different ways depending on WHO caught it — which is the difference between knowing the
+   *  command did not run and only knowing that someone answered:
+   *   - the RESPONDER fenced it on the request's `bind` (§13.2, an `ok:false` reply marked
+   *     {@link replyRefusedBeforeEffect}): the command did not run, so the stale bind is dropped and
+   *     the call is re-issued ONCE for any command.
+   *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
+   *     `failed-precondition`; the same instance at a later epoch after a same-root restart,
+   *     `expired`) — which is what happens against a responder too old to know the field. There the
+   *     request was received and answered by a live instance, so the stale bind is still dropped but
+   *     the call is re-issued only for a command on the {@link isRepeatSafeCommand} allowlist; any
+   *     other surfaces, because a second attempt could duplicate its effect.
    *  Errors from the responder come back structurally on the attributed reply
    *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
@@ -1384,7 +1389,28 @@ export class CotalEndpoint extends EventEmitter {
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
     const doInvoke = async (): Promise<EpAttributedReply> => {
       try {
-        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        const r = await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a member of the class received
+        // this call, saw it was bound to a different incarnation, and refused BEFORE running the
+        // command. Two consequences, and they are the reason the fence is worth having here.
+        //
+        // First, this arrives as an ordinary `ok:false` REPLY, not a throw, so the recovery below —
+        // which keys on a thrown `respondedButUnbound` — never sees it. Without this branch a
+        // long-lived client would keep its stale bind and every later call on this endpoint would
+        // meet the same refusal, permanently, on an endpoint with no repeat-safe command to heal it
+        // through. That is the exact failure the bind-drop below exists to prevent.
+        //
+        // Second, the retry here is NOT gated on {@link isRepeatSafeCommand}, and deliberately so.
+        // That allowlist exists because a split used to be detected after the responder had already
+        // handled the request, so core could not tell a duplicate-able effect from a repaired one
+        // and had to fail closed. A bind refusal removes the uncertainty rather than working around
+        // it: the responder states it did not run the command, so re-issuing is a FIRST attempt, not
+        // a second one. Re-resolve and re-issue exactly once; a second refusal surfaces.
+        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
+          this.resolvedServices.delete(endpoint);
+          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        }
+        return r;
       } catch (e) {
         if (!(e instanceof EpEnvelopeError)) throw e;
         // DO NOT auto-retry a command that a responder already ANSWERED. This recovery was
