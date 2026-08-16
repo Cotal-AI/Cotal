@@ -6,6 +6,8 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 
 `cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).
 
+**Arguments are closed.** Every tool accepts exactly the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. A key that is not in the table is an error, not something to be quietly dropped — so a call that names an identity (`owner`, `actor`, `caller`) is turned away rather than run as if it had never named one. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.
+
 | Tool | Does | Side-effect |
 |---|---|---|
 | [`cotal_orientation`](#cotalorientation) | orient (who you are & what you can do) | read-only |

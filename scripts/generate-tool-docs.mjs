@@ -168,6 +168,10 @@ lines.push(
   "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`) are injected only for personas declaring `capabilities: [spawn]` ([identity & auth](identity-and-auth.md)).",
 );
 lines.push("");
+lines.push(
+  "**Arguments are closed.** Every tool accepts exactly the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. A key that is not in the table is an error, not something to be quietly dropped — so a call that names an identity (`owner`, `actor`, `caller`) is turned away rather than run as if it had never named one. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.",
+);
+lines.push("");
 lines.push("| Tool | Does | Side-effect |");
 lines.push("|---|---|---|");
 for (const s of specs) {
@@ -195,10 +199,14 @@ for (const s of specs) {
   lines.push(`- **Available:** ${a.availability}.`);
   if (a.notes) lines.push(`- ${a.notes}`);
   lines.push("");
-  if (s.schema && Object.keys(s.schema).length) {
+  // `s.schema` is a closed Zod OBJECT, not the raw shape it was authored as — the field map lives
+  // on `.shape`. Enumerating the object itself yields Zod's own internals (`def`, `toJSONSchema`, …)
+  // and renders them as arguments.
+  const shape = s.schema.shape;
+  if (Object.keys(shape).length) {
     lines.push("| Argument | Type | Required | Meaning |");
     lines.push("|---|---|---|---|");
-    for (const [arg, zodType] of Object.entries(s.schema)) {
+    for (const [arg, zodType] of Object.entries(shape)) {
       const d = describeArg(arg, zodType);
       lines.push(`| \`${arg}\` | ${d.type} | ${d.optional ? "no" : "yes"} | ${d.description.replace(/\n/g, " ")} |`);
     }
