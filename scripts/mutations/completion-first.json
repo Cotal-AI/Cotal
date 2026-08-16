@@ -56,9 +56,9 @@
       "file": "scripts/mutation-proof.mjs",
       "find": "FAILED\\\\b|AssertionError",
       "replace": "[Ff][Aa][Ii][Ll][Ee][Dd]\\\\b|AssertionError",
-      "expectRed": "the case sensitivity of FAILED is load-bearing: `a failed reply` in a label is not a failure",
-      "cell": "the case sensitivity of FAILED is load-bearing: `a failed reply` in a label is not a failure",
-      "note": "The other measured near-miss. Prose about a failed REPLY is ordinary suite vocabulary; the verdict word is the shouted one.",
+      "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
+      "cell": "...while a change nothing tests is still SURVIVED on that same suite",
+      "note": "The other measured near-miss. Prose about a failed REPLY is ordinary suite vocabulary; the verdict word is the shouted one. RE-AIMED after the first run graded it WRONG-RED at 20 marks. Broader than the cell it named: the fixture's own output carries lowercase `failed` prose, so a case-insensitive vocabulary reddens the SURVIVED cell at mark 20 before the boundary cell at mark 25 is ever reached, and this file stops at its first red. That is the STRONGER proof, not a weaker one -- the harm is demonstrated on a real run rather than on a string this file typed for itself -- and the boundary cell stays as the statement of WHICH boundary carried it.",
       "completionMarker": "an absolute --config path is read where it is"
     },
     {
@@ -66,9 +66,9 @@
       "file": "scripts/mutation-proof.mjs",
       "find": "\\\\b[1-9]\\\\d* failed\\\\b",
       "replace": "\\\\b\\\\d* failed\\\\b",
-      "expectRed": "...and not on a clean summary, because `0 failed` is what a green run prints",
-      "cell": "...and not on a clean summary, because `0 failed` is what a green run prints",
-      "note": "`0 failed` is what every clean run of a counting suite prints, so without the anchor the grader reads a green summary as a failure and no counting suite can ever report SURVIVED.",
+      "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
+      "cell": "...while a change nothing tests is still SURVIVED on that same suite",
+      "note": "`0 failed` is what every clean run of a counting suite prints, so without the anchor the grader reads a green summary as a failure and no counting suite can ever report SURVIVED. RE-AIMED after the first run graded it WRONG-RED at 20 marks, and for the same reason: `0 failed` is what the fixture's own clean run prints, so dropping the anchor reddens the SURVIVED cell first. A mutation must be no broader than the cell it names, and in a fail-fast file `no broader` is decided by ordering, not by intent.",
       "completionMarker": "an absolute --config path is read where it is"
     },
     {
