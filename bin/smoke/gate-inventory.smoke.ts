@@ -50,6 +50,11 @@ const UNGATED: Record<string, string> = {
   // credential and an `active` durable row for a retired lifecycle). Gating a known red is how a
   // chain teaches its readers to skim reds, which is the most expensive habit a gate can pick up.
   "smoke:renewal-terminal-race": "reproduction of an open defect; gate when the fix lands",
+  // A MEASUREMENT, NOT A GATE. It records what live eviction currently does to a seed-minted
+  // credential: reaches it, does not revoke it. Gating that would freeze a measured negative into a
+  // required property, so CI would go red on the day someone FIXES eviction — the gate would be
+  // defending the defect. Owner: unowned, from #426.
+  "smoke:evict-seed-minted:auth": "measurement of current eviction behaviour, not a property to hold; gating it would fail CI when eviction is fixed. Owner: unowned, from #426",
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
