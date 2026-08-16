@@ -48,6 +48,26 @@ const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 /** `replace` must EXIST but may be empty: deleting the target is a mutation like any other. */
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 
+/** `packages/core/src/x.ts` -> `packages/core`; `implementations/runtime/smoke/y.ts` -> `implementations/runtime`. */
+const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
+
+/**
+ * A mutation is only gradable if the suite runs the file it mutates. A suite that imports its
+ * target's package BY NAME gets `dist`, so mutating the source cannot reach the running code and
+ * the harness reports SURVIVED — honestly, and indistinguishably from a missing test. The check is
+ * an approximation of the resolver on purpose: same package, and the suite actually reaches into
+ * `../src`. It is here rather than in a note because a rule that depends on the next author
+ * remembering it is the rule that just failed.
+ */
+const assertGradable = (configPath, suite, m) => {
+  if (packageRoot(m.file) === packageRoot(suite) && readFileSync(suite, "utf8").includes("../src/")) return;
+  throw new Error(
+    `${configPath}: mutation "${m.name}" targets ${m.file}, which ${suite} does not import by source path — ` +
+    `it would resolve that package to dist and the mutation could not reach the running code. ` +
+    `Grade it from a suite in ${packageRoot(m.file)}, or record it in this config's "unkillable" array with the reason.`,
+  );
+};
+
 for (const path of configs) {
   const cfg = JSON.parse(readFileSync(path, "utf8"));
   for (const m of cfg.mutations) {
@@ -57,6 +77,7 @@ for (const path of configs) {
     for (const k of REQUIRED_MAY_BE_EMPTY) {
       if (typeof m[k] !== "string") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
     }
+    assertGradable(path, cfg.suite, m);
   }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
