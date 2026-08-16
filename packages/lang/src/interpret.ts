@@ -25,6 +25,7 @@ import { PRIMITIVES, type EffectKind } from "./primitives.js";
 import { bindPins, resolvePins, type RunPins } from "./pins.js";
 import {
   Cancelled,
+  RunReleased,
   EffectError,
   applyCheckpointPolicy,
   type AgentHandleValue,
@@ -285,6 +286,20 @@ export interface RunOptions {
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
   /**
+   * The HOST's stop, asked before every effect that has not already been recorded.
+   *
+   * Return a reason to stop the run where it stands; return `undefined` to carry on. The interpreter
+   * raises {@link RunReleased} itself rather than accepting an error from the caller — a driver that
+   * could throw the class could also throw something a workflow's `try` would swallow, and then the
+   * guarantee would be the caller's to keep.
+   *
+   * This exists because a driver's reasons to stop are not the program's business and must not be
+   * recorded as its outcome: an absolute work horizon reached, a pause requested by an operator.
+   * Asked here, nothing is half-done — no entry begun, no handler dispatched — so the run is exactly
+   * where its journal says it is and the next driver resumes from there.
+   */
+  readonly shouldStop?: () => string | undefined;
+  /**
    * Fail loud on a loop the effect ceiling cannot see, counted in walker dispatches (L4013).
    *
    * `while (true) { n = n + 1 }` performs no effect, so nothing increments the effect count. This
@@ -459,6 +474,18 @@ class Interpreter {
     // this side: work already in flight is another matter, and the handler owns it.
     if (frame.signal.cancelled) {
       throw new Cancelled(frame.signal.reason ?? "cancelled");
+    }
+
+    // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
+    // driver holds its run under an absolute work horizon and may be asked to hand it back, and
+    // neither is a fact about the program — so the place to stop is here, where no entry has been
+    // written and no handler dispatched. One step later would mean a pending entry for work nobody
+    // performed; inside the handler would mean settling a failure for work that really happened.
+    // Replays above are deliberately unaffected: replaying a recorded prefix performs nothing, and
+    // a run that stopped mid-journal has to be able to walk back to where it stopped.
+    const stop = this.options.shouldStop?.();
+    if (stop !== undefined) {
+      throw new RunReleased(stop);
     }
 
     this.effectCount += 1;
@@ -1505,7 +1532,7 @@ class Interpreter {
           // returned normally. Nothing about that run was recorded from the refusal onward, so the
           // effects it went on to perform exist only in the world, and a resume would perform them
           // again. An unrecordable run must stop, and no `catch` may decide otherwise.
-          if (e instanceof Cancelled || e instanceof JournalAppendRejected) throw e;
+          if (e instanceof Cancelled || e instanceof JournalAppendRejected || e instanceof RunReleased) throw e;
           const handlerNode = node.handler as AnyNode | null;
           if (handlerNode === null || handlerNode === undefined) throw e;
           const catchEnv = new Env(env);

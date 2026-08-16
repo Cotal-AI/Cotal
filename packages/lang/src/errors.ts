@@ -93,6 +93,12 @@ export const CATALOG = {
   // scope and name MATCHES: a mismatch is not a mislabelling, it is one run resuming from another
   // run's history and returning its results as its own.
   L5011: "Journal belongs to a different run",
+  // The DRIVER stopped, and the program did not. A run whose host must stop before the next effect
+  // — its work horizon reached, a pause requested — has not failed and has not finished: it is
+  // exactly where its journal says it is, and someone else can pick it up there. Recorded as its
+  // own code because settling the entry instead would write down a failure for work nobody
+  // attempted.
+  L5012: "Run released before the next effect",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",

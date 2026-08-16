@@ -14,7 +14,7 @@ import { run, resume, RunDivergence } from "../src/interpret.js";
 import { requestId } from "../src/keys.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
-import { EffectError } from "../src/effects.js";
+import { EffectError, RunReleased } from "../src/effects.js";
 
 /** Collect what a program logged. A program has no return value: its outcome is what it did. */
 const logged: unknown[][] = [];
@@ -827,6 +827,89 @@ log(c.status);
   // that cannot hop. Reading `undefined` here would make `ctx.attempt > 0` throw off a NaN compare
   // rather than take the ordinary path.
   ok("and an entry with no recorded index recovers as attempt 0", sawAttempt === 0, sawAttempt);
+}
+
+// ── the host's stop: a driver leaving is not a program failing ───────────────────────────────
+//
+// A driver holds its run under an absolute work horizon and can be asked to hand it back. Neither
+// is a fact about the workflow, so neither may be RECORDED as one — the run has to stop where its
+// journal already says it is, so the next driver resumes from there rather than from a fiction.
+{
+  const P = `
+let a = await sleep("1s")
+let b = await sleep("1s")
+let c = await sleep("1s")
+`;
+  let effects = 0;
+  const journal = new Journal({ run: "r-stop" });
+  let released: unknown;
+  try {
+    await run(P, {
+      runId: "r-stop",
+      handler: new SimHandler({}),
+      journal,
+      // Stop before the SECOND effect: the first must have run to completion, so the cell is about
+      // a stop between effects rather than a run that never started.
+      shouldStop: () => (effects++ === 1 ? "work horizon reached" : undefined),
+    });
+  } catch (e) { released = e; }
+  ok("a host that stops before the next effect releases the run rather than failing it",
+    released instanceof RunReleased, `${(released as Error)?.name}`);
+  ok("and it carries the host's reason, not a fabricated program error",
+    (released as RunReleased)?.reason === "work horizon reached", (released as RunReleased)?.reason);
+
+  // The load-bearing half. A pending entry here would be a durable record of work nobody performed,
+  // and the next driver would recover it — handing a resume token for a handler that never ran.
+  const entries = journal.entries();
+  ok("the effect it stopped before was never begun: one settled entry, nothing pending",
+    entries.length === 1 && entries[0]!.state === "settled",
+    entries.map((e) => e.state));
+
+  // And the run walks back to exactly where it stopped, which is the whole reason for stopping
+  // between effects rather than inside one.
+  const finished = await resume(P, new Journal({ run: "r-stop", entries }), { runId: "r-stop", handler: new SimHandler({}) });
+  ok("a fresh driver resumes it from there and finishes it",
+    finished.journal.entries().length === 3 && finished.journal.entries().every((e) => e.state === "settled"),
+    finished.journal.entries().map((e) => e.state));
+  ok("replaying the recorded prefix is not itself stopped: it performs nothing to stop before",
+    (await (async () => {
+      let asked = 0;
+      await resume(P, new Journal({ run: "r-stop", entries }), {
+        runId: "r-stop", handler: new SimHandler({}),
+        shouldStop: () => { asked += 1; return undefined; },
+      });
+      return asked;
+    })()) === 2, "the two effects that were NOT recorded");
+}
+
+// ── a program cannot catch its host leaving ──────────────────────────────────────────────────
+//
+// `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
+// world going wrong. A program that could catch it would carry on performing effects past the
+// horizon it was granted, which is the thing the stop exists to end — the same reason `Cancelled`
+// and a refused journal append are uncatchable.
+{
+  const P = `
+try {
+  let a = await sleep("1s")
+  let b = await sleep("1s")
+} catch (e) {
+  await notify(["ops"], "swallowed")
+}
+`;
+  let effects = 0;
+  const journal = new Journal({ run: "r-stop-2" });
+  let released: unknown;
+  try {
+    await run(P, {
+      runId: "r-stop-2", handler: new SimHandler({}), journal,
+      shouldStop: () => (effects++ === 1 ? "paused" : undefined),
+    });
+  } catch (e) { released = e; }
+  ok("a workflow's catch does not swallow its host's stop", released instanceof RunReleased,
+    `${(released as Error)?.name}`);
+  ok("and the catch block performed nothing: no notify was recorded",
+    journal.entries().every((e) => e.kind !== "notify"), journal.entries().map((e) => e.kind));
 }
 
 console.log(`interpret.smoke: ${pass} checks passed`);

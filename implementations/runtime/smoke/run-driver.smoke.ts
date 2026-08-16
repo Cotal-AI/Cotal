@@ -22,7 +22,7 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal } from "@cotal-ai/core";
 import { SimHandler } from "@cotal-ai/lang";
-import { startRun, driveRun, RunJournalStore } from "../src/index.js";
+import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "wfjdrive";
@@ -290,6 +290,71 @@ try {
   const back = await replayRunJournal(js, jsm, SPACE, "d-6", `r${(takeovers += 1)}`);
   c("and nothing of it reached this run's subject",
     back.records.filter((r) => r.record.kind === "step").length === 0);
+}
+
+// ── 6) the work horizon: a driver stops at the deadline it accepted ──────────────────────────
+//
+// `workExpiry` is absolute, fixed at acceptance and never re-set (SPEC 13.8). Past it the pool has
+// already reconciled the item, so a driver still appending is writing into a run the authority
+// considers finished with — and no successor need ever exist to stop it, which is why the barrier
+// alone does not cover this. It needs no read of anything: the horizon came with the lease, and
+// that is exactly what makes it safe to check locally where a lease DEADLINE would not be.
+{
+  const handler = new CountingHandler();
+  // The horizon passes WHILE the first effect is in flight — the case that matters. A clock that
+  // ticks per call made this cell pass with nothing performed at all, which proved only that a
+  // driver can refuse to start; asserting the exact count is what caught it.
+  (handler as unknown as { now: () => number }).now = () => (handler.performed.length >= 1 ? 9_000 : 1_000);
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, runId: "d-7", source: PROGRAM, lease: lease("m1", 1, 1), handler,
+    workExpiry: 5_000,
+  }));
+  c("a driver past its work horizon RELEASES the run rather than failing it",
+    out.status === "released", why(out));
+  c("and says so as the host's reason, not as a program error",
+    out.status === "released" && /work horizon/.test(out.reason.message), why(out));
+  c("it stopped BETWEEN effects, not before the run and not after it: exactly one performed",
+    handler.performed.length === 1, handler.performed);
+  // The load-bearing half, on the wire this time: a pending record here would be durable evidence
+  // of work nobody performed, and the next driver would recover it — handing a resume token for a
+  // handler that never ran.
+  const back = await replayRunJournal(js, jsm, SPACE, "d-7", `r${(takeovers += 1)}`);
+  const steps = back.records.filter((r) => r.record.kind === "step");
+  c("and the journal on the wire has no step it did not finish",
+    steps.length % 2 === 0, steps.length);
+
+  // And the run is resumable from exactly there, by a successor with its own lease and its own
+  // horizon — which is the whole point of stopping between effects rather than inside one.
+  const successor = new CountingHandler();
+  const done2 = await attempt(driveRun(js, jsm, {
+    space: SPACE, runId: "d-7", source: PROGRAM, lease: lease("m2", 2, 2), handler: successor,
+  }));
+  c("a successor under a fresh horizon finishes the run from where it stopped",
+    done2.status === "completed", why(done2));
+}
+
+// ── 7) pause: an operator stop is not a failure either ───────────────────────────────────────
+//
+// Same seam, different reason, and the difference matters at the boundary: a pause is a request
+// about the HOST, so it must not settle an entry as failed. It is honoured at the next effect that
+// is not already recorded — never inside one, because a handler that has dispatched has done real
+// work and stopping it would record a lie about it.
+{
+  const handler = new CountingHandler();
+  const pause = new PauseToken();
+  pause.pause("operator asked");
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, runId: "d-8", source: PROGRAM, lease: lease("m1", 1, 1), handler, pause,
+  }));
+  c("a paused driver releases the run", out.status === "released", why(out));
+  c("carrying the operator's reason", out.status === "released" && /operator asked/.test(out.reason.message),
+    out.status === "released" ? out.reason.message : why(out));
+  c("and performed nothing at all: the pause was already set at the first boundary",
+    handler.performed.length === 0, handler.performed);
+  const back = await replayRunJournal(js, jsm, SPACE, "d-8", `r${(takeovers += 1)}`);
+  c("the run exists and holds only its activation: a pause writes no step",
+    back.records.length === 1 && back.records[0]!.record.kind === "activation",
+    back.records.map((r) => r.record.kind));
 }
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);

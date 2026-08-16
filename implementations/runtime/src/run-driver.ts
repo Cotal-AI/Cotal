@@ -40,6 +40,7 @@ import {
   JournalAppendRejected,
   run as runProgram,
   resume as resumeProgram,
+  RunReleased,
   type EffectHandler,
   type JournalEntry,
   type RunPins,
@@ -69,6 +70,25 @@ export interface RunLease {
   readonly takeoverId: string;
 }
 
+/**
+ * A pause an operator can ask for while a run is being driven.
+ *
+ * The driver reads it before each effect it has not already recorded, so a pause takes effect at the
+ * next boundary and never in the middle of one. It is one-way on purpose: resuming is starting a
+ * drive again, which is the same act as any other takeover and goes through the barrier like one.
+ */
+export class PauseToken {
+  private why: string | undefined;
+
+  pause(reason: string): void {
+    this.why ??= reason;
+  }
+
+  get reason(): string | undefined {
+    return this.why;
+  }
+}
+
 export interface DriveRequest {
   readonly space: string;
   readonly runId: string;
@@ -82,6 +102,18 @@ export interface DriveRequest {
   readonly file?: string;
   readonly effectCeiling?: number;
   readonly stepBudget?: number;
+  /**
+   * The ABSOLUTE work horizon this driver accepted the item under (`WorkLease.workExpiry`).
+   *
+   * Past it the pool has already reconciled the item, so a driver still appending is writing into a
+   * run the authority considers finished with. Nothing needs to be read to know this: the horizon is
+   * fixed at acceptance and never re-set (SPEC 13.8), which is exactly what makes it safe to check
+   * locally — unlike a lease deadline, whose current value is a fact on another machine and whose
+   * check would be a read-then-publish with a gap that cannot be closed.
+   */
+  readonly workExpiry?: number;
+  /** An operator's pause, honoured at the next effect boundary. */
+  readonly pause?: PauseToken;
 }
 
 /**
@@ -149,9 +181,21 @@ async function drive(
     store,
   });
 
+  // Asked before every effect that is not already recorded. Both reasons are the HOST's and neither
+  // is the program's, so neither may be recorded as its outcome — the run stops where its journal
+  // already says it is, and the next driver resumes from there.
+  const shouldStop = (): string | undefined => {
+    if (req.workExpiry !== undefined) {
+      const now = req.handler.now();
+      if (now >= req.workExpiry) return `the work horizon ${req.workExpiry} passed at ${now}`;
+    }
+    return req.pause?.reason;
+  };
+
   const options = {
     runId: req.runId,
     handler: req.handler,
+    shouldStop,
     ...(req.pins !== undefined ? { pins: req.pins } : {}),
     ...(req.seed !== undefined ? { seed: req.seed } : {}),
     ...(req.file !== undefined ? { file: req.file } : {}),
@@ -169,6 +213,9 @@ async function drive(
     // L5010 is the journal saying it could not record — the run is not this driver's any more. It
     // arrives here rather than at the append because the interpreter is what was holding the stack.
     if (e instanceof JournalAppendRejected) return { status: "released", reason: e };
+    // The host stopping is the same kind of answer: this driver no longer holds the run, and the
+    // program has neither failed nor finished.
+    if (e instanceof RunReleased) return { status: "released", reason: e };
     throw e;
   }
 }
