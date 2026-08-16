@@ -123,6 +123,33 @@ try {
   check("the severed instance is reported UNREACHABLE (a missing slot), NEVER omitted (pin 3)",
     r2.missing.includes(IID2) && r2.complete === false, { missing: r2.missing, complete: r2.complete });
   check("the scatter is deadline-bounded — a dead instance does not hang the gather", elapsed < 8_000, { elapsed });
+  // THE CELL ABOVE PASSES ON THE DEFECT, and did for as long as it existed: the budget is 3000ms
+  // and the bound is 8000ms, so "the gather paid its deadline in full" — the thing `ps` was slow
+  // for — reads as ~3050ms and sails through. It proves the gather is BOUNDED; its name promises
+  // FAST. Kept as-is (bounded is still worth asserting) and joined by the claim it was read as
+  // making.
+  //
+  // THE END-TO-END GAP, MEASURED RATHER THAN ASSUMED. `epScatterService` now wires a liveness probe
+  // that ends the gather once the broker affirms an instance holds no subscription, and
+  // `smoke:scatter-liveness` proves the gather depends on that verdict. It does NOT prove a real
+  // caller produces one — the suite hands the hook in, and mutation-proof says so itself.
+  //
+  // Here nothing is handed in, and the answer is that the probe is INERT on this path. It publishes
+  // `describe` on the target's `ep.inst.…` rail, and the `control-caller-privileged` instrument holds
+  // no instance route: the one-shot mint happens BEFORE the freeze, so a `ps` (no `--on`) carries no
+  // instance rows at all. The publish is refused by the broker, no 503 comes back, the verdict is
+  // `unknown`, and `unknown` licenses nothing — so this path still serves out its full budget.
+  //
+  // The obvious fix is a wildcard instance row for the instrument tier. That is a widening THREE
+  // REVIEW SEATS ALREADY REFUSED (inst-route-grant.smoke.ts:115 asserts `!r.includes(".*.")`), and it
+  // is not mine to overturn on my own argument. The alternative that keeps the invariant intact is to
+  // freeze FIRST and mint the instrument with an exact-iid row per frozen instance — a change to the
+  // credential flow, not to the gather.
+  //
+  // So this cell asserts the GAP, deliberately. It is a tripwire: it goes RED the moment the probe
+  // starts working end to end, which is exactly when this comment stops being true.
+  check("the probe is INERT on the operator path (no instance route in the instrument) — the gap is recorded, never mistaken for coverage",
+    elapsed >= 2_500, { elapsed, budgetMs: 3_000, why: "ep.inst publish refused: no instance row in a no---on mint" });
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
   await m2?.stop().catch(() => {});
