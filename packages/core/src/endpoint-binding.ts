@@ -790,13 +790,11 @@ const JSAPI = "$JS.API";
  *  the wildcard matches (a `*` durable grants INFO/MSG.NEXT/ACK on ALL durables of the stream).
  *  Every grammar in this module emits `[A-Za-z0-9_-]`, so anything else is refused loudly. */
 function assertGrantName(v: string, what: string): string {
-  // A consumer whose name is per-takeover cannot be granted by literal name, so ONE trailing `*`
-  // is admitted after a literal prefix — `wfj_<runId>_*`. Everything before it stays literal, so
-  // the row still pins the run, and a bare `*` is refused: that would be every consumer on the
-  // stream, which is a different grant entirely.
-  if (/^[A-Za-z0-9_-]+_\*$/.test(v)) return v;
+  // No wildcard, not even a partial one. A `*` inside a token is not a wildcard in NATS — it is a
+  // literal asterisk that matches only itself — so admitting the shape would mint rows that look
+  // like authority and grant none (measured, and it shipped for exactly one round).
   if (!/^[A-Za-z0-9_-]+$/.test(v))
-    throw new Error(`${what} ${JSON.stringify(v)} must be a literal wildcard-free name component ([A-Za-z0-9_-]+), or a literal prefix followed by one trailing "_*"`);
+    throw new Error(`${what} ${JSON.stringify(v)} must be a literal wildcard-free name component ([A-Za-z0-9_-]+)`);
   return v;
 }
 /** A consume-create row embeds the consumer's filter verbatim, so the filter's tokens become
@@ -913,33 +911,23 @@ export function runJournalConsumerConfig(
  * exactly one authoritative appender at a time; a grant that spans runs describes a different
  * system.
  */
-/**
- * The GRANT form of the replay consumer's config: the same family, named with the `*` the rows
- * carry. Minted by a builder rather than spread from a real config, because §13.9 authority is the
- * tuple a builder minted and a mutated config is deliberately refused.
- */
-function runJournalGrantConfig(space: string, runId: string): Partial<ConsumerConfig> {
-  return family(wfjStreamName(space), {
-    durable_name: `wfj_${assertIdToken(runId, "runId")}_*`,
-    filter_subject: wfjSubject(space, runId),
-    ack_policy: AckPolicy.Explicit,
-    deliver_policy: DeliverPolicy.All,
-  });
-}
-
-export function runDriverJournalGrants(space: string, runId: string): string[] {
+export function runDriverJournalGrants(space: string, runId: string, takeoverId: string): string[] {
   const stream = wfjStreamName(space);
-  // The durable is per-TAKEOVER, so the rows carry a `*` in that one token and pin everything else.
-  // This does not widen what a driver may read: a consume-create row embeds the stored-subject
-  // filter verbatim (§13.9), so the consumer it can create is still fixed to THIS run's subject
-  // however it is named.
-  const cfg = runJournalGrantConfig(space, runId);
-  const pattern = cfg.durable_name!;
+  // The replay consumer is named per TAKEOVER, and its name is one subject token, so it cannot be
+  // covered by a pattern: NATS treats `*` as a wildcard only as a WHOLE token, and `wfj_<run>_*` is
+  // a literal that matches nothing (measured: a subscription to `api.WFJ.wfj_r-1_*` received
+  // `api.WFJ.wfj_r-1_*` and NOT `api.WFJ.wfj_r-1_ab12cd34`). A whole-token `*` would be every
+  // consumer on the stream, i.e. every other run's journal.
+  //
+  // So the takeover id belongs to the CREDENTIAL: the rows are minted for the one attempt that will
+  // use them, exactly as pinned as a per-run name was, and unique the way a shared name was not.
+  const cfg = runJournalConsumerConfig(space, runId, takeoverId);
+  const durable = cfg.durable_name!;
   return [
     wfjSubject(space, runId),
     consumeCreateRow(stream, cfg),
-    ...consumeBindRows(stream, pattern),
-    consumeDeleteRow(stream, pattern),
+    ...consumeBindRows(stream, durable),
+    consumeDeleteRow(stream, durable),
   ];
 }
 

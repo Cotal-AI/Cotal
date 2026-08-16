@@ -48,7 +48,9 @@ const jsm = await jetstreamManager(nc);
 const js = jetstream(nc);
 await createEndpointStreams(jsm, new Kvm(nc), SPACE);
 
-const lease = (holder: string, epoch: number, fencingToken: number) => ({ holder, epoch, fencingToken });
+let takeovers = 0;
+const lease = (holder: string, epoch: number, fencingToken: number) =>
+  ({ holder, epoch, fencingToken, takeoverId: `t${(takeovers += 1)}` });
 
 /**
  * A drive attempt, with a THROW as a third observable outcome.
@@ -93,7 +95,7 @@ await sleep("2h", { name: "second" });
     out.status === "completed" ? out.result.journal.entries().length : "-");
   c("the handler performed each effect exactly once", handler.performed.join(",") === "sleep:1h,sleep:2h",
     handler.performed);
-  const back = await replayRunJournal(js, jsm, SPACE, "d-1");
+  const back = await replayRunJournal(js, jsm, SPACE, "d-1", `r${(takeovers += 1)}`);
   c("and both phases of both steps are durable on the broker, not in the driver",
     back.records.filter((r) => r.record.kind === "step").length === 4,
     back.records.map((r) => r.record.kind));
@@ -113,7 +115,7 @@ await sleep("2h", { name: "second" });
     taken.status === "released" ? taken.reason.name : taken.status);
   c("and performs NOTHING again: every effect came back from the journal",
     second.performed.length === 0, second.performed);
-  const back = await replayRunJournal(js, jsm, SPACE, "d-1");
+  const back = await replayRunJournal(js, jsm, SPACE, "d-1", `r${(takeovers += 1)}`);
   c("the resume wrote no duplicate steps either — only its activation",
     back.records.filter((r) => r.record.kind === "step").length === 4 &&
     back.records.filter((r) => r.record.kind === "activation").length === 2,
@@ -142,7 +144,7 @@ await sleep("2h", { name: "second" });
   });
   await wait(300);
   const usurper = await activateRun(js, jsm, {
-    space: SPACE, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, at: 1, expect: "existing",
+    space: SPACE, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
   const firstOut = await attempt(started);
@@ -224,7 +226,7 @@ await sleep("3h", { name: "after-the-catch" });
   });
   await wait(300);
   await activateRun(js, jsm, {
-    space: SPACE, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, at: 1, expect: "existing",
+    space: SPACE, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
   const lost = await attempt(started);
@@ -258,7 +260,7 @@ try {
   });
   await wait(300);
   await activateRun(js, jsm, {
-    space: SPACE, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, at: 1, expect: "existing",
+    space: SPACE, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   letGo();
   const quietOut = await attempt(running);
@@ -273,7 +275,7 @@ try {
 // as this run's own, and a PubAck on one run's subject makes the other's journal say "durable".
 {
   const a = await activateRun(js, jsm, {
-    space: SPACE, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, at: 1, expect: "new",
+    space: SPACE, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
   });
   const store = new RunJournalStore(a);
   let crossed: unknown;
@@ -285,7 +287,7 @@ try {
   } catch (e) { crossed = e; }
   c("a store refuses an entry that belongs to another run", crossed instanceof Error,
     (crossed as Error)?.message?.slice(0, 60));
-  const back = await replayRunJournal(js, jsm, SPACE, "d-6");
+  const back = await replayRunJournal(js, jsm, SPACE, "d-6", `r${(takeovers += 1)}`);
   c("and nothing of it reached this run's subject",
     back.records.filter((r) => r.record.kind === "step").length === 0);
 }

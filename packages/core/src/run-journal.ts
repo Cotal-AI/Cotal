@@ -389,6 +389,7 @@ export async function replayRunJournal(
   jsm: JetStreamManager,
   space: string,
   runId: string,
+  takeoverId: string,
 ): Promise<RunJournalReplay> {
   const stream = wfjStreamName(space);
   const subject = wfjSubject(space, runId);
@@ -399,7 +400,7 @@ export async function replayRunJournal(
   // record and then a terminal incomplete-replay error, and eight produced raw `consumer deleted`
   // and `ConsumerNotFoundError` straight from the API. This one is created, read and removed by a
   // single replay, so none of that has anyone to happen with.
-  const cfg = runJournalConsumerConfig(space, runId, takeoverToken());
+  const cfg = runJournalConsumerConfig(space, runId, takeoverId);
   const durable = cfg.durable_name as string;
   const created = await jsm.consumers.add(stream, cfg);
   try {
@@ -411,7 +412,9 @@ export async function replayRunJournal(
   }
 }
 
-function takeoverToken(): string {
+/** A takeover id: what a driver asks its credential to be minted for. Callers that mint their own
+ *  rows use this; one that is handed a credential uses the id that credential names. */
+export function newTakeoverId(): string {
   return randomBytes(8).toString("hex");
 }
 
@@ -450,6 +453,13 @@ async function readReplay(
     if (records[i]!.record.n !== i) {
       throw new RunJournalPrefixTruncated(runId, records[i]!.seq, i, records[i]!.record.n);
     }
+  }
+  // The chain proves the records are CONSECUTIVE; it does not prove they start where a run starts.
+  // A step numbered 0, or an activation that replayed something, is a journal beginning in the
+  // middle of a story with its page numbers rewritten — so the genesis anchor stays alongside it.
+  const first = records[0]!.record;
+  if (first.kind !== "activation" || first.replayedTo !== 0) {
+    throw new RunJournalPrefixTruncated(runId, records[0]!.seq, 0, first.n);
   }
   return { records, lastSeq: records[records.length - 1]!.seq };
 }
@@ -599,6 +609,15 @@ export interface RunTakeover {
    * says the run exists, so the caller states it and this refuses the mismatch either way.
    */
   readonly expect: "new" | "existing";
+  /**
+   * The id this attempt's replay consumer is named for, and the id its CREDENTIAL was minted for.
+   *
+   * A consumer name is one subject token, so a per-takeover name cannot be covered by a grant
+   * pattern — `*` is a whole-token wildcard in NATS and `wfj_<run>_*` is a literal that matches
+   * nothing. The uniqueness therefore has to be known when the rows are minted, which is when the
+   * lease is handed out, so the caller brings it here rather than the replay inventing one.
+   */
+  readonly takeoverId: string;
   readonly at: number;
 }
 
@@ -690,7 +709,7 @@ export async function activateRun(
     if (attempt > 1 && opts.beforeRetry !== undefined) await opts.beforeRetry(attempt);
     let replay: RunJournalReplay;
     try {
-      replay = await replayRunJournal(js, jsm, t.space, t.runId);
+      replay = await replayRunJournal(js, jsm, t.space, t.runId, t.takeoverId);
     } catch (e) {
       // Another driver is replaying the same run: that is a lost round, not a lost run.
       if (!(e instanceof RunJournalReplayRaced)) throw e;
@@ -705,6 +724,11 @@ export async function activateRun(
     // append landing at seq 4. The replayed prefix is where the answer already is — it contains
     // every activation, and it is current as of the CAS that follows — so a takeover under a token
     // older than the last one recorded is refused here rather than after the damage.
+    // Typed is not checked: a value that is neither would fall through BOTH guards and reactivate a
+    // purged run as if it were new, which is the thing the field exists to make impossible.
+    if (t.expect !== "new" && t.expect !== "existing") {
+      throw new Error(`run ${t.runId}: a takeover must state expect "new" or "existing"; got ${JSON.stringify(t.expect)}`);
+    }
     if (t.expect === "existing" && records.length === 0) {
       throw new RunNotResumable(t.runId, subject);
     }

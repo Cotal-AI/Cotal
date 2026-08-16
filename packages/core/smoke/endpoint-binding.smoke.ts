@@ -270,38 +270,51 @@ c("a run's journal subject is the RUN, not the entry: one appender, one fence co
   wfjSubject(SPACE, "r-1") === "cotal.epbind.wfj.r-1");
 c("and a runId that is not an id token is refused rather than tokenized into someone else's subject",
   (() => { try { wfjSubject(SPACE, "r/1"); return false; } catch { return true; } })());
-c("the run-driver journal grants are the run's own subject and its replay durables, create through DELETE",
-  JSON.stringify(runDriverJournalGrants(SPACE, "r-1")) === JSON.stringify([
+c("the run-driver journal grants are the run's own subject and ONE takeover's replay durable, create through DELETE",
+  JSON.stringify(runDriverJournalGrants(SPACE, "r-1", "tk1")) === JSON.stringify([
     "cotal.epbind.wfj.r-1",
-    "$JS.API.CONSUMER.CREATE.WFJ_epbind.wfj_r-1_*.cotal.epbind.wfj.r-1",
-    "$JS.API.CONSUMER.INFO.WFJ_epbind.wfj_r-1_*",
-    "$JS.API.CONSUMER.MSG.NEXT.WFJ_epbind.wfj_r-1_*",
-    "$JS.ACK.WFJ_epbind.wfj_r-1_*.>",
-    "$JS.API.CONSUMER.DELETE.WFJ_epbind.wfj_r-1_*",
-  ]), runDriverJournalGrants(SPACE, "r-1"));
-// The durable is per-TAKEOVER, so its name cannot be pinned — but the `*` is in the NAME token only.
-// A consume-create row embeds the stored-subject filter verbatim (§13.9), so the consumer a driver
-// can create is still fixed to this run's subject however it chooses to name it.
-c("the create row's wildcard is the durable name, never the filter: the run is still pinned",
-  runDriverJournalGrants(SPACE, "r-1")
+    "$JS.API.CONSUMER.CREATE.WFJ_epbind.wfj_r-1_tk1.cotal.epbind.wfj.r-1",
+    "$JS.API.CONSUMER.INFO.WFJ_epbind.wfj_r-1_tk1",
+    "$JS.API.CONSUMER.MSG.NEXT.WFJ_epbind.wfj_r-1_tk1",
+    "$JS.ACK.WFJ_epbind.wfj_r-1_tk1.>",
+    "$JS.API.CONSUMER.DELETE.WFJ_epbind.wfj_r-1_tk1",
+  ]), runDriverJournalGrants(SPACE, "r-1", "tk1"));
+// The durable is per-TAKEOVER, and the takeover id is therefore part of the CREDENTIAL rather than
+// something the driver picks afterwards. The earlier shape here granted `wfj_r-1_*` and read as a
+// family of names; it is not one. NATS expands `*` as a WHOLE dot-delimited token only, so that row
+// was a literal string matching no consumer any driver would ever create — measured, not reasoned:
+// a subscription to `api.WFJ.wfj_r-1_*` received `api.WFJ.wfj_r-1_*` and never `…wfj_r-1_ab12cd34`.
+// The rows below are literals on purpose; `run-journal-auth.smoke.ts` proves they work on a broker
+// that actually enforces them, which is the only place that difference is visible.
+c("no row carries a star inside a name token, which reads like a pattern and is a literal",
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !/[A-Za-z0-9_-]\*/.test(r)),
+  runDriverJournalGrants(SPACE, "r-1", "tk1"));
+c("the create row embeds this run's subject as the filter, so the consumer is pinned to it (§13.9)",
+  runDriverJournalGrants(SPACE, "r-1", "tk1")
     .filter((r) => r.includes(".CONSUMER.CREATE."))
     .every((r) => r.endsWith(".cotal.epbind.wfj.r-1")));
-c("and the name wildcard is a bounded suffix, not a bare star over every consumer on the stream",
-  runDriverJournalGrants(SPACE, "r-1").every((r) => !r.includes(".WFJ_epbind.*")));
+c("and no row is a bare star over every consumer on the stream",
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !r.includes(".WFJ_epbind.*")));
+c("two takeovers of the same run get DISJOINT consumer rows: neither can bind or delete the other's",
+  runDriverJournalGrants(SPACE, "r-1", "tk1")
+    .filter((r) => r.includes("CONSUMER") || r.includes("$JS.ACK"))
+    .every((r) => !runDriverJournalGrants(SPACE, "r-1", "tk2").includes(r)));
+c("a takeover id that is not an id token is refused rather than tokenized into a broader grant",
+  (() => { try { runDriverJournalGrants(SPACE, "r-1", "tk*"); return false; } catch { return true; } })());
 // The barrier's expectation is the last sequence the driver REPLAYED, so it needs no read of the
 // subject's current one — and granting that read would invite exactly the read-then-publish shape
 // the barrier exists to remove.
 c("and no row reads the stream's state: the expectation comes from the replay, never from a fresh read",
-  runDriverJournalGrants(SPACE, "r-1").every((r) => !r.includes("STREAM.INFO") && !r.includes("STREAM.MSG.GET")),
-  runDriverJournalGrants(SPACE, "r-1"));
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !r.includes("STREAM.INFO") && !r.includes("STREAM.MSG.GET")),
+  runDriverJournalGrants(SPACE, "r-1", "tk1"));
 // The confinement that matters. A driver holding `wfj.>` could append to ANOTHER run's journal,
 // which is not a read leak but a corruption: that run would replay a step it never took. And the
 // activation barrier assumes one authoritative appender per run subject, which a cross-run grant
 // simply is not.
 c("no run-driver row reaches another run, and no SUBJECT row is a wildcard",
-  runDriverJournalGrants(SPACE, "r-1").every((r) => !r.includes("wfj.>") && !r.includes("wfj.*")
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !r.includes("wfj.>") && !r.includes("wfj.*")
     && (!r.startsWith("cotal.") || r === "cotal.epbind.wfj.r-1")),
-  runDriverJournalGrants(SPACE, "r-1"));
+  runDriverJournalGrants(SPACE, "r-1", "tk1"));
 c("the replay durable is filtered to ONE run: a journal entry carries what an agent said",
   runJournalConsumerConfig(SPACE, "r-1", "t1").filter_subject === "cotal.epbind.wfj.r-1");
 c("and every takeover names its OWN durable, so two contenders cannot inherit or delete each other's",

@@ -59,6 +59,14 @@ export interface RunLease {
   readonly holder: string;
   readonly epoch: number;
   readonly fencingToken: number;
+  /**
+   * The takeover id this driver's journal credential was minted for.
+   *
+   * It names the replay consumer, and a consumer name is one subject token, so it cannot be covered
+   * by a grant pattern — it has to be known when the rows are minted. That is when the lease is
+   * handed out, which is why it arrives with the lease rather than being chosen here.
+   */
+  readonly takeoverId: string;
 }
 
 export interface DriveRequest {
@@ -121,6 +129,7 @@ async function drive(
       holder: req.lease.holder,
       fencingToken: req.lease.fencingToken,
       epoch: req.lease.epoch,
+      takeoverId: req.lease.takeoverId,
       at: req.handler.now(),
       expect,
     });

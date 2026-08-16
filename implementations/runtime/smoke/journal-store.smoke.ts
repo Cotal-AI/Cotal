@@ -51,8 +51,10 @@ const jsm = await jetstreamManager(nc);
 const js = jetstream(nc);
 await createEndpointStreams(jsm, new Kvm(nc), SPACE);
 
+let takeovers = 0;
 const takeover = (runId: string, holder: string, token: number, expect: "new" | "existing" = "new") => ({
   space: SPACE, runId, holder, fencingToken: token, epoch: token, at: 1_700_000_000_000, expect,
+  takeoverId: `t${(takeovers += 1)}`,
 });
 const key = (name: string) => new KeyScope().nextEffect("sleep", name);
 
@@ -61,7 +63,7 @@ const key = (name: string) => new KeyScope().nextEffect("sleep", name);
   const appender = await activateRun(js, jsm, takeover("s-1", "d1", 1));
   const journal = new Journal({ run: "s-1", store: new RunJournalStore(appender) });
   const entry = await journal.begin(key("nap"), "h1", 1_000);
-  const back = await replayRunJournal(js, jsm, SPACE, "s-1");
+  const back = await replayRunJournal(js, jsm, SPACE, "s-1", `r${(takeovers += 1)}`);
   const steps = back.records.filter((r) => r.record.kind === "step");
   c("a pending entry is durable BEFORE the handler runs, which is the whole point of two phases",
     steps.length === 1, back.records.map((r) => r.record.kind));
@@ -70,7 +72,7 @@ const key = (name: string) => new KeyScope().nextEffect("sleep", name);
     ((steps[0]!.record as RunJournalStep).entry as { state?: string }).state === entry.state,
     (steps[0]!.record as RunJournalStep).entry);
   await journal.settle(key("nap"), { status: "ok", result: null }, 2_000);
-  const after = await replayRunJournal(js, jsm, SPACE, "s-1");
+  const after = await replayRunJournal(js, jsm, SPACE, "s-1", `r${(takeovers += 1)}`);
   c("settling appends a second record rather than editing the first: the journal is append-only",
     after.records.filter((r) => r.record.kind === "step").length === 2,
     after.records.map((r) => r.record.kind));

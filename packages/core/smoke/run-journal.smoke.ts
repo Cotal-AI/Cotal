@@ -77,13 +77,18 @@ const STREAM = wfjStreamName(SPACE);
 
 /** A takeover that STARTS a run, and one that RESUMES it: an activation states which, because an
  *  empty journal cannot tell a run that never began from one whose records were purged away. */
+let takeovers = 0;
+/** Every takeover names its own replay consumer, and the name is what its credential is minted for.
+ *  The suite mints a fresh one per call for the same reason production does: two attempts sharing a
+ *  consumer is the race this design removes. */
+const tid = () => `t${(takeovers += 1)}`;
 const startRun = (runId: string, holder: string, epoch: number) => ({
   space: SPACE, runId, holder, fencingToken: epoch, epoch, at: 1_700_000_000_000,
-  expect: "new" as const,
+  expect: "new" as const, takeoverId: tid(),
 });
 const takeover = (runId: string, holder: string, epoch: number) => ({
   space: SPACE, runId, holder, fencingToken: epoch, epoch, at: 1_700_000_000_000,
-  expect: "existing" as const,
+  expect: "existing" as const, takeoverId: tid(),
 });
 /** Publish straight to the run's subject with a chosen expectation: a driver the barrier does not
  *  know about, which is what a superseded process IS from the stream's point of view. */
@@ -126,7 +131,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   const chain = (await replayRunJournalRaw("r-1")).map((r) => r.n);
   c("every record carries its journal ordinal, contiguous from 0 — activation included",
     chain.join(",") === "0,1,2", chain);
-  const { records, lastSeq } = await replayRunJournal(js, jsm, SPACE, "r-1");
+  const { records, lastSeq } = await replayRunJournal(js, jsm, SPACE, "r-1", tid());
   c("the journal reads back as activation-then-steps, in order",
     records.map((r) => r.record.kind).join(",") === "activation,step,step", records.map((r) => r.record.kind));
   c("and the replay's last delivered sequence IS the subject head the next activation must expect",
@@ -160,7 +165,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   try { await first.append({ step: "later-still" }, 3); } catch (e) { again = e; }
   c("a superseded appender refuses every later append without touching the wire",
     again instanceof RunSuperseded, String(again).slice(0, 60));
-  const after = await replayRunJournal(js, jsm, SPACE, "r-2");
+  const after = await replayRunJournal(js, jsm, SPACE, "r-2", tid());
   c("so nothing the superseded driver wrote after the takeover is in the journal",
     after.records.filter((r) => r.record.kind === "step").length === 1,
     after.records.map((r) => r.record.kind));
@@ -194,7 +199,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
   // Stage it explicitly: read the head the way a successor would, let the predecessor land, then
   // activate at the head that was true a moment ago.
-  const staged = await replayRunJournal(js, jsm, SPACE, "r-3");
+  const staged = await replayRunJournal(js, jsm, SPACE, "r-3", tid());
   const head = staged.lastSeq;
   const late = await rawAppend("r-3", head, step("r-3", 99, staged.records.length));
   c("the predecessor's delayed packet lands first, taking the sequence the successor read", late.landed, late);
@@ -269,7 +274,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("the only writer never declares itself superseded", !a.isSuperseded);
   const seqs = results.map((r) => (r.status === "fulfilled" ? r.value : -1));
   c("each got its own stream sequence, in queue order", new Set(seqs).size === 4 && seqs.every((s, i) => i === 0 || s > seqs[i - 1]!), seqs);
-  const back = await replayRunJournal(js, jsm, SPACE, "r-4");
+  const back = await replayRunJournal(js, jsm, SPACE, "r-4", tid());
   c("and all four are in the journal", back.records.filter((r) => r.record.kind === "step").length === 4);
   c("with the head where the last PubAck left it", back.lastSeq === a.lastSeq, `${back.lastSeq} vs ${a.lastSeq}`);
 }
@@ -283,7 +288,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     results.map((r) => r.status));
   c("with the same terminal supersession, not three different opinions",
     results.every((r) => r.status === "rejected" && r.reason instanceof RunSuperseded));
-  const back = await replayRunJournal(js, jsm, SPACE, "r-5");
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5", tid());
   c("and NONE of them is in the journal: a queued entry retried at the new head is the very write the barrier forbids",
     back.records.filter((r) => r.record.kind === "step").length === 0,
     back.records.map((r) => r.record.kind));
@@ -332,7 +337,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("the NEXT queued append does not reuse the stale expectation", results[1]!.status === "rejected",
     results[1]!.status === "fulfilled" ? `landed at seq ${(results[1] as PromiseFulfilledResult<number>).value}` : "rejected");
   c("the appender is finished, though nobody superseded it", a.isFinished && !a.isSuperseded);
-  const back = await replayRunJournal(js, jsm, SPACE, "r-5c");
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5c", tid());
   const steps = back.records.filter((r) => r.record.kind === "step").map((r) => (r.record as { entry: unknown }).entry);
   c("and the journal has no hole: the entry after the failure is absent, not written over its gap",
     steps.length === 1 && (steps[0] as { n: number }).n === 0, JSON.stringify(steps));
@@ -397,7 +402,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   let fresh: unknown;
   try { assertReplayConsumerFresh("r-5e", cfg.durable_name!, { delivered: { consumer_seq: 0 }, num_ack_pending: 0 }); } catch (e) { fresh = e; }
   c("and passes a consumer that has fed nobody", fresh === undefined);
-  const back = await replayRunJournal(js, jsm, SPACE, "r-5e");
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5e", tid());
   c("while an uncontended replay still reads the whole run", back.records.length === 6, back.records.length);
 }
 
@@ -423,11 +428,11 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 {
   const a = await activateRun(js, jsm, startRun("r-5f", "d1", 1));
   for (let n = 0; n < 4; n += 1) await a.append({ n }, n);
-  const before = await replayRunJournal(js, jsm, SPACE, "r-5f");
+  const before = await replayRunJournal(js, jsm, SPACE, "r-5f", tid());
   c("the run replays whole while its head is there", before.records.length === 5);
   await jsm.streams.purge(STREAM, { filter: wfjSubject(SPACE, "r-5f"), keep: 3 });
   let truncated: unknown;
-  try { await replayRunJournal(js, jsm, SPACE, "r-5f"); } catch (e) { truncated = e; }
+  try { await replayRunJournal(js, jsm, SPACE, "r-5f", tid()); } catch (e) { truncated = e; }
   c("once the head is purged the replay refuses, though its counts still agree",
     truncated instanceof RunJournalPrefixTruncated, `${(truncated as Error)?.name}`);
   let cannotActivate: unknown;
@@ -451,7 +456,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("the purge leaves a mid-run ACTIVATION at the front", head?.kind === "activation" && head.replayedTo > 0,
     `${head?.kind}/${(head as RunJournalActivation)?.replayedTo}`);
   let truncated: unknown;
-  try { await replayRunJournal(js, jsm, SPACE, "r-5g"); } catch (e) { truncated = e; }
+  try { await replayRunJournal(js, jsm, SPACE, "r-5g", tid()); } catch (e) { truncated = e; }
   c("and the replay still refuses it: an activation is not the genesis activation",
     truncated instanceof RunJournalPrefixTruncated, `${(truncated as Error)?.name}`);
 }
@@ -473,7 +478,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     (stale as StaleLeaseToken)?.held === 2 && (stale as StaleLeaseToken)?.holder === "d2");
   c("the current holder is untouched and still driving", !cur.isFinished);
   c("and can still append", (await cur.append({ n: 1 }, 1)) > 0);
-  const back = await replayRunJournal(js, jsm, SPACE, "r-5h");
+  const back = await replayRunJournal(js, jsm, SPACE, "r-5h", tid());
   c("nothing of the stale driver reached the journal",
     back.records.filter((r) => r.record.kind === "activation").length === 1,
     back.records.map((r) => r.record.kind));
@@ -504,11 +509,11 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 {
   const a = await activateRun(js, jsm, startRun("r-5i", "d1", 1));
   for (let n = 0; n < 3; n += 1) await a.append({ n }, n);
-  const before = await replayRunJournal(js, jsm, SPACE, "r-5i");
+  const before = await replayRunJournal(js, jsm, SPACE, "r-5i", tid());
   c("the run replays whole while every record is there", before.records.length === 4);
   await jsm.streams.deleteMessage(STREAM, before.records[2]!.seq);
   let torn: unknown;
-  try { await replayRunJournal(js, jsm, SPACE, "r-5i"); } catch (e) { torn = e; }
+  try { await replayRunJournal(js, jsm, SPACE, "r-5i", tid()); } catch (e) { torn = e; }
   c("one interior record removed is refused, though the front and the count both still agree",
     torn instanceof RunJournalPrefixTruncated, `${(torn as Error)?.name}`);
   c("and it says which entry is missing rather than that something is wrong",
@@ -529,7 +534,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   const a = await activateRun(js, jsm, startRun("r-5j", "d1", 1));
   await a.append({ n: 0 }, 0);
   await jsm.streams.purge(STREAM, { filter: wfjSubject(SPACE, "r-5j") });
-  const empty = await replayRunJournal(js, jsm, SPACE, "r-5j");
+  const empty = await replayRunJournal(js, jsm, SPACE, "r-5j", tid());
   c("a purged run replays as nothing at all: indistinguishable from never-started", empty.records.length === 0);
   let retired: unknown;
   try { await activateRun(js, jsm, takeover("r-5j", "d2", 2)); } catch (e) { retired = e; }
@@ -555,7 +560,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   try { await a.append({ n: 1 }, 1); } catch (e) { refused = e; }
   c("a retired run refuses its own driver's next append", refused instanceof RunSuperseded);
   c("and the appender is finished, which is the part a driver may act on", a.isFinished);
-  const after = await replayRunJournal(js, jsm, SPACE, "r-5k");
+  const after = await replayRunJournal(js, jsm, SPACE, "r-5k", tid());
   c("the journal is what distinguishes retirement from a takeover: nobody activated, there is nothing there",
     after.records.length === 0, after.records.map((r) => r.record.kind));
 }
@@ -569,7 +574,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 // the appender. Three directions, because getting one right is not getting the rule right.
 {
   const tok = (runId: string, holder: string, epoch: number, expect: "new" | "existing") => ({
-    space: SPACE, runId, holder, fencingToken: 7, epoch, at: 1_700_000_000_000, expect,
+    space: SPACE, runId, holder, fencingToken: 7, epoch, at: 1_700_000_000_000, expect, takeoverId: tid(),
   });
   const A = await activateRun(js, jsm, tok("r-5l", "A", 1, "new"));
   await A.append({ by: "A" }, 1);
@@ -583,7 +588,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     otherHolder instanceof ActivationNotAuthorized, `${(otherHolder as Error)?.name}`);
   c("and the holder that actually has the run is untouched", !A.isFinished);
   c("so nothing the intruder wanted is in the journal: still one activation",
-    (await replayRunJournal(js, jsm, SPACE, "r-5l")).records.filter((r) => r.record.kind === "activation").length === 1);
+    (await replayRunJournal(js, jsm, SPACE, "r-5l", tid())).records.filter((r) => r.record.kind === "activation").length === 1);
 
   // Direction two: one holder, restarted. The newer process takes its own run back — that is what
   // an epoch is for — and then the OLDER one must not take it back again.
@@ -613,14 +618,14 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   const a = await activateRun(js, jsm, startRun("r-5m", "d1", 1));
   for (let n = 0; n < 4; n += 1) await a.append({ n }, n);
   const both = await Promise.allSettled([
-    replayRunJournal(js, jsm, SPACE, "r-5m"),
-    replayRunJournal(js, jsm, SPACE, "r-5m"),
+    replayRunJournal(js, jsm, SPACE, "r-5m", tid()),
+    replayRunJournal(js, jsm, SPACE, "r-5m", tid()),
   ]);
   c("two concurrent replays both read the WHOLE run, rather than halves of it",
     both.every((r) => r.status === "fulfilled" && r.value.records.length === 5),
     both.map((r) => r.status === "fulfilled" ? r.value.records.length : (r.reason as Error).name));
 
-  const eight = await Promise.allSettled(Array.from({ length: 8 }, () => replayRunJournal(js, jsm, SPACE, "r-5m")));
+  const eight = await Promise.allSettled(Array.from({ length: 8 }, () => replayRunJournal(js, jsm, SPACE, "r-5m", tid())));
   c("and eight of them do too: no API errors, no consumer deleted out from under a fetch",
     eight.every((r) => r.status === "fulfilled" && r.value.records.length === 5),
     eight.map((r) => r.status === "fulfilled" ? r.value.records.length : (r.reason as Error).name).join(","));
@@ -638,6 +643,41 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("and the loser is told to read again, not that the journal is broken",
     loser?.reason instanceof ActivationRaced || loser?.reason instanceof StaleLeaseToken ||
     loser?.reason instanceof ActivationNotAuthorized, `${(loser?.reason as Error)?.name}`);
+}
+
+// ── 5n) `expect` is CHECKED, not merely typed ────────────────────────────────────────────────
+//
+// A type says nothing at a boundary a caller can reach with a value the compiler never saw — a
+// journal read back from the wire, a config parsed from JSON, JavaScript. A missing or bogus value
+// would fall through BOTH guards and reactivate a purged run as if it were new, which is precisely
+// what the field exists to make impossible.
+{
+  for (const bogus of [undefined, "", "yes", "New"]) {
+    let refused: unknown;
+    try {
+      await activateRun(js, jsm, { ...startRun("r-5n", "d1", 1), expect: bogus as never });
+    } catch (e) { refused = e; }
+    c(`a takeover stating expect ${JSON.stringify(bogus)} is refused rather than defaulted`,
+      refused instanceof Error && /must state expect/.test((refused as Error).message),
+      `${(refused as Error)?.name}: ${String((refused as Error)?.message).slice(0, 60)}`);
+  }
+  const good = await activateRun(js, jsm, startRun("r-5n", "d1", 1));
+  c("and a stated one still works", good.lastSeq > 0);
+}
+
+// ── 5o) the chain proves consecutive; the ANCHOR proves it starts at a start ──────────────────
+//
+// Ordinals are contiguous from 0 in a forged prefix just as easily as in a real one — a step
+// numbered 0 is a journal that begins in the middle of a story with its page numbers rewritten. The
+// genesis anchor is the other half and it stays alongside the chain rather than being replaced by
+// it: only an activation that replayed NOTHING can be a run's first record.
+{
+  const forged = await rawAppend("r-5o", 0, { v: 1, kind: "step", run: "r-5o", n: 0, at: 1, entry: { forged: true } });
+  c("a step can be written as journal entry 0 — the chain has no objection to it", forged.landed, forged);
+  let anchored: unknown;
+  try { await replayRunJournal(js, jsm, SPACE, "r-5o", tid()); } catch (e) { anchored = e; }
+  c("but the replay refuses it: entry 0 of a run is the activation that replayed nothing",
+    anchored instanceof RunJournalPrefixTruncated, `${(anchored as Error)?.name}`);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
@@ -661,8 +701,8 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     crossErr === undefined && seq > 0 && seq2 > seq && !x.isSuperseded,
     `${seq} then ${seq2}${crossErr === undefined ? "" : ` — ${String(crossErr).slice(0, 70)}`}`);
   c("and each run reads back only its own records",
-    (await replayRunJournal(js, jsm, SPACE, "r-6a")).records.length === 3
-    && (await replayRunJournal(js, jsm, SPACE, "r-6b")).records.length === 4);
+    (await replayRunJournal(js, jsm, SPACE, "r-6a", tid())).records.length === 3
+    && (await replayRunJournal(js, jsm, SPACE, "r-6b", tid())).records.length === 4);
 }
 
 // ── 7) the head cannot come from STREAM.INFO, which is why it comes from the replay ───────────
@@ -684,7 +724,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("publishing at the INFO-derived sequence is refused: it was never this subject's head",
     !wrong.landed && wrong.code === 10071, wrong);
   c("while the replay's last delivered sequence is accepted",
-    (await rawAppend("r-7", (await replayRunJournal(js, jsm, SPACE, "r-7")).lastSeq, step("r-7", 2, 2))).landed);
+    (await rawAppend("r-7", (await replayRunJournal(js, jsm, SPACE, "r-7", tid())).lastSeq, step("r-7", 2, 2))).landed);
 }
 
 // ── 8) every takeover replays from the TOP ────────────────────────────────────────────────────
@@ -695,8 +735,8 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 {
   const a = await activateRun(js, jsm, startRun("r-8", "d1", 1));
   await a.append({ n: 1 }, 1);
-  const first = (await replayRunJournal(js, jsm, SPACE, "r-8")).records.length;
-  const second = (await replayRunJournal(js, jsm, SPACE, "r-8")).records.length;
+  const first = (await replayRunJournal(js, jsm, SPACE, "r-8", tid())).records.length;
+  const second = (await replayRunJournal(js, jsm, SPACE, "r-8", tid())).records.length;
   c("a second replay of the same run returns the same prefix, not the tail after the first",
     first === second && first === 2, `${first} then ${second}`);
 }
