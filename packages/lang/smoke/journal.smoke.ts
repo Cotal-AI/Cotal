@@ -7,8 +7,8 @@
  * bug this keying scheme exists to prevent, so "diverged" has to be a verdict the interpreter
  * cannot accidentally treat as "miss".
  */
-import { Journal, JournalAppendRejected, RunClock, type JournalEntry } from "../src/journal.js";
-import { KeyScope, digest } from "../src/keys.js";
+import { Journal, JournalAppendRejected, RunClock, journalEntryKeyString, type JournalEntry } from "../src/journal.js";
+import { KeyScope, digest, stepKeyString } from "../src/keys.js";
 import { run } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import type { EffectHandler } from "../src/effects.js";
@@ -510,6 +510,36 @@ await sleep("3h", { name: "after-the-catch" });
     outcome instanceof JournalAppendRejected, outcome instanceof Error ? outcome.name : outcome);
   ok("and the program performed nothing after the refusal: the world stops where the journal did",
     performed.join(",") === "1h", performed);
+}
+
+// ---- an entry can be addressed by the key it was written under ------------------------------
+//
+// A resolver outside the language names a step by its key string — "the checkpoint called approve
+// in this run" — and the journal is what maps that to the identity a handler submitted under. The
+// entry keeps its scope as a string and its own (kind, name, occurrence) beside it, so the key is
+// recoverable, but only by re-applying the grammar `stepKeyString` owns. This is the cell that says
+// the two agree; a second hand-rolled join would address a different step rather than fail.
+{
+  const root = new KeyScope();
+  const plain = root.nextEffect("checkpoint", "approve");
+  const j = new Journal({ run: "addr" });
+  const e1 = await j.begin(plain, H({ p: 1 }), 0, "req-1");
+  ok("a root-level entry re-derives its own step key",
+    journalEntryKeyString(e1) === stepKeyString(plain), [journalEntryKeyString(e1), stepKeyString(plain)]);
+
+  const occurrence = root.nextScope("race", "first");
+  const branch = root.branch("race", "first", occurrence, "b0");
+  const nested = branch.nextEffect("checkpoint", "approve");
+  const e2 = await j.begin(nested, H({ p: 2 }), 1, "req-2");
+  ok("and so does one inside a concurrency scope, where the two would otherwise collide",
+    journalEntryKeyString(e2) === stepKeyString(nested), [journalEntryKeyString(e2), stepKeyString(nested)]);
+  ok("the two are DIFFERENT keys: the scope path is part of the address, not decoration",
+    journalEntryKeyString(e1) !== journalEntryKeyString(e2), [journalEntryKeyString(e1), journalEntryKeyString(e2)]);
+
+  const unnamed = root.nextEffect("sleep");
+  const e3 = await j.begin(unnamed, H(0), 2);
+  ok("an UNNAMED step addresses by its kind alone, exactly as the key grammar writes it",
+    journalEntryKeyString(e3) === stepKeyString(unnamed), [journalEntryKeyString(e3), stepKeyString(unnamed)]);
 }
 
 console.log(`journal.smoke: ${pass} checks passed`);

@@ -181,6 +181,21 @@ export class JournalReadOnlyError extends Error {
   }
 }
 
+/**
+ * The step-key string an entry was written under, rebuilt from the entry itself.
+ *
+ * A recorded entry keeps the scope path as a STRING and its own `(kind, name, occurrence)` beside
+ * it, so the key it was filed under is recoverable — but only by re-applying the grammar that
+ * `stepKeyString` owns. That grammar lives in exactly one place and this is how anything outside
+ * the language addresses a recorded step: a caller that re-joined the parts by hand would be
+ * maintaining a second copy of a rule, and the first edit to the naming would silently address a
+ * different step rather than fail.
+ */
+export function journalEntryKeyString(entry: JournalEntry): string {
+  const named = entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`;
+  return `${entry.scope}/${named}#${entry.occurrence}`;
+}
+
 export class Journal {
   readonly run: string;
   readonly readOnly: boolean;
