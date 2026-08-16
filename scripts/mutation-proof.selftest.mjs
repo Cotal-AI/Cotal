@@ -182,7 +182,7 @@ writeFileSync(
     "const c = (n, v) => { console.log(v ? `  ✓ ${n}` : `  ✗ FAIL: ${n}`); if (!v) process.exitCode = 1; };",
     "c('the guard refuses an oversized value', admit(50) === false);",
     "if (unrelated() !== 'untouched') throw new Error('the unrelated helper blew up');",
-    "c('the unrelated helper is untouched', true);",
+    "c('the unrelated helper is untouched', admit(7) === true);",
     "",
   ].join("\n"),
 );
@@ -233,6 +233,22 @@ r = runTool([
 ]);
 check("green with zero progress marks is INCONCLUSIVE, not SURVIVED",
   r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+// 7e-bis. THE DELIBERATE NON-CHANGE, pinned so nobody "fixes" it later. A mutation that reddens the
+// named cell for real AND THEN crashes the suite is KILLED, not INCONCLUSIVE. A harness that
+// harvests a kill set by counting FAIL lines must call that inconclusive — the crash adds a second
+// FAIL line and inflates its count. This grader asks one question per mutation, about one named
+// assertion, and that assertion demonstrably went from its green line to its red line BEFORE the
+// crash. The crash destroys evidence about the cells that never ran; it does not retract the
+// evidence about the cell that did.
+r = runTool([
+  "--command", `${process.execPath} paired.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;\n  if (n === 7) throw new Error('and then a crash');",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("a real red followed by a crash is still KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
 
 // 7f. A mis-spelled key is silently dropped by every JSON reader. In an instrument whose whole
 // premise is that each step of the experiment has a way to lie, a `label:` that should have been
