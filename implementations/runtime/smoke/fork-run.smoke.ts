@@ -205,9 +205,14 @@ const plan = async (
   // NAMED RE-OPEN TRIGGER: if that question is settled the other way, this cell FAILS, and it is
   // meant to. A design decision recorded only in a plan is one nobody re-reads; one asserted here
   // cannot be reversed quietly.
-  const childJournal = new Journal({ run: "r-pins", entries: got });
+  // Guarded: a Journal refuses entries belonging to another run, so a fault in the copy shows up
+  // here as a THROW rather than as a wrong number, and a thrown cell must fail rather than end the
+  // suite — every cell below it is evidence too.
+  let consumed: number | string;
+  try { consumed = new Journal({ run: "r-pins", entries: got }).dispatchedEffects(); }
+  catch (e) { consumed = `threw: ${(e as Error).message.slice(0, 60)}`; }
   c("the child inherits the prefix's effect CONSUMPTION, not just the ceiling — provisional, by construction",
-    childJournal.dispatchedEffects() === 2, childJournal.dispatchedEffects());
+    consumed === 2, consumed);
 }
 
 // ── 4) the refusals, each naming a different repair ────────────────────────────────────────────
@@ -326,9 +331,11 @@ const plan = async (
   // A suite that builds its inputs by hand proves the code it drives and nothing about what reaches
   // it — so the fence is observed, not reasoned about.
   const retryHandBuilt = collector();
-  await commitFork(kv, EP, { ...p, child: "r-crash" }, retryHandBuilt.store);
+  const retryErr = await commitFork(kv, EP, { ...p, child: "r-crash" }, retryHandBuilt.store)
+    .then(() => null, (e: unknown) => e as Error);
   c("a hand-built store lets a crashed fork be retried, and the prefix lands TWICE",
-    retryHandBuilt.got.length === 2 && dying.got.length === 1, { retry: retryHandBuilt.got.length, crashed: dying.got.length });
+    retryErr === null && retryHandBuilt.got.length === 2 && dying.got.length === 1,
+    { retry: retryHandBuilt.got.length, crashed: dying.got.length, err: retryErr?.name });
 
   // The same crash, on the DURABLE plane this time: a real appender, dying after one entry, so the
   // child ends up with journal records on the wire and no record — the exact state the write-last

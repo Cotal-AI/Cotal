@@ -84,14 +84,13 @@
       "replace": "  if (existing !== undefined && false) {",
       "expectRed": "forking into a run that already exists is refused: a fork mints a new run",
       "cell": "forking into a run that already exists is refused: a fork mints a new run"
-    },
+    }
+  ],
+  "unkillable": [
     {
       "name": "an activation expecting a NEW run accepts one whose journal has records",
       "file": "packages/core/src/run-journal.ts",
-      "find": "    if (t.expect === \"new\" && records.length > 0) {",
-      "replace": "    if (t.expect === \"new\" && records.length > 0 && false) {",
-      "expectRed": "and the retry is refused at the door a caller actually uses",
-      "cell": "and the retry is refused at the door a caller actually uses: a journal with records is not NEW"
+      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild — the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
     }
   ]
 }
