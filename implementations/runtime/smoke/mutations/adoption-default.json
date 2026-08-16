@@ -58,15 +58,18 @@
       "expectRed": "...and is handed the prefix the activation validated, which is what names the pauses to re-arm",
       "cell": "...and is handed the prefix the activation validated, which is what names the pauses to re-arm",
       "note": "A repair handed nothing cannot re-arm anything, so `it was called` is not the property. Note this passes the FRESH-run cell, whose prefix is legitimately empty -- which is why that cell is a control and not the proof."
-    },
+    }
+  ],
+  "ungradable": [
     {
       "name": "PARANOID: every handler is assumed to carry the method",
       "file": "implementations/runtime/src/run-driver.ts",
       "find": "  typeof (handler as AdoptingHandler | undefined)?.adopted === \"function\"",
       "replace": "  handler !== undefined",
-      "expectRed": "and a handler that owns no external state needs no method: the takeover still completes",
-      "cell": "and a handler that owns no external state needs no method: the takeover still completes",
-      "note": "The other narrowness twin. Every other cell in this file drives a handler that owns nothing external, so a driver that demanded the method would break the ordinary case while the takeover cells above stayed green. GRADED INCONCLUSIVE ON THE FIRST RUN, and the harness was right: demanding the method makes the FIRST cell in the file throw at bind time, so the suite died before its terminal marker and any verdict would have been about the stop. Fixed on the TEST side by routing the narrowness cell through this file's own `attempt` helper, which exists for exactly this -- an escaping exception kills the suite instead of failing a cell, and names no claim."
+      "found": "2026-08-16",
+      "why": "RECLASSIFIED, not deleted, and not counted as a kill. Graded INCONCLUSIVE twice and the harness is right both times. Removing the `typeof` test makes the driver bind a method that is not there, which throws for EVERY handler in this suite that owns no external state -- and that is cell 1, long before the narrowness cell at the end. The suite dies at its first await rather than reddening a cell, so the run never reaches its terminal marker and any verdict would be about the stop.",
+      "coverage": "The claim is NOT uncovered: the guard sits on a path every cell in this file traverses, so its removal is caught by the whole suite at once. What it cannot be is NAMED -- no single cell can be the one that reddens, because the file aborts. Routing the narrowness cell through `attempt` was tried and does not help: the throw happens at cell 1, which does not and should not catch.",
+      "notDoneOnPurpose": "Wrapping every cell in the file to make one mutation gradable would weaken 53 assertions to strengthen a report, and a suite that swallows exceptions everywhere is the instrument this harness exists to detect. Recorded here rather than re-aimed at a cell it does not name, which would have been a kill claimed for a guard the mutation did not measure."
     }
   ]
 }
