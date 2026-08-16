@@ -264,8 +264,12 @@ await sleep("1s", { name: "after-race" });
     runId: "r-fan", handler: checkHandler(10_000_000), journal: fj3, migration: true,
   }).then(() => null, (e: unknown) => e as Error);
   ok("a migration completes over a fanOut the edit narrowed", dropped === null, `${dropped?.name}: ${dropped?.message?.slice(0, 140)}`);
+  // BOTH HALVES, because "b orphaned" alone is also what a walk that entered NOTHING would report,
+  // and those are different systems wearing one green: the casualty list has to name who survived.
   ok("and the dropped branch's step is an orphan, which is the whole point of walking",
     keys(fj3.orphans()).some((k) => k.includes("/b:b/")), keys(fj3.orphans()));
+  ok("while the branch the edit KEPT was entered, so its step is not",
+    !keys(fj3.orphans()).some((k) => k.includes("/b:a/")), keys(fj3.orphans()));
 }
 
 // ---- 3) a divergence INSIDE the winning branch is seen, because the branch is entered -----------
