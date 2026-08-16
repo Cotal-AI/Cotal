@@ -1,0 +1,143 @@
+{
+  "suite": "bin/smoke/broker-disclosure.smoke.ts",
+  "guard": "every file that defaults COTAL_SERVERS with `||=` also prints what it resolved, and records whether it was inherited before the assignment destroys that evidence",
+  "command": "pnpm smoke:broker-disclosure",
+  "completionMarker": "file(s) default COTAL_SERVERS",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/broker-disclosure.json",
+  "why": [
+    "The disclosure itself adds output, not a guard: nothing stopped a future edit from deleting a",
+    "line, and its absence is silent in exactly the way the disclosure exists to prevent. This",
+    "grades the CONVENTION rather than any one suite, so a new file that picks up the `||=` habit",
+    "is caught the day it lands rather than the day someone audits.",
+    "",
+    "THE CENSUS IS KEYED ON CONTENT, NOT ON A DIRECTORY, and that is the whole reason it finds",
+    "seven. A sweep of `extensions/` -- the obvious heuristic, and the one an earlier count used --",
+    "misses `bin/smoke/launch-parity.smoke.ts`, which carries the same default and lives elsewhere.",
+    "A census keyed on where a thing usually lives cannot see the one that lives somewhere else.",
+    "",
+    "THE ORDERING CELL IS NOT DECORATION. `||=` destroys the evidence it is being asked about: once",
+    "it has run, `process.env.COTAL_SERVERS` is set either way and nothing downstream can tell an",
+    "inherited value from the default. A capture placed after the assignment reads the value the",
+    "suite just wrote and reports every run as inherited -- output present, disclosure worthless.",
+    "So the guard checks POSITION, not merely presence, and mutation 3 is that exact regression.",
+    "",
+    "THE EMPTY-SET CELL IS THE ONE MOST LIKELY TO BE CALLED PARANOID AND IS NOT. Every other cell",
+    "in this suite is generated per discovered file, so if the census ever matches nothing -- a",
+    "regex drifting against a reformat, a directory added to SKIP -- the suite passes with zero",
+    "assertions and reports OK. That is a guard over an empty set: green forever, grading nothing.",
+    "It is the same shape as an allowlist entry that has quietly stopped matching anything.",
+    "",
+    "NOT GRADED, and named rather than implied: that the seven suites do not DIAL the address. That",
+    "was measured live -- a listener on the configured port counted zero accepts for all seven, and",
+    "each passes pointed at a blackhole -- and it is a fact about what those suites do at runtime,",
+    "which a source-reading guard cannot see. It is written in the comment above each line rather",
+    "than asserted here, because a check that cannot observe a connection must not claim there was",
+    "none.",
+    "",
+    "SPECIFIER BOUNDARY: not applicable, and checked rather than assumed. This suite imports no",
+    "workspace package at all -- only `node:fs`, `node:path`, `node:url` -- and reads the mutated",
+    "files as TEXT from disk. There is no `dist` in the path and no build in the command, so the",
+    "bytes mutated are the bytes graded.",
+    "",
+    "TWO MUTATIONS SURVIVED THE FIRST RUN AND BOTH SURVIVALS WERE THE SUITE'S FAULT, fixed on the",
+    "test side rather than by re-aiming. (1) Scoping the census to `extensions/` did not redden any",
+    "cell -- it DELETED two, because every per-file cell is generated from the census, and a suite",
+    "with fewer cells still exits 0. A guard whose coverage shrinks silently with its input is the",
+    "same shape as the allowlist entry that stops matching anything. (2) Dropping the ordering",
+    "requirement changed no verdict, because every real file is compliant -- a requirement no input",
+    "exercises cannot be proved by the corpus, however many files the corpus has. The first is now a",
+    "cell about the census itself, the second a negative fixture. Neither mutation was weakened."
+  ],
+  "mutations": [
+    {
+      "name": "one file's disclosure is deleted, which is the regression this guard exists for",
+      "file": "extensions/pi/smoke/tool-input-closed.smoke.ts",
+      "find": "console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? \"INHERITED from the environment\" : \"suite default\"})`);",
+      "replace": "void brokerFromEnv;",
+      "expectRed": "extensions/pi/smoke/tool-input-closed.smoke.ts prints the broker it resolved",
+      "cell": "extensions/pi/smoke/tool-input-closed.smoke.ts prints the broker it resolved",
+      "note": "A careless edit, not a malicious one: the line is dropped and the capture kept, which still typechecks and leaves that suite passing. Before this guard the whole repo stayed green."
+    },
+    {
+      "name": "the census is scoped to `extensions/`, the heuristic that produced a count of six",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "for (const file of sources(repoRoot)) {",
+      "replace": "for (const file of sources(join(repoRoot, \"extensions\"))) {",
+      "expectRed": "the census spans more than one top-level directory, so it is keyed on content and not on location",
+      "cell": "the census spans more than one top-level directory, so it is keyed on content and not on location",
+      "note": "The mutation is a real person's first instinct, and it is why the original count of these files was six. It first SURVIVED: narrowing the census does not FAIL the per-file cells, it stops emitting them, and a suite with two fewer cells still exits 0. That is a guard whose strength shrinks with its input and reports nothing -- so the suite gained a cell that asserts the census SPANS more than one top-level directory, which is the property the finding was actually about."
+    },
+    {
+      "name": "the inherited-capture is allowed to sit AFTER the assignment that destroys the evidence",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "  return { prints: PRINTS.test(text), ordered: capture !== -1 && capture < assign };",
+      "replace": "  return { prints: PRINTS.test(text), ordered: capture !== -1 };",
+      "expectRed": "fixture: a file that captures AFTER the `||=` is rejected on order",
+      "cell": "fixture: a file that captures AFTER the `||=` is rejected on order",
+      "note": "Presence-not-position: the resulting checker accepts a disclosure that reports EVERY run as inherited. It first SURVIVED, and correctly -- every real file is compliant, so dropping the requirement changed no real verdict. A requirement that no input exercises cannot be proved by the corpus, so the suite now carries its own negative control and this mutation is aimed at that fixture. Paired with mutation 4, which puts the same defect in a real file: the fixture proves the checker still looks, mutation 4 proves it is looking at the repo."
+    },
+    {
+      "name": "PAIRED: a real file captures the flag after its own `||=`, so the disclosure always says inherited",
+      "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
+      "find": "const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\nprocess.env.COTAL_SERVERS ||= \"nats://127.0.0.1:4222\";",
+      "replace": "process.env.COTAL_SERVERS ||= \"nats://127.0.0.1:4222\";\nconst brokerFromEnv = process.env.COTAL_SERVERS !== undefined;",
+      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
+      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
+      "note": "The defect wearing a healthy shape: two lines swapped, everything still compiles, the line still prints, and it is wrong every single run. This is the pair that makes mutation 3 mean something -- one shows the guard would stop looking, the other shows what it is looking at."
+    },
+    {
+      "name": "the disclosure requirement drops back to the NAME, so `${` deleted is accepted",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:[^\\n]*${VAR}`);",
+      "expectRed": "fixture: a line carrying the NAME without the interpolation is rejected",
+      "cell": "fixture: a line carrying the NAME without the interpolation is rejected: `${` is the value",
+      "note": "THE SHIPPED STATE BEFORE THIS ROUND, and it is the whole name-versus-value family in one character. A reviewer reproduced it against the suite's own `evaluate`: delete the `$` from `${process.env.COTAL_SERVERS}` and every cell stays green while the line prints the literal text `{process.env.COTAL_SERVERS}` at runtime. The cell was called \"prints the broker it resolved\" and never looked at whether anything was resolved. The corpus cannot prove this either way -- every real file is compliant -- so the fixtures are the only thing that can, which is the same argument mutation 3 already carries one level up. RE-ANCHORED TWICE, the second time after the backtick requirement landed on the same line: an anchor that has moved reports ERROR rather than a verdict, which is the tool being honest, and is the reason a kill set is re-run rather than inherited when the guard it grades changes."
+    },
+    {
+      "name": "the self-exclusion is removed, so the guard counts its own fixtures as real suites",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "  if (rel === self) { excludedPaths.push(rel); continue; }",
+      "replace": "  if (false) { excludedPaths.push(rel); continue; }",
+      "expectRed": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "cell": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "note": "A census keyed on TEXT cannot tell a call site from a fixture, and this file is the one guaranteed to hold fixtures: without the exclusion it reported EIGHT files defaulting the variable when seven do, and graded its own negative controls as though they were suites. The published count was wrong by one and nothing said so. The exclusion is computed from `import.meta.url` rather than written as a path, so it cannot grow into an allowlist, and this cell is what stops it going dead if the fixtures ever stop matching. RE-ANCHORED when the exclusion started recording the PATH rather than a count, so identity could be asserted rather than cardinality alone."
+    },
+    {
+      "name": "the interpolation may sit ANYWHERE after `broker:`, so a commented one satisfies a literal line",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:[^\\n]*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "expectRed": "fixture: the INTERPOLATION parked in a trailing comment is rejected too",
+      "cell": "fixture: the INTERPOLATION parked in a trailing comment is rejected too",
+      "note": "THE NEXT MEMBER OF THE FAMILY, found by review after the first was closed, and the lesson is that closing the members you were shown is not closing the family. Requiring the interpolation was right and requiring it ANYWHERE ON THE LINE was not: park it in a trailing comment, hardcode the address in the template, and the line prints a literal every run while the check is satisfied. It is also the plausible careless edit rather than a contrived one, because it is what somebody leaves behind after pinning an address to debug something. RE-ANCHORED after the backtick requirement landed on the same line: it kept the shape it grades and moved to the line as it stands, because an anchor that has moved reports ERROR rather than a verdict, and a set is re-run rather than inherited when the guard it grades changes."
+    },
+    {
+      "name": "the self-exclusion is repointed at a real suite, which stops grading it and lets this file in",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const self = relative(repoRoot, fileURLToPath(import.meta.url));",
+      "replace": "const self = \"bin/smoke/launch-parity.smoke.ts\";",
+      "expectRed": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "cell": "exactly one file is excluded from the census, and it is this file's own fixtures",
+      "note": "CARDINALITY IS NOT IDENTITY, and a cell that counts a carve-out without naming it leaves the carve-out free to point elsewhere. Raised by review: repointing `self` keeps `excluded` at one, keeps the census the same size, keeps the span-directories cell green, and silently stops grading a real suite while this file walks into the census through its own compliant fixture. The cell now names the path as a LITERAL rather than re-deriving it from `self`, which would have made it a tautology that this mutation passes."
+    },
+    {
+      "name": "the census narrows back to dot access, so the same assignment under brackets is INVISIBLE",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const VAR = String.raw`process\\.env(?:\\.COTAL_SERVERS|\\[[\"']COTAL_SERVERS[\"']\\])`;",
+      "replace": "const VAR = String.raw`process\\.env\\.COTAL_SERVERS`;",
+      "expectRed": "fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
+      "cell": "fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
+      "note": "The dangerous direction, because it is SILENT. `process.env[\"COTAL_SERVERS\"] ||=` is the same assignment, and a census that cannot see it does not reject that file, it never enumerates it -- and every per-file cell is generated from the census, so the guard loses cells rather than going red. That is the same shape as scoping the sweep to `extensions/` (mutation 2), one level lower: there the census missed a DIRECTORY, here it misses a SPELLING. No file in the tree writes it this way today, which is exactly why only a fixture can hold the line."
+    },
+    {
+      "name": "the template requirement is dropped, so `${...}` inside a QUOTED string is accepted",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "expectRed": "fixture: the interpolation inside a QUOTED string is rejected",
+      "cell": "fixture: the interpolation inside a QUOTED string is rejected: it prints as text, not a value",
+      "note": "THE SHIPPED STATE BEFORE THIS ROUND, and the same name-versus-value family one level down. The interpolation is present, spelled correctly, and sits exactly where the pattern wants it, and the string is quoted, so JS never interpolates: the line prints `${process.env.COTAL_SERVERS}` as six characters of text with the real address sitting unread in the environment. Ran both forms with the variable set rather than reasoning about it. This is a careless edit and not sabotage, which is why it belongs closed: a tick-to-quote conversion, or a rewrite toward concatenation that leaves a `${}` behind inside the quotes. Every real file uses a template today, so only a fixture can hold this."
+    }
+  ]
+}
