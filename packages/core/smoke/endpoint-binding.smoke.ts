@@ -493,11 +493,18 @@ admitsFloor("a declared receipt retention BELOW the default lowers the floor wit
   + "declared, never compiled in", 2 * HORIZON,
   { horizonMs: HORIZON, resultRetentionMs: HORIZON, receiptRetentionMs: 2 * HORIZON });
 // The horizon is DECLARED, never compiled in — the same lesson as the admission ceiling. A space
-// retaining decisions for a week must have its fact age measured against ITS horizon, and this cell
+// retaining decisions for a year must have its fact age measured against ITS horizon, and this cell
 // is the one that fails if the floor is ever hardcoded to the module default.
-throws("the floor is measured against the DECLARED horizon, not this module's default: 48h of facts "
-  + "is refused under a 90-day declared horizon, though it passes the default",
-  () => assertFactRetentionFloor(2 * HORIZON, 90 * HORIZON));
+//
+// IT DID NOT USED TO BE. Written as "48h of facts under a 90-day declared horizon", it proved
+// nothing about the declared term: 90 days is EXACTLY the receipt default, so the receipt term
+// bound the floor and 48h was refused whether the declared horizon was read or replaced by the
+// module constant. Hardcoding the horizon left the cell green. **A cell that varies one term to a
+// value another term already reaches cannot tell the two apart** — the fact age has to land in the
+// gap the declared term opens ABOVE every default, or the defaults answer for it.
+throws("the floor is measured against the DECLARED horizon, not this module's default: 100 days of "
+  + "facts is refused under a 120-day declared horizon, though it clears every default",
+  () => assertFactRetentionFloor(100 * HORIZON, 120 * HORIZON));
 throws("a non-positive declared horizon is refused rather than treated as absent",
   () => assertFactRetentionFloor(HORIZON, 0));
 throws("a fractional fact age is refused (a wire duration is a safe integer)",
@@ -517,9 +524,18 @@ try {
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
 
-  await createEndpointStreams(jsm, kvm, SPACE);
-  await createEndpointStreams(jsm, kvm, SPACE); // identical re-run: idempotent, no throw
-  c("createEndpointStreams is idempotent", true);
+  // A BARE CALL IS NOT A CELL. These two were `await …; await …; c("is idempotent", true)`, so a
+  // mutant that made EITHER call throw ended the run with no assertion name on it — and the FIRST
+  // call is not the idempotence claim at all, it is the setup. Split and named: a failure now says
+  // which of the two broke.
+  await (async () => {
+    try { await createEndpointStreams(jsm, kvm, SPACE); c("createEndpointStreams builds the space resources", true); }
+    catch (e) { c("createEndpointStreams builds the space resources", false, (e as Error).message); }
+  })();
+  await (async () => {
+    try { await createEndpointStreams(jsm, kvm, SPACE); c("an identical re-run is idempotent", true); }
+    catch (e) { c("an identical re-run is idempotent", false, (e as Error).message); }
+  })();
 
   // REACH, not just behaviour. Every floor cell above calls the validator DIRECTLY, and a validator
   // that is exported and never invoked passes all of them — the same shape as registering a record
