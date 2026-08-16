@@ -211,4 +211,44 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
   ok("the digest form it replaced would NOT be legal", !ID.test(`sha256:${"a".repeat(64)}`));
 }
 
+// ---- g3: stepKeyString is NOT injective, pinned as a KNOWN DEFECT ---------------------------
+//
+// These cells assert what the code does TODAY and are written to DIE. The repair makes them fail,
+// and that is the point: they are the tripwire for a defect this lane did not detect and is now
+// fixing against its own model of it. A cell that must break when the bug is fixed has no
+// correct-looking state to pass in, so it cannot go quietly vacuous the way a forward-looking
+// assertion can.
+//
+// The key grammar builds `/kind:name#occ/b:branch` by concatenation and NOTHING escapes the three
+// characters it reserves. So a branch key — or a step name — that spells a path forges structure,
+// and two structurally different programs print one identical key. Measured consequences, both
+// reproduced live: with DIFFERENT inputs at the two locations the run throws a spurious L5001
+// "run divergence, INPUT CHANGED" for a program that never diverged; with the SAME inputs it is
+// entirely silent — one durable row serves two locations, the run reports success, and a replay
+// hands the second location the first one's recorded effect. The silent case is the worse one.
+{
+  const root = new KeyScope();
+  // A: genuinely nested — outer/b:a, then inner/b:b, then the sleep.
+  const nested = root
+    .branch("parallel", "outer", 0, "a")
+    .branch("parallel", "inner", 0, "b");
+  // B: ONE branch of ONE scope, whose key spells the whole nested path.
+  const spelled = root.branch("parallel", "outer", 0, "a/parallel:inner#0/b:b");
+
+  const kNested = stepKeyString(nested.nextEffect("sleep", "z"));
+  const kSpelled = stepKeyString(spelled.nextEffect("sleep", "z"));
+
+  ok("KNOWN DEFECT (g3): two structurally different scopes print ONE identical key",
+    kNested === kSpelled, { nested: kNested, spelled: kSpelled });
+  ok("KNOWN DEFECT (g3): and it is the nested path that the flat branch forged",
+    kSpelled === "/parallel:outer#0/b:a/parallel:inner#0/b:b/sleep:z#0", kSpelled);
+
+  // The same forgery through a step NAME rather than a branch key. `nameRequired` is false for 7 of
+  // the 13 primitives, and an optional name is never checked against STEP_NAME_RE at all — so the
+  // unvalidated half is wider than the branch keys the review named.
+  const viaName = stepKeyString(root.nextEffect("sleep", "z#0/b:x/sleep:y"));
+  ok("KNOWN DEFECT (g3): a step NAME forges structure too, not only a branch key",
+    viaName === "/sleep:z#0/b:x/sleep:y#0", viaName);
+}
+
 console.log(`keys.smoke: ${pass} checks passed`);
