@@ -285,7 +285,7 @@ const COMMIT_ROWS = [
   "$KV.cotal_records_epbind.goal.manager.>",
   "$KV.cotal_records_epbind.cp.manager.>",
   "$KV.cotal_records_epbind.lease.manager.>",
-  // SPEC:2721 enumerates SIX record kinds on this row, not three. These were built on the Model-B
+  // SPEC:2912 (§13.9 "Claim / action / checkpoint commits") enumerates SIX record kinds on this row, not three. These were built on the Model-B
   // overlay instead, where one connection binds AND commits, so nothing noticed for as long as that
   // overlay was the only caller — and a commit principal minted from this builder alone would be
   // denied the launch election, the name claim, and the cutover manifest at commit time.
@@ -296,7 +296,7 @@ const COMMIT_ROWS = [
   "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
   "$JS.API.INFO",
 ];
-c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the SIX record-key prefixes SPEC:2721 enumerates + the two leader-served fencing reads), never dec/quar",
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the SIX record-key prefixes §13.9 `Claim / action / checkpoint commits` (SPEC:2912) enumerates + the two leader-served fencing reads), never dec/quar",
   (() => {
     const g = commitPrincipalGrants(SPACE, "manager", CONN);
     return JSON.stringify(g.publish) === JSON.stringify(COMMIT_ROWS)
@@ -309,7 +309,7 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
 // list above still holds the CLOSURE (nothing extra), which per-row membership cannot.
 for (const kind of ["goaleff", "epname", "epmig"] as const) {
   const row = kind === "epmig" ? "$KV.cotal_records_epbind.epmig.manager" : `$KV.cotal_records_epbind.${kind}.manager.>`;
-  c(`the commit principal holds the \`${kind}\` key EXACTLY as SPEC:2721 spells it (\`epmig\` is ONE key, never a subtree)`,
+  c(`the commit principal holds the \`${kind}\` key EXACTLY as §13.9 \`Claim / action / checkpoint commits\` (SPEC:2912) spells it (\`epmig\` is ONE key, never a subtree)`,
     commitPrincipalGrants(SPACE, "manager", CONN).publish.includes(row), row);
 }
 // ── the three journal-action coordination kinds ────────────────────────────────────────────
@@ -355,8 +355,8 @@ c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the go
     ...COMMIT_ROWS,
   ]) && JSON.stringify(GW.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`]), GW.publish);
 // SPELLED AS A COMPOSITION, not as a re-listing. The three coordination kinds were written out here
-// as well as on the commit row, which made this overlay look like their source; they are SPEC:2721
-// commit-row grants that every commit principal holds, and this profile only INHERITS them. Reusing
+// as well as on the commit row, which made this overlay look like their source; they are §13.9
+// "Claim / action / checkpoint commits" (SPEC:2912) commit-row grants that every commit principal holds, and this profile only INHERITS them. Reusing
 // `COMMIT_ROWS` is what makes that structural rather than a claim in a comment: the day the commit
 // row changes, this cell moves with it or fails, and it cannot drift into a private copy again.
 // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
@@ -569,13 +569,30 @@ try {
   c("EPJ has NO Direct Get (nothing reads it but the canonicalizer + harness MSG.GET)", !epj.allow_direct);
   c("EPJ's duplicate window is pinned to the server minimum, never the 120s default",
     epj.duplicate_window === nanos(EPJ_DUPLICATE_WINDOW_MS));
-  c("EPF serves Direct Get (the last-by-subject fact reads)", (await cfg(epfStreamName(SPACE))).allow_direct === true);
+  const epf = await cfg(epfStreamName(SPACE));
+  c("EPF serves Direct Get (the last-by-subject fact reads)", epf.allow_direct === true);
+  // THE RETENTION FLOOR IS THE AGE TERM ONLY, AND THE RULE IS WIDER THAN THE AGE TERM. SPEC:3189-3195
+  // forbids "not only age eviction below the horizon but every conforming alternative that erases it
+  // while `MaxAge` still passes": a finite MaxMsgs/MaxBytes/MaxMsgsPerSubject with DiscardOld, a
+  // per-message TTL, rollup/compaction, or a retention-policy change. The floor validator checks the
+  // age term and nothing else, so the ledger row read FIXED while four of the five causes were
+  // unguarded — a reviewer caught the overclaim.
+  //
+  // These are not settable through `EndpointStreamOptions` today, and THAT IS THE WEAKER CLAIM: it
+  // is a fact about the option surface, and it stops being true the first time someone adds an
+  // option. Asserted here against the config the broker actually holds, so it is a fact about the
+  // stream — and it reddens on the widening rather than on the incident.
+  c("EPF has NO non-age removal cause: unlimited count/bytes/per-subject, no message TTL, no rollup, Limits retention (SPEC:3189-3195)",
+    epf.max_msgs === -1 && epf.max_bytes === -1 && epf.max_msgs_per_subject === -1
+    && !epf.allow_msg_ttl && !epf.allow_rollup_hdrs && epf.retention === "limits",
+    { max_msgs: epf.max_msgs, max_bytes: epf.max_bytes, max_msgs_per_subject: epf.max_msgs_per_subject,
+      allow_msg_ttl: epf.allow_msg_ttl, allow_rollup_hdrs: epf.allow_rollup_hdrs, retention: epf.retention });
   const eptReq = await cfg(eptReqStreamName(SPACE));
   c("EPT_REQ has message schedules DISABLED", !eptReq.allow_msg_schedules);
   const ept = await cfg(eptStreamName(SPACE));
   c("EPT has message schedules ENABLED", ept.allow_msg_schedules === true);
   const epw = await cfg(epwStreamName(SPACE));
-  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC 13.6:1864-1866)",
+  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC:2931, §13.9 `Work-pool reconciliation probe`)",
     epw.retention === "workqueue" && epw.allow_direct === false);
   const epc = await cfg(epcStreamName(SPACE));
   c("EPC has no age eviction (artifacts are permanent)", epc.allow_direct === true && epc.max_age === 0);

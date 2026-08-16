@@ -23,7 +23,7 @@
  * authorities SPEC gives it — the `epf.<e>.dec.>`/`.quar.>` fact publish (SPEC:1658-1663: the
  * canonicalizer publishes the decision or quarantine fact and terminally acks only after it
  * durably exists) nor the leader-served `STREAM.MSG.GET.EPF_<space>` of the row titled
- * "Canonicalizer CAS-winner + terminal read" (SPEC:2914, which it needs to read the winning fact
+ * "Canonicalizer CAS-winner + terminal read" (SPEC:2907, which it needs to read the winning fact
  * on redelivery). Its builders emit its EPJ consumer rows plus the EPW work publish, and the
  * holder-set fixture below asserts that absence POSITIVELY by listing `canonicalizer:EPW_<space>`
  * and no `canonicalizer:EPF_<space>`. That is correct today — no production path mints a
@@ -183,7 +183,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.goal.jobsrv.>",
     "$KV.cotal_records_d32m.cp.jobsrv.>",
     "$KV.cotal_records_d32m.lease.jobsrv.>",
-    // SPEC:2721 puts SIX record kinds on the commit row. The three coordination kinds were
+    // SPEC:2912 (§13.9 "Claim / action / checkpoint commits") puts SIX record kinds on the commit row. The three coordination kinds were
     // built on the Model-B overlay only, so this fixture pinned the wrong shape as "reviewed".
     "$KV.cotal_records_d32m.goaleff.jobsrv.>",
     "$KV.cotal_records_d32m.epname.jobsrv.>",
@@ -204,7 +204,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   "goal-writer": { publish: [
     "cotal.d32m.epf.jobsrv.goal.*.*.*.*.bind",
     "$KV.cotal_records_d32m.goalidx.jobsrv.>",
-    // The three coordination kinds are NOT here: they are SPEC:2721 commit-row grants and this
+    // The three coordination kinds are NOT here: they are SPEC:2912 (§13.9 "Claim / action / checkpoint commits") commit-row grants and this
     // overlay inherits them below. `goalidx` stays, because it is not on that row at all.
     "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
     "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result",
@@ -215,7 +215,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.goal.jobsrv.>",
     "$KV.cotal_records_d32m.cp.jobsrv.>",
     "$KV.cotal_records_d32m.lease.jobsrv.>",
-    // SPEC:2721 puts SIX record kinds on the commit row. The three coordination kinds were
+    // SPEC:2912 (§13.9 "Claim / action / checkpoint commits") puts SIX record kinds on the commit row. The three coordination kinds were
     // built on the Model-B overlay only, so this fixture pinned the wrong shape as "reviewed".
     "$KV.cotal_records_d32m.goaleff.jobsrv.>",
     "$KV.cotal_records_d32m.epname.jobsrv.>",
